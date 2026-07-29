@@ -1,0 +1,4 @@
+#!/bin/sh
+
+"$(git rev-parse --show-toplevel)/scripts/git_object_cleanup.sh" \
+    >>/tmp/agenticai-trading-git-cleanup.log 2>&1 || true

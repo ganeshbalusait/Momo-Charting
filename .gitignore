@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+artifacts/loop_engineering/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+emgs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+.venv-macos/
+venv/
+env/
+ENV/
+
+# Testing and tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Local Schwab OAuth credentials and loopback certificates
+artifacts/schwab_token.json
+artifacts/localhost_schwab_cert.pem
+artifacts/localhost_schwab_key.pem
+
+# Logs
+*.log
+
+# Local runtime data and credentials
+artifacts/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+.pnpm-store/
+coverage/

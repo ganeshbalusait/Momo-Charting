@@ -1,0 +1,33 @@
+{
+  "run_id": "repo-speed-safe",
+  "proposer_command": [
+    "codex",
+    "exec",
+    "--full-auto",
+    "Read LOOP_PROGRAM_PATH and LOOP_HISTORY_PATH. Make one small, safe performance improvement in the allowed files. Do not edit tests or verifier files."
+  ],
+  "verifier_command": [
+    "C:\\GANESH\\AgenticAI-Trading\\.venv\\Scripts\\python.exe",
+    "scripts/loop_repo_verifier.py",
+    "--python",
+    "C:\\GANESH\\AgenticAI-Trading\\.venv\\Scripts\\python.exe"
+  ],
+  "meta_command": [
+    "codex",
+    "exec",
+    "--full-auto",
+    "Read LOOP_HISTORY_PATH and LOOP_PROGRAM_PATH. Revise only LOOP_PROGRAM_PATH to force a new search direction after stagnation. Do not edit repository code."
+  ],
+  "allowed_paths": [
+    "scanner.py",
+    "strategy.py",
+    "backtester.py"
+  ],
+  "program_path": "loop_program.md",
+  "max_iterations": 12,
+  "max_minutes": 60,
+  "stagnation_limit": 3,
+  "max_outer_iterations": 3,
+  "min_score_delta": 5000.0,
+  "state_root": "artifacts/loop_engineering"
+}

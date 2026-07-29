@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgenticAI Trading Workflow</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #050d14; color: #e9f4fb; font-family: Inter, "Segoe UI", Arial, sans-serif; }
+    main { width: 1920px; min-height: 1400px; padding: 38px 44px 44px; background: #050d14; }
+    header { display: flex; align-items: end; justify-content: space-between; border-bottom: 1px solid #174159; padding-bottom: 20px; }
+    h1 { margin: 0; color: #ffffff; font-size: 34px; font-weight: 750; }
+    header p { margin: 8px 0 0; color: #83a8bd; font-size: 15px; }
+    .legend { display: flex; gap: 12px; font-size: 13px; color: #afc6d3; }
+    .legend span { border: 1px solid #24516a; padding: 8px 12px; background: #0b1b27; }
+    .board { display: grid; grid-template-columns: 1fr 1.06fr 1fr; gap: 18px; margin-top: 22px; }
+    .lane { border: 1px solid #183c51; background: #07141e; min-width: 0; }
+    .lane > h2 { margin: 0; padding: 13px 16px; font-size: 14px; letter-spacing: 0; color: #54d9ef; background: #0b2130; border-bottom: 1px solid #1a4f68; }
+    .lane.option > h2 { color: #ffd166; }
+    .lane.learn > h2 { color: #78e6a6; }
+    .stack { padding: 14px; display: grid; gap: 10px; }
+    .node { position: relative; border: 1px solid #24516a; background: #0b1c28; padding: 12px 14px; min-height: 64px; }
+    .node strong { display: block; font-size: 15px; color: #f5fbff; }
+    .node small { display: block; margin-top: 6px; color: #93afbf; font-size: 12px; line-height: 1.4; }
+    .node.source { border-color: #197d91; background: #092934; }
+    .node.pass { border-color: #168d5b; background: #09281e; }
+    .node.warn { border-color: #9a6e18; background: #2a230e; }
+    .node.account { border-width: 2px; }
+    .node.account.stock { border-color: #15bfd7; }
+    .node.account.option { border-color: #dba52a; }
+    .node.db { border-color: #7657d7; background: #17132d; }
+    .arrow { height: 20px; position: relative; }
+    .arrow:before { content: ""; position: absolute; left: 50%; top: 0; height: 14px; border-left: 2px solid #3b718d; }
+    .arrow:after { content: ""; position: absolute; left: calc(50% - 5px); top: 10px; width: 8px; height: 8px; border-right: 2px solid #3b718d; border-bottom: 2px solid #3b718d; transform: rotate(45deg); }
+    .rules { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .rule { border-left: 3px solid #2a9db5; background: #0a1822; padding: 8px 10px; color: #b7ceda; font-size: 11px; line-height: 1.35; }
+    .rule b { color: #ffffff; }
+    .score { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .score div { text-align: center; padding: 9px 5px; border: 1px solid #28516a; background: #0b1a25; }
+    .score b { display: block; font-size: 13px; }
+    .score small { color: #8ba7b8; font-size: 10px; }
+    .hot { color: #5df0a2; }
+    .active { color: #58d6ef; }
+    .review { color: #ffc857; }
+    .bottom { display: grid; grid-template-columns: 1.05fr 1.3fr 1.05fr; gap: 18px; margin-top: 18px; }
+    .panel { border: 1px solid #183c51; background: #07141e; padding: 14px; min-height: 260px; }
+    .panel h3 { margin: 0 0 12px; font-size: 14px; color: #f4f9fc; }
+    .panel ol, .panel ul { margin: 0; padding-left: 20px; color: #a9c0ce; font-size: 12px; line-height: 1.55; }
+    .accounts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .account-box { border: 1px solid #28516a; padding: 12px; background: #0b1b27; min-height: 108px; }
+    .account-box b { color: #fff; font-size: 14px; }
+    .account-box span { display: block; color: #58d7ee; margin-top: 5px; font-size: 12px; }
+    .account-box.option span { color: #ffd166; }
+    .account-box p { color: #93afbf; font-size: 11px; line-height: 1.4; margin: 8px 0 0; }
+    .health { margin-top: 18px; border: 1px solid #183c51; background: #081823; display: grid; grid-template-columns: 180px repeat(5, 1fr); align-items: stretch; }
+    .health > div { padding: 14px; border-right: 1px solid #183c51; min-width: 0; }
+    .health > div:last-child { border-right: 0; }
+    .health b { display: block; color: #f4f9fc; font-size: 12px; }
+    .health small { display: block; color: #87a6b7; margin-top: 5px; font-size: 10px; line-height: 1.35; }
+    footer { margin-top: 16px; display: flex; justify-content: space-between; color: #637f90; font-size: 10px; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>AgenticAI Trading - End-to-End Workflow</h1><p>MAG7 + Watchlist 400 | OI scanning | Stock and option paper automation | Learning and journals</p></div>
+    <div class="legend"><span>Live market data: Schwab/TOS</span><span>Execution: Alpaca Paper</span><span>Learning: Advisory only</span></div>
+  </header>
+
+  <section class="board">
+    <article class="lane">
+      <h2>1. UNIVERSES AND LIVE STOCK GATE</h2>
+      <div class="stack">
+        <div class="node source"><strong>MAG7 OI universe</strong><small>17 configured underlyings + mappings such as NVDL to NVDA and AMDL to AMD. Full-list engine targets 15-second refreshes.</small></div>
+        <div class="node source"><strong>Watchlist OI universe</strong><small>348 current non-MAG7 symbols. MAG7 duplicates removed. Five parallel workers, 25 symbols per batch, target 30 seconds.</small></div>
+        <div class="arrow"></div>
+        <div class="node pass"><strong>All required stock evidence</strong>
+          <div class="rules">
+            <div class="rule"><b>Price</b><br>Last at least $3.00</div>
+            <div class="rule"><b>Change</b><br>Live daily change at least +1%</div>
+            <div class="rule"><b>5-minute trend</b><br>EMA 9 &gt; 21 &gt; 50 and price above VWAP</div>
+            <div class="rule"><b>Approved setup</b><br>EMA + VWAP, ORB, PM/PD high, or PM/PD low reclaim</div>
+            <div class="rule"><b>MAG7 RVOL</b><br>Any 15m/30m/1H/2H/4H/D at least 0.40</div>
+            <div class="rule"><b>Watchlist RVOL</b><br>Any 15m/30m/1H/2H/4H/D at least 1.00</div>
+          </div>
+        </div>
+        <div class="node warn"><strong>Review-only information</strong><small>5m RVOL early alert, one-bar volume acceleration, fast momentum, and EMA9 retest. 5m RVOL alone cannot become A ACTIVE or A+ HOT.</small></div>
+      </div>
+    </article>
+
+    <article class="lane option">
+      <h2>2. OPTION CHAIN, OI FLOW, AND DISPLAY</h2>
+      <div class="stack">
+        <div class="node source"><strong>Live CALL chain</strong><small>OTM strike, delta at least 0.20, expected move at least $2, DTE 1-14, usable volume or OI. 0DTE and expired contracts excluded.</small></div>
+        <div class="arrow"></div>
+        <div class="node"><strong>ATM versus OTM comparison</strong><small>Compare call volume and open interest. Label Big real-time volume or Big OI, then calculate OTM &gt; ATM or ATM &gt; OTM.</small></div>
+        <div class="node"><strong>One best row per underlying</strong><small>Rank by nearest expiry, liquidity, volume + OI, delta near 0.30, then strike. Preserve timestamped events in history.</small></div>
+        <div class="score">
+          <div><b class="hot">A+ HOT</b><small>Clean OTM flow, score 80+</small></div>
+          <div><b class="active">A ACTIVE</b><small>Strong confirmation, score 65+</small></div>
+          <div><b class="review">REVIEW</b><small>Watchlist, mixed, or 5m-only</small></div>
+        </div>
+        <div class="node"><strong>Result columns</strong><small>Symbol, timestamp, strength, UW score, contract, setup, fast momentum, all RVOL TFs, expected move, DTE, delta, OTM/ATM volume and OI, premium, flow, liquidity winner, why, and scanner tag.</small></div>
+      </div>
+    </article>
+
+    <article class="lane learn">
+      <h2>3. EXECUTION, JOURNALS, AND LEARNING</h2>
+      <div class="stack">
+        <div class="node pass"><strong>Option bot entry</strong><small>Regular market hours only. Fresh A+ HOT snapshot no older than 45 seconds. Recheck 5m EMA/VWAP and quote. ATM-dominant flow waits for ATM break.</small></div>
+        <div class="node account option"><strong>MAG7 option - Paper3</strong><small>Fresh MAG7 A+ HOT long-call limit orders. Separate option buying power and journal cohort.</small></div>
+        <div class="node account option"><strong>Watchlist option - Paper5</strong><small>Fresh non-MAG7 A+ HOT long-call limit orders. Separate account and Watchlist 400 learning book.</small></div>
+        <div class="node account stock"><strong>All stock automation - Paper4</strong><small>Core: fresh A+ HOT or A ACTIVE OI within 300 seconds. Extended sessions: stock momentum, with OI advisory.</small></div>
+        <div class="node db"><strong>Stock Journal + Option Journal</strong><small>Broker IDs, account, setup, contract, entry, stop, target, partial exits, runner state, exit reason, and realized P/L. Default retention: 183 days.</small></div>
+        <div class="node db"><strong>Learning Lab</strong><small>Separate MAG7 Stock, MAG7 Option, Watchlist Stock, and Watchlist 400 Option books. Forward outcomes + closed trades. Advisory only; cannot block trades.</small></div>
+      </div>
+    </article>
+  </section>
+
+  <section class="bottom">
+    <article class="panel">
+      <h3>NVDA MAG7 example</h3>
+      <ol>
+        <li>NVDA passes $3, +1% change, EMA/VWAP, setup, and MAG7 RVOL.</li>
+        <li>2-DTE 205C passes delta, expected move, DTE, and liquidity.</li>
+        <li>OTM volume and OI both beat ATM; score becomes A+ HOT.</li>
+        <li>Row appears in MAG7 Result and timestamped History.</li>
+        <li>Option bot rechecks freshness and routes to Paper3.</li>
+        <li>Manager checks stop, target, partial exit, and runner every 5 seconds.</li>
+      </ol>
+    </article>
+    <article class="panel">
+      <h3>Account routing</h3>
+      <div class="accounts">
+        <div class="account-box option"><b>Paper3</b><span>MAG7 OPTION TRADE</span><p>MAG7 long-call execution and MAG7 Option learning outcomes.</p></div>
+        <div class="account-box"><b>Paper4</b><span>WATCHLIST STOCK TRADE</span><p>MAG7 + watchlist stock orders, stock journal, and stock learning books.</p></div>
+        <div class="account-box option"><b>Paper5</b><span>WATCHLIST OPTION TRADE</span><p>Non-MAG7 watchlist calls and Watchlist 400 Option learning outcomes.</p></div>
+      </div>
+      <div class="node warn" style="margin-top:10px"><strong>Current implementation caveat</strong><small>The OI chain stage currently obtains setups through scanner.run(), so live 1H/4H stock comparisons can still be inherited even though the OI panel describes EMA/VWAP + daily change + RVOL.</small></div>
+    </article>
+    <article class="panel">
+      <h3>Learning sample targets</h3>
+      <ul>
+        <li>MAG7 Stock: 100 initial / 100 advanced</li>
+        <li>MAG7 Option: 100 initial / 100 advanced</li>
+        <li>Watchlist Stock: 100 initial / 100 advanced</li>
+        <li>Watchlist 400 Option: 50 initial / 150 advanced</li>
+        <li>Scanner observations and model versions: retained until archived</li>
+        <li>Learning can rank and explain; deterministic rules keep order authority</li>
+      </ul>
+    </article>
+  </section>
+
+  <section class="health">
+    <div><b>RUNTIME HEALTH LOOP</b><small>Does not rewrite code</small></div>
+    <div><b>1. Scan</b><small>Independent MAG7, watchlist, and stock engines</small></div>
+    <div><b>2. Verify</b><small>Freshness, API, account, buying power, database</small></div>
+    <div><b>3. Trade/manage</b><small>Rule-authorized paper orders and 5-second managers</small></div>
+    <div><b>4. Persist/learn</b><small>History, journals, observations, outcomes</small></div>
+    <div><b>5. Recover/repeat</b><small>Retry, retain stable rows, log errors, pause unsafe entries</small></div>
+  </section>
+
+  <footer><span>Source: docs/END_TO_END_TRADING_WORKFLOW.md</span><span>Generate -&gt; Test -&gt; Verify -&gt; Repeat is the separate engineering loop</span></footer>
+</main>
+</body>
+</html>
