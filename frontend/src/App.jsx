@@ -14137,15 +14137,20 @@ export default function App() {
         const message = requestError?.name === "AbortError"
           ? "The live option chain took longer than 25 seconds. Retry now; the chart remains available."
           : requestError instanceof Error ? requestError.message : "OI Finder feed unavailable.";
-        setOiFinderFeed({
-          symbol: target,
-          live: false,
-          callRows: [],
-          putRows: [],
-          currentAtm: {},
-          tosScriptLevels: [],
-          errors: [{ error: message }],
-        });
+        // A periodic refresh must never erase a complete chain that is already
+        // on screen. Keep the last good snapshot and surface failures only for
+        // the initial/manual request where no usable data has arrived yet.
+        if (!background) {
+          setOiFinderFeed({
+            symbol: target,
+            live: false,
+            callRows: [],
+            putRows: [],
+            currentAtm: {},
+            tosScriptLevels: [],
+            errors: [{ error: message }],
+          });
+        }
       }
     } finally {
       if (timeoutId) window.clearTimeout(timeoutId);
@@ -14309,7 +14314,14 @@ export default function App() {
     loadOiFinderFeed(oiFinderSymbol, false);
     // Match the selected ticker refresh to the heatmap's advertised 15-second
     // comparison window. Slow broker requests are de-duplicated above.
-    const timer = setInterval(() => loadOiFinderFeed(oiFinderSymbol, true, true), 15000);
+    // Popup chains use a stale-while-refresh server cache. Do not force a new
+    // broker round-trip every 15 seconds; doing so makes several open charts
+    // compete and can replace responsive cached data with slow requests.
+    const forceBackgroundRefresh = !popoutConfig.mode;
+    const timer = setInterval(
+      () => loadOiFinderFeed(oiFinderSymbol, forceBackgroundRefresh, true),
+      15000,
+    );
     return () => clearInterval(timer);
   }, [activeView, oiFinderSymbol, popoutConfig.mode]);
 
