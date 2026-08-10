@@ -4718,9 +4718,13 @@ function FullChartsAndOiBoard({
   const [chainOpen, setChainOpen] = useState(() => {
     if (embedded) return true;
     try {
-      return window.localStorage.getItem("chartsOiChainOpen") === "true";
+      // The chart and the option chain form one trading surface.  Keep a
+      // trader's explicit preference, but make the first visit open both
+      // panels so phones and tablets immediately resemble a terminal.
+      const saved = window.localStorage.getItem("chartsOiChainOpen");
+      return saved == null ? true : saved === "true";
     } catch {
-      return false;
+      return true;
     }
   });
   const toggleChain = () => setChainOpen((current) => {
@@ -5010,6 +5014,7 @@ function FullChartsAndOiBoard({
   return <section
     className={`charts-oi-page charts-oi-page-full chain-${chainSide} ${embedded ? "is-embedded" : ""} ${chainOpen ? "is-chain-open" : "is-chain-closed"} ${isChainResizing ? "is-resizing" : ""}`}
     data-testid="charts-and-oi-view"
+    id="charts-oi-workspace"
     ref={pageRef}
     style={{ "--charts-oi-chain-width": `${chainWidth}px` }}
   >
@@ -16245,6 +16250,20 @@ export default function App() {
   const learningPageActive = activeView === "Learning Lab";
   const scannerPageActive = activeView === "Scanner";
   const scannerSurfaceActive = scannerPageActive || oiScannerPageActive;
+  const openMobilePriceAlert = () => {
+    const symbol = normalizeOiChartSymbol(oiFinderSymbol || selectedSymbol, "AAPL");
+    const price = Number(oiFinderFeed?.underlyingPrice || 0);
+    window.dispatchEvent(new CustomEvent(OI_PRICE_ALERT_DRAFT_EVENT, {
+      detail: { symbol, price, condition: "above" },
+    }));
+  };
+  const navigateMobileTerminal = (view) => {
+    setActiveView(view);
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+  };
+  const focusMobileCharting = () => {
+    document.getElementById("charts-oi-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   const normalizedNewsSearch = newsSearch.trim().toLowerCase();
   const mag7NewsSymbols = new Set((dashboard.mag7OptionWatchlist || MAG7.split(",")).map((symbol) => String(symbol || "").toUpperCase()));
   const watchlistNewsSymbols = new Set((dashboard.watchlist || []).map((symbol) => String(symbol || "").toUpperCase()));
@@ -16798,6 +16817,27 @@ export default function App() {
                 {symbol}
               </button>
             ))}
+          </nav>
+        ) : null}
+
+        {chartsAndOiPageActive ? (
+          <nav className="mobile-terminal-action-bar" aria-label="Mobile trading actions">
+            <button type="button" onClick={openMobilePriceAlert}>
+              <Bell size={15} />
+              <span>Set alert</span>
+            </button>
+            <button className="is-active" type="button" onClick={focusMobileCharting}>
+              <ChartCandlestick size={15} />
+              <span>Charting</span>
+            </button>
+            <button type="button" onClick={() => navigateMobileTerminal("OI Level Script TOS")}>
+              <NotebookTabs size={15} />
+              <span>OI levels</span>
+            </button>
+            <button type="button" onClick={() => navigateMobileTerminal("OI Scanner")}>
+              <ScanSearch size={15} />
+              <span>Scan results</span>
+            </button>
           </nav>
         ) : null}
 
