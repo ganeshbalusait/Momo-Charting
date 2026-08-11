@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.claude.com)",
+      "Skill(update-config)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(claude remote-control *)",
+      "PowerShell(Start-ScheduledTask -TaskName 'AgenticAI-Trading-24x7')",
+      "PowerShell(Get-ScheduledTask -TaskName 'AgenticAI-Trading-24x7')",
+      "PowerShell(Get-NetTCPConnection -State Listen -LocalPort 3001 -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-ScheduledTaskInfo -TaskName 'AgenticAI-Trading-24x7')"
+    ]
+  }
+}
