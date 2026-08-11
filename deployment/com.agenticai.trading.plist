@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.agenticai.trading</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/2320754846/Library/Application Support/AgenticAI-Trading/app/scripts/run_macos_production.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/2320754846/Library/Application Support/AgenticAI-Trading/app</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ALLOW_LIVE_TRADING</key>
+    <string>false</string>
+    <key>ANALYTICS_ONLY</key>
+    <string>true</string>
+    <key>API_HOST</key>
+    <string>127.0.0.1</string>
+    <key>API_PORT</key>
+    <string>3001</string>
+    <key>AUTO_START_BOT</key>
+    <string>false</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>PYTHONPYCACHEPREFIX</key>
+    <string>/tmp/agenticai-trading-pycache</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/2320754846/Library/Application Support/AgenticAI-Trading/app/artifacts/logs/production.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/2320754846/Library/Application Support/AgenticAI-Trading/app/artifacts/logs/production.error.log</string>
+</dict>
+</plist>
