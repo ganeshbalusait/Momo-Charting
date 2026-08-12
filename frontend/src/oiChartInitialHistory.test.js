@@ -7,11 +7,19 @@ import {
   oiChartNeedsInitialStudySeed,
 } from "./oiChartInitialHistory.js";
 
-test("only 4H requests the compact study seed", () => {
-  for (const minutes of [3, 5, 10, 15, 30, 60, 120, 1440, 10080, 43200]) {
-    assert.equal(oiChartNeedsInitialStudySeed(minutes), false);
+test("every timeframe that reads the study tape requests the seed", () => {
+  // Was "only 4H requests the compact study seed". The 30-minute tape is the
+  // history source for every timeframe at least as coarse as its cadence:
+  // 30m/1h/2h/4h aggregate their candles from it, and D/W/M read it for
+  // studies. Seeding only 4H left the others rendering from the fast-paint
+  // slice, whose studyBars is empty, so they fell back to the ~5-day
+  // one-minute tape - about 17-20 candles on 4H and fewer above it.
+  for (const minutes of [3, 5, 10, 15]) {
+    assert.equal(oiChartNeedsInitialStudySeed(minutes), false, `${minutes}m must not pay for the seed`);
   }
-  assert.equal(oiChartNeedsInitialStudySeed(240), true);
+  for (const minutes of [30, 60, 120, 240, 1_440, 10_080, 43_200]) {
+    assert.equal(oiChartNeedsInitialStudySeed(minutes), true, `${minutes}m needs the study seed`);
+  }
 });
 
 test("a prefetched shallow payload cannot strand a 4H opening viewport", () => {

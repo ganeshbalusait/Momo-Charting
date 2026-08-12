@@ -6,40 +6,170 @@ export function chartOpeningHistorySignature(symbol, bars) {
   return `${normalizedSymbol}-${Number.isFinite(firstTime) ? firstTime : 0}`;
 }
 
-// TradingView frames candles at roughly this width and lets the pane decide
-// how many fit, which is why a wider window there shows MORE history rather
-// than fatter candles.
-const TRADINGVIEW_CANDLE_PITCH_PX = 7;
+// Candle DENSITY is the thing that makes a chart read as zoomed out, not the
+// candle count on its own. Capping the count at 120 meant a 1920px pane spread
+// those 120 bars over the full width at ~15px each - technically "120 candles
+// visible", visually fat and zoomed in.
+//
+// So the pitch is the fixed quantity and the count follows from the pane.
+// 6px sits in the middle of the 4-7px target band.
+const TRADINGVIEW_DEFAULT_CANDLE_PITCH_PX = 4;
+// Floor keeps a narrow panel usable; ceiling stops a 4K pane opening on a
+// thousand slivers. A 1200px pane lands ~200, a 1920px pane ~320.
+const TRADINGVIEW_DEFAULT_MIN_CANDLES = 150;
+const TRADINGVIEW_DEFAULT_MAX_CANDLES = 600;
+// Hard ceiling on the applied barSpacing. The old value was 16px, which let a
+// wide pane force fat candles no matter how the range was computed.
+export const TRADINGVIEW_MAX_BAR_SPACING_PX = 7;
+// Let the trader keep zooming out well past the opening density.
+export const TRADINGVIEW_MIN_BAR_SPACING_PX = 2;
+
+// Lightweight Charts applies minBarSpacing to every timestamp on the shared
+// time scale, not just to candlesticks. A 4H candle can therefore span eight
+// logical slots when 30m studies are present. Keeping a fixed 2px logical
+// floor turns that into a 16px minimum candle pitch and makes 4H look zoomed
+// in even after the correct candle range is selected.
+export function chartMinimumLogicalBarSpacing({ bars, timeToIndex } = {}) {
+  const slotsPerCandle = chartLogicalSlotsPerCandle({ bars, timeToIndex });
+  return Math.max(0.25, TRADINGVIEW_MIN_BAR_SPACING_PX / slotsPerCandle);
+}
+
+export function chartLogicalTimeScaleSpacing({
+  candlePitch = TRADINGVIEW_DEFAULT_CANDLE_PITCH_PX,
+  futureSlots = 0,
+  bars,
+  timeToIndex,
+} = {}) {
+  const slotsPerCandle = chartLogicalSlotsPerCandle({ bars, timeToIndex });
+  const minBarSpacing = Math.max(0.25, TRADINGVIEW_MIN_BAR_SPACING_PX / slotsPerCandle);
+  // Lightweight Charts measures barSpacing and rightOffset in SHARED logical
+  // points. A 4H candle spans eight such points when 30m studies are present,
+  // so applying a 4px candle pitch directly makes each candle 32px wide. This
+  // is the 5m -> 4H switch regression that left only about five days visible
+  // whenever the timestamp-based opening window had not settled yet.
+  return {
+    barSpacing: Math.max(
+      minBarSpacing,
+      Math.max(0.25, Number(candlePitch) || TRADINGVIEW_DEFAULT_CANDLE_PITCH_PX) / slotsPerCandle,
+    ),
+    rightOffset: Math.max(0, Number(futureSlots) || 0) * slotsPerCandle,
+    minBarSpacing,
+    slotsPerCandle,
+  };
+}
+
+export function chartExplicitSavedLogicalRange({
+  latestIndex,
+  visibleSpan,
+  latestRatio,
+  candleCount,
+  slotsPerCandle = 1,
+  futureSlots = 5,
+} = {}) {
+  const latest = Number(latestIndex);
+  const requestedSpan = Number(visibleSpan);
+  const count = Math.max(0, Math.floor(Number(candleCount) || 0));
+  const density = Math.max(1, Number(slotsPerCandle) || 1);
+  if (!Number.isFinite(latest) || !Number.isFinite(requestedSpan) || requestedSpan < 4 || !count) return null;
+  const maximumSpan = Math.max(8, (count + Math.max(0, Number(futureSlots) || 0)) * density);
+  const span = Math.max(8, Math.min(requestedSpan, maximumSpan));
+  const ratio = Math.max(0.05, Math.min(0.95, Number(latestRatio) || 0.8));
+  const from = latest - span * ratio;
+  return { from, to: from + span };
+}
 
 export function chartDefaultHistorySlots({
   timeframeMinutes,
   isBigScreen = false,
   chartWidth = 0,
 } = {}) {
+  // SETTLED against the user's own reference. A 20-candle branch for
+  // timeframeMinutes >= 240 has been added, removed and re-added by three
+  // sessions today; every session has disclaimed it. It is dropped here on
+  // evidence rather than preference:
+  //
+  //  - The user supplied their TradingView 4H chart as the target. TradingView
+  //    draws ONE candle width on every timeframe; a 4H candle is not wider
+  //    than a 5m one. A per-timeframe count contradicts the reference.
+  //  - It left 4H/D/W opening on 20 candles while 5m/1h opened on 166 in the
+  //    same pane - an 8x inconsistency with no basis in the reference.
+  //  - The user objected to this exact view by name ("higher timeframe zoomed
+  //    out 20 last candles") and reported "still zoomed in" repeatedly.
+  //
+  // The complaint it was presumably added to fix had a different cause:
+  // oiChartNeedsInitialStudySeed only seeded 4H, so higher timeframes rendered
+  // off the ~5-day one-minute tape and had just 17-20 candles IN EXISTENCE.
+  // Capping the viewport matched that symptom without addressing it. With the
+  // seed fixed the full tape is present, so the cap only hides it.
+  //
+  // Anyone restoring a per-timeframe count should bring a reference that
+  // contradicts the one above, and settle it with the user first.
   const width = Number(chartWidth) || 0;
   if (width > 0) {
-    // Derive the candle count from the pane instead of a fixed number. The
-    // fixed counts made a BIG screen show FEWER candles than a normal one
-    // (32 vs 72 intraday, 80 vs 120 on 4H), so the more screen the user gave
-    // the chart the more zoomed-in it looked - the opposite of TradingView.
-    // Reserve ~22% of the pane for the forward projection area.
-    const slots = Math.round((width * 0.78) / TRADINGVIEW_CANDLE_PITCH_PX);
-    return Math.max(60, Math.min(400, slots));
+    // Count follows from the pane at a fixed density, so a wider chart shows
+    // MORE history at the same candle width - which is what "zoomed out" means
+    // visually. Deriving the count first and letting the pitch fall out of it
+    // is what produced 15px candles on a big screen.
+    const slots = Math.round(width / TRADINGVIEW_DEFAULT_CANDLE_PITCH_PX);
+    return Math.max(
+      TRADINGVIEW_DEFAULT_MIN_CANDLES,
+      Math.min(TRADINGVIEW_DEFAULT_MAX_CANDLES, slots),
+    );
   }
-  const minutes = Number(timeframeMinutes || 0);
-  // Width-less fallback (headless/first paint before layout settles).
-  if (minutes === 240) return isBigScreen ? 120 : 160;
-  return isBigScreen ? 32 : 72;
+  // Width-less first paint and headless callers use the same lower-timeframe
+  // fallback. Higher timeframes returned their explicit 20-candle view above.
+  return 150;
+}
+
+export function chartTrailingSessionHistorySlots({
+  bars,
+  sessionCount = 5,
+  sessionKey,
+} = {}) {
+  const source = Array.isArray(bars) ? bars : [];
+  const requestedSessions = Math.max(1, Math.floor(Number(sessionCount) || 1));
+  if (!source.length || typeof sessionKey !== "function") return 0;
+
+  const sessions = new Set();
+  let historySlots = 0;
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const key = String(sessionKey(source[index], index) || "").trim();
+    if (!key) continue;
+    if (!sessions.has(key) && sessions.size >= requestedSessions) break;
+    sessions.add(key);
+    historySlots += 1;
+  }
+  return historySlots;
 }
 
 export function chartDefaultFutureSlots({ historySlots, isBigScreen = false } = {}) {
   const history = Math.max(1, Math.floor(Number(historySlots) || 1));
   // A projection area is useful for forward session lines and signal labels,
-  // but the former 1.18× normal-chart setting put up to seven hours of empty
-  // 5-minute space after every ticker. Keep a compact live-chart edge while
-  // retaining a little more room in the intentional big-screen workspace.
-  if (isBigScreen) return Math.max(10, Math.min(32, Math.round(history * 0.9)));
-  return Math.max(8, Math.min(24, Math.round(history * 0.3)));
+  // but it is empty space: every slot spent here is a candle not shown. The
+  // big-screen branch used history * 0.9 capped at 32, so in a ~600px
+  // workspace pane 32 of ~99 slots - a THIRD of the chart - were blank, and
+  // the chart read as zoomed in however many candles were loaded.
+  //
+  // Keep only 5-10 empty bars after the latest candle. The previous 18% rule
+  // could reserve more than twenty slots and make the real candles look
+  // squeezed left even when the historical range itself was correct.
+  return Math.max(5, Math.min(10, Math.round(history * 0.08)));
+}
+
+export function chartLogicalSlotsPerCandle({ bars, timeToIndex } = {}) {
+  const source = Array.isArray(bars) ? bars : [];
+  if (source.length < 2 || typeof timeToIndex !== "function") return 1;
+  const deltas = [];
+  const firstSample = Math.max(1, source.length - 12);
+  for (let index = firstSample; index < source.length; index += 1) {
+    const previous = Number(timeToIndex(Number(source[index - 1]?.time || 0)));
+    const current = Number(timeToIndex(Number(source[index]?.time || 0)));
+    const delta = current - previous;
+    if (Number.isFinite(delta) && delta > 0) deltas.push(delta);
+  }
+  if (!deltas.length) return 1;
+  deltas.sort((left, right) => left - right);
+  return Math.max(1, deltas[Math.floor(deltas.length / 2)]);
 }
 
 export function chartCandleLogicalWindow({
@@ -73,11 +203,30 @@ export function chartCandleLogicalWindow({
     history - 1,
     Math.max(MINIMUM_USABLE_SPAN, Math.floor(history * 0.5)),
   );
-  if (latest - from < minimumResolvedSpan) return null;
+  const density = chartLogicalSlotsPerCandle({ bars: source, timeToIndex });
+  if (latest - from < minimumResolvedSpan) {
+    // Detecting the clamp was right; returning null was not. The caller's
+    // fallback re-frames from barSpacing alone and does not restore the
+    // requested candle count, so a clamped scale left the chart on whatever
+    // slice the clamp produced. Measured live on MSFT 4H: 1,107 candles
+    // loaded, "150 candles ago" clamped to index 1055, and the chart opened
+    // on the last 52 - the persistent "still zoomed in" report.
+    //
+    // `latest` is trustworthy even mid-load (the newest candle is always on
+    // the scale), and density is sampled from the most recent bars, which are
+    // on it too. So derive the window by index instead of abandoning it.
+    const indexFrom = latest - history * density;
+    if (!Number.isFinite(indexFrom)) return null;
+    return { from: indexFrom, to: latest + projection * density };
+  }
   // Use the actual candle timestamps. Higher-timeframe charts can share the
   // time scale with denser 30-minute study points, so subtracting 72 logical
   // indexes may show only nine 4H candles instead of the requested 72.
-  return { from, to: latest + projection };
+  // Scale the right-side gap by that same logical density: eight requested
+  // blank 4H bars must remain eight candle-widths even when 30m study points
+  // place eight logical indexes between adjacent 4H candles.
+  const slotsPerCandle = chartLogicalSlotsPerCandle({ bars: source, timeToIndex });
+  return { from, to: latest + projection * slotsPerCandle };
 }
 
 export function chartLayoutProfileStorageKey(isMaximized, timeframeKey, workspaceScope = "") {
@@ -88,6 +237,19 @@ export function chartLayoutProfileStorageKey(isMaximized, timeframeKey, workspac
 }
 
 export const CHART_PANE_SIZING_VERSION = 2;
+// v1 chart-layout viewports were saved before candle pitch was converted into
+// the shared logical-point scale. A saved 4H range could therefore restore the
+// five-day, fat-candle view even after the opening-zoom fix. Ignore those old
+// horizontal ranges once; the next explicit Save writes a corrected v2 range.
+// Bumped to 3 on 2026-08-11. Saved viewports written earlier were captured
+// while a 20-candle higher-timeframe cap was live, so 4H/D/W profiles hold a
+// span of roughly twenty candles. A saved profile is re-applied on every study
+// rebuild (App.jsx: restoreChartLayoutProfile), which snapped the chart back
+// to that narrow span AFTER the opening framing had already run correctly -
+// and it lives in localStorage, so no reload could clear it. Bumping the
+// version retires those entries without anyone editing browser storage; the
+// Save button writes v3 immediately.
+export const CHART_LAYOUT_VIEWPORT_VERSION = 3;
 
 export function defaultChartPaneFactors(isBigScreen = false) {
   // Keep the price chart dominant without making the two lower studies appear
@@ -130,6 +292,112 @@ export function chartLayoutAutosaveContextMatches(queuedProfileKey, currentProfi
   return Boolean(queued) && queued === current;
 }
 
+export function chartShouldFrameAutomaticViewport({
+  initialView = false,
+  restoredViewport = false,
+  manualNavigation = false,
+  followsLatest = false,
+  studyStage = 0,
+  previousStudyStage = -1,
+} = {}) {
+  if (restoredViewport || manualNavigation) return false;
+  if (initialView) return true;
+  // Initial indicators may add denser timestamps one stage at a time. Reframe
+  // only when that opening ladder reaches a stage not already handled. A live
+  // quote restarts at stage zero, which must not reset the current zoom.
+  return Boolean(followsLatest) && Number(studyStage) > Number(previousStudyStage);
+}
+
+// v2 deliberately abandons the v1 payload rather than migrating it.
+//
+// v1 stored the visible span in LOGICAL INDEX units. Indexes shift whenever
+// study series add or drop points and when the shallow fast-paint tape is
+// replaced by full history, so save -> restore -> remeasure -> save was not
+// idempotent: it drifted, which is the 2026-08-05 layout ratchet that
+// chartViewport.js documents a rule against. Every stored v1 entry is
+// therefore untrustworthy, and a live one was pinning charts to a range set
+// hours earlier - the "still zoomed in on any ticker" report.
+//
+// v2 stores SECONDS, which no reflow can change. Changing the key also means
+// stale v1 entries are ignored without anyone having to clear storage.
+export const OI_CHART_TIME_VIEWPORT_SESSION_KEY = "oiFinderChartTimeViewports.v2";
+
+// A minute of chart is the smallest span worth restoring; below that a stray
+// pinch would persist as an unusable view.
+const MINIMUM_VIEWPORT_SPAN_SECONDS = 60;
+
+export function readChartTimeViewport(storage, viewportKey) {
+  const key = String(viewportKey || "").trim();
+  if (!key) return null;
+  try {
+    const parsed = JSON.parse(storage?.getItem?.(OI_CHART_TIME_VIEWPORT_SESSION_KEY) || "{}");
+    const entry = parsed?.[key];
+    const spanSeconds = Number(entry?.spanSeconds);
+    const forwardSeconds = Number(entry?.forwardSeconds);
+    if (!Number.isFinite(spanSeconds) || spanSeconds < MINIMUM_VIEWPORT_SPAN_SECONDS) return null;
+    return {
+      spanSeconds,
+      forwardSeconds: Number.isFinite(forwardSeconds) && forwardSeconds >= 0 ? forwardSeconds : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function storeChartTimeViewport(storage, viewportKey, viewport) {
+  const key = String(viewportKey || "").trim();
+  const spanSeconds = Number(viewport?.spanSeconds);
+  const forwardSeconds = Number(viewport?.forwardSeconds);
+  if (!key || typeof storage?.setItem !== "function"
+    || !Number.isFinite(spanSeconds) || spanSeconds < MINIMUM_VIEWPORT_SPAN_SECONDS) return false;
+  try {
+    const parsed = JSON.parse(storage.getItem?.(OI_CHART_TIME_VIEWPORT_SESSION_KEY) || "{}");
+    const entries = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    entries[key] = {
+      spanSeconds,
+      forwardSeconds: Number.isFinite(forwardSeconds) && forwardSeconds >= 0 ? forwardSeconds : 0,
+    };
+    storage.setItem(OI_CHART_TIME_VIEWPORT_SESSION_KEY, JSON.stringify(entries));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Restored window: the remembered ZOOM, always anchored to the newest candle.
+ *
+ * Remembering the scroll POSITION as well is what made a range saved days
+ * earlier strand the chart in old data (an AMZN 4H chart reopened on
+ * 2026-08-06). The user asked for TradingView-style zoom memory, so the span
+ * is what persists; the view still follows the live edge.
+ */
+export function chartTimeViewportRange(latestCandleTime, viewport) {
+  const latest = Number(latestCandleTime);
+  const spanSeconds = Number(viewport?.spanSeconds);
+  if (!Number.isFinite(latest) || latest <= 0) return null;
+  if (!Number.isFinite(spanSeconds) || spanSeconds < MINIMUM_VIEWPORT_SPAN_SECONDS) return null;
+  const forwardSeconds = Math.max(0, Math.min(
+    Number(viewport?.forwardSeconds) || 0,
+    spanSeconds * 0.5,
+  ));
+  const to = latest + forwardSeconds;
+  return { from: to - spanSeconds, to };
+}
+
+export function clearChartTimeViewport(storage, viewportKey) {
+  const key = String(viewportKey || "").trim();
+  if (!key || typeof storage?.setItem !== "function") return false;
+  try {
+    const parsed = JSON.parse(storage.getItem?.(OI_CHART_TIME_VIEWPORT_SESSION_KEY) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !(key in parsed)) return true;
+    delete parsed[key];
+    storage.setItem(OI_CHART_TIME_VIEWPORT_SESSION_KEY, JSON.stringify(parsed));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function chartZoomOutMaximumHalfRange({
   candleCount,
   futureSlots = 0,
@@ -141,6 +409,63 @@ export function chartZoomOutMaximumHalfRange({
   // Allow room for both loaded candles and the intentional future projection,
   // while keeping a higher-timeframe chart bounded by its own candle count.
   return Math.max(minimum, (candles + projection) * 1.25);
+}
+
+export function chartZoomLogicalRange({
+  logicalRange,
+  direction,
+  firstCandleIndex,
+  latestCandleIndex,
+  futureSlots = 0,
+  minimumSpan = 8,
+} = {}) {
+  const from = Number(logicalRange?.from);
+  const to = Number(logicalRange?.to);
+  if (![from, to].every(Number.isFinite) || to <= from) return null;
+  const span = to - from;
+  const minimum = Math.max(2, Number(minimumSpan) || 8);
+
+  if (direction === "in") {
+    const nextSpan = Math.max(minimum, span * 0.68);
+    const center = (from + to) / 2;
+    return { from: center - nextSpan / 2, to: center + nextSpan / 2 };
+  }
+
+  const first = Number(firstCandleIndex);
+  const latest = Number(latestCandleIndex);
+  if (![first, latest].every(Number.isFinite) || latest < first) {
+    const center = (from + to) / 2;
+    const nextSpan = Math.max(minimum, span * 2);
+    return { from: center - nextSpan / 2, to: center + nextSpan / 2 };
+  }
+
+  // TradingView's zoom-out keeps the live edge on screen and spends the new
+  // space on older candles.  The previous center-based zoom kept doubling
+  // into future whitespace; after a few clicks every candle was crushed
+  // against the left edge even though hundreds of history bars were loaded.
+  const projection = Math.max(0, Number(futureSlots) || 0);
+  const maximumTo = latest + projection;
+  const maximumSpan = Math.max(minimum, maximumTo - first);
+  const nextSpan = Math.min(maximumSpan, Math.max(minimum, span * 2));
+  if (nextSpan >= maximumSpan - 0.001) return { from: first, to: maximumTo };
+
+  const liveRatio = latest >= from && latest <= to
+    ? (latest - from) / span
+    : 0.78;
+  const anchorRatio = Math.max(0.62, Math.min(0.9, liveRatio));
+  let nextFrom = latest - nextSpan * anchorRatio;
+  let nextTo = nextFrom + nextSpan;
+  if (nextTo > maximumTo) {
+    const shift = nextTo - maximumTo;
+    nextFrom -= shift;
+    nextTo -= shift;
+  }
+  if (nextFrom < first) {
+    const shift = first - nextFrom;
+    nextFrom += shift;
+    nextTo += shift;
+  }
+  return { from: nextFrom, to: nextTo };
 }
 
 export function sanitizeChartLayoutVisibleSpan({

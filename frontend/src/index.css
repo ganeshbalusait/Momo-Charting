@@ -1166,6 +1166,176 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
     grid-column: span 2;
   }
 }
+
+/*
+ * Compact chart terminal
+ *
+ * Keep price action and the live chain together below desktop width.  Tablets
+ * retain the familiar chart-left/chain-right terminal composition; phones
+ * stack two independently scrollable panes so the option table remains
+ * readable and touchable instead of becoming an unusably narrow side rail.
+ */
+@media (min-width: 701px) and (max-width: 1220px) {
+  .charts-oi-page-full,
+  .charts-oi-page-full.chain-left {
+    grid-template-columns: minmax(0, 1fr) 8px minmax(280px, 38vw);
+    gap: 6px;
+  }
+
+  .charts-oi-page-full.chain-left {
+    grid-template-columns: minmax(280px, 38vw) 8px minmax(0, 1fr);
+  }
+
+  .charts-oi-page-full.chain-right > .charts-oi-full-chart,
+  .charts-oi-page-full.chain-left > .charts-oi-full-chart {
+    grid-column: 1;
+    grid-row: auto;
+    padding: 10px 0 0 10px;
+  }
+
+  .charts-oi-page-full.chain-right > .charts-oi-resize-handle,
+  .charts-oi-page-full.chain-left > .charts-oi-resize-handle {
+    display: grid;
+    grid-column: 2;
+    grid-row: auto;
+    margin-top: 10px;
+  }
+
+  .charts-oi-page-full.chain-right > .charts-oi-tos-chain,
+  .charts-oi-page-full.chain-left > .charts-oi-tos-chain {
+    display: flex;
+    grid-column: 3;
+    grid-row: auto;
+    height: min(76dvh, 760px);
+    min-height: 500px;
+    margin: 10px 10px 0 0;
+    flex-direction: column;
+  }
+
+  .charts-oi-page-full.chain-left > .charts-oi-full-chart { grid-column: 3; padding: 10px 10px 0 0; }
+  .charts-oi-page-full.chain-left > .charts-oi-resize-handle { grid-column: 2; }
+  .charts-oi-page-full.chain-left > .charts-oi-tos-chain { grid-column: 1; margin: 10px 0 0 10px; }
+
+  .charts-oi-page-full > .charts-oi-tos-chain .charts-oi-expiry-accordion {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .charts-oi-page-full > .charts-oi-tos-chain table { min-width: 540px; }
+  .charts-oi-page-full .charts-oi-full-chart .oi-finder-candle-chart { height: min(76dvh, 760px); min-height: 500px; }
+  .charts-oi-page-full .charts-oi-heading { padding: 13px 15px; }
+  .charts-oi-page-full .charts-oi-heading p { display: none; }
+}
+
+@media (max-width: 700px) {
+  .charts-oi-page-full {
+    display: block;
+    overflow: visible;
+    padding-bottom: 10px;
+    border-radius: 10px;
+  }
+
+  .charts-oi-page-full .charts-oi-heading {
+    align-items: center;
+    min-height: 52px;
+    padding: 9px 11px;
+  }
+
+  .charts-oi-page-full .charts-oi-heading h2 { font-size: .92rem; }
+  .charts-oi-page-full .charts-oi-heading p { display: none; }
+  .charts-oi-page-full .charts-oi-heading > div:first-child > span { font-size: .5rem; }
+  .charts-oi-page-full .mag7-wall-live { flex: 0 0 auto; font-size: .52rem; }
+  .charts-oi-page-full .mag7-wall-live small { display: none; }
+  .charts-oi-page-full .oi-finder-source-note { margin: 0 8px; }
+
+  .charts-oi-page-full .charts-oi-full-chart { padding: 8px 8px 0; }
+  .charts-oi-page-full .charts-oi-full-chart .oi-chart-multilayout { gap: 7px; }
+  .charts-oi-page-full .charts-oi-full-chart .oi-finder-candle-chart { height: min(57dvh, 500px); min-height: 330px; }
+
+  .charts-oi-page-full .oi-chart-layout-toolbar {
+    align-items: center;
+    min-height: 40px;
+    padding: 5px 7px;
+    flex-direction: row;
+    gap: 7px;
+  }
+
+  .charts-oi-page-full .oi-chart-layout-toolbar > div:first-child { min-width: 0; }
+  .charts-oi-page-full .oi-chart-layout-toolbar > div:first-child small { display: none; }
+  .charts-oi-page-full .oi-chart-layout-toolbar b { overflow: hidden; max-width: 84px; font-size: .56rem; text-overflow: ellipsis; white-space: nowrap; }
+
+  .charts-oi-page-full .oi-chart-layout-actions {
+    display: flex;
+    min-width: 0;
+    width: auto;
+    flex: 1 1 auto;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 1px;
+    scrollbar-width: none;
+  }
+
+  .charts-oi-page-full .oi-chart-layout-actions::-webkit-scrollbar { display: none; }
+  .charts-oi-page-full .oi-chart-mag7-preset,
+  .charts-oi-page-full .oi-chart-layout-picker,
+  .charts-oi-page-full .oi-chart-workspace-toggle { flex: 0 0 auto; width: auto; }
+  .charts-oi-page-full .oi-chart-mag7-preset { display: none; }
+  .charts-oi-page-full .oi-chart-layout-buttons { display: flex; width: auto; grid-template-columns: none; }
+  .charts-oi-page-full .oi-chart-layout-buttons button { width: 27px; min-width: 27px; min-height: 28px; }
+  .charts-oi-page-full .oi-chart-workspace-toggle { min-height: 28px; padding: 4px 7px; font-size: .52rem; }
+
+  .charts-oi-page-full > .charts-oi-resize-handle { display: none; }
+  .charts-oi-page-full > .charts-oi-tos-chain {
+    display: flex;
+    height: min(48dvh, 470px);
+    min-height: 330px;
+    margin: 8px;
+    flex-direction: column;
+    border-radius: 9px;
+  }
+
+  .charts-oi-page-full > .charts-oi-tos-chain > header { min-height: 42px; padding: 7px 9px; }
+  .charts-oi-page-full > .charts-oi-tos-chain > header small { display: none; }
+  .charts-oi-page-full > .charts-oi-tos-chain > header b { font-size: .61rem; }
+  .charts-oi-page-full .charts-oi-chain-header-actions { gap: 5px !important; font-size: .56rem; }
+  .charts-oi-page-full .charts-oi-chain-header-actions button { width: 25px; height: 25px; }
+  .charts-oi-page-full .charts-oi-chain-header-actions .tos-sync-tag { display: none; }
+
+  .charts-oi-page-full > .charts-oi-tos-chain .charts-oi-chain-color-key {
+    flex-wrap: nowrap;
+    gap: 7px;
+    overflow-x: auto;
+    padding: 6px 8px;
+    white-space: nowrap;
+    scrollbar-width: none;
+  }
+
+  .charts-oi-page-full > .charts-oi-tos-chain .charts-oi-chain-color-key::-webkit-scrollbar { display: none; }
+  .charts-oi-page-full > .charts-oi-tos-chain .charts-oi-chain-color-key > b { flex: 0 0 auto; }
+  .charts-oi-page-full > .charts-oi-tos-chain .charts-oi-chain-color-tags { flex-wrap: nowrap; }
+
+  .charts-oi-page-full > .charts-oi-tos-chain .charts-oi-expiry-accordion {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .charts-oi-page-full .charts-oi-expiry-row { min-height: 31px; padding: 5px 8px; }
+  .charts-oi-page-full .charts-oi-expiry-summary { gap: 5px; padding: 6px 8px; overflow-x: auto; white-space: nowrap; }
+  .charts-oi-page-full .charts-oi-expiry-summary small:last-child { display: none; }
+  .charts-oi-page-full .charts-oi-expiry-panel .charts-oi-tos-scroll { max-height: 280px; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .charts-oi-page-full > .charts-oi-tos-chain table { min-width: 560px; font-size: .58rem; }
+  .charts-oi-page-full > .charts-oi-tos-chain th,
+  .charts-oi-page-full > .charts-oi-tos-chain td { padding: 6px 7px; }
+}
 .oi-chart-multilayout.charts-2 .oi-chart-layout-grid.is-two-panel-stack {
   grid-template-columns: minmax(0, 1fr) !important;
   grid-template-rows: auto 10px auto;
@@ -1663,6 +1833,7 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
 .oi-finder-crosshair-bottom-time.is-visible { opacity: 1; }
 .oi-finder-chart-card > header > .oi-finder-chart-actions { display: flex; flex: 1 1 320px; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
 .oi-finder-chart-actions > span { color: #63e9b2; font-size: 0.62rem; font-weight: 900; letter-spacing: 0.05em; white-space: nowrap; }
+.oi-finder-chart-actions > .oi-finder-visible-save-status { max-width: 180px; overflow: hidden; color: #72f0bd; text-overflow: ellipsis; }
 .oi-finder-candle-countdown { display: inline-flex; align-items: center; gap: 5px; min-height: 29px; padding: 0 8px; border: 1px solid rgba(41, 158, 196, .7); border-radius: 7px; background: rgba(6, 34, 47, .92); color: #8feaff !important; font-variant-numeric: tabular-nums; letter-spacing: 0 !important; }
 .oi-finder-candle-countdown small { color: #8f8f9b; font-size: .5rem; font-weight: 900; text-transform: uppercase; }
 .oi-finder-candle-countdown b { min-width: 38px; color: #d8f8ff; font-size: .68rem; text-align: right; }
@@ -7371,6 +7542,56 @@ body.global-price-alert-visible .topbar.trading-header {
 .oi-chart-quick-tickers button:hover { border-color: rgba(46, 205, 238, 0.38); background: rgba(19, 197, 232, 0.1); color: #dffaff; }
 .oi-chart-quick-tickers button.is-active { border-color: #17bfe2; background: #0c7893; color: #f9f9fa; box-shadow: 0 0 12px rgba(21, 197, 232, 0.22); }
 .oi-chart-quick-tickers button:disabled { opacity: 0.72; cursor: wait; }
+.mobile-terminal-action-bar { display: none; }
+@media (max-width: 1220px) {
+  .mobile-terminal-action-bar {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px;
+    padding: 7px 10px;
+    border-bottom: 1px solid #173549;
+    background: #07131d;
+  }
+
+  .mobile-terminal-action-bar button {
+    display: inline-flex;
+    min-width: 0;
+    min-height: 34px;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 5px 7px;
+    color: #90b5c7;
+    border: 1px solid rgba(56, 114, 140, .48);
+    border-radius: 6px;
+    background: #0a1924;
+    font: inherit;
+    font-size: .6rem;
+    font-weight: 900;
+    letter-spacing: .02em;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .mobile-terminal-action-bar button:hover,
+  .mobile-terminal-action-bar button:focus-visible {
+    color: #e5faff;
+    border-color: #38cdf0;
+    background: #0d2c3c;
+  }
+
+  .mobile-terminal-action-bar button.is-active {
+    color: #041219;
+    border-color: #42d9fb;
+    background: #43d9ff;
+    box-shadow: 0 0 14px rgba(67, 217, 255, .2);
+  }
+}
+@media (max-width: 500px) {
+  .mobile-terminal-action-bar { gap: 4px; padding: 6px 8px; }
+  .mobile-terminal-action-bar button { min-height: 38px; flex-direction: column; gap: 2px; padding: 4px 2px; font-size: .51rem; line-height: 1.05; }
+  .mobile-terminal-action-bar button span { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }
+}
 .oi-finder-header-atm {
   min-height: 48px;
   min-width: 510px;
@@ -12405,6 +12626,97 @@ button.avatar {
 }
 .app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-layout-actions {
   flex-wrap: wrap;
+}
+
+/* TradingView-style big screen: the workspace owns exactly one viewport and
+   each chart card divides the remaining height after the real toolbar height
+   is known.  Do not derive the candle host from 100vh: every card also has a
+   ticker header and OHLC strip, so that made the lower studies overflow below
+   the monitor.  The option chain keeps its own scrollbar. */
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized {
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100dvh;
+  min-height: 0;
+  max-height: 100dvh;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  overflow: hidden;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-layout-toolbar {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-workspace-content {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized.has-big-screen-companion .oi-chart-workspace-content {
+  grid-template-columns: minmax(0, 1fr) 10px clamp(300px, var(--oi-workspace-companion-width, 31vw), 62vw);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  align-items: stretch;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-layout-grid {
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: repeat(var(--oi-chart-rows, 1), minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-layout-grid.is-two-panel-stack {
+  grid-template-rows: minmax(0, var(--oi-chart-top-size, 50fr)) 10px minmax(0, var(--oi-chart-bottom-size, 50fr));
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-workspace-height-handle {
+  display: none;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-layout-grid > .oi-finder-chart-card {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-layout-grid > .oi-finder-chart-card > header,
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-layout-grid > .oi-finder-chart-card > .oi-finder-chart-ohlc {
+  flex: 0 0 auto;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-layout-grid > .oi-finder-chart-card > .oi-finder-candle-chart {
+  width: 100%;
+  min-width: 0;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none;
+  flex: 1 1 0;
+  overflow: hidden;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-workspace-companion,
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-workspace-companion .charts-oi-tos-chain.is-big-screen-chain {
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+}
+
+.app-shell.charts-workstation .oi-chart-multilayout.is-workspace-maximized .oi-chart-workspace-companion .charts-oi-expiry-accordion {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* Exact terminal type scale from MomoX.  This is deliberately limited to the

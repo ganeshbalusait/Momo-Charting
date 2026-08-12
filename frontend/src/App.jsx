@@ -89,21 +89,31 @@ import {
   chartIndicatorProfileStorageKey,
   chartDefaultHistorySlots,
   chartDefaultFutureSlots,
+  TRADINGVIEW_MAX_BAR_SPACING_PX,
+  TRADINGVIEW_MIN_BAR_SPACING_PX,
   chartCandleLogicalWindow,
   chartAnchorTranslation,
   chartBodyDragLogicalRange,
   chartBodyDragPriceRange,
+  clearChartTimeViewport,
   chartLayoutAutosaveContextMatches,
   chartLayoutProfileStorageKey,
+  chartLogicalSlotsPerCandle,
+  chartLogicalTimeScaleSpacing,
+  chartExplicitSavedLogicalRange,
   chartOpeningHistorySignature,
-  chartZoomOutMaximumHalfRange,
+  chartShouldFrameAutomaticViewport,
+  chartTrailingSessionHistorySlots,
+  chartZoomLogicalRange,
   clampExpandedPriceRangeToCandles,
+  CHART_LAYOUT_VIEWPORT_VERSION,
   CHART_PANE_SIZING_VERSION,
   defaultChartPaneFactors,
   paneFactorsMateriallyDiffer,
   priceRangeNeedsUpdate,
   readStoredChartPaneFactors,
   restoreChartPaneFactors,
+  storeChartTimeViewport,
   storeChartPaneFactors,
   workspaceCompanionWidthAtPointer,
 } from "./chartViewport";
@@ -5910,7 +5920,11 @@ function FullChartsAndOiBoard({
   const [chainOpen, setChainOpen] = useState(() => {
     if (embedded) return true;
     try {
-      return window.localStorage.getItem("chartsOiChainOpen") !== "false";
+      // The chart and the option chain form one trading surface.  Keep a
+      // trader's explicit preference, but make the first visit open both
+      // panels so phones and tablets immediately resemble a terminal.
+      const saved = window.localStorage.getItem("chartsOiChainOpen");
+      return saved == null ? true : saved === "true";
     } catch {
       return true;
     }
@@ -6407,6 +6421,7 @@ function FullChartsAndOiBoard({
   return <section
     className={`charts-oi-page charts-oi-page-full chain-${chainSide} ${embedded ? "is-embedded" : ""} ${chainOpen ? "is-chain-open" : "is-chain-closed"} ${isChainResizing ? "is-resizing" : ""}`}
     data-testid="charts-and-oi-view"
+    id="charts-oi-workspace"
     ref={pageRef}
     style={{ "--charts-oi-chain-width": `${chainWidth}px` }}
   >
@@ -9749,7 +9764,12 @@ const DEFAULT_OI_CHART_OPTIONS = Object.freeze({
   sessionLineHourColor: "#a1a1ac",
   previousOhlcStudyVersion: "previous-ohlc-v1",
   previousDayEnabled: true,
-  previousDayShowForDays: 2,
+  // Levels draw only across the last N chart DATES (visibleDates =
+  // chartDates.slice(-showForDays)). A default of 2 was invisible once the
+  // opening view widened from ~2 days to 5+ on 5m and far more on higher
+  // timeframes: pDH/pDL/pWH/pML rendered on a sliver at the right edge.
+  // Still bounded so a deep chart does not become a wall of levels.
+  previousDayShowForDays: 12,
   previousDayShowHigh: true,
   previousDayShowLow: true,
   previousDayShowOpen: false,
@@ -9763,7 +9783,7 @@ const DEFAULT_OI_CHART_OPTIONS = Object.freeze({
   previousDayBearColor: "#ff7089",
   previousDayNeutralColor: "#a0a0ab",
   previousWeekEnabled: true,
-  previousWeekShowForDays: 2,
+  previousWeekShowForDays: 12,
   previousWeekShowHigh: true,
   previousWeekShowLow: true,
   previousWeekShowOpen: false,
@@ -9777,7 +9797,7 @@ const DEFAULT_OI_CHART_OPTIONS = Object.freeze({
   previousWeekBearColor: "#ff7089",
   previousWeekNeutralColor: "#a0a0ab",
   previousMonthEnabled: true,
-  previousMonthShowForDays: 2,
+  previousMonthShowForDays: 12,
   previousMonthShowHigh: true,
   previousMonthShowLow: true,
   previousMonthShowOpen: false,
@@ -9808,6 +9828,7 @@ const OI_CHART_MAX_PANELS = 10;
 const OI_CHART_DEFAULT_TIMEFRAMES = Object.freeze(["5m", "15m", "1h", "4h", "3m", "10m", "30m", "2h", "D", "W"]);
 const OI_CHART_INDICATOR_PROFILES_STORAGE_KEY = "oiFinderChartIndicatorProfiles";
 const OI_CHART_LAYOUT_PROFILES_STORAGE_KEY = "oiFinderChartLayoutProfiles";
+const OI_CHART_FOUR_HOUR_VIEWPORT_VERSION = 1;
 const OI_CHART_LAYOUTS = Object.freeze([
   { id: "single", label: "Single", count: 1, columns: 1 },
   { id: "two-columns", label: "2 side by side", count: 2, columns: 2 },
@@ -11932,6 +11953,8 @@ function OiFinderMultiChart({
             "--oi-chart-rows": rowCount,
             "--oi-chart-left-size": `${twoPanelSplit}fr`,
             "--oi-chart-right-size": `${100 - twoPanelSplit}fr`,
+            "--oi-chart-top-size": `${twoPanelSplit}fr`,
+            "--oi-chart-bottom-size": `${100 - twoPanelSplit}fr`,
             "--oi-chart-top-height": `${twoPanelSplit * 10}px`,
             "--oi-chart-bottom-height": `${(100 - twoPanelSplit) * 10}px`,
             gridTemplateColumns: multiColumnTemplate,
@@ -12304,6 +12327,7 @@ function OiFinderCandleChart({
   const streamedBarsRef = useRef([]);
   const streamRenderTimerRef = useRef(0);
   const pendingNativeChartBarRef = useRef(null);
+  const activeChartSymbolRef = useRef("");
   const nativeChartFrameRef = useRef(0);
   const chartStreamConnectedRef = useRef(false);
   const selectedTimeframeMinutesRef = useRef(5);
@@ -12334,6 +12358,7 @@ function OiFinderCandleChart({
   const autoFollowLatestSymbolRef = useRef("");
   const manualTimeNavigationRef = useRef(false);
   const manualPriceNavigationRef = useRef(false);
+  const automaticViewportStageRef = useRef({ key: "", maxStage: -1 });
   const detachedRenderMetaRef = useRef({
     bars: null,
     symbol: "",
@@ -12779,6 +12804,7 @@ function OiFinderCandleChart({
   }, [initialTimeframe]);
   selectedTimeframeMinutesRef.current = selectedTimeframe.minutes;
   const normalizedChartSymbol = normalizeOiChartSymbol(symbol, "");
+  activeChartSymbolRef.current = normalizedChartSymbol;
   // The API supplies one-minute bars.  Always aggregate to the timeframe the
   // trader selected (including 5m) so the plotted index range, candles, and
   // higher-timeframe markers share the same time base. Never render the prior
@@ -13437,12 +13463,39 @@ function OiFinderCandleChart({
   // These study source tapes need a uniform fine cadence; a 30-minute tape
   // mixed in draws cloud/fib lines across ghost gaps. Coarse studyBars are
   // display-only (4H aggregation handles them natively in chartAggregation).
-  const fineStudyBars = useMemo(() => (
-    studyBars.length && chartSourceBarSpacingMinutes(studyBars) <= 5 ? studyBars : []
-  ), [studyBars]);
+  // A study source is "fine enough" when its cadence is no coarser than the
+  // chart's own candle. The gate used to be an absolute 5 minutes, which made
+  // sense while studyBars were 5-minute: mixing a 30-minute tape into a
+  // 5-minute study grid draws cloud and fib lines across ghost gaps.
+  //
+  // The server now ships 30-minute studyBars, so on every higher timeframe the
+  // gate rejected them and all studies fell back to `bars` - the 1-minute tape,
+  // capped at 3,000 rows, about two days. On a 5m chart that covers the whole
+  // view so nothing looked wrong; on an 18-day 4H chart the EMA, cloud and fib
+  // lines simply stopped two days from the right edge. That is the reported
+  // "on 4H I don't see the indicator lines".
+  //
+  // A 30-minute tape is eight times finer than a 4H candle, so it is a
+  // perfectly good source there - it is only too coarse for the 5m grid.
+  const studySourceCadenceLimit = Math.max(5, Number(selectedTimeframe.minutes) || 5);
+  // D/W/M draw from dailyBars (a decade), so the 30-minute study tape - only
+  // ~260 days - would leave their indicators stopping years short of the left
+  // edge. Match the study source to whatever the DISPLAY is built from.
+  const usesDailySeed = Number(selectedTimeframe.minutes) >= 1440;
+  const fineStudyBars = useMemo(() => {
+    if (usesDailySeed) return dailyBars.length ? dailyBars : studyBars;
+    return studyBars.length && chartSourceBarSpacingMinutes(studyBars) <= studySourceCadenceLimit
+      ? studyBars
+      : [];
+  }, [dailyBars, studyBars, studySourceCadenceLimit, usesDailySeed]);
   const cloudBandSourceBars = useMemo(() => {
-    const historicalBars = aggregateChartBars(fineStudyBars.length ? fineStudyBars : bars, 5);
-    const latestBars = aggregateChartBars(bars, 5);
+    // Bucket at the SOURCE's native cadence, never finer. Aggregating a
+    // 30-minute tape onto a 5-minute grid is what creates the ghost slots the
+    // old gate was avoiding.
+    const sourceBars = fineStudyBars.length ? fineStudyBars : bars;
+    const cadence = Math.max(5, chartSourceBarSpacingMinutes(sourceBars) || 5);
+    const historicalBars = aggregateChartBars(sourceBars, cadence);
+    const latestBars = aggregateChartBars(bars, cadence);
     const merged = new Map(historicalBars.map((bar) => [Number(bar.time), bar]));
     latestBars.forEach((bar) => merged.set(Number(bar.time), bar));
     return [...merged.values()].sort((left, right) => Number(left.time) - Number(right.time));
@@ -13734,6 +13787,30 @@ function OiFinderCandleChart({
     selectedTimeframe.key,
     workspaceProfileScope,
   );
+  // Keep a panel's time-axis memory stable when the user switches between
+  // one-, two-, and four-chart grids. The grid layout id is intentionally not
+  // part of this key; TradingView does not forget a panel's zoom when its
+  // surrounding layout changes.
+  const chartViewportPanelScope = workspaceProfileScope.match(/panel-\d+$/)?.[0] || "panel-0";
+  const chartTimeViewportKey = `${usesBigScreenProfile ? "big" : "normal"}:${chartViewportPanelScope}:${selectedTimeframe.key}:${normalizedChartSymbol}`;
+  // Persist the trader's zoom as a DURATION read from the chart's own time
+  // range. getVisibleRange returns times, so this never stores a logical
+  // index - the reflow that made the previous index-based span drift (and
+  // pinned every ticker to a stale zoom) cannot affect it.
+  const persistChartTimeViewport = (timeScale) => {
+    if (!timeScale?.getVisibleRange) return false;
+    const visible = timeScale.getVisibleRange();
+    const from = Number(visible?.from);
+    const to = Number(visible?.to);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return false;
+    const latestCandleTime = Number(chartBars.at(-1)?.time || 0);
+    return storeChartTimeViewport(window.sessionStorage, chartTimeViewportKey, {
+      spanSeconds: to - from,
+      // Empty space held past the newest candle, so the live edge keeps the
+      // same breathing room after a reload.
+      forwardSeconds: latestCandleTime > 0 ? Math.max(0, to - latestCandleTime) : 0,
+    });
+  };
   chartLayoutProfileKeyRef.current = chartLayoutProfileKey;
   const visibleCandlePriceRangeForLayout = (visibleSpan, latestRatio) => {
     const visibleHistoryCount = Math.max(
@@ -13794,6 +13871,49 @@ function OiFinderCandleChart({
       chart.panes()[index]?.setStretchFactor(factor);
     });
     lastAppliedPaneFactorsRef.current = chart.panes().map((pane) => pane.getStretchFactor());
+    // Only the Save button may make a horizontal viewport persistent. This is
+    // deliberately separate from the session auto-capture that caused stale,
+    // narrow ranges to override every ticker/timeframe opening.
+    const viewportMatchesCurrentOpeningWindow = profile?.viewportVersion === CHART_LAYOUT_VIEWPORT_VERSION
+      && (selectedTimeframe.minutes !== 240
+        || profile?.fourHourViewportVersion === OI_CHART_FOUR_HOUR_VIEWPORT_VERSION);
+    if (viewportMatchesCurrentOpeningWindow) {
+      const timeScale = chart.timeScale();
+      const latestCandleTime = Number(chartBars.at(-1)?.time || 0);
+      const latestCandleIndex = latestCandleTime > 0
+        ? timeScale.timeToIndex?.(latestCandleTime, true)
+        : null;
+      const futureSlots = chartDefaultFutureSlots({
+        historySlots: chartDefaultHistorySlots({
+          timeframeMinutes: selectedTimeframe.minutes,
+          isBigScreen: usesBigScreenProfile,
+          chartWidth: Number(chartRef.current?.clientWidth) || 960,
+        }),
+        isBigScreen: usesBigScreenProfile,
+      });
+      const savedRange = chartExplicitSavedLogicalRange({
+        latestIndex: latestCandleIndex,
+        visibleSpan: profile.visibleSpan,
+        latestRatio: profile.latestRatio,
+        candleCount: chartBars.length,
+        slotsPerCandle: chartLogicalSlotsPerCandle({
+          bars: chartBars,
+          timeToIndex: (time) => timeScale.timeToIndex(time, true),
+        }),
+        futureSlots,
+      });
+      if (savedRange) {
+        timeScale.setVisibleLogicalRange(savedRange);
+        manualTimeNavigationRef.current = true;
+        chartInitialViewRef.current = false;
+        lastAutoFocusedSymbolRef.current = normalizedChartSymbol;
+        autoFollowLatestSymbolRef.current = "";
+        return true;
+      }
+    }
+    // Unsaved charts always use the timeframe default (five sessions on 4H).
+    // Same-chart indicator rebuilds preserve the active in-memory viewport via
+    // restoreSessionChartViewport().
     return false;
   };
   const saveChartLayoutProfile = (announce = true) => {
@@ -13828,7 +13948,15 @@ function OiFinderCandleChart({
       manualTime: manualTimeNavigationRef.current,
       manualPrice: manualPriceNavigationRef.current,
       autoFollowActive: Boolean(autoFollowLatestSymbolRef.current),
+      fourHourViewportVersion: selectedTimeframe.minutes === 240
+        ? OI_CHART_FOUR_HOUR_VIEWPORT_VERSION
+        : null,
     };
+    if (manualTimeNavigationRef.current) {
+      // Persist the zoom in SECONDS from the chart's own time range, never in
+      // logical indexes - index reflow is what made the stored span drift.
+      persistChartTimeViewport(chart.timeScale?.());
+    }
     if (!announce) return;
     const visibleSpan = Math.max(Number(range.to) - Number(range.from), 8);
     const latestRatio = Math.max(0.05, Math.min(0.95, (Number(latestCandleIndex) - Number(range.from)) / visibleSpan));
@@ -13852,6 +13980,10 @@ function OiFinderCandleChart({
       profiles[chartLayoutProfileKey] = {
         visibleSpan,
         latestRatio,
+        viewportVersion: CHART_LAYOUT_VIEWPORT_VERSION,
+        fourHourViewportVersion: selectedTimeframe.minutes === 240
+          ? OI_CHART_FOUR_HOUR_VIEWPORT_VERSION
+          : null,
         priceScale,
         paneFactors: chart.panes().map((pane) => pane.getStretchFactor()),
         paneSizingVersion: CHART_PANE_SIZING_VERSION,
@@ -13870,7 +14002,9 @@ function OiFinderCandleChart({
     if (!chart
       || !saved
       || saved.profileKey !== chartLayoutProfileKey
-      || saved.symbol !== normalizedChartSymbol) return false;
+      || saved.symbol !== normalizedChartSymbol
+      || (selectedTimeframe.minutes === 240
+        && saved.fourHourViewportVersion !== OI_CHART_FOUR_HOUR_VIEWPORT_VERSION)) return false;
     const latestCandleTime = Number(chartBars.at(-1)?.time || 0);
     const latestCandleIndex = latestCandleTime > 0
       ? chart.timeScale?.()?.timeToIndex?.(latestCandleTime, true)
@@ -13986,21 +14120,35 @@ function OiFinderCandleChart({
   }, [saveWorkspaceVersion]);
   const defaultTradingViewScale = () => {
     const chartWidth = Number(chartRef.current?.clientWidth) || 960;
-    // Keep the intraday panes compact, but give 4H enough calendar context to
-    // avoid looking permanently zoomed in on only a couple of weeks.
-    const maximumHistorySlots = chartDefaultHistorySlots({
+    const widthBasedHistorySlots = chartDefaultHistorySlots({
       timeframeMinutes: selectedTimeframe.minutes,
       isBigScreen: usesBigScreenProfile,
-      // Let the pane width choose the candle count (TradingView behaviour):
-      // a wider chart shows more history, not fatter candles.
       chartWidth,
     });
+    // The 4H chart is a deliberate five-session composition. Deriving it from
+    // the actual ET session keys keeps the result stable across holidays and
+    // across one-, two-, four-chart, and big-screen pane widths.
+    const fiveSessionHistorySlots = selectedTimeframe.minutes === 240
+      ? chartTrailingSessionHistorySlots({
+        bars: chartBars,
+        sessionCount: 5,
+        sessionKey: (bar) => easternDateFormatter.format(new Date(Number(bar.time) * 1000)),
+      })
+      : 0;
+    const maximumHistorySlots = fiveSessionHistorySlots || widthBasedHistorySlots;
     const historySlots = Math.max(1, Math.min(maximumHistorySlots, chartBars.length || maximumHistorySlots));
     const futureSlots = chartDefaultFutureSlots({
       historySlots,
       isBigScreen: usesBigScreenProfile,
     });
-    const candlePitch = Math.max(4, Math.min(16, chartWidth / (historySlots + futureSlots)));
+    // Ceiling was 16px, which is the root cause of "still zoomed in on a wide
+    // pane": once the candle count was capped, this spread those few bars
+    // across the whole width as fat bars. Clamping to the target density keeps
+    // candles narrow and lets the visible range carry more history instead.
+    const candlePitch = Math.max(
+      TRADINGVIEW_MIN_BAR_SPACING_PX,
+      Math.min(TRADINGVIEW_MAX_BAR_SPACING_PX, chartWidth / (historySlots + futureSlots)),
+    );
     return {
       barSpacing: candlePitch,
       rightOffset: futureSlots,
@@ -14020,7 +14168,28 @@ function OiFinderCandleChart({
       historySlots,
       futureSlots,
     } = defaultTradingViewScale();
-    timeScale.applyOptions({ barSpacing, rightOffset });
+    const logicalScaleSpacing = chartLogicalTimeScaleSpacing({
+      candlePitch: barSpacing,
+      futureSlots: rightOffset,
+      bars: chartBars,
+      timeToIndex: (time) => timeScale.timeToIndex(time, true),
+    });
+    timeScale.applyOptions({
+      barSpacing: logicalScaleSpacing.barSpacing,
+      rightOffset: logicalScaleSpacing.rightOffset,
+      minBarSpacing: logicalScaleSpacing.minBarSpacing,
+    });
+    // First establish the window using candle TIMES. Logical indexes belong
+    // to the combined chart and are made much denser by 30m indicator points;
+    // using them before the shared scale has settled is what reduced a 207-bar
+    // 4H tape to roughly a dozen visible candles.
+    const firstVisibleCandle = chartBars[Math.max(0, chartBars.length - historySlots)];
+    const latestVisibleCandle = chartBars.at(-1);
+    const firstVisibleTime = Number(firstVisibleCandle?.time || 0);
+    const latestVisibleTime = Number(latestVisibleCandle?.time || 0);
+    if (firstVisibleTime > 0 && latestVisibleTime >= firstVisibleTime) {
+      timeScale.setVisibleRange({ from: firstVisibleTime, to: latestVisibleTime });
+    }
     // Anchor the viewport to the candle series' actual newest timestamp. Some
     // MTF studies contribute their own logical points, so positioning from the
     // chart-wide data edge can leave the searched ticker's latest candle out
@@ -14034,7 +14203,7 @@ function OiFinderCandleChart({
     if (candleWindow) {
       timeScale.setVisibleLogicalRange(candleWindow);
     } else {
-      timeScale.scrollToPosition(rightOffset, false);
+      timeScale.scrollToPosition(logicalScaleSpacing.rightOffset, false);
     }
   };
 
@@ -14056,7 +14225,11 @@ function OiFinderCandleChart({
     // width. Live bars therefore preserve the trader's chosen zoom level.
     const visibleSpan = Math.max(Number(visibleRange.to) - Number(visibleRange.from), 8);
     const { futureSlots } = defaultTradingViewScale();
-    const visibleFutureSlots = Math.min(futureSlots, Math.max(2, visibleSpan * 0.3));
+    const futureLogicalSlots = futureSlots * chartLogicalSlotsPerCandle({
+      bars: chartBars,
+      timeToIndex: (time) => timeScale.timeToIndex(time, true),
+    });
+    const visibleFutureSlots = Math.min(futureLogicalSlots, Math.max(2, visibleSpan * 0.3));
     timeScale.setVisibleLogicalRange({
       from: Number(latestCandleIndex) - (visibleSpan - visibleFutureSlots),
       to: Number(latestCandleIndex) + visibleFutureSlots,
@@ -14083,6 +14256,26 @@ function OiFinderCandleChart({
   const focusLatestCandle = () => {
     const timeScale = chartApiRef.current?.timeScale?.();
     if (!timeScale || !chartBars.length) return;
+    clearChartTimeViewport(window.sessionStorage, chartTimeViewportKey);
+    // Reset must also FORGET a saved zoom, not just reframe the current view.
+    // An explicitly saved layout lives in localStorage and short-circuits the
+    // opening framing on every load, so a layout saved while zoomed in stayed
+    // stuck across reloads with no in-app way out - the only escape was
+    // deleting the key from the console. Pane sizing is deliberately kept:
+    // this button resets the ZOOM, not the upper/lower study split.
+    try {
+      const parsed = JSON.parse(localStorage.getItem(OI_CHART_LAYOUT_PROFILES_STORAGE_KEY) || "{}");
+      const profiles = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      const saved = profiles[chartLayoutProfileKey];
+      if (saved && typeof saved === "object") {
+        delete saved.viewportVersion;
+        delete saved.visibleSpan;
+        delete saved.latestRatio;
+        delete saved.priceScale;
+        delete saved.fourHourViewportVersion;
+        localStorage.setItem(OI_CHART_LAYOUT_PROFILES_STORAGE_KEY, JSON.stringify(profiles));
+      }
+    } catch { /* a reset must never fail on unreadable storage */ }
     // Restore the price scale as well as the time window. A vertical drag can
     // leave the price scale manually panned far away from the live candles.
     enableCandleAutoScale();
@@ -14105,8 +14298,11 @@ function OiFinderCandleChart({
     fitVisibleCandlePriceRangeRef.current?.();
     chartInitialViewRef.current = false;
     lastAutoFocusedSymbolRef.current = normalizedChartSymbol;
-    autoFollowLatestSymbolRef.current = normalizedChartSymbol;
-    manualTimeNavigationRef.current = false;
+    // Latest is a one-time recenter that deliberately preserves the trader's
+    // selected horizontal span. Keep the viewport manual afterward so staged
+    // indicator points cannot replace that span with the opening preset.
+    autoFollowLatestSymbolRef.current = "";
+    manualTimeNavigationRef.current = true;
     queueChartLayoutSave();
   };
 
@@ -14166,21 +14362,37 @@ function OiFinderCandleChart({
     chartInitialViewRef.current = false;
     lastAutoFocusedSymbolRef.current = normalizedChartSymbol;
     autoFollowLatestSymbolRef.current = "";
-    const center = (Number(range.from) + Number(range.to)) / 2;
-    const halfRange = Math.max((Number(range.to) - Number(range.from)) / 2, 3);
     const displayed = displayedChartBarsRef.current;
-    const selectedCandleCount = Number(displayed?.minutes) === Number(selectedTimeframe.minutes)
+    const selectedBars = Number(displayed?.minutes) === Number(selectedTimeframe.minutes)
       && Array.isArray(displayed?.bars)
-      ? displayed.bars.length
-      : chartBars.length;
+      && displayed.bars.length
+      ? displayed.bars
+      : chartBars;
+    const firstCandleTime = Number(selectedBars[0]?.time || 0);
+    const latestCandleTime = Number(selectedBars.at(-1)?.time || 0);
+    const firstCandleIndex = firstCandleTime > 0
+      ? timeScale.timeToIndex?.(firstCandleTime, true)
+      : null;
+    const latestCandleIndex = latestCandleTime > 0
+      ? timeScale.timeToIndex?.(latestCandleTime, true)
+      : null;
     const { futureSlots } = defaultTradingViewScale();
-    const nextHalfRange = direction === "in"
-      ? Math.max(4, halfRange * 0.68)
-      : Math.min(chartZoomOutMaximumHalfRange({
-        candleCount: selectedCandleCount,
-        futureSlots,
-      }), halfRange * 2);
-    timeScale.setVisibleLogicalRange({ from: center - nextHalfRange, to: center + nextHalfRange });
+    const futureLogicalSlots = futureSlots * chartLogicalSlotsPerCandle({
+      bars: selectedBars,
+      timeToIndex: (time) => timeScale.timeToIndex(time, true),
+    });
+    const nextRange = chartZoomLogicalRange({
+      logicalRange: range,
+      direction,
+      firstCandleIndex,
+      latestCandleIndex,
+      futureSlots: futureLogicalSlots,
+    });
+    if (!nextRange) return;
+    timeScale.setVisibleLogicalRange(nextRange);
+    // Read the resulting range back in TIME and persist that, so the stored
+    // zoom never carries a logical index across a reflow.
+    persistChartTimeViewport(timeScale);
     queueChartLayoutSave();
   };
 
@@ -15034,16 +15246,28 @@ function OiFinderCandleChart({
       }
       const liveChartBar = aggregateChartBars(nextBars.slice(bucketStartIndex), timeframeMinutes).at(-1);
       if (liveChartBar) {
-        pendingNativeChartBarRef.current = liveChartBar;
+        pendingNativeChartBarRef.current = {
+          bar: liveChartBar,
+          symbol: normalizedChartSymbol,
+          timeframeMinutes,
+        };
         if (!nativeChartFrameRef.current) {
           // Lightweight Charts invalidates all panes when the live candle is
           // updated. Coalesce Schwab's quote + chart packets into one paint
           // every 250ms so those pane redraws cannot starve wheel/drag input.
           nativeChartFrameRef.current = window.setTimeout(() => {
             nativeChartFrameRef.current = 0;
-            const pendingBar = pendingNativeChartBarRef.current;
+            const pendingUpdate = pendingNativeChartBarRef.current;
+            const pendingBar = pendingUpdate?.bar;
             const liveSeries = chartSeriesRef.current;
             if (!pendingBar || !liveSeries?.candleSeries || !liveSeries?.volumeSeries) return;
+            // A queued 250ms live paint can outlive a ticker/timeframe click.
+            // Updating the replacement series with that older bucket makes
+            // Lightweight Charts reject it as "Cannot update oldest data" and
+            // can leave the new chart blank. React's normal history render will
+            // paint the correct bar, so discard any cross-context callback.
+            if (pendingUpdate.symbol !== activeChartSymbolRef.current
+              || Number(pendingUpdate.timeframeMinutes) !== Number(selectedTimeframeMinutesRef.current)) return;
             liveSeries.candleSeries.update({
               time: pendingBar.time,
               open: pendingBar.open,
@@ -15244,6 +15468,9 @@ function OiFinderCandleChart({
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 2,
+        // Let the trader keep zooming out past the opening density. The
+        // library default floor stops the wheel well before a multi-year view.
+        minBarSpacing: TRADINGVIEW_MIN_BAR_SPACING_PX,
         fixLeftEdge: false,
         fixRightEdge: false,
         shiftVisibleRangeOnNewBar: !disableKineticScroll,
@@ -16500,8 +16727,14 @@ function OiFinderCandleChart({
     // so the studies return one idle slice at a time (the apply effect sends
     // only candles on its first pass over a fresh tree).
     setChartSeriesResetVersion((version) => version + 1);
-    chartInitialViewRef.current = true;
-    manualPriceNavigationRef.current = false;
+    // Indicator stages rebuild the Lightweight Charts tree after the candles
+    // are already visible. Preserve the captured viewport across that rebuild;
+    // treating every new tree as a first opening is what made 4H jump back to
+    // the narrow default a moment after the trader zoomed out.
+    if (!pendingChartLayoutRestoreRef.current) {
+      chartInitialViewRef.current = true;
+      manualPriceNavigationRef.current = false;
+    }
     updateIndicatorAxisLabelsRef.current = scheduleOverlayGeometry;
     updateDrawingGeometryRef.current = scheduleOverlayGeometry;
     fitVisibleCandlePriceRangeRef.current = scheduleVisibleCandlePriceRange;
@@ -18112,27 +18345,38 @@ function OiFinderCandleChart({
           ...fullWidthStudyLevels.map((level) => ({
             price: Number(level.price),
             color: level.color,
+            // Chip text, so the line stops just short of ITS OWN label. The
+            // chips are right-aligned at the axis, so one shared reserve left
+            // a wide gap in front of short titles.
+            labelText: level.title,
             lineWidth: level.lineWidth,
             dash: lineStyleDashArray(level.lineStyle),
-            startTime: momoxLevelAnchor ?? 0,
+            // Prior-day/week/month reference levels belong to the complete
+            // visible tape. Anchoring at 4am reduced them to a tiny premarket
+            // segment at the far-right edge, which looked like a missing line.
+            startTime: 0,
           })),
           // OI walls / High OI.
           ...wallLevels.map((level) => ({
             price: Number(level.price),
             color: level.color,
+            labelText: level.title || level.label,
             lineWidth: level.lineWidth,
             dash: lineStyleDashArray(level.lineStyle),
-            startTime: momoxLevelAnchor ?? 0,
+            // OI walls must remain visible across the active chart, including
+            // before today's session has accumulated many candles.
+            startTime: 0,
           })),
           ...(expectedMoveRange ? [
-            { price: expectedMoveRange.high, color: "#ff3b4f", lineWidth: 3, dash: lineStyleDashArray(2), startTime: momoxLevelAnchor ?? 0 },
-            { price: expectedMoveRange.low, color: "#22c55e", lineWidth: 3, dash: lineStyleDashArray(2), startTime: momoxLevelAnchor ?? 0 },
+            { price: expectedMoveRange.high, color: "#ff3b4f", lineWidth: 3, dash: lineStyleDashArray(2), startTime: momoxLevelAnchor ?? 0, labelText: `+EM ${expectedMoveRange.high}` },
+            { price: expectedMoveRange.low, color: "#22c55e", lineWidth: 3, dash: lineStyleDashArray(2), startTime: momoxLevelAnchor ?? 0, labelText: `-EM ${expectedMoveRange.low}` },
           ] : []),
           ...(indicatorSettings.mtfMaLevels
             ? mtfMaLevelsStudy.map((level) => ({
               price: Number(level.value),
               color: Number(level.value) >= Number(chartBars.at(-1)?.close || 0) ? "#ff00ff" : "#00ffff",
               lineWidth: level.lineWidth,
+              labelText: level.label,
               // Was a fixed 40-bar lookback, which drifted against the session
               // as the timeframe changed; share the one session anchor instead.
               startTime: momoxLevelAnchor ?? Number(chartBars[Math.max(0, chartBars.length - 40)]?.time || 0),
@@ -18145,16 +18389,16 @@ function OiFinderCandleChart({
               // carrying midnight-to-4am bars began the line before the open,
               // and week.start is days back. They share the one anchor now.
               ...(sessionLevelsStudy.pm ? [
-                { price: sessionLevelsStudy.pm.high, startTime: momoxLevelAnchor ?? sessionLevelsStudy.pm.start, lineWidth: 1, dash: [3, 3] },
-                { price: sessionLevelsStudy.pm.low, startTime: momoxLevelAnchor ?? sessionLevelsStudy.pm.start, lineWidth: 1, dash: [3, 3] },
+                { price: sessionLevelsStudy.pm.high, labelText: "pmH", startTime: momoxLevelAnchor ?? sessionLevelsStudy.pm.start, lineWidth: 1, dash: [3, 3] },
+                { price: sessionLevelsStudy.pm.low, labelText: "pmL", startTime: momoxLevelAnchor ?? sessionLevelsStudy.pm.start, lineWidth: 1, dash: [3, 3] },
               ] : []),
               ...(sessionLevelsStudy.day ? [
-                { price: sessionLevelsStudy.day.high, startTime: momoxLevelAnchor ?? sessionLevelsStudy.day.start, lineWidth: 1 },
-                { price: sessionLevelsStudy.day.low, startTime: momoxLevelAnchor ?? sessionLevelsStudy.day.start, lineWidth: 1 },
+                { price: sessionLevelsStudy.day.high, labelText: "dH", startTime: momoxLevelAnchor ?? sessionLevelsStudy.day.start, lineWidth: 1 },
+                { price: sessionLevelsStudy.day.low, labelText: "dL", startTime: momoxLevelAnchor ?? sessionLevelsStudy.day.start, lineWidth: 1 },
               ] : []),
               ...(sessionLevelsStudy.week ? [
-                { price: sessionLevelsStudy.week.high, startTime: momoxLevelAnchor ?? sessionLevelsStudy.week.start, lineWidth: 2 },
-                { price: sessionLevelsStudy.week.low, startTime: momoxLevelAnchor ?? sessionLevelsStudy.week.start, lineWidth: 2 },
+                { price: sessionLevelsStudy.week.high, labelText: "wH", startTime: momoxLevelAnchor ?? sessionLevelsStudy.week.start, lineWidth: 2 },
+                { price: sessionLevelsStudy.week.low, labelText: "wL", startTime: momoxLevelAnchor ?? sessionLevelsStudy.week.start, lineWidth: 2 },
               ] : []),
             ].map((segment) => ({
               ...segment,
@@ -18394,22 +18638,39 @@ function OiFinderCandleChart({
       && (restoreSessionChartViewport() || restoreChartLayoutProfile());
     if (shouldRestoreRebuiltChart) pendingChartLayoutRestoreRef.current = false;
     const shouldResetOpeningZoom = chartInitialViewRef.current && !restoredRebuiltChart;
-    const shouldAutoFocusLatest = shouldResetOpeningZoom
-      || (!restoredRebuiltChart
-        && !manualTimeNavigationRef.current
-        && autoFollowLatestSymbolRef.current === normalizedChartSymbol);
+    const automaticViewportKey = `${normalizedChartSymbol}|${selectedTimeframe.key}|${Number(chartBars[0]?.time || 0)}|${chartSeriesResetVersion}`;
+    const previousAutomaticStage = automaticViewportStageRef.current.key === automaticViewportKey
+      ? automaticViewportStageRef.current.maxStage
+      : -1;
+    const shouldAutoFocusLatest = chartShouldFrameAutomaticViewport({
+      initialView: shouldResetOpeningZoom,
+      restoredViewport: restoredRebuiltChart,
+      manualNavigation: manualTimeNavigationRef.current,
+      followsLatest: autoFollowLatestSymbolRef.current === normalizedChartSymbol,
+      studyStage: chartStudyStage,
+      previousStudyStage: previousAutomaticStage,
+    });
     if (shouldAutoFocusLatest) {
       // A persisted pan/zoom state or a stale logical range must never leave a
       // newly loaded chart blank.  Reset both axes to a recent visible window
       // after setting the new candle data, then let the trader pan from there.
-      const positionLatest = shouldResetOpeningZoom ? focusLatestTimeScale : followLatestTimeScale;
-      positionLatest(chart.timeScale());
+      // Study series are staged after the candles. Adding their denser 30m
+      // timestamps changes the meaning of a logical-index span: preserving a
+      // candle-only span can suddenly show only a few 4H candles. Reframe once
+      // for each NEW opening study stage. A live quote restarts the ladder at
+      // stage zero, but never exceeds the remembered maximum, so it cannot
+      // reset the user's time scale. Manual zoom/pan never reaches this branch.
+      focusLatestTimeScale(chart.timeScale());
+      automaticViewportStageRef.current = {
+        key: automaticViewportKey,
+        maxStage: Math.max(previousAutomaticStage, chartStudyStage),
+      };
       // Some chart studies and responsive panel measurements finish on the
       // next paint. Reapply the projection window, then make the candle-only
       // price range the final scale operation so distant levels stay clipped.
       requestAnimationFrame(() => {
-        if (chartApiRef.current === chart) {
-          positionLatest(chart.timeScale());
+        if (chartApiRef.current === chart && !manualTimeNavigationRef.current) {
+          focusLatestTimeScale(chart.timeScale());
           fitVisibleCandlePriceRangeRef.current?.();
         }
       });
@@ -18418,22 +18679,6 @@ function OiFinderCandleChart({
       chartInitialViewRef.current = false;
     }
     fitVisibleCandlePriceRangeRef.current?.();
-    { // TEMP-CHART-DIAG
-      try {
-        const diag = JSON.parse(document.body.dataset.chartDiag || "{}");
-        const range = chart.timeScale().getVisibleLogicalRange?.();
-        let seriesLen = null;
-        try { seriesLen = candleSeries.data?.().length ?? null; } catch { seriesLen = "n/a"; }
-        diag[`${normalizedChartSymbol}|${selectedTimeframe.key}`] = {
-          chartBars: chartBars.length,
-          seriesLen,
-          treeReplaced: seriesTreeReplaced,
-          ctx: sectionContextChanged,
-          range: range ? [Math.round(range.from), Math.round(range.to)] : null,
-        };
-        document.body.dataset.chartDiag = JSON.stringify(diag);
-      } catch { /* diagnostics only */ }
-    }
   }, [allowPageScroll, chartBars, disableKineticScroll, tosMtfSignals, projectedGaneshHigherTimeframeSignals, expectedMoveRange, wallLevels, easternDateFormatter, sessionWindows, sessionTimeMarkers, symbol, normalizedChartSymbol, symbolAlerts, indicatorSettings, indicatorOptions, previousOhlcStudy, selectedTimeframe.minutes, mtfOneSidedCloudStudy, mtfMacdTrendCloudStudy, mtfEma920CloudStudy, mtfSqueezeCloudStudy, mtfCloudBandStudy, relativeVolumeCandleStudy, cloudMaxMtfStudy, autoFibStudies, ichimokuStudies, mtfAdxStudies, squeezeMomentumLowerStudy, mtfSqueeze410Study, pivotPointsStudy, personsPivotsStudy, mtfMaLevelsStudy, sessionLevelsStudy]);
 
   // Only a ticker change or older REST backfill is an opening-layout event.
@@ -18451,7 +18696,6 @@ function OiFinderCandleChart({
           || autoFollowLatestSymbolRef.current !== normalizedChartSymbol) return;
         const chart = chartApiRef.current;
         if (!chart) return;
-        if (restoreChartLayoutProfile()) return;
         // Ticker search replaces the candle and indicator series together.
         // Re-anchor after both paints so a late study/layout update cannot
         // restore the previous ticker's narrower right-side projection.
@@ -18757,6 +19001,12 @@ function OiFinderCandleChart({
           >
             <LayoutPanelTop size={14} />
           </button>
+          {indicatorSaveStatus ? <span
+            className="oi-finder-visible-save-status"
+            role="status"
+            aria-live="polite"
+            title={indicatorSaveStatus}
+          >{indicatorSaveStatus}</span> : null}
           <button
             className="oi-finder-chart-latest oi-finder-indicator-save-button chart-icon-action"
             type="button"
@@ -24143,6 +24393,20 @@ function TradingWorkspace({ authUser, onLogout }) {
   const learningPageActive = activeView === "Learning Lab";
   const scannerPageActive = activeView === "Scanner";
   const scannerSurfaceActive = scannerPageActive || oiScannerPageActive;
+  const openMobilePriceAlert = () => {
+    const symbol = normalizeOiChartSymbol(oiFinderSymbol || selectedSymbol, "AAPL");
+    const price = Number(oiFinderFeed?.underlyingPrice || 0);
+    window.dispatchEvent(new CustomEvent(OI_PRICE_ALERT_DRAFT_EVENT, {
+      detail: { symbol, price, condition: "above" },
+    }));
+  };
+  const navigateMobileTerminal = (view) => {
+    setActiveView(view);
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+  };
+  const focusMobileCharting = () => {
+    document.getElementById("charts-oi-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   const normalizedNewsSearch = newsSearch.trim().toLowerCase();
   const mag7NewsSymbols = new Set((dashboard.mag7OptionWatchlist || MAG7.split(",")).map((symbol) => String(symbol || "").toUpperCase()));
   const watchlistNewsSymbols = new Set((dashboard.watchlist || []).map((symbol) => String(symbol || "").toUpperCase()));
@@ -24732,6 +24996,27 @@ function TradingWorkspace({ authUser, onLogout }) {
                 {symbol}
               </button>
             ))}
+          </nav>
+        ) : null}
+
+        {chartsAndOiPageActive ? (
+          <nav className="mobile-terminal-action-bar" aria-label="Mobile trading actions">
+            <button type="button" onClick={openMobilePriceAlert}>
+              <Bell size={15} />
+              <span>Set alert</span>
+            </button>
+            <button className="is-active" type="button" onClick={focusMobileCharting}>
+              <ChartCandlestick size={15} />
+              <span>Charting</span>
+            </button>
+            <button type="button" onClick={() => navigateMobileTerminal("OI Level Script TOS")}>
+              <NotebookTabs size={15} />
+              <span>OI levels</span>
+            </button>
+            <button type="button" onClick={() => navigateMobileTerminal("OI Scanner")}>
+              <ScanSearch size={15} />
+              <span>Scan results</span>
+            </button>
           </nav>
         ) : null}
 

@@ -7,12 +7,20 @@ import {
   nativeFireGlyphPoints,
   nativeFireMotion,
   nativeHighlightPulse,
+  nativeLevelLabelGutter,
   nativeCloudBandShapes,
   nativeSignalAutoscaleMargins,
   nativeSignalLabelTops,
   nativeSignalStackScope,
   TosNativeChartPrimitive,
 } from "./tosNativeChartPrimitive.js";
+
+test("ends each level line at the left edge of its own name", () => {
+  assert.equal(nativeLevelLabelGutter(""), 92);
+  assert.equal(nativeLevelLabelGutter("dL"), 14);
+  assert.ok(Math.abs(nativeLevelLabelGutter("44.4K 8/21") - 60.6) < 0.01);
+  assert.ok(nativeLevelLabelGutter("pmH") < nativeLevelLabelGutter("+EM 275.93"));
+});
 
 test("aligns native cloud boundaries only on identical TOS chart bars", () => {
   assert.deepEqual(alignNativeCloudPair(

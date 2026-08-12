@@ -23,7 +23,7 @@ test("does not merge nearby but different prices", () => {
   assert.equal(labels.length, 2);
 });
 
-test("keeps exact-price labels fixed and prevents every axis-label collision", () => {
+test("keeps every surviving label fixed to its indicator line", () => {
   const labels = layoutChartAxisLabels([
     { key: "live-price", top: 100, preservePricePosition: true },
     { key: "oi-wall-1-100", top: 103, preservePricePosition: true, priority: 5 },
@@ -34,6 +34,7 @@ test("keeps exact-price labels fixed and prevents every axis-label collision", (
 
   assert.equal(labels.find(({ key }) => key === "live-price")?.top, 100);
   assert.equal(labels.some(({ key }) => key === "oi-wall-1-100"), false);
+  assert.ok(labels.every(({ top }) => [100, 101, 102, 104].includes(top)));
   for (let index = 1; index < labels.length; index += 1) {
     assert.ok(labels[index].top - labels[index - 1].top >= 18);
   }
@@ -50,8 +51,21 @@ test("uses a pane-size label budget and retains higher-value study labels", () =
 
   assert.ok(labels.length <= 3);
   assert.ok(labels.some(({ key }) => key === "session-level-pmH"));
-  assert.ok(labels.some(({ key }) => key === "pivot-WEEK-R1"));
+  assert.equal(labels.find(({ key }) => key === "session-level-pmH")?.top, 45);
+  assert.equal(labels.some(({ key }) => key === "pivot-WEEK-R1"), false);
   for (let index = 1; index < labels.length; index += 1) {
     assert.ok(labels[index].top - labels[index - 1].top >= 18);
   }
+});
+
+test("does not move labels away from the pane edge", () => {
+  const labels = layoutChartAxisLabels([
+    { key: "near-top", top: 4 },
+    { key: "inside", top: 9 },
+    { key: "near-bottom", top: 156 },
+  ], { paneHeight: 160, padding: 9, minimumGap: 18 });
+
+  assert.deepEqual(labels.map(({ key, top }) => ({ key, top })), [
+    { key: "inside", top: 9 },
+  ]);
 });

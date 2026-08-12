@@ -276,11 +276,25 @@ export function buildChartDisplayBars({
       return aggregateChartBars([...merged.values()], minutes);
     }
   }
-  if (minutes !== 240) return aggregateChartBars(live, minutes);
-
   const normalizedStudyBars = sourcesNormalized && Array.isArray(studyBars)
     ? studyBars
     : normalizedChartSourceBars(studyBars);
+  // The study tape is usable for ANY timeframe at least as coarse as its own
+  // cadence, not just 4H. Only 240 took this path before, so 1h and 2h were
+  // aggregated from the one-minute live tape - capped at ~5 days by the
+  // ingestion contract, which is 63 candles on 1h and 32 on 2h. The study
+  // tape carries ~260 days at 30 minutes.
+  const studyCadence = chartSourceBarSpacingMinutes(normalizedStudyBars);
+  const usesStudyHistory = normalizedStudyBars.length > 0 && (
+    // 4H has always merged the study tape regardless of its cadence, including
+    // sparse/daily-ish shapes the backend has shipped over time. Keep that.
+    minutes >= 240
+    // New: any timeframe at least as coarse as the tape's own cadence can use
+    // it too. Without this, 1h and 2h aggregated from the one-minute live tape,
+    // which the ingestion contract caps at ~5 days - 63 candles on 1h, 32 on 2h.
+    || (studyCadence > 0 && studyCadence <= minutes)
+  );
+  if (!usesStudyHistory) return aggregateChartBars(live, minutes);
   // Bucket BOTH tapes at the study history's native cadence — 5-minute or
   // 30-minute, the two shapes the backend has shipped — so no ghost
   // sub-cadence slots appear AND a live partial bucket still replaces its

@@ -21,6 +21,16 @@ function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+export function nativeLevelLabelGutter(labelText, fallback = 92) {
+  const text = String(labelText || "").trim();
+  const fallbackGutter = Math.max(14, Number(fallback) || 92);
+  if (!text) return fallbackGutter;
+  // The 10px monospace chip measures 5.86px per glyph and has 8px of inline
+  // padding. Its right edge overlaps the plot/price-axis boundary by 6px, so
+  // the line only needs textWidth + 2px reserved to meet the chip's left edge.
+  return Math.max(14, Math.min(fallbackGutter, text.length * 5.86 + 2));
+}
+
 function colorWithOpacity(color, opacity) {
   const source = String(color || "").trim();
   const alpha = clamp(Number(opacity) || 0, 0, 1);
@@ -488,6 +498,11 @@ function coordinateProjector(model, chart, series) {
   return { barSpacing, xForTime, yForPrice };
 }
 
+// Fixed probe price. priceToCoordinate(probe) changes whenever the vertical
+// mapping changes - range, inversion or log mode - so one sample detects any
+// price-scale movement that would strand cached geometry.
+const PRICE_MAPPING_PROBE = 100;
+
 function nativeGeometry(model, chart, series) {
   const paneSize = chart.paneSize?.(0) || {};
   const width = Math.max(1, Number(paneSize.width) || 1);
@@ -667,7 +682,16 @@ function nativeGeometry(model, chart, series) {
   // Labels hang left from 56px inside the pane edge; the widest wall label
   // ("26.4K 8/21" ≈ 66px) needs the line to stop 56 + 66 + 6 ≈ 128px out so
   // the dash never touches the text.
-  const LEVEL_LABEL_GUTTER = 138;
+  // Right-hand reserve so a level line stops before its name chip instead of
+  // running underneath it. The chips are drawn separately (addIndicatorName in
+  // App.jsx) and are RIGHT-ALIGNED against the price axis, so a single shared
+  // reserve cannot fit them all: sized for the widest ("44.4K 8/21", ~80px) it
+  // leaves a large gap in front of short ones ("pmH", "dL", "9eD", ~30px).
+  //
+  // When a segment carries its label text the reserve is computed from that
+  // text, so every line stops just short of its own chip. Segments without
+  // label text keep the shared worst-case reserve.
+  const LEVEL_LABEL_GUTTER = 92;
   model.levelSegments.forEach((segment) => {
     const y = yForPrice(segment.price);
     if (y == null) return;
@@ -676,7 +700,7 @@ function nativeGeometry(model, chart, series) {
     if (x1 > width) return;
     lines.push({
       x1,
-      x2: Math.max(x1, width - LEVEL_LABEL_GUTTER),
+      x2: Math.max(x1, width - nativeLevelLabelGutter(segment.labelText, LEVEL_LABEL_GUTTER)),
       y1: y,
       y2: y,
       color: segment.color,
@@ -1197,9 +1221,35 @@ export class TosNativeChartPrimitive {
     const timeScale = this.chart.timeScale();
     const visibleRange = timeScale.getVisibleLogicalRange?.() || {};
     const paneSize = this.chart.paneSize?.(0) || {};
+    // The key must cover the VERTICAL mapping too. It originally held only the
+    // logical range, pane size and barSpacing, so any price-scale change -
+    // autoscale adjusting as new bars arrive, or a manual price drag - left
+    // every cached shape at its old Y coordinate while the candles moved.
+    // Reported as "indicators are not moving with the chart".
+    //
+    // Sampling priceToCoordinate captures the whole mapping in the key. TWO
+    // probes pin down offset AND scale (one alone misses a zoom centred on
+    // the probe), and each is quantised to half a pixel: raw price-range
+    // endpoints in the key made every sub-pixel autoscale twitch during live
+    // ticking a full recompute per paint, which is the exact churn the memo
+    // exists to prevent. A mapping move under half a pixel cannot shift any
+    // drawn shape visibly, so quantised probes lose nothing. If either probe
+    // is unavailable (empty scale) fall back to the raw range endpoints so a
+    // vertical change is never silently missed.
+    const quantizedProbe = (price) => {
+      const coordinate = Number(this.series.priceToCoordinate?.(price));
+      return Number.isFinite(coordinate) ? Math.round(coordinate * 2) / 2 : null;
+    };
+    const probeA = quantizedProbe(PRICE_MAPPING_PROBE);
+    const probeB = quantizedProbe(PRICE_MAPPING_PROBE * 2);
+    const priceRange = this.series.priceScale?.()?.getVisibleRange?.() || {};
+    const verticalKey = probeA != null && probeB != null
+      ? `${probeA}|${probeB}`
+      : `${Number(priceRange.from) || 0}|${Number(priceRange.to) || 0}`;
     const viewKey = `${Number(visibleRange.from) || 0}|${Number(visibleRange.to) || 0}`
       + `|${Number(paneSize.width) || 0}|${Number(paneSize.height) || 0}`
-      + `|${Number(timeScale.options?.().barSpacing) || 0}`;
+      + `|${Number(timeScale.options?.().barSpacing) || 0}`
+      + `|${verticalKey}`;
     if (this.model === this.geometryModel && viewKey === this.geometryViewKey) return;
     const geometry = nativeGeometry(this.model, this.chart, this.series);
     this.geometryModel = this.model;

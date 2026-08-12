@@ -24,23 +24,6 @@ function axisLabelPriority(label) {
   return 400 + Math.max(0, Number(label?.priority) || 0);
 }
 
-function nearestAvailableTop(desiredTop, occupiedTops, minimumTop, maximumTop, minimumGap) {
-  const candidates = [
-    Math.max(minimumTop, Math.min(maximumTop, desiredTop)),
-    minimumTop,
-    maximumTop,
-    ...occupiedTops.flatMap((top) => [top - minimumGap, top + minimumGap]),
-  ]
-    .filter((top) => top >= minimumTop && top <= maximumTop)
-    .sort((left, right) => (
-      Math.abs(left - desiredTop) - Math.abs(right - desiredTop)
-      || left - right
-    ));
-  return candidates.find((top) => (
-    occupiedTops.every((occupied) => Math.abs(occupied - top) >= minimumGap)
-  ));
-}
-
 export function layoutChartAxisLabels(labels, {
   paneHeight,
   padding = 9,
@@ -56,10 +39,14 @@ export function layoutChartAxisLabels(labels, {
   const candidates = (Array.isArray(labels) ? labels : [])
     .flatMap((label, index) => {
       const top = Number(label?.top);
-      if (!Number.isFinite(top)) return [];
+      // A visible name must remain welded to the y-coordinate of the line it
+      // identifies. Moving edge labels inward made them point at a different
+      // price, so let the chart's existing edge badges handle off-screen
+      // levels instead.
+      if (!Number.isFinite(top) || top < minimumTop || top > maximumTop) return [];
       return [{
         ...label,
-        top: Math.max(minimumTop, Math.min(maximumTop, top)),
+        top,
         _axisOrder: index,
         _axisPriority: axisLabelPriority(label),
       }];
@@ -80,9 +67,10 @@ export function layoutChartAxisLabels(labels, {
       fixed.push(label);
     });
 
-  // Ordinary study labels may slide slightly along the axis. Place the most
-  // useful labels first and hide only the labels for which no collision-free
-  // slot remains. Their study lines stay visible on the chart.
+  // Ordinary study labels must also remain on the exact y-coordinate of the
+  // line they name. Keep the highest-value label when levels are crowded and
+  // hide colliding names; sliding a name into a free row creates a misleading
+  // visual gap between the indicator and its label.
   const positioned = [...fixed];
   const occupiedTops = fixed.map(({ top }) => top);
   candidates
@@ -92,10 +80,9 @@ export function layoutChartAxisLabels(labels, {
       || left._axisOrder - right._axisOrder
     ))
     .forEach((label) => {
-      const top = nearestAvailableTop(label.top, occupiedTops, minimumTop, maximumTop, gap);
-      if (top == null) return;
-      occupiedTops.push(top);
-      positioned.push({ ...label, top });
+      if (occupiedTops.some((top) => Math.abs(top - label.top) < gap)) return;
+      occupiedTops.push(label.top);
+      positioned.push(label);
     });
 
   return positioned
