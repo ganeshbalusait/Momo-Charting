@@ -183,7 +183,9 @@ class DashboardSummaryTests(unittest.TestCase):
         recovered = state._recover_runtime_components({
             "stockScanner": {"required": True, "alive": False},
             "mag7OiScanner": {"required": True, "alive": True},
-            "watchlistOiScanner": {"required": True, "alive": True},
+            # The full-watchlist scanner has no worker by design. Even a stale
+            # persisted health snapshot must not make recovery restart it.
+            "watchlistOiScanner": {"required": True, "alive": False},
             "stockPositionManager": {"required": True, "alive": True},
             "learningAgent": {"required": True, "alive": True},
             "optionScheduler": {"required": False, "alive": False},
@@ -192,6 +194,86 @@ class DashboardSummaryTests(unittest.TestCase):
 
         self.assertEqual(recovered, ["stockScanner"])
         self.assertEqual(starts, ["stockScanner"])
+
+    def test_dashboard_reuses_full_cache_between_browser_polls(self):
+        state = DashboardState.__new__(DashboardState)
+        state.dashboard_cache_lock = threading.Lock()
+        state.dashboard_cache = {"source": "full"}
+        state.dashboard_cache_timestamp = datetime.now().astimezone() - timedelta(seconds=6)
+        state.dashboard_refresh_thread = None
+        state._dashboard_payload_minimal = lambda: (_ for _ in ()).throw(
+            AssertionError("six-second-old full cache should not rebuild")
+        )
+
+        payload = DashboardState.dashboard_payload(state)
+
+        self.assertEqual(payload, {"source": "full"})
+
+    def test_background_oi_snapshot_skips_display_analytics_and_interactive_priority(self):
+        state = DashboardState.__new__(DashboardState)
+        state.oi_finder_lock = threading.Lock()
+        state.oi_finder_cache = {}
+        state.oi_finder_chain_cache = {}
+        touches = []
+        persistence_calls = []
+        state.touch_oi_finder_interactive_window = lambda: touches.append(True)
+        state._oi_finder_side_rows = lambda chain, side: [
+            {"expiry": "2026-08-14", "liquidity_score": 1, "volume": 10, "open_interest": 20}
+        ]
+        state._oi_finder_selected_expiry_chain_rows = lambda chain: []
+        state._oi_finder_current_atm = lambda chain: {}
+        state._oi_finder_tos_script_levels = lambda chain: []
+        state._option_chain_contracts = lambda chain, side: []
+        state._oi_finder_volume_snapshot = lambda *args: {}
+        state._oi_finder_volume_momentum = lambda *args: {}
+        state._attach_oi_finder_volume_momentum = lambda *args: None
+        state._record_oi_finder_daily_chain_snapshot = lambda *args, **kwargs: (
+            persistence_calls.append(("daily", kwargs.get("include_history"))) or {}
+        )
+        state._record_oi_finder_live_wall_snapshot = lambda *args, **kwargs: (
+            persistence_calls.append(("wall", kwargs.get("include_history"))) or {}
+        )
+        state._oi_finder_unusual_otm_activity = lambda *args: (_ for _ in ()).throw(
+            AssertionError("background snapshot must not build unusual activity")
+        )
+        state._oi_finder_persistent_option_activity = lambda *args: (_ for _ in ()).throw(
+            AssertionError("background snapshot must not build persistence analytics")
+        )
+        state._option_underlying_day_move = lambda *args: {
+            "price": 100.0,
+            "change": 1.0,
+            "changePercent": 1.0,
+        }
+        state._chain_implied_volatility = lambda chain: None
+        state._option_underlying_price_from_chain = lambda chain: 100.0
+        state._oi_finder_snapshot_schedule_payload = lambda: {}
+        state.repository = SimpleNamespace(
+            option_chain_daily_snapshots=lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("background snapshot must not load 183-day history")
+            )
+        )
+
+        class FakeSchwabClient:
+            configured = True
+
+            def get_option_chain(self, *args, **kwargs):
+                return {"symbol": "AAPL"}
+
+            def get_quotes(self, symbols):
+                return {}
+
+        with patch("api_server.SchwabClient", FakeSchwabClient):
+            payload = DashboardState.oi_finder_payload(
+                state,
+                "AAPL",
+                force=True,
+                background_snapshot=True,
+            )
+
+        self.assertTrue(payload["live"])
+        self.assertTrue(payload["analyticsDeferred"])
+        self.assertEqual(touches, [])
+        self.assertEqual(persistence_calls, [("daily", False), ("wall", False)])
 
     def test_manual_oi_scan_reports_busy_when_job_is_running(self):
         state = DashboardState.__new__(DashboardState)

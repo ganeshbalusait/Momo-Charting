@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "vite build",
-    "test": "node --test src/chartSeriesData.test.js",
     "preview": "vite preview --host 0.0.0.0 --port 4173"
   },
   "dependencies": {

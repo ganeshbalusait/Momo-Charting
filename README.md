@@ -155,30 +155,6 @@ Frontend notes:
 - `api_server.py` runs on `http://127.0.0.1:3001` and serves the real dashboard data.
 - The React app includes Scanner, Paper Trading, and Backtesting tabs plus an agent-style decision pipeline inspired by RakshaQuant, adapted for the US market and Alpaca.
 
-## Run continuously on Windows
-
-The project includes two watchdog layers:
-
-- `api_server.py` monitors and recovers required scanner, scheduler, position-manager, and learning threads.
-- `scripts/scanner_watchdog.ps1` monitors the backend and dashboard processes and restarts a process after repeated failed health checks.
-- `scripts/start_api_background.ps1` holds a machine-wide file lock while the backend runs, preventing duplicate supervised trading engines during slow restarts.
-
-To start both layers automatically whenever your Windows account signs in, run:
-
-```powershell
-.\scripts\install_24x7_task.ps1
-```
-
-This creates the `AgenticAI-Trading-24x7` Windows Scheduled Task under your current account with limited privileges and starts it immediately. The task is configured to restart after a failure. After a reboot, it resumes when you sign in. The dashboard remains local at `http://127.0.0.1:5173`, and backend health is available at `http://127.0.0.1:3001/api/health`.
-
-Keep the computer plugged in, connected to the internet, and configured not to sleep. This startup task does not enable live trading or change any execution, strategy, risk, account, or credential setting. After code or frontend dependency changes, restart the scheduled task so the supervised processes reload them.
-
-To stop and remove automatic startup, run:
-
-```powershell
-.\scripts\uninstall_24x7_task.ps1
-```
-
 ## Alpaca tools used
 
 - `alpaca-py` is the primary SDK used by the app runtime.
@@ -237,6 +213,6 @@ This complements `scripts/agentic_coding_loop.ps1`: the bilevel loop searches an
 
 - Intraday-accurate backtesting
 - News and catalyst scoring
-- Remote alerting for process or broker-connection failures
+- Background scheduler or service process for unattended paper trading
 - Live trading only after paper workflow validation
 # AI-BOT-Stock

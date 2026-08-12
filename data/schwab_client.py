@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -12,7 +13,28 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from schwab import auth as schwab_auth
 
-from config import EASTERN_TZ, settings
+from config import ARTIFACTS_DIR, EASTERN_TZ, settings
+
+
+def schwab_profile_settings(profile: str):
+    """Settings for a named Schwab profile.
+
+    "market_data" (default) is the primary app from settings; "trading" is the
+    optional Accounts & Trading app with its own key pair and token file, used
+    for the live tick stream.
+    """
+    if str(profile or "").strip().lower() == "trading":
+        from dataclasses import replace
+        return replace(
+            settings.schwab,
+            client_id=os.getenv("SCHWAB_TRADING_CLIENT_ID", ""),
+            client_secret=os.getenv("SCHWAB_TRADING_CLIENT_SECRET", ""),
+            token_path=os.getenv(
+                "SCHWAB_TRADING_TOKEN_PATH",
+                str(ARTIFACTS_DIR / "schwab_trading_token.json"),
+            ),
+        )
+    return settings.schwab
 
 
 SCHWAB_AUTH_BASE = "https://api.schwabapi.com/v1/oauth"
@@ -36,12 +58,17 @@ class SchwabClient:
     """
 
     _auth_lock = threading.RLock()
-    _pending_auth_contexts: dict[str, object] = {}
+    _pending_auth_context = None
 
-    def __init__(self, profile: str = "market_data") -> None:
+    def __init__(self, config=None) -> None:
         self._tz = ZoneInfo(EASTERN_TZ)
-        self.profile = "trading" if str(profile or "").strip().lower() == "trading" else "market_data"
-        self.config = settings.schwab_trading if self.profile == "trading" else settings.schwab
+        # An explicit config selects an alternate Schwab profile (the optional
+        # Accounts & Trading app) with its own keys and token file; a string
+        # names a profile ("trading"); the default remains the market-data
+        # profile from settings.
+        if isinstance(config, str):
+            config = schwab_profile_settings(config)
+        self.config = config or settings.schwab
         self._token_path = Path(self.config.token_path)
         self._client = None
         self._token: dict = {}
@@ -54,6 +81,16 @@ class SchwabClient:
     @property
     def configured(self) -> bool:
         return bool(self.config.client_id and self.config.client_secret and self._token.get("refresh_token"))
+
+    def library_client(self):
+        """schwab-py client for this profile (required by StreamClient)."""
+        if self._client is None:
+            self._client = schwab_auth.client_from_token_file(
+                str(self._token_path),
+                api_key=self.config.client_id,
+                app_secret=self.config.client_secret,
+            )
+        return self._client
 
     def connection_status(self) -> dict:
         now = datetime.now()
@@ -74,7 +111,6 @@ class SchwabClient:
             else "configured" if client_id else ""
         )
         return {
-            "profile": self.profile,
             "configured": self.configured,
             "credentialsConfigured": bool(self.config.client_id and self.config.client_secret),
             "hasClientId": bool(self.config.client_id),
@@ -106,22 +142,6 @@ class SchwabClient:
         return {
             "connected": True,
             "symbol": "SPY",
-            "marketDataConnected": True,
-            "verifiedAt": datetime.now().isoformat(),
-        }
-
-    def test_trading_connection(self) -> dict:
-        client = self._library_client()
-        preferences = client.get_user_preferences()
-        preferences.raise_for_status()
-        accounts = client.get_account_numbers()
-        accounts.raise_for_status()
-        account_rows = accounts.json()
-        return {
-            "connected": True,
-            "traderApiAuthorized": True,
-            "streamingAvailable": True,
-            "linkedAccountCount": len(account_rows) if isinstance(account_rows, list) else 0,
             "verifiedAt": datetime.now().isoformat(),
         }
 
@@ -132,11 +152,11 @@ class SchwabClient:
         if not self.config.client_id or not self.config.client_secret:
             raise RuntimeError("Schwab app key and secret are required before authentication.")
         with self._auth_lock:
-            type(self)._pending_auth_contexts[self.profile] = schwab_auth.get_auth_context(
+            type(self)._pending_auth_context = schwab_auth.get_auth_context(
                 self.config.client_id,
                 self.config.redirect_uri,
             )
-            return type(self)._pending_auth_contexts[self.profile].authorization_url
+            return type(self)._pending_auth_context.authorization_url
 
     def exchange_authorization_response(self, received_url: str) -> dict:
         """Exchange a loopback OAuth callback through schwab-py.
@@ -145,9 +165,9 @@ class SchwabClient:
         refreshes. This app never processes a raw authorization code itself.
         """
         with self._auth_lock:
-            context = type(self)._pending_auth_contexts.get(self.profile)
+            context = type(self)._pending_auth_context
             if context is None:
-                raise RuntimeError(f"No Schwab {self.profile.replace('_', ' ')} authorization is waiting. Start a fresh authentication first.")
+                raise RuntimeError("No Schwab authorization is waiting. Start a fresh authentication first.")
             client = schwab_auth.client_from_received_url(
                 self.config.client_id,
                 self.config.client_secret,
@@ -156,13 +176,12 @@ class SchwabClient:
                 self._write_library_token,
                 enforce_enums=False,
             )
-            type(self)._pending_auth_contexts.pop(self.profile, None)
+            type(self)._pending_auth_context = None
 
         self._client = client
         self._load_cached_token()
         return {
             "connected": True,
-            "profile": self.profile,
             "hasAccessToken": bool(self._token.get("access_token")),
             "hasRefreshToken": bool(self._token.get("refresh_token")),
         }
@@ -244,6 +263,17 @@ class SchwabClient:
                     "change": change,
                     "change_pct": change_pct,
                     "volume": volume,
+                    # Previous close and description are needed by consumers
+                    # that recompute day-change from a live tick (the ticker
+                    # strip froze its change/% between polls without this).
+                    "close_price": self._first_float(
+                        quote,
+                        regular,
+                        "closePrice",
+                        "regularMarketPreviousClose",
+                        "previousClose",
+                    ),
+                    "description": str(reference.get("description") or "").strip(),
                     "asset_type": str(reference.get("assetType") or raw_quote.get("assetMainType") or "").upper(),
                 }
         return quotes
@@ -334,32 +364,13 @@ class SchwabClient:
             "range": "ALL",
         }
         if from_date:
-            normalized_from_date = from_date
-            while normalized_from_date.weekday() >= 5:
-                normalized_from_date += timedelta(days=1)
-            params["fromDate"] = normalized_from_date.date().isoformat()
+            params["fromDate"] = from_date.date().isoformat()
         if to_date:
             params["toDate"] = to_date.date().isoformat()
-        try:
-            return self._get_json(f"{SCHWAB_MARKET_DATA_BASE}/chains?{urlencode(params)}")
-        except Exception as exc:
-            # Schwab can reject fromDate on exchange holidays even when the
-            # calendar date is a weekday. Preserve the direct Schwab chain by
-            # retrying once without the optional date window; callers already
-            # constrain the displayed DTE range after normalization.
-            status_code = getattr(getattr(exc, "response", None), "status_code", None)
-            if status_code != 400 or "fromDate" not in params:
-                raise
-            params.pop("fromDate", None)
-            params.pop("toDate", None)
-            return self._get_json(f"{SCHWAB_MARKET_DATA_BASE}/chains?{urlencode(params)}")
+        return self._get_json(f"{SCHWAB_MARKET_DATA_BASE}/chains?{urlencode(params)}")
 
     def ensure_streaming(self, symbols: Iterable[str]) -> None:
         return None
-
-    def library_client(self):
-        """Return the authenticated schwab-py client for StreamClient."""
-        return self._library_client()
 
     def _get_price_history(
         self,

@@ -1,41 +1,33 @@
 $ErrorActionPreference = "Stop"
 
-# Some launchers inject both PATH and Path. Windows treats them as the same
-# variable, but PowerShell Start-Process rejects the duplicate environment keys.
-$processPath = [Environment]::GetEnvironmentVariable(
-    "Path",
-    [EnvironmentVariableTarget]::Process
-)
-if ($processPath) {
-    [Environment]::SetEnvironmentVariable(
-        "PATH",
-        $null,
-        [EnvironmentVariableTarget]::Process
-    )
-    [Environment]::SetEnvironmentVariable(
-        "Path",
-        $processPath,
-        [EnvironmentVariableTarget]::Process
-    )
-}
-
 $root = Split-Path -Parent $PSScriptRoot
 $artifacts = Join-Path $root "artifacts"
 $python = Join-Path $root ".venv\Scripts\python.exe"
-$backendLauncher = Join-Path $PSScriptRoot "start_api_background.ps1"
-$powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$node = "C:\Users\ganes\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
 $vite = Join-Path $root "frontend\node_modules\vite\bin\vite.js"
 $watchdogLog = Join-Path $artifacts "scanner_watchdog.log"
 $backendProcess = $null
 $frontendProcess = $null
-$backendStartedAt = $null
-$frontendStartedAt = $null
-$backendHealthFailures = 0
-$frontendHealthFailures = 0
-$startupGraceSeconds = 300
-$healthFailureLimit = 4
 
 New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
+
+# Single instance. Two watchdogs racing each other (or a watchdog racing a
+# session's manual restart) produced FOUR duplicate api_server pairs on
+# 2026-08-10; one of those pairs concurrently refreshed the Schwab trading
+# token and revoked it (Schwab rotates the refresh token on every refresh).
+$lockPath = Join-Path $artifacts "scanner_watchdog.lock"
+try {
+    $script:lockStream = [System.IO.File]::Open(
+        $lockPath,
+        [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+}
+catch {
+    Write-Host "Another scanner watchdog already holds $lockPath; exiting."
+    exit 0
+}
 
 function Write-WatchdogLog {
     param([string]$Message)
@@ -43,57 +35,42 @@ function Write-WatchdogLog {
     Add-Content -LiteralPath $watchdogLog -Value "$timestamp $Message"
 }
 
-function Find-NodeRuntime {
-    $candidates = [System.Collections.Generic.List[string]]::new()
-    $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
-    if ($null -ne $nodeCommand -and $nodeCommand.Source) {
-        $candidates.Add($nodeCommand.Source)
-    }
-    if ($env:ProgramFiles) {
-        $candidates.Add((Join-Path $env:ProgramFiles "nodejs\node.exe"))
-    }
-    $candidates.Add("C:\Users\ganes\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
-
-    foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
-            return $candidate
-        }
-    }
-    return $null
-}
-
-function Test-LocalHttp {
-    param([string]$Uri)
+function Test-LocalPort {
+    param([int]$Port)
+    $client = [System.Net.Sockets.TcpClient]::new()
     try {
-        $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 3
-        return $response.StatusCode -ge 200 -and $response.StatusCode -lt 500
+        $connection = $client.ConnectAsync("127.0.0.1", $Port)
+        return $connection.Wait(750) -and $client.Connected
     }
     catch {
         return $false
     }
+    finally {
+        $client.Dispose()
+    }
+}
+
+function Get-ApiServerProcesses {
+    @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*api_server.py*" })
 }
 
 function Start-Backend {
     if ($null -ne $script:backendProcess -and -not $script:backendProcess.HasExited) {
         return
     }
-    if (
-        -not (Test-Path -LiteralPath $python) -or
-        -not (Test-Path -LiteralPath $backendLauncher) -or
-        -not (Test-Path -LiteralPath $powershell)
-    ) {
-        Write-WatchdogLog "Backend runtime or launcher is missing."
+    if (-not (Test-Path -LiteralPath $python)) {
+        Write-WatchdogLog "Backend runtime missing: $python"
         return
     }
     $script:backendProcess = Start-Process `
-        -FilePath $powershell `
-        -ArgumentList "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "`"$backendLauncher`"" `
+        -FilePath $python `
+        -ArgumentList "-u", "api_server.py" `
         -WorkingDirectory $root `
         -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $artifacts "api_server.out.log") `
         -RedirectStandardError (Join-Path $artifacts "api_server.err.log") `
         -PassThru
-    $script:backendStartedAt = Get-Date
     Write-WatchdogLog "Started backend on port 3001."
 }
 
@@ -101,8 +78,7 @@ function Start-Frontend {
     if ($null -ne $script:frontendProcess -and -not $script:frontendProcess.HasExited) {
         return
     }
-    $node = Find-NodeRuntime
-    if ($null -eq $node -or -not (Test-Path -LiteralPath $node) -or -not (Test-Path -LiteralPath $vite)) {
+    if (-not (Test-Path -LiteralPath $node) -or -not (Test-Path -LiteralPath $vite)) {
         Write-WatchdogLog "Frontend runtime or Vite entrypoint is missing."
         return
     }
@@ -114,77 +90,41 @@ function Start-Frontend {
         -RedirectStandardOutput (Join-Path $artifacts "frontend.out.log") `
         -RedirectStandardError (Join-Path $artifacts "frontend.err.log") `
         -PassThru
-    $script:frontendStartedAt = Get-Date
     Write-WatchdogLog "Started frontend on port 5173."
 }
 
-function Restart-OwnedProcess {
-    param(
-        [System.Diagnostics.Process]$Process,
-        [string]$Name
-    )
-    if ($null -eq $Process -or $Process.HasExited) {
-        return
-    }
-    Write-WatchdogLog "$Name failed repeated health checks; restarting owned process $($Process.Id)."
-    Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
-    Wait-Process -Id $Process.Id -Timeout 10 -ErrorAction SilentlyContinue
-}
+# Server startup takes 60-80s on this box, during which port 3001 is closed.
+# Restarting whenever the port is closed therefore spawned a SECOND backend
+# beside every legitimately starting one. A backend process younger than this
+# window is presumed to be booting and is left alone; one older than this
+# with the port still closed is wedged and gets replaced.
+$backendStartupGraceSeconds = 180
 
-Write-WatchdogLog "Scanner watchdog started."
 while ($true) {
     try {
-        $backendHealthy = Test-LocalHttp -Uri "http://127.0.0.1:3001/api/health"
-        if ($backendHealthy) {
-            $backendHealthFailures = 0
+        if (-not (Test-LocalPort -Port 3001)) {
+            $existing = Get-ApiServerProcesses
+            if ($existing.Count -eq 0) {
+                Write-WatchdogLog "Port 3001 closed and no api_server process exists; starting backend."
+                Start-Backend
+            }
+            else {
+                $newest = ($existing | Sort-Object CreationDate -Descending | Select-Object -First 1)
+                $ageSeconds = [Math]::Round(((Get-Date) - $newest.CreationDate).TotalSeconds)
+                if ($ageSeconds -lt $backendStartupGraceSeconds) {
+                    Write-WatchdogLog "Port 3001 closed but api_server pid $($newest.ProcessId) is ${ageSeconds}s old (starting up); waiting."
+                }
+                else {
+                    Write-WatchdogLog "Port 3001 closed and api_server pid $($newest.ProcessId) is ${ageSeconds}s old (wedged); replacing."
+                    $existing | ForEach-Object {
+                        try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}
+                    }
+                    Start-Sleep -Seconds 2
+                    Start-Backend
+                }
+            }
         }
-        else {
-            $backendHealthFailures += 1
-        }
-
-        if (
-            -not $backendHealthy -and
-            ($null -eq $backendProcess -or $backendProcess.HasExited)
-        ) {
-            $backendProcess = $null
-            Start-Backend
-        }
-        elseif (
-            -not $backendHealthy -and
-            $backendHealthFailures -ge $healthFailureLimit -and
-            $null -ne $backendStartedAt -and
-            ((Get-Date) - $backendStartedAt).TotalSeconds -ge $startupGraceSeconds
-        ) {
-            Restart-OwnedProcess -Process $backendProcess -Name "Backend"
-            $backendProcess = $null
-            $backendHealthFailures = 0
-            Start-Backend
-        }
-
-        $frontendHealthy = Test-LocalHttp -Uri "http://127.0.0.1:5173/"
-        if ($frontendHealthy) {
-            $frontendHealthFailures = 0
-        }
-        else {
-            $frontendHealthFailures += 1
-        }
-
-        if (
-            -not $frontendHealthy -and
-            ($null -eq $frontendProcess -or $frontendProcess.HasExited)
-        ) {
-            $frontendProcess = $null
-            Start-Frontend
-        }
-        elseif (
-            -not $frontendHealthy -and
-            $frontendHealthFailures -ge $healthFailureLimit -and
-            $null -ne $frontendStartedAt -and
-            ((Get-Date) - $frontendStartedAt).TotalSeconds -ge $startupGraceSeconds
-        ) {
-            Restart-OwnedProcess -Process $frontendProcess -Name "Frontend"
-            $frontendProcess = $null
-            $frontendHealthFailures = 0
+        if (-not (Test-LocalPort -Port 5173)) {
             Start-Frontend
         }
     }

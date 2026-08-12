@@ -1,0 +1,272 @@
+//@version=6
+indicator("Trading Alphas MTF 4x8 Call & Put Signals", shorttitle = "TA4x8 MTF", overlay = true, max_labels_count = 500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings
+// ─────────────────────────────────────────────────────────────────────────────
+
+fastLength = input.int(4, "Fast EMA", minval = 1)
+slowLength = input.int(8, "Slow EMA", minval = 2)
+
+show15m = input.bool(true, "Show 15m signals")
+show30m = input.bool(true, "Show 30m signals")
+show1h  = input.bool(true, "Show 1H signals")
+show2h  = input.bool(true, "Show 2H signals")
+show4h  = input.bool(true, "Show 4H signals")
+
+showLabels = input.bool(true, "Show TOS-style CALL / PUT bubbles")
+showArrows = input.bool(false, "Show separate arrows")
+
+limitToSession = input.bool(true, "Limit signals to session")
+signalSession  = input.session("0500-1600", "Signal session (New York)")
+
+callColor     = input.color(#FFF200, "CALL / C bubble", group = "TOS style")
+putColor      = input.color(#FF006A, "PUT / P bubble", group = "TOS style")
+callTextColor = input.color(#000000, "CALL / C text", group = "TOS style")
+putTextColor  = input.color(#FFFFFF, "PUT / P text", group = "TOS style")
+useTosBackground = input.bool(true, "Use TOS black chart background", group = "TOS style")
+tosBackground    = input.color(#000000, "Chart background", group = "TOS style")
+
+inSignalSession = not limitToSession or not na(time(timeframe.period, signalSession, "America/New_York"))
+
+bgcolor(useTosBackground ? tosBackground : na, title = "TOS chart background")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Confirmed EMA values
+//
+// [1] with lookahead_on returns the previous completed secondary candle.
+// This prevents signals from disappearing or changing after a refresh.
+// ─────────────────────────────────────────────────────────────────────────────
+
+confirmedEmaValues() =>
+    fastEma = ta.ema(close, fastLength)
+    slowEma = ta.ema(close, slowLength)
+
+    crossUp   = ta.crossover(fastEma, slowEma)
+    crossDown = ta.crossunder(fastEma, slowEma)
+
+    [fastEma[1], slowEma[1], crossUp[1], crossDown[1]]
+
+[fast15, slow15, up15, down15] = request.security(syminfo.tickerid, "15", confirmedEmaValues(), lookahead = barmerge.lookahead_on)
+[fast30, slow30, up30, down30] = request.security(syminfo.tickerid, "30", confirmedEmaValues(), lookahead = barmerge.lookahead_on)
+[fast1h, slow1h, up1h, down1h] = request.security(syminfo.tickerid, "60", confirmedEmaValues(), lookahead = barmerge.lookahead_on)
+[fast2h, slow2h, up2h, down2h] = request.security(syminfo.tickerid, "120", confirmedEmaValues(), lookahead = barmerge.lookahead_on)
+[fast4h, slow4h, up4h, down4h] = request.security(syminfo.tickerid, "240", confirmedEmaValues(), lookahead = barmerge.lookahead_on)
+[fastDay, slowDay, upDay, downDay] = request.security(syminfo.tickerid, "1D", confirmedEmaValues(), lookahead = barmerge.lookahead_on)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Higher-timeframe confirmation
+//
+// 15m → 30m
+// 30m → 1H
+// 1H  → 2H
+// 2H  → 4H
+// 4H  → Daily
+// ─────────────────────────────────────────────────────────────────────────────
+
+bull30  = fast30 >= slow30
+bull1h  = fast1h >= slow1h
+bull2h  = fast2h >= slow2h
+bull4h  = fast4h >= slow4h
+bullDay = fastDay >= slowDay
+
+new15m = timeframe.change("15")
+new30m = timeframe.change("30")
+new1h  = timeframe.change("60")
+new2h  = timeframe.change("120")
+new4h  = timeframe.change("240")
+
+call15 = show15m and inSignalSession and new15m and up15
+put15  = show15m and inSignalSession and new15m and down15
+
+call30 = show30m and inSignalSession and new30m and up30
+put30  = show30m and inSignalSession and new30m and down30
+
+call1h = show1h and inSignalSession and new1h and up1h
+put1h  = show1h and inSignalSession and new1h and down1h
+
+call2h = show2h and inSignalSession and new2h and up2h
+put2h  = show2h and inSignalSession and new2h and down2h
+
+call4h = show4h and inSignalSession and new4h and up4h
+put4h  = show4h and inSignalSession and new4h and down4h
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Labels
+//
+// Full CALL/PUT means the next higher timeframe confirms the direction.
+// Compact C/P means the EMA crossover occurred without higher-TF confirmation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+if showLabels and call15
+    label.new(
+         bar_index,
+         low,
+         bull30 ? "CALL15" : "C15",
+         yloc = yloc.belowbar,
+         style = label.style_label_up,
+         color = callColor,
+         textcolor = callTextColor,
+         size = size.small
+    )
+
+if showLabels and put15
+    label.new(
+         bar_index,
+         high,
+         not bull30 ? "PUT15" : "P15",
+         yloc = yloc.abovebar,
+         style = label.style_label_down,
+         color = putColor,
+         textcolor = putTextColor,
+         size = size.small
+    )
+
+if showLabels and call30
+    label.new(
+         bar_index,
+         low,
+         bull1h ? "CALL30" : "C30",
+         yloc = yloc.belowbar,
+         style = label.style_label_up,
+         color = callColor,
+         textcolor = callTextColor,
+         size = size.small
+    )
+
+if showLabels and put30
+    label.new(
+         bar_index,
+         high,
+         not bull1h ? "PUT30" : "P30",
+         yloc = yloc.abovebar,
+         style = label.style_label_down,
+         color = putColor,
+         textcolor = putTextColor,
+         size = size.small
+    )
+
+if showLabels and call1h
+    label.new(
+         bar_index,
+         low,
+         bull2h ? "CALL1H" : "C1H",
+         yloc = yloc.belowbar,
+         style = label.style_label_up,
+         color = callColor,
+         textcolor = callTextColor,
+         size = size.small
+    )
+
+if showLabels and put1h
+    label.new(
+         bar_index,
+         high,
+         not bull2h ? "PUT1H" : "P1H",
+         yloc = yloc.abovebar,
+         style = label.style_label_down,
+         color = putColor,
+         textcolor = putTextColor,
+         size = size.small
+    )
+
+if showLabels and call2h
+    label.new(
+         bar_index,
+         low,
+         bull4h ? "CALL2H" : "C2H",
+         yloc = yloc.belowbar,
+         style = label.style_label_up,
+         color = callColor,
+         textcolor = callTextColor,
+         size = size.normal
+    )
+
+if showLabels and put2h
+    label.new(
+         bar_index,
+         high,
+         not bull4h ? "PUT2H" : "P2H",
+         yloc = yloc.abovebar,
+         style = label.style_label_down,
+         color = putColor,
+         textcolor = putTextColor,
+         size = size.normal
+    )
+
+if showLabels and call4h
+    label.new(
+         bar_index,
+         low,
+         bullDay ? "CALL4H" : "C4H",
+         yloc = yloc.belowbar,
+         style = label.style_label_up,
+         color = callColor,
+         textcolor = callTextColor,
+         size = size.normal
+    )
+
+if showLabels and put4h
+    label.new(
+         bar_index,
+         high,
+         not bullDay ? "PUT4H" : "P4H",
+         yloc = yloc.abovebar,
+         style = label.style_label_down,
+         color = putColor,
+         textcolor = putTextColor,
+         size = size.normal
+    )
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Arrows
+// ─────────────────────────────────────────────────────────────────────────────
+
+anyCall = call15 or call30 or call1h or call2h or call4h
+anyPut  = put15 or put30 or put1h or put2h or put4h
+
+plotshape(
+     showArrows and anyCall,
+     title = "CALL arrow",
+     style = shape.triangleup,
+     location = location.belowbar,
+     color = callColor,
+     size = size.tiny
+)
+
+plotshape(
+     showArrows and anyPut,
+     title = "PUT arrow",
+     style = shape.triangledown,
+     location = location.abovebar,
+     color = putColor,
+     size = size.tiny
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TradingView alerts
+// ─────────────────────────────────────────────────────────────────────────────
+
+alertcondition(
+     anyCall,
+     title = "MTF 4x8 CALL",
+     message = "MTF 4x8 CALL signal on {{ticker}} at {{close}}"
+)
+
+alertcondition(
+     anyPut,
+     title = "MTF 4x8 PUT",
+     message = "MTF 4x8 PUT signal on {{ticker}} at {{close}}"
+)
+
+alertcondition(
+     call2h or call4h,
+     title = "MTF 4x8 CALL 2H/4H",
+     message = "MTF 4x8 higher-timeframe CALL signal on {{ticker}} at {{close}}"
+)
+
+alertcondition(
+     put2h or put4h,
+     title = "MTF 4x8 PUT 2H/4H",
+     message = "MTF 4x8 higher-timeframe PUT signal on {{ticker}} at {{close}}"
+)

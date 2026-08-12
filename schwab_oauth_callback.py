@@ -22,11 +22,6 @@ KEY_PATH = ARTIFACTS_DIR / "localhost_schwab_key.pem"
 _CALLBACK_LOCK = threading.Lock()
 _CALLBACK_SERVER: HTTPServer | None = None
 _CALLBACK_THREAD: threading.Thread | None = None
-_CALLBACK_PROFILE = "market_data"
-
-
-def _profile_config(profile: str):
-    return settings.schwab_trading if profile == "trading" else settings.schwab
 
 
 def ensure_localhost_certificate() -> None:
@@ -82,13 +77,12 @@ class SchwabCallbackHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            profile = _CALLBACK_PROFILE
-            configured_callback = urlparse(_profile_config(profile).redirect_uri)
+            configured_callback = urlparse(settings.schwab.redirect_uri)
             received_url = f"{configured_callback.scheme}://{configured_callback.netloc}{self.path}"
-            result = SchwabClient(profile).exchange_authorization_response(received_url)
+            result = SchwabClient().exchange_authorization_response(received_url)
             self._send_html(
                 200,
-                f"<h1>Schwab {escape(profile.replace('_', ' '))} connected</h1>"
+                "<h1>Schwab connected</h1>"
                 f"<p>Access token: {'yes' if result.get('hasAccessToken') else 'no'}</p>"
                 f"<p>Refresh token: {'yes' if result.get('hasRefreshToken') else 'no'}</p>"
                 "<p>Token is now managed by schwab-py.</p>"
@@ -117,9 +111,9 @@ class SchwabCallbackHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
 
-def _build_callback_server(profile: str = "market_data") -> HTTPServer:
+def _build_callback_server() -> HTTPServer:
     ensure_localhost_certificate()
-    callback = urlparse(_profile_config(profile).redirect_uri)
+    callback = urlparse(settings.schwab.redirect_uri)
     if callback.scheme != "https" or callback.hostname != "127.0.0.1":
         raise RuntimeError("SCHWAB_REDIRECT_URI must use https://127.0.0.1 and exactly match the Schwab app setting.")
     httpd = HTTPServer(("127.0.0.1", callback.port or 443), SchwabCallbackHandler)
@@ -133,14 +127,12 @@ def callback_listener_status() -> bool:
     return bool(_CALLBACK_THREAD and _CALLBACK_THREAD.is_alive())
 
 
-def start_callback_listener(profile: str = "market_data") -> bool:
-    global _CALLBACK_SERVER, _CALLBACK_THREAD, _CALLBACK_PROFILE
-    normalized_profile = "trading" if str(profile or "").strip().lower() == "trading" else "market_data"
+def start_callback_listener() -> bool:
+    global _CALLBACK_SERVER, _CALLBACK_THREAD
     with _CALLBACK_LOCK:
         if callback_listener_status():
-            return _CALLBACK_PROFILE == normalized_profile
-        _CALLBACK_PROFILE = normalized_profile
-        httpd = _build_callback_server(normalized_profile)
+            return True
+        httpd = _build_callback_server()
         _CALLBACK_SERVER = httpd
 
         def serve() -> None:
@@ -165,7 +157,7 @@ def main() -> None:
     print("")
     print(f"Waiting on {settings.schwab.redirect_uri} for the Schwab redirect...")
     print("Your browser may show a certificate warning. Choose Advanced/Continue for localhost.")
-    httpd = _build_callback_server("market_data")
+    httpd = _build_callback_server()
     httpd.serve_forever()
     httpd.server_close()
     print("Callback server stopped.")

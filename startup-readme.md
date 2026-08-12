@@ -124,6 +124,28 @@ The MacBook must remain powered, connected to the internet, and awake for contin
 
 ### Automatic startup
 
-The Windows PowerShell watchdog and Scheduled Task do not run on macOS. Automatic startup on a Mac requires a `launchd` LaunchAgent configured with `RunAtLoad` and `KeepAlive`.
+The project includes a production `launchd` LaunchAgent. It serves the built React frontend and Python API from one supervised process, starts after macOS login, restarts after crashes, and prevents system sleep while connected to AC power.
 
-The current project does not yet include a macOS LaunchAgent installer. Until one is added, use the manual commands above after signing in.
+Install it once:
+
+```bash
+cd "/path/to/AgenticAI-Trading 2/frontend"
+npm run build
+cd ..
+./scripts/install_macos_service.sh
+```
+
+Then use [http://127.0.0.1:3001](http://127.0.0.1:3001). Bookmark this address. Port `5173` is only the Vite development server and is not supervised or intended as the 24/7 production URL.
+
+For the one-time setup, manual start/restart commands, foreground debugging, and log locations, see [RUN_24_7.md](RUN_24_7.md).
+
+Check the service and health:
+
+```bash
+launchctl print "gui/$(id -u)/com.agenticai.trading"
+curl http://127.0.0.1:3001/api/health
+```
+
+Logs are written to `artifacts/logs/production.out.log` and `artifacts/logs/production.error.log`.
+
+This local service runs only while the Mac is powered on and the user is logged in. A truly public 24/7 site that survives Mac shutdowns requires deployment to an always-on cloud host with HTTPS and persistent storage.

@@ -443,5 +443,3 @@ Runtime state is exposed through:
 - `bot_events` records for incidents, recoveries, and watchdog errors
 
 The external `scripts/scanner_watchdog.ps1` remains the process-level layer that restarts backend/frontend processes when ports 3001 or 5173 are down. The in-process watchdog handles worker threads after the backend is alive.
-
-For continuous Windows operation, run `scripts/install_24x7_task.ps1` once. It registers the external watchdog as the limited-privilege `AgenticAI-Trading-24x7` task for the current user, starts it immediately, and configures Task Scheduler to restart it after failure. After a reboot, it resumes when that user signs in. The machine must remain powered, online, and awake. The task does not change broker mode, trading permissions, strategy, risk, accounts, watchlists, or credentials. Use `scripts/uninstall_24x7_task.ps1` to remove the task.

@@ -208,18 +208,6 @@ class SchwabSettings:
 
 
 @dataclass(slots=True)
-class SchwabTradingSettings:
-    client_id: str = os.getenv("SCHWAB_TRADING_CLIENT_ID", "")
-    client_secret: str = os.getenv("SCHWAB_TRADING_CLIENT_SECRET", "")
-    redirect_uri: str = os.getenv("SCHWAB_TRADING_REDIRECT_URI", os.getenv("SCHWAB_REDIRECT_URI", "https://127.0.0.1/"))
-    refresh_token: str = ""
-    access_token: str = ""
-    token_path: str = os.getenv("SCHWAB_TRADING_TOKEN_PATH", str(ARTIFACTS_DIR / "schwab_trading_token.json"))
-    include_extended_hours: bool = os.getenv("SCHWAB_EXTENDED_HOURS", "true").lower() == "true"
-    timeout_seconds: int = int(os.getenv("SCHWAB_TIMEOUT_SECONDS", "15"))
-
-
-@dataclass(slots=True)
 class TradierSettings:
     access_token: str = os.getenv("TRADIER_ACCESS_TOKEN", "")
     base_url: str = os.getenv("TRADIER_BASE_URL", "https://api.tradier.com/v1").rstrip("/")
@@ -240,7 +228,6 @@ class AppConfig:
     runtime_watchdog_interval_seconds: int = int(os.getenv("RUNTIME_WATCHDOG_INTERVAL_SECONDS", "15"))
     runtime_watchdog_stale_multiplier: float = float(os.getenv("RUNTIME_WATCHDOG_STALE_MULTIPLIER", "4.0"))
     schwab: SchwabSettings = field(default_factory=SchwabSettings)
-    schwab_trading: SchwabTradingSettings = field(default_factory=SchwabTradingSettings)
     tradier: TradierSettings = field(default_factory=TradierSettings)
     scanner: ScannerSettings = field(default_factory=ScannerSettings)
     trading: TradingSettings = field(default_factory=TradingSettings)

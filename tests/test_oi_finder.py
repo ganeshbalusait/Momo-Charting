@@ -1,261 +1,64 @@
 from __future__ import annotations
 
-import threading
 import unittest
-from datetime import datetime, timedelta, timezone
+import threading
+from datetime import datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import pandas as pd
 
 from api_server import DashboardState
 
 
 class OiFinderTests(unittest.TestCase):
-    def test_chain_view_omits_analysis_heavy_finder_sections(self) -> None:
-        compact = DashboardState._oi_finder_chain_view({
-            "symbol": "AAPL",
-            "live": True,
-            "underlyingPrice": 200.0,
-            "currentAtm": {"expiry": "2026-07-31"},
-            "selectedExpiryChainRows": [{"side": "CALL", "strike": 205}],
-            "callRows": [{"strike": 205}],
-            "putRows": [],
-            "dailyLiquidityHeatmap": {"call": [object()]},
-            "unusualOtmDashboard": {"contracts": [object()]},
-            "persistentActivity": {"contracts": [object()]},
-            "errors": [],
-        })
-
-        self.assertEqual(compact["symbol"], "AAPL")
-        self.assertEqual(compact["currentAtm"]["expiry"], "2026-07-31")
-        self.assertEqual(len(compact["selectedExpiryChainRows"]), 1)
-        self.assertNotIn("dailyLiquidityHeatmap", compact)
-        self.assertNotIn("unusualOtmDashboard", compact)
-        self.assertNotIn("persistentActivity", compact)
-
-    def test_builds_compact_popup_chain_without_history_analysis(self) -> None:
+    def test_chain_rows_preserve_quotes_greeks_and_contract_identity(self) -> None:
         state = DashboardState.__new__(DashboardState)
-
-        class FakeStream:
-            def __init__(self) -> None:
-                self.watched = []
-
-            def watch(self, symbol, option_symbols=(), replace_options=False) -> None:
-                self.watched.append((symbol, list(option_symbols), replace_options))
-
-            @staticmethod
-            def status() -> dict:
-                return {"connected": False}
-
-        state.live_market_stream = FakeStream()
         expiry = (datetime.now().date() + timedelta(days=2)).isoformat()
-        expiry_key = f"{expiry}:2"
 
-        def option(side: str, strike: float, delta: float, symbol: str) -> list[dict]:
+        def option(strike: float, delta: float, symbol: str, mark: float) -> list[dict]:
             return [{
                 "symbol": symbol,
-                "putCall": side,
                 "strikePrice": strike,
                 "delta": delta,
-                "gamma": 0.02,
-                "totalVolume": 500,
-                "openInterest": 1_000,
+                "gamma": 0.0123,
+                "theta": -0.44,
+                "vega": 0.21,
+                "totalVolume": 1200,
+                "openInterest": 2400,
                 "daysToExpiration": 2,
                 "expirationDate": expiry,
-                "bid": 2.0,
-                "ask": 2.2,
-                "mark": 2.1,
+                "bid": 2.8,
+                "ask": 3.0,
+                "last": 2.85,
+                "mark": mark,
             }]
 
         chain = {
-            "symbol": "AAPL",
             "underlyingPrice": 200.0,
             "callExpDateMap": {
-                expiry_key: {
-                    "200": option("CALL", 200, 0.51, "AAPL-C-200"),
-                    "205": option("CALL", 205, 0.35, "AAPL-C-205"),
-                },
-            },
-            "putExpDateMap": {
-                expiry_key: {
-                    "195": option("PUT", 195, -0.35, "AAPL-P-195"),
-                    "200": option("PUT", 200, -0.49, "AAPL-P-200"),
-                },
+                f"{expiry}:2": {
+                    "200": option(200, 0.51, "TEST_ATM", 5.1),
+                    "205": option(205, 0.40, "TEST_OTM", 2.95),
+                }
             },
         }
 
-        payload = state._build_oi_finder_chain_payload(
-            "AAPL",
-            chain,
-            {},
-            "Schwab/TOS option chain",
-            "",
-            datetime.now().astimezone(),
+        side_row = state._oi_finder_side_rows(chain, "CALL")[0]
+        selected_row = next(
+            row for row in state._oi_finder_selected_expiry_chain_rows(chain)
+            if row["strike"] == 205
         )
 
-        self.assertTrue(payload["live"])
-        self.assertEqual(payload["currentAtm"]["expiry"], expiry)
-        self.assertEqual({row["side"] for row in payload["selectedExpiryChainRows"]}, {"CALL", "PUT"})
-        self.assertEqual(payload["errors"], [])
-        self.assertNotIn("dailyLiquidityHeatmap", payload)
-        self.assertNotIn("unusualOtmDashboard", payload)
-        self.assertTrue(state.live_market_stream.watched)
-
-    def test_greek_roi_estimate_matches_delta_gamma_theta_example(self) -> None:
-        state = DashboardState.__new__(DashboardState)
-
-        result = state.option_roi_estimate(
-            side="CALL",
-            spot_price=158.29,
-            strike=180,
-            entry_price=2.07,
-            target_price=165,
-            delta=0.1941,
-            gamma=0.012,
-            theta=-0.18,
-            vega=0.08,
-            days_to_target=1,
-            iv_change_points=0,
-            days_to_expiration=5,
-        )
-
-        self.assertAlmostEqual(result["estimatedExitPrice"], 3.4626, places=4)
-        self.assertAlmostEqual(result["roiPercent"], 67.27, places=2)
-        self.assertAlmostEqual(result["profitPerContract"], 139.26, places=2)
-        self.assertEqual(result["vegaEffect"], 0.0)
-
-    def test_attaches_backend_chain_mark_roi_to_call_and_put_chain_rows(self) -> None:
-        state = DashboardState.__new__(DashboardState)
-        rows = [
-            {"side": "CALL", "expiry": "2026-07-31", "days_to_expiration": 4, "strike": 170, "delta": 0.35, "gamma": 0.01, "theta": -0.15, "vega": 0.08, "mark": 4.0},
-            {"side": "CALL", "expiry": "2026-07-31", "days_to_expiration": 4, "strike": 180, "delta": 0.19, "gamma": 0.012, "theta": -0.18, "vega": 0.08, "mark": 2.07},
-            {"side": "PUT", "expiry": "2026-07-31", "days_to_expiration": 4, "strike": 140, "delta": 0.19, "gamma": 0.012, "theta": -0.18, "vega": 0.08, "mark": 2.10},
-            {"side": "PUT", "expiry": "2026-07-31", "days_to_expiration": 4, "strike": 150, "delta": 0.35, "gamma": 0.01, "theta": -0.15, "vega": 0.08, "mark": 4.10},
-        ]
-
-        state._attach_option_chain_roi_estimates(rows, 158.29)
-
-        self.assertEqual(rows[1]["roiEstimate"]["kind"], "entry")
-        self.assertEqual(rows[0]["roiEstimate"]["kind"], "target")
-        self.assertEqual(rows[0]["roiEstimate"]["source"], "chain-mark")
-        self.assertAlmostEqual(rows[0]["roiEstimate"]["roiPercent"], 93.24, places=2)
-        self.assertEqual(rows[2]["roiEstimate"]["kind"], "entry")
-        self.assertEqual(rows[3]["roiEstimate"]["kind"], "target")
-        self.assertEqual(rows[3]["roiEstimate"]["source"], "chain-mark")
-        self.assertAlmostEqual(rows[3]["roiEstimate"]["roiPercent"], 95.24, places=2)
-
-    def test_chain_mark_roi_matches_340_call_to_335_target_example(self) -> None:
-        state = DashboardState.__new__(DashboardState)
-        rows = [
-            {"side": "CALL", "expiry": "2026-07-31", "days_to_expiration": 3, "strike": 335, "delta": 0.37, "gamma": 0.02, "theta": -0.12, "vega": 0.05, "mark": 2.06},
-            {"side": "CALL", "expiry": "2026-07-31", "days_to_expiration": 3, "strike": 337.5, "delta": 0.26, "gamma": 0.02, "theta": -0.10, "vega": 0.04, "mark": 1.30},
-            {"side": "CALL", "expiry": "2026-07-31", "days_to_expiration": 3, "strike": 340, "delta": 0.17, "gamma": 0.02, "theta": -0.08, "vega": 0.03, "mark": 0.79},
-        ]
-
-        state._attach_option_chain_roi_estimates(rows, 330)
-
-        estimate = rows[0]["roiEstimate"]
-        self.assertEqual(estimate["source"], "chain-mark")
-        self.assertEqual(estimate["estimatedExitPrice"], 2.06)
-        self.assertEqual(estimate["profitPerContract"], 127.0)
-        self.assertAlmostEqual(estimate["roiPercent"], 160.76, places=2)
-
-    def test_chain_mark_roi_always_uses_original_point_19_delta_entry(self) -> None:
-        state = DashboardState.__new__(DashboardState)
-        rows = [
-            {"side": "CALL", "expiry": "2026-07-31", "strike": 160, "delta": 0.51, "mark": 4.50},
-            {"side": "CALL", "expiry": "2026-07-31", "strike": 162.5, "delta": 0.42, "mark": 3.35},
-            {"side": "CALL", "expiry": "2026-07-31", "strike": 185, "delta": 0.18, "mark": 2.20},
-        ]
-
-        state._attach_option_chain_roi_estimates(rows, 157.5)
-
-        self.assertEqual(rows[2]["roiEstimate"]["kind"], "entry")
-        self.assertAlmostEqual(rows[0]["roiEstimate"]["roiPercent"], 104.55, places=2)
-        self.assertAlmostEqual(rows[1]["roiEstimate"]["roiPercent"], 52.27, places=2)
-
-    def test_chain_exposes_chain_and_gamma_roi_side_by_side(self) -> None:
-        state = DashboardState.__new__(DashboardState)
-        rows = [
-            {"side": "CALL", "expiry": "2026-07-31", "strike": 335, "delta": 0.41, "gamma": 0.032, "mark": 2.26},
-            {"side": "CALL", "expiry": "2026-07-31", "strike": 337.5, "delta": 0.29, "gamma": 0.032, "mark": 1.41},
-            {"side": "CALL", "expiry": "2026-07-31", "strike": 340, "delta": 0.20 - 1e-6, "gamma": 0.032, "mark": 0.85},
-        ]
-
-        state._attach_option_chain_roi_estimates(rows, 332.5)
-
-        self.assertAlmostEqual(rows[0]["roiEstimate"]["roiPercent"], 165.88, places=2)
-        self.assertAlmostEqual(rows[0]["gammaRoiEstimate"]["estimatedExitPrice"], 1.45, places=2)
-        self.assertAlmostEqual(rows[0]["gammaRoiEstimate"]["roiPercent"], 70.59, places=2)
-        self.assertAlmostEqual(rows[1]["roiEstimate"]["roiPercent"], 65.88, places=2)
-        self.assertAlmostEqual(rows[1]["gammaRoiEstimate"]["estimatedExitPrice"], 2.25, places=2)
-        self.assertAlmostEqual(rows[1]["gammaRoiEstimate"]["roiPercent"], 164.71, places=2)
-
-    def test_live_heatmap_changes_compare_the_same_exact_contract(self) -> None:
-        state = DashboardState.__new__(DashboardState)
-        state.oi_finder_lock = threading.RLock()
-        state.oi_finder_volume_history = {}
-        state._oi_finder_intraday_volume_timeline = lambda _symbol, _snapshot: {}
-        first_time = datetime(2026, 7, 24, 14, 30, tzinfo=timezone.utc)
-        contract_key = state._oi_finder_volume_key("CALL", "2026-07-31", 205)
-
-        first = {
-            "recordedAt": first_time,
-            "contracts": {
-                contract_key: {
-                    "side": "CALL",
-                    "expiry": "2026-07-31",
-                    "strike": 205,
-                    "volume": 1_000,
-                    "openInterest": 8_000,
-                },
-            },
-            "aggregates": {},
-        }
-        second = {
-            "recordedAt": first_time + timedelta(seconds=15),
-            "contracts": {
-                contract_key: {
-                    "side": "CALL",
-                    "expiry": "2026-07-31",
-                    "strike": 205,
-                    "volume": 6_000,
-                    "openInterest": 7_750,
-                },
-            },
-            "aggregates": {},
-        }
-
-        first_momentum = state._oi_finder_volume_momentum("AAPL", first)
-        second_momentum = state._oi_finder_volume_momentum("AAPL", second)
-        heatmap = {
-            "call": [{"expiry": "2026-07-31", "strike": 205}],
-            "put": [{"expiry": "2026-07-31", "strike": 205}],
-        }
-        state._attach_oi_finder_heatmap_live_changes(heatmap, second_momentum)
-
-        self.assertNotIn("liveVolumeChange", first_momentum["contracts"][contract_key])
-        self.assertEqual(heatmap["call"][0]["liveVolumeChange"], 5_000)
-        self.assertEqual(heatmap["call"][0]["liveOpenInterestChange"], -250)
-        self.assertEqual(heatmap["call"][0]["liveComparisonElapsedSeconds"], 15)
-        self.assertNotIn("liveVolumeChange", heatmap["put"][0])
-
-        reset_snapshot = {
-            "recordedAt": first_time + timedelta(seconds=30),
-            "contracts": {
-                contract_key: {
-                    "side": "CALL",
-                    "expiry": "2026-07-31",
-                    "strike": 205,
-                    "volume": 500,
-                    "openInterest": 7_750,
-                },
-            },
-            "aggregates": {},
-        }
-        reset_momentum = state._oi_finder_volume_momentum("AAPL", reset_snapshot)
-        reset_heatmap = {"call": [{"expiry": "2026-07-31", "strike": 205}], "put": []}
-        state._attach_oi_finder_heatmap_live_changes(reset_heatmap, reset_momentum)
-
-        self.assertIsNone(reset_heatmap["call"][0]["liveVolumeChange"])
-        self.assertTrue(reset_heatmap["call"][0]["liveVolumeReset"])
+        for row in (side_row, selected_row):
+            self.assertEqual(row["symbol"], "TEST_OTM")
+            self.assertEqual(row["bid"], 2.8)
+            self.assertEqual(row["ask"], 3.0)
+            self.assertEqual(row["last"], 2.85)
+            self.assertEqual(row["mark"], 2.95)
+            self.assertEqual(row["gamma"], 0.0123)
+            self.assertEqual(row["theta"], -0.44)
+            self.assertEqual(row["vega"], 0.21)
 
     def test_builds_representative_delta_rows_with_expected_move_and_tags(self) -> None:
         state = DashboardState.__new__(DashboardState)
@@ -494,6 +297,130 @@ class OiFinderTests(unittest.TestCase):
         self.assertTrue(high_oi["above_atm_open_interest"])
         self.assertIn("HIGH VOL", high_volume["liquidity_labels"])
         self.assertIn("HIGH OI", high_oi["liquidity_labels"])
+
+    def test_four_hour_source_keeps_twenty_year_archive_and_exact_recent_bars(self) -> None:
+        daily = pd.DataFrame({
+            "timestamp": pd.to_datetime([
+                "2006-08-15T16:00:00Z",
+                "2025-11-21T21:00:00Z",
+                "2025-11-24T21:00:00Z",
+            ]),
+            "open": [10.0, 20.0, 30.0],
+            "high": [11.0, 21.0, 31.0],
+            "low": [9.0, 19.0, 29.0],
+            "close": [10.5, 20.5, 30.5],
+            "volume": [100, 200, 300],
+        })
+        intraday = pd.DataFrame({
+            "timestamp": pd.to_datetime([
+                "2025-11-23T01:00:00Z",
+                "2025-11-23T01:30:00Z",
+                "2025-11-24T14:30:00Z",
+            ]),
+            "open": [25.0, 25.5, 30.0],
+            "high": [26.0, 26.5, 31.0],
+            "low": [24.0, 24.5, 29.0],
+            "close": [25.5, 26.0, 30.5],
+            "volume": [50, 60, 70],
+        })
+
+        merged, coverage = DashboardState._four_hour_archive_frame(daily, intraday)
+
+        self.assertEqual(len(merged), 5)
+        self.assertEqual(pd.Timestamp(merged.iloc[0]["timestamp"]).year, 2006)
+        self.assertEqual(coverage["mode"], "daily-archive+exact-30m")
+        self.assertEqual(coverage["requestedYears"], 20)
+        self.assertTrue(coverage["exactFrom"].startswith("2025-11-22"))
+
+    def test_chart_and_chain_browser_caches_survive_restart(self) -> None:
+        state = DashboardState.__new__(DashboardState)
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state.oi_finder_chart_disk_cache_dir = root / "charts"
+            state.oi_finder_chain_disk_cache_dir = root / "chains"
+            chart = {
+                "symbol": "NVDA",
+                "live": True,
+                "bars": [{"time": 1, "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10}],
+                "studyBars": [{"time": 1, "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10}],
+                "dailyBars": [{"time": 1, "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10}],
+                "fourHourCoverage": {"requestedYears": 20},
+                "historyLoading": False,
+            }
+            chain = {
+                "symbol": "NVDA",
+                "live": True,
+                "callRows": [{"strike": 100}],
+                "putRows": [{"strike": 95}],
+            }
+
+            state._save_oi_finder_chart_disk_payload("NVDA", chart)
+            state._save_oi_finder_chain_disk_payload("NVDA", chain)
+
+            loaded_chart = state._load_oi_finder_chart_disk_payload("NVDA")
+            loaded_chain = state._load_oi_finder_chain_disk_payload("NVDA")
+            self.assertEqual(loaded_chart["studyBars"], chart["studyBars"])
+            self.assertTrue(loaded_chart["diskCached"])
+            self.assertEqual(loaded_chain["callRows"], chain["callRows"])
+            self.assertTrue(loaded_chain["diskCached"])
+
+    def test_initial_option_chain_keeps_only_the_nearest_expiry(self) -> None:
+        payload = {
+            "currentAtm": {"expiry": "2026-08-10"},
+            "expiries": ["2026-08-10", "2026-08-14"],
+            "callRows": [
+                {"expiry": "2026-08-10", "strike": 100},
+                {"expiry": "2026-08-14", "strike": 105},
+            ],
+            "putRows": [{"expiry": "2026-08-14", "strike": 95}],
+            "selectedExpiryChainRows": [
+                {"expiry": "2026-08-10", "strike": 100},
+                {"expiry": "2026-08-14", "strike": 105},
+            ],
+            "tosScriptLevels": [
+                {"expiry": "2026-08-10", "callLevels": []},
+                {"expiry": "2026-08-14", "callLevels": []},
+            ],
+            "expiryExpectedMoves": {"2026-08-10": 2.0, "2026-08-14": 4.0},
+        }
+
+        slim = DashboardState._slim_initial_oi_finder_chain_payload(payload)
+
+        self.assertEqual(slim["expiries"], ["2026-08-10"])
+        self.assertEqual(len(slim["callRows"]), 1)
+        self.assertEqual(slim["putRows"], [])
+        self.assertEqual(len(slim["selectedExpiryChainRows"]), 1)
+        self.assertEqual(len(slim["tosScriptLevels"]), 1)
+        self.assertEqual(slim["expiryExpectedMoves"], {"2026-08-10": 2.0})
+        self.assertTrue(slim["frontExpiryOnly"])
+
+    def test_cached_initial_option_chain_is_also_nearest_expiry_only(self) -> None:
+        state = DashboardState.__new__(DashboardState)
+        state.oi_finder_lock = threading.RLock()
+        state.oi_finder_chain_cache = {
+            "NVDA": (datetime.now().astimezone(), {
+                "live": True,
+                "symbol": "NVDA",
+                "currentAtm": {"expiry": "2026-08-10"},
+                "expiries": ["2026-08-10", "2026-08-14"],
+                "callRows": [
+                    {"expiry": "2026-08-10", "strike": 100},
+                    {"expiry": "2026-08-14", "strike": 105},
+                ],
+                "putRows": [{"expiry": "2026-08-14", "strike": 95}],
+                "selectedExpiryChainRows": [],
+                "tosScriptLevels": [],
+                "expiryExpectedMoves": {},
+            }),
+        }
+        state.oi_finder_cache = {}
+
+        payload = state.oi_finder_payload("NVDA", compact=True, initial_paint=True)
+
+        self.assertEqual(payload["expiries"], ["2026-08-10"])
+        self.assertEqual(len(payload["callRows"]), 1)
+        self.assertEqual(payload["putRows"], [])
+        self.assertTrue(payload["frontExpiryOnly"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 artifacts/loop_engineering/
+artifacts/oi_chart_cache/
 *.py[cod]
 *$py.class
 *.so
@@ -24,7 +25,6 @@ pip-wheel-metadata/
 
 # Virtual environments
 .venv/
-.venv-macos/
 venv/
 env/
 ENV/
@@ -44,20 +44,13 @@ htmlcov/
 
 # Local Schwab OAuth credentials and loopback certificates
 artifacts/schwab_token.json
+artifacts/schwab_trading_token.json
+artifacts/user_credentials.key
 artifacts/localhost_schwab_cert.pem
 artifacts/localhost_schwab_key.pem
 
 # Logs
 *.log
-
-# Local runtime data and credentials
-artifacts/
-*.db
-*.db-*
-*.sqlite
-*.sqlite3
-*.pem
-*.key
 
 # IDE/editor settings
 .vscode/
@@ -77,3 +70,14 @@ frontend/build/
 frontend/.vite/
 .pnpm-store/
 coverage/
+
+# Live data and secrets must never be git-managed: a checkout-touching
+# operation truncated the live trades.db on 2026-08-10 BECAUSE it was tracked.
+*.db
+*.db-shm
+*.db-wal
+.pnpm-store/
+artifacts/schwab_token.*.json
+
+# Scratch dir: holds captured browser profiles (cookies, session tokens)
+tmp/
