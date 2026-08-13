@@ -1843,9 +1843,10 @@ function parseScannerHistoryRawRow(row) {
   }
 }
 
+const COMPACT_NUMBER_FORMATTER = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 function formatCompactNumber(value) {
   if (value == null || value === "") return "--";
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(Number(value ?? 0));
+  return COMPACT_NUMBER_FORMATTER.format(Number(value ?? 0));
 }
 
 function formatRvolValue(value) {
@@ -12190,7 +12191,7 @@ function chartCandleCountdown(nowMillis, minutes) {
   return { seconds, label };
 }
 
-function OiChartCandleCountdown({ minutes, label }) {
+const OiChartCandleCountdown = memo(function OiChartCandleCountdown({ minutes, label }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (minutes >= 1440) return undefined;
@@ -12211,9 +12212,9 @@ function OiChartCandleCountdown({ minutes, label }) {
       <b>{countdown.label}</b>
     </span>
   );
-}
+});
 
-function OiChartOhlcStrip({
+const OiChartOhlcStrip = memo(function OiChartOhlcStrip({
   chartId,
   symbol,
   timeframeLabel,
@@ -12259,7 +12260,7 @@ function OiChartOhlcStrip({
       </small>
     </div>
   );
-}
+});
 
 function OiFinderCandleChart({
   symbol,
@@ -16257,6 +16258,19 @@ function OiFinderCandleChart({
           chip.style.display = top == null ? "none" : "";
           if (top != null) chip.style.top = `${top}px`;
         }
+        // The LIVE price re-quotes every tick. Push its new text/colour onto the
+        // already-rendered chip here so a quote does not re-render the whole
+        // workstation; the chip first appearing or leaving still flows through
+        // React below (its key stays in the render signature, its price does not).
+        const liveLabel = nextLabels.find((label) => String(label.key || "") === "live-price");
+        if (liveLabel) {
+          const liveText = labelHost.querySelector('[data-axis-label-key="live-price"] b');
+          if (liveText) {
+            if (liveText.textContent !== liveLabel.title) liveText.textContent = liveLabel.title || "";
+            const liveColor = liveLabel.color || "";
+            if (liveText.style.color !== liveColor) liveText.style.color = liveColor;
+          }
+        }
       }
       // Nearest off-screen OI walls become edge badges so the trader always
       // knows where the next wall sits even when the candle-fit framing puts
@@ -16308,7 +16322,13 @@ function OiFinderCandleChart({
       // absent from this signature: a pan changes every top and would
       // otherwise re-render the whole workstation on each animation frame.
       const nextSignature = nextLabels
-        .map((label) => `${label.key || label.title}:${Number(label.price).toFixed(6)}`)
+        .map((label) => (String(label.key || "") === "live-price"
+          // Presence only: the LIVE chip's price is repainted imperatively above,
+          // so a per-tick price change must not change this signature (that was a
+          // full re-render every second). Its appearing or leaving still shifts the
+          // signature because its key enters or leaves this list.
+          ? `${label.key}:live`
+          : `${label.key || label.title}:${Number(label.price).toFixed(6)}`))
         .join("|");
       if (nextSignature === lastIndicatorAxisLabelsSignature) return;
       lastIndicatorAxisLabelsSignature = nextSignature;
@@ -20348,28 +20368,6 @@ function MultiAgentConsole({ decisions, catalysts }) {
           <b>System_Overseer</b>
           <span>Paper trades require signal and risk approval. Catalyst/news is context only.</span>
         </div>
-      </div>
-    </section>
-  );
-}
-
-function MobileAgentStatus({ topCandidate, status }) {
-  return (
-    <section className="mobile-agent-card">
-      <div className="mobile-card-top">
-        <div>
-          <span>Agent Alpha: {status.sessionStatus?.canAutoTrade ? "Active" : "Monitoring"}</span>
-          <b>{topCandidate?.symbol || "AAPL"} - Breakout Match</b>
-        </div>
-        <strong>{topCandidate?.final_score ? `${topCandidate.final_score}%` : topCandidate?.score ? `${topCandidate.score}%` : "90+"}</strong>
-      </div>
-      <p>
-        Pattern requires EMA stack, VWAP hold, momentum, price action trend,
-        and one of the four approved setups before paper execution.
-      </p>
-      <div>
-        <button type="button">Pause Agent</button>
-        <button type="button">Paper Liquidate</button>
       </div>
     </section>
   );
@@ -28964,8 +28962,6 @@ function TradingWorkspace({ authUser, onLogout }) {
             </div>
           </section>
         )}
-
-        <MobileAgentStatus topCandidate={dashboard.topCandidate} status={dashboard.status} />
       </main>
     </div>
   );
