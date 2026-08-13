@@ -1,0 +1,6 @@
+# Rendered previews are build output, not source: ~2.3MB of PNGs that can be
+# regenerated at any time with `node render-previews.mjs`. Keeping them out of
+# git avoids permanently bloating the repo with images that change every time
+# the page or the app screenshots are re-shot.
+preview-*.png
+app-brand.png
