@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MomoX — app.momox.io hosting</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#05080f; --panel:#0a1018;
+    --line:rgba(34,211,238,.14); --line-soft:rgba(140,170,200,.10);
+    --cyan:#22d3ee; --magenta:#ff3d9a; --green:#34d399; --amber:#fbbf24; --red:#f87171;
+    --text:#c8d6e6; --bright:#eaf3fb; --dim:#5d6f85;
+    --mono:'JetBrains Mono','Cascadia Code','SF Mono',Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1240px;margin:0 auto;padding:56px 40px 80px}
+  .eyebrow{display:flex;align-items:center;gap:12px;font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);margin-bottom:16px}
+  .eyebrow::before{content:'';width:26px;height:1px;background:var(--cyan);opacity:.5}
+  h1{font-size:34px;font-weight:800;letter-spacing:-.02em;color:var(--bright);line-height:1.1}
+  h2{font-size:19px;font-weight:800;color:var(--bright);letter-spacing:-.01em;margin-bottom:6px}
+  .sub{color:var(--dim);margin-top:12px;max-width:760px;font-size:14px}
+  section{margin-top:56px}
+
+  /* ---- flow diagram ---- */
+  .flow{margin-top:26px;display:grid;gap:0}
+  .node{
+    border:1px solid var(--line);border-radius:5px;background:var(--panel);
+    padding:16px 20px;position:relative;
+  }
+  .node .t{font-size:13px;font-weight:700;color:var(--bright);letter-spacing:.02em}
+  .node .d{font-size:12px;color:var(--dim);margin-top:5px}
+  .node .tag{
+    position:absolute;top:14px;right:18px;font-size:10px;letter-spacing:.14em;
+    text-transform:uppercase;padding:4px 9px;border-radius:3px;
+    border:1px solid var(--line);color:var(--cyan);background:rgba(34,211,238,.07);
+  }
+  .node.edge .tag{color:var(--amber);border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.07)}
+  .node.machine{border-color:rgba(52,211,153,.28);background:rgba(10,20,18,.55)}
+  .node.machine .tag{color:var(--green);border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.07)}
+  .arrow{
+    height:34px;display:flex;align-items:center;justify-content:center;
+    color:var(--dim);font-size:11px;letter-spacing:.1em;gap:10px;
+  }
+  .arrow::before,.arrow::after{content:'';width:1px;height:11px;background:var(--line-soft)}
+
+  .routes{margin-top:16px;border-top:1px solid var(--line-soft)}
+  .route{
+    display:grid;grid-template-columns:150px 30px 210px 1fr;gap:16px;align-items:center;
+    padding:12px 2px;border-bottom:1px solid var(--line-soft);font-size:12.5px;
+  }
+  .route .p{color:var(--amber)}
+  .route .a{color:var(--dim);text-align:center}
+  .route .s{color:var(--cyan)}
+  .route .n{color:var(--dim)}
+
+  /* ---- callout ---- */
+  .note{
+    margin-top:22px;border-left:2px solid var(--cyan);background:rgba(34,211,238,.05);
+    padding:14px 18px;font-size:12.5px;color:var(--text);border-radius:0 4px 4px 0;
+  }
+  .note.warn{border-left-color:var(--amber);background:rgba(251,191,36,.06)}
+  .note b{color:var(--bright)}
+
+  /* ---- screens ---- */
+  .screens{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:30px}
+  .screen{
+    border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel);
+    box-shadow:0 20px 55px rgba(0,0,0,.55);
+  }
+  .bar{
+    display:flex;align-items:center;gap:9px;padding:9px 14px;
+    border-bottom:1px solid var(--line-soft);background:rgba(5,8,15,.7);
+  }
+  .bar i{width:8px;height:8px;border-radius:50%;background:#2a3543;display:block}
+  .bar .url{
+    margin-left:8px;font-size:11px;color:var(--dim);
+    background:rgba(0,0,0,.35);border:1px solid var(--line-soft);
+    padding:3px 12px;border-radius:20px;
+  }
+  .bar .url b{color:var(--green);font-weight:400}
+  .body{padding:44px 34px 48px;min-height:330px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+
+  .mark{
+    width:40px;height:40px;display:grid;place-items:center;
+    border:1px solid rgba(34,211,238,.35);border-radius:10px;color:var(--cyan);
+    background:linear-gradient(160deg,rgba(34,211,238,.13),rgba(10,16,24,.9));
+    box-shadow:inset 0 0 14px rgba(34,211,238,.12);
+  }
+  .mark svg{width:22px;height:22px;display:block}
+  .wordmark{font-weight:800;letter-spacing:.16em;color:var(--bright);font-size:14px;margin-top:14px}
+  .screen h3{font-size:16px;color:var(--bright);font-weight:700;margin-top:22px;letter-spacing:-.01em}
+  .screen p{font-size:12px;color:var(--dim);margin-top:9px;max-width:290px;line-height:1.65}
+  .field{
+    width:100%;max-width:300px;margin-top:20px;text-align:left;
+  }
+  .field label{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+  .field .box{
+    margin-top:7px;border:1px solid var(--line);border-radius:4px;
+    background:rgba(0,0,0,.35);padding:10px 13px;font-size:13px;color:var(--bright);
+  }
+  .field .box.ph{color:#3d4b5c}
+  .pin{display:flex;gap:9px;margin-top:20px}
+  .pin span{
+    width:38px;height:46px;border:1px solid var(--line);border-radius:4px;
+    display:grid;place-items:center;font-size:18px;color:var(--cyan);background:rgba(0,0,0,.35);
+  }
+  .btn{
+    margin-top:22px;width:100%;max-width:300px;padding:11px 20px;border-radius:4px;
+    background:var(--cyan);color:#04121a;font-weight:700;font-size:12px;
+    letter-spacing:.14em;text-transform:uppercase;text-align:center;
+  }
+  .step{
+    font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+    border:1px solid var(--line-soft);padding:4px 11px;border-radius:20px;margin-bottom:4px;
+  }
+  .foot-note{margin-top:18px;font-size:11px;color:#3f4d5c}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Corrected hosting</div>
+  <h1>app.momox.io — one origin, no backend changes.</h1>
+  <p class="sub">
+    The earlier plan assumed <b style="color:var(--bright)">:3001</b> served the app. It doesn't — it is API-only and
+    bound to loopback. This routes the frontend and the API to one hostname at the tunnel
+    instead, so nothing in <b style="color:var(--bright)">api_server.py</b> has to change and the backend never restarts.
+  </p>
+
+  <section>
+    <div class="eyebrow">Request path</div>
+
+    <div class="flow">
+      <div class="node">
+        <div class="t">Browser → https://app.momox.io</div>
+        <div class="d">Phone, laptop, anywhere. One hostname for both the app and its API, so there is no CORS to configure.</div>
+        <div class="tag">Client</div>
+      </div>
+      <div class="arrow">TLS</div>
+
+      <div class="node edge">
+        <div class="t">Cloudflare Access <span style="color:var(--dim);font-weight:400">· Google identity provider</span></div>
+        <div class="d">"Continue with Google" against an email allow-list — a Zero Trust setting, not code. Strangers stop here and never reach your machine. 30-day session, free up to 50 users.</div>
+        <div class="tag">Gate</div>
+      </div>
+      <div class="arrow">authorised</div>
+
+      <div class="node edge">
+        <div class="t">Cloudflare Tunnel <span style="color:var(--dim);font-weight:400">· cloudflared, Windows service</span></div>
+        <div class="d">Outbound-only connection from your PC. No router ports opened, no home IP published, starts on boot.</div>
+        <div class="tag">Transport</div>
+      </div>
+      <div class="arrow">routes by path</div>
+
+      <div class="node machine">
+        <div class="t">Your machine</div>
+        <div class="d">Two local services, split by URL path at the tunnel:</div>
+        <div class="tag">Local</div>
+
+        <div class="routes">
+          <div class="route">
+            <span class="p">/api/*</span><span class="a">→</span><span class="s">127.0.0.1:3001</span>
+            <span class="n">existing API — untouched, stays loopback-only</span>
+          </div>
+          <div class="route">
+            <span class="p">/* &nbsp;(everything else)</span><span class="a">→</span><span class="s">127.0.0.1:4173</span>
+            <span class="n">static build of frontend/dist — new, tiny</span>
+          </div>
+          <div class="route">
+            <span class="p" style="color:var(--dim)">:5173</span><span class="a">—</span><span class="s" style="color:var(--dim)">not exposed</span>
+            <span class="n">Vite dev server stays exactly as it is, local only</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>Why this shape:</b> the API keeps binding to 127.0.0.1, so it is never directly reachable from
+      the internet — only cloudflared, running on the same machine, can talk to it. You get one origin
+      without a single line changed in <b>api_server.py</b>, and without a restart.
+    </div>
+
+    <div class="note warn">
+      <b>The one tradeoff:</b> app.momox.io serves the built <b>frontend/dist</b>, so your edits appear there
+      only after a <b>vite build</b>. Running <b>vite build --watch</b> keeps it current on save.
+      Your <b>:5173</b> workflow is completely unaffected.
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">What you see signing in</div>
+    <h2>Two doors, then the app.</h2>
+    <p class="sub">The first is Cloudflare's, branded with your logo and colours. The second is your existing auth_service login.</p>
+
+    <div class="screens">
+      <div class="screen">
+        <div class="bar"><i></i><i></i><i></i><span class="url">🔒 <b>app.momox.io</b></span></div>
+        <div class="body">
+          <span class="step">Step 1 · Cloudflare Access</span>
+          <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/><path d="m16 16-1.9-1.9"/></svg></div>
+          <div class="wordmark">MOMOX</div>
+          <h3>Enter your access code</h3>
+          <p>We sent a one-time code to your email. This step happens about once a month.</p>
+          <div class="pin"><span>4</span><span>1</span><span>7</span><span>2</span><span>0</span><span>6</span></div>
+          <div class="btn">Verify</div>
+          <div class="foot-note">Allow-list only · nothing behind this reaches your PC</div>
+        </div>
+      </div>
+
+      <div class="screen">
+        <div class="bar"><i></i><i></i><i></i><span class="url">🔒 <b>app.momox.io</b></span></div>
+        <div class="body">
+          <span class="step">Step 2 · MomoX</span>
+          <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/><path d="m16 16-1.9-1.9"/></svg></div>
+          <div class="wordmark">MOMOX</div>
+          <h3>Sign in</h3>
+          <p>Your existing account — same auth_service, same encrypted provider credentials.</p>
+          <div class="field"><label>Email</label><div class="box">ganeshbalusait@gmail.com</div></div>
+          <div class="field"><label>Password</label><div class="box ph">••••••••••••</div></div>
+          <div class="btn">Sign in</div>
+          <div class="foot-note">Sessions last 30 days · unchanged behaviour</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AGX — 3D logo directions</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@800&family=Inter:wght@800;900&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#05080f; --panel:#0a1018; --line:rgba(34,211,238,.14);
+    --cyan:#22d3ee; --magenta:#ff3d9a; --dim:#5d6f85; --bright:#eaf3fb;
+    --mono:'JetBrains Mono','Cascadia Code',Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:#c8d6e6;font-family:var(--mono);padding:48px 40px 64px}
+  .wrap{max-width:1180px;margin:0 auto}
+  .eyebrow{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);margin-bottom:14px}
+  h1{font-size:30px;color:var(--bright);font-weight:800;letter-spacing:-.02em}
+  .sub{color:var(--dim);margin-top:10px;font-size:13.5px;max-width:720px}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:38px}
+  .card{
+    border:1px solid var(--line);border-radius:8px;background:var(--panel);
+    padding:34px 30px 24px;display:flex;flex-direction:column;align-items:center;
+  }
+  .stage{height:190px;display:grid;place-items:center;width:100%}
+  .label{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--cyan);margin-top:16px}
+  .note{font-size:11.5px;color:var(--dim);margin-top:7px;text-align:center;line-height:1.6;max-width:330px}
+
+  .sizes{display:flex;align-items:center;gap:22px;margin-top:20px;padding-top:18px;border-top:1px solid rgba(140,170,200,.08);width:100%;justify-content:center}
+  .sizes span{font-size:10px;color:#3f4d5c;letter-spacing:.1em}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">App mark</div>
+  <h1>AGX — four 3D directions</h1>
+  <p class="sub">
+    Same palette as the app: near-black ground, cyan primary, magenta accent. Each is
+    pure SVG, so it scales to any size and stays crisp — no raster assets. The strip at
+    the bottom of each card shows it at 64px, 32px and 16px, because a logo that only
+    works large is not usable as a favicon or app icon.
+  </p>
+
+  <div class="grid">
+
+    <!-- 1 — extruded isometric -->
+    <div class="card">
+      <div class="stage">
+        <svg width="330" height="140" viewBox="0 0 330 140">
+          <defs>
+            <linearGradient id="face1" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#7ef0ff"/><stop offset="45%" stop-color="#22d3ee"/><stop offset="100%" stop-color="#ff3d9a"/>
+            </linearGradient>
+            <text id="agx1" x="165" y="98" text-anchor="middle"
+                  font-family="Inter, sans-serif" font-weight="900" font-size="86" letter-spacing="-3">AGX</text>
+          </defs>
+          <g>
+            <use href="#agx1" x="9" y="9" fill="#08252e"/><use href="#agx1" x="8" y="8" fill="#092b35"/>
+            <use href="#agx1" x="7" y="7" fill="#0a313c"/><use href="#agx1" x="6" y="6" fill="#0b3743"/>
+            <use href="#agx1" x="5" y="5" fill="#0c3d4a"/><use href="#agx1" x="4" y="4" fill="#0d4351"/>
+            <use href="#agx1" x="3" y="3" fill="#0e4958"/><use href="#agx1" x="2" y="2" fill="#0f4f5f"/>
+            <use href="#agx1" x="1" y="1" fill="#105566"/>
+            <use href="#agx1" fill="url(#face1)"/>
+          </g>
+        </svg>
+      </div>
+      <div class="label">01 · Extruded</div>
+      <p class="note">Solid isometric depth. Reads as engineered and physical — closest to a terminal's identity.</p>
+      <div class="sizes">
+        <svg width="64" height="64" viewBox="0 0 330 140"><use href="#agx1" x="6" y="6" fill="#0c3d4a"/><use href="#agx1" x="3" y="3" fill="#0e4958"/><use href="#agx1" fill="url(#face1)"/></svg>
+        <svg width="32" height="32" viewBox="0 0 330 140"><use href="#agx1" x="4" y="4" fill="#0d4351"/><use href="#agx1" fill="url(#face1)"/></svg>
+        <svg width="16" height="16" viewBox="0 0 330 140"><use href="#agx1" fill="url(#face1)"/></svg>
+        <span>64 / 32 / 16</span>
+      </div>
+    </div>
+
+    <!-- 2 — beveled badge -->
+    <div class="card">
+      <div class="stage">
+        <svg width="180" height="180" viewBox="0 0 180 180">
+          <defs>
+            <linearGradient id="tile2" x1="0" y1="0" x2="0.6" y2="1">
+              <stop offset="0%" stop-color="#12303c"/><stop offset="50%" stop-color="#0a1720"/><stop offset="100%" stop-color="#060c12"/>
+            </linearGradient>
+            <linearGradient id="edge2" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#4ae4ff" stop-opacity=".9"/><stop offset="55%" stop-color="#22d3ee" stop-opacity=".25"/><stop offset="100%" stop-color="#ff3d9a" stop-opacity=".55"/>
+            </linearGradient>
+            <linearGradient id="txt2" x1="0" y1="0" x2="0.4" y2="1">
+              <stop offset="0%" stop-color="#b8f6ff"/><stop offset="60%" stop-color="#22d3ee"/><stop offset="100%" stop-color="#0e7f96"/>
+            </linearGradient>
+            <filter id="soft2" x="-40%" y="-40%" width="180%" height="180%">
+              <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#000" flood-opacity=".7"/>
+            </filter>
+          </defs>
+          <g filter="url(#soft2)">
+            <rect x="18" y="16" width="144" height="144" rx="34" fill="url(#edge2)"/>
+            <rect x="20.5" y="18.5" width="139" height="139" rx="32" fill="url(#tile2)"/>
+            <rect x="20.5" y="18.5" width="139" height="139" rx="32" fill="none" stroke="#5ce9ff" stroke-opacity=".22" stroke-width="1"/>
+            <!-- embossed shadow then face -->
+            <text x="90" y="113" text-anchor="middle" font-family="Inter, sans-serif" font-weight="900" font-size="52" letter-spacing="-2" fill="#04141b" opacity=".95">AGX</text>
+            <text x="90" y="111" text-anchor="middle" font-family="Inter, sans-serif" font-weight="900" font-size="52" letter-spacing="-2" fill="url(#txt2)">AGX</text>
+          </g>
+        </svg>
+      </div>
+      <div class="label">02 · Beveled badge</div>
+      <p class="note">App-icon shape with a lit top edge and embossed type. The one that looks right on a phone home screen.</p>
+      <div class="sizes">
+        <svg width="64" height="64" viewBox="0 0 180 180"><rect x="18" y="16" width="144" height="144" rx="34" fill="url(#edge2)"/><rect x="20.5" y="18.5" width="139" height="139" rx="32" fill="url(#tile2)"/><text x="90" y="111" text-anchor="middle" font-family="Inter, sans-serif" font-weight="900" font-size="52" letter-spacing="-2" fill="url(#txt2)">AGX</text></svg>
+        <svg width="32" height="32" viewBox="0 0 180 180"><rect x="18" y="16" width="144" height="144" rx="34" fill="url(#edge2)"/><rect x="20.5" y="18.5" width="139" height="139" rx="32" fill="url(#tile2)"/><text x="90" y="111" text-anchor="middle" font-family="Inter, sans-serif" font-weight="900" font-size="52" letter-spacing="-2" fill="url(#txt2)">AGX</text></svg>
+        <svg width="16" height="16" viewBox="0 0 180 180"><rect x="18" y="16" width="144" height="144" rx="34" fill="url(#edge2)"/><rect x="20.5" y="18.5" width="139" height="139" rx="32" fill="url(#tile2)"/><text x="90" y="111" text-anchor="middle" font-family="Inter, sans-serif" font-weight="900" font-size="52" letter-spacing="-2" fill="url(#txt2)">AGX</text></svg>
+        <span>64 / 32 / 16</span>
+      </div>
+    </div>
+
+    <!-- 3 — candlestick + AGX -->
+    <div class="card">
+      <div class="stage">
+        <svg width="330" height="150" viewBox="0 0 330 150">
+          <defs>
+            <linearGradient id="cs3" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#7ef0ff"/><stop offset="100%" stop-color="#22d3ee"/>
+            </linearGradient>
+            <linearGradient id="cs3b" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#ff6bb3"/><stop offset="100%" stop-color="#ff3d9a"/>
+            </linearGradient>
+            <text id="agx3" x="128" y="98" font-family="Inter, sans-serif" font-weight="900" font-size="58" letter-spacing="-2">AGX</text>
+          </defs>
+          <!-- 3D candlestick block -->
+          <g>
+            <rect x="30" y="34" width="66" height="82" rx="12" fill="#08252e"/>
+            <rect x="26" y="30" width="66" height="82" rx="12" fill="#0d3c49"/>
+            <rect x="22" y="26" width="66" height="82" rx="12" fill="#0a1720" stroke="#22d3ee" stroke-opacity=".38"/>
+            <!-- candles -->
+            <rect x="36" y="46" width="7" height="3" fill="url(#cs3)"/>
+            <rect x="37.5" y="40" width="4" height="52" rx="1" fill="url(#cs3)" opacity=".55"/>
+            <rect x="34" y="52" width="11" height="26" rx="2" fill="url(#cs3)"/>
+            <rect x="53.5" y="36" width="4" height="58" rx="1" fill="url(#cs3b)" opacity=".55"/>
+            <rect x="50" y="46" width="11" height="34" rx="2" fill="url(#cs3b)"/>
+            <rect x="69.5" y="44" width="4" height="48" rx="1" fill="url(#cs3)" opacity=".55"/>
+            <rect x="66" y="56" width="11" height="22" rx="2" fill="url(#cs3)"/>
+          </g>
+          <g>
+            <use href="#agx3" x="5" y="5" fill="#07202a"/><use href="#agx3" x="3.5" y="3.5" fill="#0a2f3a"/>
+            <use href="#agx3" x="2" y="2" fill="#0d4351"/>
+            <use href="#agx3" fill="url(#face1)"/>
+          </g>
+        </svg>
+      </div>
+      <div class="label">03 · Mark + wordmark</div>
+      <p class="note">Keeps the candlestick glyph already in your app, given depth, locked to the AGX type.</p>
+      <div class="sizes">
+        <svg width="64" height="64" viewBox="20 24 72 88"><rect x="30" y="34" width="66" height="82" rx="12" fill="#08252e"/><rect x="22" y="26" width="66" height="82" rx="12" fill="#0a1720" stroke="#22d3ee" stroke-opacity=".38"/><rect x="34" y="52" width="11" height="26" rx="2" fill="url(#cs3)"/><rect x="50" y="46" width="11" height="34" rx="2" fill="url(#cs3b)"/><rect x="66" y="56" width="11" height="22" rx="2" fill="url(#cs3)"/></svg>
+        <svg width="32" height="32" viewBox="20 24 72 88"><rect x="22" y="26" width="66" height="82" rx="12" fill="#0a1720" stroke="#22d3ee" stroke-opacity=".38"/><rect x="34" y="52" width="11" height="26" rx="2" fill="url(#cs3)"/><rect x="50" y="46" width="11" height="34" rx="2" fill="url(#cs3b)"/><rect x="66" y="56" width="11" height="22" rx="2" fill="url(#cs3)"/></svg>
+        <svg width="16" height="16" viewBox="20 24 72 88"><rect x="22" y="26" width="66" height="82" rx="12" fill="#0a1720"/><rect x="34" y="52" width="11" height="26" rx="2" fill="url(#cs3)"/><rect x="50" y="46" width="11" height="34" rx="2" fill="url(#cs3b)"/><rect x="66" y="56" width="11" height="22" rx="2" fill="url(#cs3)"/></svg>
+        <span>64 / 32 / 16</span>
+      </div>
+    </div>
+
+    <!-- 4 — stacked glass planes -->
+    <div class="card">
+      <div class="stage">
+        <svg width="330" height="150" viewBox="0 0 330 150">
+          <defs>
+            <linearGradient id="g4a" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#22d3ee" stop-opacity=".28"/><stop offset="100%" stop-color="#22d3ee" stop-opacity=".05"/></linearGradient>
+            <linearGradient id="g4b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ff3d9a" stop-opacity=".26"/><stop offset="100%" stop-color="#ff3d9a" stop-opacity=".04"/></linearGradient>
+            <linearGradient id="g4t" x1="0" y1="0" x2="0.5" y2="1"><stop offset="0%" stop-color="#eafcff"/><stop offset="55%" stop-color="#5ce9ff"/><stop offset="100%" stop-color="#ff6bb3"/></linearGradient>
+            <text id="agx4" x="165" y="97" text-anchor="middle" font-family="Inter, sans-serif" font-weight="900" font-size="76" letter-spacing="-3">AGX</text>
+          </defs>
+          <use href="#agx4" x="14" y="12" fill="url(#g4b)"/>
+          <use href="#agx4" x="7" y="6" fill="url(#g4a)"/>
+          <use href="#agx4" fill="url(#g4t)"/>
+        </svg>
+      </div>
+      <div class="label">04 · Stacked planes</div>
+      <p class="note">Depth from translucent offset layers rather than solid extrusion. Lighter, more software than hardware.</p>
+      <div class="sizes">
+        <svg width="64" height="64" viewBox="0 0 330 150"><use href="#agx4" x="10" y="9" fill="url(#g4b)"/><use href="#agx4" x="5" y="4" fill="url(#g4a)"/><use href="#agx4" fill="url(#g4t)"/></svg>
+        <svg width="32" height="32" viewBox="0 0 330 150"><use href="#agx4" x="5" y="4" fill="url(#g4a)"/><use href="#agx4" fill="url(#g4t)"/></svg>
+        <svg width="16" height="16" viewBox="0 0 330 150"><use href="#agx4" fill="url(#g4t)"/></svg>
+        <span>64 / 32 / 16</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

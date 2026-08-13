@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGX — Momentum, Instrumented.</title>
+<!-- Brand: AGX · site agxtrade.com · app app.agxtrade.com · logo 03 (candlestick badge) -->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#05080f;
+    --panel:#0a1018;
+    --line:rgba(34,211,238,.14);
+    --line-soft:rgba(140,170,200,.10);
+    --cyan:#22d3ee;
+    --magenta:#ff3d9a;
+    --green:#34d399;
+    --amber:#fbbf24;
+    --text:#c8d6e6;
+    --bright:#eaf3fb;
+    --dim:#5d6f85;
+    --mono:'JetBrains Mono','Cascadia Code','SF Mono',Consolas,'Courier New',monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--mono);
+    font-size:15px;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  /* faint terminal grid */
+  body::before{
+    content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+    background-image:
+      linear-gradient(rgba(34,211,238,.028) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(34,211,238,.028) 1px,transparent 1px);
+    background-size:64px 64px;
+    mask-image:radial-gradient(ellipse 90% 60% at 50% 0%,#000 20%,transparent 75%);
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:0 32px;position:relative;z-index:1}
+
+  /* ---------- nav ---------- */
+  nav{
+    position:sticky;top:0;z-index:50;
+    border-bottom:1px solid var(--line-soft);
+    background:rgba(5,8,15,.82);
+    backdrop-filter:blur(12px);
+  }
+  .nav-in{display:flex;align-items:center;justify-content:space-between;height:64px}
+  .brand{display:flex;align-items:center;gap:11px;text-decoration:none}
+  /* Logo 03 — the candlestick badge already used in the app, given 3D depth.
+     The badge and its offset layers live inside the SVG, so no CSS box here. */
+  .mark{width:38px;height:38px;flex:none;display:block}
+  .mark svg{width:38px;height:38px;display:block}
+  .brand-name{font-weight:800;letter-spacing:.16em;font-size:15px;color:var(--bright)}
+  .nav-r{display:flex;align-items:center;gap:26px}
+  .nav-link{
+    color:var(--dim);text-decoration:none;font-size:12px;
+    letter-spacing:.14em;text-transform:uppercase;transition:color .15s;
+  }
+  .nav-link:hover{color:var(--cyan)}
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;
+    padding:10px 20px;border-radius:3px;
+    font-family:var(--mono);font-size:12px;font-weight:700;
+    letter-spacing:.14em;text-transform:uppercase;text-decoration:none;
+    border:1px solid rgba(34,211,238,.45);
+    color:#04121a;background:var(--cyan);
+    transition:box-shadow .18s,transform .18s;
+  }
+  .btn:hover{box-shadow:0 0 26px rgba(34,211,238,.45);transform:translateY(-1px)}
+  .btn-ghost{background:transparent;color:var(--cyan);border-color:rgba(34,211,238,.32)}
+  .btn-ghost:hover{background:rgba(34,211,238,.07);box-shadow:none}
+
+  /* ---------- status strip ---------- */
+  .status{
+    display:inline-flex;align-items:center;gap:0;
+    border:1px solid var(--line);border-radius:3px;
+    background:rgba(10,16,24,.7);
+    font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;
+    overflow:hidden;
+  }
+  .status span{padding:7px 14px;border-right:1px solid var(--line-soft);display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .status span:last-child{border-right:none}
+  .dot{width:6px;height:6px;border-radius:50%;flex:none}
+  .dot.g{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .dot.c{background:var(--cyan);box-shadow:0 0 8px var(--cyan)}
+  .dot.m{background:var(--magenta);box-shadow:0 0 8px var(--magenta)}
+  .st-live{color:var(--green);font-weight:700}
+  .st-time{color:var(--bright);letter-spacing:.06em}
+
+  /* ---------- hero ---------- */
+  header{padding:88px 0 0;position:relative}
+  h1{
+    font-size:clamp(42px,7.4vw,88px);
+    /* 1.06 not .96 — at this weight the comma's descender collides with the cap
+       line below it, which lands right on top of the N in INSTRUMENTED. */
+    line-height:1.06;font-weight:800;letter-spacing:-.03em;
+    margin:30px 0 0;color:var(--bright);
+  }
+  h1 .grad{
+    background:linear-gradient(100deg,var(--cyan) 0%,#7dd3fc 32%,var(--magenta) 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .lede{
+    max-width:620px;margin:26px 0 0;font-size:16px;line-height:1.72;color:var(--dim);
+  }
+  .lede b{color:var(--text);font-weight:500}
+  .cta{display:flex;align-items:center;gap:16px;margin:38px 0 0;flex-wrap:wrap}
+  .cta-note{font-size:11.5px;color:#41505f;letter-spacing:.1em;text-transform:uppercase}
+
+  /* ---------- hero shot: full bleed, bleeding off bottom ---------- */
+  .shot{position:relative;margin-top:72px;padding-bottom:0}
+  .shot::before{
+    content:'';position:absolute;left:50%;top:8%;transform:translateX(-50%);
+    width:76%;height:70%;border-radius:50%;
+    background:radial-gradient(ellipse,rgba(34,211,238,.20),transparent 68%);
+    filter:blur(70px);pointer-events:none;
+  }
+  .shot-in{
+    /* Deliberately wider than the 1180px text column so it reads as an intentional
+       break-out rather than a near-miss alignment. */
+    position:relative;max-width:1340px;width:calc(100% - 40px);margin:0 auto;
+    border:1px solid var(--line);border-bottom:none;
+    border-radius:6px 6px 0 0;overflow:hidden;
+    background:var(--panel);
+  }
+  .shot-in img{display:block;width:100%;height:auto}
+  .shot-fade{
+    position:absolute;left:0;right:0;bottom:0;height:190px;
+    background:linear-gradient(transparent,var(--bg) 88%);pointer-events:none;
+  }
+
+  /* ---------- section shell ---------- */
+  section{padding:110px 0;position:relative}
+  .eyebrow{
+    display:flex;align-items:center;gap:12px;
+    font-size:11.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);
+    margin-bottom:18px;
+  }
+  .eyebrow::before{content:'';width:26px;height:1px;background:var(--cyan);opacity:.5}
+  h2{
+    font-size:clamp(26px,3.4vw,38px);line-height:1.14;font-weight:800;
+    letter-spacing:-.02em;color:var(--bright);max-width:640px;
+  }
+
+  /* ---------- capability rows ---------- */
+  .caps{margin-top:56px;border-top:1px solid var(--line-soft)}
+  .cap{
+    display:grid;grid-template-columns:60px 1.05fr 1.3fr;gap:28px;align-items:baseline;
+    padding:26px 8px;border-bottom:1px solid var(--line-soft);
+    transition:background .18s;
+  }
+  .cap:hover{background:rgba(34,211,238,.035)}
+  .cap-n{font-size:11.5px;color:var(--cyan);letter-spacing:.14em;opacity:.75}
+  .cap-t{font-size:16px;font-weight:700;color:var(--bright);letter-spacing:-.01em}
+  .cap-d{font-size:14px;color:var(--dim);line-height:1.65}
+  .cap-d em{color:var(--magenta);font-style:normal}
+
+  /* ---------- product panels ---------- */
+  .panel{margin-top:46px}
+  .panel img{
+    display:block;width:100%;height:auto;
+    border:1px solid var(--line);border-radius:5px;
+    box-shadow:0 22px 60px rgba(0,0,0,.55);
+  }
+  .panel figcaption{
+    margin-top:14px;font-size:12px;letter-spacing:.05em;color:var(--dim);
+  }
+  .kv{margin-top:52px;border-top:1px solid var(--line-soft)}
+  .kv div{
+    display:flex;justify-content:space-between;gap:20px;
+    padding:13px 2px;border-bottom:1px solid var(--line-soft);font-size:13.5px;
+  }
+  .kv dt{color:var(--dim);letter-spacing:.06em}
+  .kv dd{color:var(--bright);font-weight:500}
+  .kv dd.on{color:var(--green)}
+
+  /* ---------- panel band ---------- */
+  .band{border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);background:rgba(10,16,24,.45)}
+  .band-shot{
+    margin-top:52px;border:1px solid var(--line);border-radius:5px;overflow:hidden;
+    box-shadow:0 24px 70px rgba(0,0,0,.6);
+  }
+  .band-shot img{display:block;width:100%;height:auto}
+
+  /* ---------- closing ---------- */
+  .close-c{text-align:center;padding:120px 0}
+  .close-c h2{margin:0 auto;max-width:600px}
+  .close-c .cta{justify-content:center}
+
+  /* ---------- footer ---------- */
+  footer{border-top:1px solid var(--line-soft);padding:44px 0 60px}
+  .foot{display:flex;justify-content:space-between;align-items:flex-start;gap:40px;flex-wrap:wrap}
+  .foot-b{display:flex;align-items:center;gap:10px}
+  .disc{
+    max-width:560px;font-size:12px;line-height:1.75;color:#3f4d5c;
+  }
+  .foot-links{display:flex;gap:24px}
+
+  /* The joined strip is wider than a phone, so below 600px it breaks into
+     separate pills that wrap instead of overflowing off-screen. */
+  @media(max-width:600px){
+    .status{flex-wrap:wrap;gap:8px;border:none;background:transparent}
+    .status span{
+      border:1px solid var(--line);border-radius:3px;
+      background:rgba(10,16,24,.7);
+    }
+  }
+  @media(max-width:860px){
+    .wrap{padding:0 20px}
+    .cap{grid-template-columns:34px 1fr;gap:8px 18px}
+    .cap-d{grid-column:2}
+    .nav-r .nav-link{display:none}
+    section{padding:72px 0}
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-in">
+    <a class="brand" href="https://app.agxtrade.com"><span class="mark"><svg viewBox="20 24 78 94" aria-hidden="true"><rect x="30" y="34" width="66" height="82" rx="12" fill="#08252e"/><rect x="26" y="30" width="66" height="82" rx="12" fill="#0d3c49"/><rect x="22" y="26" width="66" height="82" rx="12" fill="#0a1720" stroke="#22d3ee" stroke-opacity=".38"/><rect x="37.5" y="40" width="4" height="52" rx="1" fill="#22d3ee" opacity=".55"/><rect x="34" y="52" width="11" height="26" rx="2" fill="#22d3ee"/><rect x="53.5" y="36" width="4" height="58" rx="1" fill="#ff3d9a" opacity=".55"/><rect x="50" y="46" width="11" height="34" rx="2" fill="#ff3d9a"/><rect x="69.5" y="44" width="4" height="48" rx="1" fill="#22d3ee" opacity=".55"/><rect x="66" y="56" width="11" height="22" rx="2" fill="#22d3ee"/></svg></span><span class="brand-name">AGX</span></a>
+    <div class="nav-r">
+      <a class="nav-link" href="#stack">The Stack</a>
+      <a class="nav-link" href="#data">Data</a>
+      <a class="btn" href="https://app.agxtrade.com">Open App</a>
+    </div>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <div class="status">
+      <span><i class="dot g"></i><span class="st-live">Market Open</span></span>
+      <span class="st-time" id="clock">9:22:33 AM ET</span>
+      <span><i class="dot c"></i>TOS Stream</span>
+      <span><i class="dot m"></i>Alpaca</span>
+    </div>
+
+    <h1>MOMENTUM,<br><span class="grad">INSTRUMENTED.</span></h1>
+
+    <p class="lede">
+      Multi-timeframe momentum signals, live open-interest walls, and autonomous agents
+      watching <b>397 symbols</b> — wired straight into <b>Schwab</b> and <b>Alpaca</b> real-time feeds.
+      Built for one trader who got tired of switching windows.
+    </p>
+
+    <div class="cta">
+      <a class="btn" href="https://app.agxtrade.com">Open App &nbsp;→</a>
+      <a class="btn btn-ghost" href="#stack">See the stack</a>
+      <span class="cta-note">Private beta · invite only</span>
+    </div>
+  </div>
+
+  <div class="shot">
+    <div class="shot-in">
+      <img src="hero.png" alt="Agentic OI Finder — live call vs put open-interest heatmap">
+      <div class="shot-fade"></div>
+    </div>
+  </div>
+</header>
+
+<section id="stack">
+  <div class="wrap">
+    <div class="eyebrow">What it runs</div>
+    <h2>Four engines, one surface.</h2>
+
+    <div class="caps">
+      <div class="cap">
+        <div class="cap-n">01</div>
+        <div class="cap-t">Multi-timeframe signals</div>
+        <div class="cap-d">MACD cloud bands, EMA stack, VWAP hold and relative volume resolved across 3m&nbsp;→&nbsp;M in one pass — <em>higher timeframes gate the lower ones</em>, so a 5m entry never fights the 4h trend.</div>
+      </div>
+      <div class="cap">
+        <div class="cap-n">02</div>
+        <div class="cap-t">OI walls &amp; gamma magnets</div>
+        <div class="cap-d">Every strike in the 0–31 DTE chain, scored for concentration and distance decay. Call walls, put walls and <em>magnet strikes</em> plotted directly on the chart.</div>
+      </div>
+      <div class="cap">
+        <div class="cap-n">03</div>
+        <div class="cap-t">Agent monitoring</div>
+        <div class="cap-d">Agents watch the list continuously and hold fire until an EMA stack, VWAP hold, momentum and one of four approved setups all agree — <em>then paper-execute</em>, never before.</div>
+      </div>
+      <div class="cap">
+        <div class="cap-n">04</div>
+        <div class="cap-t">Live dual-feed streaming</div>
+        <div class="cap-d">Schwab/TOS drives the active chart; Alpaca streams minute bars for the whole watchlist in parallel — <em>no polling, no rate-limit stalls</em>.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="data">
+  <div class="wrap">
+    <div class="eyebrow">Chart and chain, one surface</div>
+    <h2>The chart and the option chain, together.</h2>
+    <p class="lede">
+      Studies, session anchors and OI levels on the chart — then strike-by-strike ROI,
+      mark, volume, open interest and delta directly beneath it. No window switching.
+    </p>
+
+    <figure class="panel">
+      <img src="panel-chain.png" alt="AAPL 5m chart beside the live option chain, showing ROI, mark, volume, open interest and delta by strike">
+      <figcaption>
+        AAPL · 5m — MTF ADX clouds and session anchors on the left; the live chain on the
+        right, with ROI, mark, volume, OI and delta per strike and the expiry ladder beneath.
+      </figcaption>
+    </figure>
+
+    <dl class="kv">
+      <div><dt>Chart engine</dt><dd>Lightweight Charts + custom primitives</dd></div>
+      <div><dt>Market data</dt><dd>Schwab / TOS &nbsp;·&nbsp; Alpaca</dd></div>
+      <div><dt>Timeframes</dt><dd>3m → Monthly</dd></div>
+      <div><dt>Chain refresh</dt><dd class="on">Live · 15s</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="eyebrow">Open interest, exact</div>
+    <h2>178 exact contracts compared, every refresh window.</h2>
+    <div class="band-shot"><img src="panel.png" alt="Agentic TOS OI level script panel"></div>
+  </div>
+</section>
+
+<div class="wrap close-c">
+  <div class="eyebrow" style="justify-content:center">Access</div>
+  <h2>The app lives at <span style="color:var(--cyan)">app.agxtrade.com</span></h2>
+  <div class="cta">
+    <a class="btn" href="https://app.agxtrade.com">Open App &nbsp;→</a>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <div class="foot-b"><span class="mark"><svg viewBox="20 24 78 94" aria-hidden="true"><rect x="30" y="34" width="66" height="82" rx="12" fill="#08252e"/><rect x="26" y="30" width="66" height="82" rx="12" fill="#0d3c49"/><rect x="22" y="26" width="66" height="82" rx="12" fill="#0a1720" stroke="#22d3ee" stroke-opacity=".38"/><rect x="37.5" y="40" width="4" height="52" rx="1" fill="#22d3ee" opacity=".55"/><rect x="34" y="52" width="11" height="26" rx="2" fill="#22d3ee"/><rect x="53.5" y="36" width="4" height="58" rx="1" fill="#ff3d9a" opacity=".55"/><rect x="50" y="46" width="11" height="34" rx="2" fill="#ff3d9a"/><rect x="69.5" y="44" width="4" height="48" rx="1" fill="#22d3ee" opacity=".55"/><rect x="66" y="56" width="11" height="22" rx="2" fill="#22d3ee"/></svg></span><span class="brand-name">AGX</span></div>
+      <p class="disc" style="margin-top:16px">
+        AGX is a personal research and trading-automation project. Nothing here is
+        investment advice, a solicitation, or a performance claim. Markets carry risk of
+        loss. Data shown is illustrative.
+      </p>
+    </div>
+    <div class="foot-links">
+      <a class="nav-link" href="#stack">Stack</a>
+      <a class="nav-link" href="#data">Data</a>
+      <a class="nav-link" href="https://app.agxtrade.com">App</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Live ET clock + market-open state, computed client-side. No API call.
+  function tick(){
+    const now = new Date();
+    const et = new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'}));
+    const el = document.getElementById('clock');
+    if(el) el.textContent = et.toLocaleTimeString('en-US',{hour12:true}) + ' ET';
+    const mins = et.getHours()*60 + et.getMinutes();
+    const wk = et.getDay() >= 1 && et.getDay() <= 5;
+    const open = wk && mins >= 570 && mins < 960;   // 9:30–16:00 ET
+    const lab = document.querySelector('.st-live');
+    const dot = document.querySelector('.status .dot.g');
+    if(lab){
+      lab.textContent = open ? 'Market Open' : 'Market Closed';
+      lab.style.color = open ? 'var(--green)' : 'var(--dim)';
+      if(dot){ dot.style.background = open ? 'var(--green)' : '#42505f';
+               dot.style.boxShadow = open ? '0 0 8px var(--green)' : 'none'; }
+    }
+  }
+  tick(); setInterval(tick,1000);
+</script>
+</body>
+</html>

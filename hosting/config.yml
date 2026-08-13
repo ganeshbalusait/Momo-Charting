@@ -1,0 +1,37 @@
+# cloudflared ingress for app.agxtrade.com
+#
+# Path-based routing keeps the frontend and the API on ONE hostname. The browser
+# therefore never makes a cross-origin request, which is why api_server.py needs
+# no CORS handling, no static-file mount, and no restart.
+#
+# Order matters: cloudflared uses the FIRST rule that matches.
+
+tunnel: trading-app
+credentials-file: C:\Users\ganes\.cloudflared\6ae109c2-e6ae-4807-b6b5-635abbd50e03.json
+
+originRequest:
+  connectTimeout: 30s
+
+  # /api/live-market-stream is Server-Sent Events (text/event-stream), and the
+  # watchlist opens several concurrent EventSources. Chunked encoding must stay
+  # ON or cloudflared buffers the stream and events never reach the browser.
+  disableChunkedEncoding: false
+
+  # SSE connections are long-lived and mostly idle between ticks. Without these
+  # the connection gets recycled underneath an open stream.
+  tcpKeepAlive: 30s
+  keepAliveTimeout: 90s
+  keepAliveConnections: 32
+
+ingress:
+  # 1) API and the SSE stream. Must come before the catch-all frontend rule.
+  - hostname: app.agxtrade.com
+    path: ^/api(/|$)
+    service: http://127.0.0.1:3001
+
+  # 2) Everything else: the built frontend — index.html, assets, sw.js, icons.
+  - hostname: app.agxtrade.com
+    service: http://127.0.0.1:4173
+
+  # 3) cloudflared requires a catch-all as the final rule.
+  - service: http_status:404
