@@ -174,6 +174,7 @@ import {
 } from "./tosNativeChartPrimitive";
 import { calculateRelativeVolumeCandleStudy } from "./relativeVolumeStudy";
 import { calculateTosCandlePaints } from "./tosCandleColors";
+import { maskEmail } from "./maskEmail";
 import {
   liveEquityPrice,
   liveNumber,
@@ -28652,7 +28653,7 @@ function TradingWorkspace({ authUser, onLogout }) {
                     <div className="admin-user-list">
                       {adminUsers.map((user) => (
                         <div key={user.id}>
-                          <span><b>{user.displayName}</b><small>{user.email}</small></span>
+                          <span><b>{user.displayName}</b><small>{maskEmail(user.email)}</small></span>
                           <em>{user.isAdmin ? "Admin" : "User"}</em>
                           <small>{user.mustChangePassword ? "Temporary password" : user.lastLoginAt ? `Last login ${formatDateTime(user.lastLoginAt)}` : "Not signed in yet"}</small>
                         </div>
@@ -28678,8 +28679,8 @@ function TradingWorkspace({ authUser, onLogout }) {
                         {adminDeviceAccess.pendingRequests.map((device) => (
                           <div className="admin-device-row" key={device.id}>
                             <span className="admin-device-user">
-                              <b>{device.userDisplayName || device.userEmail}</b>
-                              <small>{device.userEmail}</small>
+                              <b>{device.userDisplayName || maskEmail(device.userEmail)}</b>
+                              <small>{maskEmail(device.userEmail)}</small>
                             </span>
                             <span className="admin-device-details">
                               <b>{device.label}</b>
@@ -28716,8 +28717,8 @@ function TradingWorkspace({ authUser, onLogout }) {
                         {adminDeviceAccess.approvedDevices.map((device) => (
                           <div className="admin-device-row" key={device.id}>
                             <span className="admin-device-user">
-                              <b>{device.userDisplayName || device.userEmail}</b>
-                              <small>{device.userEmail}</small>
+                              <b>{device.userDisplayName || maskEmail(device.userEmail)}</b>
+                              <small>{maskEmail(device.userEmail)}</small>
                             </span>
                             <span className="admin-device-details">
                               <b>{device.label}</b>
@@ -28908,7 +28909,7 @@ function TradingWorkspace({ authUser, onLogout }) {
               <section className="data-card personal-api-keys-card">
                   <div className="table-toolbar">
                     <span>MY DATA PROVIDER KEYS</span>
-                    <span>Private to {authUser.email}</span>
+                    <span>Private to {maskEmail(authUser.email)}</span>
                   </div>
                   <div className="personal-api-keys-body">
                     <p>Optional data-only credentials. These are encrypted in the database and are never shared with another user.</p>
