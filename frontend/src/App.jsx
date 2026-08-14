@@ -19070,8 +19070,8 @@ function OiFinderCandleChart({
               {[
                 "OI Levels / High OI", "EMA 9", "EMA 21", "EMA 50", "SMA 200", "VWAP",
                 "Call & Put Signals (4×8)", "Call & Put Signals (9×20)",
-                "Ganesh 4×8 Higher-TF Signals", "Ganesh 9×20 Higher-TF Signals",
-                "Ganesh MACD 6/12/8 Higher-TF Signals",
+                "4×8 Higher-TF Signals", "9×20 Higher-TF Signals",
+                "MACD 6/12/8 Higher-TF Signals",
                 "EMA Clouds", "MTF 4x8 Clouds",
                 "MTF MACD 6/12/8 Trend Clouds",
                 "MTF EMA 9x20 Signal Clouds", "MTF Squeeze Release Clouds",
@@ -19091,9 +19091,9 @@ function OiFinderCandleChart({
               ["vwap", "VWAP", "White"],
               ["signals48", "Call & Put Signals — 4×8", "TOS MTF study • Yellow CALL/C and magenta PUT/P • 5m through 4h"],
               ["signals920", "Call & Put Signals — 9×20", "TOS MTF study • Cyan CALL/C and magenta PUT/P • 30m through 4h"],
-              ["ganesh48HigherSignals", "Ganesh 4×8 D→M Signals", "Exact source study • D/2D/3D/4D/W/M • next-timeframe confirmation"],
-              ["ganesh920HigherSignals", "Ganesh 9×20 D→M Signals", "Exact source study • D/2D/3D/4D/W/M • first chart candle each day"],
-              ["ganeshMacdHigherSignals", "Ganesh MACD D→M Signals", "Literal TOS MACD 6/12/8 crosses • CALL and PUT • D/2D/3D/4D/W/M"],
+              ["ganesh48HigherSignals", "4×8 D→M Signals", "Exact source study • D/2D/3D/4D/W/M • next-timeframe confirmation"],
+              ["ganesh920HigherSignals", "9×20 D→M Signals", "Exact source study • D/2D/3D/4D/W/M • first chart candle each day"],
+              ["ganeshMacdHigherSignals", "MACD D→M Signals", "Literal TOS MACD 6/12/8 crosses • CALL and PUT • D/2D/3D/4D/W/M"],
               ["clouds", "EMA Clouds", "9/21 and 21/50"],
               ["mtf48Clouds", "MTF 4×8 One-Sided Clouds", "EMA crossover clouds • Current through 4h"],
               ["mtfMacdClouds", "MTF MACD 6/12/8 Trend Clouds", "MACD zero-cross + EMA 9/20 confirmation • Current through 4h"],
@@ -24817,10 +24817,10 @@ function TradingWorkspace({ authUser, onLogout }) {
                 onOpenSettings={() => setActiveView("Settings")}
               />
               <div className="signed-in-user">
-                <button className="avatar" onClick={() => setActiveView("Settings")} title={`${authUser.displayName} · ${authUser.role}`} type="button">
+                <button className="avatar" onClick={() => setActiveView("Settings")} title={authUser.role} type="button">
                   <UserRound size={17} />
                 </button>
-                <span><b>{authUser.displayName}</b><small>{authUser.isAdmin ? "Admin" : "User"}</small></span>
+                <span><b>{authUser.isAdmin ? "Admin" : "User"}</b></span>
                 <button className="header-icon-button" onClick={onLogout} title="Sign out" aria-label="Sign out" type="button"><LogOut size={16} /></button>
               </div>
             </div>
