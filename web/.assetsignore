@@ -1,0 +1,4 @@
+# The assets directory is this folder, so without these the deploy config
+# would be uploaded and served publicly at agxtrade.com/wrangler.jsonc.
+wrangler.jsonc
+.assetsignore

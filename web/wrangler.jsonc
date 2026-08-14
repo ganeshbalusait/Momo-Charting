@@ -1,0 +1,26 @@
+// Deploy config for agxtrade.com — the public marketing page.
+//
+// The site is a static-assets Worker (no server code): Cloudflare serves the
+// files in this directory directly, which is why the dashboard reports
+// "Metrics is unavailable for Workers with only static assets".
+//
+// This file lives in web/ rather than the repo root ON PURPOSE. Workers Builds
+// auto-detects package manifests in the build root directory, and the repo root
+// holds requirements.txt for the trading backend — so a root build tried
+// "pip install -r requirements.txt", spent seven minutes compiling pandas from
+// source, and failed. Publishing four static files needs none of that.
+//
+// So the build's Root directory MUST be set to "web" in the Cloudflare
+// dashboard. If it is ever set back to "/", the build breaks again on pip.
+//
+// "name" must match the Worker in the dashboard exactly or every build fails.
+//
+// Not related to app.agxtrade.com, which is the trading app served over the
+// cloudflared tunnel from the nested AgenticAI-Trading 2 repo.
+{
+  "name": "silent-dream-af05",
+  "compatibility_date": "2026-08-14",
+  "assets": {
+    "directory": "./"
+  }
+}
