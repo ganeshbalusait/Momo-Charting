@@ -81,3 +81,12 @@ artifacts/schwab_token.*.json
 
 # Scratch dir: holds captured browser profiles (cookies, session tokens)
 tmp/
+
+# The nested live project. It was tracked as a gitlink (mode 160000) with no
+# .gitmodules entry, so any clone that updates submodules fails outright —
+# which is exactly what broke the first Cloudflare Workers build for
+# agxtrade.com ("error occurred while updating repository submodules").
+# It is a separate ~3GB repo that deliberately stays local-only, so ignore it
+# rather than re-adding it: committing its contents here would be far worse
+# than the broken build.
+/AgenticAI-Trading 2/
