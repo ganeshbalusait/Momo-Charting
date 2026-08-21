@@ -1,0 +1,213 @@
+# MAG7 premarket scanner (06:00–09:30 ET)
+
+**Date:** 2026-08-20 · **Status:** Approved, not yet implemented
+
+## Problem
+
+The 5-minute chart already paints everything needed to judge a premarket
+setup: `CALL2H` / `CALL4H` boxes from the 4x8 (yellow) and 9x20 (cyan)
+families, and 🔥 bubbles when a squeeze releases on 15m/30m/1h/2h/4h/D. But
+reading it means opening each of the seven Mag7 charts by hand, every
+morning, and re-checking them as premarket moves. That does not scale to
+seven symbols across a three-and-a-half hour window.
+
+The user's requirement, stated three times and treated as the governing
+constraint of this design: **if a signal shows on the 5m chart, it must show
+in the scanner.** The table is a mirror, never a second opinion.
+
+## What already exists
+
+Most of this is a wiring job, not a new engine.
+
+- `scanner.py:315` `_tos_mtf_ema_signal_payload` is the 4x8 / 9x20 engine.
+  It emits `{time, family, color, timeframe, direction, label, liveForming}`
+  with labels `CALL2H` / `C2H` / `CALL4H` / `C4H`, mode
+  `live_forming_5m_projection`.
+- `api_server.py:9686` ships that array as `mtfSignals` on the chart payload.
+- `App.jsx:15090` draws the chart's boxes from that array. The comment at
+  `App.jsx:15084` is explicit: *"The server computes TOS studies from the full
+  one-minute history. Do not recompute 30m–4h signals from the short visible
+  chart tail."*
+- `api_server.py:11005` `_mag7_chart_signal_row` **already reads that same
+  cached array**, memoized on `(symbol, session, latest_bar_time)`.
+- `api_server.py:11244` `mag7_chart_signals_payload("premarket")` already
+  produces a premarket Mag7 table, surfaced as `mag7PremarketChartSignals`.
+- A premarket table UI with sortable columns exists at `App.jsx:23611`.
+
+### Why CALL2H parity is structural
+
+Chart bubble and scanner row read one array from one cache. There is no
+second calculation to keep in sync, so no drift is possible.
+
+One reconciler could have broken this: `mtfLiveSignalState.js`
+`reconcileLiveMtfSignals` can synthesise a marker from a live tick that the
+server's array does not yet contain. It feeds on `mtfLiveSignalContexts` —
+and **nothing in the Python emits that key** (`api_server.py:9949` only lists
+it as a payload-trim key). With no contexts it returns its input untouched.
+Verified 2026-08-20. If a future change starts emitting that key, this
+guarantee needs revisiting; see Risks.
+
+## The actual gap: 🔥 lives only in the browser
+
+`App.jsx:8606` `calculateMtfSqueezeReleaseClouds` computes squeeze release
+client-side from `studyBars`. The backend cannot see it. That is the entire
+reason each chart must currently be opened by hand, and it is the one piece
+of real new work.
+
+### Faithful-port contract
+
+The port must reproduce these exactly. Each was read from source, not
+assumed:
+
+**Fire condition** — at bar `i`, with `i >= 20`:
+`in_squeeze[i] == False and in_squeeze[i-1] == True`, where
+`in_squeeze[i] = (avg[i] + 2*stdev[i]) - (avg[i] + 1.5*atr[i]) <= 0`.
+The `avg` term cancels, so this is `2*stdev <= 1.5*atr`. Keep the unreduced
+form in code so it stays legible against the JS.
+
+**Rolling helpers** (`App.jsx:7297-7327`) — note both use a *partial*
+window before period 20 fills rather than emitting NaN:
+- `calculateRollingAverage(values, 20)` — mean of `values[max(0,i-19)..i]`,
+  divided by the actual window length.
+- `calculateRollingStdDev(values, 20)` — **population** standard deviation
+  (divide by N, not N-1), same partial window.
+- `calculateTrueRanges(bars)` — index 0 is `high - low`; thereafter
+  `max(h-l, |h-prev_close|, |l-prev_close|)`.
+
+**Bucket clocks** (`chartAggregation.js:137`) — three different rules, and
+they are **deliberately not** the backend MTF engine's clocks. The comment at
+`chartAggregation.js:110` says so directly: *"Keep this primary-chart
+contract separate from the native secondary-study aggregation clocks used by
+the backend CALL1H/CALL2H signal engine."* Using the MTF clocks for 🔥 would
+silently misplace every fire.
+- **1h (60)** — plain UTC floor: `floor(t/3600)*3600`.
+- **2h (120)** — anchored to Eastern midnight, 2h steps (so 04:00 ET stays
+  04:00 across DST).
+- **4h (240)** — TOS equity clock, anchored to midnight *Central*: boundaries
+  land at 01:00, 05:00, 09:00, 13:00, 17:00, 21:00 ET.
+- **D (1440)** — Eastern midnight.
+
+Bar aggregation itself (`aggregateChartBars`) takes first-open, max-high,
+min-low, last-close, summed volume per bucket.
+
+Only 1h / 2h / 4h / D are scanned. 15m and 30m are excluded per the user's
+"1hr to D" rule — they fire near-continuously and would drown the score.
+
+## Scan window and match rule
+
+**Window:** 06:00:00 – 09:30:00 ET, weekdays. Session key `premarket6`, added
+alongside the existing `premarket` rather than replacing it.
+
+Two different qualifying tests, because the two signal types timestamp
+differently:
+
+- **CALL2H / CALL4H** qualify on `signal.time` falling inside the window.
+  These are cross-detection times projected onto 5m candles, so they already
+  land where the chart draws them.
+- **🔥 fires** qualify on **bucket overlap**: `bucket_start + minutes*60 >
+  06:00 ET`. They must *not* be filtered on `bucket_start`, because the
+  bucket clocks anchor outside the window — a 4h bucket runs 05:00–09:00 ET
+  and the daily bucket starts at Eastern midnight. A fire on either is
+  painted on the chart throughout premarket, so filtering on its start
+  timestamp would drop signals the user can plainly see and break the
+  governing constraint of this design.
+
+  Worked through: 4h bucket 05:00–09:00 ends 09:00 > 06:00 → included, as the
+  chart shows it. Daily bucket starting 00:00 today ends at next midnight →
+  included. Yesterday's daily bucket ends 00:00 today, not > 06:00 →
+  excluded. A 2h bucket 04:00–06:00 ends exactly at 06:00 → excluded, since
+  it closed before the window opened.
+
+**Match (rule 3):** a ticker earns a row if it has *any* of —
+- a `CALL2H` or `CALL4H` with `family == "4x8"` (yellow), or
+- a `CALL2H` or `CALL4H` with `family == "9x20"` (cyan), or
+- a 🔥 release on 1h, 2h, 4h, or D.
+
+`C2H` / `C4H` (higher timeframe not confirming) render dimmed for context and
+never score — the user asked for CALL specifically.
+
+**Strength (rule 4):** one point per hit, max 8. `>3 STRONG · =3 MODERATE ·
+<3 WEAK`. Table sorts strongest-first so the names that matter never require
+scrolling.
+
+```
+MSTR  4/8 CALL2H + 4/8 CALL4H + 9/20 CALL2H + 🔥1h + 🔥2h + 🔥4h = 6  STRONG
+NVDA  4/8 CALL4H + 9/20 CALL4H + 🔥4h + 🔥D                       = 4  STRONG
+META  4/8 CALL2H + 🔥1h + 🔥2h                                     = 3  MODERATE
+AAPL  4/8 CALL2H + 🔥1h                                            = 2  WEAK
+```
+
+**Repaint honesty.** A forming 2H cross can genuinely vanish if premarket
+price reverses. Rows carry the signal's own `liveForming` flag as a FORMING /
+CONFIRMED tag, so a row disappearing is explained rather than mysterious.
+
+**Cold symbols** list under `pendingSymbols` (already distinguished by the
+existing payload) instead of showing a misleading zero.
+
+## Columns
+
+| Column | Source | New code |
+|---|---|---|
+| Ticker | `_mag7_option_underlyings()` | no |
+| Date/Time (ET) | earliest qualifying `signal.time` | no |
+| 4/8 | `mtfSignals` where `family=="4x8"` | no |
+| 9/20 | `mtfSignals` where `family=="9x20"` | no |
+| Squeeze Fire | **Python port**, 1h/2h/4h/D | yes |
+| Strength | new scorer | yes |
+
+## Files
+
+- `premarket_scanner.py` *(new, ~150 lines)* — three pure functions, no I/O:
+  `squeeze_release_events(bars, minutes)`, `score_strength(row)`,
+  `premarket_scan_row(payload, now_et)`. Kept out of `scanner.py`, which is
+  already 111 KB and would give the new code no clean test seam.
+- `tests/test_premarket_scanner.py` *(new)* — golden fixture (below), plus
+  window-boundary, scoring-threshold, and cold-symbol cases.
+- `api_server.py:10945` — cache warmer 08:00 → 06:00 ET. Without this every
+  row is cold at 06:00.
+- `api_server.py:10961` — add the 06:00–09:30 window alongside the existing
+  prior-17:00→09:29 one (do not replace it; the existing premarket table
+  still uses it).
+- `api_server.py` ~11244 / ~12930 — assemble rows, expose
+  `mag7PremarketScanner`.
+- `frontend/src/App.jsx` near 23611 — column array + `<DataTable>`.
+
+## Testing
+
+The single real risk is Python 🔥 drifting from JavaScript 🔥 — three bucket
+clocks and a population-stdev detail are easy to get subtly wrong.
+
+**Golden fixture.** Freeze one symbol's `studyBars` to JSON. Run the existing
+JS `calculateMtfSqueezeReleaseClouds` over it through the frontend test
+harness and save its output. Assert the Python reproduces it event-for-event.
+Drift then fails a test instead of quietly lying in the table at 07:15.
+
+Also covered:
+- CALL signals at 05:59:59 and 09:30:01 are excluded; 06:00:00 and 09:30:00
+  are included.
+- Fire bucket-overlap: a 4h bucket at 05:00 and a daily bucket at Eastern
+  midnight both qualify; yesterday's daily bucket and a 2h bucket ending
+  exactly at 06:00 do not.
+- Scores of 2 / 3 / 4 map to WEAK / MODERATE / STRONG.
+- `C2H` and `C4H` never contribute to the score.
+- A symbol with no cached payload lands in `pendingSymbols` rather than
+  producing a row.
+
+## Risks
+
+- **Earlier warmer start** means the paced Mag7 chain poller runs two extra
+  hours each weekday — more Schwab calls per morning. It is paced and
+  Mag7-only, so this is expected to be fine, but it is a real change in
+  broker load.
+- **`mtfLiveSignalContexts`** is currently unpopulated, which is what makes
+  CALL parity exact. If a future change starts emitting it, the chart will be
+  able to show a tick-derived signal the scanner cannot see, and the scanner
+  would need the same reconciliation server-side.
+- **`App.jsx` line endings** — editing it with Python tooling flips the file
+  to CRLF and breaks the tests that regex functions out of its source. Use
+  LF-preserving edits.
+
+## Out of scope
+
+Alerts tab feed, web push, and chart bubbles for scanner matches were all
+offered and declined. Dashboard table only.
