@@ -4,7 +4,7 @@
 
 **Goal:** A dashboard table that lists, between 06:00 and 09:30 ET, which of the saved Mag7 scanner tickers (22, not 7) show CALL2H/CALL4H (4x8 yellow or 9x20 cyan) or a squeeze fire on 1h/2h/4h/D, scored WEAK/MODERATE/STRONG.
 
-**Architecture:** The table mirrors the 5-minute chart rather than recomputing it. CALL2H/CALL4H are read straight from the cached `mtfSignals` array the chart itself draws from, so that half cannot drift. Squeeze fire exists only in browser JavaScript today; it gets extracted into a small JS module and ported to Python, with a golden fixture pinning the two implementations together.
+**Architecture:** The scanner reads the LIVE streamed tape, not just the 30s-refreshed cache, so fires do not lag the chart. The table mirrors the 5-minute chart rather than recomputing it. CALL2H/CALL4H are read straight from the cached `mtfSignals` array the chart itself draws from, so that half cannot drift. Squeeze fire exists only in browser JavaScript today; it gets extracted into a small JS module and ported to Python, with a golden fixture pinning the two implementations together.
 
 **Tech Stack:** Python 3 (stdlib only — no pandas in the new module), `node --test` for frontend tests, React + Vite.
 
@@ -837,6 +837,115 @@ because a daily candle cannot close during premarket."
 
 ---
 
+### Task 3b: Extend the scanner tape with live streamed bars
+
+**Why:** without this the scanner's fires lag the chart by up to 30 s (the
+chart computes them in-browser off the streamed tape; the server cache
+refreshes every 30 s). The user trades options and rejected that delay.
+`SchwabMarketStream.chart_history(symbol)` already keeps live minute bars per
+symbol and is tested — it has simply never been read by any request path.
+
+**Files:**
+- Modify: `premarket_scanner.py`
+- Modify: `tests/test_premarket_scanner.py`
+
+**Interfaces:**
+- Produces: `merge_live_tail(cached_bars, live_bars) -> list[dict]`. Task 4
+  passes `MARKET_STREAM.chart_history(symbol)` as `live_bars`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# append to tests/test_premarket_scanner.py
+from premarket_scanner import merge_live_tail
+
+
+def test_live_tail_extends_the_cached_tape():
+    cached = [{"time": 100, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}]
+    live = [{"time": 160, "open": 1.5, "high": 3.0, "low": 1.4, "close": 2.9}]
+    assert [bar["time"] for bar in merge_live_tail(cached, live)] == [100, 160]
+
+
+def test_live_bars_overlapping_the_cached_tape_are_ignored():
+    """studyBars can be a 30-minute tape. Letting a 1-minute live bar replace
+    a 30-minute bar at the same timestamp would silently discard that
+    bucket's real high/low, so only the strictly-newer tail is appended."""
+    cached = [
+        {"time": 100, "open": 1.0, "high": 9.0, "low": 0.5, "close": 1.5},
+        {"time": 200, "open": 1.5, "high": 8.0, "low": 1.0, "close": 2.0},
+    ]
+    live = [
+        {"time": 200, "open": 1.9, "high": 2.1, "low": 1.9, "close": 2.0},
+        {"time": 260, "open": 2.0, "high": 2.5, "low": 2.0, "close": 2.4},
+    ]
+    merged = merge_live_tail(cached, live)
+    assert [bar["time"] for bar in merged] == [100, 200, 260]
+    assert merged[1]["high"] == 8.0  # the cached 30m high survives
+
+
+def test_merge_survives_an_empty_or_missing_live_feed():
+    cached = [{"time": 100, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}]
+    assert merge_live_tail(cached, []) == cached
+    assert merge_live_tail(cached, None) == cached
+    assert merge_live_tail([], [{"time": 5, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0}])[0]["time"] == 5
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -k live -v`
+Expected: FAIL — `ImportError: cannot import name 'merge_live_tail'`
+
+- [ ] **Step 3: Implement**
+
+```python
+# append to premarket_scanner.py
+
+def merge_live_tail(cached_bars: object, live_bars: object) -> list[dict]:
+    """Cached tape plus only the STRICTLY NEWER live streamed bars.
+
+    Appending rather than merging by timestamp is deliberate. ``studyBars``
+    has shipped at both five- and thirty-minute cadences; a one-minute live
+    bar landing on the same timestamp as a thirty-minute cached bar would
+    replace it and throw away that bucket's true high and low. Anything at or
+    before the cached tape's last bar is therefore ignored.
+    """
+    cached = [bar for bar in (cached_bars or []) if isinstance(bar, dict)]
+    live = [bar for bar in (live_bars or []) if isinstance(bar, dict)]
+    if not live:
+        return cached
+
+    def bar_time(bar: dict) -> int:
+        try:
+            return int(bar.get("time") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    cutoff = max((bar_time(bar) for bar in cached), default=0)
+    tail = sorted(
+        (bar for bar in live if bar_time(bar) > cutoff),
+        key=bar_time,
+    )
+    return [*cached, *tail]
+```
+
+- [ ] **Step 4: Run to verify it passes**
+
+Run: `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v`
+Expected: PASS, 17 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add premarket_scanner.py tests/test_premarket_scanner.py
+git commit -m "feat(scanner): extend the scan tape with live streamed bars
+
+Fires were up to 30s behind the chart, which computes them in-browser from
+the streamed tape. Only the strictly-newer tail is appended so a 1m live bar
+cannot clobber a 30m cached bucket's high/low."
+```
+
+---
+
 ### Task 4: Wire the scanner into the dashboard payload
 
 **Files:**
@@ -883,7 +992,19 @@ Insert next to `mag7_chart_signals_payload`. It reads only the warm chart cache 
                 pending.append(symbol)
                 continue
             ready.append(symbol)
-            key = (symbol, int(bars[-1].get("time") or 0), now_et.date().isoformat())
+            # Live tail so fires do not lag the chart by a cache refresh.
+            # chart_history() is in-memory and lock-guarded; never let a
+            # streamer hiccup take the whole scanner down.
+            try:
+                live_bars = MARKET_STREAM.chart_history(symbol)
+            except Exception:
+                live_bars = []
+            scan_tape = merge_live_tail(payload.get("studyBars") or bars, live_bars)
+            payload = {**payload, "studyBars": scan_tape}
+            # Memoize on the LIVE tape's last bar, not the cached one, or the
+            # 30s-stale key would defeat the whole point of the live tail.
+            latest_time = int(scan_tape[-1].get("time") or 0) if scan_tape else 0
+            key = (symbol, latest_time, now_et.date().isoformat())
             if key in memo:
                 row = memo[key]
             else:
@@ -919,7 +1040,17 @@ Insert next to `mag7_chart_signals_payload`. It reads only the warm chart cache 
 
 - [ ] **Step 3: Import and expose it**
 
-Add `from premarket_scanner import premarket_scan_row` beside the existing `from oi_auto_alerts import ...` line (`grep -n "^from oi_auto_alerts" api_server.py`).
+Add `from premarket_scanner import merge_live_tail, premarket_scan_row` beside the existing `from oi_auto_alerts import ...` line (`grep -n "^from oi_auto_alerts" api_server.py`). `MARKET_STREAM` is already a module-level global in `api_server.py` — no import needed, but confirm the payload builder is defined *after* it (`grep -n "^MARKET_STREAM = " api_server.py`); it is referenced at call time, so definition order inside the class is fine.
+
+Also make sure all 22 scanner symbols are actually subscribed, or `chart_history` returns empty for most of them. In the payload builder, before the symbol loop:
+
+```python
+        if hasattr(self.client, "ensure_streaming"):
+            try:
+                self.client.ensure_streaming(list(symbols) + ["SPY"])
+            except Exception:
+                pass
+```
 
 Then next to `"mag7PremarketChartSignals": self.mag7_chart_signals_payload("premarket"),` (`grep -n "mag7PremarketChartSignals" api_server.py`) add:
 
@@ -1106,7 +1237,7 @@ The live repo is not the one GitHub sees. Copy the five new files and the four m
 
 ## Verification before claiming done
 
-- [ ] `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v` — 14 passing
+- [ ] `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v` — 17 passing
 - [ ] `cd frontend; node --test src/*.test.js` — no regression against the pre-existing count
 - [ ] `curl` on `/api/dashboard` returns a `mag7PremarketScanner` block with a non-empty `readySymbols`
 - [ ] The table renders at `:5173` with no console errors

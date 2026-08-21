@@ -195,11 +195,24 @@ is fed `bars` — via `buildChartDisplayBars({liveBars: bars})`, the *streamed*
 tape — so the browser sees a bucket close the instant a tick crosses the
 boundary. The scanner sees it only after the next server cache refresh.
 
-This is a **lag, never a disagreement**: the scanner always catches up within
-one refresh and can never miss a fire the chart showed. On 1h/2h/4h/D
-releases — events that occur at most hourly — a sub-30-second lag is
-immaterial. Recorded here so nobody later reads a brief mismatch as a parity
-bug and "fixes" it by diverging the two implementations.
+**Decision (2026-08-20): the 30 s fire lag is not acceptable.** The user
+trades options and rejected it. The scanner therefore reads the live tape
+too: `SchwabMarketStream.chart_history(symbol)` already keeps live minute
+bars per symbol, lock-guarded and tested, and has simply never been read by
+a request path. The scanner appends that live tail to the cached tape before
+computing fires (`merge_live_tail`, plan Task 3b), which drops fire latency
+from ~30 s to the dashboard's own 5 s poll.
+
+Only the strictly-newer tail is appended, never merged by timestamp:
+`studyBars` has shipped at both five- and thirty-minute cadences, and a
+one-minute live bar landing on a thirty-minute bucket's timestamp would
+replace it and discard that bucket's true high and low.
+
+**Residual latency is 5 s**, the dashboard poll interval — the table's floor
+regardless of data freshness. Going below that means pushing scanner rows
+over the existing `/api/live-market-stream` SSE pump, which is a larger
+change and is not in this plan. If 5 s ever proves too slow, that is the
+next step, not a redesign.
 
 ## Which repo
 
