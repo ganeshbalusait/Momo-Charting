@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A dashboard table that lists, between 06:00 and 09:30 ET, which of the saved Mag7 scanner tickers (22, not 7) show CALL2H/CALL4H (4x8 yellow or 9x20 cyan) or a squeeze fire on 1h/2h/4h/D, scored WEAK/MODERATE/STRONG.
+**Goal:** A dashboard table that lists, between 06:00 and 09:30 ET, which of the 9 scanned tickers show CALL2H/CALL4H (4x8 yellow or 9x20 cyan) or a squeeze fire on 1h/2h/4h/D, scored WEAK/MODERATE/STRONG.
 
 **Architecture:** The scanner reads the LIVE streamed tape, not just the 30s-refreshed cache, so fires do not lag the chart. The table mirrors the 5-minute chart rather than recomputing it. CALL2H/CALL4H are read straight from the cached `mtfSignals` array the chart itself draws from, so that half cannot drift. Squeeze fire exists only in browser JavaScript today; it gets extracted into a small JS module and ported to Python, with a golden fixture pinning the two implementations together.
 
@@ -25,10 +25,29 @@
 - Window: `06:00:00`–`09:30:00` ET, weekdays.
 - **Deliberate simplification vs the spec:** the spec proposed a `premarket6` session key threaded through `_mag7_signal_session_window`. This plan instead adds a standalone `mag7_premarket_scanner_payload()`, so that shared function is never touched and the existing premarket table cannot regress. Same behaviour, smaller blast radius.
 - Strength: 1 point per hit. `>3` STRONG, `==3` MODERATE, `<3` WEAK.
-- **"Mag7" is 22 tickers.** `_mag7_option_underlyings()` resolves
-  `DEFAULT_MAG7_OPTION_WATCHLIST_SOURCE` (`api_server.py:424` in the live
-  repo): AAPL AMZN GOOGL META MSFT NFLX NVDA TSLA AVGO INTC AMD NVDL AMDL
-  METU TSLL SPY QQQ SPCU TQQQ SOXL AMZU USO. Do not hard-code seven names.
+- **Scanner universe is exactly these 9** (user decision 2026-08-20), NOT
+  `_mag7_option_underlyings()`, which is 22 symbols including leveraged ETFs:
+
+  ```python
+  PREMARKET_SCAN_SYMBOLS = ("AAPL", "AMZN", "AVGO", "GOOGL", "TSLA", "META", "MSFT", "NVDA", "NFLX")
+  ```
+
+  Define this in `premarket_scanner.py` so it is one edit to change. All nine
+  are already in `QUICK_STRIP_WARM_SYMBOLS` (`api_server.py:17068`), the
+  priority set the chart warmer builds **without yielding to the trader** —
+  so their tapes stay warm even though the user only opens a chart *after*
+  the scanner flags something. Do not add a symbol outside that set without
+  also adding it there, or its rows will silently never appear.
+
+- **The scanner must NOT live behind the dashboard cache.**
+  `dashboard_payload()` serves a payload cached for
+  `DASHBOARD_FULL_CACHE_TTL_SECONDS = 60.0` (`api_server.py:287`). Putting
+  the scanner there would make it up to 60 s stale — worse than the 30 s lag
+  Task 3b exists to remove. It gets its own endpoint (Task 4).
+
+- **The scanner endpoint must NOT call `touch_oi_finder_interactive_window()`.**
+  That sets a 45 s "a human is watching" pause on the background collector.
+  A 5 s poll calling it would hold that pause open permanently.
 
 ---
 
@@ -392,6 +411,13 @@ SQUEEZE_LENGTH = 20
 # 15m and 30m are deliberately absent: they fire near-continuously and would
 # drown the strength score.
 FIRE_TIMEFRAMES = ((60, "1h"), (120, "2h"), (240, "4h"), (1440, "D"))
+# The nine the trader actually watches -- NOT the 22-symbol Mag7 option
+# watchlist, which carries leveraged ETFs he does not scan. Every one of
+# these is in QUICK_STRIP_WARM_SYMBOLS, so its chart tape is warmed in the
+# background; a symbol added here but not there would never produce a row.
+PREMARKET_SCAN_SYMBOLS = (
+    "AAPL", "AMZN", "AVGO", "GOOGL", "TSLA", "META", "MSFT", "NVDA", "NFLX",
+)
 
 
 def _eastern_midnight(timestamp: int) -> int:
@@ -973,7 +999,7 @@ Insert next to `mag7_chart_signals_payload`. It reads only the warm chart cache 
         re-run on every poll.
         """
         now_et = datetime.now(ZoneInfo(EASTERN_TZ))
-        symbols = self._mag7_option_underlyings()
+        symbols = list(PREMARKET_SCAN_SYMBOLS)
         rows: list[dict] = []
         ready: list[str] = []
         pending: list[str] = []
@@ -1040,7 +1066,7 @@ Insert next to `mag7_chart_signals_payload`. It reads only the warm chart cache 
 
 - [ ] **Step 3: Import and expose it**
 
-Add `from premarket_scanner import merge_live_tail, premarket_scan_row` beside the existing `from oi_auto_alerts import ...` line (`grep -n "^from oi_auto_alerts" api_server.py`). `MARKET_STREAM` is already a module-level global in `api_server.py` — no import needed, but confirm the payload builder is defined *after* it (`grep -n "^MARKET_STREAM = " api_server.py`); it is referenced at call time, so definition order inside the class is fine.
+Add `from premarket_scanner import PREMARKET_SCAN_SYMBOLS, merge_live_tail, premarket_scan_row` beside the existing `from oi_auto_alerts import ...` line (`grep -n "^from oi_auto_alerts" api_server.py`). `MARKET_STREAM` is already a module-level global in `api_server.py` — no import needed, but confirm the payload builder is defined *after* it (`grep -n "^MARKET_STREAM = " api_server.py`); it is referenced at call time, so definition order inside the class is fine.
 
 Also make sure all 22 scanner symbols are actually subscribed, or `chart_history` returns empty for most of them. In the payload builder, before the symbol loop:
 
@@ -1052,20 +1078,38 @@ Also make sure all 22 scanner symbols are actually subscribed, or `chart_history
                 pass
 ```
 
-Then next to `"mag7PremarketChartSignals": self.mag7_chart_signals_payload("premarket"),` (`grep -n "mag7PremarketChartSignals" api_server.py`) add:
+Then add a **dedicated GET route**, not a dashboard key — the dashboard payload is cached 60 s and would make the scanner staler than the lag Task 3b removes. Put it beside the other GET routes (`grep -n 'parsed.path == "/api/oi-auto-alerts"' api_server.py` shows the pattern):
 
 ```python
-            "mag7PremarketScanner": self.mag7_premarket_scanner_payload(),
+            if parsed.path == "/api/premarket-scanner":
+                # Deliberately NOT behind dashboard_payload()'s 60s cache, and
+                # deliberately NOT calling touch_oi_finder_interactive_window()
+                # -- a 5s poll would hold the background warmer paused forever.
+                self._send_json(HTTPStatus.OK, STATE.mag7_premarket_scanner_payload())
+                return
 ```
+
+Confirm the path is authenticated: it is not in `AUTH_PUBLIC_API_PATHS` (`grep -n "AUTH_PUBLIC_API_PATHS" api_server.py`), so it inherits the normal cookie check. Leave it that way.
 
 - [ ] **Step 4: Verify the payload is served**
 
 Restart the backend per the project procedure (`Stop-Process` the `api_server` parent PID; the watchdog respawns it in ~15s and it listens ~20-30s later). **Market must be closed.** Then:
 
 ```bash
-curl -s http://127.0.0.1:3001/api/dashboard \
-  | ./.venv/Scripts/python.exe -c "import json,sys; d=json.load(sys.stdin)['mag7PremarketScanner']; print(d['status'], d['windowLabel'], d['matchCount'], d['readySymbols'])"
+curl -s http://127.0.0.1:3001/api/premarket-scanner \
+  | ./.venv/Scripts/python.exe -c "import json,sys; d=json.load(sys.stdin); print(d['status'], d['windowLabel'], d['matchCount'], d['readySymbols'])"
 ```
+
+Then prove it is genuinely uncached — two calls a few seconds apart must
+return different `generatedAt` values:
+
+```bash
+curl -s http://127.0.0.1:3001/api/premarket-scanner | grep -o '"generatedAt":"[^"]*"'
+curl -s http://127.0.0.1:3001/api/premarket-scanner | grep -o '"generatedAt":"[^"]*"'
+```
+
+Identical timestamps mean it is being served from a cache — find and remove
+that path before continuing, or the live-tape work in Task 3b is wasted.
 
 Expected: a status of `READY` or `WARMING`, the window label, a match count, and the ready symbol list. Outside 06:00–09:30 a `matchCount` of `0` is correct, not a bug — confirm `readySymbols` is non-empty so you know the read path works.
 
@@ -1089,15 +1133,34 @@ now starts at 06:00 ET so tapes are ready when the window opens."
 **Interfaces:**
 - Consumes: `dashboard.mag7PremarketScanner` from Task 4.
 
-- [ ] **Step 1: Add the default payload shape**
+- [ ] **Step 1: Poll the dedicated endpoint every 5 s**
 
-Find the defaults object (`grep -n "mag7PremarketChartSignals: {" frontend/src/App.jsx`) and add alongside it:
+The scanner does **not** ride the dashboard payload (that is cached 60 s).
+Add its own poll near the other `useEffect` polls in the dashboard component:
 
-```js
-  mag7PremarketScanner: {
+```jsx
+  const [premarketScanner, setPremarketScanner] = useState({
     status: "WARMING", windowLabel: "6:00 AM - 9:30 AM ET", rows: [],
     matchCount: 0, readySymbols: [], pendingSymbols: [], message: "",
-  },
+  });
+
+  useEffect(() => {
+    if (popoutConfig.mode) return undefined;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await fetch("/api/premarket-scanner", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (!cancelled) setPremarketScanner(payload);
+      } catch {
+        // A dropped poll is not worth surfacing; the next one is 5s away.
+      }
+    };
+    load();
+    const timer = setInterval(load, 5000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [popoutConfig.mode]);
 ```
 
 - [ ] **Step 2: Add the columns**
@@ -1182,11 +1245,11 @@ Next to the existing premarket table's `<DataTable>` (`grep -n "mag7-premarket" 
               />
 ```
 
-with these beside the other dashboard destructures (`grep -n "const mag7PremarketChartSignals = dashboard" frontend/src/App.jsx`):
+with this beside it (`premarketScanner` comes from the Step 1 poll, not from `dashboard`):
 
 ```js
-  const mag7PremarketScanner = dashboard.mag7PremarketScanner || defaultDashboard.mag7PremarketScanner;
-  const mag7PremarketScannerRows = Array.isArray(mag7PremarketScanner.rows) ? mag7PremarketScanner.rows : [];
+  const mag7PremarketScanner = premarketScanner;
+  const mag7PremarketScannerRows = Array.isArray(premarketScanner.rows) ? premarketScanner.rows : [];
 ```
 
 - [ ] **Step 4: Add the strength styles**
@@ -1239,6 +1302,6 @@ The live repo is not the one GitHub sees. Copy the five new files and the four m
 
 - [ ] `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v` — 17 passing
 - [ ] `cd frontend; node --test src/*.test.js` — no regression against the pre-existing count
-- [ ] `curl` on `/api/dashboard` returns a `mag7PremarketScanner` block with a non-empty `readySymbols`
+- [ ] `curl` on `/api/premarket-scanner` returns a non-empty `readySymbols` AND a changing `generatedAt` on repeat calls
 - [ ] The table renders at `:5173` with no console errors
 - [ ] **The parity check that matters:** during a live premarket window, pick a row and open that ticker's 5m chart. Every CALL2H/CALL4H and every 🔥 in the row must be visible on the chart, and nothing on the chart in-window may be missing from the row. This cannot be run until a market morning — say so explicitly rather than implying it passed.
