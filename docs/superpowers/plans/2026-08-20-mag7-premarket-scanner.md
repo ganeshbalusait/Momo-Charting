@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A dashboard table that lists, between 05:00 and 09:30 ET, which of the seven Mag7 tickers show CALL2H/CALL4H (4x8 yellow or 9x20 cyan) or a squeeze fire on 1h/2h/4h/D, scored WEAK/MODERATE/STRONG.
+**Goal:** A dashboard table that lists, between 06:00 and 09:30 ET, which of the saved Mag7 scanner tickers (22, not 7) show CALL2H/CALL4H (4x8 yellow or 9x20 cyan) or a squeeze fire on 1h/2h/4h/D, scored WEAK/MODERATE/STRONG.
 
 **Architecture:** The table mirrors the 5-minute chart rather than recomputing it. CALL2H/CALL4H are read straight from the cached `mtfSignals` array the chart itself draws from, so that half cannot drift. Squeeze fire exists only in browser JavaScript today; it gets extracted into a small JS module and ported to Python, with a golden fixture pinning the two implementations together.
 
@@ -22,9 +22,13 @@
 - **Do not restart the backend during market hours** and announce backend writes to the coordinating session first.
 - Squeeze constants: period `20`, Bollinger `2` deviations, Keltner `1.5 * ATR`.
 - Fire timeframes: `60` (1h), `120` (2h), `240` (4h), `1440` (D). 15m and 30m are excluded.
-- Window: `05:00:00`–`09:30:00` ET, weekdays.
-- **Deliberate simplification vs the spec:** the spec proposed a `premarket5` session key threaded through `_mag7_signal_session_window`. This plan instead adds a standalone `mag7_premarket_scanner_payload()`, so that shared function is never touched and the existing premarket table cannot regress. Same behaviour, smaller blast radius.
+- Window: `06:00:00`–`09:30:00` ET, weekdays.
+- **Deliberate simplification vs the spec:** the spec proposed a `premarket6` session key threaded through `_mag7_signal_session_window`. This plan instead adds a standalone `mag7_premarket_scanner_payload()`, so that shared function is never touched and the existing premarket table cannot regress. Same behaviour, smaller blast radius.
 - Strength: 1 point per hit. `>3` STRONG, `==3` MODERATE, `<3` WEAK.
+- **"Mag7" is 22 tickers.** `_mag7_option_underlyings()` resolves
+  `DEFAULT_MAG7_OPTION_WATCHLIST_SOURCE` (`api_server.py:424` in the live
+  repo): AAPL AMZN GOOGL META MSFT NFLX NVDA TSLA AVGO INTC AMD NVDL AMDL
+  METU TSLL SPY QQQ SPCU TQQQ SOXL AMZU USO. Do not hard-code seven names.
 
 ---
 
@@ -332,8 +336,8 @@ def test_four_hour_buckets_use_the_tos_central_clock():
         return _dt.fromtimestamp(chart_bucket_time(_at(hour, minute), 240), tz=EASTERN).strftime("%H:%M")
 
     assert _bucket_hour(9, 30) == "09:00"
-    assert _bucket_hour(8, 59) == "05:00"
-    assert _bucket_hour(5, 0) == "05:00"
+    assert _bucket_hour(8, 59) == "06:00"
+    assert _bucket_hour(5, 0) == "06:00"
     assert _bucket_hour(0, 30) == "21:00"  # previous day's bucket
 
 
@@ -609,9 +613,9 @@ def _call(label, family, when):
     }
 
 
-def test_window_spans_0500_to_0930_eastern():
+def test_window_spans_0600_to_0930_eastern():
     start, end = premarket_window(_now())
-    assert datetime.fromtimestamp(start, tz=EASTERN).strftime("%H:%M") == "05:00"
+    assert datetime.fromtimestamp(start, tz=EASTERN).strftime("%H:%M") == "06:00"
     assert datetime.fromtimestamp(end, tz=EASTERN).strftime("%H:%M") == "09:30"
 
 
@@ -682,7 +686,7 @@ Expected: FAIL — `ImportError: cannot import name 'premarket_window'`
 ```python
 # append to premarket_scanner.py
 
-WINDOW_START_MINUTE = 5 * 60          # 05:00 ET
+WINDOW_START_MINUTE = 6 * 60          # 06:00 ET
 WINDOW_END_MINUTE = 9 * 60 + 30       # 09:30 ET
 CALL_LABELS = ("CALL2H", "CALL4H")
 STRONG_THRESHOLD = 3                  # "more than 3" -> STRONG
@@ -690,7 +694,7 @@ STRONG_THRESHOLD = 3                  # "more than 3" -> STRONG
 
 def premarket_window(now_et: datetime) -> tuple[int, int]:
     day = now_et.astimezone(EASTERN)
-    start = day.replace(hour=5, minute=0, second=0, microsecond=0)
+    start = day.replace(hour=6, minute=0, second=0, microsecond=0)
     end = day.replace(hour=9, minute=30, second=0, microsecond=0)
     return int(start.timestamp()), int(end.timestamp())
 
@@ -826,7 +830,7 @@ Expected: PASS, 14 tests
 git add premarket_scanner.py tests/test_premarket_scanner.py
 git commit -m "feat(scanner): premarket window, match rule and strength score
 
-05:00-09:30 ET. CALL2H/CALL4H only (C2H/C4H are context, never score).
+06:00-09:30 ET. CALL2H/CALL4H only (C2H/C4H are context, never score).
 Fires qualify on bucket close; daily carries the prior session's date
 because a daily candle cannot close during premarket."
 ```
@@ -842,9 +846,9 @@ because a daily candle cannot close during premarket."
 - Consumes: `premarket_scan_row` from Task 3.
 - Produces: dashboard key `mag7PremarketScanner` → `{status, date, timezone, windowLabel, rows, matchCount, readySymbols, pendingSymbols, generatedAt}`. Task 5 renders it.
 
-- [ ] **Step 1: Widen the cache warmer to 05:00 ET**
+- [ ] **Step 1: Widen the cache warmer to 06:00 ET**
 
-Find it: `grep -n "_is_oi_finder_mag7_live_session" -A 8 api_server.py`. Change the lower bound from `8 * 60` to `5 * 60` and update the docstring to say the premarket scanner needs tapes warm from 05:00. Leave the 16:15 upper bound alone.
+Find it: `grep -n "_is_oi_finder_mag7_live_session" -A 8 api_server.py`. Change the lower bound from `8 * 60` to `6 * 60` and update the docstring to say the premarket scanner needs tapes warm from 06:00. Leave the 16:15 upper bound alone.
 
 - [ ] **Step 2: Add the payload builder**
 
@@ -852,7 +856,7 @@ Insert next to `mag7_chart_signals_payload`. It reads only the warm chart cache 
 
 ```python
     def mag7_premarket_scanner_payload(self) -> dict:
-        """05:00-09:30 ET Mag7 scanner rows, mirroring the 5m chart.
+        """06:00-09:30 ET Mag7 scanner rows, mirroring the 5m chart.
 
         Reads ONLY the already-warm OI-finder chart cache. Memoized per
         (symbol, latest bar time) so a dashboard poll on an unchanged tape
@@ -899,7 +903,7 @@ Insert next to `mag7_chart_signals_payload`. It reads only the warm chart cache 
             "status": "READY" if ready else "WARMING",
             "date": now_et.date().isoformat(),
             "timezone": EASTERN_TZ,
-            "windowLabel": "5:00 AM - 9:30 AM ET",
+            "windowLabel": "6:00 AM - 9:30 AM ET",
             "rows": rows,
             "matchCount": len(rows),
             "readySymbols": ready,
@@ -932,7 +936,7 @@ curl -s http://127.0.0.1:3001/api/dashboard \
   | ./.venv/Scripts/python.exe -c "import json,sys; d=json.load(sys.stdin)['mag7PremarketScanner']; print(d['status'], d['windowLabel'], d['matchCount'], d['readySymbols'])"
 ```
 
-Expected: a status of `READY` or `WARMING`, the window label, a match count, and the ready symbol list. Outside 05:00–09:30 a `matchCount` of `0` is correct, not a bug — confirm `readySymbols` is non-empty so you know the read path works.
+Expected: a status of `READY` or `WARMING`, the window label, a match count, and the ready symbol list. Outside 06:00–09:30 a `matchCount` of `0` is correct, not a bug — confirm `readySymbols` is non-empty so you know the read path works.
 
 - [ ] **Step 5: Commit**
 
@@ -941,7 +945,7 @@ git add api_server.py
 git commit -m "feat(scanner): serve the MAG7 premarket scanner payload
 
 Reads only the warm chart cache, memoized per symbol and bar time. Warmer
-now starts at 05:00 ET so tapes are ready when the window opens."
+now starts at 06:00 ET so tapes are ready when the window opens."
 ```
 
 ---
@@ -960,7 +964,7 @@ Find the defaults object (`grep -n "mag7PremarketChartSignals: {" frontend/src/A
 
 ```js
   mag7PremarketScanner: {
-    status: "WARMING", windowLabel: "5:00 AM - 9:30 AM ET", rows: [],
+    status: "WARMING", windowLabel: "6:00 AM - 9:30 AM ET", rows: [],
     matchCount: 0, readySymbols: [], pendingSymbols: [], message: "",
   },
 ```
@@ -1082,7 +1086,7 @@ Expected: `App.jsx OK`
 
 - [ ] **Step 6: Look at it in the browser**
 
-Open `http://127.0.0.1:5173/` (dev server hot-reloads; no build needed) and find the MAG7 PREMARKET SCANNER table. Outside 05:00–09:30 expect the empty message — that is correct behaviour, not a failure. Confirm the table renders, the header shows `5:00 AM - 9:30 AM ET`, and no console errors.
+Open `http://127.0.0.1:5173/` (dev server hot-reloads; no build needed) and find the MAG7 PREMARKET SCANNER table. Outside 06:00–09:30 expect the empty message — that is correct behaviour, not a failure. Confirm the table renders, the header shows `6:00 AM - 9:30 AM ET`, and no console errors.
 
 - [ ] **Step 7: Commit**
 

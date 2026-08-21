@@ -1,4 +1,4 @@
-# MAG7 premarket scanner (05:00–09:30 ET)
+# MAG7 premarket scanner (06:00–09:30 ET)
 
 **Date:** 2026-08-20 · **Status:** Approved, not yet implemented
 
@@ -95,8 +95,11 @@ Only 1h / 2h / 4h / D are scanned. 15m and 30m are excluded per the user's
 
 ## Scan window and match rule
 
-**Window:** 05:00:00 – 09:30:00 ET, weekdays. Session key `premarket5`, added
+**Window:** 06:00:00 – 09:30:00 ET, weekdays. Session key `premarket6`, added
 alongside the existing `premarket` rather than replacing it.
+
+The user first asked for 06:00, widened to 05:00, then settled back on 06:00
+(2026-08-20). 05:00 was rejected for tape thinness, not difficulty.
 
 Two different qualifying tests, because the two signal types timestamp
 differently:
@@ -111,11 +114,14 @@ differently:
   guard is `bar.time + minutes*60 > last_source_bar_time → skip`. A fire is
   therefore a bucket-close fact, and the window test must be on close time.
 
-  Worked through against the 05:00–09:30 window:
-  - **1h** buckets close 06:00, 07:00, 08:00, 09:00 → all in window.
-  - **2h** buckets (Eastern-midnight anchored) close 06:00 and 08:00 → in
-    window.
+  Worked through against the 06:00–09:30 window:
+  - **1h** buckets close 07:00, 08:00, 09:00 → in window. The 06:00 close
+    (the 05:00–06:00 bucket) lands exactly on the window open and counts.
+  - **2h** buckets (Eastern-midnight anchored) close 06:00 and 08:00 → both
+    in window, 06:00 on the boundary.
   - **4h** bucket 05:00–09:00 closes 09:00 → in window, one chance per day.
+    Note its bucket *starts* an hour before the window; only the close
+    matters.
   - **D** closes at Eastern midnight, so **today's daily bucket cannot close
     during premarket at all.**
 
@@ -189,9 +195,9 @@ Python producer (so CALL parity holds there too).
   already 111 KB and would give the new code no clean test seam.
 - `tests/test_premarket_scanner.py` *(new)* — golden fixture (below), plus
   window-boundary, scoring-threshold, and cold-symbol cases.
-- `api_server.py:10945` — cache warmer 08:00 → 05:00 ET. Without this every
-  row is cold at 05:00.
-- `api_server.py:10961` — add the 05:00–09:30 window alongside the existing
+- `api_server.py:10945` — cache warmer 08:00 → 06:00 ET. Without this every
+  row is cold at 06:00.
+- `api_server.py:10961` — add the 06:00–09:30 window alongside the existing
   prior-17:00→09:29 one (do not replace it; the existing premarket table
   still uses it).
 - `api_server.py` ~11244 / ~12930 — assemble rows, expose
@@ -209,9 +215,9 @@ harness and save its output. Assert the Python reproduces it event-for-event.
 Drift then fails a test instead of quietly lying in the table at 07:15.
 
 Also covered:
-- CALL signals at 04:59:59 and 09:30:01 are excluded; 05:00:00 and 09:30:00
+- CALL signals at 05:59:59 and 09:30:01 are excluded; 06:00:00 and 09:30:00
   are included.
-- Fire bucket-close: 1h closes at 06:00/07:00/08:00/09:00 and the 4h close at
+- Fire bucket-close: 1h closes at 07:00/08:00/09:00 and the 4h close at
   09:00 all qualify; a still-forming bucket produces no fire at all
   (regression guard for live commit `461d4af`).
 - The most recent closed daily release is included and carries its own
@@ -224,11 +230,16 @@ Also covered:
 
 ## Risks
 
-- **Earlier warmer start** means the paced Mag7 chain poller runs three extra
-  hours each weekday (05:00 instead of 08:00) — more Schwab calls per
+- **Earlier warmer start** means the paced Mag7 chain poller runs two extra
+  hours each weekday (06:00 instead of 08:00) — more Schwab calls per
   morning. It is paced and Mag7-only, so this is expected to be fine, but it
-  is a real change in broker load, and 05:00 is early enough that thin
-  premarket tapes may leave some symbols warming for the first few minutes.
+  is a real change in broker load.
+- **"Mag7" is 22 tickers, not 7.** `DEFAULT_MAG7_OPTION_WATCHLIST_SOURCE`
+  (`api_server.py:424`) is AAPL AMZN GOOGL META MSFT NFLX NVDA TSLA AVGO
+  INTC AMD NVDL AMDL METU TSLL SPY QQQ SPCU TQQQ SOXL AMZU USO. The scan
+  cost and the row count both scale with that list, and **MSTR is not in
+  it** despite appearing in the user's screenshots. The list is editable via
+  `/api/mag7-scanner-watchlist`.
 - **`mtfLiveSignalContexts`** is currently unpopulated, which is what makes
   CALL parity exact. If a future change starts emitting it, the chart will be
   able to show a tick-derived signal the scanner cannot see, and the scanner
