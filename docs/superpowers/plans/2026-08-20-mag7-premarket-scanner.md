@@ -1305,3 +1305,51 @@ The live repo is not the one GitHub sees. Copy the five new files and the four m
 - [ ] `curl` on `/api/premarket-scanner` returns a non-empty `readySymbols` AND a changing `generatedAt` on repeat calls
 - [ ] The table renders at `:5173` with no console errors
 - [ ] **The parity check that matters:** during a live premarket window, pick a row and open that ticker's 5m chart. Every CALL2H/CALL4H and every 🔥 in the row must be visible on the chart, and nothing on the chart in-window may be missing from the row. This cannot be run until a market morning — say so explicitly rather than implying it passed.
+
+---
+
+## Implementation record (2026-08-21, built overnight)
+
+Shipped in the **live** repo `AgenticAI-Trading 2` (branch `OI-scanner-BOT`):
+
+| Commit | What |
+|---|---|
+| `4a6920b` | Extract squeeze detection into `frontend/src/squeezeRelease.js` |
+| `1cd2bdd` | Python port + golden fixture (72/32/13/4 real releases matched) |
+| `260df77` | Window, match rule, strength score, live tail |
+| `a9c3c7f` | `/api/premarket-scanner` route; warmer 08:00 -> 06:00 |
+| `393ea5a` | Scanner view + mobile Scanner tab (Watchlist -> More) |
+| `c07602f` | Drop the FORMING badge |
+
+Final state: **18 Python tests, 481 frontend tests, all passing.**
+
+### Three defects the build surfaced that the plan had wrong
+
+1. **Stale daily fires.** The daily branch took the newest release anywhere in
+   the tape, so an August scan reported a **2026-07-03** fire — a flame the
+   chart would not draw. Now only the most recently *closed* daily candle
+   counts. Regression test added.
+2. **The FORMING badge could never be false.** `scanner.py:399` hardcodes
+   `liveForming=True` on every signal (all 137 in a live payload). The badge
+   would have shown on every row forever. Removed rather than faked.
+3. **`node --test` needs explicit `.js` import extensions**; Vite does not.
+   The plan's import would not have loaded under test.
+
+### NOT DONE: mirroring code to the outer repo
+
+Deliberately skipped. The mirror is far behind the live repo — App.jsx by
+~2,710 lines, `api_server.py` by ~2,100, `index.css` by ~2,900, and it has no
+`mobileOverflowNavigation.js` at all. Copying the live files across would
+sweep thousands of lines of unrelated, unmerged work into a commit labelled
+as this scanner change. That reconciliation is its own task and needs a human
+deciding what belongs. **The running app is unaffected: it serves from the
+live repo.**
+
+### Not verifiable overnight
+
+- **No browser tool in this session**, so the table was never seen rendered.
+  Verified instead: the built bundle served from `:4173` contains every new
+  identifier, the CSS shipped, and both suites pass.
+- **The live-window parity check** — open a flagged ticker's 5m chart during
+  a real premarket and confirm every CALL2H/CALL4H and flame in the row is on
+  the chart — needs a market morning. It has not been run.
