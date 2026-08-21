@@ -174,6 +174,33 @@ existing payload) instead of showing a misleading zero.
 | Squeeze Fire | **Python port**, 1h/2h/4h/D | yes |
 | Strength | new scorer | yes |
 
+## Timing: is the scanner simultaneous with the chart?
+
+Measured in the live repo, not assumed.
+
+- The dashboard (and therefore the scanner table) polls every **5 s**
+  (`App.jsx`, `setInterval(loadDashboard, 5000)`).
+- The chart payload — the source of the CALL boxes — refreshes at most every
+  **30 s** (`OI_FINDER_CHART_REFRESH_SECONDS = 30.0`, `api_server.py:202`).
+
+**CALL2H / CALL4H: effectively simultaneous.** Both the chart and the scanner
+wait on the same 30 s server refresh, and the table picks it up within 5 s of
+the cache changing. Neither can lead the other by a meaningful margin,
+because neither recomputes crosses from live ticks (`mtfLiveSignalContexts`
+is unpopulated, so `reconcileLiveMtfSignals` is inert).
+
+**🔥 fires: the chart can lead by up to ~30 s.** This is a real asymmetry and
+it does not go away with a faithful port. `calculateMtfSqueezeReleaseClouds`
+is fed `bars` — via `buildChartDisplayBars({liveBars: bars})`, the *streamed*
+tape — so the browser sees a bucket close the instant a tick crosses the
+boundary. The scanner sees it only after the next server cache refresh.
+
+This is a **lag, never a disagreement**: the scanner always catches up within
+one refresh and can never miss a fire the chart showed. On 1h/2h/4h/D
+releases — events that occur at most hourly — a sub-30-second lag is
+immaterial. Recorded here so nobody later reads a brief mismatch as a parity
+bug and "fixes" it by diverging the two implementations.
+
 ## Which repo
 
 **Implement in the live repo `AgenticAI-Trading 2` (branch `OI-scanner-BOT`),
