@@ -104,19 +104,28 @@ differently:
 - **CALL2H / CALL4H** qualify on `signal.time` falling inside the window.
   These are cross-detection times projected onto 5m candles, so they already
   land where the chart draws them.
-- **🔥 fires** qualify on **bucket overlap**: `bucket_start + minutes*60 >
-  05:00 ET`. They must *not* be filtered on `bucket_start`, because the
-  bucket clocks anchor outside the window — the daily bucket starts at
-  Eastern midnight, five hours before the scan opens. A fire on it is painted
-  on the chart throughout premarket, so filtering on its start timestamp
-  would drop a signal the user can plainly see and break the governing
-  constraint of this design.
+- **🔥 fires** qualify on **bucket close**, not bucket start and not overlap.
+  As of live commit `461d4af` (2026-08-20 16:13), a release is only drawn
+  once its bucket has closed — the forming bucket's bands and ATR move with
+  every tick, so its "release" flickered and the flame badge wandered. The
+  guard is `bar.time + minutes*60 > last_source_bar_time → skip`. A fire is
+  therefore a bucket-close fact, and the window test must be on close time.
 
-  Worked through: the 4h bucket 05:00–09:00 starts exactly at the window open
-  → included. Daily bucket starting 00:00 today ends at next midnight →
-  included. Yesterday's daily bucket ends 00:00 today, not > 05:00 →
-  excluded. A 2h bucket 04:00–06:00 ends 06:00 > 05:00 → included, since it
-  was still running when the window opened.
+  Worked through against the 05:00–09:30 window:
+  - **1h** buckets close 06:00, 07:00, 08:00, 09:00 → all in window.
+  - **2h** buckets (Eastern-midnight anchored) close 06:00 and 08:00 → in
+    window.
+  - **4h** bucket 05:00–09:00 closes 09:00 → in window, one chance per day.
+  - **D** closes at Eastern midnight, so **today's daily bucket cannot close
+    during premarket at all.**
+
+**Daily fire special case.** Because a daily candle does not close until
+midnight, a 🔥D visible during premarket is always the *previous* session's
+release. The chart draws it (it is a closed bucket inside the session
+cutoff), so parity requires including it. Rule: include the **most recent
+closed daily bucket** if it released, and label the row with that fire's own
+date so it is never mistaken for a fresh premarket event. Excluding it would
+have made the user's explicit "1hr to D" request silently impossible.
 
 All four fire timeframes count independently: **1h, 2h, 4h and D**, any one
 of which alone qualifies a ticker for a row (and adds one point). 15m and 30m
@@ -159,6 +168,19 @@ existing payload) instead of showing a misleading zero.
 | Squeeze Fire | **Python port**, 1h/2h/4h/D | yes |
 | Strength | new scorer | yes |
 
+## Which repo
+
+**Implement in the live repo `AgenticAI-Trading 2` (branch `OI-scanner-BOT`),
+then mirror the commit into the outer repo for git history.** The outer
+`AgenticAI-Trading 7` is a mirror; nothing there executes, so building only
+there would ship nothing the user can see. Line numbers below were read from
+the mirror and **will differ in the live repo** — locate by symbol name, not
+by line.
+
+Verified in the live repo 2026-08-20: `premarket_scanner.py` does not exist,
+no `mag7PremarketScanner` key, and `mtfLiveSignalContexts` still has no
+Python producer (so CALL parity holds there too).
+
 ## Files
 
 - `premarket_scanner.py` *(new, ~150 lines)* — three pure functions, no I/O:
@@ -189,9 +211,11 @@ Drift then fails a test instead of quietly lying in the table at 07:15.
 Also covered:
 - CALL signals at 04:59:59 and 09:30:01 are excluded; 05:00:00 and 09:30:00
   are included.
-- Fire bucket-overlap: a 4h bucket at 05:00, a 2h bucket running 04:00–06:00,
-  and a daily bucket at Eastern midnight all qualify; yesterday's daily
-  bucket does not.
+- Fire bucket-close: 1h closes at 06:00/07:00/08:00/09:00 and the 4h close at
+  09:00 all qualify; a still-forming bucket produces no fire at all
+  (regression guard for live commit `461d4af`).
+- The most recent closed daily release is included and carries its own
+  (previous-session) date.
 - Each of 1h, 2h, 4h and D alone is enough to produce a row.
 - Scores of 2 / 3 / 4 map to WEAK / MODERATE / STRONG.
 - `C2H` and `C4H` never contribute to the score.
