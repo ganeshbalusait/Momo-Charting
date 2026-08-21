@@ -1,4 +1,4 @@
-# MAG7 premarket scanner (06:00–09:30 ET)
+# MAG7 premarket scanner (05:00–09:30 ET)
 
 **Date:** 2026-08-20 · **Status:** Approved, not yet implemented
 
@@ -95,7 +95,7 @@ Only 1h / 2h / 4h / D are scanned. 15m and 30m are excluded per the user's
 
 ## Scan window and match rule
 
-**Window:** 06:00:00 – 09:30:00 ET, weekdays. Session key `premarket6`, added
+**Window:** 05:00:00 – 09:30:00 ET, weekdays. Session key `premarket5`, added
 alongside the existing `premarket` rather than replacing it.
 
 Two different qualifying tests, because the two signal types timestamp
@@ -105,18 +105,22 @@ differently:
   These are cross-detection times projected onto 5m candles, so they already
   land where the chart draws them.
 - **🔥 fires** qualify on **bucket overlap**: `bucket_start + minutes*60 >
-  06:00 ET`. They must *not* be filtered on `bucket_start`, because the
-  bucket clocks anchor outside the window — a 4h bucket runs 05:00–09:00 ET
-  and the daily bucket starts at Eastern midnight. A fire on either is
-  painted on the chart throughout premarket, so filtering on its start
-  timestamp would drop signals the user can plainly see and break the
-  governing constraint of this design.
+  05:00 ET`. They must *not* be filtered on `bucket_start`, because the
+  bucket clocks anchor outside the window — the daily bucket starts at
+  Eastern midnight, five hours before the scan opens. A fire on it is painted
+  on the chart throughout premarket, so filtering on its start timestamp
+  would drop a signal the user can plainly see and break the governing
+  constraint of this design.
 
-  Worked through: 4h bucket 05:00–09:00 ends 09:00 > 06:00 → included, as the
-  chart shows it. Daily bucket starting 00:00 today ends at next midnight →
-  included. Yesterday's daily bucket ends 00:00 today, not > 06:00 →
-  excluded. A 2h bucket 04:00–06:00 ends exactly at 06:00 → excluded, since
-  it closed before the window opened.
+  Worked through: the 4h bucket 05:00–09:00 starts exactly at the window open
+  → included. Daily bucket starting 00:00 today ends at next midnight →
+  included. Yesterday's daily bucket ends 00:00 today, not > 05:00 →
+  excluded. A 2h bucket 04:00–06:00 ends 06:00 > 05:00 → included, since it
+  was still running when the window opened.
+
+All four fire timeframes count independently: **1h, 2h, 4h and D**, any one
+of which alone qualifies a ticker for a row (and adds one point). 15m and 30m
+remain excluded per the user's "1hr to D" rule.
 
 **Match (rule 3):** a ticker earns a row if it has *any* of —
 - a `CALL2H` or `CALL4H` with `family == "4x8"` (yellow), or
@@ -163,9 +167,9 @@ existing payload) instead of showing a misleading zero.
   already 111 KB and would give the new code no clean test seam.
 - `tests/test_premarket_scanner.py` *(new)* — golden fixture (below), plus
   window-boundary, scoring-threshold, and cold-symbol cases.
-- `api_server.py:10945` — cache warmer 08:00 → 06:00 ET. Without this every
-  row is cold at 06:00.
-- `api_server.py:10961` — add the 06:00–09:30 window alongside the existing
+- `api_server.py:10945` — cache warmer 08:00 → 05:00 ET. Without this every
+  row is cold at 05:00.
+- `api_server.py:10961` — add the 05:00–09:30 window alongside the existing
   prior-17:00→09:29 one (do not replace it; the existing premarket table
   still uses it).
 - `api_server.py` ~11244 / ~12930 — assemble rows, expose
@@ -183,11 +187,12 @@ harness and save its output. Assert the Python reproduces it event-for-event.
 Drift then fails a test instead of quietly lying in the table at 07:15.
 
 Also covered:
-- CALL signals at 05:59:59 and 09:30:01 are excluded; 06:00:00 and 09:30:00
+- CALL signals at 04:59:59 and 09:30:01 are excluded; 05:00:00 and 09:30:00
   are included.
-- Fire bucket-overlap: a 4h bucket at 05:00 and a daily bucket at Eastern
-  midnight both qualify; yesterday's daily bucket and a 2h bucket ending
-  exactly at 06:00 do not.
+- Fire bucket-overlap: a 4h bucket at 05:00, a 2h bucket running 04:00–06:00,
+  and a daily bucket at Eastern midnight all qualify; yesterday's daily
+  bucket does not.
+- Each of 1h, 2h, 4h and D alone is enough to produce a row.
 - Scores of 2 / 3 / 4 map to WEAK / MODERATE / STRONG.
 - `C2H` and `C4H` never contribute to the score.
 - A symbol with no cached payload lands in `pendingSymbols` rather than
@@ -195,10 +200,11 @@ Also covered:
 
 ## Risks
 
-- **Earlier warmer start** means the paced Mag7 chain poller runs two extra
-  hours each weekday — more Schwab calls per morning. It is paced and
-  Mag7-only, so this is expected to be fine, but it is a real change in
-  broker load.
+- **Earlier warmer start** means the paced Mag7 chain poller runs three extra
+  hours each weekday (05:00 instead of 08:00) — more Schwab calls per
+  morning. It is paced and Mag7-only, so this is expected to be fine, but it
+  is a real change in broker load, and 05:00 is early enough that thin
+  premarket tapes may leave some symbols warming for the first few minutes.
 - **`mtfLiveSignalContexts`** is currently unpopulated, which is what makes
   CALL parity exact. If a future change starts emitting it, the chart will be
   able to show a tick-derived signal the scanner cannot see, and the scanner
