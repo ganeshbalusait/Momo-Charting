@@ -5467,8 +5467,10 @@ function HighOiContractRow({ row, peakOi, peakVolume, isLeader, tone = "" }) {
   const side = row.side === "PUT" ? "put" : "call";
   const oiPercent = peakOi > 0 ? Math.round((row.openInterest / peakOi) * 100) : 0;
   const volumePercent = peakVolume > 0 ? Math.round((row.volume / peakVolume) * 100) : 0;
-  return <tr className={`high-oi-row is-${side}${isLeader ? " is-leader" : ""}${tone ? ` is-tone-${tone}` : ""}`}>
+  const imp = Number(row.imp) || 1;
+  return <tr className={`high-oi-row is-${side} is-imp-${imp}${isLeader ? " is-leader" : ""}${tone ? ` is-tone-${tone}` : ""}`}>
     <td className="high-oi-side">{row.side === "PUT" ? "Put" : "Call"}</td>
+    <td className="high-oi-imp" title={`Importance ${imp}/5 against the leading ${side} wall`}>{imp}</td>
     <td className="high-oi-delta">{row.delta.toFixed(2)}</td>
     <td className="high-oi-volume"><i style={{ width: `${volumePercent}%` }} aria-hidden="true" /><span>{formatCompactNumber(row.volume)}</span></td>
     <td className="high-oi-oi"><i style={{ width: `${oiPercent}%` }} aria-hidden="true" /><span>{formatCompactNumber(row.openInterest)}</span></td>
@@ -5491,23 +5493,32 @@ function formatExpiryShort(value) {
 }
 
 function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, error }) {
-  const [minDelta, setMinDelta] = useState(0.14);
+  // MomoX ranks pure OI: no delta floor unless the trader dials one in.
+  const [minDelta, setMinDelta] = useState(0);
   const [topPerSide, setTopPerSide] = useState(8);
   const [scope, setScope] = useState("monthly");
+
+  const spot = Number(underlyingPrice) || 0;
+  const todayChange = Number(data?.todayChange || 0);
+  // BMO - the pre-market-open price MomoX prints between its call and put
+  // blocks. It anchors both the expected-move rails and the call/put split, so
+  // an intraday swing never flips a wall from one side of the ladder to the
+  // other while the trader is reading it.
+  const bmo = spot > 0 && todayChange ? spot - todayChange : spot;
 
   const model = useMemo(() => buildHighOiContractList({
     rows,
     underlyingPrice,
+    anchorPrice: bmo,
     minDelta,
     topPerSide,
     scope,
     frontExpiry,
-  }), [rows, underlyingPrice, minDelta, topPerSide, scope, frontExpiry]);
+  }), [rows, underlyingPrice, bmo, minDelta, topPerSide, scope, frontExpiry]);
 
-  const spot = Number(underlyingPrice) || 0;
   const expectedMove = Number(data?.expiryExpectedMoves?.[frontExpiry] || data?.currentAtm?.expectedMove || 0);
-  const todayChange = Number(data?.todayChange || 0);
-  const openPrice = spot > 0 && todayChange ? spot - todayChange : 0;
+  const emHigh = bmo > 0 && expectedMove > 0 ? bmo + expectedMove : 0;
+  const emLow = bmo > 0 && expectedMove > 0 ? bmo - expectedMove : 0;
   const hasRows = model.calls.length > 0 || model.puts.length > 0;
   // Live price-relative tones, matching the chart walls: crossed call walls
   // and the active put support glow green (bullish), the contested call wall
@@ -5523,6 +5534,29 @@ function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, er
     if (row.strike > spot) return "red";
     return row.strike === nearestPutBelow ? "green" : "";
   };
+
+  // MomoX prints one strike-descending ladder with the +EM / BMO / -EM rails
+  // inline at their own price, not a call block, a divider and a put block.
+  // Calls all sit above the anchor and puts below it, so concatenating the two
+  // sides is already sorted.
+  const rails = [
+    emHigh > 0 ? { key: "em-high", label: "+EM", price: emHigh, tone: "up" } : null,
+    bmo > 0 ? { key: "bmo", label: "BMO", price: bmo, tone: "anchor" } : null,
+    emLow > 0 ? { key: "em-low", label: "-EM", price: emLow, tone: "down" } : null,
+  ].filter(Boolean).sort((left, right) => right.price - left.price);
+  const ladder = [];
+  let railIndex = 0;
+  [...model.calls, ...model.puts].forEach((row) => {
+    while (railIndex < rails.length && rails[railIndex].price > row.strike) {
+      ladder.push({ kind: "rail", rail: rails[railIndex] });
+      railIndex += 1;
+    }
+    ladder.push({ kind: "row", row });
+  });
+  while (railIndex < rails.length) {
+    ladder.push({ kind: "rail", rail: rails[railIndex] });
+    railIndex += 1;
+  }
 
   return <div className="high-oi-panel" aria-label="Highest open interest contracts">
     <div className="high-oi-controls">
@@ -5551,9 +5585,9 @@ function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, er
     </div>
     <div className="high-oi-stats">
       <span><small>ExMo</small><b className="is-move">{expectedMove > 0 ? `±${formatCurrency(expectedMove)}` : "--"}</b></span>
-      <span><small>Open</small><b>{openPrice > 0 ? openPrice.toFixed(2) : "--"}</b></span>
-      <span><small>+EM</small><b className="is-up">{spot > 0 && expectedMove > 0 ? (spot + expectedMove).toFixed(2) : "--"}</b></span>
-      <span><small>-EM</small><b className="is-down">{spot > 0 && expectedMove > 0 ? (spot - expectedMove).toFixed(2) : "--"}</b></span>
+      <span><small>BMO</small><b>{bmo > 0 ? bmo.toFixed(2) : "--"}</b></span>
+      <span><small>+EM</small><b className="is-up">{emHigh > 0 ? emHigh.toFixed(2) : "--"}</b></span>
+      <span><small>-EM</small><b className="is-down">{emLow > 0 ? emLow.toFixed(2) : "--"}</b></span>
       <span><small>Last</small><b>{spot > 0 ? spot.toFixed(2) : "--"}</b></span>
       <span><small>P/C</small><b>{model.putCallRatio > 0 ? model.putCallRatio.toFixed(2) : "--"}</b></span>
       <span><small>Call OI</small><b className="is-call">{formatCompactNumber(model.callOi)}</b></span>
@@ -5561,27 +5595,20 @@ function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, er
     </div>
     <div className="high-oi-scroll">
       <table>
-        <thead><tr><th>C/P</th><th>Δ</th><th>Vol</th><th>OI</th><th>Strike</th><th>Last</th><th>Exp</th><th>DTE</th></tr></thead>
+        <thead><tr><th>C/P</th><th title="Importance 1-5: this wall's OI against the leading wall on its own side">Imp</th><th>Δ</th><th>Vol</th><th>OI</th><th>Strike</th><th>Last</th><th>Exp</th><th>DTE</th></tr></thead>
         <tbody>
-          {hasRows ? <>
-            {model.calls.map((row) => <HighOiContractRow
-              key={`call-${row.expiry}-${row.strike}`}
-              row={row}
+          {hasRows ? ladder.map((entry) => (entry.kind === "rail"
+            ? <tr className={`high-oi-rail is-${entry.rail.tone}`} key={entry.rail.key}>
+              <td colSpan="9">{entry.rail.label} {entry.rail.price.toFixed(2)}</td>
+            </tr>
+            : <HighOiContractRow
+              key={`${entry.row.side}-${entry.row.expiry}-${entry.row.strike}`}
+              row={entry.row}
               peakOi={model.peakOi}
               peakVolume={model.peakVolume}
-              isLeader={row.openInterest === model.peakOi}
-              tone={rowTone(row)}
-            />)}
-            <tr className="high-oi-spot"><td colSpan="8">Last {spot > 0 ? spot.toFixed(2) : "--"}</td></tr>
-            {model.puts.map((row) => <HighOiContractRow
-              key={`put-${row.expiry}-${row.strike}`}
-              row={row}
-              peakOi={model.peakOi}
-              peakVolume={model.peakVolume}
-              isLeader={row.openInterest === model.peakOi}
-              tone={rowTone(row)}
-            />)}
-          </> : <tr><td className="charts-oi-empty" colSpan="8">
+              isLeader={entry.row.openInterest === model.peakOi}
+              tone={rowTone(entry.row)}
+            />)) : <tr><td className="charts-oi-empty" colSpan="9">
             {error || (loading ? "Loading option chain..." : "No contracts match this delta floor.")}
           </td></tr>}
         </tbody>
@@ -14555,6 +14582,17 @@ function OiFinderCandleChart({
   // quote packet cannot resend the complete indicator stack while the trader
   // is dragging or zooming.
   const chartReferencePrice = Number(latestChartPrice || underlyingPrice || 0);
+  // BMO for the chart: the last print before the 4:00 AM ET session anchor.
+  // MomoX splits call walls from put walls here rather than at the live tick,
+  // which is what keeps a crossed wall drawn instead of deleting it the moment
+  // price trades through, and keeps the chart identical to the High OI list.
+  const chartSessionBmo = useMemo(() => {
+    if (!momoxLevelAnchor || !Array.isArray(chartBars) || !chartBars.length) return 0;
+    for (let index = chartBars.length - 1; index >= 0; index -= 1) {
+      if (Number(chartBars[index]?.time) < momoxLevelAnchor) return Number(chartBars[index]?.close) || 0;
+    }
+    return 0;
+  }, [chartBars, momoxLevelAnchor]);
   const persistentChartOiLevelModel = useMemo(() => buildHighOiLevelModel({
     levelSets: chartOiLevelSets,
     requestedExpiry: chartOiScopeExpiry,
@@ -14700,9 +14738,9 @@ function OiFinderCandleChart({
       reportedChartOiLevelModel.visibleLevels,
     ]);
     // MomoX parity: in window scope the chart draws exactly the High OI list
-    // walls — delta-banded (default 0.14-0.50), one row per strike at its
-    // dominant expiry, top N per side — instead of a wall at every ranked
-    // strike, labeled like "1.3K 8/7".
+    // walls — calls only above the session anchor and puts only below it, one
+    // row per strike at its dominant expiry, top N per side — instead of a
+    // wall at every ranked strike, labeled like "1.3K 8/7".
     const buildWindowWallLevels = () => {
       const chainSource = Array.isArray(selectedChainRows) && selectedChainRows.length
         ? selectedChainRows
@@ -14714,6 +14752,7 @@ function OiFinderCandleChart({
       const listModel = buildHighOiContractList({
         rows: chainSource,
         underlyingPrice: liveSpot,
+        anchorPrice: chartSessionBmo,
         topPerSide: Math.max(1, Math.min(30, Number(indicatorOptions.oiLevelsMaxPerSide) || 8)),
       });
       const expiryTag = (expiry) => (/^\d{4}-\d{2}-\d{2}$/.test(String(expiry || ""))
@@ -14832,7 +14871,7 @@ function OiFinderCandleChart({
       });
     });
     return [...levelsByPrice.values()];
-  }, [callRows, putRows, selectedChainRows, persistentChartOiLevelModel, reportedChartOiLevelModel, indicatorOptions.oiLevelsCallColor, indicatorOptions.oiLevelsCallWeakColor, indicatorOptions.oiLevelsMaxPerSide, indicatorOptions.oiLevelsPutColor, indicatorOptions.oiLevelsPutWeakColor, indicatorOptions.oiLevelsShowWeak, indicatorSettings.oiLevels, chartReferencePrice, chartOiScopeExpiry]);
+  }, [callRows, putRows, selectedChainRows, persistentChartOiLevelModel, reportedChartOiLevelModel, indicatorOptions.oiLevelsCallColor, indicatorOptions.oiLevelsCallWeakColor, indicatorOptions.oiLevelsMaxPerSide, indicatorOptions.oiLevelsPutColor, indicatorOptions.oiLevelsPutWeakColor, indicatorOptions.oiLevelsShowWeak, indicatorSettings.oiLevels, chartReferencePrice, chartSessionBmo, chartOiScopeExpiry]);
   const nextWallLevelsSignature = `${normalizedChartSymbol}|${String(currentAtm?.expiry || "")}|${chartWallLevelSignature(nextWallLevels)}`;
   const stableWallLevelsRef = useRef({ signature: "", levels: [] });
   if (stableWallLevelsRef.current.signature !== nextWallLevelsSignature) {

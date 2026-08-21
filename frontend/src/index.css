@@ -13068,3 +13068,42 @@ button.avatar {
 .high-oi-row.is-tone-red td { color: #ffd9dc; }
 .high-oi-row.is-tone-red .high-oi-oi > i { background: rgba(242, 54, 69, .5); }
 .high-oi-row.is-tone-green .high-oi-exp, .high-oi-row.is-tone-red .high-oi-exp { font-weight: 700; }
+
+/* MomoX High OI parity: the Imp 1-5 column and the inline +EM / BMO / -EM
+   rails. Appended at the end of the file on purpose - the unconditional
+   .charts-workstation rules above outrank anything added inside the earlier
+   max-width media block. */
+.high-oi-imp {
+  text-align: center !important;
+  font-family: var(--momox-ui-font);
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+/* Imp mirrors the MomoX line weights: 1-2 are its faint "small OI" dashes,
+   3-5 the bright walls it draws thick. */
+.high-oi-row.is-imp-1 .high-oi-imp { color: #5c6773; }
+.high-oi-row.is-imp-2 .high-oi-imp { color: #7d8a99; }
+.high-oi-row.is-imp-3 .high-oi-imp { color: #a8b6c4; }
+.high-oi-row.is-imp-4 .high-oi-imp { color: #d7e2ec; }
+.high-oi-row.is-imp-5 .high-oi-imp { color: #ffffff; text-shadow: 0 0 6px rgba(255, 255, 255, .45); }
+/* Faint walls read as faint, exactly like the reference panel. */
+.high-oi-row.is-imp-1 td, .high-oi-row.is-imp-2 td { opacity: .72; }
+.high-oi-row.is-imp-5 .high-oi-oi > span { font-weight: 900; }
+.high-oi-row.is-imp-1 .high-oi-oi > i, .high-oi-row.is-imp-2 .high-oi-oi > i { opacity: .5; }
+
+/* Expected-move and session-anchor rails, printed inline at their own price
+   the way MomoX splits its ladder rather than as one "Last" divider. */
+.high-oi-rail td {
+  padding: 3px 8px;
+  background: #131317;
+  font-family: var(--momox-ui-font);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .07em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.high-oi-rail.is-up td { border-top: 1px dashed rgba(255, 59, 79, .75); border-bottom: 1px dashed rgba(255, 59, 79, .75); color: #ff6a78; }
+.high-oi-rail.is-anchor td { border-top: 1px dashed rgba(243, 189, 55, .8); border-bottom: 1px dashed rgba(243, 189, 55, .8); color: #f3bd37; }
+.high-oi-rail.is-down td { border-top: 1px dashed rgba(34, 197, 94, .75); border-bottom: 1px dashed rgba(34, 197, 94, .75); color: #3ddc84; }
