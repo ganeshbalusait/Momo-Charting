@@ -128,6 +128,70 @@ button. An address that is *not* on the list must be refused — verify that too
 because a policy that admits everyone looks identical to a working one until
 someone tries.
 
+## Add a person (the day-to-day job)
+
+Everything above is how the gate was *built*. This is how you use it.
+
+Two lists have to agree, and **nothing enforces that** — the app never sees
+who Cloudflare let in until they arrive. Do both.
+
+### 1. Cloudflare — let them reach the app
+
+1. **one.dash.cloudflare.com** → your account
+2. **Access → Applications** → click **AGX**
+3. **Policies** tab → open the **Owner** policy
+4. The include selector is **Emails**. Add their address to the list.
+5. **Save**
+
+Immediate. No restart, no redeploy.
+
+### 2. AGX — give them an account
+
+**Settings → USER MANAGEMENT** → Name, Email, role **User** → **Create user**.
+
+**The email must match the Cloudflare one exactly.** That address *is* the
+account; it is what the two systems match on.
+
+There is no password field. Accounts have no password — Cloudflare Access
+already proves who they are, so a second secret would only be one more thing
+to deliver and lose. (That is exactly what stranded two accounts for eleven
+days in August: the temporary password was never handed over.)
+
+### 3. What they do
+
+Open `app.agxtrade.com` → enter their email → Cloudflare emails a **one-time
+code** → enter it → they are in AGX. If the address is a Google account they
+can press **Continue with Google** and skip the code. Sessions last 30 days.
+
+### Getting it wrong
+
+| Situation | What they see |
+|---|---|
+| Cloudflare only, no AGX account | *"No AGX account for … — ask your administrator to add you in Settings."* |
+| AGX account only, not in Cloudflare | Never reaches the app at all |
+| Address differs between the two | Same as "no AGX account" — the mismatch is invisible |
+
+### Removing someone
+
+Take the email out of the Cloudflare policy. That is the fastest revocation —
+it stops them at the edge, before the app is involved.
+
+The **Disable** button in USER MANAGEMENT is the second lever: it keeps the
+account but refuses sign-in, and drops any live session immediately. Use both
+if you mean it.
+
+### Testing it yourself
+
+Log out of Cloudflare first, or you will test your own account and conclude it
+is broken:
+
+```
+https://app.agxtrade.com/cdn-cgi/access/logout
+```
+
+Cloudflare remembers your identity across the whole team domain, so without
+this you are still signed in as yourself no matter which address you type.
+
 ## Known behaviour
 
 - **Stale builds.** `app.agxtrade.com` serves `dist`, so changes appear only after
