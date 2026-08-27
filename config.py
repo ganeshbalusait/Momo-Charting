@@ -9,8 +9,8 @@ load_dotenv()
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE_PATH = BASE_DIR / "database" / "trades.db"
-ARTIFACTS_DIR = BASE_DIR / "artifacts"
+DATABASE_PATH = Path(os.getenv("DATABASE_PATH", str(BASE_DIR / "database" / "trades.db"))).expanduser()
+ARTIFACTS_DIR = Path(os.getenv("ARTIFACTS_DIR", str(BASE_DIR / "artifacts"))).expanduser()
 TRAINING_DIR = BASE_DIR / "training"
 WATCHLIST_PATH = Path(os.getenv("WATCHLIST_FILE", BASE_DIR / "watchlist.txt"))
 EASTERN_TZ = "America/New_York"

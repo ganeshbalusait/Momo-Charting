@@ -9,7 +9,24 @@
       "PowerShell(Start-ScheduledTask -TaskName 'AgenticAI-Trading-24x7')",
       "PowerShell(Get-ScheduledTask -TaskName 'AgenticAI-Trading-24x7')",
       "PowerShell(Get-NetTCPConnection -State Listen -LocalPort 3001 -ErrorAction SilentlyContinue)",
-      "PowerShell(Get-ScheduledTaskInfo -TaskName 'AgenticAI-Trading-24x7')"
+      "PowerShell(Get-ScheduledTaskInfo -TaskName 'AgenticAI-Trading-24x7')",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(& \"C:\\\\Program Files \\(x86\\)\\\\cloudflared\\\\cloudflared.exe\" tunnel info trading-app)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"https://app.agxtrade.com/\" -MaximumRedirection 0 -ErrorAction Stop; \"STATUS: $\\($r.StatusCode\\)\" } catch { $resp = $_.Exception.Response; if \\($resp\\) { \"STATUS: $\\([int]$resp.StatusCode\\)\"; \"LOCATION: $\\($resp.Headers['Location']\\)\"; \"CF-RAY: $\\($resp.Headers['CF-RAY']\\)\" } else { \"ERR: $\\($_.Exception.Message\\)\" } })",
+      "PowerShell(curl.exe -sS -o NUL -w \"edge / -> %{http_code}  redirect=%{redirect_url}\\\\n\" https://app.agxtrade.com/ ; curl.exe -sS -o NUL -w \"edge /api/health -> %{http_code}\\\\n\" https://app.agxtrade.com/api/health ; curl.exe -sS -o NUL -w \"local 4173 -> %{http_code}\\\\n\" http://127.0.0.1:4173/ ; curl.exe -sS -o NUL -w \"local 3001 /api/health -> %{http_code}\\\\n\" http://127.0.0.1:3001/api/health)",
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell($d = \"C:\\\\GANESH\\\\AgenticAI-Trading 2\\\\frontend\\\\dist\"; if \\(Test-Path $d\\) { \"TREE A dist: $d\"; Get-ChildItem $d -File | Select-Object Name,LastWriteTime,Length | Format-Table -AutoSize | Out-String } else { \"no dist at $d\" })",
+      "PowerShell(Resolve-DnsName *)",
+      "Bash(sed -i 's#from \"./oiHeatmapDay\";#from \"./oiHeatmapDay.js\";#' src/oiHeatmapDay.test.js)",
+      "Bash(node --test src/oiHeatmapDay.test.js)",
+      "Read(//c/Users/ganes/.claude/projects/C--GANESH-AgenticAI-Trading-7/memory/**)",
+      "Bash(printf '%s\\\\n' '- [Frontend source-lifting tests need LF]\\(frontend-source-lifting-tests-need-lf.md\\) — Python edits to App.jsx flip it to CRLF and break the tests that regex functions out of its source; looks like a flake because git stash normalizes it')",
+      "Bash(sed -i 's/\\\\r$//' src/highOiContractList.js)",
+      "Bash(node --test src/highOiContractList.test.js)",
+      "Bash(sed -i 's/\\\\r$//' __TRACKED_VAR__/alert-tests-append.py)",
+      "Bash(sed -i -e 's#^ assert ladder\\\\[\"monthlyExpiry\"\\\\] == \"2026-08-21\"$# assert ladder[\"monthlyExpiry\"] == \"2026-09-18\"#' -e 's#^ assert \\\\[level\\\\[\"strike\"\\\\] for level in ladder\\\\[\"callLevels\"\\\\]\\\\] == \\\\[345.0, 350.0, 355.0, 360.0\\\\]$# assert [level[\"strike\"] for level in ladder[\"callLevels\"]] == [345.0, 350.0, 360.0]#' -e 's#^ assert \\\\[level\\\\[\"strike\"\\\\] for level in events\\\\[0\\\\]\\\\[\"crossedLevels\"\\\\]\\\\] == \\\\[345, 350, 355\\\\]$# assert [level[\"strike\"] for level in events[0][\"crossedLevels\"]] == [345, 350]#' -e 's#^ assert events\\\\[0\\\\]\\\\[\"confirmedLevel\"\\\\]\\\\[\"strike\"\\\\] == 355$# assert events[0][\"confirmedLevel\"][\"strike\"] == 350#' -e 's#^ assert next_monthly_opex\\(date\\(2026, 8, 17\\)\\).isoformat\\(\\) == \"2026-08-21\"$# assert next_monthly_opex\\(date\\(2026, 8, 10\\)\\).isoformat\\(\\) == \"2026-08-21\"#' tests/test_oi_auto_alerts.py)",
+      "Bash(sed -i 's/\\\\r$//' __TRACKED_VAR__/commitmsg.txt)",
+      "Bash(git commit *)"
     ]
   }
 }

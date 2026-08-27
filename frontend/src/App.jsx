@@ -53,6 +53,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Component, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AutoOiAlertsPanel from "./AutoOiAlertsPanel";
 import { setBoundedCacheEntry } from "./boundedCache";
 import { layoutChartAxisLabels, mergePivotAndOiAxisLabels } from "./chartAxisLabels";
 import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
@@ -5958,6 +5959,19 @@ function FullChartsAndOiBoard({
       return true;
     }
   });
+  const [autoAlertsOpen, setAutoAlertsOpen] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem("chartsOiAutoAlertsOpen");
+      return saved == null ? true : saved === "true";
+    } catch {
+      return true;
+    }
+  });
+  const toggleAutoAlerts = () => setAutoAlertsOpen((current) => {
+    const next = !current;
+    try { window.localStorage.setItem("chartsOiAutoAlertsOpen", String(next)); } catch { /* storage can be disabled */ }
+    return next;
+  });
   const toggleChain = () => setChainOpen((current) => {
     const next = !current;
     try { window.localStorage.setItem("chartsOiChainOpen", String(next)); } catch { /* storage can be disabled */ }
@@ -6448,7 +6462,7 @@ function FullChartsAndOiBoard({
   }
 
   return <section
-    className={`charts-oi-page charts-oi-page-full chain-${chainSide} ${embedded ? "is-embedded" : ""} ${chainOpen ? "is-chain-open" : "is-chain-closed"} ${isChainResizing ? "is-resizing" : ""}`}
+    className={`charts-oi-page charts-oi-page-full has-auto-oi-alerts chain-${chainSide} ${embedded ? "is-embedded" : ""} ${chainOpen ? "is-chain-open" : "is-chain-closed"} ${autoAlertsOpen ? "" : "is-auto-alerts-collapsed"} ${isChainResizing ? "is-resizing" : ""}`}
     data-testid="charts-and-oi-view"
     id="charts-oi-workspace"
     ref={pageRef}
@@ -6469,6 +6483,12 @@ function FullChartsAndOiBoard({
       {streamNeedsAuthentication ? <div className="oi-finder-source-note is-error">Live streaming is unavailable in data-only mode. Private REST market-data refresh remains active.</div> : null}
       {data?.errors?.length ? <div className="oi-finder-source-note is-error">{data.errors[0]?.error}</div> : null}
     </div> : null}
+    <AutoOiAlertsPanel
+      activeSymbol={symbol}
+      collapsed={!autoAlertsOpen}
+      onToggle={toggleAutoAlerts}
+      onSelectSymbol={onLinkedSymbolChange}
+    />
     <section className={`charts-oi-full-chart${activeOiLevelModel.allLevels.length ? " has-external-oi-levels" : ""}`}>
       <OiFinderMultiChart
         symbol={symbol}

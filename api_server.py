@@ -52,6 +52,13 @@ from database.repository import TradingRepository
 from execution.alpaca_paper_trader import AlpacaPaperTrader
 from indicators import ema
 from learning_engine import TradingLearningAgent
+from oi_auto_alerts import (
+    apply_completed_five_minute_close,
+    build_oi_ladder,
+    decorate_alert_row,
+    normalize_symbol as normalize_oi_auto_alert_symbol,
+    normalize_symbols as normalize_oi_auto_alert_symbols,
+)
 from scanner import MomentumScanner, _tos_mtf_ema_signal_payload, _tos_watchlist_mtf_signal_payload, scan_live_4h_volume, scan_live_price_change
 from ganesh_higher_timeframe_signals import (
     SCHEMA_VERSION as GANESH_SCHEMA_VERSION,
@@ -63,7 +70,7 @@ from schwab_oauth_callback import callback_listener_status, start_callback_liste
 
 
 HOST = "127.0.0.1"
-PORT = 3001
+PORT = int(os.getenv("API_PORT", "3001"))
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 DEFAULT_OPTION_DELTA_CAP = 0.20
 DEFAULT_OPTION_PREFERRED_DELTA = 0.10
@@ -631,6 +638,58 @@ class DashboardState:
         self.oi_finder_mag7_live_next_run: datetime | None = None
         self.oi_finder_mag7_live_last_error = ""
         self.oi_finder_mag7_live_progress = {"completed": 0, "total": 0, "failed": 0}
+        oi_auto_alert_settings = self.repository.get_app_settings()
+        self.oi_auto_alert_lock = threading.RLock()
+        self.oi_auto_alert_wakeup = threading.Event()
+        self.oi_auto_alert_thread: threading.Thread | None = None
+        self.oi_auto_alert_enabled = str(
+            oi_auto_alert_settings.get("oi_auto_alert_enabled", "true") or "true"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.oi_auto_alert_include_mag7 = str(
+            oi_auto_alert_settings.get("oi_auto_alert_include_mag7", "true") or "true"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            saved_manual_symbols = json.loads(
+                oi_auto_alert_settings.get("oi_auto_alert_manual_symbols", "[]") or "[]"
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            saved_manual_symbols = []
+        self.oi_auto_alert_manual_symbols = normalize_oi_auto_alert_symbols(
+            saved_manual_symbols if isinstance(saved_manual_symbols, list) else [],
+            limit=25,
+        )
+        try:
+            saved_auto_rows = json.loads(oi_auto_alert_settings.get("oi_auto_alert_rows", "{}") or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            saved_auto_rows = {}
+        self.oi_auto_alert_rows: dict[str, dict] = {
+            symbol: row
+            for raw_symbol, row in (saved_auto_rows.items() if isinstance(saved_auto_rows, dict) else [])
+            if (symbol := normalize_oi_auto_alert_symbol(raw_symbol)) and isinstance(row, dict)
+        }
+        try:
+            saved_auto_events = json.loads(oi_auto_alert_settings.get("oi_auto_alert_events", "[]") or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            saved_auto_events = []
+        self.oi_auto_alert_events: list[dict] = [
+            event for event in saved_auto_events if isinstance(event, dict)
+        ][-100:]
+        self.oi_auto_alert_last_refresh_date = str(
+            oi_auto_alert_settings.get("oi_auto_alert_last_refresh_date", "") or ""
+        )
+        self.oi_auto_alert_last_evaluated_bucket = ""
+        self.oi_auto_alert_last_run: datetime | None = None
+        self.oi_auto_alert_next_run: datetime | None = None
+        self.oi_auto_alert_last_error = ""
+        self.oi_auto_alert_status = "Armed" if self.oi_auto_alert_enabled else "Paused"
+        self.oi_auto_alert_message = (
+            "Waiting for the 9:15 AM ET OI-ladder refresh."
+            if self.oi_auto_alert_enabled
+            else "Automatic OI alerts are paused."
+        )
+        self.oi_auto_alert_refresh_requested = False
+        self.oi_auto_alert_force_refresh = False
+        self.oi_auto_alert_refresh_symbols: set[str] = set()
         self.dashboard_cache_lock = threading.Lock()
         self.dashboard_cache: dict | None = None
         self.dashboard_cache_timestamp: datetime | None = None
@@ -809,6 +868,7 @@ class DashboardState:
         self._start_oi_scanner_auto_loops(initial_delay_seconds=60.0)
         self._start_oi_finder_snapshot_schedule()
         self._start_oi_finder_mag7_live_collector()
+        self._start_oi_auto_alert_worker()
         self._start_stock_position_manager()
         self._start_learning_loop()
         self._start_runtime_watchdog()
@@ -11485,6 +11545,516 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 self.oi_finder_mag7_live_last_error = ""
             time.sleep(wait_seconds)
 
+    def _oi_auto_alert_symbols(self) -> list[str]:
+        with self.oi_auto_alert_lock:
+            include_mag7 = bool(self.oi_auto_alert_include_mag7)
+            manual_symbols = list(self.oi_auto_alert_manual_symbols)
+        source = list(MAGNIFICENT_SEVEN) if include_mag7 else []
+        return normalize_oi_auto_alert_symbols([*source, *manual_symbols], limit=32)
+
+    def _oi_auto_alert_symbol_source(self, symbol: str) -> str:
+        normalized = normalize_oi_auto_alert_symbol(symbol)
+        mag7 = normalized in set(MAGNIFICENT_SEVEN)
+        with self.oi_auto_alert_lock:
+            manual = normalized in set(self.oi_auto_alert_manual_symbols)
+        if mag7 and manual:
+            return "MAG7 + manual"
+        if mag7:
+            return "MAG7"
+        return "Manual"
+
+    def _persist_oi_auto_alert_state(self) -> None:
+        with self.oi_auto_alert_lock:
+            enabled = "true" if self.oi_auto_alert_enabled else "false"
+            include_mag7 = "true" if self.oi_auto_alert_include_mag7 else "false"
+            manual_symbols = json.dumps(self.oi_auto_alert_manual_symbols, separators=(",", ":"))
+            rows = json.dumps(self.oi_auto_alert_rows, separators=(",", ":"))
+            events = json.dumps(self.oi_auto_alert_events[-100:], separators=(",", ":"))
+            last_refresh_date = str(self.oi_auto_alert_last_refresh_date or "")
+        self.repository.set_app_setting("oi_auto_alert_enabled", enabled)
+        self.repository.set_app_setting("oi_auto_alert_include_mag7", include_mag7)
+        self.repository.set_app_setting("oi_auto_alert_manual_symbols", manual_symbols)
+        self.repository.set_app_setting("oi_auto_alert_rows", rows)
+        self.repository.set_app_setting("oi_auto_alert_events", events)
+        self.repository.set_app_setting("oi_auto_alert_last_refresh_date", last_refresh_date)
+
+    @staticmethod
+    def _oi_auto_alert_session_label(now_et: datetime) -> str:
+        if now_et.weekday() >= 5:
+            return "Closed"
+        current = now_et.time().replace(tzinfo=None)
+        if clock_time(4, 0) <= current < clock_time(9, 30):
+            return "Premarket"
+        if clock_time(9, 30) <= current < clock_time(16, 0):
+            return "Regular session"
+        if clock_time(16, 0) <= current < clock_time(20, 0):
+            return "After hours"
+        return "Closed"
+
+    @staticmethod
+    def _next_oi_auto_alert_refresh_time(now_et: datetime) -> datetime:
+        candidate = now_et.replace(hour=9, minute=15, second=0, microsecond=0)
+        if candidate <= now_et:
+            candidate += timedelta(days=1)
+        while candidate.weekday() >= 5:
+            candidate += timedelta(days=1)
+        return candidate
+
+    def oi_auto_alert_payload(self) -> dict:
+        eastern = ZoneInfo(EASTERN_TZ)
+        now = datetime.now(eastern)
+        symbols = self._oi_auto_alert_symbols()
+        mag7_symbols = set(MAGNIFICENT_SEVEN)
+        with self.oi_auto_alert_lock:
+            rows_by_symbol = dict(self.oi_auto_alert_rows)
+            rows = []
+            for symbol in symbols:
+                saved = rows_by_symbol.get(symbol)
+                if isinstance(saved, dict):
+                    row = decorate_alert_row(saved)
+                    row["sourceGroup"] = self._oi_auto_alert_symbol_source(symbol)
+                else:
+                    row = {
+                        "symbol": symbol,
+                        "sourceGroup": "MAG7" if symbol in mag7_symbols else "Manual",
+                        "status": "Queued",
+                        "message": "Waiting for the premarket OI-ladder refresh.",
+                        "callLevels": [],
+                        "putLevels": [],
+                        "activeCall": None,
+                        "nextCall": None,
+                        "activePut": None,
+                        "nextPut": None,
+                    }
+                rows.append(row)
+            events = list(reversed(self.oi_auto_alert_events[-50:]))
+            payload = {
+                "enabled": bool(self.oi_auto_alert_enabled),
+                "includeMag7": bool(self.oi_auto_alert_include_mag7),
+                "manualSymbols": list(self.oi_auto_alert_manual_symbols),
+                "monitoredSymbols": symbols,
+                "maxManualSymbols": 25,
+                "confirmationMinutes": 5,
+                "confirmationRule": "Completed regular-session 5-minute candle close strictly above/below the OI level",
+                "rthOnly": True,
+                "premarketRefreshTime": "09:15",
+                "timezone": "America/New_York",
+                "session": self._oi_auto_alert_session_label(now),
+                "status": self.oi_auto_alert_status,
+                "message": self.oi_auto_alert_message,
+                "refreshing": self.oi_auto_alert_status == "Refreshing OI ladders",
+                "lastRun": _serialize_value(self.oi_auto_alert_last_run),
+                "nextRun": _serialize_value(
+                    self.oi_auto_alert_next_run or self._next_oi_auto_alert_refresh_time(now)
+                ),
+                "lastError": self.oi_auto_alert_last_error,
+                "lastRefreshDate": self.oi_auto_alert_last_refresh_date or None,
+                "workerAlive": bool(self.oi_auto_alert_thread and self.oi_auto_alert_thread.is_alive()),
+                "rows": rows,
+                "events": events,
+            }
+        return payload
+
+    def configure_oi_auto_alerts(
+        self,
+        *,
+        enabled: object | None = None,
+        include_mag7: object | None = None,
+    ) -> dict:
+        should_refresh = False
+
+        def checked(value: object) -> bool:
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(value)
+
+        with self.oi_auto_alert_lock:
+            if enabled is not None:
+                next_enabled = checked(enabled)
+                should_refresh = should_refresh or (next_enabled and not self.oi_auto_alert_enabled)
+                self.oi_auto_alert_enabled = next_enabled
+            if include_mag7 is not None:
+                next_include_mag7 = checked(include_mag7)
+                should_refresh = should_refresh or (next_include_mag7 and not self.oi_auto_alert_include_mag7)
+                self.oi_auto_alert_include_mag7 = next_include_mag7
+                if not next_include_mag7:
+                    manual = set(self.oi_auto_alert_manual_symbols)
+                    self.oi_auto_alert_rows = {
+                        symbol: row for symbol, row in self.oi_auto_alert_rows.items() if symbol in manual
+                    }
+            self.oi_auto_alert_status = "Armed" if self.oi_auto_alert_enabled else "Paused"
+            self.oi_auto_alert_message = (
+                "Automatic OI ladders are armed for completed 5-minute RTH candles."
+                if self.oi_auto_alert_enabled
+                else "Automatic OI alerts are paused."
+            )
+        self._persist_oi_auto_alert_state()
+        if should_refresh:
+            self.request_oi_auto_alert_refresh(force=False)
+        else:
+            self.oi_auto_alert_wakeup.set()
+        return self.oi_auto_alert_payload()
+
+    def add_oi_auto_alert_symbol(self, symbol: object) -> dict:
+        target = normalize_oi_auto_alert_symbol(symbol)
+        if not target:
+            raise ValueError("Enter a valid ticker symbol.")
+        with self.oi_auto_alert_lock:
+            if target not in self.oi_auto_alert_manual_symbols:
+                if len(self.oi_auto_alert_manual_symbols) >= 25:
+                    raise ValueError("Auto OI alerts support up to 25 manually added tickers.")
+                self.oi_auto_alert_manual_symbols.append(target)
+        self._persist_oi_auto_alert_state()
+        return self.request_oi_auto_alert_refresh(symbols=[target], force=True)
+
+    def remove_oi_auto_alert_symbol(self, symbol: object) -> dict:
+        target = normalize_oi_auto_alert_symbol(symbol)
+        if not target:
+            raise ValueError("Enter a valid ticker symbol.")
+        with self.oi_auto_alert_lock:
+            self.oi_auto_alert_manual_symbols = [
+                item for item in self.oi_auto_alert_manual_symbols if item != target
+            ]
+            if target not in set(MAGNIFICENT_SEVEN) or not self.oi_auto_alert_include_mag7:
+                self.oi_auto_alert_rows.pop(target, None)
+        self._persist_oi_auto_alert_state()
+        return self.oi_auto_alert_payload()
+
+    def request_oi_auto_alert_refresh(
+        self,
+        *,
+        symbols: list[str] | None = None,
+        force: bool = False,
+    ) -> dict:
+        targets = normalize_oi_auto_alert_symbols(symbols or [], limit=32)
+        with self.oi_auto_alert_lock:
+            self.oi_auto_alert_refresh_requested = True
+            self.oi_auto_alert_force_refresh = self.oi_auto_alert_force_refresh or bool(force)
+            self.oi_auto_alert_refresh_symbols.update(targets)
+            self.oi_auto_alert_status = "Refreshing OI ladders"
+            self.oi_auto_alert_message = (
+                f"Refreshing OI ladders for {', '.join(targets)}."
+                if targets
+                else "Refreshing OI ladders for every monitored ticker."
+            )
+        self.oi_auto_alert_wakeup.set()
+        return self.oi_auto_alert_payload()
+
+    def _refresh_oi_auto_alert_ladders(
+        self,
+        *,
+        symbols: list[str] | None = None,
+        force: bool = False,
+    ) -> None:
+        eastern = ZoneInfo(EASTERN_TZ)
+        now = datetime.now(eastern)
+        targets = normalize_oi_auto_alert_symbols(symbols or self._oi_auto_alert_symbols(), limit=32)
+        if not targets:
+            with self.oi_auto_alert_lock:
+                self.oi_auto_alert_status = "Waiting for tickers"
+                self.oi_auto_alert_message = "Enable MAG7 or add a ticker to start automatic OI alerts."
+            return
+
+        failures: list[str] = []
+        for symbol in targets:
+            try:
+                payload = self.oi_finder_payload(
+                    symbol,
+                    force=force,
+                    compact=True,
+                    background_snapshot=True,
+                )
+                chain_rows = payload.get("selectedExpiryChainRows") or []
+                spot = self._safe_float(payload.get("underlyingPrice"), 0.0)
+                if not chain_rows or spot <= 0:
+                    raise RuntimeError(
+                        str((payload.get("errors") or [{}])[0].get("error") or "No usable option chain returned.")
+                    )
+                # MomoX splits calls from puts at BMO (the pre-open price), not
+                # at the live tick, so an intraday swing cannot flip a wall from
+                # one side to the other and re-arm the ladder mid-session.
+                bmo = spot - self._safe_float(payload.get("todayChange"), 0.0)
+                ladder = build_oi_ladder(
+                    chain_rows,
+                    spot,
+                    as_of=now,
+                    anchor_price=bmo if bmo > 0 else spot,
+                )
+                if not ladder.get("callLevels") and not ladder.get("putLevels"):
+                    raise RuntimeError("No qualifying call or put OI levels were returned.")
+                if symbol not in set(self._oi_auto_alert_symbols()):
+                    # The ticker can be removed while its provider request is
+                    # in flight. Do not resurrect that stale row afterward.
+                    continue
+
+                with self.oi_auto_alert_lock:
+                    previous = self.oi_auto_alert_rows.get(symbol, {})
+                    same_session = str(previous.get("sessionDate") or "") == now.date().isoformat()
+                    same_levels = (
+                        [level.get("strike") for level in previous.get("callLevels", [])]
+                        == [level.get("strike") for level in ladder.get("callLevels", [])]
+                        and [level.get("strike") for level in previous.get("putLevels", [])]
+                        == [level.get("strike") for level in ladder.get("putLevels", [])]
+                    )
+                    preserve_progress = same_session and same_levels
+                    self.oi_auto_alert_rows[symbol] = {
+                        "symbol": symbol,
+                        "sourceGroup": self._oi_auto_alert_symbol_source(symbol),
+                        "status": "Monitoring" if self.oi_auto_alert_enabled else "Paused",
+                        "message": "Waiting for a completed 5-minute RTH candle close.",
+                        "spot": round(spot, 4),
+                        "anchor": ladder.get("anchor"),
+                        "source": payload.get("source") or "Option chain",
+                        "sessionDate": now.date().isoformat(),
+                        "monthlyExpiry": ladder.get("monthlyExpiry"),
+                        "levelsUpdatedAt": payload.get("scannedAt") or now.isoformat(),
+                        "callLevels": ladder.get("callLevels") or [],
+                        "putLevels": ladder.get("putLevels") or [],
+                        "confirmedCallStrikes": previous.get("confirmedCallStrikes", []) if preserve_progress else [],
+                        "confirmedPutStrikes": previous.get("confirmedPutStrikes", []) if preserve_progress else [],
+                        "lastProcessedBar": previous.get("lastProcessedBar") if preserve_progress else None,
+                        "lastClose": previous.get("lastClose") if preserve_progress else None,
+                        "lastBar": previous.get("lastBar") if preserve_progress else None,
+                    }
+            except Exception as exc:
+                failures.append(f"{symbol}: {exc}")
+                with self.oi_auto_alert_lock:
+                    previous = self.oi_auto_alert_rows.get(symbol, {})
+                    self.oi_auto_alert_rows[symbol] = {
+                        **previous,
+                        "symbol": symbol,
+                        "sourceGroup": self._oi_auto_alert_symbol_source(symbol),
+                        "status": "Unavailable",
+                        "message": str(exc),
+                    }
+            if len(targets) > 1:
+                time.sleep(0.35)
+
+        finished = datetime.now(eastern)
+        with self.oi_auto_alert_lock:
+            self.oi_auto_alert_last_run = finished
+            self.oi_auto_alert_last_refresh_date = finished.date().isoformat()
+            self.oi_auto_alert_last_error = " | ".join(failures)
+            self.oi_auto_alert_status = "Partial" if failures else ("Armed" if self.oi_auto_alert_enabled else "Paused")
+            self.oi_auto_alert_message = (
+                f"Built {len(targets) - len(failures)}/{len(targets)} OI ladders; unavailable tickers can be refreshed again."
+                if failures
+                else f"{len(targets)} OI ladders ready. Confirmation requires a completed 5-minute RTH close."
+            )
+            self.oi_auto_alert_next_run = self._next_oi_auto_alert_refresh_time(finished)
+        self._persist_oi_auto_alert_state()
+
+    def _latest_completed_oi_auto_alert_bar(
+        self,
+        symbol: str,
+        completed_end: datetime,
+    ) -> dict | None:
+        target = normalize_oi_auto_alert_symbol(symbol)
+        if not target:
+            return None
+        if hasattr(self.market_data_client, "ensure_streaming"):
+            self.market_data_client.ensure_streaming([target])
+        frame = self.market_data_client.get_chart_bars(target, timeframe="1Min", days_back=2)
+        if not isinstance(frame, pd.DataFrame) or frame.empty or "timestamp" not in frame.columns:
+            return None
+        bars = frame.copy()
+        timestamps = pd.to_datetime(bars["timestamp"], errors="coerce")
+        if getattr(timestamps.dt, "tz", None) is None:
+            timestamps = timestamps.dt.tz_localize(EASTERN_TZ, nonexistent="shift_forward", ambiguous="NaT")
+        else:
+            timestamps = timestamps.dt.tz_convert(EASTERN_TZ)
+        bars["timestamp"] = timestamps
+        bars = bars.dropna(subset=["timestamp"]).sort_values("timestamp")
+        if bars.empty:
+            return None
+
+        end_stamp = pd.Timestamp(completed_end).tz_convert(EASTERN_TZ)
+        start_stamp = end_stamp - pd.Timedelta(minutes=5)
+        session_open = end_stamp.normalize() + pd.Timedelta(hours=9, minutes=30)
+        session_close = end_stamp.normalize() + pd.Timedelta(hours=16)
+        if start_stamp < session_open or end_stamp > session_close:
+            return None
+        window = bars.loc[
+            (bars["timestamp"] >= start_stamp)
+            & (bars["timestamp"] < end_stamp)
+            & (bars["timestamp"].dt.date == end_stamp.date())
+        ]
+        if window.empty:
+            return None
+        final_minute = end_stamp - pd.Timedelta(minutes=1)
+        if window["timestamp"].max() < final_minute:
+            # The broker snapshot has not published the candle's final minute
+            # yet. The worker will retry instead of confirming a partial bar.
+            return None
+        last = window.iloc[-1]
+        return {
+            "startedAt": start_stamp.isoformat(),
+            "endedAt": end_stamp.isoformat(),
+            "open": round(float(window.iloc[0]["open"]), 4),
+            "high": round(float(window["high"].max()), 4),
+            "low": round(float(window["low"].min()), 4),
+            "close": round(float(last["close"]), 4),
+            "volume": int(window["volume"].fillna(0).sum()) if "volume" in window.columns else 0,
+        }
+
+    def _evaluate_oi_auto_alerts(self, completed_end: datetime) -> None:
+        with self.oi_auto_alert_lock:
+            rows = [dict(row) for row in self.oi_auto_alert_rows.values()]
+            known_event_ids = {
+                str(event.get("id") or "")
+                for event in self.oi_auto_alert_events
+                if isinstance(event, dict)
+            }
+        if not rows:
+            return
+        changed = False
+        for row in rows:
+            symbol = normalize_oi_auto_alert_symbol(row.get("symbol"))
+            if not symbol or row.get("status") == "Unavailable":
+                continue
+            try:
+                bar = self._latest_completed_oi_auto_alert_bar(symbol, completed_end)
+            except Exception as exc:
+                with self.oi_auto_alert_lock:
+                    current = self.oi_auto_alert_rows.get(symbol, row)
+                    current["message"] = f"5-minute candle unavailable: {exc}"
+                    self.oi_auto_alert_rows[symbol] = current
+                continue
+            if not bar:
+                continue
+            updated, event_specs = apply_completed_five_minute_close(
+                row,
+                close=bar["close"],
+                bar_ended_at=bar["endedAt"],
+            )
+            updated["lastBar"] = bar
+            updated["status"] = "Monitoring"
+            updated["message"] = "Last completed 5-minute candle evaluated."
+            with self.oi_auto_alert_lock:
+                self.oi_auto_alert_rows[symbol] = updated
+            changed = changed or updated != row
+            for spec in event_specs:
+                confirmed_level = spec.get("confirmedLevel") or {}
+                next_target = spec.get("nextTarget")
+                event_id = (
+                    f"{symbol}-{spec.get('side')}-{bar['endedAt']}-"
+                    f"{self._safe_float(confirmed_level.get('strike'), 0.0):g}"
+                )
+                if event_id in known_event_ids:
+                    continue
+                known_event_ids.add(event_id)
+                next_text = (
+                    f"Next OI target {self._safe_float(next_target.get('strike'), 0.0):g}"
+                    f" (Imp {int(self._safe_float(next_target.get('imp'), 0.0)) or '-'})."
+                    if isinstance(next_target, dict)
+                    else "No further ranked OI target remains."
+                )
+                side = str(spec.get("side") or "")
+                direction = "above" if side == "CALL" else "below"
+                strike = self._safe_float(confirmed_level.get("strike"), 0.0)
+                imp = int(self._safe_float(confirmed_level.get("imp"), 0.0))
+                event = {
+                    "id": event_id,
+                    "symbol": symbol,
+                    "side": side,
+                    "direction": direction,
+                    "confirmedLevel": confirmed_level,
+                    "crossedLevels": spec.get("crossedLevels") or [],
+                    "nextTarget": next_target,
+                    "followingTarget": spec.get("followingTarget"),
+                    "close": spec.get("close"),
+                    "barEndedAt": spec.get("barEndedAt"),
+                    "createdAt": datetime.now(ZoneInfo(EASTERN_TZ)).isoformat(),
+                    "imp": imp,
+                    "message": (
+                        f"{symbol} 5m closed {direction} {side} OI {strike:g}"
+                        f"{f' (Imp {imp})' if imp else ''}. {next_text}"
+                    ),
+                }
+                with self.oi_auto_alert_lock:
+                    self.oi_auto_alert_events.append(event)
+                    self.oi_auto_alert_events = self.oi_auto_alert_events[-100:]
+                self.repository.log_bot_event("oi_auto_alert", event["message"])
+                changed = True
+        with self.oi_auto_alert_lock:
+            self.oi_auto_alert_last_run = datetime.now(ZoneInfo(EASTERN_TZ))
+            self.oi_auto_alert_last_evaluated_bucket = completed_end.isoformat()
+            if self.oi_auto_alert_enabled:
+                self.oi_auto_alert_status = "Monitoring"
+                self.oi_auto_alert_message = "Watching completed five-minute RTH candles for OI confirmations."
+        if changed:
+            self._persist_oi_auto_alert_state()
+
+    def _start_oi_auto_alert_worker(self) -> None:
+        if self.oi_auto_alert_thread is None or not self.oi_auto_alert_thread.is_alive():
+            self.oi_auto_alert_thread = threading.Thread(
+                target=self._oi_auto_alert_worker_loop,
+                name="oi-auto-alerts",
+                daemon=True,
+            )
+            self.oi_auto_alert_thread.start()
+
+    def _oi_auto_alert_worker_loop(self) -> None:
+        eastern = ZoneInfo(EASTERN_TZ)
+        while True:
+            now = datetime.now(eastern)
+            with self.oi_auto_alert_lock:
+                enabled = bool(self.oi_auto_alert_enabled)
+                refresh_requested = bool(self.oi_auto_alert_refresh_requested)
+                refresh_force = bool(self.oi_auto_alert_force_refresh)
+                refresh_symbols = list(self.oi_auto_alert_refresh_symbols)
+                if refresh_requested:
+                    self.oi_auto_alert_refresh_requested = False
+                    self.oi_auto_alert_force_refresh = False
+                    self.oi_auto_alert_refresh_symbols.clear()
+            if refresh_requested:
+                try:
+                    self._refresh_oi_auto_alert_ladders(
+                        symbols=refresh_symbols or None,
+                        force=refresh_force,
+                    )
+                except Exception as exc:
+                    with self.oi_auto_alert_lock:
+                        self.oi_auto_alert_status = "Error"
+                        self.oi_auto_alert_last_error = str(exc)
+                        self.oi_auto_alert_message = f"OI-ladder refresh failed: {exc}"
+            elif enabled and now.weekday() < 5:
+                current = now.time().replace(tzinfo=None)
+                scheduled_refresh_due = (
+                    current >= clock_time(9, 15)
+                    and current < clock_time(16, 0)
+                    and self.oi_auto_alert_last_refresh_date != now.date().isoformat()
+                )
+                if scheduled_refresh_due:
+                    try:
+                        self._refresh_oi_auto_alert_ladders(force=False)
+                    except Exception as exc:
+                        with self.oi_auto_alert_lock:
+                            self.oi_auto_alert_status = "Error"
+                            self.oi_auto_alert_last_error = str(exc)
+                            self.oi_auto_alert_message = f"Scheduled OI-ladder refresh failed: {exc}"
+                elif clock_time(9, 30) <= current < clock_time(16, 0):
+                    completed_minute = (now.minute // 5) * 5
+                    completed_end = now.replace(minute=completed_minute, second=0, microsecond=0)
+                    session_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+                    if (
+                        completed_end > session_open
+                        and now >= completed_end + timedelta(seconds=20)
+                        and completed_end.isoformat() != self.oi_auto_alert_last_evaluated_bucket
+                    ):
+                        self._evaluate_oi_auto_alerts(completed_end)
+                else:
+                    with self.oi_auto_alert_lock:
+                        self.oi_auto_alert_status = "Armed"
+                        self.oi_auto_alert_message = "Waiting for the 9:15 AM ET OI-ladder refresh."
+                        self.oi_auto_alert_next_run = self._next_oi_auto_alert_refresh_time(now)
+            elif not enabled:
+                with self.oi_auto_alert_lock:
+                    self.oi_auto_alert_status = "Paused"
+                    self.oi_auto_alert_message = "Automatic OI alerts are paused."
+            self.oi_auto_alert_wakeup.wait(timeout=2.0)
+            self.oi_auto_alert_wakeup.clear()
+
     def _start_oi_finder_snapshot_schedule(self) -> None:
         """Start the slow, after-close OI Finder archive worker once per boot."""
         if not self.oi_finder_snapshot_enabled:
@@ -13528,6 +14098,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
+            if parsed.path == "/api/oi-auto-alerts":
+                self._send_json(HTTPStatus.OK, STATE.oi_auto_alert_payload())
+                return
             if parsed.path == "/api/ticker-strip":
                 query = parse_qs(parsed.query)
                 symbol = str(query.get("symbol", [""])[0]).strip().upper()
@@ -13937,6 +14510,34 @@ class ApiHandler(BaseHTTPRequestHandler):
                 grids_path.parent.mkdir(parents=True, exist_ok=True)
                 grids_path.write_text(json.dumps(grids), encoding="utf-8")
                 self._send_json(HTTPStatus.OK, {"ok": True, "count": len(grids)})
+                return
+            if parsed.path == "/api/oi-auto-alerts":
+                action = str(body.get("action", "configure") or "configure").strip().lower()
+                try:
+                    if action == "configure":
+                        payload = STATE.configure_oi_auto_alerts(
+                            enabled=body.get("enabled") if "enabled" in body else None,
+                            include_mag7=body.get("includeMag7") if "includeMag7" in body else None,
+                        )
+                    elif action == "add":
+                        payload = STATE.add_oi_auto_alert_symbol(body.get("symbol"))
+                    elif action == "remove":
+                        payload = STATE.remove_oi_auto_alert_symbol(body.get("symbol"))
+                    elif action == "refresh":
+                        raw_symbols = body.get("symbols") or []
+                        if isinstance(raw_symbols, str):
+                            raw_symbols = [item.strip() for item in raw_symbols.split(",") if item.strip()]
+                        payload = STATE.request_oi_auto_alert_refresh(
+                            symbols=raw_symbols if isinstance(raw_symbols, list) else None,
+                            force=bool(body.get("force", True)),
+                        )
+                    else:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"Unknown auto-alert action: {action}"})
+                        return
+                except ValueError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                self._send_json(HTTPStatus.OK, payload)
                 return
             if parsed.path == "/api/option-roi-estimate":
                 # The calculator computes a local gamma estimate whenever the
