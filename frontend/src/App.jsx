@@ -169,6 +169,7 @@ import { oiChartHasInitialStudySeed, oiChartNeedsInitialStudySeed } from "./oiCh
 import { chartSessionLinesForTimeframe, chartSessionWindowsForTimeframe } from "./chartSessionDisplay";
 import { mtfSignalVisualSignature, reconcileLiveMtfSignals } from "./mtfLiveSignalState";
 import { calculateMtfMacdTrendClouds } from "./mtfMacdCloudStudy";
+import { calculateRollingAverage, calculateRollingStdDev, calculateTrueRanges, squeezeReleaseEvents } from "./squeezeRelease";
 import {
   expandNativeSignalPriceRange,
   TosNativeChartPrimitive,
@@ -7294,37 +7295,9 @@ function calculateNumericEma(values, period) {
   return source.map((value) => (ema = Number(value || 0) * multiplier + ema * (1 - multiplier)));
 }
 
-function calculateRollingAverage(values, period) {
-  const length = Math.max(1, Number(period) || 1);
-  let total = 0;
-  const window = [];
-  return (Array.isArray(values) ? values : []).map((value) => {
-    const numeric = Number(value || 0);
-    window.push(numeric);
-    total += numeric;
-    if (window.length > length) total -= window.shift();
-    return total / window.length;
-  });
-}
-
-function calculateRollingStdDev(values, period) {
-  const length = Math.max(1, Number(period) || 1);
-  return (Array.isArray(values) ? values : []).map((_, index) => {
-    const window = values.slice(Math.max(0, index - length + 1), index + 1).map((value) => Number(value || 0));
-    const average = window.reduce((sum, value) => sum + value, 0) / Math.max(window.length, 1);
-    return Math.sqrt(window.reduce((sum, value) => sum + (value - average) ** 2, 0) / Math.max(window.length, 1));
-  });
-}
-
-function calculateTrueRanges(bars) {
-  return (Array.isArray(bars) ? bars : []).map((bar, index, source) => {
-    const high = Number(bar?.high || 0);
-    const low = Number(bar?.low || 0);
-    if (index === 0) return high - low;
-    const previousClose = Number(source[index - 1]?.close || 0);
-    return Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose));
-  });
-}
+// calculateRollingAverage / calculateRollingStdDev / calculateTrueRanges
+// live in ./squeezeRelease so the Python premarket scanner can be pinned to
+// the exact same maths by a golden fixture.
 
 
 function calculateChartSma(bars, period) {
@@ -8627,25 +8600,19 @@ function calculateMtfSqueezeReleaseClouds(bars, currentMinutes, easternSessionFo
   return definitions.flatMap((definition) => {
     if (definition.minutes < displayedMinutes || options[definition.optionKey] === false) return [];
     const timeframeBars = aggregateChartBars(source, definition.minutes);
-    const closes = timeframeBars.map((bar) => Number(bar.close || 0));
-    const average = calculateRollingAverage(closes, 20);
-    const standardDeviation = calculateRollingStdDev(closes, 20);
-    const averageTrueRange = calculateRollingAverage(calculateTrueRanges(timeframeBars), 20);
-    const inSqueeze = timeframeBars.map((_, index) => (
-      average[index] + 2 * standardDeviation[index] - (average[index] + 1.5 * averageTrueRange[index]) <= 0
-    ));
-    return timeframeBars.flatMap((bar, index) => {
-      if (index < 20 || Number(bar.time) < cutoffTime || inSqueeze[index] || !inSqueeze[index - 1]) return [];
-      const tone = Number(bar.close) > Number(timeframeBars[index - 1]?.close) ? "bull" : "bear";
-      const anchor = tone === "bull" ? Number(bar.low) : Number(bar.high);
+    const barsByTime = new Map(timeframeBars.map((bar) => [Number(bar.time), bar]));
+    return squeezeReleaseEvents(source, definition.minutes).flatMap((event) => {
+      if (event.bucketTime < cutoffTime) return [];
+      const bar = barsByTime.get(event.bucketTime);
+      const anchor = event.tone === "bull" ? Number(bar?.low) : Number(bar?.high);
       if (!Number.isFinite(anchor)) return [];
       return [{
-        key: `${definition.key}-${bar.time}-${tone}`,
+        key: `${definition.key}-${event.bucketTime}-${event.tone}`,
         timeframe: definition.label,
-        startTime: Number(bar.time),
-        endTime: Number(bar.time) + definition.minutes * 60,
+        startTime: event.bucketTime,
+        endTime: event.closeTime,
         anchor,
-        tone,
+        tone: event.tone,
         family: "mtf-squeeze-release",
         bubbleLabel: `🔥${definition.bubbleLabel}`,
       }];
