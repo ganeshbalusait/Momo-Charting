@@ -1544,7 +1544,7 @@ class OptionEngineUnitTests(unittest.TestCase):
         self.assertNotIn("dashboard", calls)
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["resultCount"], len(state.option_candidate_results.index))
-        self.assertEqual(result["scanLabel"], "Mag7 + Watchlist Options")
+        self.assertEqual(result["scanLabel"], "Option Watchlist")
         self.assertEqual(state.dashboard_cache, {"stale": True})
         self.assertIsNotNone(state.dashboard_cache_timestamp)
 
@@ -2109,7 +2109,7 @@ class OptionEngineIntegrationTests(unittest.TestCase):
         self.assertEqual(len(payload["bars"]), 1)
         self.assertEqual(payload["bars"][0]["close"], 126.0)
         self.assertEqual(state.market_data_client.chart_requests, [("PLTR", "5Min", 20)])
-        self.assertEqual(payload["mtfSignalMode"], "live_forming_5m_projection")
+        self.assertEqual(payload["mtfSignalMode"], "tos_secondary_bucket_projection")
         self.assertEqual(payload["mtfSignals"], [])
 
     def test_tos_mtf_ema_signal_payload_builds_2h_and_4h_crosses(self):
@@ -2128,7 +2128,7 @@ class OptionEngineIntegrationTests(unittest.TestCase):
 
         payload = api_server._tos_mtf_ema_signal_payload(frame)
 
-        self.assertEqual(payload["mode"], "live_forming_5m_projection")
+        self.assertEqual(payload["mode"], "tos_secondary_bucket_projection")
         self.assertEqual(payload["sourceTimeframe"], "5Min")
         self.assertEqual(
             {(row["family"], row["timeframe"]) for row in payload["states"]},

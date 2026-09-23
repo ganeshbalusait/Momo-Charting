@@ -95,6 +95,10 @@ class OptionApiEndToEndTests(unittest.TestCase):
     def setUp(self):
         self.original_state = api_server.STATE
         api_server.STATE = FakeDashboardState()
+        # Every /api route except auth and health is session-gated; sign the
+        # test client in rather than exercising the auth flow here.
+        self.original_session_user = api_server.ApiHandler._session_user
+        api_server.ApiHandler._session_user = lambda handler: {"id": 1, "email": "test@example.com"}
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), api_server.ApiHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -105,6 +109,7 @@ class OptionApiEndToEndTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
         api_server.STATE = self.original_state
+        api_server.ApiHandler._session_user = self.original_session_user
 
     def request_json(self, path, payload=None, method=None):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
