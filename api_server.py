@@ -220,6 +220,11 @@ OPTION_ALLOWED_SETUPS = {
     "EMA + VWAP + Premarket Low Above Candle",
     "EMA + VWAP + Previous Day Low Above Candle",
 }
+# The scanner tags MTF-only rows with this setup name. The OI scan asks for
+# them (allow_mtf_signal_setup) and gates them on mtf_bullish_signal_pass, so
+# the strategy filter must accept the name too, or every such row is dropped.
+# Kept out of OPTION_ALLOWED_SETUPS so the option-bot entry trigger is unchanged.
+OI_STRATEGY_ALLOWED_SETUPS = OPTION_ALLOWED_SETUPS | {"MTF EMA C/CALL 2H/4H"}
 DEFAULT_OPTION_UNDERLYING_MAP = {
     "AAPU": "AAPL",
     "AMDL": "AMD",
@@ -5237,7 +5242,7 @@ class DashboardState:
             pd.Series(False, index=strategy_frame.index),
         ).fillna(False)
         approved_mask = (
-            strategy_frame["setup_name"].isin(OPTION_ALLOWED_SETUPS)
+            strategy_frame["setup_name"].isin(OI_STRATEGY_ALLOWED_SETUPS)
             & last_price.ge(float(settings.scanner.min_price))
             & ema_stack.astype(bool)
             & above_vwap.astype(bool)
