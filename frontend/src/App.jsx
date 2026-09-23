@@ -170,6 +170,7 @@ import { chartSessionLinesForTimeframe, chartSessionWindowsForTimeframe } from "
 import { mtfSignalVisualSignature, reconcileLiveMtfSignals } from "./mtfLiveSignalState";
 import { calculateMtfMacdTrendClouds } from "./mtfMacdCloudStudy";
 import { calculateRollingAverage, calculateRollingStdDev, calculateTrueRanges, squeezeReleaseEvents } from "./squeezeRelease";
+import { premarketScannerFireBadges, premarketScannerRowKey } from "./premarketScanner";
 import {
   expandNativeSignalPriceRange,
   TosNativeChartPrimitive,
@@ -23575,6 +23576,102 @@ function TradingWorkspace({ authUser, onLogout }) {
     { key: "tosAllOfPass", label: "All Result", render: renderTosAllGate },
   ], [openChartSignalChart]);
 
+  const [premarketScanner, setPremarketScanner] = useState({
+    status: "WARMING",
+    windowLabel: "6:00 AM - 9:30 AM ET",
+    rows: [],
+    matchCount: 0,
+    readySymbols: [],
+    pendingSymbols: [],
+    message: "",
+  });
+  const premarketScannerVisible = activeView === "OI Scanner" && !popoutConfig.mode;
+
+  // The scanner has its own uncached endpoint: the dashboard payload is
+  // cached for 60s, which would make fires staler than the chart. Poll only
+  // while the table is on screen.
+  useEffect(() => {
+    if (!premarketScannerVisible) return undefined;
+    let cancelled = false;
+    const loadPremarketScanner = async () => {
+      try {
+        const response = await fetch("/api/premarket-scanner", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (!cancelled && payload && typeof payload === "object") setPremarketScanner(payload);
+      } catch {
+        // A dropped poll is not worth surfacing; the next one is 5s away.
+      }
+    };
+    loadPremarketScanner();
+    const timer = setInterval(loadPremarketScanner, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [premarketScannerVisible]);
+
+  const mag7PremarketScannerRows = Array.isArray(premarketScanner.rows) ? premarketScanner.rows : [];
+
+  const mag7PremarketScannerColumns = useMemo(() => [
+    {
+      key: "symbol",
+      label: "Ticker",
+      render: (value) => (
+        <button
+          className="symbol-pill"
+          data-testid="mag7-premarket-scanner-symbol"
+          onClick={() => openChartSignalChart(value, "5m", "mag7-premarket-scanner")}
+          aria-label={`Open ${value} on the 5-minute chart`}
+          title={`Open ${value} on the 5-minute chart`}
+          type="button"
+        >
+          {value}
+        </button>
+      ),
+    },
+    { key: "signalAt", label: "Date/Time (ET)", render: formatDateTime },
+    {
+      key: "signals48",
+      label: "4/8",
+      sortable: false,
+      render: (value) => renderPremarketChartSignalBadges(value, "yellow"),
+    },
+    {
+      key: "signals920",
+      label: "9/20",
+      sortable: false,
+      render: (value) => renderPremarketChartSignalBadges(value, "cyan"),
+    },
+    {
+      key: "fires",
+      label: "Squeeze Fire",
+      sortable: false,
+      render: (_, row) => {
+        const badges = premarketScannerFireBadges(row);
+        if (!badges.length) return "--";
+        return (
+          <div className="mtf-table-signals">
+            {badges.map((badge) => (
+              <span className="mtf-table-signal mtf-table-signal-fire" key={badge.key} title={badge.title}>
+                {badge.text}
+              </span>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
+      key: "score",
+      label: "Strength",
+      render: (value, row) => (
+        <span className={`premarket-strength is-${String(row?.strength || "weak").toLowerCase()}`}>
+          {`${row?.strength || "WEAK"} (${value ?? 0})`}
+        </span>
+      ),
+    },
+  ], [openChartSignalChart]);
+
   const mag7PremarketChartSignalColumns = useMemo(() => [
     {
       key: "symbol",
@@ -26272,6 +26369,38 @@ function TradingWorkspace({ authUser, onLogout }) {
                 rows={stableMag7FiveMinuteChartSignalRows}
                 getRowKey={buildPremarketChartSignalRowKey}
                 emptyMessage={mag7FiveMinuteChartSignals.message || "No requested 5m MAG7 chart signals yet."}
+              />
+            </section>
+            <section
+              className="data-card scanner-table scanner-results-card premarket-scanner-card"
+              data-testid="mag7-premarket-scanner"
+            >
+              <div className="table-toolbar">
+                <span>MAG7 PREMARKET SCANNER</span>
+                <span role="status" aria-live="polite">
+                  {premarketScanner.windowLabel || "6:00 AM - 9:30 AM ET"} · {premarketScanner.matchCount || 0} match{premarketScanner.matchCount === 1 ? "" : "es"}
+                </span>
+              </div>
+              <div className="journal-review-controls premarket-chart-signal-summary">
+                <span className="journal-toolbar-pill">
+                  Chart tapes: {premarketScanner.readySymbols?.length || 0}/{(premarketScanner.readySymbols?.length || 0) + (premarketScanner.pendingSymbols?.length || 0)} ready
+                </span>
+                {premarketScanner.pendingSymbols?.length ? (
+                  <span className="journal-toolbar-pill">
+                    Cold: {premarketScanner.pendingSymbols.join(", ")}
+                  </span>
+                ) : null}
+                <span className="journal-toolbar-pill is-yellow-signal">4/8 CALL2H/CALL4H</span>
+                <span className="journal-toolbar-pill is-cyan-signal">9/20 CALL2H/CALL4H</span>
+                <span className="journal-toolbar-pill">🔥 1h/2h/4h on bucket close · D = last closed daily</span>
+                <span className="journal-toolbar-pill">Strength: &gt;3 STRONG · 3 MODERATE · &lt;3 WEAK</span>
+              </div>
+              <DataTable
+                tableId="mag7-premarket-scanner"
+                columns={mag7PremarketScannerColumns}
+                rows={mag7PremarketScannerRows}
+                getRowKey={premarketScannerRowKey}
+                emptyMessage={premarketScanner.message || "No MAG7 premarket matches yet."}
               />
             </section>
             <section
