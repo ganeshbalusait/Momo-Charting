@@ -226,3 +226,170 @@ def squeeze_release_events(bars: object, minutes: object) -> list[dict]:
             "tone": "bull" if timeframe_bars[index]["close"] > timeframe_bars[index - 1]["close"] else "bear",
         })
     return events
+
+
+# --- Window filter, match rule and strength score -------------------------
+
+WINDOW_START_MINUTE = 6 * 60          # 06:00 ET
+WINDOW_END_MINUTE = 9 * 60 + 30       # 09:30 ET
+CALL_LABELS = ("CALL2H", "CALL4H")
+STRONG_THRESHOLD = 3                  # "more than 3" -> STRONG
+
+
+def premarket_window(now_et: datetime) -> tuple[int, int]:
+    """Inclusive 06:00:00-09:30:00 ET bounds for ``now_et``'s trading day."""
+    day = now_et.astimezone(EASTERN)
+    start = day.replace(
+        hour=WINDOW_START_MINUTE // 60, minute=WINDOW_START_MINUTE % 60, second=0, microsecond=0
+    )
+    end = day.replace(
+        hour=WINDOW_END_MINUTE // 60, minute=WINDOW_END_MINUTE % 60, second=0, microsecond=0
+    )
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def window_call_signals(mtf_signals: object, start: int, end: int) -> list[dict]:
+    """CALL2H/CALL4H from the chart's own array, inside the window.
+
+    Read-only over ``mtfSignals`` -- the exact array the chart draws its
+    boxes from -- so these can never disagree with the chart.
+    """
+    kept: list[dict] = []
+    for signal in mtf_signals or []:
+        if not isinstance(signal, dict):
+            continue
+        if str(signal.get("direction") or "").upper() != "CALL":
+            continue
+        if str(signal.get("label") or "").upper() not in CALL_LABELS:
+            continue
+        try:
+            when = int(signal.get("time") or 0)
+        except (TypeError, ValueError):
+            continue
+        if start <= when <= end:
+            kept.append(signal)
+    return kept
+
+
+def latest_closed_bucket_time(bars: object, minutes: object) -> int | None:
+    """Start of the newest bucket that has CLOSED, by the same rule the
+    release detector uses (bucket start + span <= last source bar time)."""
+    source = [bar for bar in (bars or []) if isinstance(bar, dict)]
+    span = max(int(minutes or 1), 1)
+    last_source_time = _last_source_time(source)
+    closed = [
+        int(bar["time"])
+        for bar in aggregate_chart_bars(source, span)
+        if int(bar["time"]) + span * 60 <= last_source_time
+    ]
+    return closed[-1] if closed else None
+
+
+def window_fires(bars: object, start: int, end: int) -> list[dict]:
+    """Fires the chart is showing this premarket.
+
+    1h/2h/4h qualify on their bucket CLOSE landing in the window. Daily is
+    special: a daily candle does not close until midnight, so a D fire seen
+    during premarket is the previous session's release. Only the MOST
+    RECENTLY CLOSED daily candle counts -- an older release anywhere in the
+    tape is history, not a signal (the first build reported a July fire in
+    August by taking the newest release in the whole tape).
+    """
+    fires: list[dict] = []
+    for minutes, label in FIRE_TIMEFRAMES:
+        events = squeeze_release_events(bars, minutes)
+        if not events:
+            continue
+        if minutes == 1440:
+            latest = events[-1]
+            if (
+                latest["bucketTime"] == latest_closed_bucket_time(bars, minutes)
+                and latest["closeTime"] <= end
+            ):
+                fires.append({**latest, "label": label})
+            continue
+        fires.extend(
+            {**event, "label": label}
+            for event in events
+            if start <= event["closeTime"] <= end
+        )
+    return fires
+
+
+def score_strength(calls: object, fires: object) -> tuple[int, str]:
+    """One point per hit. Max 8: four CALL slots and four fire timeframes."""
+    score = len(list(calls or [])) + len(list(fires or []))
+    if score > STRONG_THRESHOLD:
+        return score, "STRONG"
+    if score == STRONG_THRESHOLD:
+        return score, "MODERATE"
+    return score, "WEAK"
+
+
+def _fire_date_label(fire: dict) -> str:
+    # Daily fires carry their own SESSION date (the bucket's day), so a
+    # prior-session release is never mistaken for a fresh premarket event.
+    # Intraday fires carry their bucket-close time.
+    if int(fire.get("minutes") or 0) == 1440:
+        return datetime.fromtimestamp(int(fire["bucketTime"]), tz=EASTERN).date().isoformat()
+    return datetime.fromtimestamp(int(fire["closeTime"]), tz=EASTERN).isoformat()
+
+
+def premarket_scan_row(
+    symbol: str,
+    payload: object,
+    now_et: datetime,
+    *,
+    fires: object = None,
+) -> dict | None:
+    """One scanner row, or None when the symbol has nothing (or is cold).
+
+    There is intentionally no FORMING/CONFIRMED flag: scanner.py stamps
+    ``liveForming=True`` on every MTF signal, so such a badge would show on
+    every row forever and mean nothing.
+    """
+    if not isinstance(payload, dict):
+        return None
+    bars = payload.get("bars")
+    if not bars:
+        return None
+
+    start, end = premarket_window(now_et)
+    calls = window_call_signals(payload.get("mtfSignals"), start, end)
+    matched_fires = list(fires) if fires is not None else window_fires(
+        payload.get("studyBars") or bars, start, end
+    )
+    if not calls and not matched_fires:
+        return None
+
+    score, strength = score_strength(calls, matched_fires)
+    times = [int(signal["time"]) for signal in calls]
+    times += [int(fire["closeTime"]) for fire in matched_fires]
+    first = min(times) if times else None
+
+    def labels(family: str) -> list[str]:
+        seen: list[str] = []
+        for signal in calls:
+            if str(signal.get("family") or "") != family:
+                continue
+            label = str(signal.get("label") or "")
+            if label and label not in seen:
+                seen.append(label)
+        return seen
+
+    try:
+        last_price = round(float(bars[-1].get("close") or 0), 2)
+    except (AttributeError, TypeError, ValueError):
+        last_price = 0.0
+
+    return {
+        "symbol": str(symbol or "").upper(),
+        "signalAt": datetime.fromtimestamp(first, tz=EASTERN).isoformat() if first else None,
+        "lastPrice": last_price,
+        "signals48": labels("4x8"),
+        "signals920": labels("9x20"),
+        "fires": [fire["label"] for fire in matched_fires],
+        "fireDates": {fire["label"]: _fire_date_label(fire) for fire in matched_fires},
+        "score": score,
+        "strength": strength,
+    }
