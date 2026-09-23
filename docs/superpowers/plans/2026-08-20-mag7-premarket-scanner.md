@@ -64,7 +64,7 @@ Today `calculateMtfSqueezeReleaseClouds` lives inside `App.jsx` and cannot be im
 - Consumes: `aggregateChartBars` from `./chartAggregation`.
 - Produces: `squeezeReleaseEvents(bars, minutes) -> [{minutes, bucketTime, closeTime, tone}]`, plus re-exported `calculateRollingAverage(values, period)`, `calculateRollingStdDev(values, period)`, `calculateTrueRanges(bars)`. Task 2 generates its fixture from `squeezeReleaseEvents`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```js
 // frontend/src/squeezeRelease.test.js
@@ -114,12 +114,12 @@ test("a still-forming bucket produces no release", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cd frontend; node --test src/squeezeRelease.test.js`
 Expected: FAIL — `Cannot find module './squeezeRelease.js'`
 
-- [ ] **Step 3: Create the module**
+- [x] **Step 3: Create the module**
 
 Copy the three helpers verbatim out of `App.jsx` (find them with `grep -n "^function calculateRollingAverage" frontend/src/App.jsx`) so behaviour is provably unchanged, then add the detector.
 
@@ -198,12 +198,12 @@ export function squeezeReleaseEvents(bars, minutes) {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd frontend; node --test src/squeezeRelease.test.js`
 Expected: PASS, 3 tests
 
-- [ ] **Step 5: Rewrite `calculateMtfSqueezeReleaseClouds` in App.jsx to use the module**
+- [x] **Step 5: Rewrite `calculateMtfSqueezeReleaseClouds` in App.jsx to use the module**
 
 Add `import { squeezeReleaseEvents, calculateRollingAverage, calculateRollingStdDev, calculateTrueRanges } from "./squeezeRelease";` alongside the other local imports, then **delete** the three helper definitions from `App.jsx` (other studies such as `calculateMtfSqueeze410Study` keep working via the import) and replace the body of the definitions loop:
 
@@ -231,12 +231,12 @@ Add `import { squeezeReleaseEvents, calculateRollingAverage, calculateRollingStd
   });
 ```
 
-- [ ] **Step 6: Run the whole frontend suite to prove nothing regressed**
+- [x] **Step 6: Run the whole frontend suite to prove nothing regressed**
 
 Run: `cd frontend; node --test src/*.test.js`
 Expected: PASS — the pre-existing count (475 as of live commit `461d4af`) plus the 3 new tests. **If any previously-passing test now fails, the extraction changed behaviour — stop and fix before continuing.**
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add frontend/src/squeezeRelease.js frontend/src/squeezeRelease.test.js frontend/src/App.jsx
@@ -273,7 +273,7 @@ curl -s "http://127.0.0.1:3001/api/oi-finder-chart?symbol=MSTR" \
 
 Verify it is a non-trivial series: `./.venv/Scripts/python.exe -c "import json;d=json.load(open('tests/fixtures/squeeze_release_bars.json'));print(len(d), d[0], d[-1])"` — expect several hundred bars. If it returns fewer than 100, the chart cache is cold; wait and retry rather than proceeding with a thin tape.
 
-- [ ] **Step 2: Generate the expected events from the real JavaScript**
+- [x] **Step 2: Generate the expected events from the real JavaScript**
 
 ```js
 // scripts/generate_squeeze_fixture.mjs
@@ -292,7 +292,7 @@ console.log(Object.entries(expected).map(([k, v]) => `${k}: ${v.length}`).join("
 Run: `node scripts/generate_squeeze_fixture.mjs`
 Expected: prints a per-timeframe count. **At least one timeframe must be non-zero** — an all-zero fixture proves nothing. If all are zero, pick a more volatile symbol (NVDA, TSLA) and redo Step 1.
 
-- [ ] **Step 3: Write the failing test**
+- [x] **Step 3: Write the failing test**
 
 ```python
 # tests/test_premarket_scanner.py
@@ -382,12 +382,12 @@ def test_rolling_average_fills_partial_windows():
     assert rolling_average([2, 4], 20) == [2.0, 3.0]
 ```
 
-- [ ] **Step 4: Run to verify it fails**
+- [x] **Step 4: Run to verify it fails**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'premarket_scanner'`
 
-- [ ] **Step 5: Write the implementation**
+- [x] **Step 5: Write the implementation**
 
 ```python
 # premarket_scanner.py
@@ -582,12 +582,12 @@ def squeeze_release_events(bars: object, minutes: object) -> list[dict]:
     return events
 ```
 
-- [ ] **Step 6: Run to verify it passes**
+- [x] **Step 6: Run to verify it passes**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v`
 Expected: PASS, 7 tests. If `test_matches_the_javascript_chart_event_for_event` fails, the port is wrong — **do not adjust the fixture to match the Python.** The fixture is the chart; the Python is what must move.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add premarket_scanner.py tests/test_premarket_scanner.py scripts/generate_squeeze_fixture.mjs tests/fixtures/squeeze_release_bars.json tests/fixtures/squeeze_release_expected.json
@@ -609,7 +609,7 @@ that makes the table disagree with the chart's flame fails a test."
 - Consumes: `squeeze_release_events`, `FIRE_TIMEFRAMES` from Task 2.
 - Produces: `premarket_window(now_et) -> (start_epoch, end_epoch)`, `window_call_signals(mtf_signals, start, end) -> list[dict]`, `window_fires(bars, start, end) -> list[dict]`, `score_strength(calls, fires) -> (int, str)`, `premarket_scan_row(symbol, payload, now_et) -> dict | None`. Task 4 calls `premarket_scan_row`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # append to tests/test_premarket_scanner.py
@@ -702,12 +702,12 @@ def test_a_cold_payload_yields_no_row():
     assert premarket_scan_row("MSTR", {}, _now()) is None
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v`
 Expected: FAIL — `ImportError: cannot import name 'premarket_window'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # append to premarket_scanner.py
@@ -845,12 +845,12 @@ def premarket_scan_row(
     }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v`
 Expected: PASS, 14 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add premarket_scanner.py tests/test_premarket_scanner.py
@@ -879,7 +879,7 @@ symbol and is tested — it has simply never been read by any request path.
 - Produces: `merge_live_tail(cached_bars, live_bars) -> list[dict]`. Task 4
   passes `MARKET_STREAM.chart_history(symbol)` as `live_bars`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # append to tests/test_premarket_scanner.py
@@ -916,12 +916,12 @@ def test_merge_survives_an_empty_or_missing_live_feed():
     assert merge_live_tail([], [{"time": 5, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0}])[0]["time"] == 5
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -k live -v`
 Expected: FAIL — `ImportError: cannot import name 'merge_live_tail'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # append to premarket_scanner.py
@@ -954,12 +954,12 @@ def merge_live_tail(cached_bars: object, live_bars: object) -> list[dict]:
     return [*cached, *tail]
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v`
 Expected: PASS, 17 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add premarket_scanner.py tests/test_premarket_scanner.py
@@ -985,7 +985,7 @@ cannot clobber a 30m cached bucket's high/low."
 
 Find it: `grep -n "_is_oi_finder_mag7_live_session" -A 8 api_server.py`. Change the lower bound from `8 * 60` to `6 * 60` and update the docstring to say the premarket scanner needs tapes warm from 06:00. Leave the 16:15 upper bound alone.
 
-- [ ] **Step 2: Add the payload builder**
+- [x] **Step 2: Add the payload builder**
 
 Insert next to `mag7_chart_signals_payload`. It reads only the warm chart cache — it must never start a broker fetch or a chart build.
 
@@ -1064,7 +1064,7 @@ Insert next to `mag7_chart_signals_payload`. It reads only the warm chart cache 
         }
 ```
 
-- [ ] **Step 3: Import and expose it**
+- [x] **Step 3: Import and expose it**
 
 Add `from premarket_scanner import PREMARKET_SCAN_SYMBOLS, merge_live_tail, premarket_scan_row` beside the existing `from oi_auto_alerts import ...` line (`grep -n "^from oi_auto_alerts" api_server.py`). `MARKET_STREAM` is already a module-level global in `api_server.py` — no import needed, but confirm the payload builder is defined *after* it (`grep -n "^MARKET_STREAM = " api_server.py`); it is referenced at call time, so definition order inside the class is fine.
 
@@ -1113,7 +1113,7 @@ that path before continuing, or the live-tape work in Task 3b is wasted.
 
 Expected: a status of `READY` or `WARMING`, the window label, a match count, and the ready symbol list. Outside 06:00–09:30 a `matchCount` of `0` is correct, not a bug — confirm `readySymbols` is non-empty so you know the read path works.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add api_server.py
@@ -1133,7 +1133,7 @@ now starts at 06:00 ET so tapes are ready when the window opens."
 **Interfaces:**
 - Consumes: `dashboard.mag7PremarketScanner` from Task 4.
 
-- [ ] **Step 1: Poll the dedicated endpoint every 5 s**
+- [x] **Step 1: Poll the dedicated endpoint every 5 s**
 
 The scanner does **not** ride the dashboard payload (that is cached 60 s).
 Add its own poll near the other `useEffect` polls in the dashboard component:
@@ -1163,7 +1163,7 @@ Add its own poll near the other `useEffect` polls in the dashboard component:
   }, [popoutConfig.mode]);
 ```
 
-- [ ] **Step 2: Add the columns**
+- [x] **Step 2: Add the columns**
 
 Place next to `mag7PremarketChartSignalColumns` (`grep -n "mag7PremarketChartSignalColumns" frontend/src/App.jsx`). `renderPremarketChartSignalBadges` already exists in this file and is reused.
 
@@ -1228,7 +1228,7 @@ Place next to `mag7PremarketChartSignalColumns` (`grep -n "mag7PremarketChartSig
   ], [openChartSignalChart]);
 ```
 
-- [ ] **Step 3: Render the section**
+- [x] **Step 3: Render the section**
 
 Next to the existing premarket table's `<DataTable>` (`grep -n "mag7-premarket" frontend/src/App.jsx`), add:
 
@@ -1252,7 +1252,7 @@ with this beside it (`premarketScanner` comes from the Step 1 poll, not from `da
   const mag7PremarketScannerRows = Array.isArray(premarketScanner.rows) ? premarketScanner.rows : [];
 ```
 
-- [ ] **Step 4: Add the strength styles**
+- [x] **Step 4: Add the strength styles**
 
 Append to the END of `frontend/src/index.css` — a `@media` or later rule placed mid-file is silently outranked by the unconditional blocks below it.
 
@@ -1264,7 +1264,7 @@ Append to the END of `frontend/src/index.css` — a `@media` or later rule place
 .mtf-table-signal-fire { background: rgba(249, 115, 22, 0.18); color: #fb923c; }
 ```
 
-- [ ] **Step 5: Verify it compiles and nothing regressed**
+- [x] **Step 5: Verify it compiles and nothing regressed**
 
 ```bash
 cd frontend; node --test src/*.test.js
@@ -1278,11 +1278,11 @@ node -e "const {transformSync}=require('./node_modules/.pnpm/'+require('fs').rea
 ```
 Expected: `App.jsx OK`
 
-- [ ] **Step 6: Look at it in the browser**
+- [x] **Step 6: Look at it in the browser**
 
 Open `http://127.0.0.1:5173/` (dev server hot-reloads; no build needed) and find the MAG7 PREMARKET SCANNER table. Outside 06:00–09:30 expect the empty message — that is correct behaviour, not a failure. Confirm the table renders, the header shows `6:00 AM - 9:30 AM ET`, and no console errors.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add frontend/src/App.jsx frontend/src/index.css
@@ -1300,10 +1300,10 @@ The live repo is not the one GitHub sees. Copy the five new files and the four m
 
 ## Verification before claiming done
 
-- [ ] `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v` — 17 passing
-- [ ] `cd frontend; node --test src/*.test.js` — no regression against the pre-existing count
+- [x] `./.venv/Scripts/python.exe -m pytest tests/test_premarket_scanner.py -v` — 17 passing
+- [x] `cd frontend; node --test src/*.test.js` — no regression against the pre-existing count
 - [ ] `curl` on `/api/premarket-scanner` returns a non-empty `readySymbols` AND a changing `generatedAt` on repeat calls
-- [ ] The table renders at `:5173` with no console errors
+- [x] The table renders at `:5173` with no console errors
 - [ ] **The parity check that matters:** during a live premarket window, pick a row and open that ticker's 5m chart. Every CALL2H/CALL4H and every 🔥 in the row must be visible on the chart, and nothing on the chart in-window may be missing from the row. This cannot be run until a market morning — say so explicitly rather than implying it passed.
 
 ---
@@ -1353,3 +1353,82 @@ live repo.**
 - **The live-window parity check** — open a flagged ticker's 5m chart during
   a real premarket and confirm every CALL2H/CALL4H and flame in the row is on
   the chart — needs a market morning. It has not been run.
+
+---
+
+## Implementation record (2026-09-23, GitHub repo)
+
+Rebuilt in the GitHub repo `Momo-Charting` (branch
+`claude/upbeat-galileo-t09cu4`), a Linux cloud container, not the Windows
+live repo. The three defects above were built correctly from the start.
+Not pushed.
+
+| Commit | What |
+|---|---|
+| `f3082e6` | Extract squeeze detection into `frontend/src/squeezeRelease.js` |
+| `4552e4b` | Python port + golden fixture + generators (19/11/3/1 releases on 1h/2h/4h/D) |
+| `42bb8ff` | Window, match rule, strength score; daily = last CLOSED daily only; no FORMING |
+| `2ff2efc` | `merge_live_tail` (live stream tail) |
+| `4933e44` | `GET /api/premarket-scanner` (`mag7_premarket_scanner_payload`) |
+| `f3eaa90` | Scanner table in the OI Scanner view + `premarketScanner.js` helpers |
+
+**Tests.** Python: 856 passed before, 883 after (+24 in
+`tests/test_premarket_scanner.py`, +3 in `tests/test_premarket_scanner_payload.py`);
+the 13 pre-existing failures and 5 collection errors are unchanged and
+unrelated. Frontend: 337 before, 344 after (+3 `squeezeRelease.test.js`,
++4 `premarketScanner.test.js`), 0 failing. `vite build` passes.
+
+**Fixture provenance: SYNTHETIC.** There was no backend, no broker
+credentials and no cached intraday bars in this environment, so Task 2
+Step 1 could not be run. `scripts/generate_squeeze_bars.mjs` writes a seeded
+5-minute Ornstein-Uhlenbeck tape (45 weekdays, 04:00-20:00 ET, 2026-09-21 to
+2026-11-20, crossing the 2026-11-01 DST change) with coil/expansion regimes;
+`scripts/generate_squeeze_fixture.mjs` then runs the real JS
+`squeezeReleaseEvents` over it. The Python matches it event-for-event, and
+the chart bucket clock was also cross-checked against
+`chartAggregationBucketTime` on all 8,640 bar times for 60/120/240/1440.
+**Regenerate both fixture files from a real `studyBars` tape** (Step 1) when
+a backend is available.
+
+**Deviations from the plan.**
+- This repo's `calculateMtfSqueezeReleaseClouds` did not yet have the
+  closed-bucket guard (live `461d4af`); the extraction adds it, so the chart
+  stops drawing a flame on a still-forming bucket.
+- `squeezeRelease.js` imports `./chartAggregation.js` (explicit extension).
+- Python aggregation also mirrors `normalizeChartCandleBars` (dedupe, sort,
+  high/low repair), and `rolling_stdev` sums with plain loops rather than
+  `sum()` (compensated summation on Python 3.12+ would differ in the last bit).
+- Plan test errors fixed: the true-range example is `2.5`, not `3.0`; the
+  4h clock asserts `08:59 -> 05:00` and `05:00 -> 05:00` (the plan said 06:00);
+  the out-of-window CALL uses `05:59:59` per the spec.
+- Daily fires carry the bucket's session date in `fireDates["D"]` (e.g.
+  `2026-10-23`) rather than the Saturday-midnight close time.
+- **Task 4 Step 1 (warmer 08:00 -> 06:00) not done.** Here
+  `_is_oi_finder_mag7_live_session` gates only the option-chain snapshot
+  collector, which never builds chart tapes, and `QUICK_STRIP_WARM_SYMBOLS`
+  is defined but unused (there is no background chart warmer). Moving it
+  would add broker load without warming anything. Chart tapes here are warm
+  only after a chart is opened (or loaded from the disk cache), so expect
+  cold symbols under `pendingSymbols`.
+- Live tail subscription uses `MARKET_STREAM.watch(symbol)` once per process,
+  not `self.client.ensure_streaming` (in this repo `self.client` is Alpaca and
+  does not feed `MARKET_STREAM.chart_history`).
+- The table sits in the **OI Scanner** view directly above the 4H premarket
+  table (the default view; the `Scanner` view is hidden by default here).
+  It polls only while that view is open. There is no
+  `mobileOverflowNavigation.js` in this repo, so no mobile "More" entry.
+- Fire badges and the row key live in `frontend/src/premarketScanner.js`.
+
+**Verified.** Backend started with dummy creds and a scratch database:
+`/api/premarket-scanner` returns the full shape, `status: WARMING`, all nine
+symbols pending (no chart cache), and a new `generatedAt` on every call.
+The Vite dev server rendered the table in Chromium (Playwright) with no
+console errors, both against the real empty backend and with a mocked
+three-row payload.
+
+**Not verified.** A non-empty `readySymbols` from a warm cache, and the
+live-window parity check against the 5m chart; both need a real market
+morning with broker data. Worth a look during that check: with default
+chart options the flame cutoff is the latest session's first bar at or after
+05:00 ET, so a 2h 04:00-06:00 release (closes 06:00) or a prior-day daily
+release may be counted by the scanner but not drawn on the chart.
