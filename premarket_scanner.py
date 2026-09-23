@@ -393,3 +393,33 @@ def premarket_scan_row(
         "score": score,
         "strength": strength,
     }
+
+
+# --- Live streamed tail --------------------------------------------------
+
+def merge_live_tail(cached_bars: object, live_bars: object) -> list[dict]:
+    """Cached tape plus only the STRICTLY NEWER live streamed bars.
+
+    Appending rather than merging by timestamp is deliberate. ``studyBars``
+    has shipped at both five- and thirty-minute cadences; a one-minute live
+    bar landing on the same timestamp as a thirty-minute cached bar would
+    replace it and throw away that bucket's true high and low. Anything at or
+    before the cached tape's last bar is therefore ignored.
+    """
+    cached = [bar for bar in (cached_bars or []) if isinstance(bar, dict)]
+    live = [bar for bar in (live_bars or []) if isinstance(bar, dict)]
+    if not live:
+        return cached
+
+    def bar_time(bar: dict) -> int:
+        try:
+            return int(bar.get("time") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    cutoff = max((bar_time(bar) for bar in cached), default=0)
+    tail = sorted(
+        (bar for bar in live if bar_time(bar) > cutoff),
+        key=bar_time,
+    )
+    return [*cached, *tail]

@@ -272,3 +272,38 @@ def test_no_signals_means_no_row():
 def test_a_cold_payload_yields_no_row():
     assert premarket_scan_row("MSFT", {}, _now()) is None
     assert premarket_scan_row("MSFT", None, _now()) is None
+
+
+# --- Live streamed tail --------------------------------------------------
+
+from premarket_scanner import merge_live_tail  # noqa: E402
+
+
+def test_live_tail_extends_the_cached_tape():
+    cached = [{"time": 100, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}]
+    live = [{"time": 160, "open": 1.5, "high": 3.0, "low": 1.4, "close": 2.9}]
+    assert [bar["time"] for bar in merge_live_tail(cached, live)] == [100, 160]
+
+
+def test_live_bars_overlapping_the_cached_tape_are_ignored():
+    """studyBars can be a 30-minute tape. Letting a 1-minute live bar replace
+    a 30-minute bar at the same timestamp would silently discard that
+    bucket's real high/low, so only the strictly-newer tail is appended."""
+    cached = [
+        {"time": 100, "open": 1.0, "high": 9.0, "low": 0.5, "close": 1.5},
+        {"time": 200, "open": 1.5, "high": 8.0, "low": 1.0, "close": 2.0},
+    ]
+    live = [
+        {"time": 260, "open": 2.0, "high": 2.5, "low": 2.0, "close": 2.4},
+        {"time": 200, "open": 1.9, "high": 2.1, "low": 1.9, "close": 2.0},
+    ]
+    merged = merge_live_tail(cached, live)
+    assert [bar["time"] for bar in merged] == [100, 200, 260]
+    assert merged[1]["high"] == 8.0  # the cached 30m high survives
+
+
+def test_merge_survives_an_empty_or_missing_live_feed():
+    cached = [{"time": 100, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}]
+    assert merge_live_tail(cached, []) == cached
+    assert merge_live_tail(cached, None) == cached
+    assert merge_live_tail([], [{"time": 5, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0}])[0]["time"] == 5
