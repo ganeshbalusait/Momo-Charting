@@ -1,0 +1,214 @@
+{
+  "60": [
+    {
+      "minutes": 60,
+      "bucketTime": 1790622000,
+      "closeTime": 1790625600,
+      "tone": "bear"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1791187200,
+      "closeTime": 1791190800,
+      "tone": "bull"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1791493200,
+      "closeTime": 1791496800,
+      "tone": "bull"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1791579600,
+      "closeTime": 1791583200,
+      "tone": "bull"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1791907200,
+      "closeTime": 1791910800,
+      "tone": "bear"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1791997200,
+      "closeTime": 1792000800,
+      "tone": "bear"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1792058400,
+      "closeTime": 1792062000,
+      "tone": "bull"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1792080000,
+      "closeTime": 1792083600,
+      "tone": "bear"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1792148400,
+      "closeTime": 1792152000,
+      "tone": "bull"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1792177200,
+      "closeTime": 1792180800,
+      "tone": "bear"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1792440000,
+      "closeTime": 1792443600,
+      "tone": "bear"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1792537200,
+      "closeTime": 1792540800,
+      "tone": "bear"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1792573200,
+      "closeTime": 1792576800,
+      "tone": "bear"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1793725200,
+      "closeTime": 1793728800,
+      "tone": "bear"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1793829600,
+      "closeTime": 1793833200,
+      "tone": "bull"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1794855600,
+      "closeTime": 1794859200,
+      "tone": "bull"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1794996000,
+      "closeTime": 1794999600,
+      "tone": "bull"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1795014000,
+      "closeTime": 1795017600,
+      "tone": "bull"
+    },
+    {
+      "minutes": 60,
+      "bucketTime": 1795114800,
+      "closeTime": 1795118400,
+      "tone": "bull"
+    }
+  ],
+  "120": [
+    {
+      "minutes": 120,
+      "bucketTime": 1790625600,
+      "closeTime": 1790632800,
+      "tone": "bear"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1790683200,
+      "closeTime": 1790690400,
+      "tone": "bull"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1791194400,
+      "closeTime": 1791201600,
+      "tone": "bull"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1791403200,
+      "closeTime": 1791410400,
+      "tone": "bear"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1791792000,
+      "closeTime": 1791799200,
+      "tone": "bull"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1792152000,
+      "closeTime": 1792159200,
+      "tone": "bear"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1792447200,
+      "closeTime": 1792454400,
+      "tone": "bear"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1792706400,
+      "closeTime": 1792713600,
+      "tone": "bear"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1793955600,
+      "closeTime": 1793962800,
+      "tone": "bear"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1793984400,
+      "closeTime": 1793991600,
+      "tone": "bear"
+    },
+    {
+      "minutes": 120,
+      "bucketTime": 1794992400,
+      "closeTime": 1794999600,
+      "tone": "bull"
+    }
+  ],
+  "240": [
+    {
+      "minutes": 240,
+      "bucketTime": 1792731600,
+      "closeTime": 1792746000,
+      "tone": "bull"
+    },
+    {
+      "minutes": 240,
+      "bucketTime": 1793916000,
+      "closeTime": 1793930400,
+      "tone": "bear"
+    },
+    {
+      "minutes": 240,
+      "bucketTime": 1793973600,
+      "closeTime": 1793988000,
+      "tone": "bear"
+    }
+  ],
+  "1440": [
+    {
+      "minutes": 1440,
+      "bucketTime": 1792728000,
+      "closeTime": 1792814400,
+      "tone": "bull"
+    }
+  ]
+}
