@@ -52,6 +52,7 @@ from database.repository import TradingRepository
 from execution.alpaca_paper_trader import AlpacaPaperTrader
 from indicators import ema
 from learning_engine import TradingLearningAgent
+from premarket_scanner import PREMARKET_SCAN_SYMBOLS, merge_live_tail, premarket_scan_row
 from oi_auto_alerts import (
     apply_completed_five_minute_close,
     build_oi_ladder,
@@ -11241,6 +11242,96 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "message": "Warming MAG7 chart tapes; signals appear as each chart caches.",
         }
 
+    def mag7_premarket_scanner_payload(self) -> dict:
+        """06:00-09:30 ET MAG7 premarket scanner rows, mirroring the 5m chart.
+
+        Reads ONLY the already-warm OI-finder chart cache plus the in-memory
+        live stream tape -- never a broker fetch or a chart build. Served
+        from its own uncached route (/api/premarket-scanner), NOT through
+        dashboard_payload()'s 60s cache, and deliberately does not call
+        touch_oi_finder_interactive_window(): a 5s poll would hold the
+        background collector paused forever. Memoized per (symbol, live tape
+        last bar time, date) so an unchanged tape costs a dict lookup.
+        """
+        now_et = datetime.now(ZoneInfo(EASTERN_TZ))
+        symbols = list(PREMARKET_SCAN_SYMBOLS)
+        rows: list[dict] = []
+        ready: list[str] = []
+        pending: list[str] = []
+
+        # chart_history() only has bars for equities the Schwab stream is
+        # subscribed to. Pin the nine once per process (idempotent, and it
+        # never touches the option subscriptions).
+        if not getattr(self, "_premarket_scan_stream_pinned", False):
+            try:
+                for symbol in symbols:
+                    MARKET_STREAM.watch(symbol)
+                self._premarket_scan_stream_pinned = True
+            except Exception:
+                pass
+
+        memo = getattr(self, "_mag7_premarket_scan_memo", None)
+        if not isinstance(memo, dict):
+            memo = {}
+            self._mag7_premarket_scan_memo = memo
+
+        for symbol in symbols:
+            with self.oi_finder_chart_lock:
+                cached = self.oi_finder_chart_cache.get(symbol)
+                payload = dict(cached["payload"]) if cached and cached.get("payload") else None
+            bars = payload.get("bars") if payload else None
+            if not bars:
+                pending.append(symbol)
+                continue
+            ready.append(symbol)
+            # Live tail so fires do not lag the chart by a cache refresh.
+            # Never let a streamer hiccup take the whole scanner down.
+            try:
+                live_bars = MARKET_STREAM.chart_history(symbol)
+            except Exception:
+                live_bars = []
+            scan_tape = merge_live_tail(payload.get("studyBars") or bars, live_bars)
+            payload = {**payload, "studyBars": scan_tape}
+            # Memoize on the LIVE tape's last bar, not the cached one, or the
+            # 30s-stale key would defeat the point of the live tail.
+            try:
+                latest_time = int(scan_tape[-1].get("time") or 0) if scan_tape else 0
+            except (AttributeError, TypeError, ValueError):
+                latest_time = 0
+            key = (symbol, latest_time, now_et.date().isoformat())
+            if key in memo:
+                row = memo[key]
+            else:
+                try:
+                    row = premarket_scan_row(symbol, payload, now_et)
+                except Exception:
+                    row = None
+                memo[key] = row
+                if len(memo) > 120:
+                    for stale in list(memo)[: len(memo) - 120]:
+                        memo.pop(stale, None)
+            if row:
+                rows.append(row)
+
+        rows.sort(key=lambda item: (-int(item.get("score") or 0), str(item.get("symbol") or "")))
+        return {
+            "status": "READY" if ready else "WARMING",
+            "date": now_et.date().isoformat(),
+            "timezone": EASTERN_TZ,
+            "windowLabel": "6:00 AM - 9:30 AM ET",
+            "symbols": symbols,
+            "rows": rows,
+            "matchCount": len(rows),
+            "readySymbols": ready,
+            "pendingSymbols": pending,
+            "generatedAt": now_et.isoformat(),
+            "message": (
+                f"{len(rows)} of {len(symbols)} MAG7 symbols match in this premarket window."
+                if ready
+                else "Warming MAG7 chart tapes; rows appear as each chart caches."
+            ),
+        }
+
     def mag7_chart_signals_payload(self, session: str) -> dict:
         """Dashboard payload for the MAG7 premarket / 5-minute signal tables."""
         eastern = ZoneInfo(EASTERN_TZ)
@@ -14100,6 +14191,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/oi-auto-alerts":
                 self._send_json(HTTPStatus.OK, STATE.oi_auto_alert_payload())
+                return
+            if parsed.path == "/api/premarket-scanner":
+                # Deliberately NOT behind dashboard_payload()'s 60s cache, and
+                # deliberately NOT calling touch_oi_finder_interactive_window()
+                # -- a 5s poll would hold the background collector paused forever.
+                self._send_json(HTTPStatus.OK, STATE.mag7_premarket_scanner_payload())
                 return
             if parsed.path == "/api/ticker-strip":
                 query = parse_qs(parsed.query)
