@@ -47,15 +47,38 @@ Momentum score:
 - Market trend: 10 points
 - News/catalyst: information only (0 points; shown in the News Feed, never scored)
 
-Note: news never changes a score. The News Feed scrapes ticker-tagged headlines from
-Yahoo Finance (search API + RSS), Alpaca News (Benzinga, uses your Alpaca keys), Finviz and
-Nasdaq. Only headlines the publisher tagged with the ticker are stored; the same story from
-several sources is stored once, and the feed shows which source each headline came from and
-which sources were blocked or unavailable on the last scrape. Google News keyword search is
-available as an opt-in source (`NEWS_SOURCES=...,google_news`) because it is a headline match.
+Note: news never changes a score. The News Feed scrapes ticker-tagged headlines only:
+a headline is attributed to a ticker only when the publisher tagged it (a ticker field,
+a per-ticker feed, or an explicit `(NASDAQ:AAPL)` exchange tag). The same story from
+several sources is stored once, and the feed shows which source each headline came from,
+which sources were blocked or unavailable on the last scrape, and which sources are not
+active and why (`newsFeedMeta.availableSources`).
+
+| Source (`NEWS_SOURCES` name) | Key needed | How the ticker is attributed |
+| --- | --- | --- |
+| `yahoo_search` Yahoo Finance search API | no | `relatedTickers` on each article |
+| `yahoo_rss` Yahoo Finance RSS | no | per-ticker feed |
+| `alpaca` Alpaca News (Benzinga wire) | Alpaca key pair (already configured for trading) | `symbols` on each article |
+| `benzinga` Benzinga public RSS (`benzinga.com/feed`, `benzinga.com/news/feed`) | no | explicit exchange tag `(NASDAQ:AAPL)`, `NYSE: AAPL`, `AMEX:`, `ARCA:`, `OTC:`, `BATS:`, `TSX:` in the title/description, or a `<category>` from Benzinga's ticker taxonomy (its `domain` attribute names a quote/ticker list). A bare topic category such as AI, IPO, EV or a plain ticker-looking word is never used for attribution. The site-wide feed is fetched once per scan and filtered per symbol; if one of the two feed URLs is rejected after the other loaded, the loaded items are kept |
+| `finviz` Finviz quote page | no | per-ticker news table |
+| `nasdaq` Nasdaq RSS | no | `nasdaq:tickers` on each item |
+| `sec_edgar` SEC EDGAR filings (Atom) | no, but set `NEWS_CONTACT_EMAIL` (SEC requires a contact in the User-Agent) | per-ticker feed; keeps 8-K, 10-Q, 10-K, 6-K, S-1, S-3, 424B*, SC 13D, SC 13G, DEF 14A and insider forms 3/4 (and their /A amendments), tagged `Filing`. Each filing gets its own headline `8-K filing: Apple Inc. (2026-09-26, Item 2.02: ..., AccNo 0000320193-26-000001)` so repeated forms by the same filer are never collapsed into one |
+| `finnhub` Finnhub company news | `FINNHUB_API_KEY` (free tier) | `related` ticker list |
+| `polygon` Polygon reference news | `POLYGON_API_KEY` (free tier) | `tickers` list |
+| `alphavantage` Alpha Vantage NEWS_SENTIMENT | `ALPHA_VANTAGE_API_KEY` (free tier, ~25 requests/day; a rate-limit note is reported as blocked) | `ticker_sentiment` entry for the ticker with publisher `relevance_score >= 0.2` |
+| `tiingo` Tiingo news | `TIINGO_API_KEY` (free tier) | `tickers` list |
+| `google_news` Google News keyword search | no | headline keyword match, so it is **opt-in** (`NEWS_SOURCES=...,google_news`) |
+
+Key-based sources switch on automatically when their key is set and are skipped (listed
+as "not set", never reported as blocked or failed) when it is empty.
 
 ```env
-NEWS_SOURCES=yahoo_search,yahoo_rss,alpaca,finviz,nasdaq
+NEWS_SOURCES=yahoo_search,yahoo_rss,alpaca,benzinga,finviz,nasdaq,sec_edgar
+FINNHUB_API_KEY=
+POLYGON_API_KEY=
+ALPHA_VANTAGE_API_KEY=
+TIINGO_API_KEY=
+NEWS_CONTACT_EMAIL=you@example.com
 NEWS_PER_SYMBOL_LIMIT=25
 NEWS_LOOKBACK_DAYS=7
 NEWS_TIMEOUT_SECONDS=8

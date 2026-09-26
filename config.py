@@ -218,9 +218,18 @@ class TradierSettings:
 class NewsSettings:
     """Information-only News Feed scraping. Never feeds scoring or execution."""
 
-    # Comma list of: yahoo_search, yahoo_rss, alpaca, finviz, nasdaq, google_news.
-    # Google News is a headline keyword match, so it is opt-in.
-    sources: str = os.getenv("NEWS_SOURCES", "yahoo_search,yahoo_rss,alpaca,finviz,nasdaq")
+    # Comma list of: yahoo_search, yahoo_rss, alpaca, benzinga, finviz, nasdaq, sec_edgar,
+    # finnhub, polygon, alphavantage, tiingo, google_news.
+    # finnhub/polygon/alphavantage/tiingo need a key (below) and switch on automatically
+    # when it is set.  Google News is a headline keyword match, so it is opt-in.
+    sources: str = os.getenv("NEWS_SOURCES", "yahoo_search,yahoo_rss,alpaca,benzinga,finviz,nasdaq,sec_edgar")
+    # Free API tiers.  Leave empty to skip the source (it is listed as "not set", never as failed).
+    finnhub_api_key: str = os.getenv("FINNHUB_API_KEY", "")
+    polygon_api_key: str = os.getenv("POLYGON_API_KEY", "")
+    alpha_vantage_api_key: str = os.getenv("ALPHA_VANTAGE_API_KEY", "")
+    tiingo_api_key: str = os.getenv("TIINGO_API_KEY", "")
+    # SEC EDGAR requires a descriptive User-Agent with a contact address.
+    contact_email: str = os.getenv("NEWS_CONTACT_EMAIL", "noreply@example.com")
     per_symbol_limit: int = int(os.getenv("NEWS_PER_SYMBOL_LIMIT", "25"))
     lookback_days: int = int(os.getenv("NEWS_LOOKBACK_DAYS", "7"))
     timeout_seconds: int = int(os.getenv("NEWS_TIMEOUT_SECONDS", "8"))

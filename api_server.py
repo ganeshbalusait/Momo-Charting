@@ -8601,7 +8601,8 @@ class DashboardState:
     @staticmethod
     def _build_catalyst_engine() -> CatalystEngine:
         """News is scraped from ticker-tagged feeds (Yahoo Finance, Alpaca/Benzinga,
-        Finviz, Nasdaq). Alpaca news works with any configured Alpaca key pair."""
+        Benzinga RSS, Finviz, Nasdaq, SEC EDGAR, plus Finnhub/Polygon/Alpha Vantage/Tiingo
+        when their free-tier key is set). Alpaca news works with any configured Alpaca key pair."""
         news = settings.news
         alpaca_key = alpaca_secret = ""
         try:
@@ -8622,6 +8623,13 @@ class DashboardState:
             per_symbol_limit=news.per_symbol_limit,
             lookback_days=news.lookback_days,
             alpaca_credentials=(alpaca_key, alpaca_secret),
+            api_keys={
+                "finnhub": news.finnhub_api_key,
+                "polygon": news.polygon_api_key,
+                "alphavantage": news.alpha_vantage_api_key,
+                "tiingo": news.tiingo_api_key,
+            },
+            contact_email=news.contact_email,
         )
 
     def _refresh_catalyst_information(self, symbols: list[str] | None = None) -> dict:
@@ -8630,6 +8638,7 @@ class DashboardState:
         items = self.catalysts.load_watchlist_news(scoped_symbols)
         stored = self.repository.log_catalysts(items)
         source_status = self.catalysts.source_status() if hasattr(self.catalysts, "source_status") else []
+        available_sources = self.catalysts.available_sources() if hasattr(self.catalysts, "available_sources") else []
         healthy = [entry for entry in source_status if entry.get("status") in {"ok", "partial"}]
         failed = [entry for entry in source_status if entry.get("status") in {"blocked", "error"}]
         message = (
@@ -8648,6 +8657,7 @@ class DashboardState:
             "refreshedAt": datetime.now().astimezone().isoformat(),
             "elapsedMs": int((time.monotonic() - started) * 1000),
             "sources": source_status,
+            "availableSources": available_sources,
             "lookbackDays": int(getattr(self.catalysts, "lookback_days", settings.news.lookback_days)),
             "perSymbolLimit": int(getattr(self.catalysts, "per_symbol_limit", settings.news.per_symbol_limit)),
         }

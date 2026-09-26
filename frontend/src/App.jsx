@@ -1674,6 +1674,14 @@ function NewsSourceHealthStrip({ meta }) {
   );
 }
 
+// "Publisher via Aggregator" for a stored headline, omitting the aggregator
+// when it is the publisher itself (Finviz headline vs. Reuters via Yahoo).
+function newsPublisherLabel(item) {
+  const publisher = String(item?.source || "").trim() || "News Feed";
+  const aggregator = String(item?.via || "").trim();
+  return aggregator && aggregator.toLowerCase() !== publisher.toLowerCase() ? `${publisher} via ${aggregator}` : publisher;
+}
+
 function renderNewsRating(value) {
   const score = Math.max(0, Math.min(3, Number(value) || 0));
   return <span className={`news-rating news-rating-${score}`} aria-label={`${score} of 3 catalyst rating`}>{score} / 3</span>;
@@ -5080,8 +5088,9 @@ function OiFinderBoard({
           </div>
         </header>
         {relatedNews.length ? <div className="oi-finder-related-news-grid">{relatedNews.map((item, index) => <article key={`${item?.id || item?.published_at || index}-${item?.headline || "news"}`}>
-          <div><span className={`news-sentiment news-sentiment-${String(item?.sentiment || "neutral").toLowerCase()}`}>{item?.sentiment || "Neutral"}</span><small>{item?.published_at ? formatTimeLabel(item.published_at) : "Stored news"} · {item?.source || "News Feed"}</small></div>
+          <div><span className={`news-sentiment news-sentiment-${String(item?.sentiment || "neutral").toLowerCase()}`}>{item?.sentiment || "Neutral"}</span><small>{newsPublisherLabel(item)} · {item?.published_at ? formatTimeLabel(item.published_at) : "Stored news"}</small></div>
           {item?.url ? <a href={item.url} rel="noreferrer" target="_blank">{item?.headline || "Open article"}</a> : <b>{item?.headline || "Headline unavailable"}</b>}
+          {item?.summary ? <p className="news-item-summary">{item.summary}</p> : null}
         </article>)}</div> : <div className="oi-finder-related-news-empty">No stored headlines for {symbol || "this ticker"} yet. News is fetched automatically when a ticker opens; use Refresh news to try again.</div>}
       </section>
       <div className="oi-finder-side-stack">
@@ -6305,10 +6314,11 @@ function FullChartsAndOiBoard({
           <div className="charts-oi-chain-dock-news">
             {dockRelatedNews.length ? dockRelatedNews.map((item, index) => (
               <article key={`chain-dock-news-${item?.id || item?.url || index}`}>
-                <small>{item?.published_at ? formatTimeLabel(item.published_at) : "Stored news"} · {item?.source || "News Feed"}</small>
+                <small>{newsPublisherLabel(item)} · {item?.published_at ? formatTimeLabel(item.published_at) : "Stored news"}</small>
                 {item?.url
                   ? <a href={item.url} rel="noreferrer" target="_blank">{item?.headline || "Open article"}</a>
                   : <b>{item?.headline || "Headline unavailable"}</b>}
+                {item?.summary ? <p className="news-item-summary">{item.summary}</p> : null}
               </article>
             )) : <span className="charts-oi-chain-dock-empty">No stored headlines for {symbol || "this ticker"} yet.</span>}
           </div>
@@ -24217,6 +24227,35 @@ function TradingWorkspace({ authUser, onLogout }) {
     return String(row.source || "").toUpperCase().includes(mag7ScannerSearchTerm)
       || String(row.mapped || "").toUpperCase().includes(mag7ScannerSearchTerm);
   });
+  // Mag7 (MomoX) scanner news: the headline shown on a card is the latest one
+  // stored for the scanned underlying; the typed ticker only stands in when
+  // the underlying has nothing. Information only, nothing scores it.
+  const mag7ScannerNewsSymbol = (row) => {
+    const mapped = String(row?.mapped || "").trim().toUpperCase();
+    const source = String(row?.source || "").trim().toUpperCase();
+    if (!mapped) return source;
+    if (source && source !== mapped && !oiNewsBySymbol.has(mapped) && oiNewsBySymbol.has(source)) return source;
+    return mapped;
+  };
+  const mag7ScannerNewsSymbols = [...new Set(
+    visibleMag7OptionRows
+      .flatMap((row) => [row.mapped, row.source])
+      .map((symbol) => String(symbol || "").trim().toUpperCase())
+      .filter(Boolean),
+  )].slice(0, 40);
+  const mag7ScannerNewsCoveredCount = visibleMag7OptionRows.filter((row) => oiNewsBySymbol.has(mag7ScannerNewsSymbol(row))).length;
+  const mag7ScannerNewsMeta = dashboard.newsFeedMeta && typeof dashboard.newsFeedMeta === "object" ? dashboard.newsFeedMeta : null;
+  const mag7ScannerNewsSources = Array.isArray(mag7ScannerNewsMeta?.sources) ? mag7ScannerNewsMeta.sources : [];
+  const mag7ScannerNewsSourcesOk = mag7ScannerNewsSources.filter((source) => ["ok", "partial"].includes(String(source?.status || "").toLowerCase())).length;
+  const mag7ScannerNewsUnavailable = mag7ScannerNewsSources
+    .filter((source) => ["blocked", "error"].includes(String(source?.status || "").toLowerCase()))
+    .map((source) => String(source?.label || source?.name || "").trim())
+    .filter(Boolean);
+  const refreshMag7ScannerNews = () => runAction("/api/news-feed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbols: mag7ScannerNewsSymbols }),
+  }, "mag7-scanner-news");
 
   const optionIdeaRows = (dashboard.optionCandidateResults || [])
     .map((row) => ({
@@ -28544,8 +28583,27 @@ function TradingWorkspace({ authUser, onLogout }) {
               <div>
                 <h2>Mag7 Scanner</h2>
                 <p>{mag7OptionWatchlistSource.length} signal tickers, {mag7OptionWatchlist.length} mapped underlyings scanned by the MAG7 scanner</p>
+                <p className="mag7-scanner-news-meta">
+                  {mag7ScannerNewsMeta
+                    ? `${Number(mag7ScannerNewsMeta.headlinesRefreshed || 0)} headlines · ${mag7ScannerNewsSourcesOk}/${mag7ScannerNewsSources.length} sources OK · last scrape ${formatDateTime(mag7ScannerNewsMeta.refreshedAt)}`
+                    : "Press Refresh news to scrape ticker-tagged headlines for these tickers."}
+                  {mag7ScannerNewsUnavailable.length ? <span className="mag7-scanner-news-unavailable"> · Unavailable: {mag7ScannerNewsUnavailable.join(", ")}</span> : null}
+                  <span className="mag7-scanner-news-coverage"> · {mag7ScannerNewsCoveredCount}/{visibleMag7OptionRows.length} tickers have news</span>
+                </p>
               </div>
-              <button className="watchlist-close" onClick={() => setActiveView("Scanner")} type="button">x</button>
+              <div className="mag7-scanner-head-actions">
+                <button
+                  className="watchlist-add-button mag7-scanner-news-refresh"
+                  disabled={!mag7ScannerNewsSymbols.length || submitting === "mag7-scanner-news"}
+                  onClick={refreshMag7ScannerNews}
+                  title="Scrape the latest ticker-tagged headlines for every ticker on this scanner"
+                  type="button"
+                >
+                  <RefreshCw className={submitting === "mag7-scanner-news" ? "is-spinning" : ""} size={14} />
+                  {submitting === "mag7-scanner-news" ? "Refreshing…" : "Refresh news"}
+                </button>
+                <button className="watchlist-close" onClick={() => setActiveView("Scanner")} type="button">x</button>
+              </div>
             </div>
             <div className="watchlist-panel-body">
               <div className="watchlist-addbar">
@@ -28613,6 +28671,7 @@ function TradingWorkspace({ authUser, onLogout }) {
                             <strong>{row.source}</strong>
                           )}
                           <small>{mappedLabel}</small>
+                          <div className="mag7-scanner-news">{renderScannerNewsCell(mag7ScannerNewsSymbol(row))}</div>
                         </div>
                         <div className="watchlist-row-actions">
                           {isEditing ? (
