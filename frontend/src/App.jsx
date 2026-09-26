@@ -6775,7 +6775,7 @@ function reorderColumnKeys(savedKeys, fallbackKeys) {
 
 function readColumnProfile(storageKey, columns) {
   const fallback = (columns || []).map((column) => column.key);
-  const profileSchemaVersion = 9;
+  const profileSchemaVersion = 10;
   const newsColumnKeys = ["__news"];
   const mtfColumnKeys = ["mtf_bullish_signal_labels", "stock_mtf_bullish_signal_labels"];
   const premarketChartSignalColumnKeys = ["intraday48Signals", "higher48Signals"];
@@ -6828,8 +6828,14 @@ function readColumnProfile(storageKey, columns) {
     if (Number(parsed.schemaVersion || 1) < profileSchemaVersion && String(storageKey).includes("scanner")) {
       visibleKeys = [...visibleKeys, ...cloudColumnKeys.filter((key) => fallback.includes(key) && !visibleKeys.includes(key))];
     }
-    if (Number(parsed.schemaVersion || 1) < profileSchemaVersion && String(storageKey).includes("oi-scanner")) {
+    if (Number(parsed.schemaVersion || 1) < profileSchemaVersion && String(storageKey).includes("scanner")) {
       visibleKeys = [...visibleKeys, ...newsColumnKeys.filter((key) => fallback.includes(key) && !visibleKeys.includes(key))];
+      if (String(storageKey).includes("stock-scanner") && fallback.includes("__news")) {
+        const withoutNews = orderKeys.filter((key) => key !== "__news");
+        const setupIndex = withoutNews.indexOf("setup_name");
+        const insertAt = setupIndex >= 0 ? setupIndex + 1 : 1;
+        orderKeys = [...withoutNews.slice(0, insertAt), "__news", ...withoutNews.slice(insertAt)];
+      }
     }
     if (Number(parsed.schemaVersion || 1) < profileSchemaVersion && String(storageKey).includes("scanner")) {
       visibleKeys = [...visibleKeys, ...mtfColumnKeys.filter((key) => fallback.includes(key) && !visibleKeys.includes(key))];
@@ -6902,6 +6908,8 @@ function buildOiTableRowSignature(row, index = 0) {
     row?.stock_mtf_bullish_signal_labels ?? "",
     row?.stock_mtf_bullish_signal_both_2h_4h ? "1" : "0",
     row?.__isNew ? "1" : "0",
+    row?.__news?.published_at ?? "",
+    row?.__news?.headline ?? "",
     row?.scanned_at ?? "",
   ].join("~");
 }
@@ -23177,14 +23185,35 @@ function TradingWorkspace({ authUser, onLogout }) {
     const signalShape = String(row?.signal_shape_label || "").trim();
     return label === "Watchlist" || label === "Mixed Flow" || signalShape === "Mixed Flow";
   };
+  const oiNewsBySymbol = new Map();
+  (dashboard.catalystIndex?.length ? dashboard.catalystIndex : dashboard.catalysts || []).forEach((item) => {
+    const symbol = String(item.symbol || "").trim().toUpperCase();
+    if (!symbol) return;
+    const publishedAt = parseApiDate(item.published_at);
+    const current = oiNewsBySymbol.get(symbol);
+    const currentPublishedAt = parseApiDate(current?.published_at);
+    if (!current || (publishedAt?.getTime() || 0) > (currentPublishedAt?.getTime() || 0)) {
+      oiNewsBySymbol.set(symbol, item);
+    }
+  });
+
+  // OI tables hold their rows stable between polls and DataTable compares
+  // columns by shape only, so a headline must travel on the row itself (and
+  // in its signature) for the News cell to refresh when new news lands.
+  const withOiNews = (rows) => (rows || []).map((row) => {
+    const symbol = String(row?.underlying || row?.history_symbol || row?.symbol || "").trim().toUpperCase();
+    const news = oiNewsBySymbol.get(symbol) || null;
+    return row?.__news === news ? row : { ...row, __news: news };
+  });
+
   const oiMag7ScannerRows = oiMag7DisplayRows.filter((row) => isTradeGradeOiRow(row) && matchesOiResultSearch(row));
   const oiScannerRows = oiScannerDisplayRows.filter((row) => isTradeGradeOiRow(row) && matchesOiResultSearch(row));
   const oiMag7ReviewRows = oiMag7DisplayRows.filter((row) => isReviewGradeOiRow(row) && matchesOiResultSearch(row));
   const oiScannerReviewRows = oiScannerDisplayRows.filter((row) => isReviewGradeOiRow(row) && matchesOiResultSearch(row));
-  const stableOiMag7ScannerRows = useStableTableRows(oiMag7ScannerRows);
-  const stableOiScannerRows = useStableTableRows(oiScannerRows);
-  const stableOiMag7ReviewRows = useStableTableRows(oiMag7ReviewRows);
-  const stableOiScannerReviewRows = useStableTableRows(oiScannerReviewRows);
+  const stableOiMag7ScannerRows = useStableTableRows(withOiNews(oiMag7ScannerRows));
+  const stableOiScannerRows = useStableTableRows(withOiNews(oiScannerRows));
+  const stableOiMag7ReviewRows = useStableTableRows(withOiNews(oiMag7ReviewRows));
+  const stableOiScannerReviewRows = useStableTableRows(withOiNews(oiScannerReviewRows));
   const activeScanSource = dashboard.scanJob?.source || "Watchlist";
   const stockScannerHistorySearchTerm = stockScannerHistorySearch.trim().toUpperCase();
   const matchesStockScannerHistorySearch = (row) => {
@@ -23332,14 +23361,14 @@ function TradingWorkspace({ authUser, onLogout }) {
     ? oiScannerReviewRows
     : latestOiHistoryRowsBySymbol(watchlistOiRawHistoryRows)
       .filter((row) => isReviewGradeOiRow(row) && matchesOiResultSearch(row));
-  const stableSelectedMag7DailyRows = useStableTableRows(selectedMag7DailyRows);
-  const stableSelectedMag7ReviewRows = useStableTableRows(selectedMag7ReviewRows);
-  const stableSelectedWatchlistDailyRows = useStableTableRows(selectedWatchlistDailyRows);
-  const stableSelectedWatchlistReviewRows = useStableTableRows(selectedWatchlistReviewRows);
-  const stableOiMag7ScannerHistoryRows = useStableTableRows(oiMag7ScannerHistoryRows);
-  const stableOiScannerHistoryRows = useStableTableRows(oiScannerHistoryRows);
-  const stableOiMag7ReviewHistoryRows = useStableTableRows(oiMag7ReviewHistoryRows);
-  const stableOiScannerReviewHistoryRows = useStableTableRows(oiScannerReviewHistoryRows);
+  const stableSelectedMag7DailyRows = useStableTableRows(withOiNews(selectedMag7DailyRows));
+  const stableSelectedMag7ReviewRows = useStableTableRows(withOiNews(selectedMag7ReviewRows));
+  const stableSelectedWatchlistDailyRows = useStableTableRows(withOiNews(selectedWatchlistDailyRows));
+  const stableSelectedWatchlistReviewRows = useStableTableRows(withOiNews(selectedWatchlistReviewRows));
+  const stableOiMag7ScannerHistoryRows = useStableTableRows(withOiNews(oiMag7ScannerHistoryRows));
+  const stableOiScannerHistoryRows = useStableTableRows(withOiNews(oiScannerHistoryRows));
+  const stableOiMag7ReviewHistoryRows = useStableTableRows(withOiNews(oiMag7ReviewHistoryRows));
+  const stableOiScannerReviewHistoryRows = useStableTableRows(withOiNews(oiScannerReviewHistoryRows));
   const oiMag7ScannerHistoryDay = (dashboard.scannerHistoryDays || [])
     .find((row) => String(row.scan_date || "") === activeMag7OiScannerHistoryDate && isMag7OiHistoryRow(row));
   const oiScannerHistoryDay = (dashboard.scannerHistoryDays || [])
@@ -23498,6 +23527,57 @@ function TradingWorkspace({ authUser, onLogout }) {
     || journalPnLFilter !== "all"
   );
 
+  const openTickerNews = (rawSymbol) => {
+    const symbol = String(rawSymbol || "").trim().toUpperCase();
+    if (!symbol) return;
+    setNewsSearchDraft(symbol);
+    setNewsSearch(symbol);
+    setNewsUniverse("all");
+    setActiveView("News Feed");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  // Latest ticker-tagged headline for a scanner row. Information only: the
+  // cell links to the article and to the News Feed, nothing else reads it.
+  const renderScannerNewsCell = (rawSymbol, attachedNews) => {
+    const symbol = String(rawSymbol || "").trim().toUpperCase();
+    const news = attachedNews === undefined ? oiNewsBySymbol.get(symbol) : attachedNews;
+    if (!news) return <span className="oi-news-status oi-news-none">No</span>;
+    const freshness = newsFreshnessMeta(news.published_at);
+    const isFresh = freshness.ageHours <= 24;
+    const sentiment = String(news.sentiment || "neutral").toLowerCase();
+    const publisher = String(news.source || "").trim();
+    const aggregator = String(news.via || "").trim();
+    const meta = [publisher, aggregator && aggregator.toLowerCase() !== publisher.toLowerCase() ? `via ${aggregator}` : "", news.published_at ? formatTimeLabel(news.published_at) : ""]
+      .filter(Boolean)
+      .join(" · ");
+    return (
+      <span className="scanner-news-cell">
+        <span className="scanner-news-badges">
+          <a
+            className={`oi-news-status ${isFresh ? "oi-news-fresh" : "oi-news-stored"}`}
+            href="#news-feed"
+            onClick={(event) => {
+              event.preventDefault();
+              openTickerNews(symbol);
+            }}
+            title={`Open the News Feed for ${symbol}`}
+          >
+            {isFresh ? "Fresh" : "Stored"}
+          </a>
+          <span className={`news-sentiment news-sentiment-${sentiment}`}>{news.sentiment || "Neutral"}</span>
+        </span>
+        {news.url
+          ? <a className="scanner-news-headline" href={news.url} target="_blank" rel="noreferrer" title={news.summary || news.headline}>{news.headline}</a>
+          : <span className="scanner-news-headline" title={news.summary || news.headline}>{news.headline}</span>}
+        {meta ? <small className="scanner-news-meta">{meta}</small> : null}
+      </span>
+    );
+  };
+
+  const renderOiNewsLink = (_, row) => renderScannerNewsCell(row.underlying || row.history_symbol || row.symbol, row.__news);
+  const renderStockNewsCell = (_, row) => renderScannerNewsCell(row.symbol);
+
   const scannerColumns = [
     {
       key: "symbol",
@@ -23509,6 +23589,7 @@ function TradingWorkspace({ authUser, onLogout }) {
       ),
     },
     { key: "setup_name", label: "Why Setup", render: (_, row) => renderStockSetupMatches(row) },
+    { key: "__news", label: "News", sortable: false, render: renderStockNewsCell },
     { key: "mtf_bullish_signal_labels", label: "MTF C/CALL", render: renderMtfSignalBadges },
     { key: "four_hour_cloud_state", label: "4H Cloud", render: renderCloudState },
     { key: "five_min_cloud_state", label: "5M Cloud", render: renderCloudState },
@@ -23575,49 +23656,6 @@ function TradingWorkspace({ authUser, onLogout }) {
     { key: "one_hour_close_change_pct", label: "1H Close %", render: (value) => value == null ? "--" : formatPercent(value) },
     { key: "trigger_source", label: "Trigger" },
   ];
-
-  const oiNewsBySymbol = new Map();
-  (dashboard.catalystIndex?.length ? dashboard.catalystIndex : dashboard.catalysts || []).forEach((item) => {
-    const symbol = String(item.symbol || "").trim().toUpperCase();
-    if (!symbol) return;
-    const publishedAt = parseApiDate(item.published_at);
-    const current = oiNewsBySymbol.get(symbol);
-    const currentPublishedAt = parseApiDate(current?.published_at);
-    if (!current || (publishedAt?.getTime() || 0) > (currentPublishedAt?.getTime() || 0)) {
-      oiNewsBySymbol.set(symbol, item);
-    }
-  });
-
-  const openTickerNews = (rawSymbol) => {
-    const symbol = String(rawSymbol || "").trim().toUpperCase();
-    if (!symbol) return;
-    setNewsSearchDraft(symbol);
-    setNewsSearch(symbol);
-    setNewsUniverse("all");
-    setActiveView("News Feed");
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const renderOiNewsLink = (_, row) => {
-    const symbol = String(row.underlying || row.history_symbol || "").trim().toUpperCase();
-    const news = oiNewsBySymbol.get(symbol);
-    if (!news) return <span className="oi-news-status oi-news-none">No</span>;
-    const freshness = newsFreshnessMeta(news.published_at);
-    const isFresh = freshness.ageHours <= 24;
-    return (
-      <a
-        className={`oi-news-status ${isFresh ? "oi-news-fresh" : "oi-news-stored"}`}
-        href="#news-feed"
-        onClick={(event) => {
-          event.preventDefault();
-          openTickerNews(symbol);
-        }}
-        title={`${isFresh ? "Fresh" : "Stored"} news for ${symbol}: ${news.headline || "Open News Feed"}`}
-      >
-        {isFresh ? "Fresh" : "Yes"}
-      </a>
-    );
-  };
 
   const beginOiFinderRequestTargetLatestRef = useRef(beginOiFinderRequestTarget);
   beginOiFinderRequestTargetLatestRef.current = beginOiFinderRequestTarget;

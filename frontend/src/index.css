@@ -10263,6 +10263,54 @@ body.global-price-alert-visible .topbar.trading-header {
   color: #82e9f5;
 }
 
+.scanner-news-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 240px;
+  max-width: 380px;
+  white-space: normal;
+}
+
+.scanner-news-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.scanner-news-headline {
+  color: #e6e6ea;
+  font-size: 11px;
+  line-height: 1.35;
+  text-decoration: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+a.scanner-news-headline:hover {
+  color: #fff0ad;
+  text-decoration: underline;
+}
+
+.scanner-news-meta {
+  color: #7f7f8d;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 760px) {
+  .scanner-news-cell {
+    min-width: 180px;
+  }
+}
+
 a.oi-news-status:hover {
   border-color: #e4b84c;
   color: #fff0ad;

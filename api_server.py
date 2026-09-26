@@ -7404,6 +7404,13 @@ class DashboardState:
                     "error": "",
                 }
             )
+            # Information only: refresh ticker-tagged headlines for the symbols
+            # just scanned so the scanner's News column is current. Runs in the
+            # background and never delays or alters scan results.
+            try:
+                self._schedule_catalyst_information_refresh(symbols)
+            except Exception as exc:
+                self.repository.log_bot_event("catalyst_scan_error", f"News refresh after scan failed: {exc}")
         except Exception as exc:
             self.action_message = f"Scan failed: {exc}"
             self.repository.log_bot_event("scan_error", self.action_message)
