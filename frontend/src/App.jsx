@@ -1640,7 +1640,7 @@ function NewsSourceHealthStrip({ meta }) {
       <section className="news-source-strip" aria-label="News sources">
         <article className="news-source-idle">
           <span>Sources</span>
-          <b>Press Refresh View to scrape ticker-tagged headlines from Yahoo Finance, Alpaca/Benzinga, Finviz and Nasdaq.</b>
+          <b>Press Refresh View to scrape ticker-tagged headlines from Yahoo Finance, Benzinga, Finviz, Nasdaq and SEC EDGAR filings.</b>
         </article>
       </section>
     );
@@ -28418,7 +28418,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             <section className="news-command-band">
               <div className="news-command-title">
                 <Newspaper size={18} />
-                <div><b>Market News Intelligence · Information only</b><span>Ticker-tagged headlines scraped from Yahoo Finance, Alpaca/Benzinga, Finviz and Nasdaq; never used to qualify, block, rank, size, or delay a trade</span></div>
+                <div><b>Market News Intelligence · Information only</b><span>Ticker-tagged headlines scraped from Yahoo Finance, Benzinga, Finviz, Nasdaq and SEC EDGAR; never used to qualify, block, rank, size, or delay a trade</span></div>
               </div>
               <div className="news-universe-tabs" role="group" aria-label="News universe">
                 <button className={newsUniverse === "watchlist" ? "is-active" : ""} onClick={() => setNewsUniverse("watchlist")} type="button">Watchlist</button>
