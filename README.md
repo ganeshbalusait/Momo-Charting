@@ -45,9 +45,24 @@ Momentum score:
 - VWAP: 10 points
 - Breakout: 15 points
 - Market trend: 10 points
-- News/catalyst placeholder: 10 points
+- News/catalyst: information only (0 points; shown in the News Feed, never scored)
 
-Note: the catalyst score is still a placeholder and remains zero until a news source is integrated.
+Note: news never changes a score. The News Feed scrapes ticker-tagged headlines from
+Yahoo Finance (search API + RSS), Alpaca News (Benzinga, uses your Alpaca keys), Finviz and
+Nasdaq. Only headlines the publisher tagged with the ticker are stored; the same story from
+several sources is stored once, and the feed shows which source each headline came from and
+which sources were blocked or unavailable on the last scrape. Google News keyword search is
+available as an opt-in source (`NEWS_SOURCES=...,google_news`) because it is a headline match.
+
+```env
+NEWS_SOURCES=yahoo_search,yahoo_rss,alpaca,finviz,nasdaq
+NEWS_PER_SYMBOL_LIMIT=25
+NEWS_LOOKBACK_DAYS=7
+NEWS_TIMEOUT_SECONDS=8
+NEWS_MAX_WORKERS=6
+NEWS_CACHE_TTL_SECONDS=300
+NEWS_FEED_ROWS=600
+```
 
 ## Project structure
 
@@ -212,7 +227,6 @@ This complements `scripts/agentic_coding_loop.ps1`: the bilevel loop searches an
 
 
 - Intraday-accurate backtesting
-- News and catalyst scoring
 - Background scheduler or service process for unattended paper trading
 - Live trading only after paper workflow validation
 # AI-BOT-Stock

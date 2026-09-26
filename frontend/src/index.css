@@ -10009,6 +10009,141 @@ body.global-price-alert-visible .topbar.trading-header {
   font-size: 18px;
 }
 
+.news-source-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  border: 1px solid #2f2f35;
+  border-top: 0;
+  background: #0b1219;
+}
+
+.news-source-strip article {
+  display: grid;
+  gap: 4px;
+  min-height: 62px;
+  padding: 10px 14px;
+  border-right: 1px solid #2f2f35;
+  border-left: 3px solid #3c3c43;
+}
+
+.news-source-strip article:last-child {
+  border-right: 0;
+}
+
+.news-source-strip span {
+  color: #7f7f8d;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.news-source-strip b {
+  color: #f3f3f3;
+  font-size: 13px;
+}
+
+.news-source-strip small {
+  color: #a3a3ae;
+  font-size: 10px;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.news-source-strip .news-source-ok {
+  border-left-color: #168c69;
+}
+
+.news-source-strip .news-source-ok b {
+  color: #73f0bd;
+}
+
+.news-source-strip .news-source-partial {
+  border-left-color: #b8862b;
+}
+
+.news-source-strip .news-source-partial b {
+  color: #ffd27a;
+}
+
+.news-source-strip .news-source-blocked,
+.news-source-strip .news-source-error {
+  border-left-color: #b0413e;
+}
+
+.news-source-strip .news-source-blocked b,
+.news-source-strip .news-source-error b {
+  color: #ff9a8f;
+}
+
+.news-source-strip .news-source-summary {
+  border-left-color: #0d4a52;
+}
+
+.news-source-strip .news-source-idle {
+  grid-column: 1 / -1;
+}
+
+.news-source-strip .news-source-idle b {
+  font-size: 11px;
+  font-weight: 600;
+  color: #c8c8cf;
+}
+
+.news-source-cell {
+  display: grid;
+  gap: 2px;
+  line-height: 1.2;
+}
+
+.news-source-cell b {
+  font-size: 11px;
+  color: #e2e2e4;
+  white-space: nowrap;
+}
+
+.news-source-cell small {
+  font-size: 9px;
+  color: #7f7f8d;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.news-headline-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 260px;
+  max-width: 640px;
+}
+
+.news-headline-summary {
+  color: #9d9da8;
+  font-size: 10.5px;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.news-headline-related {
+  color: #6f8fa0;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+@media (max-width: 760px) {
+  .news-source-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .news-headline-cell {
+    min-width: 200px;
+  }
+}
+
 .news-filter-row {
   display: flex;
   align-items: end;

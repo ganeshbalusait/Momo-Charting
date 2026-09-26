@@ -215,6 +215,21 @@ class TradierSettings:
 
 
 @dataclass(slots=True)
+class NewsSettings:
+    """Information-only News Feed scraping. Never feeds scoring or execution."""
+
+    # Comma list of: yahoo_search, yahoo_rss, alpaca, finviz, nasdaq, google_news.
+    # Google News is a headline keyword match, so it is opt-in.
+    sources: str = os.getenv("NEWS_SOURCES", "yahoo_search,yahoo_rss,alpaca,finviz,nasdaq")
+    per_symbol_limit: int = int(os.getenv("NEWS_PER_SYMBOL_LIMIT", "25"))
+    lookback_days: int = int(os.getenv("NEWS_LOOKBACK_DAYS", "7"))
+    timeout_seconds: int = int(os.getenv("NEWS_TIMEOUT_SECONDS", "8"))
+    max_workers: int = int(os.getenv("NEWS_MAX_WORKERS", "6"))
+    cache_ttl_seconds: int = int(os.getenv("NEWS_CACHE_TTL_SECONDS", "300"))
+    feed_rows: int = int(os.getenv("NEWS_FEED_ROWS", "600"))
+
+
+@dataclass(slots=True)
 class AppConfig:
     execution_mode: str = os.getenv("EXECUTION_MODE", "paper").lower()
     allow_live_trading: bool = os.getenv("ALLOW_LIVE_TRADING", "false").lower() == "true"
@@ -233,6 +248,7 @@ class AppConfig:
     trading: TradingSettings = field(default_factory=TradingSettings)
     backtest: BacktestSettings = field(default_factory=BacktestSettings)
     ai: AISettings = field(default_factory=AISettings)
+    news: NewsSettings = field(default_factory=NewsSettings)
     default_account_profile: str = os.getenv("ACTIVE_ALPACA_PROFILE", "paper4").lower()
     mag7_option_account_profile: str = (
         os.getenv("OPTION_ACCOUNT_PROFILE")

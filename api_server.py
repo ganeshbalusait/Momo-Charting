@@ -34,7 +34,7 @@ from alpaca_stream import AlpacaBarStream
 from auth_service import AuthenticationError, AuthorizationError, AuthService
 from schwab_stream import SchwabMarketStream, event_stream_cursor
 from backtester import Backtester
-from catalyst_engine import CatalystEngine
+from catalyst_engine import CatalystEngine, parse_source_list
 from config import ARTIFACTS_DIR, DATABASE_PATH, EASTERN_TZ, WATCHLIST_PATH, settings
 from data.alpaca_client import AlpacaClient
 from data.market_data import create_market_data_client
@@ -517,7 +517,7 @@ class DashboardState:
 
     def __init__(self) -> None:
         self.repository = TradingRepository()
-        self.catalysts = CatalystEngine()
+        self.catalysts = self._build_catalyst_engine()
         self.catalyst_refresh_lock = threading.Lock()
         self.catalyst_refresh_thread: threading.Thread | None = None
         self.catalyst_refresh_cursor = 0
@@ -8591,17 +8591,58 @@ class DashboardState:
             end = end.replace(tzinfo=self.backtester._tz)
         return start, end
 
+    @staticmethod
+    def _build_catalyst_engine() -> CatalystEngine:
+        """News is scraped from ticker-tagged feeds (Yahoo Finance, Alpaca/Benzinga,
+        Finviz, Nasdaq). Alpaca news works with any configured Alpaca key pair."""
+        news = settings.news
+        alpaca_key = alpaca_secret = ""
+        try:
+            credentials = settings.credentials_for_profile(settings.default_account_profile, settings.execution_mode)
+            alpaca_key, alpaca_secret = credentials.key or "", credentials.secret or ""
+        except Exception:
+            pass
+        if not alpaca_key or not alpaca_secret:
+            for profile in settings.available_profiles("paper") + settings.available_profiles("live"):
+                if profile.key and profile.secret:
+                    alpaca_key, alpaca_secret = profile.key, profile.secret
+                    break
+        return CatalystEngine(
+            timeout_seconds=news.timeout_seconds,
+            max_workers=news.max_workers,
+            cache_ttl_seconds=news.cache_ttl_seconds,
+            sources=parse_source_list(news.sources),
+            per_symbol_limit=news.per_symbol_limit,
+            lookback_days=news.lookback_days,
+            alpaca_credentials=(alpaca_key, alpaca_secret),
+        )
+
     def _refresh_catalyst_information(self, symbols: list[str] | None = None) -> dict:
         scoped_symbols = symbols or settings.scanner.default_universe[:40]
+        started = time.monotonic()
         items = self.catalysts.load_watchlist_news(scoped_symbols)
-        self.repository.log_catalysts(items)
-        message = f"Catalyst scan completed for {len(scoped_symbols)} symbols; {len(items)} headlines refreshed."
+        stored = self.repository.log_catalysts(items)
+        source_status = self.catalysts.source_status() if hasattr(self.catalysts, "source_status") else []
+        healthy = [entry for entry in source_status if entry.get("status") in {"ok", "partial"}]
+        failed = [entry for entry in source_status if entry.get("status") in {"blocked", "error"}]
+        message = (
+            f"News scan completed for {len(scoped_symbols)} symbols; {len(items)} ticker-tagged headlines fetched, "
+            f"{int(stored or 0)} new. Sources ok: {len(healthy)}/{len(source_status)}."
+        )
+        if failed:
+            message += " Unavailable: " + ", ".join(str(entry.get("label")) for entry in failed) + "."
         self.repository.log_bot_event("catalyst_scan", message)
         return {
             "message": message,
             "symbolsScanned": len(scoped_symbols),
+            "symbols": list(scoped_symbols),
             "headlinesRefreshed": len(items),
+            "headlinesStored": int(stored or 0),
             "refreshedAt": datetime.now().astimezone().isoformat(),
+            "elapsedMs": int((time.monotonic() - started) * 1000),
+            "sources": source_status,
+            "lookbackDays": int(getattr(self.catalysts, "lookback_days", settings.news.lookback_days)),
+            "perSymbolLimit": int(getattr(self.catalysts, "per_symbol_limit", settings.news.per_symbol_limit)),
         }
 
     def _recent_catalysts_or_empty(self, limit: int = 200) -> pd.DataFrame:
@@ -9170,13 +9211,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         self.action_message = refresh["message"]
         return {
             "actionMessage": self.action_message,
-            "catalysts": _frame_records(self._recent_catalysts_or_empty(limit=200)),
+            "catalysts": _frame_records(self._recent_catalysts_or_empty(limit=settings.news.feed_rows)),
             "catalystIndex": _frame_records(self._latest_catalysts_or_empty()),
-            "newsFeedMeta": {
-                "symbolsScanned": refresh["symbolsScanned"],
-                "headlinesRefreshed": refresh["headlinesRefreshed"],
-                "refreshedAt": refresh["refreshedAt"],
-            },
+            "newsFeedMeta": {key: value for key, value in refresh.items() if key != "message"},
         }
 
     def chart_payload(self, symbol: str, timeframe: str = "5Min") -> dict:

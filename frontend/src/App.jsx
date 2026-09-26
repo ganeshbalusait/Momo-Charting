@@ -1597,6 +1597,83 @@ function normalizeNewsType(value) {
   return text || "News";
 }
 
+function NewsSourceCell({ source, via }) {
+  const publisher = String(source || "").trim() || "Unknown";
+  const aggregator = String(via || "").trim();
+  const showVia = aggregator && aggregator.toLowerCase() !== publisher.toLowerCase();
+  return (
+    <span className="news-source-cell" title={showVia ? `${publisher} via ${aggregator}` : publisher}>
+      <b>{publisher}</b>
+      {showVia ? <small>via {aggregator}</small> : null}
+    </span>
+  );
+}
+
+function NewsHeadlineCell({ headline, row }) {
+  const text = String(headline || "").trim();
+  const summary = String(row?.summary || "").trim();
+  const related = String(row?.related_symbols || "")
+    .split(",")
+    .map((token) => token.trim().toUpperCase())
+    .filter((token) => token && token !== String(row?.symbol || "").toUpperCase());
+  return (
+    <span className="news-headline-cell">
+      {row?.url ? <a className="news-headline-link" href={row.url} target="_blank" rel="noreferrer">{text}</a> : text}
+      {summary ? <small className="news-headline-summary" title={summary}>{summary}</small> : null}
+      {related.length ? <small className="news-headline-related">Also tagged: {related.slice(0, 6).join(", ")}</small> : null}
+    </span>
+  );
+}
+
+const NEWS_SOURCE_STATUS_LABELS = {
+  ok: "OK",
+  partial: "Partial",
+  blocked: "Blocked",
+  error: "Error",
+  idle: "Idle",
+};
+
+function NewsSourceHealthStrip({ meta }) {
+  const sources = Array.isArray(meta?.sources) ? meta.sources : [];
+  if (!sources.length) {
+    return (
+      <section className="news-source-strip" aria-label="News sources">
+        <article className="news-source-idle">
+          <span>Sources</span>
+          <b>Press Refresh View to scrape ticker-tagged headlines from Yahoo Finance, Alpaca/Benzinga, Finviz and Nasdaq.</b>
+        </article>
+      </section>
+    );
+  }
+  const refreshedAt = meta?.refreshedAt ? formatDateTime(meta.refreshedAt) : "--";
+  return (
+    <section className="news-source-strip" aria-label="News sources">
+      {sources.map((source) => {
+        const status = String(source.status || "idle").toLowerCase();
+        const label = NEWS_SOURCE_STATUS_LABELS[status] || status;
+        const detail = status === "ok" || status === "partial"
+          ? `${Number(source.items || 0)} headlines · ${Number(source.symbols || 0)} symbols`
+          : String(source.error || "No response.");
+        return (
+          <article key={source.name} className={`news-source-${status}`} title={source.error || source.homepage || ""}>
+            <span>{source.label}{source.tickerTagged === false ? " · headline match" : ""}</span>
+            <b>{label}</b>
+            <small>{detail}</small>
+          </article>
+        );
+      })}
+      <article className="news-source-summary">
+        <span>Last scrape</span>
+        <b>{refreshedAt}</b>
+        <small>
+          {Number(meta?.headlinesRefreshed || 0)} fetched · {Number(meta?.headlinesStored || 0)} new · {Number(meta?.symbolsScanned || 0)} symbols · {Number(meta?.lookbackDays || 7)}d window
+          {Number.isFinite(Number(meta?.elapsedMs)) ? ` · ${(Number(meta.elapsedMs) / 1000).toFixed(1)}s` : ""}
+        </small>
+      </article>
+    </section>
+  );
+}
+
 function renderNewsRating(value) {
   const score = Math.max(0, Math.min(3, Number(value) || 0));
   return <span className={`news-rating news-rating-${score}`} aria-label={`${score} of 3 catalyst rating`}>{score} / 3</span>;
@@ -24483,7 +24560,7 @@ function TradingWorkspace({ authUser, onLogout }) {
     const symbol = String(row.symbol || "").toUpperCase();
     const matchesUniverse = newsUniverse === "all"
       || (newsUniverse === "mag7" ? mag7NewsSymbols.has(symbol) : watchlistNewsSymbols.has(symbol));
-    const matchesSearch = !normalizedNewsSearch || [row.symbol, row.headline, row.tags, row.sentiment, row.source]
+    const matchesSearch = !normalizedNewsSearch || [row.symbol, row.headline, row.tags, row.sentiment, row.source, row.via, row.summary]
       .flatMap((value) => Array.isArray(value) ? value : [value])
       .some((value) => String(value || "").toLowerCase().includes(normalizedNewsSearch));
     const matchesRating = newsRatingFilter === "all" || Number(row.score || 0) === Number(newsRatingFilter);
@@ -28264,7 +28341,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             <section className="news-command-band">
               <div className="news-command-title">
                 <Newspaper size={18} />
-                <div><b>Market News Intelligence · Information only</b><span>Persistent catalysts from the last week; never used to qualify, block, rank, size, or delay a trade</span></div>
+                <div><b>Market News Intelligence · Information only</b><span>Ticker-tagged headlines scraped from Yahoo Finance, Alpaca/Benzinga, Finviz and Nasdaq; never used to qualify, block, rank, size, or delay a trade</span></div>
               </div>
               <div className="news-universe-tabs" role="group" aria-label="News universe">
                 <button className={newsUniverse === "watchlist" ? "is-active" : ""} onClick={() => setNewsUniverse("watchlist")} type="button">Watchlist</button>
@@ -28294,6 +28371,8 @@ function TradingWorkspace({ authUser, onLogout }) {
               <article><span>Universe size</span><b>{newsRefreshSymbols.length}</b></article>
             </section>
 
+            <NewsSourceHealthStrip meta={dashboard.newsFeedMeta} />
+
             <section className="data-card scanner-table news-feed-card">
               <div className="table-toolbar">
                 <span>{newsUniverse === "mag7" ? "MAG7 NEWS FEED · INFO ONLY" : newsUniverse === "all" ? "ALL STORED NEWS · INFO ONLY" : "WATCHLIST NEWS FEED · INFO ONLY"}</span>
@@ -28312,9 +28391,9 @@ function TradingWorkspace({ authUser, onLogout }) {
                 { key: "freshness_label", label: "Fresh", render: (value, row) => <span className={`news-freshness news-freshness-${row.freshness_key}`}>{value}</span> },
                 { key: "score", label: "Rating", render: renderNewsRating },
                 { key: "news_type", label: "News Type", render: (value) => <span className="news-type-badge">{value}</span> },
-                { key: "source", label: "Source" },
+                { key: "source", label: "Source", render: (value, row) => <NewsSourceCell source={value} via={row.via} /> },
                 { key: "sentiment", label: "Sentiment", render: (value) => <span className={`news-sentiment news-sentiment-${String(value || "neutral").toLowerCase()}`}>{value || "Neutral"}</span> },
-                { key: "headline", label: "Headline", render: (value, row) => row.url ? <a className="news-headline-link" href={row.url} target="_blank" rel="noreferrer">{value}</a> : value },
+                { key: "headline", label: "Headline", render: (value, row) => <NewsHeadlineCell headline={value} row={row} /> },
               ]} rows={newsFeedRows} emptyMessage={newsSearch ? "No news matches this search and filters." : "No catalyst news matches this universe and filters."} />
             </section>
           </section>

@@ -362,6 +362,12 @@ class TradingRepository:
             connection.execute("CREATE INDEX IF NOT EXISTS idx_learning_source ON learning_observations(source, product)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_learning_due ON learning_horizon_outcomes(due_at, resolved_at)")
             self._ensure_column(connection, "scan_runs", "top_symbol", "TEXT")
+            self._ensure_column(connection, "catalyst_items", "via", "TEXT")
+            self._ensure_column(connection, "catalyst_items", "summary", "TEXT")
+            self._ensure_column(connection, "catalyst_items", "related_symbols", "TEXT")
+            self._ensure_column(connection, "catalyst_items", "article_id", "TEXT")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_catalyst_symbol_url ON catalyst_items(symbol, url)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_catalyst_published ON catalyst_items(published_at)")
             self._ensure_column(connection, "learning_observations", "cohort", "TEXT NOT NULL DEFAULT 'mag7'")
             self._ensure_column(connection, "learning_trade_outcomes", "cohort", "TEXT NOT NULL DEFAULT 'mag7'")
             self._ensure_column(connection, "scan_runs", "notes", "TEXT")
@@ -1382,30 +1388,64 @@ class TradingRepository:
             f"SELECT * FROM backtest_runs ORDER BY created_at DESC LIMIT {int(limit)}"
         )
 
-    def log_catalysts(self, items: list[dict]) -> None:
+    def log_catalysts(self, items: list[dict]) -> int:
+        """Store scraped headlines; returns how many rows were new.
+
+        Sources report the same story with slightly different timestamps
+        (Finviz is minute-level Eastern time, Yahoo is epoch seconds), so the
+        UNIQUE(symbol, headline, published_at) constraint alone is not enough.
+        A story already stored for the symbol under the same canonical URL or
+        the same normalized headline is skipped.
+        """
         if not items:
-            return
+            return 0
+        inserted = 0
         with self._connect() as connection:
             for item in items:
-                connection.execute(
+                symbol = str(item.get("symbol", "") or "").strip().upper()
+                headline = str(item.get("headline", "") or "").strip()
+                url = str(item.get("url", "") or "").strip()
+                if not symbol or not headline:
+                    continue
+                duplicate = connection.execute(
+                    """
+                    SELECT 1 FROM catalyst_items
+                    WHERE symbol = ?
+                      AND (
+                        (? != '' AND url = ?)
+                        OR LOWER(TRIM(headline)) = LOWER(?)
+                      )
+                    LIMIT 1
+                    """,
+                    (symbol, url, url, headline),
+                ).fetchone()
+                if duplicate:
+                    continue
+                cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO catalyst_items (
                         created_at, symbol, headline, source, url, published_at,
-                        score, sentiment, tags
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        score, sentiment, tags, via, summary, related_symbols, article_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         datetime.utcnow().isoformat(),
-                        item.get("symbol", ""),
-                        item.get("headline", ""),
+                        symbol,
+                        headline,
                         item.get("source", ""),
-                        item.get("url", ""),
+                        url,
                         item.get("published_at", ""),
                         int(item.get("score") or 0),
                         item.get("sentiment", ""),
                         item.get("tags", ""),
+                        item.get("via", ""),
+                        item.get("summary", ""),
+                        item.get("related_symbols", ""),
+                        item.get("article_id", ""),
                     ),
                 )
+                inserted += int(cursor.rowcount or 0)
+        return inserted
 
     def get_recent_catalysts(self, limit: int = 50) -> pd.DataFrame:
         return self._query_frame(
@@ -1416,7 +1456,7 @@ class TradingRepository:
         return self._query_frame(
             """
             SELECT id, created_at, symbol, headline, source, url, published_at,
-                   score, sentiment, tags
+                   score, sentiment, tags, via, summary, related_symbols, article_id
             FROM (
                 SELECT catalyst_items.*,
                        ROW_NUMBER() OVER (
