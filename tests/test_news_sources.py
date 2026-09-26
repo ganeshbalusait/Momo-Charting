@@ -12,7 +12,7 @@ from catalyst_engine import (
     ALL_SOURCES,
     DEFAULT_SOURCES,
     KEY_SOURCES,
-    BenzingaRssSource,
+    BenzingaSource,
     CatalystEngine,
     FinvizSource,
     HttpResponse,
@@ -36,6 +36,16 @@ def _rfc822(hours_ago: float) -> str:
 
 def _iso(hours_ago: float) -> str:
     return (NOW - timedelta(hours=hours_ago)).isoformat().replace("+00:00", "Z")
+
+
+def _iso_ns(hours_ago: float) -> str:
+    # Benzinga's site API stamps with nanoseconds: 2026-09-25T17:35:11.067620084Z
+    return (NOW - timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%S") + ".067620084Z"
+
+
+def _edgar_stamp(hours_ago: float) -> str:
+    # EDGAR's <updated> is Eastern with an offset: 2026-09-24T18:30:07-04:00
+    return (NOW - timedelta(hours=hours_ago)).astimezone(timezone(timedelta(hours=-4))).isoformat()
 
 
 YAHOO_SEARCH = {
@@ -66,6 +76,16 @@ YAHOO_SEARCH = {
             "providerPublishTime": _epoch(24 * 30),
             "type": "STORY",
             "relatedTickers": ["AAPL"],
+        },
+        {
+            # Seen live (query META, 2026-09-26): a keyword hit Yahoo did not tag with any ticker.
+            "uuid": "aaa-4",
+            "title": 'The "Magnificent Seven" Stocks Explained: Apple, Microsoft, Nvidia, Alphabet, Amazon, Meta',
+            "publisher": "Motley Fool",
+            "link": "https://finance.yahoo.com/markets/stocks/articles/magnificent-seven-stocks-explained-095500123.html",
+            "providerPublishTime": _epoch(4),
+            "type": "STORY",
+            "relatedTickers": [],
         },
     ]
 }
@@ -122,130 +142,239 @@ FINVIZ_HTML = """<html><body>
 </div><div class="news-link-right"><span>(MarketWatch)</span></div></div></td></tr>
 </table></body></html>"""
 
-NASDAQ_RSS = f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:nasdaq="http://nasdaq.com/rss/" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>
-<item><title>3 Reasons Apple Is a Buy Right Now</title>
-<link>https://www.nasdaq.com/articles/apple-buy</link>
-<pubDate>{_rfc822(6)}</pubDate><guid>nasdaq-apple-buy</guid>
-<dc:creator>The Motley Fool</dc:creator>
-<nasdaq:tickers>AAPL,MSFT</nasdaq:tickers>
-<description>Apple keeps growing services.</description></item>
-<item><title>Nvidia article that mentions Apple in body</title>
-<link>https://www.nasdaq.com/articles/nvda-thing</link>
-<pubDate>{_rfc822(6)}</pubDate>
-<nasdaq:tickers>NVDA</nasdaq:tickers></item>
-</channel></rss>"""
-
+NASDAQ_RSS = f"""<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/"
+  xmlns:nasdaq="http://nasdaq.com/reference/feeds/1.0" version="2.0" xml:base="https://www.nasdaq.com/feed/rssoutbound">
+ <channel>
+  <title>AAPL Feed</title>
+  <link>https://www.nasdaq.com/feed/rssoutbound</link>
+  <description>This feed is responsible for generating the rss feed related to the topic AAPL</description>
+  <language>en</language>
+  <item>
+   <title>3 Reasons Apple Is a Buy Right Now</title>
+   <link>https://www.nasdaq.com/articles/apple-buy</link>
+   <description>
+        Key PointsApple keeps growing services.
+    </description>
+   <pubDate>{_rfc822(6)}</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/apple-buy?time=1790436420</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>AAPL,AAPL,MSFT</nasdaq:tickers>
+  </item>
+  <item>
+   <title>Nvidia article that mentions Apple in body</title>
+   <link>https://www.nasdaq.com/articles/nvda-thing</link>
+   <description>
+        Key PointsNvidia keeps growing.
+    </description>
+   <pubDate>{_rfc822(6)}</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/nvda-thing?time=1790436000</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>NVDA,NVDA</nasdaq:tickers>
+  </item>
+ </channel>
+</rss>"""
 
 def _av_stamp(hours_ago: float) -> str:
     return (NOW - timedelta(hours=hours_ago)).strftime("%Y%m%dT%H%M%S")
 
 
-# Benzinga's feed is site-wide.  Only items Benzinga tagged with an exchange:ticker
-# (or a <category> from its ticker taxonomy, i.e. with a quote/ticker domain) may
-# be attributed to a symbol.  A bare topic category is never a ticker tag.
-BENZINGA_RSS = f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
-<title>Benzinga</title>
-<item><title>Apple (NASDAQ:AAPL) Unveils New Chips</title>
-<link>https://www.benzinga.com/news/26/09/apple-chips?utm_source=rss</link>
-<pubDate>{_rfc822(1)}</pubDate><guid>bz-1</guid><dc:creator>Benzinga Newsdesk</dc:creator>
-<category>News</category><category>Tech</category>
-<description>Apple Inc. (NASDAQ:AAPL) introduced new chips at its event.</description></item>
-<item><title>Tesla Cuts Prices Again</title>
-<link>https://www.benzinga.com/news/26/09/tesla-prices</link>
-<pubDate>{_rfc822(2)}</pubDate><guid>bz-2</guid>
-<description>Tesla (NASDAQ: TSLA) trimmed prices; rivals such as Apple were not mentioned by the company.</description></item>
-<item><title>Apple Services Growth Continues</title>
-<link>https://www.benzinga.com/news/26/09/apple-services</link>
-<pubDate>{_rfc822(3)}</pubDate><guid>bz-3</guid>
-<category domain="https://www.benzinga.com/quote/AAPL">AAPL</category><category>News</category>
-<description>Services revenue keeps climbing.</description></item>
-<item><title>Fund Adds Position In NASDAQ:AAPLX Tracker</title>
-<link>https://www.benzinga.com/news/26/09/aaplx</link>
-<pubDate>{_rfc822(4)}</pubDate><guid>bz-4</guid>
-<description>An ETF, not Apple.</description></item>
-<item><title>Markets Open Higher</title>
-<link>https://www.benzinga.com/news/26/09/markets-open</link>
-<pubDate>{_rfc822(4)}</pubDate><guid>bz-5</guid>
-<description>Broad rally with no ticker tags.</description></item>
-<item><title>Microsoft Raises Dividend</title>
-<link>https://www.benzinga.com/news/26/09/msft-dividend</link>
-<pubDate>{_rfc822(5)}</pubDate><guid>bz-6</guid>
-<content:encoded><![CDATA[<p>Microsoft Corp (NYSE: MSFT) raised its dividend.</p>]]></content:encoded>
-<description>Microsoft raised its quarterly dividend.</description></item>
-</channel></rss>"""
-
-BENZINGA_NEWS_RSS = f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0"><channel><title>Benzinga News</title>
-<item><title>Apple (NASDAQ:AAPL) Unveils New Chips</title>
-<link>https://www.benzinga.com/news/26/09/apple-chips</link>
-<pubDate>{_rfc822(1)}</pubDate><guid>bz-1</guid>
-<description>Apple Inc. (NASDAQ:AAPL) introduced new chips at its event.</description></item>
-<item><title>Analyst Sees Upside For Apple And Nvidia</title>
-<link>https://www.benzinga.com/analyst-ratings/26/09/apple-nvidia</link>
-<pubDate>{_rfc822(2.5)}</pubDate><guid>bz-7</guid>
-<description>The note covers Apple (NASDAQ:AAPL) and Nvidia (NASDAQ:NVDA).</description></item>
-</channel></rss>"""
+# Benzinga's site news API answers per ticker with a bare JSON list; every story carries
+# Benzinga's own ``stocks`` / ``tickers`` lists.  Trimmed from the live AAPL response
+# (2026-09-26); ``meta``/``assets``/``image`` blobs dropped.
+BENZINGA_API = {
+    "AAPL": [
+        {
+            "id": 62002905,
+            "nodeId": 62002905,
+            "storyId": "6ab6a8de20a62c00013f3a20",
+            "title": "What Is Going on With Qualcomm Stock on Friday?",
+            "url": "https://www.benzinga.com/markets/tech/26/09/62002905/what-is-going-on-with-qualcomm-stock-on-friday",
+            "author": "Anusuya Lahiri",
+            "created": _iso_ns(1),
+            "createdAt": _iso_ns(1),
+            "updated": _iso_ns(1),
+            "updatedAt": _iso_ns(1),
+            "teaser": "<p>Qualcomm stock surged following new Snapdragon 8 Elite chip rollouts.</p>",
+            "teaserText": "Qualcomm stock surged following new Snapdragon 8 Elite chip rollouts.",
+            "stocks": [{"name": "QCOM"}, {"name": "AAPL"}, {"name": "TSM"}],
+            "tickers": [
+                {"tid": 12675, "vid": 2, "name": "QCOM", "primary": True},
+                {"tid": 10394, "vid": 2, "name": "AAPL"},
+                {"tid": 16475, "vid": 2, "name": "TSM"},
+            ],
+            "channels": [{"tid": 16, "vid": 1, "name": "Tech"}, {"tid": 17, "vid": 1, "name": "News"}],
+            "tags": ["Why It's Moving", "benzai"],
+            "isBzPost": True,
+            "isBzProPost": False,
+        },
+        {
+            "id": 61990122,
+            "nodeId": 61990122,
+            "storyId": "6ab645ce20a62c00013f04f8",
+            "title": "Understanding Apple&#39;s Position In Technology Hardware, Storage &amp; Peripherals Industry",
+            "url": "https://www.benzinga.com/news/26/09/61990122/understanding-apple-s-position-technology-hardware-storage-amp-peripherals-industry-compared-competi",
+            "author": "Benzinga Insights",
+            "created": _iso_ns(3),
+            "createdAt": _iso_ns(3),
+            "updated": _iso_ns(3),
+            "updatedAt": _iso_ns(3),
+            "teaser": "<p>In today&#39;s rapidly changing and highly competitive business world, it is imperative for investors to compare.</p>",
+            "teaserText": "In today&#39;s rapidly changing and highly competitive business world, it is imperative for investors to compare.",
+            "stocks": [{"name": "AAPL"}],
+            "tickers": [{"tid": 10394, "vid": 2, "name": "AAPL", "primary": True}],
+            "channels": [{"tid": 17, "vid": 1, "name": "News"}, {"tid": 63, "vid": 1, "name": "Trading Ideas"}],
+            "tags": None,
+            "isBzPost": True,
+            "isBzProPost": False,
+        },
+        {
+            # Guard: a story in the response that Benzinga did not tag with the requested symbol.
+            "id": 61998944,
+            "nodeId": 61998944,
+            "title": "9 Of 11 Sectors Fall In Friday Trading As Cyclicals Lead",
+            "url": "https://www.benzinga.com/trading-ideas/movers/26/09/61998944/9-of-11-sectors-fall-in-friday-trading-as-cyclicals-lead",
+            "author": "Benzinga Insights",
+            "created": _iso_ns(5),
+            "updated": _iso_ns(5),
+            "teaserText": "Friday's regular session has two sectors higher and nine lower.",
+            "stocks": [{"name": "SPY"}, {"name": "QQQ"}, {"name": "MSFT"}],
+            "tickers": [{"tid": 10098, "vid": 2, "name": "SPY"}, {"tid": 37163, "vid": 2, "name": "QQQ"}, {"tid": 12200, "vid": 2, "name": "MSFT"}],
+            "channels": [{"tid": 44, "vid": 1, "name": "Movers"}],
+            "tags": ["BZI-ETFMOVERS"],
+        },
+    ],
+    "MSFT": [
+        {
+            "id": 62001000,
+            "nodeId": 62001000,
+            "title": "Microsoft Raises Dividend",
+            "url": "https://www.benzinga.com/news/26/09/62001000/microsoft-raises-dividend",
+            "author": "Benzinga Newsdesk",
+            "created": _iso_ns(2),
+            "updated": _iso_ns(2),
+            "teaserText": "Microsoft lifts its quarterly dividend.",
+            "stocks": [{"name": "MSFT"}],
+            "tickers": [{"tid": 12200, "vid": 2, "name": "MSFT", "primary": True}],
+            "channels": [{"tid": 17, "vid": 1, "name": "News"}],
+            "tags": [],
+        },
+    ],
+}
 
 SEC_ATOM = f"""<?xml version="1.0" encoding="ISO-8859-1" ?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-<author><email>webmaster@sec.gov</email><name>Webmaster</name></author>
-<company-info><cik>0000320193</cik><conformed-name>Apple Inc.</conformed-name></company-info>
-<title>AAPL (0000320193) - EDGAR filings</title>
-<updated>{_iso(0.5)}</updated>
-<entry><title>8-K - Apple Inc. (0000320193) (Filer)</title>
-<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/0000320193-26-000001-index.htm"/>
-<summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-09-26 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000001 &lt;b&gt;Size:&lt;/b&gt; 1 MB&lt;br&gt;Item 2.02: Results of Operations and Financial Condition</summary>
-<updated>{_iso(1)}</updated>
-<category scheme="https://www.sec.gov/" label="form type" term="8-K"/>
-<id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000001</id></entry>
-<entry><title>4 - Cook Timothy D (0001214156) (Reporting)</title>
-<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000002/xslF345X05/wk-form4.xml"/>
-<summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-09-25 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000002 &lt;b&gt;Size:&lt;/b&gt; 10 KB</summary>
-<updated>{_iso(20)}</updated>
-<category scheme="https://www.sec.gov/" label="form type" term="4"/>
-<id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000002</id></entry>
-<entry><title>8-K - Apple Inc. (0000320193) (Filer)</title>
-<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000007/0000320193-26-000007-index.htm"/>
-<summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-09-25 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000007 &lt;b&gt;Size:&lt;/b&gt; 120 KB&lt;br&gt;Item 5.02: Departure of Directors or Certain Officers</summary>
-<updated>{_iso(25)}</updated>
-<category scheme="https://www.sec.gov/" label="form type" term="8-K"/>
-<id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000007</id></entry>
-<entry><title>4 - Cook Timothy D (0001214156) (Reporting)</title>
-<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000008/xslF345X05/wk-form4.xml"/>
-<summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-09-24 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000008 &lt;b&gt;Size:&lt;/b&gt; 9 KB</summary>
-<updated>{_iso(28)}</updated>
-<category scheme="https://www.sec.gov/" label="form type" term="4"/>
-<id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000008</id></entry>
-<entry><title>UPLOAD - Apple Inc. (0000320193) (Filer)</title>
-<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/320193/000000000026000003/filename1.pdf"/>
-<summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-09-24</summary>
-<updated>{_iso(30)}</updated>
-<category scheme="https://www.sec.gov/" label="form type" term="UPLOAD"/>
-<id>urn:tag:sec.gov,2008:accession-number=0000000000-26-000003</id></entry>
-<entry><title>SC 13G/A - Apple Inc. (0000320193) (Subject)</title>
-<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/320193/000000000026000004/index.htm"/>
-<summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-09-24</summary>
-<updated>{_iso(40)}</updated>
-<category scheme="https://www.sec.gov/" label="form type" term="SC 13G/A"/>
-<id>urn:tag:sec.gov,2008:accession-number=0000000000-26-000004</id></entry>
-<entry><title>424B2 - Apple Inc. (0000320193) (Filer)</title>
-<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000005/index.htm"/>
-<summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-09-23</summary>
-<updated>{_iso(50)}</updated>
-<category scheme="https://www.sec.gov/" label="form type" term="424B2"/>
-<id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000005</id></entry>
-<entry><title>CORRESP - Apple Inc. (0000320193) (Filer)</title>
-<link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000006/index.htm"/>
-<summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-09-22</summary>
-<updated>{_iso(60)}</updated>
-<category scheme="https://www.sec.gov/" label="form type" term="CORRESP"/>
-<id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000006</id></entry>
-</feed>"""
+  <feed xmlns="http://www.w3.org/2005/Atom">
+    <author>
+      <email>webmaster@sec.gov</email>
+      <name>Webmaster</name>
+    </author>
+    <company-info>
+      <assigned-sic>3571</assigned-sic>
+      <assigned-sic-desc>ELECTRONIC COMPUTERS</assigned-sic-desc>
+      <cik>0000320193</cik>
+      <cik-href>https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;CIK=0000320193&amp;owner=include&amp;count=40</cik-href>
+      <conformed-name>Apple Inc.</conformed-name>
+      <fiscal-year-end>0926</fiscal-year-end>
+      <formerly-names count="1">
+        <names>
+          <date>2007-01-10</date>
+          <name>APPLE COMPUTER INC</name>
+        </names>
+      </formerly-names>
+      <state-location>CA</state-location>
+    </company-info>
+    <entry>
+      <category label="form type" scheme="https://www.sec.gov/" term="8-K" />
+      <content type="text/xml"></content>
+      <id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000001</id>
+      <link href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/0000320193-26-000001-index.htm" rel="alternate" type="text/html" />
+      <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-09-26 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000001 &lt;b&gt;Size:&lt;/b&gt; 1 MB</summary>
+      <title>8-K  - Current report</title>
+      <updated>{_edgar_stamp(1)}</updated>
+    </entry>
+    <entry>
+      <category label="form type" scheme="https://www.sec.gov/" term="4" />
+      <content type="text/xml"></content>
+      <id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000002</id>
+      <link href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000002/0000320193-26-000002-index.htm" rel="alternate" type="text/html" />
+      <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-09-25 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000002 &lt;b&gt;Size:&lt;/b&gt; 10 KB</summary>
+      <title>4  - Statement of changes in beneficial ownership of securities</title>
+      <updated>{_edgar_stamp(20)}</updated>
+    </entry>
+    <entry>
+      <category label="form type" scheme="https://www.sec.gov/" term="8-K" />
+      <content type="text/xml"></content>
+      <id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000007</id>
+      <link href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000007/0000320193-26-000007-index.htm" rel="alternate" type="text/html" />
+      <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-09-25 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000007 &lt;b&gt;Size:&lt;/b&gt; 120 KB</summary>
+      <title>8-K  - Current report</title>
+      <updated>{_edgar_stamp(25)}</updated>
+    </entry>
+    <entry>
+      <category label="form type" scheme="https://www.sec.gov/" term="4" />
+      <content type="text/xml"></content>
+      <id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000008</id>
+      <link href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000008/0000320193-26-000008-index.htm" rel="alternate" type="text/html" />
+      <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-09-24 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000008 &lt;b&gt;Size:&lt;/b&gt; 9 KB</summary>
+      <title>4  - Statement of changes in beneficial ownership of securities</title>
+      <updated>{_edgar_stamp(28)}</updated>
+    </entry>
+    <entry>
+      <category label="form type" scheme="https://www.sec.gov/" term="144" />
+      <content type="text/xml"></content>
+      <id>urn:tag:sec.gov,2008:accession-number=0001950047-26-009738</id>
+      <link href="https://www.sec.gov/Archives/edgar/data/320193/000195004726009738/0001950047-26-009738-index.htm" rel="alternate" type="text/html" />
+      <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-09-24 &lt;b&gt;AccNo:&lt;/b&gt; 0001950047-26-009738 &lt;b&gt;Size:&lt;/b&gt; 9 KB</summary>
+      <title>144  - Report of proposed sale of securities</title>
+      <updated>{_edgar_stamp(30)}</updated>
+    </entry>
+    <entry>
+      <category label="form type" scheme="https://www.sec.gov/" term="SCHEDULE 13G/A" />
+      <content type="text/xml"></content>
+      <id>urn:tag:sec.gov,2008:accession-number=0000000000-26-000004</id>
+      <link href="https://www.sec.gov/Archives/edgar/data/320193/000000000026000004/0000000000-26-000004-index.htm" rel="alternate" type="text/html" />
+      <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-09-24 &lt;b&gt;AccNo:&lt;/b&gt; 0000000000-26-000004 &lt;b&gt;Size:&lt;/b&gt; 25 KB</summary>
+      <title>SCHEDULE 13G/A [Amend]  - Statement of Beneficial Ownership by Certain Investors</title>
+      <updated>{_edgar_stamp(40)}</updated>
+    </entry>
+    <entry>
+      <category label="form type" scheme="https://www.sec.gov/" term="424B5" />
+      <content type="text/xml"></content>
+      <id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000005</id>
+      <link href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000005/0000320193-26-000005-index.htm" rel="alternate" type="text/html" />
+      <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-09-23 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000005 &lt;b&gt;Size:&lt;/b&gt; 2 MB</summary>
+      <title>424B5  - Prospectus [Rule 424(b)(5)]</title>
+      <updated>{_edgar_stamp(50)}</updated>
+    </entry>
+    <entry>
+      <category label="form type" scheme="https://www.sec.gov/" term="SD" />
+      <content type="text/xml"></content>
+      <id>urn:tag:sec.gov,2008:accession-number=0000320193-26-000006</id>
+      <link href="https://www.sec.gov/Archives/edgar/data/320193/000032019326000006/0000320193-26-000006-index.htm" rel="alternate" type="text/html" />
+      <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-09-22 &lt;b&gt;AccNo:&lt;/b&gt; 0000320193-26-000006 &lt;b&gt;Size:&lt;/b&gt; 300 KB</summary>
+      <title>SD  - Specialized disclosure report</title>
+      <updated>{_edgar_stamp(60)}</updated>
+    </entry>
+    <id>https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;CIK=AAPL&amp;type=&amp;dateb=&amp;owner=include&amp;count=40&amp;output=atom</id>
+    <link href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;CIK=AAPL&amp;type=&amp;dateb=&amp;owner=include&amp;count=40" rel="alternate" type="text/html" />
+    <link href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;CIK=AAPL&amp;type=&amp;dateb=&amp;owner=include&amp;count=40&amp;output=atom" rel="self" type="application/atom+xml" />
+    <title>Apple Inc.  (0000320193)</title>
+    <updated>{_edgar_stamp(1)}</updated>
+  </feed>"""
 
-SEC_NO_TICKER_HTML = """<!DOCTYPE html><html><head><title>EDGAR Search Results</title></head>
-<body><h1>No matching Ticker Symbol.</h1><p>Please try a different symbol.</p></body></html>"""
+# An unknown ticker is HTTP 200 with this HTML page (trimmed from the live response).
+SEC_NO_TICKER_HTML = """
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<html lang="ENG">
+<head>
+<title>Company Information: </title>
+</head>
+<body style="margin: 0">
+<div style="margin-left: 10px">
+<p><center><h1>No matching Ticker Symbol.</h1></center></p>
+</table>"""
 
 FINNHUB_NEWS = [
     {
@@ -422,11 +551,10 @@ class FakeHttp:
             return HttpResponse(status=200, body=NASDAQ_RSS.encode())
         path = urlsplit(url).path
         query = parse_qs(urlsplit(url).query)
-        if host == "www.benzinga.com":
-            if path == "/feed":
-                return HttpResponse(status=200, body=BENZINGA_RSS.encode())
-            if path == "/news/feed":
-                return HttpResponse(status=200, body=BENZINGA_NEWS_RSS.encode())
+        if host == "www.benzinga.com" and path == "/api/news":
+            assert "application/json" in headers.get("Accept", ""), headers
+            requested = (query.get("tickers") or [""])[0].upper()
+            return HttpResponse(status=200, body=json.dumps(BENZINGA_API.get(requested, [])).encode())
         if host == "www.sec.gov":
             assert "contact:" in headers.get("User-Agent", ""), headers
             assert headers.get("Accept", "").startswith("application/atom+xml"), headers
@@ -482,7 +610,11 @@ class ParserTests(unittest.TestCase):
     def test_yahoo_search_keeps_only_articles_tagged_with_the_symbol(self) -> None:
         engine = _engine(FakeHttp(), sources=("yahoo_search",))
         items = engine.load_symbol_news("AAPL")
+        # aaa-2 is tagged MSFT only, aaa-3 is stale, aaa-4 has no relatedTickers at all (a keyword hit).
         self.assertEqual([item.headline for item in items], ["Apple beats estimates as iPhone demand surges"])
+        self.assertEqual(engine.source_status()[0]["items"], 1)
+        meta = _engine(FakeHttp(), sources=("yahoo_search",)).load_symbol_news("META")
+        self.assertEqual(meta, [])
         item = items[0]
         self.assertEqual(item.source, "Reuters")
         self.assertEqual(item.via, "Yahoo Finance")
@@ -566,139 +698,85 @@ class ParserTests(unittest.TestCase):
         items = engine.load_symbol_news("AAPL")
         self.assertEqual([item.headline for item in items], ["3 Reasons Apple Is a Buy Right Now"])
         self.assertEqual(items[0].source, "The Motley Fool")
-        self.assertEqual(items[0].related_symbols, "AAPL,MSFT")
+        self.assertEqual(items[0].related_symbols, "AAPL,MSFT")  # "AAPL,AAPL,MSFT" in the feed
+        self.assertEqual(items[0].summary, "Key PointsApple keeps growing services.")
+        self.assertEqual(items[0].article_id, "https://www.nasdaq.com/articles/apple-buy?time=1790436420")
 
 
 class BenzingaTests(unittest.TestCase):
-    def test_exchange_tag_regex_is_explicit_and_word_bounded(self) -> None:
-        tags = BenzingaRssSource.exchange_tags
-        self.assertEqual(tags("Apple (NASDAQ:AAPL) and Tesla (NASDAQ: TSLA)"), ("AAPL", "TSLA"))
-        self.assertEqual(tags("NYSE:BRK.B, AMEX:GLD, ARCA:SPY, OTC:TCEHY, BATS:CBOE, TSX:SHOP"),
-                         ("BRK.B", "GLD", "SPY", "TCEHY", "CBOE", "SHOP"))
-        # A longer token is a different ticker; a bare company name is not a tag.
-        self.assertEqual(tags("NASDAQ:AAPLX tracker"), ("AAPLX",))
-        self.assertEqual(tags("Apple beats estimates; AAPL up"), ())
-        self.assertEqual(tags("XNASDAQ:AAPL"), ())
-
-    def test_benzinga_attributes_only_exchange_tagged_or_category_tagged_items(self) -> None:
+    def test_benzinga_attributes_by_publisher_stock_tags(self) -> None:
         http = FakeHttp()
         engine = _engine(http, sources=("benzinga",))
         items = engine.load_symbol_news("AAPL")
         self.assertEqual(
             [item.headline for item in items],
             [
-                "Apple (NASDAQ:AAPL) Unveils New Chips",
-                "Analyst Sees Upside For Apple And Nvidia",
-                "Apple Services Growth Continues",
+                "What Is Going on With Qualcomm Stock on Friday?",
+                "Understanding Apple's Position In Technology Hardware, Storage & Peripherals Industry",
             ],
         )
         self.assertTrue(all(item.source == "Benzinga" and item.via == "Benzinga" for item in items))
-        self.assertEqual(items[1].related_symbols, "AAPL,NVDA")
-        # The duplicate of bz-1 from the second feed is stored once, tracking params stripped.
-        self.assertEqual(sum(1 for item in items if item.article_id == "bz-1"), 1)
-        # Both site-wide feeds were fetched exactly once for this symbol.
-        self.assertEqual(sorted(http.calls), ["https://www.benzinga.com/feed", "https://www.benzinga.com/news/feed"])
-        # Negative cases: keyword mention (bz-2), NASDAQ:AAPLX (bz-4), untagged (bz-5), MSFT-only (bz-6).
-        headlines = " ".join(item.headline for item in items)
-        for missing in ("Tesla Cuts Prices", "AAPLX", "Markets Open Higher", "Microsoft Raises Dividend"):
-            self.assertNotIn(missing, headlines)
+        self.assertEqual(items[0].related_symbols, "AAPL,QCOM,TSM")
+        self.assertEqual(items[0].article_id, "62002905")
+        self.assertEqual(items[0].summary, "Qualcomm stock surged following new Snapdragon 8 Elite chip rollouts.")
+        self.assertEqual(items[0].published_at, "2026-09-26T14:00:00.067620+00:00")
+        self.assertEqual(items[1].summary, "In today's rapidly changing and highly competitive business world, it is imperative for investors to compare.")
+        # The sector story came back in the response but Benzinga did not tag AAPL on it: dropped, never guessed.
+        self.assertNotIn("9 Of 11 Sectors", " ".join(item.headline for item in items))
+        self.assertEqual(urlsplit(http.calls[0]).path, "/api/news")
+        query = parse_qs(urlsplit(http.calls[0]).query)
+        self.assertEqual(query["tickers"], ["AAPL"])
+        self.assertEqual(query["limit"], ["25"])
+        status = engine.source_status()[0]
+        self.assertEqual((status["status"], status["items"]), ("ok", 2))
         msft = _engine(FakeHttp(), sources=("benzinga",)).load_symbol_news("MSFT")
         self.assertEqual([item.headline for item in msft], ["Microsoft Raises Dividend"])
 
-    def test_benzinga_feed_is_fetched_once_per_run_across_symbols(self) -> None:
+    def test_benzinga_unknown_ticker_is_empty_not_an_error(self) -> None:
+        engine = _engine(FakeHttp(), sources=("benzinga",))
+        self.assertEqual(engine.load_symbol_news("ZZZZQQ"), [])
+        status = engine.source_status()[0]
+        self.assertEqual((status["status"], status["items"], status["failures"]), ("ok", 0, 0))
+
+    def test_benzinga_is_queried_per_symbol(self) -> None:
         http = FakeHttp()
         engine = _engine(http, sources=("benzinga",))
         rows = engine.load_watchlist_news(["AAPL", "MSFT", "TSLA", "NVDA"])
-        benzinga_calls = [call for call in http.calls if "benzinga.com" in call]
-        self.assertEqual(len(benzinga_calls), 2)  # two feed URLs, one fetch each for the whole run
-        self.assertEqual({row["symbol"] for row in rows}, {"AAPL", "MSFT", "TSLA", "NVDA"})
+        calls = [call for call in http.calls if "benzinga.com" in call]
+        self.assertEqual(len(calls), 4)
+        self.assertEqual({parse_qs(urlsplit(call).query)["tickers"][0] for call in calls}, {"AAPL", "MSFT", "TSLA", "NVDA"})
+        self.assertEqual({row["symbol"] for row in rows}, {"AAPL", "MSFT"})
         status = engine.source_status()[0]
-        self.assertEqual(status["status"], "ok")
-        self.assertEqual(status["symbols"], 4)
-        # A new run fetches again (cache_ttl_seconds=0 in this fixture).
-        engine.load_watchlist_news(["AAPL"])
-        self.assertEqual(len([call for call in http.calls if "benzinga.com" in call]), 4)
+        self.assertEqual((status["status"], status["symbols"], status["items"]), ("ok", 4, 3))
 
-    def test_benzinga_blocked_feed_is_reported_per_symbol_without_refetching(self) -> None:
-        http = FakeHttp(blocked={"www.benzinga.com"})
-        engine = _engine(http, sources=("benzinga",))
-        engine.load_watchlist_news(["AAPL", "MSFT"])
-        # The first feed was rejected before anything was fetched: the second URL is not hammered.
-        self.assertEqual(len(http.calls), 1)
-        status = engine.source_status()[0]
-        self.assertEqual(status["status"], "blocked")
-        self.assertEqual(status["failures"], 2)
+    def test_benzinga_blocked_or_broken_is_reported(self) -> None:
+        blocked = _engine(FakeHttp(blocked={"www.benzinga.com"}), sources=("benzinga",))
+        self.assertEqual(blocked.load_symbol_news("AAPL"), [])
+        self.assertEqual(blocked.source_status()[0]["status"], "blocked")
+        self.assertIn("HTTP 403", blocked.source_status()[0]["error"])
+        limited = _engine(FakeHttp(path_status={"www.benzinga.com/api/news": 429}), sources=("benzinga",))
+        self.assertEqual(limited.load_symbol_news("AAPL"), [])
+        self.assertEqual(limited.source_status()[0]["status"], "blocked")
+        self.assertIn("HTTP 429", limited.source_status()[0]["error"])
+        # The old RSS paths answer with a Next.js "Page Not Found" HTML document: an error, not silence.
+        html_page = "<!DOCTYPE html><html id=\"__next_error__\"><head><title>Page Not Found - Benzinga</title></head></html>"
+        broken = _engine(FakeHttp(bodies={"www.benzinga.com/api/news": html_page}), sources=("benzinga",))
+        self.assertEqual(broken.load_symbol_news("AAPL"), [])
+        self.assertEqual(broken.source_status()[0]["status"], "error")
+        self.assertIn("invalid JSON", broken.source_status()[0]["error"])
+        envelope = _engine(FakeHttp(bodies={"www.benzinga.com/api/news": json.dumps({"error": "invalid tickers"})}), sources=("benzinga",))
+        self.assertEqual(envelope.load_symbol_news("AAPL"), [])
+        self.assertIn("Benzinga error: invalid tickers", envelope.source_status()[0]["error"])
 
-    def test_benzinga_second_feed_blocked_keeps_first_feed_items(self) -> None:
-        http = FakeHttp(path_status={"www.benzinga.com/news/feed": 429})
-        engine = _engine(http, sources=("benzinga",))
-        items = engine.load_symbol_news("AAPL")
-        # Everything parsed from /feed survives; only the /news/feed-only story (bz-7) is missing.
+    def test_benzinga_tagged_symbols_reads_stocks_and_tickers(self) -> None:
+        tagged = BenzingaSource.tagged_symbols
         self.assertEqual(
-            [item.headline for item in items],
-            ["Apple (NASDAQ:AAPL) Unveils New Chips", "Apple Services Growth Continues"],
+            tagged({"stocks": [{"name": "QCOM"}, {"name": "AAPL"}], "tickers": [{"name": "AAPL", "primary": True}, {"name": "TSM"}]}),
+            ("QCOM", "AAPL", "TSM"),
         )
-        self.assertEqual(sorted(http.calls), ["https://www.benzinga.com/feed", "https://www.benzinga.com/news/feed"])
-        status = engine.source_status()[0]
-        self.assertEqual(status["status"], "ok")
-        self.assertEqual(status["items"], 2)
-        self.assertEqual(status["failures"], 0)
-        # Both feeds rejected -> still reported as blocked, not as a generic error.
-        both = _engine(FakeHttp(path_status={"www.benzinga.com/feed": 404, "www.benzinga.com/news/feed": 429}), sources=("benzinga",))
-        self.assertEqual(both.load_symbol_news("AAPL"), [])
-        self.assertEqual(both.source_status()[0]["status"], "blocked")
-        self.assertIn("HTTP 429", both.source_status()[0]["error"])
-
-    def test_benzinga_category_tags_ignore_section_names_and_long_tokens(self) -> None:
-        looks = BenzingaRssSource._looks_like_ticker
-        # A category from Benzinga's ticker taxonomy (quote/ticker domain) is a ticker tag.
-        for ticker in ("AAPL", "GOOGL", "BRK.B", "PBR-A", "F", "X", "TSLA"):
-            self.assertTrue(looks(ticker, "https://www.benzinga.com/quote/" + ticker), ticker)
-        self.assertTrue(looks("AI", "https://www.benzinga.com/quote/AI"))
-        self.assertTrue(looks("aapl", "ticker"))
-        # A bare category, even one that looks exactly like a ticker, is a topic label: never a guess.
-        for bare in ("AAPL", "TSLA", "AI", "IPO", "FDA", "ESG", "SPAC", "ETF", "REIT", "EARNINGS", "M&A", "SEC",
-                     "FOMC", "EV", "OPTIONS", "MARKETS", "News", "Tech", "Trading Ideas", "", "aapl"):
-            self.assertFalse(looks(bare), bare)
-        self.assertFalse(looks("Trading Ideas", "https://www.benzinga.com/topic"))
-        self.assertFalse(looks("AAPL", "https://www.benzinga.com/topic"))
-        feed = f"""<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>
-<item><title>How AI Is Reshaping Retail</title><link>https://www.benzinga.com/news/26/09/ai-retail</link>
-<pubDate>{_rfc822(1)}</pubDate><guid>bz-ai</guid><category>AI</category><category>News</category>
-<description>A generic AI topic story, no exchange tag anywhere.</description></item>
-<item><title>C3.ai Wins Contract</title><link>https://www.benzinga.com/news/26/09/c3ai</link>
-<pubDate>{_rfc822(2)}</pubDate><guid>bz-c3</guid><category>AI</category>
-<description>C3.ai (NYSE: AI) signed a new deal.</description></item>
-</channel></rss>"""
-        http = FakeHttp(bodies={"www.benzinga.com/feed": feed, "www.benzinga.com/news/feed": feed})
-        engine = _engine(http, sources=("benzinga",))
-        self.assertEqual([item.headline for item in engine.load_symbol_news("AI")], ["C3.ai Wins Contract"])
-
-    def test_benzinga_direct_calls_refetch_after_ttl(self) -> None:
-        first = BENZINGA_RSS
-        second = BENZINGA_RSS.replace("Apple Services Growth Continues", "Apple Services Growth Accelerates")
-        http = FakeHttp(bodies={"www.benzinga.com/feed": first, "www.benzinga.com/news/feed": BENZINGA_NEWS_RSS})
-        engine = _engine(http, sources=("benzinga",))  # cache_ttl_seconds=0
-        self.assertIn("Apple Services Growth Continues", [item.headline for item in engine.load_symbol_news("AAPL")])
-        http.bodies["www.benzinga.com/feed"] = second
-        headlines = [item.headline for item in engine.load_symbol_news("AAPL")]
-        self.assertIn("Apple Services Growth Accelerates", headlines)
-        self.assertNotIn("Apple Services Growth Continues", headlines)
-        self.assertEqual(len([call for call in http.calls if "benzinga.com" in call]), 4)
-        # A transient failure is not cached forever either.
-        flaky = FakeHttp(path_status={"www.benzinga.com/feed": 500, "www.benzinga.com/news/feed": 500})
-        engine = _engine(flaky, sources=("benzinga",))
-        self.assertEqual(engine.load_symbol_news("AAPL"), [])
-        self.assertEqual(engine.source_status()[0]["status"], "error")
-        flaky.path_status.clear()
-        self.assertTrue(engine.load_symbol_news("MSFT"))
-        self.assertEqual(engine.source_status()[0]["status"], "partial")
-        # Within the TTL, direct calls for different symbols share one fetch of the site-wide feed.
-        http = FakeHttp()
-        engine = _engine(http, sources=("benzinga",), cache_ttl_seconds=300)
-        engine.load_symbol_news("AAPL")
-        engine.load_symbol_news("MSFT")
-        self.assertEqual(len([call for call in http.calls if "benzinga.com" in call]), 2)
+        self.assertEqual(tagged({"stocks": [], "tickers": None}), ())
+        self.assertEqual(tagged({"stocks": ["aapl", ""], "tags": None}), ("AAPL",))
+        self.assertEqual(tagged({}), ())
 
 
 class SecEdgarTests(unittest.TestCase):
@@ -709,17 +787,19 @@ class SecEdgarTests(unittest.TestCase):
         self.assertEqual(
             [item.headline for item in items],
             [
-                "8-K filing: Apple Inc. (2026-09-26, Item 2.02: Results of Operations and Financial Condition, AccNo 0000320193-26-000001)",
-                "4 filing: Cook Timothy D (2026-09-25, AccNo 0000320193-26-000002)",
-                "8-K filing: Apple Inc. (2026-09-25, Item 5.02: Departure of Directors or Certain Officers, AccNo 0000320193-26-000007)",
-                "4 filing: Cook Timothy D (2026-09-24, AccNo 0000320193-26-000008)",
-                "SC 13G/A filing: Apple Inc. (2026-09-24, AccNo 0000000000-26-000004)",
-                "424B2 filing: Apple Inc. (2026-09-23, AccNo 0000320193-26-000005)",
+                "8-K filing: Apple Inc. - Current report (2026-09-26, AccNo 0000320193-26-000001)",
+                "4 filing: Apple Inc. - Statement of changes in beneficial ownership of securities (2026-09-25, AccNo 0000320193-26-000002)",
+                "8-K filing: Apple Inc. - Current report (2026-09-25, AccNo 0000320193-26-000007)",
+                "4 filing: Apple Inc. - Statement of changes in beneficial ownership of securities (2026-09-24, AccNo 0000320193-26-000008)",
+                "SCHEDULE 13G/A filing: Apple Inc. - Statement of Beneficial Ownership by Certain Investors (2026-09-24, AccNo 0000000000-26-000004)",
+                "424B5 filing: Apple Inc. - Prospectus [Rule 424(b)(5)] (2026-09-23, AccNo 0000320193-26-000005)",
             ],
         )
+        # Form 144 and SD are in the feed but are not catalyst forms.
         self.assertTrue(all(item.source == "SEC EDGAR" and item.via == "SEC EDGAR" for item in items))
         self.assertTrue(all(item.tags.startswith("Filing") for item in items))
-        self.assertEqual(items[0].summary, "Filed: 2026-09-26 AccNo: 0000320193-26-000001 Size: 1 MB Item 2.02: Results of Operations and Financial Condition")
+        self.assertEqual(items[0].summary, "Filed: 2026-09-26 AccNo: 0000320193-26-000001 Size: 1 MB")
+        self.assertEqual(items[0].published_at, "2026-09-26T14:00:00+00:00")
         self.assertEqual(items[0].article_id, "urn:tag:sec.gov,2008:accession-number=0000320193-26-000001")
         self.assertTrue(items[0].url.startswith("https://www.sec.gov/Archives/edgar/data/320193/"))
         query = parse_qs(urlsplit(http.calls[0]).query)
@@ -750,23 +830,34 @@ class SecEdgarTests(unittest.TestCase):
             # A later 8-K by the same company (new accession, six days later) is a new row.
             later = dict(rows[0])
             later.update(
-                headline="8-K filing: Apple Inc. (2026-10-02, Item 8.01: Other Events, AccNo 0000320193-26-000009)",
+                headline="8-K filing: Apple Inc. - Current report (2026-10-02, AccNo 0000320193-26-000009)",
                 url="https://www.sec.gov/Archives/edgar/data/320193/000032019326000009/0000320193-26-000009-index.htm",
                 published_at="2026-10-02T13:00:00+00:00",
                 article_id="urn:tag:sec.gov,2008:accession-number=0000320193-26-000009",
             )
             self.assertEqual(repository.log_catalysts([later]), 1)
 
-    def test_edgar_headline_carries_date_items_and_accession(self) -> None:
+    def test_edgar_headline_carries_description_date_and_accession(self) -> None:
         published = datetime(2026, 9, 26, 13, 0, tzinfo=timezone.utc)
         self.assertEqual(
             SecEdgarSource.headline_for(
                 "8-K", "Apple Inc.", published, "urn:tag:sec.gov,2008:accession-number=0000320193-26-000001",
-                "Filed: 2026-09-26 AccNo: 0000320193-26-000001 Size: 1 MB Item 2.02: Results of Operations and Financial Condition",
+                "Filed: 2026-09-26 AccNo: 0000320193-26-000001 Size: 1 MB",
                 "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/0000320193-26-000001-index.htm",
+                "Current report",
             ),
-            "8-K filing: Apple Inc. (2026-09-26, Item 2.02: Results of Operations and Financial Condition, AccNo 0000320193-26-000001)",
+            "8-K filing: Apple Inc. - Current report (2026-09-26, AccNo 0000320193-26-000001)",
         )
+        # Real titles are "<form>  - <description>"; the company is not in the entry title.
+        self.assertEqual(SecEdgarSource._split_title("8-K  - Current report"), ("8-K", "Current report"))
+        self.assertEqual(
+            SecEdgarSource._split_title("SCHEDULE 13G/A [Amend]  - Statement of Beneficial Ownership by Certain Investors"),
+            ("SCHEDULE 13G/A", "Statement of Beneficial Ownership by Certain Investors"),
+        )
+        self.assertEqual(SecEdgarSource._split_title("Apple Inc.  (0000320193)"), ("", ""))
+        # The feed declares ISO-8859-1; a Latin-1 company name survives.
+        latin = '<?xml version="1.0" encoding="ISO-8859-1" ?><feed><title>Soci\u00e9t\u00e9 (0000000001)</title></feed>'
+        self.assertIn("Soci\u00e9t\u00e9", SecEdgarSource._decode(HttpResponse(status=200, body=latin.encode("iso-8859-1"))))
         # Accession falls back to the summary, then the URL folder.
         self.assertEqual(SecEdgarSource.accession_for("", "AccNo: 0000320193-26-000002 Size: 9 KB", ""), "0000320193-26-000002")
         self.assertEqual(
@@ -776,15 +867,20 @@ class SecEdgarTests(unittest.TestCase):
         self.assertEqual(SecEdgarSource.headline_for("10-Q", "Apple Inc.", published, "", "", ""), "10-Q filing: Apple Inc. (2026-09-26)")
         # EDGAR's own "Filed:" date wins over the entry timestamp when both are present.
         self.assertEqual(
-            SecEdgarSource.headline_for("4", "Cook Timothy D", published, "", "Filed: 2026-09-24 AccNo: 0000320193-26-000008 Size: 9 KB", ""),
-            "4 filing: Cook Timothy D (2026-09-24, AccNo 0000320193-26-000008)",
+            SecEdgarSource.headline_for(
+                "4", "Apple Inc.", published, "", "Filed: 2026-09-24 AccNo: 0000320193-26-000008 Size: 9 KB", "",
+                "Statement of changes in beneficial ownership of securities",
+            ),
+            "4 filing: Apple Inc. - Statement of changes in beneficial ownership of securities (2026-09-24, AccNo 0000320193-26-000008)",
         )
 
     def test_edgar_form_filter(self) -> None:
         keep = SecEdgarSource.keep_form
-        for form in ("8-K", "8-K/A", "10-Q", "10-K", "6-K", "S-1", "S-3", "424B2", "424B5", "SC 13D", "SC 13G/A", "DEF 14A", "3", "4", "4/A"):
+        for form in ("8-K", "8-K/A", "10-Q", "10-K", "6-K", "S-1", "S-3", "424B2", "424B5", "SC 13D", "SC 13G/A",
+                     "SCHEDULE 13G", "SCHEDULE 13D/A", "SCHEDULE 13G/A [Amend]", "DEF 14A", "3", "4", "4/A"):
             self.assertTrue(keep(form), form)
-        for form in ("UPLOAD", "CORRESP", "13F-HR", "SD", "11-K", "ARS", "144", "", "S-8", "10-K405X"):
+        for form in ("UPLOAD", "CORRESP", "13F-HR", "SD", "11-K", "ARS", "144", "", "S-8", "10-K405X", "NPORT-P", "N-30D",
+                     "497", "485BPOS", "N-CEN", "24F-2NT", "S-3ASR"):
             self.assertFalse(keep(form), form)
 
     def test_edgar_unknown_ticker_is_an_error_not_silent_empty(self) -> None:
@@ -918,15 +1014,14 @@ class MergeAndStatusTests(unittest.TestCase):
                 "Apple signs chip supply contract with TSMC",
                 "Apple stock slips ahead of event",
                 "3 Reasons Apple Is a Buy Right Now",
-                "Apple (NASDAQ:AAPL) Unveils New Chips",
-                "Analyst Sees Upside For Apple And Nvidia",
-                "Apple Services Growth Continues",
-                "8-K filing: Apple Inc. (2026-09-26, Item 2.02: Results of Operations and Financial Condition, AccNo 0000320193-26-000001)",
-                "4 filing: Cook Timothy D (2026-09-25, AccNo 0000320193-26-000002)",
-                "8-K filing: Apple Inc. (2026-09-25, Item 5.02: Departure of Directors or Certain Officers, AccNo 0000320193-26-000007)",
-                "4 filing: Cook Timothy D (2026-09-24, AccNo 0000320193-26-000008)",
-                "SC 13G/A filing: Apple Inc. (2026-09-24, AccNo 0000000000-26-000004)",
-                "424B2 filing: Apple Inc. (2026-09-23, AccNo 0000320193-26-000005)",
+                "What Is Going on With Qualcomm Stock on Friday?",
+                "Understanding Apple's Position In Technology Hardware, Storage & Peripherals Industry",
+                "8-K filing: Apple Inc. - Current report (2026-09-26, AccNo 0000320193-26-000001)",
+                "4 filing: Apple Inc. - Statement of changes in beneficial ownership of securities (2026-09-25, AccNo 0000320193-26-000002)",
+                "8-K filing: Apple Inc. - Current report (2026-09-25, AccNo 0000320193-26-000007)",
+                "4 filing: Apple Inc. - Statement of changes in beneficial ownership of securities (2026-09-24, AccNo 0000320193-26-000008)",
+                "SCHEDULE 13G/A filing: Apple Inc. - Statement of Beneficial Ownership by Certain Investors (2026-09-24, AccNo 0000000000-26-000004)",
+                "424B5 filing: Apple Inc. - Prospectus [Rule 424(b)(5)] (2026-09-23, AccNo 0000320193-26-000005)",
             ]),
         )
         beats = next(item for item in items if item.headline.startswith("Apple beats"))
@@ -943,7 +1038,7 @@ class MergeAndStatusTests(unittest.TestCase):
         self.assertEqual({name: entry["status"] for name, entry in status.items()}, {name: "ok" for name in DEFAULT_SOURCES})
         self.assertEqual(status["yahoo_search"]["items"], 1)
         self.assertEqual(status["finviz"]["items"], 3)
-        self.assertEqual(status["benzinga"]["items"], 3)
+        self.assertEqual(status["benzinga"]["items"], 2)
         self.assertEqual(status["sec_edgar"]["items"], 6)
 
     def test_every_key_source_merges_with_the_defaults(self) -> None:

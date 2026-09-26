@@ -48,21 +48,23 @@ Momentum score:
 - News/catalyst: information only (0 points; shown in the News Feed, never scored)
 
 Note: news never changes a score. The News Feed scrapes ticker-tagged headlines only:
-a headline is attributed to a ticker only when the publisher tagged it (a ticker field,
-a per-ticker feed, or an explicit `(NASDAQ:AAPL)` exchange tag). The same story from
-several sources is stored once, and the feed shows which source each headline came from,
-which sources were blocked or unavailable on the last scrape, and which sources are not
-active and why (`newsFeedMeta.availableSources`).
+a headline is attributed to a ticker only when the publisher tagged it (a ticker field on
+the article or a per-ticker feed). A story a source returns without the ticker in its own
+tag list (Yahoo's search API does this for keyword hits) is dropped, never guessed. The same
+story from several sources is stored once, and the feed shows which source each headline
+came from, which sources were blocked or unavailable on the last scrape, and which sources
+are not active and why (`newsFeedMeta.availableSources`). Every parser was verified against
+the live endpoint on 2026-09-26; the test fixtures are trimmed copies of those responses.
 
 | Source (`NEWS_SOURCES` name) | Key needed | How the ticker is attributed |
 | --- | --- | --- |
-| `yahoo_search` Yahoo Finance search API | no | `relatedTickers` on each article |
+| `yahoo_search` Yahoo Finance search API | no | `relatedTickers` on each article (an article with an empty list is dropped) |
 | `yahoo_rss` Yahoo Finance RSS | no | per-ticker feed |
 | `alpaca` Alpaca News (Benzinga wire) | Alpaca key pair (already configured for trading) | `symbols` on each article |
-| `benzinga` Benzinga public RSS (`benzinga.com/feed`, `benzinga.com/news/feed`) | no | explicit exchange tag `(NASDAQ:AAPL)`, `NYSE: AAPL`, `AMEX:`, `ARCA:`, `OTC:`, `BATS:`, `TSX:` in the title/description, or a `<category>` from Benzinga's ticker taxonomy (its `domain` attribute names a quote/ticker list). A bare topic category such as AI, IPO, EV or a plain ticker-looking word is never used for attribution. The site-wide feed is fetched once per scan and filtered per symbol; if one of the two feed URLs is rejected after the other loaded, the loaded items are kept |
+| `benzinga` Benzinga site news API (`benzinga.com/api/news?tickers=AAPL&limit=25`, the JSON behind `benzinga.com/quote/AAPL/news`) | no | per-ticker query; `stocks[].name` / `tickers[].name` on each story must contain the ticker. An unknown ticker is an empty list. Benzinga's public RSS is **not** used: `benzinga.com/feed` is a WordPress blog feed with no ticker tags (verified live: ten crypto price-prediction posts in category "Uncategorized") and `benzinga.com/news/feed` is HTTP 404 |
 | `finviz` Finviz quote page | no | per-ticker news table |
-| `nasdaq` Nasdaq RSS | no | `nasdaq:tickers` on each item |
-| `sec_edgar` SEC EDGAR filings (Atom) | no, but set `NEWS_CONTACT_EMAIL` (SEC requires a contact in the User-Agent) | per-ticker feed; keeps 8-K, 10-Q, 10-K, 6-K, S-1, S-3, 424B*, SC 13D, SC 13G, DEF 14A and insider forms 3/4 (and their /A amendments), tagged `Filing`. Each filing gets its own headline `8-K filing: Apple Inc. (2026-09-26, Item 2.02: ..., AccNo 0000320193-26-000001)` so repeated forms by the same filer are never collapsed into one |
+| `nasdaq` Nasdaq RSS (`nasdaq.com/feed/rssoutbound?symbol=`) | no | `nasdaq:tickers` on each item (the feed repeats the primary ticker, e.g. `TSLA,TSLA,AAPL`; duplicates are collapsed) |
+| `sec_edgar` SEC EDGAR filings (Atom) | no, but set `NEWS_CONTACT_EMAIL` (SEC requires a contact in the User-Agent) | per-ticker company feed; keeps 8-K, 10-Q, 10-K, 6-K, S-1, S-3, 424B*, SCHEDULE 13D/13G (EDGAR's current form names; the older `SC 13D`/`SC 13G` spelling is also accepted), DEF 14A and insider forms 3/4 (and their /A amendments), tagged `Filing`. Form 144, SD, NPORT-P and the other forms in the feed are skipped. The entry title is `<form>  - <description>` and the company name comes from `<company-info><conformed-name>`, so each filing gets its own headline `8-K filing: Apple Inc. - Current report (2026-09-26, AccNo 0000320193-26-000001)` and repeated forms by the same filer are never collapsed into one. An unknown ticker is an HTTP 200 page saying "No matching Ticker Symbol" and is reported as an error for that source |
 | `finnhub` Finnhub company news | `FINNHUB_API_KEY` (free tier) | `related` ticker list |
 | `polygon` Polygon reference news | `POLYGON_API_KEY` (free tier) | `tickers` list |
 | `alphavantage` Alpha Vantage NEWS_SENTIMENT | `ALPHA_VANTAGE_API_KEY` (free tier, ~25 requests/day; a rate-limit note is reported as blocked) | `ticker_sentiment` entry for the ticker with publisher `relevance_score >= 0.2` |

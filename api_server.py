@@ -8601,7 +8601,7 @@ class DashboardState:
     @staticmethod
     def _build_catalyst_engine() -> CatalystEngine:
         """News is scraped from ticker-tagged feeds (Yahoo Finance, Alpaca/Benzinga,
-        Benzinga RSS, Finviz, Nasdaq, SEC EDGAR, plus Finnhub/Polygon/Alpha Vantage/Tiingo
+        Benzinga site API, Finviz, Nasdaq, SEC EDGAR, plus Finnhub/Polygon/Alpha Vantage/Tiingo
         when their free-tier key is set). Alpaca news works with any configured Alpaca key pair."""
         news = settings.news
         alpaca_key = alpaca_secret = ""

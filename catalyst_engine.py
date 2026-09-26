@@ -8,9 +8,8 @@ tagged the ticker, not from a keyword match on the headline:
 * Alpaca News (Benzinga)    - JSON, ``symbols`` per article (needs Alpaca keys)
 * Finviz quote page         - per-ticker news table
 * Nasdaq RSS                - per-ticker feed with ``nasdaq:tickers``
-* Benzinga public RSS       - site-wide feed, kept only when the item carries an
-                              explicit ``(NASDAQ:AAPL)`` style exchange tag or a
-                              ``<category>`` equal to the ticker
+* Benzinga site news API    - per-ticker JSON (``benzinga.com/api/news?tickers=``),
+                              ``stocks``/``tickers`` per article
 * SEC EDGAR Atom            - per-ticker filing feed (8-K, 10-Q, 10-K, insider 3/4 ...)
 * Finnhub / Polygon / Alpha Vantage / Tiingo
                             - free API tiers, each enabled only when its key is set;
@@ -23,6 +22,10 @@ labelled as a headline match and is off by default.
 Every source runs in isolation.  A blocked or broken source is reported in
 ``source_status()`` instead of silently thinning the feed, so the UI can say
 exactly where each headline came from and which source failed.
+
+Every parser below was checked against the live response of its endpoint on
+2026-09-26 (see tests/test_news_sources.py, whose fixtures are trimmed copies of
+those real bodies).
 """
 
 from __future__ import annotations
@@ -337,8 +340,11 @@ class YahooSearchSource(NewsSource):
         for item in payload.get("news") or []:
             if not isinstance(item, dict):
                 continue
-            related = tuple(str(ticker).upper() for ticker in item.get("relatedTickers") or [] if str(ticker).strip())
-            if related and symbol not in related:
+            related = tuple(dict.fromkeys(str(ticker).upper() for ticker in item.get("relatedTickers") or [] if str(ticker).strip()))
+            # The search endpoint is a keyword query: a story that Yahoo did not tag
+            # with the symbol (live example: an empty ``relatedTickers`` for a
+            # "Magnificent Seven" story returned for META) is a guess, so it is dropped.
+            if symbol not in related:
                 continue
             published = _parse_epoch(item.get("providerPublishTime"))
             headline = _strip_html(item.get("title"))
@@ -530,7 +536,7 @@ class NasdaqRssSource(NewsSource):
                 if child.tag.endswith("tickers") and child.text:
                     tickers_text = child.text
                     break
-            related = tuple(token.strip().upper() for token in tickers_text.split(",") if token.strip())
+            related = tuple(dict.fromkeys(token.strip().upper() for token in tickers_text.split(",") if token.strip()))
             if related and symbol not in related:
                 continue
             headline = _strip_html(item.findtext("title"))
@@ -622,160 +628,107 @@ def _child_text(element: ET.Element, name: str) -> str:
     return ""
 
 
-class BenzingaRssSource(NewsSource):
-    """Benzinga public RSS.  The feed is site-wide (not per ticker), so a headline
-    is attributed to a symbol only when Benzinga itself tagged it: an explicit
-    ``(NASDAQ:AAPL)`` / ``NYSE: AAPL`` exchange tag in the title, description or
-    content, or a ``<category>`` element equal to the ticker.  The feed is fetched
-    once per engine run and filtered per symbol."""
+class BenzingaSource(NewsSource):
+    """Benzinga's own site news API, the JSON feed behind ``benzinga.com/quote/<T>/news``.
+    It is queried per ticker and every story carries Benzinga's ``stocks`` /
+    ``tickers`` lists, so a headline is attributed only when the requested symbol
+    is in that publisher-supplied list.
+
+    Verified live on 2026-09-26.  The public RSS feeds are not usable for ticker
+    attribution and are no longer used: ``benzinga.com/feed`` is a WordPress blog
+    feed (ten untagged posts in category "Uncategorized", no exchange tags) and
+    ``benzinga.com/news/feed`` returns HTTP 404.  ``benzinga.com/feed/?s=<T>`` is
+    a keyword search, which would be a headline match, not a tag."""
 
     name = "benzinga"
     label = "Benzinga"
     homepage = "https://www.benzinga.com"
 
-    FEED_URLS = ("https://www.benzinga.com/feed", "https://www.benzinga.com/news/feed")
-    EXCHANGES = (
-        "NASDAQ", "NYSE", "NYSEAMERICAN", "NYSEARCA", "AMEX", "ARCA", "OTC", "OTCQB", "OTCQX", "OTCPK",
-        "BATS", "CBOE", "TSX", "TSXV",
-    )
-    EXCHANGE_TAG_RE = re.compile(
-        r"(?<![A-Za-z0-9])(?:" + "|".join(EXCHANGES) + r")\s*:\s*([A-Z][A-Z0-9]{0,9}(?:[.\-][A-Z0-9]{1,4})?)(?![A-Za-z0-9])"
-    )
-
-    @dataclass(slots=True)
-    class FeedItem:
-        article: RawArticle
-        tagged: frozenset[str]
+    NEWS_URL = "https://www.benzinga.com/api/news"
 
     def fetch(self, symbol: str, limit: int) -> list[RawArticle]:
-        feed: list[BenzingaRssSource.FeedItem] = self.engine.shared_fetch(self.name, self._fetch_feed)
+        params = {"tickers": symbol, "limit": max(1, min(int(limit), 100))}
+        response = self._get(f"{self.NEWS_URL}?{urllib.parse.urlencode(params)}", {"Accept": "application/json, */*"})
+        return self.parse(self._json(response), symbol, limit)
+
+    def parse(self, payload, symbol: str, limit: int) -> list[RawArticle]:
+        if isinstance(payload, dict):
+            # Success is a bare list (an unknown ticker is an empty list, HTTP 200).
+            message = payload.get("error") or payload.get("message") or payload.get("detail") or "unexpected payload"
+            raise OSError(f"Benzinga error: {str(message)[:160]}")
+        if not isinstance(payload, list):
+            raise OSError("Benzinga returned an unexpected payload")
         articles: list[RawArticle] = []
-        for entry in feed:
-            if symbol not in entry.tagged:
+        for item in payload:
+            if not isinstance(item, dict):
                 continue
-            articles.append(entry.article)
+            related = self.tagged_symbols(item)
+            if symbol not in related:
+                continue
+            published = _parse_iso(item.get("created") or item.get("createdAt") or item.get("updated"))
+            headline = _strip_html(item.get("title"))
+            link = str(item.get("url") or "").strip()
+            if not headline or not link or published is None:
+                continue
+            articles.append(
+                RawArticle(
+                    headline=headline,
+                    url=link,
+                    published_at=published,
+                    publisher="Benzinga",
+                    summary=_strip_html(item.get("teaserText") or item.get("teaser") or "")[:600],
+                    related_symbols=related,
+                    article_id=str(item.get("id") or item.get("nodeId") or ""),
+                )
+            )
             if len(articles) >= limit:
                 break
         return articles
 
-    def _fetch_feed(self) -> list["BenzingaRssSource.FeedItem"]:
-        items: list[BenzingaRssSource.FeedItem] = []
-        seen: set[str] = set()
-        errors: list[Exception] = []
-        fetched = 0
-        for url in self.FEED_URLS:
-            try:
-                response = self._get(url, {"Accept": "application/rss+xml, application/xml, text/xml, */*"})
-                parsed = self.parse(response.text())
-            except SourceBlocked as exc:
-                if not fetched:
-                    # Nothing fetched yet: stop hammering a host that is rejecting us.
-                    raise
-                # One feed already succeeded; a 403/429 on the other one is a per-URL
-                # failure, not a reason to throw away the good items for the whole run.
-                errors.append(exc)
-                continue
-            except Exception as exc:
-                errors.append(exc)
-                continue
-            fetched += 1
-            for entry in parsed:
-                key = canonical_url(entry.article.url) or entry.article.article_id or normalize_headline(entry.article.headline)
-                if key in seen:
-                    continue
-                seen.add(key)
-                items.append(entry)
-        if not items and errors:
-            # Everything failed: report "blocked" if any feed rejected us, else the first error.
-            raise next((error for error in errors if isinstance(error, SourceBlocked)), errors[0])
-        return items
-
-    def parse(self, text: str) -> list["BenzingaRssSource.FeedItem"]:
-        entries: list[BenzingaRssSource.FeedItem] = []
-        for item in self._rss_items(text):
-            title = _strip_html(item.findtext("title"))
-            link = (item.findtext("link") or "").strip()
-            published = _parse_rfc822(item.findtext("pubDate"))
-            if not title or not link or published is None:
-                continue
-            description = item.findtext("description") or ""
-            encoded = _child_text(item, "encoded")
-            categories = tuple(
-                ((child.text or "").strip(), str(child.attrib.get("domain") or ""))
-                for child in item
-                if _local_tag(child) == "category" and (child.text or "").strip()
-            )
-            tagged = set(self.exchange_tags(f"{title}\n{html.unescape(description)}\n{html.unescape(encoded)}"))
-            tagged.update(category.upper() for category, domain in categories if self._looks_like_ticker(category, domain))
-            if not tagged:
-                continue
-            creator = _child_text(item, "creator").strip()
-            entries.append(
-                self.FeedItem(
-                    article=RawArticle(
-                        headline=title,
-                        url=link,
-                        published_at=published,
-                        publisher="Benzinga",
-                        summary=_strip_html(description)[:600],
-                        related_symbols=tuple(sorted(tagged)),
-                        article_id=(item.findtext("guid") or "").strip() or (f"benzinga:{creator}:{link}" if creator else ""),
-                    ),
-                    tagged=frozenset(tagged),
-                )
-            )
-        return entries
-
-    @classmethod
-    def exchange_tags(cls, text: str) -> tuple[str, ...]:
-        """Tickers Benzinga tagged in the text with an explicit exchange prefix."""
-        return tuple(dict.fromkeys(match.group(1).upper() for match in cls.EXCHANGE_TAG_RE.finditer(str(text or ""))))
-
-    # Benzinga section/topic names that are all-caps but collide with real tickers
-    # (AI = C3.ai, IPO = Renaissance IPO ETF, FDA, ESG, ...).  A bare <category> equal
-    # to one of these is a section label, never a ticker tag.
-    SECTION_CATEGORIES = frozenset({
-        "AI", "IPO", "IPOS", "FDA", "ESG", "SPAC", "SPACS", "ETF", "ETFS", "REIT", "REITS", "EARNINGS",
-        "M&A", "SEC", "FOMC", "FED", "GDP", "CPI", "PPI", "EPS", "CEO", "CFO", "EV", "EVS", "NFT", "NFTS",
-        "DEFI", "BTC", "ETH", "CRYPTO", "US", "USA", "UK", "EU", "ECB", "OPEC", "GLP-1", "NEWS", "TECH",
-    })
-    TICKER_CATEGORY_RE = re.compile(r"[A-Z][A-Z0-9]{0,4}(?:[.\-][A-Z0-9]{1,4})?")
-    TICKER_DOMAIN_RE = re.compile(r"ticker|quote|symbol|stock", re.IGNORECASE)
-
-    @classmethod
-    def _looks_like_ticker(cls, category: str, domain: str = "") -> bool:
-        """A <category> counts as a ticker tag ONLY when Benzinga marks it as one:
-        the element's ``domain`` attribute must name a ticker/quote taxonomy and
-        the token must be shaped like a ticker (all-caps, at most five characters
-        plus an optional share-class suffix, e.g. BRK.B, GOOGL).  A bare category
-        with no such domain is a topic label (AI, IPO, EV, ...) and is never used
-        for attribution, so a topic that collides with a ticker cannot leak
-        unrelated stories into that symbol's feed."""
-        token = str(category or "").strip()
-        if not token or not domain or not cls.TICKER_DOMAIN_RE.search(domain):
-            return False
-        if token.upper() in cls.SECTION_CATEGORIES and not re.fullmatch(r"[A-Z][A-Z0-9]{0,4}", token):
-            return False
-        return bool(cls.TICKER_CATEGORY_RE.fullmatch(token.upper()))
+    @staticmethod
+    def tagged_symbols(item: dict) -> tuple[str, ...]:
+        """Tickers Benzinga attached to the story (``stocks[].name`` and ``tickers[].name``)."""
+        tickers: list[str] = []
+        for key in ("stocks", "tickers"):
+            for entry in item.get(key) or []:
+                name = entry.get("name") if isinstance(entry, dict) else entry
+                token = str(name or "").strip().upper()
+                if token:
+                    tickers.append(token)
+        return tuple(dict.fromkeys(tickers))
 
 
 class SecEdgarSource(NewsSource):
     """SEC EDGAR company filings Atom feed, keyed by ticker.  Filings are catalysts
-    in their own right, so every kept entry is tagged ``Filing``."""
+    in their own right, so every kept entry is tagged ``Filing``.
+
+    Live shape (2026-09-26): each ``<entry>`` title is ``"<form>  - <description>"``
+    (``"8-K  - Current report"``, ``"4  - Statement of changes in beneficial
+    ownership of securities"``, ``"SCHEDULE 13G/A [Amend]  - ..."``), the form type
+    is also the ``<category term>``, the company name is only in
+    ``<company-info><conformed-name>``, and the summary is
+    ``Filed: <date> AccNo: <accession> Size: <n> KB`` with no item text.  An
+    unknown ticker is an HTTP 200 HTML page saying "No matching Ticker Symbol."
+    The feed declares ISO-8859-1."""
 
     name = "sec_edgar"
     label = "SEC EDGAR"
     homepage = "https://www.sec.gov"
 
     FEED_URL = "https://www.sec.gov/cgi-bin/browse-edgar"
-    KEEP_FORMS = ("8-K", "10-Q", "10-K", "6-K", "S-1", "S-3", "424B", "SC 13D", "SC 13G", "DEF 14A", "3", "4")
-    TITLE_RE = re.compile(r"^\s*(?P<form>.+?)\s+-\s+(?P<company>.+?)\s*\((?P<cik>\d{10})\)\s*\((?P<role>[^)]*)\)\s*$")
+    KEEP_FORMS = (
+        "8-K", "10-Q", "10-K", "6-K", "S-1", "S-3", "424B", "SC 13D", "SC 13G", "SCHEDULE 13D", "SCHEDULE 13G",
+        "DEF 14A", "3", "4",
+    )
+    TITLE_RE = re.compile(r"^\s*(?P<form>.+?)\s+-\s+(?P<description>.+?)\s*$")
+    AMEND_SUFFIX_RE = re.compile(r"\s*\[amend\]\s*$", re.IGNORECASE)
+    FEED_TITLE_CIK_RE = re.compile(r"\s*\(\d{10}\)\s*$")
     NO_TICKER_RE = re.compile(r"No matching Ticker Symbol", re.IGNORECASE)
     ACCESSION_RE = re.compile(r"accession-number=(\d{10}-\d{2}-\d{6})")
     ACCNO_RE = re.compile(r"AccNo:\s*(\d{10}-\d{2}-\d{6})")
     URL_ACCESSION_RE = re.compile(r"/(\d{10}-\d{2}-\d{6})-index|/(\d{18})/")
-    FILING_ITEMS_RE = re.compile(r"Size:\s*[\d.,]+\s*[KMG]?B\s*(?P<items>.+)$", re.IGNORECASE)
     FILED_RE = re.compile(r"Filed:\s*(\d{4}-\d{2}-\d{2})")
+    XML_ENCODING_RE = re.compile(rb"<\?xml[^>]*encoding=[\"']([A-Za-z0-9._-]+)[\"']")
 
     def fetch(self, symbol: str, limit: int) -> list[RawArticle]:
         params = {
@@ -795,7 +748,19 @@ class SecEdgarSource(NewsSource):
                 "Accept": "application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.5",
             },
         )
-        return self.parse(response.text(), symbol, limit)
+        return self.parse(self._decode(response), symbol, limit)
+
+    @classmethod
+    def _decode(cls, response: HttpResponse) -> str:
+        """EDGAR declares ``encoding="ISO-8859-1"``; honour the declaration so a
+        company name with a Latin-1 character survives."""
+        match = cls.XML_ENCODING_RE.search(response.body[:200])
+        if match:
+            try:
+                return response.body.decode(match.group(1).decode("ascii"))
+            except (LookupError, UnicodeDecodeError):
+                pass
+        return response.text()
 
     def parse(self, text: str, symbol: str, limit: int) -> list[RawArticle]:
         stripped = text.lstrip()
@@ -811,17 +776,23 @@ class SecEdgarSource(NewsSource):
             raise OSError(f"invalid Atom feed: {exc}") from exc
         if _local_tag(root).lower() != "feed":
             raise OSError(f"SEC EDGAR returned <{_local_tag(root)}> instead of the Atom feed")
+        # The company name lives only in <company-info><conformed-name>; the feed
+        # <title> ("Apple Inc.  (0000320193)") is the fallback.
         company_name = ""
-        for element in root.iter():
-            if _local_tag(element) == "conformed-name" and element.text:
-                company_name = " ".join(element.text.split())
-                break
+        feed_title = ""
+        for element in root:
+            local = _local_tag(element)
+            if local == "company-info":
+                company_name = " ".join((_child_text(element, "conformed-name") or "").split())
+            elif local == "title" and element.text:
+                feed_title = self.FEED_TITLE_CIK_RE.sub("", " ".join(element.text.split()))
+        company = company_name or feed_title or symbol
         articles: list[RawArticle] = []
         for entry in root.iter():
             if _local_tag(entry) != "entry":
                 continue
             title = " ".join((_child_text(entry, "title") or "").split())
-            form, company = self._split_title(title)
+            title_form, description = self._split_title(title)
             category_form = ""
             link = ""
             for child in entry:
@@ -831,18 +802,18 @@ class SecEdgarSource(NewsSource):
                 elif local == "link" and not link:
                     if child.attrib.get("rel", "alternate") == "alternate" or not link:
                         link = str(child.attrib.get("href") or "").strip()
-            form = form or category_form
+            # <category term> is the form type; the title prefix is the fallback.
+            form = category_form or title_form
             if not form or not self.keep_form(form) or not link:
                 continue
             published = _parse_iso(_child_text(entry, "updated").strip())
             if published is None:
                 continue
-            label_company = company or company_name or symbol
             summary = _strip_html(_child_text(entry, "summary"))
             article_id = (_child_text(entry, "id") or "").strip()
             articles.append(
                 RawArticle(
-                    headline=self.headline_for(form, label_company, published, article_id, summary, link),
+                    headline=self.headline_for(form, company, published, article_id, summary, link, description),
                     url=link,
                     published_at=published,
                     publisher="SEC EDGAR",
@@ -857,23 +828,24 @@ class SecEdgarSource(NewsSource):
         return articles
 
     @classmethod
-    def headline_for(cls, form: str, company: str, published: datetime, article_id: str, summary: str, link: str) -> str:
+    def headline_for(
+        cls, form: str, company: str, published: datetime, article_id: str, summary: str, link: str, description: str = ""
+    ) -> str:
         """One headline per filing.  A company files the same form many times
         (every 8-K, every insider Form 4), and both the engine merge and the
-        repository dedupe by normalized headline, so the headline carries the
-        filed date (EDGAR's ``Filed:`` in the summary, else the entry date),
-        the 8-K item text when EDGAR lists it, and the accession number, which
-        is unique per filing."""
+        repository dedupe by normalized headline, so the headline carries EDGAR's
+        form description, the filed date (``Filed:`` in the summary, else the
+        entry date) and the accession number, which is unique per filing."""
         accession = cls.accession_for(article_id, summary, link)
         filed = cls.FILED_RE.search(summary or "")
         parts = [filed.group(1) if filed else published.astimezone(timezone.utc).date().isoformat()]
-        items_match = cls.FILING_ITEMS_RE.search(summary or "")
-        items = " ".join(items_match.group("items").split()) if items_match else ""
-        if items:
-            parts.append(items[:160])
         if accession:
             parts.append(f"AccNo {accession}")
-        return f"{form} filing: {company} ({', '.join(parts)})"[:400]
+        label = f"{form} filing: {company}"
+        description = " ".join(str(description or "").split())
+        if description:
+            label = f"{label} - {description[:160]}"
+        return f"{label} ({', '.join(parts)})"[:400]
 
     @classmethod
     def accession_for(cls, article_id: str, summary: str, link: str) -> str:
@@ -891,17 +863,18 @@ class SecEdgarSource(NewsSource):
 
     @classmethod
     def _split_title(cls, title: str) -> tuple[str, str]:
-        match = cls.TITLE_RE.match(title)
-        if match:
-            return match.group("form").strip(), " ".join(match.group("company").split())
-        if " - " in title:
-            form, _, rest = title.partition(" - ")
-            return form.strip(), re.sub(r"\s*\(\d{10}\).*$", "", rest).strip()
-        return "", ""
+        """``"8-K  - Current report"`` -> ``("8-K", "Current report")``;
+        ``"SCHEDULE 13G/A [Amend]  - Statement ..."`` -> ``("SCHEDULE 13G/A", "Statement ...")``."""
+        match = cls.TITLE_RE.match(title or "")
+        if not match:
+            return "", ""
+        form = cls.AMEND_SUFFIX_RE.sub("", match.group("form")).strip()
+        return form, " ".join(match.group("description").split())
 
     @classmethod
     def keep_form(cls, form: str) -> bool:
         base = str(form or "").strip().upper()
+        base = cls.AMEND_SUFFIX_RE.sub("", base)
         base = re.sub(r"/A$", "", base)  # amendments of a kept form are kept
         for keep in cls.KEEP_FORMS:
             if keep == "424B":
@@ -1159,7 +1132,7 @@ SOURCE_CLASSES: dict[str, type[NewsSource]] = {
     AlpacaNewsSource.name: AlpacaNewsSource,
     FinvizSource.name: FinvizSource,
     NasdaqRssSource.name: NasdaqRssSource,
-    BenzingaRssSource.name: BenzingaRssSource,
+    BenzingaSource.name: BenzingaSource,
     SecEdgarSource.name: SecEdgarSource,
     FinnhubSource.name: FinnhubSource,
     PolygonSource.name: PolygonSource,
@@ -1232,13 +1205,8 @@ class CatalystEngine:
         self._yahoo_crumb: str | None = None
         self._yahoo_crumb_lock = threading.Lock()
         self._yahoo_crumb_checked = False
-        # Site-wide feeds (Benzinga) are fetched once per run and shared across symbols.
-        self._shared_lock = threading.Lock()
-        self._shared_run = 0
-        self._active_runs = 0  # load_watchlist_news runs in flight (their workers share one run id)
-        self._shared: dict[str, tuple[int, float, object, BaseException | None]] = {}
 
-    # ----------------------------------------------------------------- keys / shared feeds
+    # ----------------------------------------------------------------- keys
     def api_key(self, source_name: str) -> str:
         return self.api_keys.get(str(source_name or "").strip().lower(), "")
 
@@ -1246,39 +1214,6 @@ class CatalystEngine:
     def sec_user_agent(self) -> str:
         # SEC asks for a descriptive User-Agent with a contact address.
         return f"AgenticAI-Trading/1.0 (contact: {self.contact_email})"
-
-    def shared_fetch(self, key: str, loader: Callable[[], object]) -> object:
-        """Run ``loader`` once per engine run and hand every symbol the same
-        parsed result.  ``load_watchlist_news`` starts one run for the whole
-        watchlist; a direct ``load_symbol_news`` call outside a watchlist run
-        starts its own run, so it reuses the feed only while the cache TTL is
-        fresh.  Failures are cached the same way, so a blocked site-wide feed is
-        reported per symbol without being re-requested per symbol, and a
-        transient failure is retried once the TTL expires."""
-        with self._shared_lock:
-            entry = self._shared.get(key)
-            now = time.monotonic()
-            if entry is not None:
-                run, stamp, value, error = entry
-                if run == self._shared_run or (self.cache_ttl_seconds and now - stamp < self.cache_ttl_seconds):
-                    if error is not None:
-                        raise error
-                    return value
-            try:
-                value = loader()
-            except Exception as exc:
-                self._shared[key] = (self._shared_run, now, None, exc)
-                raise
-            self._shared[key] = (self._shared_run, now, value, None)
-            return value
-
-    def _begin_run(self) -> None:
-        with self._shared_lock:
-            self._shared_run += 1
-
-    def _in_watchlist_run(self) -> bool:
-        with self._shared_lock:
-            return self._active_runs > 0
 
     def available_sources(self) -> list[dict]:
         """Every known source with whether it is active for this engine and why not.
@@ -1400,21 +1335,14 @@ class CatalystEngine:
         if not normalized_symbols:
             return []
         self._reset_status()
-        self._begin_run()
-        with self._shared_lock:
-            self._active_runs += 1
-        try:
-            worker_count = min(self.max_workers, len(normalized_symbols))
-            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="news") as executor:
-                futures = {executor.submit(self.load_symbol_news, symbol, self.per_symbol_limit): symbol for symbol in normalized_symbols}
-                for future in as_completed(futures):
-                    try:
-                        rows.extend(future.result())
-                    except Exception:
-                        continue
-        finally:
-            with self._shared_lock:
-                self._active_runs -= 1
+        worker_count = min(self.max_workers, len(normalized_symbols))
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="news") as executor:
+            futures = {executor.submit(self.load_symbol_news, symbol, self.per_symbol_limit): symbol for symbol in normalized_symbols}
+            for future in as_completed(futures):
+                try:
+                    rows.extend(future.result())
+                except Exception:
+                    continue
         return sorted(
             [asdict(row) for row in rows],
             key=lambda item: item.get("published_at") or "",
@@ -1431,9 +1359,6 @@ class CatalystEngine:
             if cached and now - cached[0] < self.cache_ttl_seconds:
                 return list(cached[1])
 
-        if not self._in_watchlist_run():
-            # A direct call is its own run: site-wide feeds are reused only within the TTL.
-            self._begin_run()
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.lookback_days)
         collected: list[tuple[NewsSource, RawArticle]] = []
         for source in self.sources:
