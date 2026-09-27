@@ -45,7 +45,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 
@@ -99,6 +99,10 @@ EASTERN = ZoneInfo("America/New_York")
 TRACKING_QUERY_KEYS = ("utm_", "guccounter", "guce_referrer", "ref", "src", "fbclid", "gclid", ".tsrc")
 
 
+if TYPE_CHECKING:  # pragma: no cover
+    from news_sentiment_ai import NewsSentimentClassifier
+
+
 @dataclass(slots=True)
 class CatalystItem:
     symbol: str
@@ -113,6 +117,9 @@ class CatalystItem:
     summary: str = ""
     related_symbols: str = ""
     article_id: str = ""
+    # "ai" when an LLM labelled the headline, "keywords" for the regex scorer.
+    sentiment_source: str = "keywords"
+    sentiment_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -1167,8 +1174,11 @@ class CatalystEngine:
         api_keys: dict[str, str] | None = None,
         contact_email: str = "",
         auto_enable_key_sources: bool = True,
+        sentiment_classifier: "NewsSentimentClassifier | None" = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
+        # Optional LLM labeller (news_sentiment_ai). None or unavailable = keyword labels.
+        self.sentiment_classifier = sentiment_classifier
         self.max_workers = max(1, int(max_workers))
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
         self.per_symbol_limit = max(1, int(per_symbol_limit))
@@ -1377,8 +1387,56 @@ class CatalystEngine:
         items = self._merge(normalized_symbol, collected)
         items.sort(key=lambda item: item.published_at, reverse=True)
         items = items[:effective_limit]
+        self.label_sentiment(items)
         with self._cache_lock:
             self._cache[cache_key] = (now, list(items))
+        return items
+
+    def sentiment_status(self) -> dict:
+        classifier = self.sentiment_classifier
+        if classifier is None:
+            return {"enabled": False, "available": False, "model": "", "reason": "not configured", "labeled": 0, "requests": 0, "cached": 0, "lastError": "", "lastRunAt": None}
+        return classifier.status()
+
+    def label_sentiment(self, items: list[CatalystItem]) -> list[CatalystItem]:
+        """Overlay AI Positive/Negative/Neutral labels on the keyword labels.
+
+        Items the AI did not answer for (no key, timeout, malformed reply)
+        keep their keyword sentiment and are marked ``sentiment_source =
+        "keywords"`` so the UI can say which is which.
+        """
+        classifier = self.sentiment_classifier
+        if classifier is None or not getattr(classifier, "available", False) or not items:
+            return items
+        keyed: dict[str, CatalystItem] = {}
+        for index, item in enumerate(items):
+            keyed[f"{index}:{canonical_url(item.url) or normalize_headline(item.headline)}"] = item
+        try:
+            verdicts = classifier.classify(
+                [{"key": key, "headline": item.headline, "summary": item.summary} for key, item in keyed.items()]
+            )
+        except Exception:
+            return items
+        for key, verdict in (verdicts or {}).items():
+            item = keyed.get(key)
+            label = str(getattr(verdict, "label", "") or "")
+            if item is None or label not in {"Positive", "Negative", "Neutral"}:
+                continue
+            tags = [tag for tag in (part.strip() for part in item.tags.split(",")) if tag and tag not in {"Positive Catalyst", "Risk Headline", "News"}]
+            if label == "Positive":
+                item.score = max(int(item.score), 2)
+                item.sentiment = "Strong" if item.score >= 3 else "Positive"
+                tags.insert(0, "Positive Catalyst")
+            elif label == "Negative":
+                item.score = 0
+                item.sentiment = "Negative"
+                tags.insert(0, "Risk Headline")
+            else:
+                item.score = 1
+                item.sentiment = "Neutral"
+            item.tags = ", ".join(dict.fromkeys(tags)) if tags else "News"
+            item.sentiment_source = "ai"
+            item.sentiment_reason = str(getattr(verdict, "reason", "") or "")[:160]
         return items
 
     def _merge(self, symbol: str, collected: list[tuple[NewsSource, RawArticle]]) -> list[CatalystItem]:

@@ -35,6 +35,7 @@ from auth_service import AuthenticationError, AuthorizationError, AuthService
 from schwab_stream import SchwabMarketStream, event_stream_cursor
 from backtester import Backtester
 from catalyst_engine import CatalystEngine, parse_source_list
+from news_sentiment_ai import NewsSentimentClassifier
 from config import ARTIFACTS_DIR, DATABASE_PATH, EASTERN_TZ, WATCHLIST_PATH, settings
 from data.alpaca_client import AlpacaClient
 from data.market_data import create_market_data_client
@@ -8630,6 +8631,12 @@ class DashboardState:
                 "tiingo": news.tiingo_api_key,
             },
             contact_email=news.contact_email,
+            sentiment_classifier=NewsSentimentClassifier(
+                enabled=news.ai_sentiment_enabled,
+                model=news.ai_sentiment_model,
+                timeout_seconds=news.ai_sentiment_timeout_seconds,
+                batch_size=news.ai_sentiment_batch_size,
+            ),
         )
 
     def _refresh_catalyst_information(self, symbols: list[str] | None = None) -> dict:
@@ -8647,9 +8654,16 @@ class DashboardState:
         )
         if failed:
             message += " Unavailable: " + ", ".join(str(entry.get("label")) for entry in failed) + "."
+        ai_sentiment = self.catalysts.sentiment_status() if hasattr(self.catalysts, "sentiment_status") else {}
+        ai_labeled = sum(1 for item in items if str(item.get("sentiment_source") or "") == "ai")
+        if ai_sentiment.get("available"):
+            message += f" AI sentiment: {ai_labeled}/{len(items)} headlines tagged by {ai_sentiment.get('model')}."
+            if ai_sentiment.get("lastError"):
+                message += f" AI error: {ai_sentiment['lastError']}."
         self.repository.log_bot_event("catalyst_scan", message)
         return {
             "message": message,
+            "aiSentiment": {**ai_sentiment, "labeledThisRun": ai_labeled},
             "symbolsScanned": len(scoped_symbols),
             "symbols": list(scoped_symbols),
             "headlinesRefreshed": len(items),

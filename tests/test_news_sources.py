@@ -1076,7 +1076,7 @@ class MergeAndStatusTests(unittest.TestCase):
         self.assertEqual(len(rows), 6)
         self.assertEqual(set(rows[0]), {
             "symbol", "headline", "source", "url", "published_at", "score", "sentiment", "tags",
-            "via", "summary", "related_symbols", "article_id",
+            "via", "summary", "related_symbols", "article_id", "sentiment_source", "sentiment_reason",
         })
         status = engine.source_status()[0]
         self.assertEqual(status["symbols"], 2)

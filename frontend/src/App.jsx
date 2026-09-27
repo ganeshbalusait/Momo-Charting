@@ -23549,6 +23549,17 @@ function TradingWorkspace({ authUser, onLogout }) {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  // "AI" tag on a sentiment pill when an LLM labelled the headline; the
+  // one-line reason rides in the tooltip. Keyword labels carry no tag.
+  const renderNewsAiTag = (news) => (String(news?.sentiment_source || "") === "ai"
+    ? <span className="news-ai-tag" title={news?.sentiment_reason ? `AI: ${news.sentiment_reason}` : "Labelled by AI"} aria-label="Labelled by AI">AI</span>
+    : null);
+  const newsSentimentTitle = (news, label) => {
+    const reason = String(news?.sentiment_reason || "").trim();
+    const by = String(news?.sentiment_source || "") === "ai" ? "AI" : "keywords";
+    return reason ? `${label} (${by}): ${reason}` : `${label} (${by})`;
+  };
+
   // Latest ticker-tagged headline for a scanner row. Information only: the
   // cell links to the article and to the News Feed, nothing else reads it.
   // The pill is coloured by the headline's sentiment, never by its age:
@@ -23574,11 +23585,12 @@ function TradingWorkspace({ authUser, onLogout }) {
               event.preventDefault();
               openTickerNews(symbol);
             }}
-            title={`${tone.label} news for ${symbol} - open the News Feed`}
+            title={`${newsSentimentTitle(news, tone.label)} - open the News Feed for ${symbol}`}
             aria-label={`${tone.label} news for ${symbol}, open the News Feed`}
           >
             {tone.label}
           </a>
+          {renderNewsAiTag(news)}
         </span>
         {news.url
           ? <a className="scanner-news-headline" href={news.url} target="_blank" rel="noreferrer" title={news.summary || news.headline}>{news.headline}</a>
@@ -28472,7 +28484,12 @@ function TradingWorkspace({ authUser, onLogout }) {
                 { key: "score", label: "Rating", render: renderNewsRating },
                 { key: "news_type", label: "News Type", render: (value) => <span className="news-type-badge">{value}</span> },
                 { key: "source", label: "Source", render: (value, row) => <NewsSourceCell source={value} via={row.via} /> },
-                { key: "sentiment", label: "Sentiment", render: (value) => <span className={`news-sentiment news-sentiment-${String(value || "neutral").toLowerCase()}`}>{value || "Neutral"}</span> },
+                { key: "sentiment", label: "Sentiment", render: (value, row) => (
+                  <span className="news-sentiment-cell">
+                    <span className={`news-sentiment news-sentiment-${String(value || "neutral").toLowerCase()}`} title={newsSentimentTitle(row, value || "Neutral")}>{value || "Neutral"}</span>
+                    {renderNewsAiTag(row)}
+                  </span>
+                ) },
                 { key: "headline", label: "Headline", render: (value, row) => <NewsHeadlineCell headline={value} row={row} /> },
               ]} rows={newsFeedRows} emptyMessage={newsSearch ? "No news matches this search and filters." : "No catalyst news matches this universe and filters."} />
             </section>

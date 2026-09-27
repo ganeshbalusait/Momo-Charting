@@ -236,6 +236,13 @@ class NewsSettings:
     max_workers: int = int(os.getenv("NEWS_MAX_WORKERS", "6"))
     cache_ttl_seconds: int = int(os.getenv("NEWS_CACHE_TTL_SECONDS", "300"))
     feed_rows: int = int(os.getenv("NEWS_FEED_ROWS", "600"))
+    # AI Positive/Negative/Neutral tag per headline (news_sentiment_ai). Uses the
+    # OpenAI-compatible endpoint behind OPENAI_API_KEY / OPENAI_BASE_URL and falls
+    # back to the keyword labels whenever the key is missing or a call fails.
+    ai_sentiment_enabled: bool = os.getenv("NEWS_AI_SENTIMENT_ENABLED", "true").lower() == "true"
+    ai_sentiment_model: str = os.getenv("NEWS_AI_SENTIMENT_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    ai_sentiment_timeout_seconds: float = float(os.getenv("NEWS_AI_SENTIMENT_TIMEOUT_SECONDS", "12"))
+    ai_sentiment_batch_size: int = int(os.getenv("NEWS_AI_SENTIMENT_BATCH_SIZE", "20"))
 
 
 @dataclass(slots=True)

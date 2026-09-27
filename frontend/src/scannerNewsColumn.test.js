@@ -73,3 +73,19 @@ test("positive news flashes green and negative news flashes red; neutral stays s
 test("a sentiment change re-renders stable scanner rows", () => {
   assert.match(appSource, /row\?\.__news\?\.headline \?\? "",\n\s*row\?\.__news\?\.sentiment \?\? "",/);
 });
+
+test("an AI-labelled headline shows the AI tag with its reason; keyword labels do not", () => {
+  const start = appSource.indexOf("const renderNewsAiTag = ");
+  const end = appSource.indexOf("const renderScannerNewsCell = ");
+  const helpers = appSource.slice(start, end);
+  assert.match(helpers, /String\(news\?\.sentiment_source \|\| ""\) === "ai"\n\s*\? <span className="news-ai-tag"/);
+  assert.match(helpers, /title=\{news\?\.sentiment_reason \? `AI: \$\{news\.sentiment_reason\}` : "Labelled by AI"\}/);
+  assert.match(helpers, /: null\);/);
+  const cellStart = appSource.indexOf("const renderScannerNewsCell = ");
+  const cell = appSource.slice(cellStart, appSource.indexOf("const renderOiNewsLink = "));
+  assert.match(cell, /\{tone\.label\}\n\s*<\/a>\n\s*\{renderNewsAiTag\(news\)\}/);
+  // The News Feed's Sentiment column carries the same tag.
+  assert.match(appSource, /key: "sentiment", label: "Sentiment", render: \(value, row\) => \(\n\s*<span className="news-sentiment-cell">[\s\S]*?\{renderNewsAiTag\(row\)\}/);
+  const cssSource = readFileSync(new URL("./index.css", import.meta.url), "utf8");
+  assert.match(cssSource, /\.news-ai-tag \{[^}]*cursor: help;[^}]*\}/);
+});

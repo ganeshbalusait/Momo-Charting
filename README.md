@@ -74,6 +74,19 @@ the live endpoint on 2026-09-26; the test fixtures are trimmed copies of those r
 Key-based sources switch on automatically when their key is set and are skipped (listed
 as "not set", never reported as blocked or failed) when it is empty.
 
+**AI sentiment tag.** The keyword scorer only knows a few words, so most headlines land on
+"Neutral". When `OPENAI_API_KEY` is set (the same key the LLM trade advisor uses;
+`OPENAI_BASE_URL` points it at any OpenAI-compatible endpoint), every scraped headline is
+also sent to the model in `NEWS_AI_SENTIMENT_MODEL` in batches of `NEWS_AI_SENTIMENT_BATCH_SIZE`
+and labelled **Positive**, **Negative** or **Neutral** with a one-line reason. The label
+drives the News column colour (green flash / red flash / grey) and shows an `AI` tag with the
+reason in its tooltip; `sentiment_source` on each stored headline says `ai` or `keywords`.
+Without a key, on a timeout, or for any headline the model did not answer for, the keyword
+label stays - the feed never waits on or fails because of the AI, and the AI label never
+feeds a score or a trade. `newsFeedMeta.aiSentiment` reports the model, how many headlines
+were tagged on the last refresh, and the last error. Set `NEWS_AI_SENTIMENT_ENABLED=false`
+to switch it off.
+
 ```env
 NEWS_SOURCES=yahoo_search,yahoo_rss,alpaca,benzinga,finviz,nasdaq,sec_edgar
 FINNHUB_API_KEY=
@@ -87,6 +100,11 @@ NEWS_TIMEOUT_SECONDS=8
 NEWS_MAX_WORKERS=6
 NEWS_CACHE_TTL_SECONDS=300
 NEWS_FEED_ROWS=600
+NEWS_AI_SENTIMENT_ENABLED=true
+NEWS_AI_SENTIMENT_MODEL=gpt-4o-mini
+NEWS_AI_SENTIMENT_TIMEOUT_SECONDS=12
+NEWS_AI_SENTIMENT_BATCH_SIZE=20
+OPENAI_API_KEY=
 ```
 
 ## Project structure

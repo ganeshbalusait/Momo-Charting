@@ -366,6 +366,8 @@ class TradingRepository:
             self._ensure_column(connection, "catalyst_items", "summary", "TEXT")
             self._ensure_column(connection, "catalyst_items", "related_symbols", "TEXT")
             self._ensure_column(connection, "catalyst_items", "article_id", "TEXT")
+            self._ensure_column(connection, "catalyst_items", "sentiment_source", "TEXT")
+            self._ensure_column(connection, "catalyst_items", "sentiment_reason", "TEXT")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_catalyst_symbol_url ON catalyst_items(symbol, url)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_catalyst_published ON catalyst_items(published_at)")
             self._ensure_column(connection, "learning_observations", "cohort", "TEXT NOT NULL DEFAULT 'mag7'")
@@ -1407,9 +1409,10 @@ class TradingRepository:
                 url = str(item.get("url", "") or "").strip()
                 if not symbol or not headline:
                     continue
+                sentiment_source = str(item.get("sentiment_source", "") or "keywords")
                 duplicate = connection.execute(
                     """
-                    SELECT 1 FROM catalyst_items
+                    SELECT id, sentiment_source FROM catalyst_items
                     WHERE symbol = ?
                       AND (
                         (? != '' AND url = ?)
@@ -1420,13 +1423,33 @@ class TradingRepository:
                     (symbol, url, url, headline),
                 ).fetchone()
                 if duplicate:
+                    # A story stored with keyword labels picks up the AI label
+                    # the first time the AI answers for it; an AI label is
+                    # never downgraded back to keywords.
+                    if sentiment_source == "ai" and str(duplicate["sentiment_source"] or "") != "ai":
+                        connection.execute(
+                            """
+                            UPDATE catalyst_items
+                            SET score = ?, sentiment = ?, tags = ?, sentiment_source = ?, sentiment_reason = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                int(item.get("score") or 0),
+                                item.get("sentiment", ""),
+                                item.get("tags", ""),
+                                sentiment_source,
+                                item.get("sentiment_reason", ""),
+                                int(duplicate["id"]),
+                            ),
+                        )
                     continue
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO catalyst_items (
                         created_at, symbol, headline, source, url, published_at,
-                        score, sentiment, tags, via, summary, related_symbols, article_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        score, sentiment, tags, via, summary, related_symbols, article_id,
+                        sentiment_source, sentiment_reason
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         datetime.utcnow().isoformat(),
@@ -1442,6 +1465,8 @@ class TradingRepository:
                         item.get("summary", ""),
                         item.get("related_symbols", ""),
                         item.get("article_id", ""),
+                        sentiment_source,
+                        item.get("sentiment_reason", ""),
                     ),
                 )
                 inserted += int(cursor.rowcount or 0)
@@ -1456,7 +1481,8 @@ class TradingRepository:
         return self._query_frame(
             """
             SELECT id, created_at, symbol, headline, source, url, published_at,
-                   score, sentiment, tags, via, summary, related_symbols, article_id
+                   score, sentiment, tags, via, summary, related_symbols, article_id,
+                   sentiment_source, sentiment_reason
             FROM (
                 SELECT catalyst_items.*,
                        ROW_NUMBER() OVER (

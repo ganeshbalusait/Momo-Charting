@@ -10386,6 +10386,28 @@ body.global-price-alert-visible .topbar.trading-header {
   }
 }
 
+/* "AI" tag beside a sentiment pill: the label came from the LLM classifier. */
+.news-ai-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 1px 5px;
+  border: 1px solid #69519d;
+  border-radius: 4px;
+  background: #2b2246;
+  color: #c7b4ff;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  cursor: help;
+}
+
+.news-sentiment-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .scanner-news-cell {
   display: grid;
   gap: 4px;

@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -512,3 +513,57 @@ class RepositoryRollupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class CatalystAiSentimentStorageTests(unittest.TestCase):
+    def _item(self, **overrides):
+        base = {
+            "symbol": "TSLA",
+            "headline": "Tesla recalls 300k vehicles over steering fault",
+            "source": "Benzinga",
+            "url": "https://example.com/tsla-recall",
+            "published_at": "2026-09-27T12:00:00+00:00",
+            "score": 1,
+            "sentiment": "Neutral",
+            "tags": "News",
+            "sentiment_source": "keywords",
+            "sentiment_reason": "",
+        }
+        base.update(overrides)
+        return base
+
+    def test_stores_the_ai_label_and_reason(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = TradingRepository(db_path=os.path.join(temp_dir, "trades.db"))
+            stored = repository.log_catalysts([self._item(score=0, sentiment="Negative", tags="Risk Headline", sentiment_source="ai", sentiment_reason="Costly safety recall")])
+            self.assertEqual(stored, 1)
+            [row] = repository.get_latest_catalysts_by_symbol().to_dict("records")
+            self.assertEqual((row["sentiment"], row["score"], row["sentiment_source"], row["sentiment_reason"]), ("Negative", 0, "ai", "Costly safety recall"))
+            [recent] = repository.get_recent_catalysts(limit=5).to_dict("records")
+            self.assertEqual(recent["sentiment_source"], "ai")
+
+    def test_a_keyword_labelled_story_picks_up_the_ai_label_once_it_arrives(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = TradingRepository(db_path=os.path.join(temp_dir, "trades.db"))
+            self.assertEqual(repository.log_catalysts([self._item()]), 1)
+            # Same story (same URL) scraped again, now with an AI label: not a new row, but re-labelled.
+            self.assertEqual(repository.log_catalysts([self._item(score=0, sentiment="Negative", tags="Risk Headline", sentiment_source="ai", sentiment_reason="Costly safety recall")]), 0)
+            [row] = repository.get_latest_catalysts_by_symbol().to_dict("records")
+            self.assertEqual((row["sentiment"], row["score"], row["tags"], row["sentiment_source"], row["sentiment_reason"]), ("Negative", 0, "Risk Headline", "ai", "Costly safety recall"))
+            # An AI label is never downgraded back to keywords by a later keyword-only copy.
+            self.assertEqual(repository.log_catalysts([self._item(published_at="2026-09-27T12:01:00+00:00")]), 0)
+            [row] = repository.get_latest_catalysts_by_symbol().to_dict("records")
+            self.assertEqual((row["sentiment"], row["sentiment_source"]), ("Negative", "ai"))
+
+    def test_existing_databases_gain_the_sentiment_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "trades.db")
+            TradingRepository(db_path=path)
+            with sqlite3.connect(path) as connection:
+                connection.execute("ALTER TABLE catalyst_items DROP COLUMN sentiment_source")
+                connection.execute("ALTER TABLE catalyst_items DROP COLUMN sentiment_reason")
+            repository = TradingRepository(db_path=path)
+            with repository._connect() as connection:
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(catalyst_items)").fetchall()}
+            self.assertIn("sentiment_source", columns)
+            self.assertIn("sentiment_reason", columns)
