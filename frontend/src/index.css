@@ -22323,47 +22323,33 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
   opacity: 0.55;
 }
 
-/* News cell colour + plain word (2026-09-27). The whole cell takes the
-   story's colour - green for positive, red for negative, purple for neutral -
-   and a fresh (<3h) coloured story pulses once so it catches the eye. The
-   hover leads with "Positive news" / "Negative news"; the phone's tap popover
-   says the same word (.momx-news-pop-verdict). Appended after the last
-   @media block on purpose: an unconditional rule placed earlier loses to the
-   760px block below it (the mobile cascade trap), and these must hold at
-   every width. */
-.momx-scanner-panel .momx-newscol.is-tone-up {
+/* News cell flash + plain word (2026-09-27). Positive news pulses green,
+   negative pulses red - the age text and its sparkle only, NO cell fill (his
+   first look at a filled column, phone screenshot 08:30 ET: "why you added
+   column color?"). Neutral and unjudged rows are untouched. The hover leads
+   with "Positive news" / "Negative news"; the phone's tap popover says the
+   same word (.momx-news-pop-verdict). Appended after the last @media block
+   on purpose: an unconditional rule placed earlier loses to the 760px block
+   below it (the mobile cascade trap), and these must hold at every width.
+   The .is-stored variants restate the colour at the specificity of the
+   .is-stored:not(.is-fresh) grey rule above, which otherwise wins. */
+.momx-scanner-panel .momx-newscol.is-tone-up,
+.momx-scanner-panel .momx-newscol.is-stored.is-tone-up {
   color: #4ade80;
-  background: rgba(74, 222, 128, 0.14);
-  box-shadow: inset 2px 0 0 #4ade80;
+  animation: momx-news-flash 1.6s ease-in-out infinite;
 }
-.momx-scanner-panel .momx-newscol.is-tone-down {
+.momx-scanner-panel .momx-newscol.is-tone-down,
+.momx-scanner-panel .momx-newscol.is-stored.is-tone-down {
   color: #f87171;
-  background: rgba(248, 113, 113, 0.14);
-  box-shadow: inset 2px 0 0 #f87171;
+  animation: momx-news-flash 1.6s ease-in-out infinite;
 }
-.momx-scanner-panel .momx-newscol.is-tone-flat {
-  color: #c4b5fd;
-  background: rgba(167, 139, 250, 0.12);
-  box-shadow: inset 2px 0 0 #a78bfa;
-}
-/* A stored (older) story is dimmed grey by the .is-stored:not(.is-fresh) rule
-   above, which is one class more specific than the tone rules; restate the
-   colour at that specificity so the word and the tint agree. */
-.momx-scanner-panel .momx-newscol.is-stored.is-tone-up { color: #4ade80; }
-.momx-scanner-panel .momx-newscol.is-stored.is-tone-down { color: #f87171; }
-.momx-scanner-panel .momx-newscol.is-stored.is-tone-flat { color: #c4b5fd; }
-.momx-scanner-panel .momx-newscol.is-tone-up.is-fresh { animation: momx-news-flash-up 1.2s ease-out 3; }
-.momx-scanner-panel .momx-newscol.is-tone-down.is-fresh { animation: momx-news-flash-down 1.2s ease-out 3; }
-@keyframes momx-news-flash-up {
-  0% { background: rgba(74, 222, 128, 0.55); }
-  100% { background: rgba(74, 222, 128, 0.14); }
-}
-@keyframes momx-news-flash-down {
-  0% { background: rgba(248, 113, 113, 0.55); }
-  100% { background: rgba(248, 113, 113, 0.14); }
+@keyframes momx-news-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .momx-scanner-panel .momx-newscol.is-fresh { animation: none; }
+  .momx-scanner-panel .momx-newscol.is-tone-up,
+  .momx-scanner-panel .momx-newscol.is-tone-down { animation: none; }
 }
 .momx-news-pop-verdict {
   margin: 0 0 6px;

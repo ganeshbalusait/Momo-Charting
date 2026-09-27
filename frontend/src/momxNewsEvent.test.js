@@ -91,15 +91,20 @@ test("news cell: toneWord says Positive/Negative/Neutral and leads the tooltip",
   const at = new Date(NOW - 3600000).toISOString();
   const judgedUp = newsColumnCell({ news: { headline: "x", publishedAt: at }, catalyst: { category: "CONTRACT", direction: "bullish" } }, NOW);
   assert.equal(judgedUp.toneWord, "Positive");
-  assert.match(judgedUp.title, /^Positive news \(AI read\)\n/);
+  // "how do I know what category this news is?" - the AI's category is named in the same line
+  assert.equal(judgedUp.category, "CONTRACT");
+  assert.equal(judgedUp.readBy, "AI read: CONTRACT");
+  assert.match(judgedUp.title, /^Positive news \(AI read: CONTRACT\)\n/);
   const judgedDown = newsColumnCell({ news: { headline: "x", publishedAt: at }, catalyst: { category: "OFFERING", direction: "bearish" } }, NOW);
   assert.equal(judgedDown.toneWord, "Negative");
-  assert.match(judgedDown.title, /^Negative news \(AI read\)\n/);
+  assert.match(judgedDown.title, /^Negative news \(AI read: OFFERING\)\n/);
   const judgedFlat = newsColumnCell({ news: { headline: "x", publishedAt: at }, catalyst: { category: "OTHER", direction: "neutral" } }, NOW);
   assert.equal(judgedFlat.toneWord, "Neutral");
   // keyword sentiment only (no AI read yet): still a plain word, labelled as the weaker read
   const keyword = newsColumnCell({ news: { headline: "x", publishedAt: at, stored: true, sentiment: "negative" } }, NOW);
   assert.equal(keyword.toneWord, "Negative");
+  assert.equal(keyword.readBy, "keyword read");
+  assert.equal(keyword.category, "");
   assert.match(keyword.title, /^Negative news \(keyword read\)\n/);
   assert.equal(newsColumnCell({ news: { headline: "x", publishedAt: at, stored: true, sentiment: "Strong" } }, NOW).toneWord, "Positive");
   // nothing judged it -> no word, and the tooltip starts with the headline as before

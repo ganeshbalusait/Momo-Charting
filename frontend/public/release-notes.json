@@ -5,8 +5,8 @@
       "at": "2026-09-27T02:15:00-04:00",
       "heading": "News cell says positive or negative",
       "items": [
-        "The MomX News cell is now green for positive news, red for negative and purple for neutral - the whole cell, not just the star. A fresh coloured story (under 3 hours) flashes three times when it appears.",
-        "Hover the cell on the desktop and the first line reads 'Positive news' or 'Negative news', with '(AI read)' when the AI reader judged the story or '(keyword read)' when only the scraper's keyword score did.",
+        "In the MomX News column, positive news flashes green and negative news flashes red - the age and its star only, no fill. Neutral or unjudged stories look exactly as before.",
+        "Hover the cell on the desktop and the first line reads 'Positive news', 'Negative news' or 'Neutral news'. When the AI reader judged the story it also names the category, e.g. '(AI read: UPGRADE)'; otherwise it says '(keyword read)', the scraper's keyword score.",
         "On the phone, tap the row's news to open it: the same word sits at the top of the popover.",
         "A story nobody has judged yet stays uncoloured, exactly as before - no guess is made."
       ]

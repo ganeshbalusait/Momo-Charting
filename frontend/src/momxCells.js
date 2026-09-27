@@ -1382,7 +1382,11 @@ export function newsColumnCell(row, nowMs = Date.now()) {
   // leaving him to decode a sparkle colour. The AI verdict wins; the scraper's
   // keyword sentiment is the weaker read and is labelled as such.
   const toneWord = tone === "up" ? "Positive" : tone === "down" ? "Negative" : tone === "flat" ? "Neutral" : "";
-  const toneLine = toneWord ? toneWord + " news (" + (ai ? "AI read" : "keyword read") + ")\n" : "";
+  // "How do I know what category this news is?" (2026-09-27): when the AI
+  // read it, name its category (EARNINGS, UPGRADE, OFFERING...) right there.
+  const category = ai && typeof c.category === "string" ? c.category : "";
+  const readBy = ai ? "AI read" + (category ? ": " + category : "") : "keyword read";
+  const toneLine = toneWord ? toneWord + " news (" + readBy + ")\n" : "";
   const whence = [news.source, news.via && news.via !== news.source ? "via " + news.via : "", news.age]
     .filter(Boolean)
     .join(", ");
@@ -1393,6 +1397,8 @@ export function newsColumnCell(row, nowMs = Date.now()) {
     // Sparkle colour: the AI verdict, else the keyword sentiment, else none.
     tone,
     toneWord,
+    category,
+    readBy,
     aiJudged: ai !== null,
     stored: news.stored === true,
     atMs: news.atMs,

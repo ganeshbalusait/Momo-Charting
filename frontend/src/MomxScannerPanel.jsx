@@ -448,11 +448,12 @@ function newsEventCell(column, row, earnings, className, nowMs) {
         key={column.key}
         data-col={column.key}
         className={className + " momx-newscol" + (cell && cell.fresh ? " is-fresh" : "") + (cell && cell.stored ? " is-stored" : "")
-          // The whole cell takes the story's colour (green good / red bad),
-          // not just the sparkle - asked for 2026-09-27. The hover leads with
-          // the word (cell.title), so desktop reads it; the phone gets the
-          // same word in the tap popover.
-          + (cell && cell.toneWord ? " is-tone-" + cell.tone : "")}
+          // Positive flashes green, negative flashes red (text + sparkle, no
+          // fill) - asked for 2026-09-27. Neutral gets no class: he wants
+          // only the two colours. The hover leads with the word
+          // (cell.title), so desktop reads it; the phone gets the same word
+          // in the tap popover.
+          + (cell && (cell.tone === "up" || cell.tone === "down") ? " is-tone-" + cell.tone : "")}
         title={cell ? cell.title : undefined}
       >
         {cell ? cell.text : ""}
@@ -2296,7 +2297,7 @@ function MomxNewsPopover({ symbol, news, verdict, onClose }) {
         {verdict && verdict.toneWord ? (
           <p className={"momx-news-pop-verdict is-" + verdict.tone}>
             {verdict.toneWord + " news"}
-            <small>{verdict.aiJudged ? " (AI read)" : " (keyword read)"}</small>
+            <small>{" (" + verdict.readBy + ")"}</small>
           </p>
         ) : null}
         <p className="momx-news-pop-headline">{news.headline}</p>
