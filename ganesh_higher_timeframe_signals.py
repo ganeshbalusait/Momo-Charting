@@ -22,7 +22,8 @@ from datetime import date, datetime, timezone
 from functools import lru_cache
 import math
 import re
-from typing import Any, Iterable, Mapping
+from collections.abc import Mapping  # abc, not typing: same isinstance answer, far cheaper (speed pass 2026-09-25)
+from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -60,6 +61,9 @@ _TIMEFRAME_RANK = {
 }
 _FAMILY_RANK = {"ganesh48": 0, "ganesh920": 1, "ganeshMacd": 2}
 _FAMILY_PREFETCH_BUCKETS = {"ganesh48": 32, "ganesh920": 80, "ganeshMacd": 48}
+# Below this many supplied sessions a bucket shortfall means "not fetched yet",
+# never "cannot exist": a 2-day fast_start seed must not be judged terminal.
+_TERMINAL_MIN_DAILY_BARS = 240
 _DATE_KEY_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _EASTERN_ZONE = ZoneInfo(EASTERN_TZ)
 
@@ -679,20 +683,20 @@ def _event_sort_key(event: Mapping[str, Any]) -> tuple[int, int, int, str]:
     )
 
 
-def _calculate_signal_result(
+def _calculate_signal_result_detailed(
     intraday_bars: pd.DataFrame | Iterable[Mapping[str, Any]] | None,
     daily_bars: pd.DataFrame | Iterable[Mapping[str, Any]] | None,
     *,
     aggregation_minutes: int = SOURCE_AGGREGATION_MINUTES,
     incomplete_session_date: str = "",
-) -> tuple[list[dict[str, Any]], bool]:
+) -> tuple[list[dict[str, Any]], bool, bool]:
     intraday = _normalize_bars(intraday_bars)
     daily = [
         {**bar, "date": _date_key_for_bar(bar)}
         for bar in _normalize_bars(daily_bars)
     ]
     if not intraday:
-        return [], False
+        return [], False, False
     macd_carrier_bars = []
     for bar in intraday:
         calendar_date = _date_key_for_bar(bar)
@@ -707,7 +711,7 @@ def _calculate_signal_result(
                 }
             )
     if not macd_carrier_bars:
-        return [], False
+        return [], False, False
     intraday_dates = list(
         dict.fromkeys(
             str(bar.get("tradingDate") or "")
@@ -723,7 +727,7 @@ def _calculate_signal_result(
         )
     )
     if not intraday_dates:
-        return [], False
+        return [], False, False
     has_sunday_extended = any(
         str(bar.get("calendarDate") or "") != str(bar.get("tradingDate") or "")
         for bar in macd_carrier_bars
@@ -1162,33 +1166,59 @@ def _calculate_signal_result(
     ordered = sorted(unique.values(), key=_event_sort_key)
 
     latest_calendar_date = calendar_dates[-1] if calendar_dates else ""
-    ema_history_ready = all(
-        int(
-            (
+
+    def _completed_buckets(definition: Mapping[str, Any], family: str) -> int:
+        if family == "ganeshMacd" and str(definition["key"]) not in {"W", "M"}:
+            raw = active_macd_contexts[str(definition["key"])].get("completedBuckets")
+        else:
+            raw = (
                 calendar_contexts.get(str(definition["key"]), {})
                 .get("byDate", {})
                 .get(latest_calendar_date, {})
                 .get("completedBuckets")
-                or 0
             )
-        ) >= _FAMILY_PREFETCH_BUCKETS["ganesh920"]
-        for definition in GANESH_HIGHER_TIMEFRAMES
+        return int(raw or 0)
+
+    shortfall = any(
+        _completed_buckets(definition, family) < _FAMILY_PREFETCH_BUCKETS[family]
+        for family, definitions in (
+            ("ganesh920", GANESH_HIGHER_TIMEFRAMES),
+            ("ganeshMacd", GANESH_MACD_TIMEFRAMES),
+        )
+        for definition in definitions
     )
-    macd_history_ready = all(
-        int(
-            (
-                calendar_contexts.get(str(definition["key"]), {})
-                .get("byDate", {})
-                .get(latest_calendar_date, {})
-                .get("completedBuckets")
-                if str(definition["key"]) in {"W", "M"}
-                else active_macd_contexts[str(definition["key"])].get("completedBuckets")
-            )
-            or 0
-        ) >= _FAMILY_PREFETCH_BUCKETS["ganeshMacd"]
-        for definition in GANESH_MACD_TIMEFRAMES
+    # A shortfall means one of two very different things, and conflating them
+    # cost 35-77s on EVERY chart open for young symbols (DJT and AAPU,
+    # measured 2026-08-21 during RTH). Either the study simply has not been
+    # computed over enough history yet - retrying is correct - or the symbol
+    # is too young to ever supply this many buckets, and retrying can never
+    # succeed. api_server reads historyReady=False as "still loading": it
+    # forces _start_oi_finder_chart_refresh(full_history=True) on every
+    # request and then refuses to persist the result, because the payload
+    # carries historyLoading=True and _save_oi_finder_chart_disk_payload
+    # drops those. DJT's disk file was still dated 08-19 after two successful
+    # rebuilds that same day - it could not heal itself. A structural
+    # shortfall is a FINAL answer, so report it ready and flag it terminal;
+    # the caller may then cache and serve it with whatever depth exists.
+    history_terminal = shortfall and len(daily) >= _TERMINAL_MIN_DAILY_BARS
+    return ordered, bool(not shortfall or history_terminal), bool(history_terminal)
+
+
+def _calculate_signal_result(
+    intraday_bars: pd.DataFrame | Iterable[Mapping[str, Any]] | None,
+    daily_bars: pd.DataFrame | Iterable[Mapping[str, Any]] | None,
+    *,
+    aggregation_minutes: int = SOURCE_AGGREGATION_MINUTES,
+    incomplete_session_date: str = "",
+) -> tuple[list[dict[str, Any]], bool]:
+    """Backwards-compatible two-value view of the detailed result."""
+    signals, history_ready, _ = _calculate_signal_result_detailed(
+        intraday_bars,
+        daily_bars,
+        aggregation_minutes=aggregation_minutes,
+        incomplete_session_date=incomplete_session_date,
     )
-    return ordered, bool(ema_history_ready and macd_history_ready)
+    return signals, history_ready
 
 
 def _literal_secondary_states_by_date(
@@ -1499,7 +1529,7 @@ def build_ganesh_higher_timeframe_signal_payload(
             latest_eastern.hour * 60 + latest_eastern.minute
         ) < 16 * 60:
             incomplete_session_date = latest_eastern.date().isoformat()
-    signals, history_ready = _calculate_signal_result(
+    signals, history_ready, history_terminal = _calculate_signal_result_detailed(
         primary_bars,
         daily_frame,
         aggregation_minutes=SOURCE_AGGREGATION_MINUTES,
@@ -1510,6 +1540,10 @@ def build_ganesh_higher_timeframe_signal_payload(
         "mode": SIGNAL_MODE,
         "sourceAggregationMinutes": SOURCE_AGGREGATION_MINUTES,
         "historyReady": history_ready,
+        # True only when the symbol is structurally too young to satisfy the
+        # bucket requirement, so the caller can cache this as a final answer
+        # instead of rebuilding it on every chart open.
+        "historyTerminal": history_terminal,
         "signals": signals,
     }
 

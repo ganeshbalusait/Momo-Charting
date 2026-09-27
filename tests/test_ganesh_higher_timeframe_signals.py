@@ -96,6 +96,12 @@ def test_payload_has_a_stable_versioned_empty_contract() -> None:
         "mode": SIGNAL_MODE,
         "sourceAggregationMinutes": 240,
         "historyReady": False,
+        # Added alongside historyReady without a schemaVersion bump: readers
+        # test named fields, never dict equality, so the 398 cached v17
+        # payloads that predate this key stay valid. Bumping the version
+        # would invalidate every one of them and force the full rebuild this
+        # change exists to eliminate.
+        "historyTerminal": False,
         "signals": [],
     }
 
@@ -1030,3 +1036,71 @@ def test_short_history_self_gates_and_reports_not_ready() -> None:
 
     assert payload["historyReady"] is False
     assert payload["signals"] == []
+
+
+def test_thin_history_symbol_reports_terminal_readiness() -> None:
+    """A symbol too young for 80 weekly/monthly buckets must not stay "loading".
+
+    Measured 2026-08-21 during RTH: DJT and AAPU cost 35-77s on EVERY chart
+    open. Both carry historyReady=False, which makes api_server's
+    _chart_payload_has_ready_ganesh_signals fail, which forces
+    _start_oi_finder_chart_refresh(full_history=True) per request, and the
+    resulting payload carries historyLoading=True so
+    _save_oi_finder_chart_disk_payload refuses to persist it. DJT's disk file
+    was still dated 08-19 after two successful rebuilds that day: the symbol
+    can never heal itself.
+
+    The shortfall is structural, not transient. ganesh920 wants 80 completed
+    buckets per timeframe; a symbol with ~14 months of sessions cannot supply
+    80 monthly or weekly buckets no matter how often it is rebuilt. That is a
+    terminal answer and must be cacheable, so it is reported ready and flagged.
+    """
+    daily = _trading_daily_history(300, end="2026-07-30")
+    primary = [
+        {
+            "time": _unix(f"2026-07-30T{hour}:00:00Z"),
+            "open": 3_000.0,
+            "high": 3_010.0,
+            "low": 2_990.0,
+            "close": 3_000.0,
+            "volume": 100,
+        }
+        for hour in ("05", "09", "13", "17")
+    ]
+
+    payload = build_ganesh_higher_timeframe_signal_payload(
+        _frame(primary),
+        pd.DataFrame(),
+        _frame(daily),
+    )
+
+    assert payload["historyTerminal"] is True
+    assert payload["historyReady"] is True
+
+
+def test_shallow_seed_is_not_reported_terminal() -> None:
+    """A 2-day fast_start seed must never be mistaken for a thin-history symbol.
+
+    Terminality means "more history cannot exist". A shallow seed means "more
+    history was not fetched yet", and caching that as final would freeze the
+    symbol at seed depth. Only a substantial supplied history may be judged
+    terminal, so this stays not-ready and keeps its full rebuild.
+    """
+    daily = _falling_daily_history(10)
+    primary = _frame(
+        [
+            {
+                "time": _unix("2026-03-02T06:00:00Z"),
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100,
+                "volume": 100,
+            }
+        ]
+    )
+
+    payload = build_ganesh_higher_timeframe_signal_payload(primary, pd.DataFrame(), _frame(daily))
+
+    assert payload["historyReady"] is False
+    assert payload["historyTerminal"] is False

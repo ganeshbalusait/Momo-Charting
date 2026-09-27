@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import {
   aggregateChartBars,
   buildChartDisplayBars,
+  chartDeepHistoryPending,
+  COARSE_TIMEFRAME_MIN_CANDLES,
   chartAggregationBucketTime,
   chartSourceBarSpacingMinutes,
   normalizeChartCandleBars,
@@ -53,12 +55,14 @@ test("builds only true four-hour primary candles around the 13:00 boundary", () 
 test("extends only the 4H display with study history and cuts over cleanly to live bars", () => {
   const studyBars = [
     { time: unix("2026-07-29T13:00:00Z"), open: 90, high: 94, low: 89, close: 93, volume: 50 },
-    // This cached row overlaps the live window and must not be counted.
+    // This cached row overlaps the live window: its prices must not be
+    // counted, but its volume is a complete reading of the same bucket and
+    // wins over the live tape's partial sum (see overlayLiveOnHistorical).
     { time: unix("2026-07-31T13:00:00Z"), open: 100, high: 999, low: 1, close: 500, volume: 5000 },
   ];
   const liveBars = [
     // Begin inside the cached 13:00 five-minute bucket. The fresh partial
-    // bucket replaces it instead of adding its volume or extreme prices.
+    // bucket owns the prices; the same sub-bucket's volumes are never added.
     { time: unix("2026-07-31T13:03:00Z"), open: 100, high: 103, low: 99, close: 102, volume: 10 },
     { time: unix("2026-07-31T14:00:00Z"), open: 102, high: 105, low: 101, close: 104, volume: 20 },
   ];
@@ -68,7 +72,9 @@ test("extends only the 4H display with study history and cuts over cleanly to li
       .map(({ time, open, high, low, close, volume }) => ({ time, open, high, low, close, volume })),
     [
       { time: unix("2026-07-29T13:00:00Z"), open: 90, high: 94, low: 89, close: 93, volume: 50 },
-      { time: unix("2026-07-31T13:00:00Z"), open: 100, high: 105, low: 99, close: 104, volume: 30 },
+      // 5000 for the shared 13:00 sub-bucket (the cached reading wins over the
+      // live partial 10) plus the 14:00 sub-bucket the cache never had (20).
+      { time: unix("2026-07-31T13:00:00Z"), open: 100, high: 105, low: 99, close: 104, volume: 5020 },
     ],
   );
 
@@ -236,4 +242,164 @@ test("buildChartDisplayBars 4H view keeps five-minute studyBars behavior", () =>
   const fourHour = buildChartDisplayBars({ studyBars, liveBars: [], aggregationMinutes: 240 });
   const totalVolume = fourHour.reduce((sum, bar) => sum + bar.volume, 0);
   assert.equal(totalVolume, 96 * 3);
+});
+
+// A fast-start payload ships SHORT seeds, not empty ones - measured on MMM
+// 2026-08-18: historyLoading=true, studyBars=796, dailyBars=3, rendering 10
+// candles on 4H and 3 on D. An emptiness check never fired; the count does.
+test("deep history is pending while a coarse timeframe renders only a stub", () => {
+  assert.equal(chartDeepHistoryPending({ renderedCandleCount: 10, aggregationMinutes: 240, historyLoading: true }), true);
+  assert.equal(chartDeepHistoryPending({ renderedCandleCount: 3, aggregationMinutes: 1440, historyLoading: true }), true);
+  assert.equal(chartDeepHistoryPending({ renderedCandleCount: 35, aggregationMinutes: 60, historyLoading: true }), true);
+  assert.equal(chartDeepHistoryPending({ renderedCandleCount: 18, aggregationMinutes: 120, historyLoading: true }), true);
+  // Warm: thousands of candles, so no badge.
+  assert.equal(chartDeepHistoryPending({ renderedCandleCount: 5958, aggregationMinutes: 240, historyLoading: true }), false);
+  // 30m and below reconstruct within seconds; labelling them would flicker.
+  assert.equal(chartDeepHistoryPending({ renderedCandleCount: 26, aggregationMinutes: 30, historyLoading: true }), false);
+  // Not loading => show what exists rather than a badge that never clears.
+  assert.equal(chartDeepHistoryPending({ renderedCandleCount: 10, aggregationMinutes: 240, historyLoading: false }), false);
+  // Boundary is exclusive.
+  assert.equal(chartDeepHistoryPending({ renderedCandleCount: COARSE_TIMEFRAME_MIN_CANDLES, aggregationMinutes: 240, historyLoading: true }), false);
+});
+
+test("aggregateChartBars cache sees an in-place tail mutation of the same array", async () => {
+  const { aggregateChartBars } = await import("./chartAggregation.js");
+  const tape = [
+    { time: 1787000460, open: 1, high: 2, low: 1, close: 1.5, volume: 10 },
+    { time: 1787000520, open: 1.5, high: 2, low: 1, close: 1.8, volume: 10 },
+    { time: 1787000580, open: 1.8, high: 2.2, low: 1.7, close: 2, volume: 5 },
+  ];
+  const first = aggregateChartBars(tape, 5);
+  assert.equal(first.at(-1).close, 2);
+  // Same array reference (the live stream buffer), last bar restated in place.
+  tape[2] = { ...tape[2], close: 2.4, high: 2.5, volume: 9 };
+  const second = aggregateChartBars(tape, 5);
+  assert.equal(second.at(-1).close, 2.4);
+  // Unchanged content -> cached result reused.
+  assert.equal(aggregateChartBars(tape, 5), second);
+});
+
+test("a thin live bucket never replaces a completed TOS five-minute candle", () => {
+  // Measured 2026-09-04 01:46 ET: the legend read O=H=L=C, Vol 0 because a
+  // single sparse live minute landed on top of a full 5m candle. The TOS tape
+  // is the source of truth for every bucket it has closed; the live tape may
+  // only own the forming candle and anything newer.
+  const fineStudyBars = [
+    { time: unix("2026-09-03T13:30:00Z"), open: 100, high: 102, low: 99, close: 101, volume: 5000 },
+    { time: unix("2026-09-03T13:35:00Z"), open: 101, high: 104, low: 100, close: 103, volume: 6000 },
+    { time: unix("2026-09-03T13:40:00Z"), open: 103, high: 103.5, low: 102, close: 102.5, volume: 4000 },
+  ];
+  const liveBars = [
+    // One trade-only minute inside the CLOSED 13:35 candle: flat, no volume.
+    { time: unix("2026-09-03T13:37:00Z"), open: 103, high: 103, low: 103, close: 103, volume: 0 },
+    // The forming 13:40 candle keeps ticking from the live tape.
+    { time: unix("2026-09-03T13:43:00Z"), open: 103, high: 105, low: 102, close: 104.5, volume: 4500 },
+    // A bucket the TOS tape has not shipped yet comes from live alone.
+    { time: unix("2026-09-03T13:45:00Z"), open: 104.5, high: 106, low: 104, close: 105, volume: 700 },
+  ];
+  const out = buildChartDisplayBars({ fineStudyBars, liveBars, aggregationMinutes: 5, sourcesNormalized: true })
+    .map(({ time, open, high, low, close, volume }) => ({ time, open, high, low, close, volume }));
+  assert.deepEqual(out, [
+    fineStudyBars[0],
+    fineStudyBars[1],
+    { time: unix("2026-09-03T13:40:00Z"), open: 103, high: 105, low: 102, close: 104.5, volume: 4500 },
+    { time: unix("2026-09-03T13:45:00Z"), open: 104.5, high: 106, low: 104, close: 105, volume: 700 },
+  ]);
+});
+
+test("study-history path keeps closed cached candles when the live tape is sparse", () => {
+  const studyBars = [
+    { time: unix("2026-07-29T13:00:00Z"), open: 90, high: 94, low: 89, close: 93, volume: 50 },
+    { time: unix("2026-07-30T13:00:00Z"), open: 93, high: 97, low: 92, close: 96, volume: 60 },
+  ];
+  const liveBars = [
+    // Sparse minute inside the CLOSED 07-29 candle must not flatten it.
+    { time: unix("2026-07-29T13:03:00Z"), open: 91, high: 91, low: 91, close: 91, volume: 0 },
+    // Partial minute inside the LAST cached candle replaces its prices
+    // (forming); the cached candle's fuller volume is kept.
+    { time: unix("2026-07-30T13:03:00Z"), open: 93, high: 95, low: 93, close: 94, volume: 10 },
+  ];
+  const out = buildChartDisplayBars({ studyBars, liveBars, aggregationMinutes: 240, sourcesNormalized: true })
+    .map(({ time, open, high, low, close, volume }) => ({ time, open, high, low, close, volume }));
+  assert.deepEqual(out, [
+    studyBars[0],
+    { time: unix("2026-07-30T13:00:00Z"), open: 93, high: 95, low: 93, close: 94, volume: 60 },
+  ]);
+});
+
+test("the live tape fills holes the TOS tape is missing without touching its closed candles", () => {
+  // Measured 2026-09-04 on AMZN: the night of Sep 2 had 32/96 five-minute
+  // candles in the TOS tape but 96/96 derivable from the one-minute tape. A
+  // hole must be filled from live; an existing candle must still be kept.
+  const fineStudyBars = [
+    { time: unix("2026-09-02T23:45:00Z"), open: 99, high: 100, low: 98, close: 99.5, volume: 300 },
+    { time: unix("2026-09-02T23:50:00Z"), open: 99.5, high: 100.5, low: 99, close: 100, volume: 300 },
+    { time: unix("2026-09-02T23:55:00Z"), open: 100, high: 101, low: 99.5, close: 100, volume: 300 },
+    { time: unix("2026-09-03T00:00:00Z"), open: 100, high: 102, low: 99, close: 101, volume: 500 },
+    // 00:05 and 00:10 missing from the TOS tape.
+    { time: unix("2026-09-03T00:15:00Z"), open: 103, high: 104, low: 102, close: 103.5, volume: 400 },
+  ];
+  const liveBars = [
+    { time: unix("2026-09-03T00:01:00Z"), open: 100, high: 100, low: 100, close: 100, volume: 0 }, // inside a closed candle: ignored
+    { time: unix("2026-09-03T00:06:00Z"), open: 101, high: 102.5, low: 101, close: 102, volume: 60 }, // fills the 00:05 hole
+    { time: unix("2026-09-03T00:11:00Z"), open: 102, high: 103, low: 102, close: 103, volume: 70 }, // fills the 00:10 hole
+  ];
+  const out = buildChartDisplayBars({ fineStudyBars, liveBars, aggregationMinutes: 5, sourcesNormalized: true })
+    .map(({ time, open, high, low, close, volume }) => ({ time, open, high, low, close, volume }));
+  assert.deepEqual(out, [
+    ...fineStudyBars.slice(0, 4),
+    { time: unix("2026-09-03T00:05:00Z"), open: 101, high: 102.5, low: 101, close: 102, volume: 60 },
+    { time: unix("2026-09-03T00:10:00Z"), open: 102, high: 103, low: 102, close: 103, volume: 70 },
+    fineStudyBars[4],
+  ]);
+});
+
+test("a missing volume is a 0, and a bucket of non-finite volumes never becomes NaN", () => {
+  const time = unix("2026-09-03T13:40:00Z");
+  const [missing] = normalizeChartCandleBars([{ time, open: 1, high: 1, low: 1, close: 1 }]);
+  assert.equal(missing.volume, 0);
+  const [text] = normalizeChartCandleBars([{ time, open: 1, high: 1, low: 1, close: 1, volume: "12" }]);
+  assert.equal(text.volume, 12);
+  // Pre-normalised callers can still hand over null/NaN; they add nothing.
+  const mixed = [
+    { time, open: 1, high: 1, low: 1, close: 1, volume: 300 },
+    { time: time + 60, open: 1, high: 1, low: 1, close: 1, volume: null },
+    { time: time + 120, open: 1, high: 1, low: 1, close: 1, volume: NaN },
+  ];
+  assert.equal(aggregateChartBars(mixed, 5)[0].volume, 300);
+});
+
+test("the forming candle keeps the larger of the two volumes it is known by", () => {
+  // Measured 2026-09-04 08:30:01 ET: Vol 60,858 -> Vol 0 at the 5m boundary.
+  // The live tape's forming bucket is its closed minutes plus a forming minute
+  // that has barely started, so it always understates; the server's
+  // five-minute bar for the same bucket is complete but may be a reconcile
+  // behind. Price comes from the live side; volume from whichever knows more.
+  const fineStudyBars = [
+    { time: unix("2026-09-03T13:35:00Z"), open: 101, high: 104, low: 100, close: 103, volume: 6000 },
+    { time: unix("2026-09-03T13:40:00Z"), open: 103, high: 103.5, low: 102, close: 102.5, volume: 4000 },
+  ];
+  const liveBars = [
+    { time: unix("2026-09-03T13:40:00Z"), open: 103, high: 103.5, low: 102, close: 102.5, volume: 1200 },
+    { time: unix("2026-09-03T13:41:00Z"), open: 102.5, high: 105, low: 102.5, close: 104.5, volume: 0 },
+  ];
+  const out = buildChartDisplayBars({ fineStudyBars, liveBars, aggregationMinutes: 5, sourcesNormalized: true })
+    .map(({ time, open, high, low, close, volume }) => ({ time, open, high, low, close, volume }));
+  assert.deepEqual(out[1], { time: unix("2026-09-03T13:40:00Z"), open: 103, high: 105, low: 102, close: 104.5, volume: 4000 });
+  // Once the live side has seen MORE than the server's stale reading, it wins.
+  const later = buildChartDisplayBars({
+    fineStudyBars,
+    liveBars: [{ time: unix("2026-09-03T13:40:00Z"), open: 103, high: 105, low: 102, close: 104.5, volume: 4300 }],
+    aggregationMinutes: 5,
+    sourcesNormalized: true,
+  });
+  assert.equal(later[1].volume, 4300);
+  // A live bucket the server has not shipped yet keeps its own reading.
+  const ahead = buildChartDisplayBars({
+    fineStudyBars,
+    liveBars: [{ time: unix("2026-09-03T13:45:00Z"), open: 1, high: 1, low: 1, close: 1, volume: 7 }],
+    aggregationMinutes: 5,
+    sourcesNormalized: true,
+  });
+  assert.equal(ahead[ahead.length - 1].volume, 7);
 });

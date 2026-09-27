@@ -6,23 +6,129 @@ export function chartOpeningHistorySignature(symbol, bars) {
   return `${normalizedSymbol}-${Number.isFinite(firstTime) ? firstTime : 0}`;
 }
 
-// Candle DENSITY is the thing that makes a chart read as zoomed out, not the
-// candle count on its own. Capping the count at 120 meant a 1920px pane spread
-// those 120 bars over the full width at ~15px each - technically "120 candles
-// visible", visually fat and zoomed in.
+// Candle pitch, MEASURED off the user's own TradingView charts and locked to
+// them. Two references, both ~13-15px per candle:
+//   AMZN 5m, ~1460px pane -> 07:30..16:05 = ~105 candles -> ~14px
+//   AMZN 4h,  ~700px pane -> ~45 candles                 -> ~15px
+// TradingView draws ONE width on every timeframe, and it is ~13-14px, not the
+// 4px this had drifted to. The 4px came from the "zoomed in" reports, but
+// those were a DATA bug (higher timeframes had ~17 candles in existence
+// because the study seed only covered 4H) - not the pitch. With the data
+// fixed, 4px made 5m open on ~380 candles / two days when TradingView shows
+// one session.
 //
-// So the pitch is the fixed quantity and the count follows from the pane.
-// 6px sits in the middle of the 4-7px target band.
-const TRADINGVIEW_DEFAULT_CANDLE_PITCH_PX = 4;
-// Floor keeps a narrow panel usable; ceiling stops a 4K pane opening on a
-// thousand slivers. A 1200px pane lands ~200, a 1920px pane ~320.
-const TRADINGVIEW_DEFAULT_MIN_CANDLES = 150;
-const TRADINGVIEW_DEFAULT_MAX_CANDLES = 600;
-// Hard ceiling on the applied barSpacing. The old value was 16px, which let a
-// wide pane force fat candles no matter how the range was computed.
-export const TRADINGVIEW_MAX_BAR_SPACING_PX = 7;
+// DO NOT change this without a NEW measured reference: it has been retuned
+// repeatedly and each move chased a symptom whose real cause was elsewhere.
+const TRADINGVIEW_DEFAULT_CANDLE_PITCH_PX = 13;
+// A 1520px pane lands ~117 candles (TradingView shows ~109 there); a 700px
+// pane lands ~54, clamped up to the floor so a narrow panel stays usable.
+const TRADINGVIEW_DEFAULT_MIN_CANDLES = 70;
+const TRADINGVIEW_DEFAULT_MAX_CANDLES = 220;
+// Higher timeframes (4H/D/W/M) open on ~40 FAT candles like the user's AMZN
+// 4h reference - a recent stretch of sessions, not a pane-filling count. All
+// the deep history is still loaded; the wheel zooms straight into it.
+const TRADINGVIEW_HIGHER_TIMEFRAME_CANDLES = 40;
+// Hard ceiling on the applied barSpacing so a wide pane cannot force fat
+// candles. Matches the ~13px opening pitch with a little headroom.
+export const TRADINGVIEW_MAX_BAR_SPACING_PX = 16;
 // Let the trader keep zooming out well past the opening density.
 export const TRADINGVIEW_MIN_BAR_SPACING_PX = 2;
+
+// Lightweight Charts is explicitly resized from its host. The host carries
+// presentation padding, so clientWidth/clientHeight are border-box values and
+// cannot be handed straight back to the library: the generated canvas becomes
+// wider than the content box, makes an auto-sized flex item grow, and the next
+// ResizeObserver pass repeats the growth. Keep the sizing math DOM-independent
+// so the mobile multi-chart regression stays covered without a browser shim.
+export function chartHostContentBoxSize({
+  clientWidth,
+  clientHeight,
+  paddingLeft = 0,
+  paddingRight = 0,
+  paddingTop = 0,
+  paddingBottom = 0,
+  minimumWidth = 320,
+  minimumHeight = 240,
+} = {}) {
+  const finite = (value) => {
+    const number = Number.parseFloat(value);
+    return Number.isFinite(number) ? number : 0;
+  };
+  return {
+    width: Math.max(
+      Math.floor(finite(clientWidth) - finite(paddingLeft) - finite(paddingRight)),
+      Math.max(1, Math.floor(finite(minimumWidth))),
+    ),
+    height: Math.max(
+      Math.floor(finite(clientHeight) - finite(paddingTop) - finite(paddingBottom)),
+      Math.max(1, Math.floor(finite(minimumHeight))),
+    ),
+  };
+}
+
+// The desktop chart historically forced a 320px width floor. In a dense
+// multi-chart layout ("6 across") a column's content box is ~288px, so the
+// floor made the canvas wider than its box and the right price scale - where
+// the OI strike labels live - was clipped off the panel (completely once the
+// active panel's drawing-toolbar gutter pushed it another 42px right). The
+// floor now only applies while the host has no measurable width (hidden tab,
+// first mount); a real host always wins.
+export function chartHostMinimumWidth({
+  clientWidth,
+  paddingLeft = 0,
+  paddingRight = 0,
+  fallback = 320,
+} = {}) {
+  const finite = (value) => {
+    const number = Number.parseFloat(value);
+    return Number.isFinite(number) ? number : 0;
+  };
+  const width = Math.floor(finite(clientWidth));
+  if (!(width > 0)) return fallback;
+  const contentWidth = Math.floor(width - finite(paddingLeft) - finite(paddingRight));
+  return Math.max(1, Math.min(fallback, contentWidth));
+}
+
+// Study captions are HTML overlays while panes are native chart elements.
+// Anchor a caption to the pane's actual DOM top when it is available; summed
+// pane heights are only a fallback because separators and canvas padding vary
+// between desktop, phone, and fullscreen modes.
+export function chartPaneOverlayTop({
+  chartTop,
+  paneTop,
+  fallbackTop,
+  inset = 0,
+} = {}) {
+  const presentFinite = (value) => value !== null
+    && value !== undefined
+    && Number.isFinite(Number(value));
+  const outerTop = Number(chartTop);
+  const nativePaneTop = Number(paneTop);
+  const overlayInset = Number(inset);
+  if (presentFinite(chartTop) && presentFinite(paneTop) && nativePaneTop >= outerTop) {
+    return Math.round(nativePaneTop - outerTop + (Number.isFinite(overlayInset) ? overlayInset : 0));
+  }
+  const fallback = Number(fallbackTop);
+  return presentFinite(fallbackTop) ? Math.round(fallback) : null;
+}
+
+export function chartLowerStudyHeaderOffsets({
+  isPhone = false,
+  hasAdx = false,
+  hasCloudLabels = false,
+} = {}) {
+  // A compact phone can legitimately give a lower pane only 30px when Safari
+  // expands its browser chrome. The measured rows are 8/12/8px, so the phone
+  // offsets use the exact row heights plus a one-pixel ADX-to-cloud gap. This
+  // keeps the final Squeeze row inside the pane instead of letting it jump
+  // across the native separator as the visual viewport changes height.
+  const adxRow = isPhone ? 9 : 18;
+  const cloudRow = isPhone ? 12 : 22;
+  return {
+    cloudTop: hasAdx ? adxRow : 0,
+    squeezeTop: (hasAdx ? adxRow : 0) + (hasCloudLabels ? cloudRow : 0),
+  };
+}
 
 // Lightweight Charts applies minBarSpacing to every timestamp on the shared
 // time scale, not just to candlesticks. A 4H candle can therefore span eight
@@ -83,42 +189,48 @@ export function chartDefaultHistorySlots({
   isBigScreen = false,
   chartWidth = 0,
 } = {}) {
-  // SETTLED against the user's own reference. A 20-candle branch for
-  // timeframeMinutes >= 240 has been added, removed and re-added by three
-  // sessions today; every session has disclaimed it. It is dropped here on
-  // evidence rather than preference:
+  // PER-TIMEFRAME, grounded in two of the user's own TradingView charts.
   //
-  //  - The user supplied their TradingView 4H chart as the target. TradingView
-  //    draws ONE candle width on every timeframe; a 4H candle is not wider
-  //    than a 5m one. A per-timeframe count contradicts the reference.
-  //  - It left 4H/D/W opening on 20 candles while 5m/1h opened on 166 in the
-  //    same pane - an 8x inconsistency with no basis in the reference.
-  //  - The user objected to this exact view by name ("higher timeframe zoomed
-  //    out 20 last candles") and reported "still zoomed in" repeatedly.
+  // The earlier "uniform pitch" rule was settled against ONLY the 5m
+  // reference and explicitly invited a contradicting reference: "anyone
+  // restoring a per-timeframe count should bring a reference that contradicts
+  // the one above." The user then supplied the AMZN 4h chart, which does:
   //
-  // The complaint it was presumably added to fix had a different cause:
-  // oiChartNeedsInitialStudySeed only seeded 4H, so higher timeframes rendered
-  // off the ~5-day one-minute tape and had just 17-20 candles IN EXISTENCE.
-  // Capping the viewport matched that symptom without addressing it. With the
-  // seed fixed the full tape is present, so the cap only hides it.
+  //   AMZN 5m, ~1460px -> ~105 candles filling the pane, thin (~14px), small
+  //                       forward gap. One session.
+  //   AMZN 4h, ~1460px -> ~38 FAT candles (~17px) in the LEFT ~45% of the
+  //                       pane, with large forward space. NOT the same count
+  //                       or width as 5m.
   //
-  // Anyone restoring a per-timeframe count should bring a reference that
-  // contradicts the one above, and settle it with the user first.
+  // So TradingView is not uniform: higher timeframes open fatter and fewer.
+  // The 4h count is stable (a recent stretch of sessions), not width-derived;
+  // intraday fills the pane at the ~13px reference pitch.
+  // Both counts below were calibrated on 700-1520px panes. A phone pane is
+  // ~370px - half the narrowest case considered - and the floors are constants,
+  // so the same candle COUNT got crammed into a third of the width: 370/(70+6)
+  // = ~4.9px per candle, a grey smear instead of readable candles. TradingView
+  // mobile keeps the candle WIDTH (~8-10px) and shows fewer bars instead, so
+  // taper the floor with the pane and leave every desktop width untouched
+  // (width/9 already exceeds 70 above ~630px, width/14 exceeds 40 above ~560px).
+  const minutes = Number(timeframeMinutes) || 0;
   const width = Number(chartWidth) || 0;
+  if (minutes >= 240) {
+    // ~40 candles, matching the AMZN 4h reference. Same for D/W/M: those
+    // reference charts likewise open on a few dozen fat candles, not hundreds.
+    return width > 0
+      ? Math.max(20, Math.min(TRADINGVIEW_HIGHER_TIMEFRAME_CANDLES, Math.round(width / 14)))
+      : TRADINGVIEW_HIGHER_TIMEFRAME_CANDLES;
+  }
   if (width > 0) {
-    // Count follows from the pane at a fixed density, so a wider chart shows
-    // MORE history at the same candle width - which is what "zoomed out" means
-    // visually. Deriving the count first and letting the pitch fall out of it
-    // is what produced 15px candles on a big screen.
     const slots = Math.round(width / TRADINGVIEW_DEFAULT_CANDLE_PITCH_PX);
+    const floor = Math.max(24, Math.min(TRADINGVIEW_DEFAULT_MIN_CANDLES, Math.round(width / 9)));
     return Math.max(
-      TRADINGVIEW_DEFAULT_MIN_CANDLES,
+      floor,
       Math.min(TRADINGVIEW_DEFAULT_MAX_CANDLES, slots),
     );
   }
-  // Width-less first paint and headless callers use the same lower-timeframe
-  // fallback. Higher timeframes returned their explicit 20-candle view above.
-  return 150;
+  // Width-less first paint / headless callers.
+  return 110;
 }
 
 export function chartTrailingSessionHistorySlots({
@@ -142,17 +254,16 @@ export function chartTrailingSessionHistorySlots({
   return historySlots;
 }
 
-export function chartDefaultFutureSlots({ historySlots, isBigScreen = false } = {}) {
+export function chartDefaultFutureSlots({ historySlots, isBigScreen = false, timeframeMinutes = 0 } = {}) {
   const history = Math.max(1, Math.floor(Number(historySlots) || 1));
-  // A projection area is useful for forward session lines and signal labels,
-  // but it is empty space: every slot spent here is a candle not shown. The
-  // big-screen branch used history * 0.9 capped at 32, so in a ~600px
-  // workspace pane 32 of ~99 slots - a THIRD of the chart - were blank, and
-  // the chart read as zoomed in however many candles were loaded.
-  //
-  // Keep only 5-10 empty bars after the latest candle. The previous 18% rule
-  // could reserve more than twenty slots and make the real candles look
-  // squeezed left even when the historical range itself was correct.
+  // Higher timeframes get generous forward room, matching the user's AMZN 4h
+  // reference where the last candle sits near the middle with lots of space
+  // ahead. Intraday keeps a small 5-10 bar gap: on 5m the reference has the
+  // last candle near the right edge, so a big projection there would just push
+  // the session off-screen.
+  if (Number(timeframeMinutes) >= 240) {
+    return Math.max(12, Math.min(30, Math.round(history * 0.6)));
+  }
   return Math.max(5, Math.min(10, Math.round(history * 0.08)));
 }
 
@@ -296,16 +407,15 @@ export function chartShouldFrameAutomaticViewport({
   initialView = false,
   restoredViewport = false,
   manualNavigation = false,
-  followsLatest = false,
-  studyStage = 0,
-  previousStudyStage = -1,
 } = {}) {
   if (restoredViewport || manualNavigation) return false;
   if (initialView) return true;
-  // Initial indicators may add denser timestamps one stage at a time. Reframe
-  // only when that opening ladder reaches a stage not already handled. A live
-  // quote restarts at stage zero, which must not reset the current zoom.
-  return Boolean(followsLatest) && Number(studyStage) > Number(previousStudyStage);
+  // The opening window is already expressed in candle timestamps. Reframing
+  // it for every staged indicator was the visible "dance" on ticker changes:
+  // each newly attached study repainted the shared time scale. Only the first
+  // opening/history frame owns the viewport; staged studies and live-quote
+  // ladder restarts leave it alone.
+  return false;
 }
 
 // v2 deliberately abandons the v1 payload rather than migrating it.
@@ -468,6 +578,55 @@ export function chartZoomLogicalRange({
   return { from: nextFrom, to: nextTo };
 }
 
+// One click of a toolbar pan arrow travels this share of the visible span.
+// A third is the trader's own choice: far enough to feel like turning a page,
+// short enough that two candles of the previous screen stay on the new one.
+export const CHART_PAN_STEP_FRACTION = 1 / 3;
+
+// The toolbar pan arrows, as pure arithmetic. TIME AXIS ONLY: this returns a
+// shifted LOGICAL range and there is deliberately nothing here that could touch
+// a price scale - the native pressedMouseMove drag is disabled in this app
+// precisely because it drags a manual price scale on any vertical delta and
+// every price study visibly moves with it.
+//
+// `firstIndex` is the oldest loaded candle and `lastIndex` the newest plus the
+// configured right offset, i.e. the whole region the chart is willing to show.
+// Returning null means "this direction cannot move any further", which is also
+// what disables the button: an arrow that silently does nothing reads as a
+// broken chart, and re-clamping to the same range makes the candles jitter.
+export function chartPanStepLogicalRange({
+  logicalRange,
+  direction,
+  fraction = CHART_PAN_STEP_FRACTION,
+  firstIndex,
+  lastIndex,
+  epsilon = 0.001,
+} = {}) {
+  const from = Number(logicalRange?.from);
+  const to = Number(logicalRange?.to);
+  if (![from, to].every(Number.isFinite) || to <= from) return null;
+  if (direction !== "back" && direction !== "forward") return null;
+  const share = Number(fraction);
+  const step = (to - from) * (Number.isFinite(share) && share > 0 ? share : CHART_PAN_STEP_FRACTION);
+  if (!(step > 0)) return null;
+
+  const first = Number(firstIndex);
+  const last = Number(lastIndex);
+  let shift = direction === "back" ? -step : step;
+  if (direction === "back" && Number.isFinite(first)) {
+    // Stop at the oldest loaded candle - and never haul a view that is ALREADY
+    // parked left of it back to the right. A clamp may only shorten the step it
+    // was handed, never reverse it, or a pan-left at the edge would jump right.
+    shift = Math.max(shift, Math.min(first, from) - from);
+  }
+  if (direction === "forward" && Number.isFinite(last)) {
+    shift = Math.min(shift, Math.max(last, to) - to);
+  }
+  const settled = Math.max(0, Number(epsilon) || 0);
+  if (Math.abs(shift) <= settled) return null;
+  return { from: from + shift, to: to + shift };
+}
+
 export function sanitizeChartLayoutVisibleSpan({
   visibleSpan,
   candleCount,
@@ -489,7 +648,7 @@ export function workspaceCompanionWidthAtPointer({
   containerLeft,
   containerWidth,
   pointerX,
-  minimumChainWidth = 340,
+  minimumChainWidth = 240,
   minimumChartWidth = 420,
   dividerWidth = 10,
 }) {
@@ -497,7 +656,7 @@ export function workspaceCompanionWidthAtPointer({
   const width = Number(containerWidth);
   const x = Number(pointerX);
   if (![left, width, x].every(Number.isFinite) || width <= 0) return null;
-  const minimum = Math.max(240, Number(minimumChainWidth) || 340);
+  const minimum = Math.max(200, Number(minimumChainWidth) || 240);
   const maximum = Math.max(
     minimum,
     width - Math.max(320, Number(minimumChartWidth) || 420) - Math.max(0, Number(dividerWidth) || 0),

@@ -23,6 +23,38 @@ test("does not merge nearby but different prices", () => {
   assert.equal(labels.length, 2);
 });
 
+test("an opted-in blocked label merges into the chip that displaced it", () => {
+  // 50sD at 510.08 lands ~1.5px from a 4K wall at 510.00. It sits in the
+  // lowest priority band, so it can never win the row - it must merge instead.
+  const labels = layoutChartAxisLabels([
+    { key: "oi-wall-0-510", top: 100, title: "4K 8/14", color: "#0099cc", preservePricePosition: true, priority: 5 },
+    { key: "mtf-ma-DAY-sma3", top: 101.5, title: "50sD", color: "#74bde8", priority: 1, mergeWhenBlocked: true },
+  ], { paneHeight: 600 });
+
+  assert.equal(labels.length, 1);
+  assert.equal(labels[0].key, "oi-wall-0-510");
+  assert.equal(labels[0].title, "4K 8/14 · 50sD");
+  assert.deepEqual(labels[0].parts.map(({ title }) => title), ["4K 8/14", "50sD"]);
+  // Each part keeps its own colour, so 50sD still reads as its ThinkScript blue.
+  assert.deepEqual(labels[0].parts.map(({ color }) => color), ["#0099cc", "#74bde8"]);
+});
+
+test("a blocked label without the opt-in still hides, and an unblocked one stays separate", () => {
+  const hidden = layoutChartAxisLabels([
+    { key: "oi-wall-0-510", top: 100, title: "4K 8/14", preservePricePosition: true, priority: 5 },
+    { key: "pivot-WEEK-R1", top: 101.5, title: "W P R1" },
+  ], { paneHeight: 600 });
+  assert.equal(hidden.length, 1);
+  assert.equal(hidden[0].title, "4K 8/14");
+
+  const roomy = layoutChartAxisLabels([
+    { key: "oi-wall-0-510", top: 100, title: "4K 8/14", preservePricePosition: true, priority: 5 },
+    { key: "mtf-ma-DAY-sma3", top: 400, title: "50sD", priority: 1, mergeWhenBlocked: true },
+  ], { paneHeight: 600 });
+  assert.equal(roomy.length, 2);
+  assert.equal(roomy.find(({ key }) => key === "mtf-ma-DAY-sma3")?.title, "50sD");
+});
+
 test("keeps every surviving label fixed to its indicator line", () => {
   const labels = layoutChartAxisLabels([
     { key: "live-price", top: 100, preservePricePosition: true },

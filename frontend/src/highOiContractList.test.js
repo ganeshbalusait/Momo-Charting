@@ -1,260 +1,365 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildHighOiContractList, nextMonthlyOpexDate } from "./highOiContractList.js";
+import {
+  buildHighOiContractList,
+  expectedMoveFromExpiries,
+  formatCompactVolume,
+  formatDelta,
+  formatMark,
+  HIGH_OI_IMPORTANCE_BREAKS,
+  highOiImportance,
+  highOiWindowEndDate,
+  nextMonthlyOpexDate,
+} from "./highOiContractList.js";
 
-const rows = [
-  // Calls above spot (89.89), mixed expiries and deltas.
-  { side: "CALL", strike: 100, delta: 0.38, volume: 5_900, open_interest: 68_000, last: 5.09, expiry: "2026-08-21", days_to_expiration: 15 },
-  { side: "CALL", strike: 120, delta: 0.15, volume: 831, open_interest: 16_000, last: 1.72, expiry: "2026-08-21", days_to_expiration: 15 },
-  { side: "CALL", strike: 110, delta: 0.25, volume: 238, open_interest: 6_900, last: 2.91, expiry: "2026-08-21", days_to_expiration: 15 },
-  // Below the 0.14 delta floor with small size: a lottery strike that must
-  // not rank (large OI outside the band stays via the MomoX high-OI rule).
-  { side: "CALL", strike: 200, delta: 0.02, volume: 40, open_interest: 900, last: 0.05, expiry: "2026-08-21", days_to_expiration: 15 },
-  // Beyond the next monthly OPEX (2026-08-21): out of the monthly window.
-  { side: "CALL", strike: 105, delta: 0.30, volume: 100, open_interest: 77_000, last: 4.28, expiry: "2026-09-18", days_to_expiration: 43 },
-  { side: "PUT", strike: 90, delta: -0.45, volume: 1_400, open_interest: 3_700, last: 8.70, expiry: "2026-08-21", days_to_expiration: 15 },
-  { side: "PUT", strike: 85, delta: -0.24, volume: 11_000, open_interest: 8_800, last: 1.15, expiry: "2026-08-07", days_to_expiration: 1 },
-  { side: "PUT", strike: 87.5, delta: -0.41, volume: 1_500, open_interest: 1_500, last: 6.72, expiry: "2026-08-21", days_to_expiration: 15 },
-  // Zero OI never ranks even with a qualifying delta.
-  { side: "PUT", strike: 80, delta: -0.30, volume: 10, open_interest: 0, last: 0.4, expiry: "2026-08-21", days_to_expiration: 15 },
+// MSFT chain from the live app on 2026-08-20 (spot 482.28), the day the list
+// was validated against the Trading Alphas / MomoX daily sheet. The sheet
+// splits the board AT SPOT: above it only call contracts count, at/below it
+// only put contracts. The deep-ITM rows here (480/470/450 calls, 500/490
+// puts) are the exact contracts that used to pollute the wrong side.
+const MSFT_ROWS = [
+  // Call contracts above spot -> call walls.
+  { side: "CALL", strike: 525, delta: 0.10, volume: 90, open_interest: 30_700, last: 0.55, expiry: "2026-09-18", days_to_expiration: 29 },
+  { side: "CALL", strike: 520, delta: 0.00, volume: 613, open_interest: 11_183, last: 0.01, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "CALL", strike: 510, delta: 0.23, volume: 131, open_interest: 17_676, last: 4.72, expiry: "2026-09-18", days_to_expiration: 29 },
+  { side: "CALL", strike: 505, delta: 0.06, volume: 40, open_interest: 3_500, last: 0.30, expiry: "2026-09-18", days_to_expiration: 29 },
+  { side: "CALL", strike: 500, delta: 0.03, volume: 4_693, open_interest: 47_262, last: 0.09, expiry: "2026-08-21", days_to_expiration: 1 },
+  // Same strike on the later monthly with LESS OI: must lose the strike.
+  { side: "CALL", strike: 500, delta: 0.18, volume: 120, open_interest: 19_100, last: 2.05, expiry: "2026-09-18", days_to_expiration: 29 },
+  { side: "CALL", strike: 495, delta: 0.09, volume: 200, open_interest: 5_300, last: 0.45, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "CALL", strike: 490, delta: 0.18, volume: 2_511, open_interest: 9_330, last: 0.83, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "CALL", strike: 485, delta: 0.35, volume: 1_100, open_interest: 3_900, last: 1.60, expiry: "2026-08-21", days_to_expiration: 1 },
+  // Deep-ITM call contracts BELOW spot: positioning history, never call walls.
+  { side: "CALL", strike: 480, delta: 0.61, volume: 499, open_interest: 24_161, last: 4.72, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "CALL", strike: 470, delta: 0.65, volume: 155, open_interest: 19_669, last: 21.65, expiry: "2026-09-18", days_to_expiration: 29 },
+  { side: "CALL", strike: 450, delta: 0.82, volume: 156, open_interest: 16_469, last: 37.29, expiry: "2026-09-18", days_to_expiration: 29 },
+  // Put contracts at/below spot -> put walls.
+  { side: "PUT", strike: 480, delta: -0.40, volume: 2_896, open_interest: 8_442, last: 2.35, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "PUT", strike: 477.5, delta: -0.30, volume: 300, open_interest: 1_700, last: 1.55, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "PUT", strike: 475, delta: -0.20, volume: 1_978, open_interest: 5_441, last: 1.01, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "PUT", strike: 470, delta: -0.09, volume: 1_258, open_interest: 6_428, last: 0.41, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "PUT", strike: 465, delta: -0.04, volume: 245, open_interest: 6_296, last: 0.17, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "PUT", strike: 460, delta: -0.02, volume: 649, open_interest: 13_048, last: 0.08, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "PUT", strike: 455, delta: -0.02, volume: 110, open_interest: 2_100, last: 0.06, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "PUT", strike: 450, delta: -0.02, volume: 2_088, open_interest: 12_694, last: 0.04, expiry: "2026-08-21", days_to_expiration: 1 },
+  // ITM put contracts ABOVE spot: never put walls.
+  { side: "PUT", strike: 500, delta: -1.00, volume: 572, open_interest: 6_593, last: 17.90, expiry: "2026-08-21", days_to_expiration: 1 },
+  { side: "PUT", strike: 490, delta: -0.83, volume: 240, open_interest: 5_478, last: 8.25, expiry: "2026-08-21", days_to_expiration: 1 },
+  // Zero OI never ranks.
+  { side: "PUT", strike: 440, delta: -0.01, volume: 10, open_interest: 0, last: 0.02, expiry: "2026-08-21", days_to_expiration: 1 },
 ];
 
-const now = new Date(Date.UTC(2026, 7, 6));
+const SPOT = 482.28;
+// 2026-08-20: the 8/21 monthly OPEX is tomorrow, so the sheet window extends
+// to the 9/18 monthly.
+const now = new Date(Date.UTC(2026, 7, 20));
 
-test("ranks by open interest per side and displays far-to-near around spot", () => {
-  const model = buildHighOiContractList({ rows, underlyingPrice: 89.89, now });
-
-  // Ranked by OI but rendered descending by strike. The 90 put is ITM against
-  // the 89.89 anchor, so it belongs to the call side of the board and never
-  // lists as support.
-  assert.deepEqual(model.calls.map((row) => row.strike), [200, 120, 110, 100]);
-  assert.deepEqual(model.puts.map((row) => row.strike), [87.5, 85]);
-  assert.equal(model.peakOi, 68_000);
+test("splits the board at spot: call walls above with call OI, put walls below with put OI", () => {
+  const model = buildHighOiContractList({ rows: MSFT_ROWS, underlyingPrice: SPOT, now });
+  assert.ok(model.calls.every((row) => row.side === "CALL" && row.strike > SPOT));
+  assert.ok(model.puts.every((row) => row.side === "PUT" && row.strike <= SPOT));
+  // 480 appears exactly once — as the PUT wall with the put contract's 8.4K,
+  // never the ITM call contract's 24.2K.
+  assert.equal(model.calls.some((row) => row.strike === 480), false);
+  const put480 = model.puts.find((row) => row.strike === 480);
+  assert.equal(put480.openInterest, 8_442);
+  // 500/490 appear only as CALL walls; their ITM put contracts stay off the board.
+  assert.equal(model.puts.some((row) => row.strike >= 485), false);
+  assert.equal(model.calls.find((row) => row.strike === 500).openInterest, 47_262);
 });
 
-test("the delta floor is opt-in: MomoX ranks pure OI by default", () => {
-  // MomoX's High OI list carries no delta band - a 0.02-delta strike holding
-  // real size is exactly the far wall it prints (MSFT 530 at spot 484).
-  const model = buildHighOiContractList({ rows, underlyingPrice: 89.89, now });
-  assert.equal(model.calls.some((row) => row.strike === 200), true);
-
-  // Raising the floor by hand still filters the lottery strike out.
-  const banded = buildHighOiContractList({ rows, underlyingPrice: 89.89, minDelta: 0.14, now });
-  assert.equal(banded.calls.some((row) => row.strike === 200), false);
+test("top 8 per side by OI, rendered strike-descending, like the daily sheet", () => {
+  const model = buildHighOiContractList({ rows: MSFT_ROWS, underlyingPrice: SPOT, now });
+  // Call candidates by OI: 500 47.3k, 525 30.7k, 510 17.7k, 520 11.2k,
+  // 490 9.3k, 495 5.3k, 485 3.9k, 505 3.5k — all eight, shown descending.
+  assert.deepEqual(model.calls.map((row) => row.strike), [525, 520, 510, 505, 500, 495, 490, 485]);
+  // Put candidates by OI: 460, 450, 480, 470, 465, 475, 455, then 477.5 —
+  // 477.5 (1.7k) beats nothing else so it is the eighth.
+  assert.deepEqual(model.puts.map((row) => row.strike), [480, 477.5, 475, 470, 465, 460, 455, 450]);
+  assert.equal(model.calls.length, 8);
+  assert.equal(model.puts.length, 8);
 });
 
-test("monthly scope stops at the next monthly OPEX, front scope pins one expiry", () => {
-  const monthly = buildHighOiContractList({ rows, underlyingPrice: 89.89, now });
-  assert.equal(monthly.monthlyExpiry, "2026-08-21");
-  assert.equal(monthly.calls.some((row) => row.expiry === "2026-09-18"), false);
+test("dominant expiry per strike: largest OI wins the strike", () => {
+  const model = buildHighOiContractList({ rows: MSFT_ROWS, underlyingPrice: SPOT, now });
+  const call500 = model.calls.find((row) => row.strike === 500);
+  assert.equal(call500.openInterest, 47_262);
+  assert.equal(call500.expiry, "2026-08-21");
+  assert.equal(model.calls.filter((row) => row.strike === 500).length, 1);
+});
 
-  const front = buildHighOiContractList({
-    rows, underlyingPrice: 89.89, scope: "front", frontExpiry: "2026-08-07", now,
+test("window extends past an imminent monthly OPEX to the following monthly", () => {
+  // 8/20 with OPEX on 8/21: the sheets list 9/18 walls beside the weeklies.
+  assert.equal(highOiWindowEndDate(new Date(Date.UTC(2026, 7, 20))).toISOString().slice(0, 10), "2026-09-18");
+  // Mid-cycle (8/6, OPEX 15 days out): the window stays at the near monthly.
+  assert.equal(highOiWindowEndDate(new Date(Date.UTC(2026, 7, 6))).toISOString().slice(0, 10), "2026-08-21");
+  assert.equal(nextMonthlyOpexDate(new Date(Date.UTC(2026, 7, 20))).toISOString().slice(0, 10), "2026-08-21");
+
+  const model = buildHighOiContractList({ rows: MSFT_ROWS, underlyingPrice: SPOT, now });
+  assert.equal(model.monthlyExpiry, "2026-09-18");
+  assert.equal(model.calls.some((row) => row.expiry === "2026-09-18"), true);
+
+  // Mid-cycle the September walls fall out of scope entirely.
+  const midCycle = buildHighOiContractList({ rows: MSFT_ROWS, underlyingPrice: SPOT, now: new Date(Date.UTC(2026, 7, 6)) });
+  assert.equal(midCycle.monthlyExpiry, "2026-08-21");
+  assert.equal(midCycle.calls.some((row) => row.expiry === "2026-09-18"), false);
+});
+
+test("no delta filter of any kind: tiny, unknown, and sentinel deltas all rank on OI", () => {
+  // The 0.03-delta 500 call is the biggest wall on the board — it leads.
+  const model = buildHighOiContractList({ rows: MSFT_ROWS, underlyingPrice: SPOT, now });
+  assert.equal(model.calls.find((row) => row.strike === 500).importance, 5);
+  // Schwab's overnight ±999 sentinel changes nothing.
+  const sentinel = MSFT_ROWS.map((row) => ({ ...row, delta: 999 }));
+  const overnight = buildHighOiContractList({ rows: sentinel, underlyingPrice: SPOT, now });
+  assert.deepEqual(
+    overnight.calls.map((row) => row.strike),
+    model.calls.map((row) => row.strike),
+  );
+});
+
+test("with no EM band, falls back to the top-N by OI per side", () => {
+  const model = buildHighOiContractList({ rows: MSFT_ROWS, underlyingPrice: SPOT, topPerSide: 2, now });
+  // No expectedMove -> no band -> the 2 biggest-OI walls each side.
+  assert.deepEqual(model.calls.map((row) => row.strike), [525, 500]);
+  assert.deepEqual(model.puts.map((row) => row.strike), [460, 450]);
+  assert.equal(model.callOi, 77_962);
+  assert.equal(model.putOi, 25_742);
+});
+
+test("a strike exactly at spot is a put wall (support being stood on)", () => {
+  const rows = [
+    { side: "CALL", strike: 480, delta: 0.5, volume: 1, open_interest: 9_000, expiry: "2026-08-21", days_to_expiration: 1 },
+    { side: "PUT", strike: 480, delta: -0.5, volume: 1, open_interest: 4_000, expiry: "2026-08-21", days_to_expiration: 1 },
+    { side: "CALL", strike: 485, delta: 0.3, volume: 1, open_interest: 2_000, expiry: "2026-08-21", days_to_expiration: 1 },
+  ];
+  const model = buildHighOiContractList({ rows, underlyingPrice: 480, now });
+  assert.deepEqual(model.calls.map((row) => row.strike), [485]);
+  assert.deepEqual(model.puts.map((row) => row.strike), [480]);
+  assert.equal(model.puts[0].openInterest, 4_000);
+});
+
+test("importance is scored against the side leader", () => {
+  const model = buildHighOiContractList({ rows: MSFT_ROWS, underlyingPrice: SPOT, now });
+  // Calls lead with 47.3k: 30.7k -> 5 (65%), 17.7k -> 4 (37%), 3.5k -> 1 (7%).
+  assert.equal(model.calls.find((row) => row.strike === 525).importance, 5);
+  assert.equal(model.calls.find((row) => row.strike === 510).importance, 4);
+  // 7% of the leader is a faint wall, not a small one: the sheet's own MSFT
+  // panel scores 3.7k against a 48.3k leader (7.7%) as Imp 1.
+  assert.equal(model.calls.find((row) => row.strike === 505).importance, 1);
+  // Puts lead with 13.0k: 8.4k -> 5 (65%), 1.7k -> 2 (13%).
+  assert.equal(model.puts.find((row) => row.strike === 480).importance, 5);
+  assert.equal(model.puts.find((row) => row.strike === 477.5).importance, 2);
+});
+
+test("the +/-2*EM band excludes far mega-walls when the near band is dense", () => {
+  // NVDA-like dense near chain (>=8 strikes each side within +/-2*EM) plus far
+  // walls with huge OI. Because the band is dense, no fill happens, so the far
+  // 180/170/140 (past +/-2*EM of 208) are excluded despite their big OI - the
+  // NVDA case the trader flagged.
+  const rows = [];
+  const nearPutOi = { 190: 67_000, 200: 45_000, 195: 31_000 };
+  for (const strike of [185, 187.5, 190, 192.5, 195, 197.5, 200, 202.5, 205, 207.5]) {
+    rows.push({ side: "PUT", strike, open_interest: nearPutOi[strike] || 5_000, volume: 1, expiry: "2026-09-18", days_to_expiration: 24 });
+  }
+  for (const strike of [180, 170, 140]) {
+    rows.push({ side: "PUT", strike, open_interest: 66_000, volume: 1, expiry: "2026-09-18", days_to_expiration: 24 });
+  }
+  for (const strike of [210, 215, 220]) {
+    rows.push({ side: "CALL", strike, open_interest: 30_000, volume: 1, expiry: "2026-09-18", days_to_expiration: 24 });
+  }
+  const model = buildHighOiContractList({ rows, underlyingPrice: 208, expectedMove: 12.63, now });
+  const putStrikes = model.puts.map((row) => row.strike);
+  for (const far of [180, 170, 140]) assert.equal(putStrikes.includes(far), false, `${far} should be out of band`);
+  // The near band's biggest-OI strikes are kept.
+  for (const near of [190, 200, 195]) assert.equal(putStrikes.includes(near), true);
+});
+
+test("front scope pins a single expiry", () => {
+  const model = buildHighOiContractList({
+    rows: MSFT_ROWS, underlyingPrice: SPOT, scope: "front", frontExpiry: "2026-09-18", now,
   });
-  assert.deepEqual(front.puts.map((row) => row.strike), [85]);
-  assert.equal(front.calls.length, 0);
-});
-
-test("limits each side to the requested count and reports OI totals", () => {
-  const model = buildHighOiContractList({ rows, underlyingPrice: 89.89, topPerSide: 2, now });
-
-  assert.equal(model.calls.length, 2);
-  assert.equal(model.puts.length, 2);
-  // Top two per side: calls 68k + 16k, puts 8.8k + 1.5k (the 3.7k 90 put is
-  // ITM against the anchor and never reaches the put ladder).
-  assert.equal(model.callOi, 84_000);
-  assert.equal(model.putOi, 10_300);
-  assert.equal(model.putCallRatio.toFixed(2), "0.12");
-});
-
-test("ITM strikes never rank, however large: the anchor decides the side", () => {
-  const withItm = [
-    ...rows,
-    // Huge ITM positions on both sides. MomoX lists calls only above the
-    // anchor and puts only below it, so neither may appear at any delta.
-    { side: "CALL", strike: 80, delta: 0.92, volume: 561, open_interest: 410_000, last: 10.15, expiry: "2026-08-07", days_to_expiration: 1 },
-    { side: "PUT", strike: 100, delta: -0.62, volume: 82, open_interest: 380_000, last: 13.98, expiry: "2026-08-21", days_to_expiration: 15 },
-  ];
-  const model = buildHighOiContractList({ rows: withItm, underlyingPrice: 89.89, now });
-  assert.equal(model.calls.some((row) => row.strike === 80), false);
-  assert.equal(model.puts.some((row) => row.strike === 100), false);
-  assert.equal(model.calls.every((row) => row.strike > 89.89), true);
-  assert.equal(model.puts.every((row) => row.strike < 89.89), true);
-
-  const uncapped = buildHighOiContractList({ rows: withItm, underlyingPrice: 89.89, maxDelta: 1, now });
-  assert.equal(uncapped.calls.some((row) => row.strike === 80), false);
-});
-
-test("MomoX high-OI exception: extreme deltas stay when the size is dominant", () => {
-  const withCollapsed = [
-    ...rows,
-    // TSLA 332.5 case: 0DTE delta collapsed to ~0 at the close while the wall
-    // still holds a fifth of the side's leader — it must stay on the chart.
-    { side: "CALL", strike: 95.5, delta: 0.009, volume: 120, open_interest: 27_000, last: 0.01, expiry: "2026-08-07", days_to_expiration: 0 },
-  ];
-  const model = buildHighOiContractList({ rows: withCollapsed, underlyingPrice: 89.89, now });
-  assert.equal(model.calls.some((row) => row.strike === 95.5 && row.openInterest === 27_000), true);
+  assert.ok(model.calls.every((row) => row.expiry === "2026-09-18"));
+  assert.deepEqual(model.calls.map((row) => row.strike), [525, 510, 505, 500]);
 });
 
 test("carries this week's size as frontAlt when a later cycle dominates the strike", () => {
   const stacked = [
-    // MomoX AAPL example: 315 calls hold 15k on the front week and 18k on the
-    // later monthly — the chart must print both figures.
     { side: "CALL", strike: 315, delta: 0.30, volume: 2_000, open_interest: 15_000, last: 1.2, expiry: "2026-08-07", days_to_expiration: 1 },
     { side: "CALL", strike: 315, delta: 0.28, volume: 1_500, open_interest: 18_000, last: 2.4, expiry: "2026-08-21", days_to_expiration: 15 },
     // Tiny front OI below the 20% floor must not stack.
     { side: "CALL", strike: 320, delta: 0.20, volume: 100, open_interest: 500, last: 0.4, expiry: "2026-08-07", days_to_expiration: 1 },
     { side: "CALL", strike: 320, delta: 0.18, volume: 900, open_interest: 12_000, last: 1.1, expiry: "2026-08-21", days_to_expiration: 15 },
   ];
-  const model = buildHighOiContractList({ rows: stacked, underlyingPrice: 312.8, now });
+  const model = buildHighOiContractList({ rows: stacked, underlyingPrice: 312.8, now: new Date(Date.UTC(2026, 7, 6)) });
   const wall315 = model.calls.find((row) => row.strike === 315);
   assert.equal(wall315.openInterest, 18_000);
-  assert.equal(wall315.expiry, "2026-08-21");
   assert.equal(wall315.frontAlt.openInterest, 15_000);
   assert.equal(wall315.frontAlt.expiry, "2026-08-07");
   const wall320 = model.calls.find((row) => row.strike === 320);
   assert.equal(wall320.frontAlt, undefined);
 });
 
-test("keeps one row per strike: the dominant expiry wins", () => {
-  const withDuplicates = [
-    ...rows,
-    // Same 85 put on a second expiry with smaller OI: must not appear twice.
-    { side: "PUT", strike: 85, delta: -0.21, volume: 2_273, open_interest: 3_097, last: 3.10, expiry: "2026-08-21", days_to_expiration: 15 },
-  ];
-  const model = buildHighOiContractList({ rows: withDuplicates, underlyingPrice: 89.89, now });
-  const eightyFive = model.puts.filter((row) => row.strike === 85);
-  assert.equal(eightyFive.length, 1);
-  assert.equal(eightyFive[0].openInterest, 8_800);
-  assert.equal(eightyFive[0].expiry, "2026-08-07");
+test("without a spot the split is impossible — fall back to contract-type grouping", () => {
+  const model = buildHighOiContractList({ rows: MSFT_ROWS, underlyingPrice: 0, now });
+  assert.ok(model.calls.length > 0);
+  assert.ok(model.puts.length > 0);
 });
 
-test("skips zero-open-interest contracts", () => {
-  const model = buildHighOiContractList({ rows, underlyingPrice: 89.89, now });
-  assert.equal(model.puts.some((row) => row.strike === 80), false);
-});
-
-test("falls back to all expiries when nothing lists inside the monthly window", () => {
+test("falls back to all expiries when nothing lists inside the window", () => {
   const quarterlyOnly = [
-    { side: "CALL", strike: 105, delta: 0.30, volume: 100, open_interest: 77_000, last: 4.28, expiry: "2026-09-18", days_to_expiration: 43 },
-    { side: "PUT", strike: 80, delta: -0.30, volume: 50, open_interest: 12_000, last: 2.10, expiry: "2026-09-18", days_to_expiration: 43 },
+    { side: "CALL", strike: 105, delta: 0.30, volume: 100, open_interest: 77_000, expiry: "2026-12-18", days_to_expiration: 120 },
+    { side: "PUT", strike: 80, delta: -0.30, volume: 50, open_interest: 12_000, expiry: "2026-12-18", days_to_expiration: 120 },
   ];
-  const model = buildHighOiContractList({ rows: quarterlyOnly, underlyingPrice: 89.89, now });
-  assert.equal(model.calls.length, 1);
-  assert.equal(model.calls[0].expiry, "2026-09-18");
-  assert.equal(model.puts.length, 1);
-});
-
-test("falls back to raw OI ranking when the provider omits every delta", () => {
-  const noGreeks = [
-    { side: "CALL", strike: 100, delta: 0, volume: 500, open_interest: 9_000, last: 1.2, expiry: "2026-08-21", days_to_expiration: 15 },
-    { side: "PUT", strike: 80, delta: 0, volume: 300, open_interest: 4_000, last: 0.9, expiry: "2026-08-21", days_to_expiration: 15 },
-  ];
-  const model = buildHighOiContractList({ rows: noGreeks, underlyingPrice: 89.89, now });
+  const model = buildHighOiContractList({ rows: quarterlyOnly, underlyingPrice: 89.89, now: new Date(Date.UTC(2026, 7, 6)) });
   assert.equal(model.calls.length, 1);
   assert.equal(model.puts.length, 1);
 });
 
 test("returns an empty model without rows", () => {
-  const model = buildHighOiContractList({ rows: [], underlyingPrice: 89.89, now });
+  const model = buildHighOiContractList({ rows: [], underlyingPrice: SPOT, now });
   assert.deepEqual(model.calls, []);
   assert.deepEqual(model.puts, []);
   assert.equal(model.putCallRatio, 0);
   assert.equal(model.peakOi, 0);
 });
 
-// --- MomoX parity ---------------------------------------------------------
-// Fixtures transcribed from the MomoX MSFT and SPY High OI panels (2026-08-20
-// session). They pin both the strike selection and the Imp 1-5 column.
+test("expected move skips a SPENT expiry but keeps a live same-day one", () => {
+  assert.equal(expectedMoveFromExpiries({ "2026-08-17": 0.915, "2026-08-19": 7.525 }), 7.525);
+  assert.equal(expectedMoveFromExpiries({ "2026-08-18": 2.87, "2026-08-19": 4.19 }), 2.87);
+});
 
-const msftRows = [
-  { side: "CALL", strike: 530, delta: 0.03, volume: 613, open_interest: 16_600, last: 0.98, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "CALL", strike: 525, delta: 0.14, volume: 1_131, open_interest: 30_700, last: 1.44, expiry: "2026-09-18", days_to_expiration: 29 },
-  { side: "CALL", strike: 520, delta: 0.04, volume: 4_693, open_interest: 11_500, last: 0.09, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "CALL", strike: 510, delta: 0.23, volume: 499, open_interest: 17_600, last: 4.72, expiry: "2026-09-18", days_to_expiration: 29 },
-  { side: "CALL", strike: 500, delta: 0.09, volume: 155, open_interest: 48_300, last: 0.09, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "CALL", strike: 495, delta: 0.31, volume: 88, open_interest: 3_900, last: 9.10, expiry: "2026-09-18", days_to_expiration: 29 },
-  { side: "CALL", strike: 490, delta: 0.24, volume: 156, open_interest: 8_400, last: 1.12, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "CALL", strike: 485, delta: 0.45, volume: 572, open_interest: 3_700, last: 2.55, expiry: "2026-08-21", days_to_expiration: 1 },
-  // Deep ITM calls carrying more OI than every wall above: must never list.
-  { side: "CALL", strike: 400, delta: 0.97, volume: 12, open_interest: 90_000, last: 84.4, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "PUT", strike: 480, delta: -0.42, volume: 240, open_interest: 8_500, last: 1.90, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "PUT", strike: 475, delta: -0.28, volume: 2_896, open_interest: 5_200, last: 0.94, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "PUT", strike: 470, delta: -0.24, volume: 1_978, open_interest: 6_000, last: 4.15, expiry: "2026-09-18", days_to_expiration: 29 },
-  { side: "PUT", strike: 465, delta: -0.12, volume: 1_258, open_interest: 4_700, last: 0.31, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "PUT", strike: 460, delta: -0.09, volume: 245, open_interest: 13_300, last: 0.17, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "PUT", strike: 455, delta: -0.06, volume: 649, open_interest: 3_300, last: 0.11, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "PUT", strike: 450, delta: -0.04, volume: 2_088, open_interest: 11_800, last: 0.08, expiry: "2026-08-21", days_to_expiration: 1 },
-  { side: "PUT", strike: 440, delta: -0.09, volume: 410, open_interest: 6_900, last: 1.02, expiry: "2026-09-18", days_to_expiration: 29 },
-  // Deep ITM puts above the anchor: must never list.
-  { side: "PUT", strike: 560, delta: -0.98, volume: 5, open_interest: 75_000, last: 75.6, expiry: "2026-08-21", days_to_expiration: 1 },
-];
+test("expected move falls back when there is nothing to compare against", () => {
+  assert.equal(expectedMoveFromExpiries({ "2026-08-17": 0.915 }), 0.915);
+  assert.equal(expectedMoveFromExpiries({}), 0);
+  assert.equal(expectedMoveFromExpiries(null), 0);
+});
 
-const msftNow = new Date(Date.UTC(2026, 7, 20));
+// --- Imp column, pinned to the reference sheets ---------------------------
+// The two panels below are transcribed straight off the 2026-08-20 MomoX /
+// Trading Alphas sheets, OI and Imp together. They are the only source that
+// fixes HIGH_OI_IMPORTANCE_BREAKS, so they must stay exact: every other Imp
+// assertion in this file is scored against our own chain and would happily
+// agree with a wrong formula.
 
-test("MomoX MSFT parity: calls above the anchor, puts below, nothing crosses", () => {
-  const model = buildHighOiContractList({ rows: msftRows, underlyingPrice: 484.42, now: msftNow });
+const SHEET_NOW = new Date(Date.UTC(2026, 7, 20));
+
+const sheetRow = (side, strike, openInterest, expiry = "2026-08-21") => ({
+  side,
+  strike,
+  delta: 999,
+  volume: 100,
+  open_interest: openInterest,
+  last: 1,
+  expiry,
+  days_to_expiration: expiry === "2026-08-21" ? 1 : 29,
+});
+
+test("sheet parity: the MSFT Imp column is reproduced exactly", () => {
+  // MSFT panel, BMO 484.42. Call 140.8k / Put 59.8k in its header.
+  const rows = [
+    sheetRow("CALL", 530, 16_600),
+    sheetRow("CALL", 525, 30_700, "2026-09-18"),
+    sheetRow("CALL", 520, 11_500),
+    sheetRow("CALL", 510, 17_600, "2026-09-18"),
+    sheetRow("CALL", 500, 48_300),
+    sheetRow("CALL", 495, 3_900, "2026-09-18"),
+    sheetRow("CALL", 490, 8_400),
+    sheetRow("CALL", 485, 3_700),
+    sheetRow("PUT", 480, 8_500),
+    sheetRow("PUT", 475, 5_200),
+    sheetRow("PUT", 470, 6_000, "2026-09-18"),
+    sheetRow("PUT", 465, 4_700),
+    sheetRow("PUT", 460, 13_300),
+    sheetRow("PUT", 455, 3_300),
+    sheetRow("PUT", 450, 11_800),
+    sheetRow("PUT", 440, 6_900, "2026-09-18"),
+  ];
+  const model = buildHighOiContractList({ rows, underlyingPrice: 484.42, now: SHEET_NOW });
 
   assert.deepEqual(model.calls.map((row) => row.strike), [530, 525, 520, 510, 500, 495, 490, 485]);
+  assert.deepEqual(model.calls.map((row) => row.importance), [3, 5, 3, 4, 5, 1, 2, 1]);
   assert.deepEqual(model.puts.map((row) => row.strike), [480, 475, 470, 465, 460, 455, 450, 440]);
-  // Header totals match the MomoX chips: Call 140.7k / Put 59.7k.
+  assert.deepEqual(model.puts.map((row) => row.importance), [5, 4, 4, 4, 5, 3, 5, 5]);
+  // The sheet header sums the printed walls only.
   assert.equal(model.callOi, 140_700);
   assert.equal(model.putOi, 59_700);
 });
 
-test("MomoX MSFT parity: the Imp column reproduces the reference panel", () => {
-  const model = buildHighOiContractList({ rows: msftRows, underlyingPrice: 484.42, now: msftNow });
-
-  assert.deepEqual(model.calls.map((row) => row.imp), [3, 5, 3, 4, 5, 1, 2, 1]);
-  assert.deepEqual(model.puts.map((row) => row.imp), [5, 4, 4, 4, 5, 3, 5, 5]);
-});
-
-test("MomoX SPY parity: the Imp column reproduces the reference panel", () => {
-  const spyRows = [
-    { side: "CALL", strike: 795, delta: 0.04, volume: 100, open_interest: 15_000, last: 0.2, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "CALL", strike: 790, delta: 0.06, volume: 100, open_interest: 47_200, last: 0.3, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "CALL", strike: 785, delta: 0.09, volume: 100, open_interest: 45_600, last: 0.5, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "CALL", strike: 780, delta: 0.13, volume: 100, open_interest: 51_900, last: 0.8, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "CALL", strike: 775, delta: 0.20, volume: 100, open_interest: 58_500, last: 1.3, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "CALL", strike: 773, delta: 0.24, volume: 100, open_interest: 12_700, last: 1.7, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "CALL", strike: 770, delta: 0.29, volume: 100, open_interest: 28_900, last: 2.2, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "CALL", strike: 765, delta: 0.38, volume: 100, open_interest: 17_100, last: 3.4, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "PUT", strike: 760, delta: -0.44, volume: 100, open_interest: 48_800, last: 3.1, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "PUT", strike: 755, delta: -0.33, volume: 100, open_interest: 47_200, last: 2.2, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "PUT", strike: 750, delta: -0.24, volume: 100, open_interest: 57_500, last: 1.5, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "PUT", strike: 745, delta: -0.17, volume: 100, open_interest: 32_000, last: 1.0, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "PUT", strike: 740, delta: -0.12, volume: 100, open_interest: 33_300, last: 0.7, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "PUT", strike: 737, delta: -0.10, volume: 100, open_interest: 22_000, last: 0.6, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "PUT", strike: 735, delta: -0.08, volume: 100, open_interest: 50_800, last: 0.5, expiry: "2026-08-21", days_to_expiration: 1 },
-    { side: "PUT", strike: 732, delta: -0.07, volume: 100, open_interest: 27_600, last: 0.4, expiry: "2026-08-21", days_to_expiration: 1 },
+test("sheet parity: the SPY Imp column is reproduced exactly", () => {
+  // SPY panel, BMO 764.63.
+  const rows = [
+    sheetRow("CALL", 795, 15_000),
+    sheetRow("CALL", 790, 47_200),
+    sheetRow("CALL", 785, 45_600),
+    sheetRow("CALL", 780, 51_900),
+    sheetRow("CALL", 775, 58_500),
+    sheetRow("CALL", 773, 12_700),
+    sheetRow("CALL", 770, 28_900),
+    sheetRow("CALL", 765, 17_100),
+    sheetRow("PUT", 760, 48_800),
+    sheetRow("PUT", 755, 47_200),
+    sheetRow("PUT", 750, 57_500),
+    sheetRow("PUT", 745, 32_000),
+    sheetRow("PUT", 740, 33_300),
+    sheetRow("PUT", 737, 22_000),
+    sheetRow("PUT", 735, 50_800),
+    sheetRow("PUT", 732, 27_600),
   ];
-  const model = buildHighOiContractList({ rows: spyRows, underlyingPrice: 764.63, now: msftNow });
+  const model = buildHighOiContractList({ rows, underlyingPrice: 764.63, now: SHEET_NOW });
 
-  assert.deepEqual(model.calls.map((row) => row.imp), [3, 5, 5, 5, 5, 2, 4, 3]);
-  assert.deepEqual(model.puts.map((row) => row.imp), [5, 5, 5, 5, 5, 4, 5, 4]);
+  assert.deepEqual(model.calls.map((row) => row.importance), [3, 5, 5, 5, 5, 2, 4, 3]);
+  assert.deepEqual(model.puts.map((row) => row.importance), [5, 5, 5, 5, 5, 4, 5, 4]);
 });
 
-test("the anchor, not the live tick, decides which side a strike belongs to", () => {
-  // MomoX pins the split at BMO, so an intraday rally does not flip the 485
-  // call into a put row and churn the ladder mid-session.
-  const rallied = buildHighOiContractList({
-    rows: msftRows, underlyingPrice: 496.5, anchorPrice: 484.42, now: msftNow,
-  });
-  assert.equal(rallied.anchor, 484.42);
-  assert.equal(rallied.calls.some((row) => row.strike === 485), true);
-  assert.equal(rallied.puts.some((row) => row.strike === 485), false);
-
-  // Without an explicit anchor the live price is used.
-  const unanchored = buildHighOiContractList({ rows: msftRows, underlyingPrice: 496.5, now: msftNow });
-  assert.equal(unanchored.anchor, 496.5);
-  assert.equal(unanchored.calls.some((row) => row.strike === 485), false);
+test("importance breaks stay in step with the python alert ladder", () => {
+  // oi_auto_alerts.IMPORTANCE_BREAKS must carry the same four numbers.
+  assert.deepEqual(HIGH_OI_IMPORTANCE_BREAKS, [0.125, 0.225, 0.35, 0.5]);
+  assert.equal(highOiImportance(1, 100), 1);
+  assert.equal(highOiImportance(13, 100), 2);
+  assert.equal(highOiImportance(23, 100), 3);
+  assert.equal(highOiImportance(36, 100), 4);
+  assert.equal(highOiImportance(50, 100), 5);
 });
 
-test("the monthly window rolls forward once the current OPEX is inside a week", () => {
-  // On 2026-08-20 MomoX still lists the 2026-09-18 cycle; stopping at the
-  // 2026-08-21 OPEX one day out would have hidden every one of those walls.
-  assert.equal(nextMonthlyOpexDate(new Date(Date.UTC(2026, 7, 20))).toISOString().slice(0, 10), "2026-09-18");
-  // Early in the cycle the window still stops at the current month OPEX.
-  assert.equal(nextMonthlyOpexDate(new Date(Date.UTC(2026, 7, 3))).toISOString().slice(0, 10), "2026-08-21");
+// --- Board display formatters (the Delta / Vol / Mark columns) ---
+
+test("formatDelta: two decimals, signed, and a dead-feed zero prints a dash", () => {
+  assert.equal(formatDelta(0.43), "0.43");
+  assert.equal(formatDelta(-0.34), "-0.34");
+  assert.equal(formatDelta(0.4321), "0.43");
+  assert.equal(formatDelta(1), "1.00");
+  // Overnight feeds report delta 0 until the market wakes; a printed 0.00
+  // would read as a real greek.
+  assert.equal(formatDelta(0), "-");
+  assert.equal(formatDelta(null), "-");
+  assert.equal(formatDelta(undefined), "-");
+  assert.equal(formatDelta(Number.NaN), "-");
+  // A real-but-tiny negative delta must not print "-0.00".
+  assert.equal(formatDelta(-0.004), "0.00");
+  assert.equal(formatDelta(0.004), "0.00");
+});
+
+test("formatCompactVolume: MomoX 18k / 863 style, zero prints a dash", () => {
+  assert.equal(formatCompactVolume(863), "863");
+  assert.equal(formatCompactVolume(999), "999");
+  assert.equal(formatCompactVolume(1_000), "1k");
+  assert.equal(formatCompactVolume(1_499), "1k");
+  assert.equal(formatCompactVolume(1_500), "2k");
+  assert.equal(formatCompactVolume(18_312), "18k");
+  assert.equal(formatCompactVolume(0), "-");
+  assert.equal(formatCompactVolume(null), "-");
+  assert.equal(formatCompactVolume(undefined), "-");
+  assert.equal(formatCompactVolume(Number.NaN), "-");
+});
+
+test("formatMark: option price to two decimals, zero prints a dash", () => {
+  assert.equal(formatMark(0.55), "0.55");
+  assert.equal(formatMark(4.7), "4.70");
+  assert.equal(formatMark(12.345), "12.35");
+  assert.equal(formatMark(0), "-");
+  assert.equal(formatMark(null), "-");
+  assert.equal(formatMark(undefined), "-");
+  assert.equal(formatMark(Number.NaN), "-");
 });

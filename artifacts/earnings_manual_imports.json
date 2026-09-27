@@ -1,0 +1,156 @@
+[
+  {
+    "symbol": "WFC",
+    "date": "2026-07-14",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-16T12:45:28.328342-05:00"
+  },
+  {
+    "symbol": "ASML",
+    "date": "2026-07-15",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-16T12:45:28.329339-05:00"
+  },
+  {
+    "symbol": "JNJ",
+    "date": "2026-07-15",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-16T12:45:28.329339-05:00"
+  },
+  {
+    "symbol": "GE",
+    "date": "2026-07-16",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-16T12:45:28.329339-05:00"
+  },
+  {
+    "symbol": "UAL",
+    "date": "2026-07-16",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-16T12:45:28.330339-05:00"
+  },
+  {
+    "symbol": "UNH",
+    "date": "2026-07-16",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-16T12:45:28.329339-05:00"
+  },
+  {
+    "symbol": "NFLX",
+    "date": "2026-07-17",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-16T12:45:28.330339-05:00"
+  },
+  {
+    "symbol": "AMC",
+    "date": "2026-07-20",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.991964-05:00"
+  },
+  {
+    "symbol": "SCHW",
+    "date": "2026-07-21",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "GEV",
+    "date": "2026-07-22",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "IRDM",
+    "date": "2026-07-22",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "CLF",
+    "date": "2026-07-23",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "FCX",
+    "date": "2026-07-23",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "GOOGL",
+    "date": "2026-07-23",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "IBM",
+    "date": "2026-07-23",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "STM",
+    "date": "2026-07-23",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "CHTR",
+    "date": "2026-07-24",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "DECK",
+    "date": "2026-07-24",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "INTC",
+    "date": "2026-07-24",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "M",
+    "date": "2026-07-24",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "NEE",
+    "date": "2026-07-24",
+    "timingCode": "amc",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  },
+  {
+    "symbol": "NEM",
+    "date": "2026-07-24",
+    "timingCode": "bmo",
+    "source": "Manual image import",
+    "importedAt": "2026-07-20T22:21:34.993025-05:00"
+  }
+]

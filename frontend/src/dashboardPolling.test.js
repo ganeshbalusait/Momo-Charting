@@ -15,7 +15,7 @@ test("frequent dashboard polling uses the compact payload", () => {
 test("historical dashboard sections wait until a view needs them", () => {
   assert.match(
     appSource,
-    /const heavyDashboardViews = new Set\(\[[\s\S]*?"Scanner"[\s\S]*?"OI Scanner"[\s\S]*?"News Feed"[\s\S]*?\]\);/,
+    /const heavyDashboardViews = new Set\(\[[\s\S]*?"Charts & OI"[\s\S]*?"Quick Options"[\s\S]*?\]\);/,
   );
   assert.match(
     appSource,

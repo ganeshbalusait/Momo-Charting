@@ -116,22 +116,27 @@ function calendarBucketTime(timestamp, aggregationMinutes) {
  * Keep this primary-chart contract separate from the native secondary-study
  * aggregation clocks used by the backend CALL1H/CALL2H signal engine.
  */
-export function tosFourHourBucketTime(timestamp) {
+export function tosCentralMidnightBucketTime(timestamp, aggregationMinutes) {
   const time = Math.floor(Number(timestamp || 0));
   if (!Number.isFinite(time) || time <= 0) return null;
   const easternMidnight = calendarBucketTime(time, 1440);
   const midnightCentralInEastern = easternMidnight + 60 * 60;
-  const fourHours = 240 * 60;
+  const seconds = Math.max(Number(aggregationMinutes || 1), 1) * 60;
   return midnightCentralInEastern
-    + Math.floor((time - midnightCentralInEastern) / fourHours) * fourHours;
+    + Math.floor((time - midnightCentralInEastern) / seconds) * seconds;
 }
 
-function easternSessionAlignedBucketTime(timestamp, aggregationMinutes) {
-  // Two-hour UTC epoch buckets move one hour on the Eastern clock when DST
-  // changes. Anchor them to exchange midnight so 04:00 remains 04:00 all year.
-  const easternMidnight = calendarBucketTime(timestamp, 1440);
-  const seconds = aggregationMinutes * 60;
-  return easternMidnight + Math.floor((timestamp - easternMidnight) / seconds) * seconds;
+export function tosFourHourBucketTime(timestamp) {
+  return tosCentralMidnightBucketTime(timestamp, 240);
+}
+
+// TOS 2h bars share the midnight-Central clock with extended hours on:
+// 01:00, 03:00, 05:00, 07:00, 09:00, 11:00 ... ET (TOS support: nine 2h
+// candles in a 16-hour session). Verified against the trader's chart
+// 2026-08-24 - its P2H 07:00 and CALL2H 09:10 sit on those boundaries;
+// even-hour buckets straddled the 4h boundaries and never matched.
+export function tosTwoHourBucketTime(timestamp) {
+  return tosCentralMidnightBucketTime(timestamp, 120);
 }
 
 export function chartAggregationBucketTime(timestamp, minutes) {
@@ -139,7 +144,7 @@ export function chartAggregationBucketTime(timestamp, minutes) {
   const aggregationMinutes = Math.max(Number(minutes || 1), 1);
   if (!Number.isFinite(time) || time <= 0) return null;
   if (aggregationMinutes === 240) return tosFourHourBucketTime(time);
-  if (aggregationMinutes === 120) return easternSessionAlignedBucketTime(time, aggregationMinutes);
+  if (aggregationMinutes === 120) return tosTwoHourBucketTime(time);
   if ([1440, 10080, 43200].includes(aggregationMinutes)) {
     return calendarBucketTime(time, aggregationMinutes);
   }
@@ -179,8 +184,24 @@ function normalizeChartCandleBar(bar) {
     high: Math.max(high, open, close),
     low: Math.min(low, open, close),
     close,
+    // Volume stays numeric all the way to the histogram (Lightweight Charts
+    // rejects null points); chartStreamBars marks honesty with `volumeKnown`.
     volume: Number.isFinite(volume) ? volume : 0,
   };
+}
+
+// Sum of the finite volumes; a non-finite reading (null/undefined/NaN from a
+// caller that skipped normalisation) contributes nothing rather than NaN-ing
+// the bucket. Number(null) is 0, so the filter runs BEFORE any cast.
+function addVolume(current, incoming) {
+  const known = [current, incoming].filter((value) => Number.isFinite(value));
+  return known.reduce((sum, value) => sum + value, 0);
+}
+
+// The larger of two volume readings for the same bucket.
+function maxVolume(left, right) {
+  const known = [left, right].filter((value) => Number.isFinite(value));
+  return known.length ? Math.max(...known) : 0;
 }
 
 export function normalizeChartCandleBars(bars) {
@@ -192,7 +213,46 @@ export function normalizeChartCandleBars(bars) {
   return [...byTime.values()].sort((left, right) => left.time - right.time);
 }
 
+// Every multi-timeframe study aggregates the SAME source tape to the same
+// handful of timeframes, and they all recompute together whenever the tape
+// reference changes. Measured in the six-across workspace: fifteen study
+// memos each re-aggregating an 11.7k-bar tape to 15m/30m/1h/2h/4h/D/W was a
+// large share of a 1-2s render per tape change. Cache by source-array
+// identity (a WeakMap, so a dropped tape frees its aggregations) and by
+// timeframe, so each aggregation happens once per tape instead of once per
+// study. Results are shared, so callers must treat them as read-only - which
+// every study already does.
+const aggregationCache = new WeakMap();
+
+// Identity alone is not enough: the live stream buffer is mutated IN PLACE
+// every tick (same array, restated last bar) and is aggregated once a second
+// for the forming candle. A pure identity cache handed that path the stale
+// aggregation and froze the live candle for the rest of each minute. The
+// signature covers everything a tail mutation can change; a tape whose
+// history changes always arrives as a new array.
+function aggregationSignature(bars) {
+  const last = bars[bars.length - 1];
+  const first = bars[0];
+  return `${bars.length}|${Number(first?.time)}|${Number(last?.time)}|${Number(last?.open)}|${Number(last?.high)}|${Number(last?.low)}|${Number(last?.close)}|${Number(last?.volume)}`;
+}
+
 export function aggregateChartBars(bars, minutes) {
+  if (!Array.isArray(bars)) return aggregateChartBarsUncached(bars, minutes);
+  const aggregationMinutes = Math.max(Number(minutes || 1), 1);
+  let byMinutes = aggregationCache.get(bars);
+  if (!byMinutes) {
+    byMinutes = new Map();
+    aggregationCache.set(bars, byMinutes);
+  }
+  const signature = aggregationSignature(bars);
+  const cached = byMinutes.get(aggregationMinutes);
+  if (cached && cached.signature === signature) return cached.aggregated;
+  const aggregated = aggregateChartBarsUncached(bars, aggregationMinutes);
+  byMinutes.set(aggregationMinutes, { signature, aggregated });
+  return aggregated;
+}
+
+function aggregateChartBarsUncached(bars, minutes) {
   const aggregationMinutes = Math.max(Number(minutes || 1), 1);
   const buckets = new Map();
   normalizeChartCandleBars(bars).forEach((bar) => {
@@ -207,7 +267,7 @@ export function aggregateChartBars(bars, minutes) {
     current.high = Math.max(Number(current.high || 0), Number(bar?.high || 0));
     current.low = Math.min(Number(current.low || 0), Number(bar?.low || 0));
     current.close = Number(bar?.close || current.close || 0);
-    current.volume = Number(current.volume || 0) + Number(bar?.volume || 0);
+    current.volume = addVolume(current.volume, bar?.volume);
   });
   return [...buckets.values()].sort((left, right) => left.time - right.time);
 }
@@ -250,8 +310,63 @@ export function chartSourceBarSpacingMinutes(bars, fallbackMinutes = 5) {
  * OHLC and volume are never counted twice even if the live window starts in
  * the middle of a five-minute candle.
  */
+// A coarse timeframe needs enough candles to read structure from. Below this
+// the pane is a stub, not a chart: a fast-start payload rendered 10 candles on
+// 4H and 3 on D for an uncached symbol (measured on MMM, 2026-08-18).
+export const COARSE_TIMEFRAME_MIN_CANDLES = 60;
+
+// True when a coarse timeframe is showing a stub because the deep seed has not
+// finished downloading. Judged on the RENDERED CANDLE COUNT, deliberately: an
+// earlier version checked whether the seed arrays were empty and never fired
+// once, because a fast-start payload ships SHORT seeds, not empty ones.
+export function chartDeepHistoryPending({
+  renderedCandleCount = 0,
+  aggregationMinutes = 5,
+  historyLoading = false,
+} = {}) {
+  if (!historyLoading) return false;
+  const minutes = Math.max(Number(aggregationMinutes || 1), 1);
+  // 1H and coarser lean on the study seed and stay stubs until it lands - 35
+  // candles on 1H, 18 on 2H, 11 on 4H, 3 on D measured mid-rebuild. Below 1H
+  // the live tape reconstructs every bucket within seconds.
+  if (minutes < 60) return false;
+  return Number(renderedCandleCount || 0) < COARSE_TIMEFRAME_MIN_CANDLES;
+}
+
+// Lay the live tape over a historical (TOS price-history) tape at a shared
+// cadence. The historical tape is the source of truth for every bucket it has
+// CLOSED: a live bucket may replace the historical tape's LAST bucket (the
+// forming candle), add buckets newer than it, or FILL a bucket the historical
+// tape is missing - but never replace a closed candle that exists. Two
+// measurements on 2026-09-04 (AMZN): a single trade-only live minute
+// (O=H=L=C, volume 0) had landed on top of a complete five-minute candle while
+// the Schwab feed was stalled; and the night of Sep 2 had 32/96 candles in the
+// five-minute tape but 96/96 in the one-minute tape, so holes must stay
+// fillable or that night loses two thirds of its candles.
+export function overlayLiveOnHistorical(historical, liveShared) {
+  const merged = new Map(historical.map((bar) => [Number(bar.time), bar]));
+  const lastClosed = historical.length ? Number(historical[historical.length - 1].time) : -Infinity;
+  liveShared.forEach((bar) => {
+    const time = Number(bar.time);
+    if (!merged.has(time)) {
+      merged.set(time, bar);
+      return;
+    }
+    if (time >= lastClosed) {
+      // The live forming bucket owns price, but it is closed minutes plus a
+      // volume-less forming minute, so it always understates volume. The
+      // server's bar for the same bucket is complete but may be a reconcile
+      // behind. Take the larger reading rather than whichever arrived last -
+      // measured 2026-09-04: Vol 60,858 -> Vol 0 at every 5m boundary.
+      merged.set(time, { ...bar, volume: maxVolume(bar.volume, merged.get(time)?.volume) });
+    }
+  });
+  return [...merged.values()].sort((left, right) => Number(left.time) - Number(right.time));
+}
+
 export function buildChartDisplayBars({
   studyBars,
+  fineStudyBars,
   liveBars,
   dailyBars,
   aggregationMinutes = 5,
@@ -271,9 +386,7 @@ export function buildChartDisplayBars({
       : normalizedChartSourceBars(dailyBars);
     if (seed.length) {
       const liveDaily = aggregateChartBars(live, 1440);
-      const merged = new Map(seed.map((bar) => [Number(bar.time), bar]));
-      liveDaily.forEach((bar) => merged.set(Number(bar.time), bar));
-      return aggregateChartBars([...merged.values()], minutes);
+      return aggregateChartBars(overlayLiveOnHistorical(seed, liveDaily), minutes);
     }
   }
   const normalizedStudyBars = sourcesNormalized && Array.isArray(studyBars)
@@ -294,7 +407,31 @@ export function buildChartDisplayBars({
     // which the ingestion contract caps at ~5 days - 63 candles on 1h, 32 on 2h.
     || (studyCadence > 0 && studyCadence <= minutes)
   );
-  if (!usesStudyHistory) return aggregateChartBars(live, minutes);
+  if (!usesStudyHistory) {
+    // Low timeframes: prefer the 60-day FIVE-minute tape over the live
+    // one-minute tape, which the ingestion contract caps for render cost and
+    // which therefore ran out about two weeks back. The 5m tape is finer than
+    // any of these buckets, so it reconstructs them exactly; the live tape is
+    // still merged on top so the forming candle keeps ticking.
+    const fine = sourcesNormalized && Array.isArray(fineStudyBars)
+      ? fineStudyBars
+      : normalizedChartSourceBars(fineStudyBars);
+    const fineCadence = chartSourceBarSpacingMinutes(fine);
+    // Only prefer the fine tape when it actually reaches FURTHER BACK than the
+    // live tape. Measured 2026-08-12: the server's five-minute tape covered
+    // two days while the client's one-minute tape covered two weeks, so using
+    // it unconditionally would have SHORTENED the chart. The guard makes the
+    // client correct regardless of how deep the server's tape happens to be.
+    const earliest = (rows) => (rows.length ? Number(rows[0].time) || 0 : 0);
+    const fineReachesFurther = fine.length > 0
+      && (!live.length || earliest(fine) < earliest(live));
+    if (fine.length && fineCadence > 0 && fineCadence <= minutes && fineReachesFurther) {
+      const historical = aggregateChartBars(fine, minutes);
+      const liveShared = aggregateChartBars(live, minutes);
+      return overlayLiveOnHistorical(historical, liveShared);
+    }
+    return aggregateChartBars(live, minutes);
+  }
   // Bucket BOTH tapes at the study history's native cadence — 5-minute or
   // 30-minute, the two shapes the backend has shipped — so no ghost
   // sub-cadence slots appear AND a live partial bucket still replaces its
@@ -302,10 +439,5 @@ export function buildChartDisplayBars({
   const sharedCadence = chartSourceBarSpacingMinutes(normalizedStudyBars) >= 30 ? 30 : 5;
   const historical = aggregateChartBars(normalizedStudyBars, sharedCadence);
   const liveShared = aggregateChartBars(live, sharedCadence);
-  const merged = new Map(historical.map((bar) => [Number(bar.time), bar]));
-  liveShared.forEach((bar) => merged.set(Number(bar.time), bar));
-  return aggregateChartBars(
-    [...merged.values()].sort((left, right) => Number(left.time) - Number(right.time)),
-    minutes,
-  );
+  return aggregateChartBars(overlayLiveOnHistorical(historical, liveShared), minutes);
 }

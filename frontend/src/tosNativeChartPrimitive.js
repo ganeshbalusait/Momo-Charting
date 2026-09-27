@@ -105,6 +105,22 @@ const NATIVE_SIGNAL_PANE_PADDING = 2;
 const NATIVE_SIGNAL_POINTER_HEIGHT = 5;
 const NATIVE_SIGNAL_FIRST_ROW_OFFSET = 8;
 const NATIVE_SIGNAL_ROW_GAP = 4;
+// Scanner-grade circle drawn to the right of a bullish CALL bubble.
+export const NATIVE_SIGNAL_GRADE_RADIUS = 7;
+const NATIVE_SIGNAL_GRADE_GAP = 3;
+const NATIVE_SIGNAL_GRADE_COLORS = { "A+": "#39ff88", A: "#6fdc8c", B: "#9aa0a6" };
+//: The BEAR grade (spec 2026-09-24) on PUT labels: the same ladder in red.
+const NATIVE_SIGNAL_GRADE_COLORS_BEAR = { "A+": "#ff4d6d", A: "#ff8fa3", B: "#9aa0a6" };
+//: A signal whose price has since closed back below its trigger. Faded enough
+//: to read as "past", dark enough to still be legible on the candle behind it.
+const NATIVE_SIGNAL_GRADE_FAILED_ALPHA = 0.45;
+
+// Left edge of a signal bubble, clamped so the bubble - and its grade circle
+// when it has one - never runs past either pane edge.
+export function nativeSignalBoxLeft(x, boxWidth, paneWidth, grade) {
+  const extra = grade ? NATIVE_SIGNAL_GRADE_GAP + NATIVE_SIGNAL_GRADE_RADIUS * 2 : 0;
+  return clamp(x - boxWidth / 2, 2, Math.max(2, paneWidth - boxWidth - extra - 2));
+}
 
 export function nativeSignalStackScope(signal) {
   const family = String(signal?.family || "tos-mtf");
@@ -139,7 +155,7 @@ function nativeSignalRequestedTop(label, stackOffset = null) {
  * the complete stack preserves both its source-candle x coordinate and every
  * TOS row even when a saved/manual price range leaves little vertical room.
  */
-export function nativeSignalLabelTops(labels, paneHeight) {
+export function nativeSignalLabelTops(labels, paneHeight, clampToPane = true) {
   const source = Array.isArray(labels) ? labels : [];
   const height = Math.max(1, Number(paneHeight) || 1);
   const tops = source.map(() => null);
@@ -169,15 +185,26 @@ export function nativeSignalLabelTops(labels, paneHeight) {
     const paneBottom = Math.max(paneTop, height - NATIVE_SIGNAL_PANE_PADDING);
     const groupFits = groupBottom - groupTop <= paneBottom - paneTop;
     let shift = 0;
-    if (groupFits) {
-      if (groupBottom > paneBottom) shift = paneBottom - groupBottom;
-      if (groupTop + shift < paneTop) shift += paneTop - (groupTop + shift);
-    } else {
-      // Never collapse an impossible stack. Keep the row nearest its source
-      // candle in view and let the canvas clip only the farthest rows.
-      shift = rows[0]?.label?.placement === "below"
-        ? paneTop - groupTop
-        : paneBottom - groupBottom;
+    // While the trader is actively panning (clampToPane === false) every stack
+    // must stay rigidly glued to its source candle, even if that pushes rows
+    // past the pane edge. The clamp below keeps stacks readable AT REST, but
+    // during a vertical pan it pinned edge stacks at a fixed screen Y while
+    // the candles moved underneath - on a short phone pane nearly every stack
+    // sits within one stack-height of an edge, so the fire chips and signal
+    // bubbles visibly slid relative to their candles ("not glued", iPhone
+    // 2026-08-20). Clipping during the gesture is the TOS/TradingView look;
+    // the clamp re-engages on the gesture-end repaint.
+    if (clampToPane) {
+      if (groupFits) {
+        if (groupBottom > paneBottom) shift = paneBottom - groupBottom;
+        if (groupTop + shift < paneTop) shift += paneTop - (groupTop + shift);
+      } else {
+        // Never collapse an impossible stack. Keep the row nearest its source
+        // candle in view and let the canvas clip only the farthest rows.
+        shift = rows[0]?.label?.placement === "below"
+          ? paneTop - groupTop
+          : paneBottom - groupBottom;
+      }
     }
 
     rows.forEach((row) => {
@@ -503,7 +530,7 @@ function coordinateProjector(model, chart, series) {
 // price-scale movement that would strand cached geometry.
 const PRICE_MAPPING_PROBE = 100;
 
-function nativeGeometry(model, chart, series) {
+export function nativeGeometry(model, chart, series) {
   const paneSize = chart.paneSize?.(0) || {};
   const width = Math.max(1, Number(paneSize.width) || 1);
   const height = Math.max(1, Number(paneSize.height) || 1);
@@ -769,6 +796,11 @@ function nativeGeometry(model, chart, series) {
       textColor: labelTextColor(signal.color),
       family,
       compact: signal.compact === true,
+      grade: typeof signal.grade?.letter === "string" && signal.grade.letter
+        ? signal.grade.letter
+        : undefined,
+      gradeFailed: Number.isFinite(Number(signal.grade?.failedAt)),
+      gradeBear: signal.grade?.direction === "bear",
     }];
   });
 
@@ -869,6 +901,9 @@ function roundedRectangle(context, x, y, width, height, radius) {
 class TosSignalRenderer {
   constructor() {
     this.geometry = null;
+    // Mirrors the primitive's interactionActive flag: during a pan/drag the
+    // per-draw pane-edge clamp is suspended so bubbles track their candles.
+    this.interactionActive = false;
   }
 
   setGeometry(geometry) {
@@ -885,7 +920,7 @@ class TosSignalRenderer {
       context.font = "400 11px system-ui, sans-serif";
       context.textAlign = "center";
       context.textBaseline = "middle";
-      const labelTops = nativeSignalLabelTops(this.geometry.labels, mediaSize.height);
+      const labelTops = nativeSignalLabelTops(this.geometry.labels, mediaSize.height, !this.interactionActive);
       this.geometry.candleHighlights.forEach((highlight) => {
         const height = Math.max(4, highlight.bottom - highlight.top);
         const left = highlight.x - highlight.width / 2;
@@ -979,7 +1014,7 @@ class TosSignalRenderer {
         const boxWidth = Math.max(label.compact ? 27 : 32, textWidth + (label.compact ? 9 : 12));
         const boxHeight = nativeSignalBoxHeight(label);
         const pointerHeight = NATIVE_SIGNAL_POINTER_HEIGHT;
-        const left = clamp(label.x - boxWidth / 2, 2, Math.max(2, mediaSize.width - boxWidth - 2));
+        const left = nativeSignalBoxLeft(label.x, boxWidth, mediaSize.width, label.grade);
         const centerX = clamp(label.x, left + 5, left + boxWidth - 5);
         const top = labelTops[labelIndex] ?? clamp(
           nativeSignalRequestedTop(label),
@@ -1019,6 +1054,42 @@ class TosSignalRenderer {
         context.stroke();
         context.fillStyle = isSqueeze ? "#061018" : label.textColor;
         context.fillText(label.text, left + boxWidth / 2, top + boxHeight / 2 + 0.5);
+        if (label.grade) {
+          const radius = NATIVE_SIGNAL_GRADE_RADIUS;
+          const cx = left + boxWidth + radius + NATIVE_SIGNAL_GRADE_GAP;
+          const cy = top + boxHeight / 2;
+          const palette = label.gradeBear ? NATIVE_SIGNAL_GRADE_COLORS_BEAR : NATIVE_SIGNAL_GRADE_COLORS;
+          const gradeColor = palette[label.grade] || palette.B;
+          // A signal that has SINCE failed keeps its letter - the grade was
+          // true when it was stamped and rewriting it would make the chart
+          // lie about its own history - but it is drawn faded and struck
+          // through so a dead A+ stops reading as a live one.
+          const failed = label.gradeFailed === true;
+          context.save();
+          if (failed) context.globalAlpha *= NATIVE_SIGNAL_GRADE_FAILED_ALPHA;
+          context.beginPath();
+          context.arc(cx, cy, radius, 0, Math.PI * 2);
+          context.fillStyle = "#0b1116";
+          context.fill();
+          context.lineWidth = 1.5;
+          context.strokeStyle = gradeColor;
+          context.stroke();
+          context.fillStyle = gradeColor;
+          context.font = "bold 8px sans-serif";
+          context.fillText(label.grade, cx, cy + 0.5);
+          if (failed) {
+            // A slash, not a cross: one stroke stays legible at 7px radius
+            // and still leaves the letter readable underneath.
+            const reach = radius * 0.78;
+            context.beginPath();
+            context.moveTo(cx - reach, cy + reach);
+            context.lineTo(cx + reach, cy - reach);
+            context.lineWidth = 1.5;
+            context.strokeStyle = gradeColor;
+            context.stroke();
+          }
+          context.restore();
+        }
         context.restore();
       });
       context.restore();
@@ -1160,6 +1231,9 @@ export class TosNativeChartPrimitive {
     const nextActive = Boolean(active);
     if (this.interactionActive === nextActive) return;
     this.interactionActive = nextActive;
+    // The signal renderer suspends its pane-edge label clamp while a gesture
+    // is in flight so every bubble stays glued to its candle mid-pan.
+    this.signalRenderer.interactionActive = nextActive;
     if (nextActive) {
       if (this.animationFrameId && typeof globalThis.cancelAnimationFrame === "function") {
         globalThis.cancelAnimationFrame(this.animationFrameId);

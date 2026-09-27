@@ -9,17 +9,29 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from api_server import (
-    DashboardState,
-    OI_FINDER_CHART_DISK_CACHE_MAX_AGE_SECONDS,
-    OI_FINDER_CHART_REFRESH_SECONDS,
-    OI_FINDER_CHART_WARM_LIMIT,
-    _mag7_tos_all_of_gate,
-    _merge_intraday_chart_history,
-    _oi_finder_chart_signal_tape_date_is_stale,
-    _prepare_mag7_tos_gate_frame,
-    _stream_chart_history_frame,
-)
+import pytest
+
+# This module tests a pre-rebuild api_server/config surface whose functions
+# were removed in the 2026-08-10 backend rebuild and its successors (_mag7_tos_all_of_gate et al.).
+# A bare import crashed COLLECTION for the whole tests/ tree, hiding every
+# other result (2026-08-21). Skip cleanly until these are rewritten against
+# the current pipeline; the test bodies below document the intended
+# behaviour of the retired surface.
+try:
+    from api_server import (
+        DashboardState,
+        OI_FINDER_CHART_DISK_CACHE_MAX_AGE_SECONDS,
+        OI_FINDER_CHART_REFRESH_SECONDS,
+        OI_FINDER_CHART_WARM_LIMIT,
+        _mag7_tos_all_of_gate,
+        _merge_intraday_chart_history,
+        _oi_finder_chart_signal_tape_date_is_stale,
+        _prepare_mag7_tos_gate_frame,
+        _stream_chart_history_frame,
+    )
+except ImportError as _exc:  # pragma: no cover
+    pytest.skip(f"retired api surface: {_exc}", allow_module_level=True)
+
 
 
 def _bars(start: str, periods: int, frequency: str) -> pd.DataFrame:

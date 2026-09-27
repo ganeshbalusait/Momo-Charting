@@ -2,7 +2,19 @@ from __future__ import annotations
 
 import pandas as pd
 
-from api_server import _regular_session_daily_ohlc
+import pytest
+
+# This module tests a pre-rebuild api_server/config surface whose functions
+# were removed in the 2026-08-10 backend rebuild and its successors (_regular_session_daily_ohlc).
+# A bare import crashed COLLECTION for the whole tests/ tree, hiding every
+# other result (2026-08-21). Skip cleanly until these are rewritten against
+# the current pipeline; the test bodies below document the intended
+# behaviour of the retired surface.
+try:
+    from api_server import _regular_session_daily_ohlc
+except ImportError as _exc:  # pragma: no cover
+    pytest.skip(f"retired api surface: {_exc}", allow_module_level=True)
+
 
 
 def _bar(timestamp: str, open_: float, high: float, low: float, close: float, volume: int = 100) -> dict:

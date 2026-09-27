@@ -50,6 +50,26 @@ export function chartTapeContentUnchanged(current, next) {
  * complete an empty series is authoritative, so a symbol with genuinely no
  * history never shows stale candles.
  */
+/**
+ * True when a payload must not be allowed to shrink or clear the history
+ * series (studyBars / fineStudyBars / dailyBars).
+ *
+ * `initialSlim` is the case that bit: the fast first-paint response OMITS
+ * those tapes by contract, so its empty array means "not included in this
+ * response", not "this symbol has no history". Passing only historyLoading
+ * meant that once a full rebuild finished, every `initial=true` poll wiped
+ * the 1600-bar study tape - 4H then re-aggregated from the ~900-bar
+ * one-minute tape (~10 candles instead of hundreds), the seed re-fetch
+ * restored it, the next poll wiped it again, and each cycle refit the
+ * viewport. That oscillation is what made the chart shake.
+ */
+export function chartHistorySeriesGuarded(payload) {
+  return payload?.historyLoading === true
+    || payload?.warming === true
+    || payload?.refreshing === true
+    || payload?.initialSlim === true;
+}
+
 export function resolveHistorySeriesUpdate(current, incoming, historyLoading = false) {
   const held = Array.isArray(current) ? current : [];
   const next = Array.isArray(incoming) ? incoming : [];
@@ -73,7 +93,19 @@ export function resolveHistorySeriesUpdate(current, incoming, historyLoading = f
 // those tapes continuously and the workstation froze for 30-85s at a time.
 // Enforce the contracts at ingestion so a server-side tape regression can
 // never scale frontend cost unbounded again.
-export const OI_CHART_LIVE_TAPE_MAX_BARS = 3_000;
+// The one-minute tape is the ONLY source for 3m/5m/10m/15m, so this cap is
+// their history depth: 3,000 bars is about five days, which is why a 5m chart
+// could not be panned back past last week. The server ships ~28,000 (30 days).
+//
+// Raised to 12,000 (~2 weeks, ~2,400 five-minute candles). Deliberately not
+// the full 28,000: this tape also feeds the study builders on those
+// timeframes, and an unbounded tape is what produced the 30-85s render
+// freezes the cap was introduced to stop. 4x the history at a bounded cost.
+//
+// Going deeper on 5m needs the backend to ship a FIVE-minute study tape (it
+// has shipped one before); the current 30-minute tape is too coarse to
+// reconstruct 5m candles.
+export const OI_CHART_LIVE_TAPE_MAX_BARS = 12_000;
 // 4H is aggregated from studyBars, so this window bounds the 4H chart's
 // depth. It is a SAFETY cap only - the real boundary is cadence, enforced by
 // dropCoarseHistoryPrefix below. Widening this alone is not enough and in
@@ -127,6 +159,13 @@ export function normalizeOiChartPayload(payload) {
         OI_CHART_STUDY_TAPE_MAX_AGE_SECONDS,
       ),
     ),
+    // 60-day FIVE-minute tape. studyBars is 30-minute (chosen for 4H depth)
+    // and cannot reconstruct a 5m candle, so 3m/5m/10m/15m previously had only
+    // the render-capped 1-minute tape - about two weeks - to draw from.
+    fineStudyBars: trimSeriesToNewestWindow(
+      normalizeLightweightChartSeriesData(source.fineStudyBars),
+      OI_CHART_STUDY_TAPE_MAX_AGE_SECONDS,
+    ),
     dailyBars: trimSeriesToNewestWindow(
       normalizeLightweightChartSeriesData(source.dailyBars),
       OI_CHART_DAILY_TAPE_MAX_AGE_SECONDS,
@@ -164,6 +203,54 @@ export function createOiChartWarmingPayload(symbol) {
   };
 }
 
+// Masking a transient failure is right for ONE dropped request and wrong
+// forever after. Returning a plain warming payload for every 5xx/timeout made
+// a broken backend indistinguishable from a warming one: the chart sat on
+// "Loading live one-minute candles from Schwab/TOS..." with no error, no
+// status and no visible retry, while the phone (which uses the plain API error
+// path) correctly reported the underlying 5xx. Carry the cause on the payload
+// so the caller can keep quiet at first and then tell the truth.
+export function createOiChartTransportFailurePayload(symbol, error) {
+  return {
+    ...createOiChartWarmingPayload(symbol),
+    transportFailure: true,
+    transportError: {
+      name: String(error?.name || "Error"),
+      message: String(error?.message || ""),
+      httpStatus: Number(error?.httpStatus || 0) || 0,
+    },
+  };
+}
+
+// How many consecutive transport failures stay invisible before the chart
+// admits it is not merely warming. Two covers a service restart and a single
+// market-open burst; a third failure means something is actually wrong.
+export const OI_CHART_TRANSPORT_FAILURE_GRACE_ATTEMPTS = 2;
+
+export function describeOiChartTransportFailure(error) {
+  const status = Number(error?.httpStatus || 0);
+  if (status >= 500 && status <= 599) {
+    return `API is unavailable right now (server error ${status}).`;
+  }
+  if (String(error?.name || "") === "AbortError") {
+    return "The chart request timed out - the API did not answer in time.";
+  }
+  return "Lost the connection to the API.";
+}
+
+// Empty string means "stay on the loading placeholder". A non-empty notice is
+// shown in place of the chart while the background loop keeps retrying, so it
+// must never read as a terminal, user-must-act failure.
+export function oiChartTransportFailureNotice(
+  consecutiveFailures,
+  error,
+  graceAttempts = OI_CHART_TRANSPORT_FAILURE_GRACE_ATTEMPTS,
+) {
+  const failures = Number(consecutiveFailures);
+  if (!Number.isFinite(failures) || failures <= graceAttempts) return "";
+  return `${describeOiChartTransportFailure(error)} Retrying automatically.`;
+}
+
 // A local service restart makes browser fetch reject before it receives an
 // HTTP status. Treat that separately from a broker/API response: the chart's
 // readiness poll can reconnect in the next moment, while a real HTTP error is
@@ -195,14 +282,33 @@ export function guardLightweightChartSeriesTree(value, path = "chart", visited =
   visited.add(value);
   if (typeof value.setData === "function") {
     const setData = value.setData.bind(value);
+    // Re-applying the identical array is pure cost: normalizing it and handing it
+    // back to Lightweight Charts profiled at ~350ms of one 773ms task during a
+    // ticker switch, across every series of every pane. The tape helpers in this
+    // module already preserve the reference for unchanged data (see
+    // resolveHistorySeriesUpdate), so "same reference" is this codebase's own
+    // definition of unchanged. Length is compared too as a cheap backstop, and a
+    // rebuilt series tree gets a fresh closure, so its first apply always runs.
+    let appliedData;
+    let appliedLength = -1;
     value.setData = (data) => {
+      if (data === appliedData && Array.isArray(data) && data.length === appliedLength) {
+        return undefined;
+      }
       const normalized = normalizeLightweightChartSeriesData(data);
       try {
-        return setData(normalized);
+        const result = setData(normalized);
+        appliedData = data;
+        appliedLength = Array.isArray(data) ? data.length : -1;
+        return result;
       } catch (error) {
         // A malformed optional study must never unmount the chart workspace.
         // Clear only that series and leave candles/option chain operational.
         console.error(`Skipped invalid ${path} series data.`, error);
+        // The series now holds [], not `data`. Forget what was applied so a retry
+        // with the same reference is never skipped as already-drawn.
+        appliedData = undefined;
+        appliedLength = -1;
         try {
           return setData([]);
         } catch {
@@ -221,4 +327,136 @@ export function guardLightweightChartSeriesTree(value, path = "chart", visited =
   Object.entries(value).forEach(([key, item]) => {
     guardLightweightChartSeriesTree(item, `${path}.${key}`, visited);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Tail-diff series apply.
+//
+// Lightweight Charts rebuilds the shared time index across EVERY series on each
+// setData() call (DataLayer.setSeriesData), so its cost is the total number of
+// points in the chart, not the size of the series being set. A six-across
+// workspace measured 38 setData calls per apply pass on ~60 series of ~11.7k
+// points: "persons-pivots" alone took ~2s, a full pass ~3.4s, and the pass
+// re-ran every ~10s per panel because a tape TAIL change (the forming candle,
+// one new bar) invalidates every study array. Six panels of that saturate the
+// main thread and starve the study ladder - the lower panes never activate.
+//
+// update(point) only touches the tail. Nearly every routine apply changes just
+// the last point (or appends a bar) while the history is byte-identical, so
+// diff against what this series last received and prefer update() for that
+// shape; anything else (history changed, points removed, older times) falls
+// back to setData(). The comparison is a linear scan of primitives, microseconds
+// against the milliseconds a time-index rebuild costs.
+// ---------------------------------------------------------------------------
+const appliedSeriesData = new WeakMap();
+
+function seriesPointsEqual(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  for (const key of leftKeys) {
+    const a = left[key];
+    const b = right[key];
+    if (a === b) continue;
+    // NaN !== NaN, and whitespace points carry no value at all.
+    if (Number.isNaN(a) && Number.isNaN(b)) continue;
+    return false;
+  }
+  return true;
+}
+
+function seriesPointTime(point) {
+  const time = point?.time;
+  return typeof time === "number" ? time : Number(time);
+}
+
+export function applySeriesData(series, data, options = {}) {
+  if (!series || typeof series.setData !== "function") return "none";
+  const next = Array.isArray(data) ? data : [];
+  const previous = appliedSeriesData.get(series);
+  if (options.force === true || !Array.isArray(previous) || typeof series.update !== "function") {
+    series.setData(next);
+    appliedSeriesData.set(series, next);
+    return "setData";
+  }
+  if (previous === next) return "skip";
+  if (!next.length) {
+    if (!previous.length) {
+      appliedSeriesData.set(series, next);
+      return "skip";
+    }
+    series.setData(next);
+    appliedSeriesData.set(series, next);
+    return "setData";
+  }
+  const maxAppended = Number.isFinite(options.maxAppended) ? Math.max(0, options.maxAppended) : 8;
+  const appended = next.length - previous.length;
+  if (previous.length && appended >= 0 && appended <= maxAppended) {
+    // Everything before the previous last point must be identical: update()
+    // can restate the last point and append newer ones, nothing older.
+    const stableCount = previous.length - 1;
+    let historyIdentical = true;
+    for (let index = 0; index < stableCount; index += 1) {
+      if (!seriesPointsEqual(previous[index], next[index])) {
+        historyIdentical = false;
+        break;
+      }
+    }
+    if (historyIdentical) {
+      let lastTime = seriesPointTime(previous[stableCount]);
+      let changed = false;
+      let ordered = true;
+      const updates = [];
+      for (let index = stableCount; index < next.length; index += 1) {
+        const point = next[index];
+        const time = seriesPointTime(point);
+        if (!Number.isFinite(time) || time < lastTime) {
+          ordered = false;
+          break;
+        }
+        // A point that already exists in the series may only be RESTATED at
+        // its own time. update() cannot remove a point, so a last point that
+        // moved to a later time would leave the old one behind as a phantom.
+        if (index < previous.length && time !== seriesPointTime(previous[index])) {
+          ordered = false;
+          break;
+        }
+        if (index >= previous.length || !seriesPointsEqual(previous[index], point)) {
+          updates.push(point);
+          changed = true;
+        }
+        lastTime = time;
+      }
+      if (ordered) {
+        if (!changed) {
+          appliedSeriesData.set(series, next);
+          return "skip";
+        }
+        // The candle and volume series are also advanced imperatively by the
+        // live stream (a newer bar than this baseline knows about), and
+        // Lightweight Charts throws "Cannot update oldest data" for a point
+        // older than the series' own last one. That must never take the panel
+        // down: fall back to a full setData, which re-baselines everything.
+        try {
+          updates.forEach((point) => series.update(point));
+          appliedSeriesData.set(series, next);
+          return "update";
+        } catch {
+          series.setData(next);
+          appliedSeriesData.set(series, next);
+          return "setData";
+        }
+      }
+    }
+  }
+  series.setData(next);
+  appliedSeriesData.set(series, next);
+  return "setData";
+}
+
+// Tests and diagnostics: what this series last received through applySeriesData.
+export function appliedSeriesDataFor(series) {
+  return appliedSeriesData.get(series);
 }

@@ -12,16 +12,28 @@ const EASTERN_PARTS_FORMATTER = new Intl.DateTimeFormat("en-US", {
   hourCycle: "h23",
 });
 
+// formatToParts allocates a parts array that is then filtered, mapped and turned
+// into an object - once per timestamp, across whole tapes, while the chart lays
+// out its time axis. Profiled at ~70ms inside a single 773ms task on a ticker
+// switch. The answer depends only on the timestamp, so keep it.
+//
+// Callers receive a COPY: several of them reassign/mutate the returned object,
+// and they must never be handed the cached one.
+const easternPartsCache = new Map();
+const EASTERN_PARTS_CACHE_LIMIT = 20000;
+
 function easternParts(timestamp) {
   const time = Math.floor(Number(timestamp || 0));
   if (!Number.isFinite(time) || time <= 0) return null;
+  const cached = easternPartsCache.get(time);
+  if (cached) return { ...cached };
   const values = Object.fromEntries(
     EASTERN_PARTS_FORMATTER
       .formatToParts(new Date(time * 1000))
       .filter((part) => part.type !== "literal")
       .map((part) => [part.type, part.value]),
   );
-  return {
+  const parts = {
     year: Number(values.year),
     month: Number(values.month),
     day: Number(values.day),
@@ -30,6 +42,11 @@ function easternParts(timestamp) {
     minute: Number(values.minute),
     second: Number(values.second),
   };
+  // Whole-cache reset rather than LRU bookkeeping: the keys are bar timestamps,
+  // so the working set turns over with the chart, not one entry at a time.
+  if (easternPartsCache.size >= EASTERN_PARTS_CACHE_LIMIT) easternPartsCache.clear();
+  easternPartsCache.set(time, parts);
+  return { ...parts };
 }
 
 function wallClockUtc(parts) {
@@ -183,16 +200,17 @@ function nextBusinessDate(parts) {
 function intradayBucketTimes(parts, timeframeMinutes) {
   const minutes = Math.max(1, Math.floor(Number(timeframeMinutes) || 1));
   if (minutes === 120) {
-    // Keep 2H candles anchored to the Eastern extended-hours session through
-    // both EST and EDT instead of inheriting alternating UTC epoch boundaries.
-    return Array.from({ length: 8 }, (_, index) => 240 + index * 120).map((minute) => (
-      easternWallClockToTimestamp({
-        ...parts,
-        hour: Math.floor(minute / 60),
-        minute: minute % 60,
-        second: 0,
-      })
-    ));
+    // TOS 2h bars share the 4h clock below (midnight Central): 21:00 and
+    // 23:00 of the previous date open the session, then 01:00 ... 19:00 ET,
+    // twelve bars per 24-hour extended day. Same density as the history now
+    // that the overnight session is on the tape.
+    const previousDate = moveEasternDate(parts, -1);
+    return [
+      ...[21, 23].map((hour) => easternWallClockToTimestamp({ ...previousDate, hour, minute: 0, second: 0 })),
+      ...Array.from({ length: 10 }, (_, index) => 1 + index * 2).map((hour) => (
+        easternWallClockToTimestamp({ ...parts, hour, minute: 0, second: 0 })
+      )),
+    ];
   }
   if (minutes === 240) {
     // Primary TOS equity Last-price bars begin at midnight Central, so the

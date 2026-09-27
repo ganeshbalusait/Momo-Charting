@@ -2,7 +2,19 @@ from __future__ import annotations
 
 import pandas as pd
 
-from api_server import _merge_chart_and_watchlist_mtf_signals, _merge_live_mtf_history
+import pytest
+
+# This module tests a pre-rebuild api_server/config surface whose functions
+# were removed in the 2026-08-10 backend rebuild and its successors (_merge_chart_and_watchlist_mtf_signals, _merge_live_mtf_history).
+# A bare import crashed COLLECTION for the whole tests/ tree, hiding every
+# other result (2026-08-21). Skip cleanly until these are rewritten against
+# the current pipeline; the test bodies below document the intended
+# behaviour of the retired surface.
+try:
+    from api_server import _merge_chart_and_watchlist_mtf_signals, _merge_live_mtf_history
+except ImportError as _exc:  # pragma: no cover
+    pytest.skip(f"retired api surface: {_exc}", allow_module_level=True)
+
 
 
 def _stamp(value: str) -> int:

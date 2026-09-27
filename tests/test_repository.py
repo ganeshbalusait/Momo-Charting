@@ -512,3 +512,92 @@ class RepositoryRollupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class OptionExpiryDedupeGuardTests(unittest.TestCase):
+    """The legacy expiry migration must not re-scan the whole table every boot.
+
+    Measured on the live database 2026-08-22: option_chain_daily_snapshots holds
+    2,349,128 rows and ZERO of them need canonicalising, yet
+    _deduplicate_option_chain_snapshot_expiries bare-SELECTed all of them into
+    Python dicts inside initialize() - reported at 55s of GIL and 2,088MB
+    transient RSS on EVERY boot, growing ~4s/day. There were seven restarts on
+    2026-08-21, five of them during market hours.
+
+    The pass is provably a no-op once every expiry is already canonical:
+    _canonical_option_expiry only differs from the stored value when the text is
+    longer than 10 chars with dashes at positions 5 and 8, and the table carries
+    UNIQUE(snapshot_date, symbol, expiry, side, strike) - so with all-canonical
+    expiries the grouping key IS the unique key and every group has exactly one
+    member.
+    """
+
+    @staticmethod
+    def _insert(repository, expiry, strike=100.0, captured_at="2026-08-21T10:00:00"):
+        with repository._connect() as connection:
+            connection.execute(
+                "INSERT INTO option_chain_daily_snapshots "
+                "(snapshot_date, captured_at, symbol, expiry, side, strike, volume, open_interest, gamma, delta) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2026-08-21", captured_at, "AAPL", expiry, "CALL", strike, 1.0, 2.0, 0.0, 0.0),
+            )
+
+    def test_canonical_table_is_not_scanned(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = TradingRepository(db_path=os.path.join(temp_dir, "trades.db"))
+            for index in range(5):
+                self._insert(repository, "2026-09-18", strike=100.0 + index)
+
+            scanned = []
+
+            class _Watched:
+                """sqlite3.Connection.execute is read-only, so proxy instead."""
+
+                def __init__(self, inner):
+                    self._inner = inner
+
+                def execute(self, sql, *args, **kwargs):
+                    if "FROM option_chain_daily_snapshots" in sql and "LIMIT" not in sql.upper():
+                        scanned.append(" ".join(sql.split()))
+                    return self._inner.execute(sql, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self._inner, name)
+
+            with repository._connect() as connection:
+                repository._deduplicate_option_chain_snapshot_expiries(_Watched(connection))
+
+            self.assertEqual(scanned, [], "took the full-table scan on an already-canonical table")
+
+    def test_legacy_timestamp_expiry_is_still_collapsed(self):
+        """The guard must not disable the migration it guards."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = TradingRepository(db_path=os.path.join(temp_dir, "trades.db"))
+            self._insert(repository, "2026-09-18T00:00:00", captured_at="2026-08-21T09:00:00")
+
+            with repository._connect() as connection:
+                repository._deduplicate_option_chain_snapshot_expiries(connection)
+
+            with repository._connect() as connection:
+                rows = connection.execute(
+                    "SELECT expiry FROM option_chain_daily_snapshots ORDER BY expiry"
+                ).fetchall()
+            self.assertEqual([str(row["expiry"]) for row in rows], ["2026-09-18"])
+
+    def test_duplicate_across_expiry_forms_keeps_the_newest(self):
+        """Two spellings of one expiry collapse to the latest captured_at."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = TradingRepository(db_path=os.path.join(temp_dir, "trades.db"))
+            self._insert(repository, "2026-09-18", captured_at="2026-08-21T09:00:00")
+            self._insert(repository, "2026-09-18T00:00:00", captured_at="2026-08-21T15:00:00")
+
+            with repository._connect() as connection:
+                repository._deduplicate_option_chain_snapshot_expiries(connection)
+
+            with repository._connect() as connection:
+                rows = connection.execute(
+                    "SELECT expiry, captured_at FROM option_chain_daily_snapshots"
+                ).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(str(rows[0]["expiry"]), "2026-09-18")
+            self.assertEqual(str(rows[0]["captured_at"]), "2026-08-21T15:00:00")

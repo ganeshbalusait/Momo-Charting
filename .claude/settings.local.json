@@ -26,7 +26,12 @@
       "Bash(sed -i 's/\\\\r$//' __TRACKED_VAR__/alert-tests-append.py)",
       "Bash(sed -i -e 's#^ assert ladder\\\\[\"monthlyExpiry\"\\\\] == \"2026-08-21\"$# assert ladder[\"monthlyExpiry\"] == \"2026-09-18\"#' -e 's#^ assert \\\\[level\\\\[\"strike\"\\\\] for level in ladder\\\\[\"callLevels\"\\\\]\\\\] == \\\\[345.0, 350.0, 355.0, 360.0\\\\]$# assert [level[\"strike\"] for level in ladder[\"callLevels\"]] == [345.0, 350.0, 360.0]#' -e 's#^ assert \\\\[level\\\\[\"strike\"\\\\] for level in events\\\\[0\\\\]\\\\[\"crossedLevels\"\\\\]\\\\] == \\\\[345, 350, 355\\\\]$# assert [level[\"strike\"] for level in events[0][\"crossedLevels\"]] == [345, 350]#' -e 's#^ assert events\\\\[0\\\\]\\\\[\"confirmedLevel\"\\\\]\\\\[\"strike\"\\\\] == 355$# assert events[0][\"confirmedLevel\"][\"strike\"] == 350#' -e 's#^ assert next_monthly_opex\\(date\\(2026, 8, 17\\)\\).isoformat\\(\\) == \"2026-08-21\"$# assert next_monthly_opex\\(date\\(2026, 8, 10\\)\\).isoformat\\(\\) == \"2026-08-21\"#' tests/test_oi_auto_alerts.py)",
       "Bash(sed -i 's/\\\\r$//' __TRACKED_VAR__/commitmsg.txt)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" status --short)",
+      "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" remote -v)",
+      "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" branch --show-current)",
+      "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" log --oneline -3)",
+      "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" worktree list)"
     ]
   }
 }

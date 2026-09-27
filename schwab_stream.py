@@ -67,6 +67,11 @@ class SchwabMarketStream:
         self._last_error = ""
         self._last_event_at: str | None = None
         self._last_event_by_type: dict[str, dict] = {}
+        #: Newest quote per equity symbol, for snapshot readers (the MomX
+        #: fastlane polls this instead of tailing the event deque). Written
+        #: under _condition in _publish; includes Alpaca-failover quotes too,
+        #: since those publish through the same pipe with their own source tag.
+        self._latest_equity: dict[str, dict] = {}
         self._chart_history_path = Path(chart_history_path) if chart_history_path else None
         self._chart_history_max_bars = max(100, int(chart_history_max_bars))
         self._chart_history_flush_seconds = max(0.0, float(chart_history_flush_seconds))
@@ -116,6 +121,8 @@ class SchwabMarketStream:
                 "marketTimeMillis": market_time_millis,
                 "sequence": self._sequence,
             }
+            if event_type == "equity" and event["symbol"]:
+                self._latest_equity[event["symbol"]] = {**data, "receivedAt": received_at}
             self._condition.notify_all()
 
     def _handle_equity(self, message: dict) -> None:
@@ -442,6 +449,24 @@ class SchwabMarketStream:
                     or time.monotonic() >= deadline
                 ):
                     return cursor, events
+
+    def latest_equities(self, symbols: Iterable[str] | None = None) -> dict[str, dict]:
+        """Newest quote per symbol (copies), or every cached symbol when None.
+
+        A snapshot read for pollers: unlike wait_for_events it never blocks and
+        never replays history - just "what is the freshest quote you hold".
+        Unknown symbols are simply absent from the result.
+        """
+        with self._condition:
+            if symbols is None:
+                return {key: dict(value) for key, value in self._latest_equity.items()}
+            out: dict[str, dict] = {}
+            for raw in symbols:
+                key = str(raw or "").strip().upper()
+                held = self._latest_equity.get(key)
+                if held is not None:
+                    out[key] = dict(held)
+            return out
 
     def status(self) -> dict:
         with self._lock:

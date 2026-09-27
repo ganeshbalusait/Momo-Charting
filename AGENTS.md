@@ -16,3 +16,7 @@ Treat this checklist as a standing requirement for every code change in this rep
 - Report what was tested and any test limitation in the final handoff.
 
 Do not consider a visual change complete from a screenshot or successful compilation alone.
+
+## Release notes are mandatory
+
+Every fix or feature that ships gets an entry at the TOP of `frontend/public/release-notes.json`, in the same commit, stamped in ET, written as what the trader would notice (not code detail). The pre-commit hook (`scripts/check_release_notes.py`) refuses a commit that changes app code without a new entry. Do not bypass it with `--no-verify` unless Ganesh asks. Rebuild the frontend afterwards so the installed app sees the entry.

@@ -503,8 +503,23 @@ export function projectGaneshSignalsToChart(signals, chartBars, aggregationMinut
   (Array.isArray(signals) ? signals : []).forEach((signal) => {
     const sourceTime = Number(signal?.time || 0);
     const bucketTime = chartAggregationBucketTime(sourceTime, aggregationMinutes);
-    const match = barsByTime.get(Number(bucketTime));
-    if (!match) return;
+    let match = barsByTime.get(Number(bucketTime));
+    if (!match) {
+      // Overnight/premarket D-M stamps land in tape gaps (a 01:00 CALLD on a
+      // tape whose day starts 04:00 - trader report 2026-08-24: "I don't see
+      // cyan signals in charts" while the scanner showed them). Snap FORWARD
+      // to the first bar at/after the signal so the bubble still draws;
+      // sourceTime keeps the true print time.
+      let lo = 0;
+      let hi = bars.length - 1;
+      let snapped = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (Number(bars[mid].time) >= sourceTime) { snapped = mid; hi = mid - 1; } else { lo = mid + 1; }
+      }
+      if (snapped < 0) return;
+      match = { bar: bars[snapped], index: snapped };
+    }
     const { bar, index } = match;
     const direction = signal.direction === "PUT" ? "PUT" : "CALL";
     const multiplier = Math.max(0, Number(signal.atrMultiplier) || 0);

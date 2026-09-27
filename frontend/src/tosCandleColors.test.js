@@ -77,3 +77,40 @@ describe("shared_CoolCandles_Momo_New24 translation", () => {
     assert.equal(painted.length, 2);
   });
 });
+
+describe("cyanMagentaOnly collapse", () => {
+  const only = (bars) => calculateTosCandlePaints(bars, { cyanMagentaOnly: true }).map(({ color }) => color);
+
+  it("replaces the white high-squeeze candle with a momentum cyan/magenta body", () => {
+    const flat = Array.from({ length: 80 }, (_, index) => bar(index, 100, {
+      open: 100,
+      high: 100.02,
+      low: 99.98,
+    }));
+    const colors = only(flat);
+    assert.ok(!colors.includes("#ffffff"), "no white candles remain");
+    assert.ok(!colors.includes("#ffc800"), "no orange candles remain");
+    assert.ok(colors.every((color) => color === "#00ffff" || color === "#ff00ff"),
+      "every candle is cyan or magenta");
+  });
+
+  it("emits only cyan/magenta across a full momentum pulse (no teal/purple/white/orange)", () => {
+    const pulse = Array.from({ length: 140 }, (_, index) => {
+      const close = 100 + Math.sin(index / 2) * 0.01 + index * 0.005;
+      return bar(index, close, { open: close - 0.01, high: close + 0.01, low: close - 0.01 });
+    });
+    const colors = only(pulse);
+    assert.ok(colors.every((color) => color === "#00ffff" || color === "#ff00ff"),
+      "every candle is cyan or magenta");
+    assert.ok(colors.includes("#00ffff"), "rising pulse shows cyan momentum");
+  });
+
+  it("leaves the literal palette untouched when the flag is off (default)", () => {
+    const flat = Array.from({ length: 80 }, (_, index) => bar(index, 100, {
+      open: 100,
+      high: 100.02,
+      low: 99.98,
+    }));
+    assert.ok(calculateTosCandlePaints(flat).map(({ color }) => color).includes("#ffffff"));
+  });
+});

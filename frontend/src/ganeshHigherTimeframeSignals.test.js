@@ -472,3 +472,24 @@ test("source visibility options suppress only the selected study timeframe", () 
   });
   assert.deepEqual(signals, []);
 });
+
+test("gap-stamped signals snap forward to the first available bar", () => {
+  // Tape starts at 04:00; the CALLD printed at 01:00 (overnight, no bars).
+  const t0 = 1787990400; // arbitrary aligned epoch
+  const bars = [0, 1, 2, 3].map((i) => ({
+    time: t0 + i * 300, open: 10, high: 11, low: 9, close: 10.5, volume: 1,
+  }));
+  const signals = [{
+    family: "ganesh920", timeframe: "D", direction: "CALL",
+    label: "CALLD", time: t0 - 3 * 3600, atrMultiplier: 0.2,
+  }];
+  const projected = projectGaneshSignalsToChart(signals, bars, 5);
+  assert.equal(projected.length, 1);
+  assert.equal(projected[0].time, t0);              // drawn on the first bar
+  assert.equal(projected[0].sourceTime, t0 - 3 * 3600); // true stamp kept
+  // A signal after the last bar has no bar at/after it: correctly dropped.
+  const late = projectGaneshSignalsToChart(
+    [{ ...signals[0], time: t0 + 99 * 300 }], bars, 5,
+  );
+  assert.equal(late.length, 0);
+});

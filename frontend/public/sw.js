@@ -1,63 +1,60 @@
-/* Service worker for the installable (PWA) build of the trading dashboard.
- *
- * Deliberately network-first for everything. This is a trading app: serving a
- * cached quote, chain or bundle would be worse than showing nothing. The cache
- * exists only so the window opens with a shell instead of Chrome's dinosaur
- * when the dev server / API is down, and so Chrome sees a fetch handler and
- * offers the install prompt.
- */
+// Network-only service worker: makes AGX installable, and CANNOT go stale.
+//
+// History, because this file has been through both failure modes:
+//
+//   1. An early PWA build cached assets. That worker kept serving old bundles
+//      after new ones shipped - a fresh bundle sat on the origin while the
+//      browser showed days-old code no matter how often the trader reloaded
+//      (observed 2026-08-28).
+//   2. The fix was a tombstone worker that wiped every cache and unregistered
+//      itself. It worked - and it also removed the last registered worker, so
+//      Chrome stopped offering "Install AGX" in the address bar, which the
+//      trader noticed on 2026-09-01: "chrome bar i dont see option to download
+//      our app before it was there".
+//
+// Chrome will only offer installation when a service worker with a fetch
+// handler controls the page. So this worker exists solely to satisfy that,
+// and does the least possible work: EVERY request goes straight to the
+// network. There is no cache, no cache API call, no stale-while-revalidate,
+// nothing to serve an old asset from. Failure mode 1 is therefore not merely
+// unlikely here, it is unreachable - you cannot serve a stale response you
+// never stored.
+//
+// Freshness is handled where it belongs, outside this file: appVersion.js
+// watches the entry bundle's content hash and offers "New version available".
+// That check reads the network directly and does not depend on this worker.
+//
+// If you ever need to add caching here, do not. Ask why first: the cost of
+// getting it wrong is the trader looking at yesterday's prices.
 
-const CACHE = "agentic-shell-v1";
+const VERSION = "agx-network-only-v1";
 
-// Only these get written to the cache. Everything else (API, Vite dev
-// modules, HMR, fonts) is passed straight through to the network.
-const CACHEABLE = [/^\/$/, /^\/assets\//, /^\/icons\//, /^\/manifest\.webmanifest$/];
-
-self.addEventListener("install", (event) => {
-  event.waitUntil(self.skipWaiting());
+self.addEventListener("install", () => {
+  // Take over immediately rather than waiting for every tab to close - a
+  // trader with a chart open all day would otherwise never get the new worker.
+  self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    (async () => {
-      const names = await caches.keys();
-      await Promise.all(names.filter((n) => n !== CACHE).map((n) => caches.delete(n)));
-      await self.clients.claim();
-    })(),
-  );
+  event.waitUntil((async () => {
+    // Delete anything an older caching worker left behind. Without this, the
+    // caches survive even though nothing reads them - and the next person to
+    // add a cache-first handler would silently resurrect ancient assets.
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    } catch (err) {
+      // A browser that denies the cache API is fine: there is nothing this
+      // worker needs it for.
+    }
+    await self.clients.claim();
+  })());
 });
 
-function isCacheable(url) {
-  return CACHEABLE.some((re) => re.test(url.pathname));
-}
-
 self.addEventListener("fetch", (event) => {
-  const { request } = event;
-  if (request.method !== "GET") return;
-
-  const url = new URL(request.url);
-  if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith("/api")) return; // never touch live data
-
-  const navigation = request.mode === "navigate";
-  if (!navigation && !isCacheable(url)) return;
-
-  event.respondWith(
-    (async () => {
-      try {
-        const response = await fetch(request);
-        if (response.ok && (navigation || isCacheable(url))) {
-          const copy = response.clone();
-          const cache = await caches.open(CACHE);
-          // Navigations are all served by the same index.html shell.
-          cache.put(navigation ? "/" : request, copy);
-        }
-        return response;
-      } catch (err) {
-        const cached = await caches.match(navigation ? "/" : request);
-        if (cached) return cached;
-        throw err;
-      }
-    })(),
-  );
+  // Straight to the network, always. This handler exists so the app is
+  // installable; it deliberately adds no behaviour of its own. The catch
+  // lets the browser show its normal offline error rather than a broken
+  // half-response.
+  event.respondWith(fetch(event.request).catch(() => Response.error()));
 });

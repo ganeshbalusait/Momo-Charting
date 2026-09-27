@@ -2,7 +2,10 @@
 // plus live scalars) over the full payload the browser already holds, so
 // periodic reconciles cost a few KB instead of re-downloading ~2MB of tape.
 
-const SERIES_KEYS = new Set(["bars", "studyBars", "dailyBars"]);
+// fineStudyBars is the 60-day five-minute tape; the server sends only its tail
+// since the cutoff (mirrored in _delta_chart_payload), so it must be merged like
+// bars - copying it whole left the browser holding 1 row instead of 13,806.
+const SERIES_KEYS = new Set(["bars", "studyBars", "fineStudyBars", "dailyBars"]);
 const CONTROL_KEYS = new Set(["delta", "deltaSince"]);
 
 function mergeSeriesTail(baseRows, deltaRows, since) {
@@ -26,6 +29,7 @@ export function mergeChartDeltaPayload(base, delta) {
   }
   merged.bars = mergeSeriesTail(base.bars, delta.bars, since);
   merged.studyBars = mergeSeriesTail(base.studyBars, delta.studyBars, since);
+  merged.fineStudyBars = mergeSeriesTail(base.fineStudyBars, delta.fineStudyBars, since);
   const dailyTail = Array.isArray(delta.dailyBars) ? delta.dailyBars : [];
   if (dailyTail.length) {
     const firstTime = Number(dailyTail[0]?.time || 0);

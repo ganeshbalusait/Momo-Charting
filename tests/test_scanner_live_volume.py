@@ -42,17 +42,29 @@ class MtfStockScannerGateTests(unittest.TestCase):
         })
 
     def test_watchlist_yellow_requires_4x8_cross_inside_9x20_bull_trend(self):
-        valid_yellow = [100.0, 101.19, 103.33, 102.95, 104.3, 104.72, 103.57, 101.84, 102.58, 100.04, 102.51, 100.38, 97.54, 95.18, 97.75, 96.82, 94.67, 91.84, 89.09, 90.25, 91.05, 92.24, 93.66, 91.05, 91.59, 90.77, 92.68, 94.6, 96.94, 94.34, 96.55, 99.03, 101.7, 99.34, 97.58, 95.25, 92.46, 94.54, 96.41, 97.22]
+        # A PURE 4x8 cross inside a locked 9x20 bull: uptrend, shallow 5-bar
+        # dip that drags EMA4 under EMA8 without crossing 9/20 or the MACD
+        # signal, then a recovery re-crossing 4 over 8 in the final bars.
+        # (Ladder colour: lime, emitted as the 4x8 family's yellow. The
+        # previous fixture also crossed 9/20 late, so cyan's higher ladder
+        # priority won -- see the companion test below.)
+        valid_yellow = [98.34, 99.71, 99.39, 99.15, 98.33, 97.96, 98.78, 98.92, 99.63, 100.38, 102.18, 102.16, 100.88, 102.41, 102.39, 103.97, 104.74, 104.94, 105.68, 108.17, 110.81, 111.23, 111.76, 113.29, 112.71, 113.43, 113.75, 114.45, 113.88, 112.48, 110.55, 109.67, 109.52, 109.55, 112.03, 113.59]
+        both_crosses_prefers_cyan = [100.0, 101.19, 103.33, 102.95, 104.3, 104.72, 103.57, 101.84, 102.58, 100.04, 102.51, 100.38, 97.54, 95.18, 97.75, 96.82, 94.67, 91.84, 89.09, 90.25, 91.05, 92.24, 93.66, 91.05, 91.59, 90.77, 92.68, 94.6, 96.94, 94.34, 96.55, 99.03, 101.7, 99.34, 97.58, 95.25, 92.46, 94.54, 96.41, 97.22]
         invalid_cross = [100.0, 99.44, 97.83, 99.57, 99.32, 101.31, 100.56, 101.96, 99.13, 97.45, 100.21, 101.31, 102.36, 102.34, 102.18, 100.36, 98.4, 99.27, 100.43, 98.99, 99.85, 97.67, 98.35, 96.38, 96.44, 95.32, 95.62, 93.43, 93.33, 94.03, 91.84, 90.69, 91.76, 92.04, 92.74, 94.42, 94.85, 93.18, 92.83, 94.81]
         bullish_higher = self._aggregated_fixture(list(range(100, 140)), "4h")
         daily = self._aggregated_fixture(list(range(100, 140)), "1D")
 
         with patch("scanner._aggregate_mtf_bars", side_effect=[self._aggregated_fixture(valid_yellow), bullish_higher, daily]):
             valid = _tos_watchlist_mtf_signal_payload(pd.DataFrame())
+        with patch("scanner._aggregate_mtf_bars", side_effect=[self._aggregated_fixture(both_crosses_prefers_cyan), bullish_higher, daily]):
+            both = _tos_watchlist_mtf_signal_payload(pd.DataFrame())
         with patch("scanner._aggregate_mtf_bars", side_effect=[self._aggregated_fixture(invalid_cross), bullish_higher, daily]):
             invalid = _tos_watchlist_mtf_signal_payload(pd.DataFrame())
 
         self.assertEqual(valid["bullishSignalLabels"], ["CALL2H yellow"])
+        # When the 9/20 crosses in the same window, the ladder's higher
+        # priority wins: the signal reports as cyan, not yellow.
+        self.assertEqual(both["bullishSignalLabels"], ["CALL2H cyan"])
         self.assertFalse(invalid["bullishSignalPass"])
 
     def test_mtf_call_signals_are_returned_as_five_groups_with_combined_colors(self):

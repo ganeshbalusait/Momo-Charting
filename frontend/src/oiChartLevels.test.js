@@ -163,10 +163,12 @@ test("ranks and styles high OI levels in the five TOS tiers", () => {
   assert.equal(model.callLevels[1].lineWidth, 4);
   assert.equal(model.callLevels[1].lineStyle, 3);
   assert.equal(model.callLevels[1].displayTitle, "C M 5K");
+  // 2K against a 10K leader is a light wall, so it draws thin - it used to
+  // draw as boldly as the 10K one purely for being third in the list.
   assert.equal(model.callLevels[2].strength, "weak");
-  assert.equal(model.callLevels[2].tier, 5);
+  assert.equal(model.callLevels[2].tier, 2);
   assert.equal(model.callLevels[2].color, "#8c2a30");
-  assert.equal(model.callLevels[2].lineWidth, 4);
+  assert.equal(model.callLevels[2].lineWidth, 1);
   assert.equal(model.callLevels[2].lineStyle, 2);
   assert.equal(model.callLevels[2].visible, false);
   assert.match(model.callLevels[0].title, /C OI T5 205 · 10K/);
@@ -182,7 +184,8 @@ test("combines call and put labels when both have high OI at one strike", () => 
 
   assert.deepEqual(shared.sides, ["C", "P"]);
   assert.match(shared.title, /C OI T5/);
-  assert.match(shared.title, /P OI T5/);
+  // The put side at 205 holds 3K against a 9K leader (33%) -> lighter tier.
+  assert.match(shared.title, /P OI T3/);
   assert.equal(shared.color, "#f23645");
 });
 
@@ -252,7 +255,9 @@ test("rebuilds the exact selected-expiry chart levels from full-chain rows", () 
 
   assert.deepEqual(model.callLevels.map((level) => level.strike), [335, 345, 340, 330, 342.5, 332.5, 337.5]);
   assert.equal(level342.strength, "moderate");
-  assert.equal(level342.tier, 4);
+  // 1,620 against a 2,835 leader is 57% - a heavy wall, so it draws bold. It
+  // was tier 4 before only because it sat fifth in the sorted list.
+  assert.equal(level342.tier, 5);
   assert.equal(level342.color, "#f23645");
   assert.equal(level342.displayTitle, "C M 1.6K");
   assert.equal(level342.visible, true);
@@ -276,21 +281,43 @@ test("uses bright and secondary TOS colors instead of dark weak walls", () => {
   });
 
   assert.equal(model.callLevels.length, 15);
+  // Every wall here is 53-100% of the leader, so they are ALL heavy and all
+  // draw bold. Tier used to come from the rank index, which split these
+  // near-identical walls across tiers 5..1 and drew the 8,000 wall thin purely
+  // for being last - the whole point of keying on OI size instead.
   assert.deepEqual(
     [0, 3, 6, 9, 12].map((index) => model.callLevels[index].tier),
-    [5, 4, 3, 2, 1],
+    [5, 5, 5, 5, 5],
   );
   assert.deepEqual(
     [0, 3, 6, 9, 12].map((index) => model.callLevels[index].lineWidth),
-    // MomoX-bold tier widths: leading walls 4/3, remaining tiers 2.
-    [4, 3, 2, 2, 2],
-  );
-  assert.deepEqual(
-    [0, 3, 6, 9, 12].map((index) => model.callLevels[index].lineStyle),
-    [3, 3, 3, 2, 2],
+    [4, 4, 4, 4, 4],
   );
   assert.equal(model.callLevels[8].color, "#f23645");
-  assert.equal(model.callLevels[9].color, "#8c2a30");
+  assert.equal(model.callLevels[9].color, "#f23645");
+});
+
+test("line weight tracks how big the wall is, not its rank", () => {
+  // Big wall = bold line, small wall = light line, all the way down.
+  const calls = [20_000, 9_000, 6_000, 3_000, 1_200, 300].map((openInterest, index) => ({
+    strike: 200 + index * 5,
+    openInterest,
+    volume: 100,
+  }));
+  const model = buildHighOiLevelModel({
+    levelSets: [{ expiry: "2026-07-31", callLevels: calls, putLevels: [] }],
+    requestedExpiry: "2026-07-31",
+    underlyingPrice: 207,
+    maxPerSide: 15,
+  });
+
+  assert.deepEqual(model.callLevels.map((level) => level.tier), [5, 4, 3, 2, 1, 1]);
+  assert.deepEqual(model.callLevels.map((level) => level.lineWidth), [4, 3, 2, 1, 1, 1]);
+  // Never thicker than the wall above it.
+  const widths = model.callLevels.map((level) => level.lineWidth);
+  widths.forEach((width, index) => {
+    if (index) assert.ok(width <= widths[index - 1], `width must not grow as OI falls (index ${index})`);
+  });
 });
 
 test("keeps the nearby 272.5 weak OI wall inside the chart price range", () => {
@@ -323,7 +350,7 @@ test("keeps the nearby 272.5 weak OI wall inside the chart price range", () => {
 
   assert.equal(weak272?.strength, "weak");
   assert.equal(weak272?.lineStyle, 2);
-  assert.equal(weak272?.lineWidth, 2);
+  assert.equal(weak272?.lineWidth, 1);
   assert.ok(fittedRange.includedPrices.includes(272.5));
   assert.ok(fittedRange.high >= 272.5);
   assert.ok(!fittedRange.includedPrices.includes(280));

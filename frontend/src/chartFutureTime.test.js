@@ -167,22 +167,24 @@ test("weekly calendar projection retains Eastern midnight across DST", () => {
   assert.equal(buildFutureChartTimes(weeklyBucket, 10080, 1)[0], utc(2026, 11, 2, 5));
 });
 
-test("2h candles retain the 04:00 Eastern session anchor through EST and EDT", () => {
+test("2h candles sit on the TOS midnight-Central clock (odd Eastern hours) through EST and EDT", () => {
+  // TOS 2h bars with extended hours on start 01/03/05/07/09... ET all year:
+  // Central midnight is always 01:00 Eastern, so DST never moves them.
   const winterSource = [
-    { time: utc(2026, 1, 5, 9), open: 1, high: 1, low: 1, close: 1, volume: 1 }, // 04:00 ET
-    { time: utc(2026, 1, 6, 0, 55), open: 1, high: 1, low: 1, close: 1, volume: 1 }, // 19:55 ET
+    { time: utc(2026, 1, 5, 9), open: 1, high: 1, low: 1, close: 1, volume: 1 }, // 04:00 ET -> 03:00 bucket
+    { time: utc(2026, 1, 6, 0, 55), open: 1, high: 1, low: 1, close: 1, volume: 1 }, // 19:55 ET -> 19:00 bucket
   ];
   const winterBuckets = aggregateChartBars(winterSource, 120);
-  assert.deepEqual(winterBuckets.map(({ time }) => time), [utc(2026, 1, 5, 9), utc(2026, 1, 5, 23)]);
-  assert.equal(buildFutureChartTimes(winterBuckets, 120, 1)[0], utc(2026, 1, 6, 9));
+  assert.deepEqual(winterBuckets.map(({ time }) => time), [utc(2026, 1, 5, 8), utc(2026, 1, 6, 0)]);
+  assert.equal(buildFutureChartTimes(winterBuckets, 120, 1)[0], utc(2026, 1, 6, 2)); // 21:00 ET
 
   const summerSource = [
-    { time: utc(2026, 7, 6, 8), open: 1, high: 1, low: 1, close: 1, volume: 1 }, // 04:00 ET
-    { time: utc(2026, 7, 6, 23, 55), open: 1, high: 1, low: 1, close: 1, volume: 1 }, // 19:55 ET
+    { time: utc(2026, 7, 6, 8), open: 1, high: 1, low: 1, close: 1, volume: 1 }, // 04:00 ET -> 03:00 bucket
+    { time: utc(2026, 7, 6, 23, 55), open: 1, high: 1, low: 1, close: 1, volume: 1 }, // 19:55 ET -> 19:00 bucket
   ];
   const summerBuckets = aggregateChartBars(summerSource, 120);
-  assert.deepEqual(summerBuckets.map(({ time }) => time), [utc(2026, 7, 6, 8), utc(2026, 7, 6, 22)]);
-  assert.equal(buildFutureChartTimes(summerBuckets, 120, 1)[0], utc(2026, 7, 7, 8));
+  assert.deepEqual(summerBuckets.map(({ time }) => time), [utc(2026, 7, 6, 7), utc(2026, 7, 6, 23)]);
+  assert.equal(buildFutureChartTimes(summerBuckets, 120, 1)[0], utc(2026, 7, 7, 1)); // 21:00 ET
 });
 
 test("every selectable chart timeframe produces ordered future whitespace", () => {

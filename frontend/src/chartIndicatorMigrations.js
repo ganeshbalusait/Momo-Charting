@@ -30,6 +30,25 @@ export function migratePersonsPivotVisibility(saved = {}) {
   };
 }
 
+export const MTF_MA_LEVELS_VISIBILITY_VERSION = "mtf-ma-levels-visible-v1";
+
+// MTF MA Levels shipped switched off inside FOCUSED_CHART_INDICATOR_OVERRIDES,
+// and the pre-v18 migration bug spread that whole map over saved profiles on
+// every version bump - so the study was stamped `false` into profiles that had
+// it switched ON. The migration is additive now, which stops further damage but
+// cannot revive a key that is already present-and-false; those profiles would
+// stay dark forever. Re-enable the study exactly once, per profile.
+//
+// Deliberately scoped to this one key: nothing else the trader has set is read
+// or written here.
+export function migrateMtfMaLevelsVisibility(saved = {}) {
+  if (saved.mtfMaLevelsVisibilityVersion === MTF_MA_LEVELS_VISIBILITY_VERSION) return {};
+  return {
+    mtfMaLevelsVisibilityVersion: MTF_MA_LEVELS_VISIBILITY_VERSION,
+    mtfMaLevels: true,
+  };
+}
+
 export const MOMOX_ONCHART_PALETTE_VERSION = "momox-onchart-palette-v11";
 
 // Colours below are transcribed from the trader's actual MomoX ThinkScripts

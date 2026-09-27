@@ -132,3 +132,19 @@ test("preserves the REST-managed price EMA reclaim trial between snapshots", () 
   assert.equal(reconciled.length, 1);
   assert.equal(reconciled[0].signalBasis, "price_ema_reclaim");
 });
+
+test("a later tick must not drag the pill anchor with the tape", () => {
+  // 2026-08-20: the trader watched PUT/CALL pills slide up and down while
+  // the chart moved. The live EMAs keep updating from every tick, but the
+  // marker's anchor price stays where the cross FIRST appeared.
+  const spy = context({ higherBaseFastEma: 100, higherBaseSlowEma: 99 });
+  const first = reconcileLiveMtfSignals([], [spy], { time: 1_785_510_000, price: 110 });
+  const drifted = reconcileLiveMtfSignals(first, [spy], { time: 1_785_510_030, price: 118 });
+  const dropped = reconcileLiveMtfSignals(drifted, [spy], { time: 1_785_510_090, price: 111 });
+
+  assert.equal(first[0].price, 110);
+  assert.equal(drifted[0].price, 110);
+  assert.equal(dropped[0].price, 110);
+  // The working EMAs still track the live tape even though the pin does not.
+  assert.notEqual(drifted[0].fastEma, first[0].fastEma);
+});

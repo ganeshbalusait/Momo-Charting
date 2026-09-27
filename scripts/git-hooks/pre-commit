@@ -1,0 +1,8 @@
+#!/bin/sh
+# Release notes are mandatory for anything that ships.
+# See scripts/check_release_notes.py for the rule and the reasons.
+root="$(git rev-parse --show-toplevel)"
+py="$root/.venv/Scripts/python.exe"
+[ -x "$py" ] || py="$root/.venv/bin/python"
+[ -x "$py" ] || py="python"
+cd "$root" && exec "$py" scripts/check_release_notes.py

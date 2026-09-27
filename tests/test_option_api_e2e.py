@@ -93,6 +93,26 @@ class FakeDashboardState:
 
 class OptionApiEndToEndTests(unittest.TestCase):
     def setUp(self):
+        # The conftest points DATABASE_PATH at a fresh scratch DB (so tests
+        # never touch live trades.db). That DB has no users, and every /api
+        # route is session-gated: loopback auto-login looks LOCAL_AUTO_LOGIN_
+        # EMAIL up in the users table, finds nothing, and the suite 401s.
+        # Seed that user once so the auto-login works exactly as in prod.
+        auto_email = str(os.getenv("LOCAL_AUTO_LOGIN_EMAIL", "") or "").strip()
+        if auto_email:
+            try:
+                api_server.auth_service_instance()._create_user_record(
+                    auto_email,
+                    "Test-Only-Password-1",  # satisfies the length/case/digit policy
+                    display_name="Test Trader",
+                    role="admin",
+                    must_change_password=False,
+                )
+            except Exception as exc:
+                # Fine when the user already exists from an earlier test in
+                # this process; anything else must be visible, not a 401.
+                if "already" not in str(exc).lower():
+                    print(f"auto-login seed failed: {exc}")
         self.original_state = api_server.STATE
         api_server.STATE = FakeDashboardState()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), api_server.ApiHandler)

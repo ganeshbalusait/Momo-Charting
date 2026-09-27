@@ -1,0 +1,58 @@
+﻿{
+    "runId":  "20260712-194704",
+    "root":  "C:\\GANESH\\AgenticAI-Trading",
+    "status":  "failed",
+    "maxAttempts":  1,
+    "completedAttempts":  1,
+    "attempts":  [
+                     {
+                         "attempt":  1,
+                         "passed":  false,
+                         "startedBy":  "ganes",
+                         "generateCommandConfigured":  false,
+                         "steps":  [
+                                       {
+                                           "name":  "compile",
+                                           "ok":  true,
+                                           "exitCode":  0,
+                                           "startedAt":  "2026-07-12T19:47:04.3855776-05:00",
+                                           "durationSeconds":  0.38,
+                                           "logPath":  "C:\\GANESH\\AgenticAI-Trading\\artifacts\\coding_loop\\20260712-194704\\1-compile.log"
+                                       },
+                                       {
+                                           "name":  "backend-tests",
+                                           "ok":  true,
+                                           "exitCode":  0,
+                                           "startedAt":  "2026-07-12T19:47:04.7720526-05:00",
+                                           "durationSeconds":  7.11,
+                                           "logPath":  "C:\\GANESH\\AgenticAI-Trading\\artifacts\\coding_loop\\20260712-194704\\1-backend-tests.log"
+                                       },
+                                       {
+                                           "name":  "runtime-contract",
+                                           "ok":  true,
+                                           "exitCode":  0,
+                                           "startedAt":  "2026-07-12T19:47:11.8859162-05:00",
+                                           "durationSeconds":  0.17,
+                                           "logPath":  "C:\\GANESH\\AgenticAI-Trading\\artifacts\\coding_loop\\20260712-194704\\1-runtime-contract.log"
+                                       },
+                                       {
+                                           "name":  "frontend-build",
+                                           "ok":  true,
+                                           "exitCode":  0,
+                                           "startedAt":  "2026-07-12T19:47:12.0579500-05:00",
+                                           "durationSeconds":  6.42,
+                                           "logPath":  "C:\\GANESH\\AgenticAI-Trading\\artifacts\\coding_loop\\20260712-194704\\1-frontend-build.log"
+                                       },
+                                       {
+                                           "name":  "live-smoke",
+                                           "ok":  false,
+                                           "exitCode":  1,
+                                           "startedAt":  "2026-07-12T19:47:18.4829458-05:00",
+                                           "durationSeconds":  1.7,
+                                           "logPath":  "C:\\GANESH\\AgenticAI-Trading\\artifacts\\coding_loop\\20260712-194704\\1-live-smoke.log"
+                                       }
+                                   ]
+                     }
+                 ],
+    "updatedAt":  "2026-07-12T19:47:20.2487966-05:00"
+}

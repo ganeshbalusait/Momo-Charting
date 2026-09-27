@@ -184,7 +184,7 @@ function crossedBelow(values, thresholdOrValues) {
  * EMA 9/20 cross, and TTM histogram can all colour the same candle. Do not
  * substitute the candle's up/down direction for its final fallback colour.
  */
-export function calculateTosCandlePaints(bars) {
+export function calculateTosCandlePaints(bars, { cyanMagentaOnly = false } = {}) {
   const source = Array.isArray(bars) ? bars : [];
   if (!source.length) return [];
   const highs = source.map((bar) => toNumber(bar?.high));
@@ -262,6 +262,21 @@ export function calculateTosCandlePaints(bars) {
     else color = histogram < previousHistogram
       ? TOS_CANDLE_COLORS.magenta
       : TOS_CANDLE_COLORS.lessBear;
+
+    // Trader preference (cyanMagentaOnly): collapse the study's white
+    // (high-squeeze), orange (medium-squeeze) and dim teal/purple intermediate
+    // candles to the two MomoX momentum colours, so the candle body stays cyan
+    // or magenta even on the bars where a signal fires. Direction comes from
+    // the TTM histogram (the study's own momentum sign), falling back to the
+    // candle body when the histogram is flat/unavailable.
+    if (cyanMagentaOnly
+      && color !== TOS_CANDLE_COLORS.cyan
+      && color !== TOS_CANDLE_COLORS.magenta) {
+      const bullish = Number.isFinite(histogram) && histogram !== 0
+        ? histogram > 0
+        : toNumber(source[index]?.close) >= toNumber(source[index]?.open);
+      color = bullish ? TOS_CANDLE_COLORS.cyan : TOS_CANDLE_COLORS.magenta;
+    }
 
     // The trader's TradingView conversion renders this study with a single
     // barcolor() — body, wick, and border all take the study colour, so a

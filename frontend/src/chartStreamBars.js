@@ -100,15 +100,77 @@ export function mergeLatestStreamBar(
         .filter(Number.isFinite),
     )
     : finiteNumber(incoming?.low, existing?.low, close);
+  // VOLUME ON THE FORMING CANDLE.
+  //
+  // This used to be `fromTrade ? Number(existing?.volume || 0) : ...`, which
+  // stamped a hard 0 on every minute a trade tick opened - App.jsx's trade call
+  // passes only {time, close}, so `existing` is null and Number(undefined || 0)
+  // is 0. The strip then read "Vol 0" over a bar the server had at 22,821
+  // (QQQ 08:10 ET 2026-09-04), and because that 0 is a finite number rather
+  // than null, the "Vol --" guard shipped in 6ea4932 could never fire for it.
+  //
+  // The real number is already on the wire and was simply unused: Schwab's
+  // Level-1 equity packet carries totalVolume, the running DAY cumulative
+  // (verified live 2026-09-04: NVDA 134,527,448 -> ...449 -> ...472 -> ...492
+  // across four seconds). The volume traded inside this minute is therefore
+  // today's total minus whatever it stood at when the minute opened.
+  //
+  // dayVolumeSeen on the PREVIOUS bar is the better baseline than this tick's
+  // own total: anchoring on the first tick of a minute silently discards that
+  // trade's own size. Falling back to the tick's total is still right the first
+  // time we ever see a symbol, it just undercounts one print.
+  //
+  // A chart packet (fromTrade false) carries the authoritative per-minute
+  // volume Schwab computed, so it always wins over anything derived here.
+  // NOT finiteNumber() for these. finiteNumber takes the first candidate whose
+  // Number() is finite, and Number(null) is 0 - so finiteNumber(null, 100)
+  // returns 0, not 100. That is the same coercion that made the ticker rail
+  // print a confident 0.00% (973469a) and the OHLC strip print Chg 0.00%
+  // (6ea4932); it silently zeroed an existing volume here too, and the
+  // pre-existing tests in this file caught it. Explicit null checks only.
+  const asNumber = (value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+  const dayVolume = asNumber(incoming?.totalVolume);
+  const priorAnchor = existing
+    ? asNumber(existing.dayVolumeAtOpen)
+    : asNumber(last?.dayVolumeSeen);
+  const dayVolumeAtOpen = priorAnchor !== null ? priorAnchor : dayVolume;
+  let volume;
+  if (fromTrade) {
+    const derived =
+      dayVolume !== null && dayVolumeAtOpen !== null
+        ? Math.max(0, dayVolume - dayVolumeAtOpen)
+        : null;
+    if (derived === null) {
+      volume = asNumber(existing?.volume);
+    } else if (existing) {
+      // Never go backwards: a late or out-of-order packet must not shrink a
+      // volume already on screen.
+      volume = Math.max(derived, asNumber(existing.volume) ?? 0);
+    } else {
+      volume = derived;
+    }
+  } else {
+    const authoritative = asNumber(incoming?.volume);
+    volume = authoritative !== null ? authoritative : asNumber(existing?.volume);
+  }
   const nextBar = {
     time,
     open,
     high,
     low,
     close,
-    volume: fromTrade
-      ? Number(existing?.volume || 0)
-      : finiteNumber(incoming?.volume, existing?.volume, 0),
+    // Still `?? 0` at the boundary, deliberately: Lightweight Charts treats a
+    // null `value` on a histogram point as a broken number and rejects the
+    // whole series, which would blank the chart rather than blank one cell.
+    // The unknown case is carried by volumeKnown instead.
+    volume: volume == null ? 0 : volume,
+    volumeKnown: volume != null,
+    dayVolumeAtOpen: dayVolumeAtOpen == null ? undefined : dayVolumeAtOpen,
+    dayVolumeSeen: dayVolume == null ? existing?.dayVolumeSeen : dayVolume,
   };
   if (existing) {
     current[current.length - 1] = nextBar;
@@ -123,15 +185,26 @@ export function mergeLatestStreamBar(
  * completed minute more than a minute late; receive time therefore cannot be
  * used to suppress a newer trade.
  */
+// How far ahead of the newest REST bar a live quote may still be treated as
+// the forming candle. Beyond this the tape is stale, not the quote early:
+// admitting the quote drew a lone O=H=L=C / Vol 0 bar hours past the last real
+// candle, and the future whitespace projected from it rendered as a wide empty
+// band with a disconnected spike - the "gap" seen on any watchlist ticker
+// whose cache had not been rebuilt during the current session.
+export const MAX_LIVE_BAR_GAP_SECONDS = 2 * 3_600;
+
 export function shouldUseEquityTradeForChart({
   equityTime,
   latestBarTime,
 } = {}) {
   const equityMinute = Math.floor(Number(equityTime || 0) / 60) * 60;
   const latestMinute = Math.floor(Number(latestBarTime || 0) / 60) * 60;
-  return Number.isFinite(equityMinute)
-    && equityMinute > 0
-    && (!(latestMinute > 0) || equityMinute >= latestMinute);
+  if (!Number.isFinite(equityMinute) || equityMinute <= 0) return false;
+  // No tape yet: nothing to be disconnected from, and refusing would leave a
+  // cold chart permanently blank.
+  if (!(latestMinute > 0)) return true;
+  if (equityMinute < latestMinute) return false;
+  return equityMinute - latestMinute <= MAX_LIVE_BAR_GAP_SECONDS;
 }
 
 /**

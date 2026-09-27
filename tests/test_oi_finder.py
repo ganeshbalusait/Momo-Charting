@@ -12,6 +12,20 @@ from api_server import DashboardState
 
 
 class OiFinderTests(unittest.TestCase):
+    def test_mobile_research_plan_computes_only_the_selected_analytics(self) -> None:
+        self.assertEqual(
+            DashboardState._oi_finder_research_plan("heatmap"),
+            {"volume": False, "heatmap": True, "unusual": False, "full": False},
+        )
+        self.assertEqual(
+            DashboardState._oi_finder_research_plan("flow"),
+            {"volume": True, "heatmap": True, "unusual": True, "full": False},
+        )
+        self.assertEqual(
+            DashboardState._oi_finder_research_plan(""),
+            {"volume": True, "heatmap": True, "unusual": True, "full": True},
+        )
+
     def test_chain_rows_preserve_quotes_greeks_and_contract_identity(self) -> None:
         state = DashboardState.__new__(DashboardState)
         expiry = (datetime.now().date() + timedelta(days=2)).isoformat()
@@ -421,6 +435,38 @@ class OiFinderTests(unittest.TestCase):
         self.assertEqual(len(payload["callRows"]), 1)
         self.assertEqual(payload["putRows"], [])
         self.assertTrue(payload["frontExpiryOnly"])
+
+    def test_mobile_fast_chain_keeps_only_nearby_strikes_and_drops_research_payloads(self) -> None:
+        selected_rows = []
+        for strike in range(90, 111):
+            selected_rows.extend([
+                {"expiry": "2026-08-14", "side": "CALL", "strike": strike},
+                {"expiry": "2026-08-14", "side": "PUT", "strike": strike},
+            ])
+        payload = {
+            "symbol": "NVDA",
+            "underlyingPrice": 100,
+            "currentAtm": {"expiry": "2026-08-14", "call": {"strike": 100}},
+            "expiries": ["2026-08-14", "2026-08-21"],
+            "selectedExpiryChainRows": selected_rows,
+            "callRows": [{"expiry": "2026-08-14", "strike": 105}],
+            "putRows": [{"expiry": "2026-08-14", "strike": 95}],
+            "tosScriptLevels": [{"expiry": "2026-08-14", "callLevels": [1]}],
+            "dailyLiquidityHeatmap": {"large": [1, 2, 3]},
+        }
+
+        fast = DashboardState._mobile_fast_oi_finder_chain_payload(payload, max_strikes=7)
+
+        self.assertEqual(
+            sorted({row["strike"] for row in fast["selectedExpiryChainRows"]}),
+            [97, 98, 99, 100, 101, 102, 103],
+        )
+        self.assertEqual(len(fast["selectedExpiryChainRows"]), 14)
+        self.assertEqual(fast["callRows"], [])
+        self.assertEqual(fast["putRows"], [])
+        self.assertEqual(fast["tosScriptLevels"], [])
+        self.assertEqual(fast["dailyLiquidityHeatmap"], {})
+        self.assertTrue(fast["mobileFast"])
 
 
 if __name__ == "__main__":

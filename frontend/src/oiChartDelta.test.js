@@ -69,3 +69,29 @@ test("detects a rebuilt signal tape so the browser refetches in full", () => {
   assert.equal(chartDeltaTapeChanged(basePayload, { signalTapeUpdatedAt: "2026-08-07T15:00:00Z" }), true);
   assert.equal(chartDeltaTapeChanged({}, { signalTapeUpdatedAt: "x" }), false);
 });
+
+test("tail-merges the 60-day five-minute tape instead of replacing it with the delta tail", () => {
+  // Measured 2026-09-04 08:46 ET: a refreshing:false delta carried a 1-row
+  // fineStudyBars tail and the browser kept that 1 row in place of 13,806,
+  // so the 5m view fell back to the 1-minute tape after every reconcile.
+  const base = {
+    ...basePayload,
+    fineStudyBars: Array.from({ length: 4680 }, (_, index) => bar(index * 300, index)),
+  };
+  const merged = mergeChartDeltaPayload(base, {
+    delta: true,
+    deltaSince: 4679 * 300,
+    bars: [bar(220, 3.5)],
+    studyBars: [],
+    fineStudyBars: [bar(4679 * 300, 99), bar(4680 * 300, 100)],
+    dailyBars: [],
+  });
+  assert.equal(merged.fineStudyBars.length, 4681);
+  assert.equal(merged.fineStudyBars[4678].close, 4678);
+  assert.equal(merged.fineStudyBars[4679].close, 99);
+  assert.equal(merged.fineStudyBars[4680].close, 100);
+
+  // An empty tail (nothing new since the cutoff) leaves the held tape intact.
+  const untouched = mergeChartDeltaPayload(base, { delta: true, deltaSince: 4679 * 300, bars: [bar(220, 3.5)], fineStudyBars: [] });
+  assert.equal(untouched.fineStudyBars.length, 4680);
+});

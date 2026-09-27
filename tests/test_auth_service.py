@@ -227,3 +227,116 @@ def test_provider_credentials_are_encrypted_and_scoped_by_user(auth):
     stored_ciphertext = " ".join(row[0] for row in encrypted_payloads)
     assert "owner-super-secret" not in stored_ciphertext
     assert "trading-super-secret" not in stored_ciphertext
+
+
+def _forbid_database(auth, monkeypatch):
+    """Make any further _connect() an error, so a cache miss is visible."""
+
+    def _explode():
+        raise AssertionError("hit the database when the identity cache should have served it")
+
+    monkeypatch.setattr(auth, "_connect", _explode)
+
+
+def test_session_lookup_is_served_from_cache_without_touching_the_database(auth, monkeypatch):
+    """The API gate runs _session_user() on EVERY /api request.
+
+    Measured live 2026-08-21 during RTH: /api/health (the only route exempt
+    from the gate) answered in 0.14-0.27s while /api/auth/status, whose whole
+    handler is bootstrap_required() plus _session_user(), took 13.3s, 26.7s
+    then 35.9s for 408 bytes. py-spy showed 15 request threads parked
+    identically on _connect (auth_service.py:51), i.e. queued on this class's
+    own connection lock, and thread names had reached Thread-2575 in one boot.
+    The database itself is innocent: app_users holds 3 rows and a full
+    connect/query/commit/close cycle measures 5ms from outside the process.
+
+    So identity must not be re-read from SQLite on every request.
+    """
+    auth.bootstrap_owner("owner@example.com", "SecurePass123", "Owner")
+    user, token = auth.authenticate("owner@example.com", "SecurePass123")
+
+    assert auth.user_for_session(token)["id"] == user["id"]
+
+    _forbid_database(auth, monkeypatch)
+
+    assert auth.user_for_session(token)["id"] == user["id"]
+    assert auth.user_for_session(token)["id"] == user["id"]
+
+
+def test_auto_login_email_lookup_is_cached(auth, monkeypatch):
+    """The LOCAL_AUTO_LOGIN_EMAIL branch hits get_user_by_email per request.
+
+    A cookie-less loopback caller reaches this path, so it is just as hot as
+    the session path and must not query per request either.
+    """
+    auth.bootstrap_owner("owner@example.com", "SecurePass123", "Owner")
+
+    assert auth.get_user_by_email("owner@example.com")["email"] == "owner@example.com"
+
+    _forbid_database(auth, monkeypatch)
+
+    assert auth.get_user_by_email("owner@example.com")["email"] == "owner@example.com"
+
+
+def test_logout_invalidates_the_cached_session(auth):
+    """Revocation must be immediate, never delayed to the cache TTL."""
+    auth.bootstrap_owner("owner@example.com", "SecurePass123", "Owner")
+    _, token = auth.authenticate("owner@example.com", "SecurePass123")
+    assert auth.user_for_session(token) is not None
+
+    auth.logout(token)
+
+    assert auth.user_for_session(token) is None
+
+
+def test_password_change_invalidates_the_cached_session(auth):
+    """Changing a password drops every session; a cache must not resurrect one."""
+    auth.bootstrap_owner("owner@example.com", "SecurePass123", "Owner")
+    user, token = auth.authenticate("owner@example.com", "SecurePass123")
+    assert auth.user_for_session(token) is not None
+
+    auth.change_password(user, current_password="SecurePass123", new_password="Replacement456")
+
+    assert auth.user_for_session(token) is None
+
+
+def test_cached_session_is_not_served_past_its_own_expiry(auth, monkeypatch):
+    """The memo must never extend a session beyond its recorded expiry.
+
+    The cache stores the session's real expires_at and re-checks it on every
+    hit, so the TTL bounds how long a row change goes unnoticed - never how
+    long a session stays valid.
+    """
+    auth.bootstrap_owner("owner@example.com", "SecurePass123", "Owner")
+    _, token = auth.authenticate("owner@example.com", "SecurePass123")
+    assert auth.user_for_session(token) is not None
+
+    # Move the clock past the session's expiry without touching the database,
+    # so only the memo's own expiry check can reject it.
+    monkeypatch.setattr(auth, "_now", lambda: "2999-01-01T00:00:00+00:00")
+
+    assert auth.user_for_session(token) is None
+
+
+def test_out_of_band_row_edits_are_bounded_by_the_cache_ttl(auth, monkeypatch):
+    """Document the one behaviour this memo does trade away.
+
+    Revocations made THROUGH this class (logout, password change, device
+    decisions) invalidate immediately, because _connect drops the cache
+    whenever its block wrote. An edit made straight to SQLite by another
+    process bypasses that and is therefore invisible for up to
+    IDENTITY_CACHE_SECONDS. That is the accepted cost of taking the database
+    out of the per-request gate; expiring the entry restores the DB read.
+    """
+    auth.bootstrap_owner("owner@example.com", "SecurePass123", "Owner")
+    _, token = auth.authenticate("owner@example.com", "SecurePass123")
+    assert auth.user_for_session(token) is not None
+
+    with sqlite3.connect(auth.db_path) as connection:
+        connection.execute("DELETE FROM app_user_sessions")
+
+    assert auth.user_for_session(token) is not None  # still memoized
+
+    monkeypatch.setattr("auth_service.IDENTITY_CACHE_SECONDS", 0.0)
+
+    assert auth.user_for_session(token) is None

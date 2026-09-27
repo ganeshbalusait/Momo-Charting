@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from unittest.mock import patch
 
 from api_server import DashboardState
@@ -96,6 +97,11 @@ def test_ready_stale_chart_cache_refreshes_only_the_recent_tail() -> None:
                 "signals": [],
             }),
             "history_ready": True,
+            # Session-aware readiness (2026-08-20): the fixture tape's bars
+            # are historic, so mark the entry as full-built THIS session -
+            # the case this test models is "ready and current, merely 39s
+            # old", which must refresh only the recent tail.
+            "built_at_epoch": time.time(),
         },
     }
 
@@ -152,5 +158,12 @@ def test_cold_chart_paints_before_deep_history_replay() -> None:
     ):
         payload = state.oi_finder_chart_payload("UBER", initial_paint=True)
 
-    assert payload["initialSlim"] is True
-    refresh.assert_called_once_with("UBER", full_history=False)
+    # Contract change: a truly-cold initial paint no longer builds a slim
+    # payload synchronously (the old `initialSlim` shape) -- it answers
+    # IMMEDIATELY with the warming shell and defers the build off-thread,
+    # so the pane paints its retry loop instead of blocking the request
+    # thread for the 40-199s cold build (AAPL 40.9s / COIN 199.0s measured).
+    assert payload["warming"] is True
+    assert payload["bars"] == []
+    assert payload["historyLoading"] is True
+    refresh.assert_called_once_with("UBER", full_history=True)

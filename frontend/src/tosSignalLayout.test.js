@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { layoutTosMtfChartSignals } from "./tosSignalLayout.js";
+import { layoutTosMtfChartSignals, snapTosMtfSignalsToBars } from "./tosSignalLayout.js";
 
 test("preserves the source aggregation label and event time from ThinkScript", () => {
   const signals = [
@@ -43,4 +43,27 @@ test("keeps yellow before cyan when bubbles share a candle", () => {
     layoutTosMtfChartSignals(signals).map(({ family, label, time }) => `${family}:${label}:${time}`),
     ["4x8:C4H:100", "9x20:C2H:100"],
   );
+});
+
+test("snaps a 5-minute signal stamp onto the visible chart's containing candle", () => {
+  // 15-minute candles: 09:00, 09:15, 09:30 (epoch seconds, ET-agnostic)
+  const bars = [{ time: 900 }, { time: 1800 }, { time: 2700 }];
+  const signals = [
+    { time: 1800, label: "CALL1H" },   // exact candle: untouched
+    { time: 2400, label: "CALL2H" },   // 09:10-style stamp inside the 09:15 candle
+    { time: 600, label: "P15" },       // older than the chart: left alone
+  ];
+
+  const snapped = snapTosMtfSignalsToBars(signals, bars);
+
+  assert.equal(snapped[0], signals[0]);
+  assert.equal(snapped[1].time, 1800);
+  assert.equal(snapped[1].label, "CALL2H");
+  assert.equal(snapped[2], signals[2]);
+});
+
+test("snapping tolerates empty inputs", () => {
+  assert.deepEqual(snapTosMtfSignalsToBars(null, []), []);
+  const signals = [{ time: 5 }];
+  assert.deepEqual(snapTosMtfSignalsToBars(signals, null), signals);
 });

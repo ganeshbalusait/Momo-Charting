@@ -1,8 +1,4 @@
-import { BaselineSeries, CandlestickSeries, CrosshairMode, HistogramSeries, LineSeries, TickMarkType, createChart, createSeriesMarkers } from "lightweight-charts";
-import * as echarts from "echarts/core";
-import { HeatmapChart } from "echarts/charts";
-import { GridComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
-import { CanvasRenderer } from "echarts/renderers";
+import { BaselineSeries, CandlestickSeries, CrosshairMode, HistogramSeries, LineSeries, TickMarkType, TrackingModeExitMode, createChart, createSeriesMarkers } from "lightweight-charts";
 import {
   Activity,
   ArrowDown,
@@ -11,7 +7,6 @@ import {
   BarChart3,
   Bell,
   Bot,
-  BrainCircuit,
   BriefcaseBusiness,
   CalendarDays,
   ChartCandlestick,
@@ -19,47 +14,96 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  CircleDot,
+  ChevronsRight,
   Clock3,
   Columns3,
   Database,
-  FlaskConical,
   ExternalLink,
+  GraduationCap,
+  HelpCircle,
   KeyRound,
   LayoutDashboard,
   LayoutPanelTop,
   Link2,
-  ListChecks,
   LogOut,
   Maximize2,
   Minimize2,
-  Newspaper,
   NotebookTabs,
+  Newspaper,
+  Pencil,
   Pin,
   Play,
   Plus,
+  Radar,
   RefreshCw,
   RotateCcw,
   Save,
   ScanSearch,
+  Crosshair,
   Search,
   Settings,
   ShieldCheck,
   Star,
+  Trophy,
+  ScrollText,
+  Sunrise,
   UserPlus,
   UserRound,
-  WalletCards,
   X,
+  WalletCards,
   Zap,
 } from "lucide-react";
-import { Component, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import AutoOiAlertsPanel from "./AutoOiAlertsPanel";
+import { Component, Fragment, Profiler, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, startTransition } from "react";
+import { flushSync } from "react-dom";
+import AgxMark from "./AgxMark";
+import MomxScannerPanel from "./MomxScannerPanel.jsx";
+import { CHART_LINK_CHANNEL, CHART_LINK_EVENT, TOS_LINK_GROUPS } from "./tosLinkGroups.js";
+import MomoAlertWatcher from "./MomoAlertWatcher.jsx";
+import { gradeUnderwaterNow, gradeWithinCandle, isBullishCallLabel, isBearishPutLabel } from "./momxGrade.js";
+import LearningCenter from "./LearningCenter.jsx";
+import ReleaseNotesPanel from "./ReleaseNotesPanel.jsx";
+import { parseReleases, readSeen, unreadCount } from "./releaseNotes.js";
+import { candleTimeFor, gradeStepMarkers } from "./gradeMarkers.js";
+import { consumeReleaseNotesMark } from "./appVersion.js";
+import { LEARN_CONTENT_VERSION, markLearnSeen, readLearnSeen, shouldAutoOpenLearn } from "./learnFirstVisit.js";
+import { nonJsonResponseError } from "./apiErrorMessage";
 import { setBoundedCacheEntry } from "./boundedCache";
+import { buildInviteMessage } from "./inviteMessage";
+import { maskEmail } from "./maskEmail";
+import { generateTemporaryPassword } from "./temporaryPassword";
+import {
+  PREFLIGHT_ENDPOINT,
+  PREFLIGHT_RUN_ENDPOINT,
+  PREFLIGHT_RUN_TIMEOUT_MS,
+  PREFLIGHT_STRIP_DAYS,
+  buildPreflightView,
+  preflightErrorMessage,
+} from "./preflightPanel";
 import { layoutChartAxisLabels, mergePivotAndOiAxisLabels } from "./chartAxisLabels";
-import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
+import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartDeepHistoryPending, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
+import { CHART_TOUCH_ALERT_HOLD_MS, touchAlertGestureShouldCancel } from "./chartTouchAlert";
 import { CLOUD_BAND_STUDIES, calculateTosCloudBandPoints } from "./cloudBandStudy";
 import { buildFutureChartTimes, projectFutureChartTime } from "./chartFutureTime";
-import { findPriceAlertLevel, priceAlertChipText } from "./priceAlertLevels";
+import { buildStrikePriceAlertDraft, findPriceAlertLevel, priceAlertChipText } from "./priceAlertLevels";
+import { limitChainRowsAroundAtm } from "./chainStrikeWindow";
+import {
+  MOBILE_OPTIONS_SECTIONS,
+  mobileOptionsSectionRequestMode,
+} from "./mobileQuickOptions";
+import {
+  initialChartChainOpen,
+  isMobileChartWidth,
+  shouldAutoLoadDeepChartHistory,
+  shouldRequestDeepChartHistory,
+} from "./mobileChartPerformance";
+import {
+  isOverflowDestinationActive,
+  overflowDestinationLabel,
+  selectOverflowDestinations,
+} from "./mobileOverflowNavigation";
+import { filterWatchlistSymbols, normalizeWatchlistSearch } from "./watchlistFilter";
+import { createDashboardWriteOrder } from "./dashboardWriteOrder";
+import { buildQuickTickers } from "./quickTickers";
 import { lineStyleDashArray, momoxLevelAnchorTime, trimPointsToAnchor } from "./chartSessionAnchor";
 import { holdStudyPointsOnChartGrid, snapStudyPointsToChartGrid } from "./chartGridProjection";
 import {
@@ -68,16 +112,21 @@ import {
   PERSONS_PIVOT_VISIBILITY_VERSION,
   TOS_MTF_SIGNAL_VISIBILITY_VERSION,
   migrateMomoxOnChartPalette,
+  migrateMtfMaLevelsVisibility,
   migratePersonsPivotVisibility,
   migrateTosMtfSignalVisibility,
 } from "./chartIndicatorMigrations";
 import {
+  applySeriesData,
+  chartHistorySeriesGuarded,
   chartTapeContentUnchanged,
   chartWallLevelSignature,
+  createOiChartTransportFailurePayload,
   createOiChartWarmingPayload,
   guardLightweightChartSeriesTree,
   isTransientOiChartTransportError,
   normalizeOiChartPayload,
+  oiChartTransportFailureNotice,
   resolveHistorySeriesUpdate,
 } from "./chartSeriesData";
 import {
@@ -86,6 +135,13 @@ import {
   ganeshSignalVisualSignature,
   projectGaneshSignalsToChart,
 } from "./ganeshHigherTimeframeSignals";
+import {
+  calculateRollingAverage,
+  calculateRollingStdDev,
+  calculateTrueRanges,
+  squeezeReleaseEvents,
+} from "./squeezeRelease.js";
+import { explainScannerRow } from "./signalExplanation.js";
 import {
   chartIndicatorProfileStorageKey,
   chartDefaultHistorySlots,
@@ -96,6 +152,9 @@ import {
   chartAnchorTranslation,
   chartBodyDragLogicalRange,
   chartBodyDragPriceRange,
+  chartHostContentBoxSize,
+  chartHostMinimumWidth,
+  chartLowerStudyHeaderOffsets,
   clearChartTimeViewport,
   chartLayoutAutosaveContextMatches,
   chartLayoutProfileStorageKey,
@@ -104,14 +163,18 @@ import {
   chartExplicitSavedLogicalRange,
   chartOpeningHistorySignature,
   chartShouldFrameAutomaticViewport,
+  chartTimeViewportRange,
   chartTrailingSessionHistorySlots,
   chartZoomLogicalRange,
+  chartPanStepLogicalRange,
   clampExpandedPriceRangeToCandles,
   CHART_LAYOUT_VIEWPORT_VERSION,
   CHART_PANE_SIZING_VERSION,
   defaultChartPaneFactors,
   paneFactorsMateriallyDiffer,
+  chartPaneOverlayTop,
   priceRangeNeedsUpdate,
+  readChartTimeViewport,
   readStoredChartPaneFactors,
   restoreChartPaneFactors,
   storeChartTimeViewport,
@@ -119,14 +182,23 @@ import {
   workspaceCompanionWidthAtPointer,
 } from "./chartViewport";
 import {
-  OI_CHART_GRIDS_STORAGE_KEY,
   OI_CHART_WORKSPACE_STORAGE_KEY,
+  applyWorkspaceLinkedNavigationIntent,
   applyWorkspaceNavigationIntent,
   deleteChartGrid,
   listChartGrids,
   loadChartGrid,
   loadChartWorkspace,
+  markChartGridApplied,
+  mergeChartGridStores,
+  pendingDefaultChartGrid,
+  readChartGridMeta,
+  chartGridStamp,
+  OI_CHART_APPLIED_GRID_STORAGE_KEY,
+  readChartGridStoreFrom,
+  writeChartGridStoreTo,
   normalizeChartWorkspace,
+  readLegacyGeometryNumber,
   saveChartGridAs,
   saveChartWorkspace,
   updateSharedWorkspaceSymbol,
@@ -140,13 +212,31 @@ import {
   classifyHighOiStrength,
   mergeOiChartLevelSources,
 } from "./oiChartLevels";
-import { buildHighOiContractList } from "./highOiContractList";
+import { buildHighOiContractList, expectedMoveFromExpiries, formatCompactVolume, formatDelta, formatMark, resolveExpectedMove } from "./highOiContractList";
+import {
+  OI_AUTO_ALERT_MIRROR_SOURCE,
+  activeLevelsForPrice,
+  buildOiAutoAlertMirror,
+  compactOiAmount,
+  findNewOiAutoAlertEvents,
+  mergeOiAutoAlertMirror,
+  normalizeOiAutoAlertSymbol,
+  oiAutoAlertDistanceText,
+  oiAutoAlertEventLabel,
+  oiAutoAlertLevelText,
+  oiAutoAlertPollDelay,
+  oiAutoAlertSideSummary,
+  sortOiAutoAlertRows,
+  splitOiAutoAlertMessage,
+  strikeText as oiAutoAlertStrikeText,
+} from "./oiAutoAlerts";
 import {
   chartDeltaRequestTime,
   chartDeltaTapeChanged,
   mergeChartDeltaPayload,
 } from "./oiChartDelta";
 import { optionExpiryDte } from "./optionExpiry";
+import { latestUsableHeatmapDay } from "./oiHeatmapDay";
 import { mergeDailyAndChartOhlcDays, rollingPivotSourcePeriod } from "./pivotPeriods";
 import {
   buildTradingViewOiScript,
@@ -154,6 +244,9 @@ import {
   normalizeTradingViewSymbols,
 } from "./oiTradingViewScript";
 import { OiChartDrawingTools } from "./OiChartDrawingTools";
+import { OiChartScrollbar } from "./OiChartScrollbar";
+import { chartWheelPanLogicalRange } from "./chartScrollbar";
+import { priceScaleMargins, pricePaddingFor } from "./chartPriceFraming";
 import {
   chartDrawingScopeKey,
   drawingHasDistinctPoints,
@@ -164,8 +257,12 @@ import {
   saveChartDrawings,
   translateDrawingPoints,
 } from "./oiChartDrawings";
-import { layoutTosMtfChartSignals } from "./tosSignalLayout";
-import { oiChartHasInitialStudySeed, oiChartNeedsInitialStudySeed } from "./oiChartInitialHistory";
+import { layoutTosMtfChartSignals, snapTosMtfSignalsToBars } from "./tosSignalLayout";
+import {
+  nextStudySeedRetryDelayMs,
+  oiChartHasInitialStudySeed,
+  oiChartNeedsInitialStudySeed,
+} from "./oiChartInitialHistory";
 import { chartSessionLinesForTimeframe, chartSessionWindowsForTimeframe } from "./chartSessionDisplay";
 import { mtfSignalVisualSignature, reconcileLiveMtfSignals } from "./mtfLiveSignalState";
 import { calculateMtfMacdTrendClouds } from "./mtfMacdCloudStudy";
@@ -175,7 +272,7 @@ import {
 } from "./tosNativeChartPrimitive";
 import { calculateRelativeVolumeCandleStudy } from "./relativeVolumeStudy";
 import { calculateTosCandlePaints } from "./tosCandleColors";
-import { maskEmail } from "./maskEmail";
+import { premarketGapBadge } from "./premarketGap";
 import {
   liveEquityPrice,
   liveNumber,
@@ -183,6 +280,7 @@ import {
   subscribeLiveChartQuoteFallback,
   subscribeLiveMarketStream,
 } from "./liveMarketStream";
+import { chartWakeDecision } from "./chartWake";
 import {
   isSchwabTosChartPacket,
   mergeLatestStreamBar,
@@ -204,6 +302,7 @@ import {
   currentOiFinderRequestOwner,
   hasUsableOiFinderChain,
   mergeOiFinderFeedResponse,
+  shouldEnrichOiFinderFeed,
   nextOiChainPollDelay,
   oiChartClientCacheDecision,
   oiFinderFailureFeed,
@@ -216,13 +315,12 @@ import {
   startOiFinderRequest,
 } from "./oiFinderRequestPolicy";
 
-echarts.use([HeatmapChart, GridComponent, TooltipComponent, VisualMapComponent, CanvasRenderer]);
-
 const MAG7 = "AAPL,MSFT,NVDA,AMZN,META,GOOGL,TSLA";
 const OI_FINDER_QUICK_TICKERS = ["SPY", "QQQ", "SLV", "AAPL", "AMZN", "GOOGL", "META", "MSFT", "NFLX", "NVDA", "TSLA", "AVGO", "USO"];
 // Panels the option-chain column's "+" menu can stack above the chain. Options is
 // the chain itself, so it is always mounted and only reported in the menu.
 const CHAIN_DOCK_PANEL_STORAGE_KEY = "chartsOiChainDockPanels";
+const CHAIN_VIEW_STORAGE_KEY = "chartsOiChainView";
 const CHAIN_DOCK_PANELS = [
   { id: "watchlist", label: "Watchlist" },
   { id: "news", label: "News" },
@@ -258,7 +356,20 @@ const OI_CHART_CLIENT_CACHE_SCHEMA_VERSION = 4;
 // latency: killing an 8s response at 4s and retrying every 700ms starves the
 // UI in an abort loop where the chain never finishes loading at all. A
 // genuinely dead server still falls back to the warming state, just later.
-const OI_CHART_INITIAL_REQUEST_TIMEOUT_MS = 25_000;
+// The chart route can take longer than 25 seconds while Schwab history and the
+// two lower-study seeds are being promoted. Aborting just before the response
+// arrives leaves the chart in a permanent retry loop and makes Vite surface a
+// misleading 500. Keep a bounded deadline, but allow the observed cold path.
+// Bounds TIME-TO-FIRST-BYTE only - the timer is cleared the moment the
+// response starts, so a slow multi-MB tape is never aborted mid-download.
+// 60s then 180s could not work: measured 2026-08-19, a COLD symbol (COIN, with a
+// disk cache present) took 199.0s. Aborting at 180s meant the request never
+// completed and simply retried forever. The FIRST request for a
+// symbol takes 60-110s while Schwab warms (NFLX chart 109.4s, finder 61.9s,
+// chain 65.1s), then drops to 2-3s once warm. A 60s budget against a 109s
+// answer aborts every cold open and leaves the pane on "Loading live
+// one-minute candles" - which is exactly the timeout the trader kept hitting.
+const OI_CHART_INITIAL_REQUEST_TIMEOUT_MS = 300_000;
 const OI_CHART_HISTORY_STATUS_TIMEOUT_MS = 15_000;
 const OI_FINDER_COMPACT_CHAIN_REQUEST_TIMEOUT_MS = 20_000;
 const OI_CHART_REST_RECONCILE_MS = 30_000;
@@ -288,6 +399,14 @@ const OI_CHART_STUDY_STAGE = {
   sessionContext: 1,
   previousOhlc: 2,
   sessionLevels: 3,
+  // A handful of averages over daily closes - one of the cheapest studies here,
+  // and a static price-level overlay like the two above it. It sat last at 20,
+  // which made it the first study to disappear and the last to come back on
+  // every series-tree rebuild: the rebuild bumps chartSeriesResetVersion, that
+  // changes the stage reset key, and the changed key wipes the held outputs. A
+  // chart that rebuilds more often than it can climb twenty stages therefore
+  // never painted these levels at all.
+  mtfMaLevels: 4,
   pivotPoints: 4,
   personsPivots: 5,
   squeezeMomentumLower: 6,
@@ -304,28 +423,114 @@ const OI_CHART_STUDY_STAGE = {
   cloudBands: 17,
   relVolCandles: 18,
   cloudMaxMtf: 19,
-  mtfMaLevels: 20,
 };
 const OI_CHART_STUDY_STAGE_MAX = 20;
+// A hop may activate several stages at once, but only while the measured cost of
+// the previous hop stayed under this. One workspace render already costs tens of
+// milliseconds, so a budget below that would pin the stride at 1 and change
+// nothing; this sits above a plain render and below anything a trader would feel.
+const OI_CHART_STUDY_STAGE_BUDGET_MS = 50;
+const OI_CHART_STUDY_STAGE_MAX_STEP = 8;
+// Study-ladder hops in a multi-chart workspace. Six panels each armed a
+// setTimeout(0) hop; those fired in the same tick, React deferred all of
+// their renders to one scheduler task and rendered six newly activated
+// studies plus six series applies in ONE pass - measured as single 9.7s
+// tasks with the main thread 92% blocked. A shared gate that released the
+// next hop after the previous one committed fixed the batching but stalled
+// the ladder behind unrelated renders (~1 stage per 15s per panel).
+//
+// The hop now renders itself synchronously (flushSync): each hop is its own
+// bounded task - one study, one apply, for one memoized panel - and hops
+// from different panels can never merge into one pass. Panels climb in
+// parallel; the browser interleaves them a task at a time.
+// See the chartBars memo: how long a forming-bar-only tape change waits before
+// the React tape (and with it every study) adopts it.
+const OI_CHART_STUDY_TAPE_ADOPT_MS = 30_000;
+// How often the App-level option-chain feed (spot price + live option rows)
+// commits stream packets to React state. See the live stream effect in App.
+const OI_FINDER_LIVE_FEED_FLUSH_MS = 1_500;
+function scheduleStudyLadderHop(hop) {
+  const timer = window.setTimeout(() => {
+    try {
+      hop();
+    } catch {
+      // A failing hop must not stall this chart forever; the next dependency
+      // change re-arms it.
+    }
+  }, 0);
+  return () => window.clearTimeout(timer);
+}
 const EMPTY_CHART_ROWS = Object.freeze([]);
 const EMPTY_CHART_CONTEXT = Object.freeze({});
 const OI_CHART_LIVE_PRICE_EVENT = "oi-chart-live-price";
 const OI_CHART_OHLC_EVENT = "oi-chart-ohlc-update";
 const OI_CHART_CLOUD_EVENT = "oi-chart-cloud-update";
 const OI_CHART_INDICATOR_PROFILE_EVENT = "oi-chart-indicator-profile-update";
+const OI_CHART_MOBILE_NAVIGATION_EVENT = "oi-chart-mobile-navigation";
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "agenticSidebarCollapsed";
-const NAVIGATION_HIDDEN_PANELS_STORAGE_KEY = "agenticHiddenNavigationPanels";
-const MANAGEABLE_NAVIGATION_PANELS = [
-  "Scanner",
-  "Learning Lab",
-  "Backtesting",
-  "Journal",
-  "Option Journal",
-  "Memory",
-];
+// The page the trader was on when the tab closed. Without it every reopen
+// landed on OI Scanner, which read as "my saved 6-chart layout is gone".
+const ACTIVE_VIEW_STORAGE_KEY = "agenticActiveView";
+// Name the floppy "Save layout" button publishes the workspace under, so one
+// press makes the layout open on every device (see saveLayoutEverywhere).
+const SAVED_LAYOUT_GRID_NAME = "My layout";
+function isPhoneChartViewport() {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia?.("(max-width: 760px)")?.matches
+    ?? isMobileChartWidth(window.innerWidth);
+}
 const MARKET_TIMEZONE = "America/New_York";
+// The premarket scanner declares its own window in premarket_scanner.py:36-37
+// (06:00-09:30 ET). A few minutes of slack on each side so the table is already
+// populated when the window opens and does not blank the moment it closes.
+const PREMARKET_SCAN_POLL_OPEN_MINUTE = 5 * 60 + 45;
+const PREMARKET_SCAN_POLL_CLOSE_MINUTE = 9 * 60 + 35;
+const PREMARKET_SCAN_POLL_ACTIVE_MS = 5_000;
+const PREMARKET_SCAN_POLL_IDLE_MS = 300_000;
+const marketClockFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: MARKET_TIMEZONE,
+  weekday: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+// How often /api/premarket-scanner may be polled right now. Inside the
+// scanner's window this is the 5s cadence the table was built for; outside it
+// the poll drops to once every five minutes.
+//
+// It is deliberately NOT switched off entirely - the table should still fill in
+// if you open the app at midnight. But polling every 5s around the clock was
+// measured on 2026-08-22 as the single largest CPU consumer in the whole
+// backend: the endpoint calls _touch_chart_tail for all nine
+// PREMARKET_SCAN_SYMBOLS, and that kicks a background refresh - which
+// re-serializes and re-gzips each ~700KB chart payload - on any entry 30s old.
+// On a dead Saturday with the market shut, that alone held ~100% of one core
+// and inflated /api/auth/status (408 bytes, zero work) from an 11ms median to
+// 315ms median / 5.7s p90. The server-side hot loop is asleep on weekends, so
+// the browser poll was the only thing keeping the storm alive.
+function premarketScannerPollIntervalMs(now = new Date()) {
+  try {
+    const parts = marketClockFormatter.formatToParts(now);
+    const read = (type) => parts.find((part) => part.type === type)?.value ?? "";
+    const weekday = read("weekday");
+    if (weekday === "Sat" || weekday === "Sun") return PREMARKET_SCAN_POLL_IDLE_MS;
+    // en-US hour12:false emits "24" for midnight in some engines; normalize.
+    const hour = Number(read("hour")) % 24;
+    const minuteOfDay = hour * 60 + Number(read("minute"));
+    if (!Number.isFinite(minuteOfDay)) return PREMARKET_SCAN_POLL_ACTIVE_MS;
+    return minuteOfDay >= PREMARKET_SCAN_POLL_OPEN_MINUTE
+      && minuteOfDay < PREMARKET_SCAN_POLL_CLOSE_MINUTE
+      ? PREMARKET_SCAN_POLL_ACTIVE_MS
+      : PREMARKET_SCAN_POLL_IDLE_MS;
+  } catch {
+    // A clock we cannot read must not silence the scanner during its window.
+    return PREMARKET_SCAN_POLL_ACTIVE_MS;
+  }
+}
 const OI_SCANNER_MAX_DTE = 14;
-const OI_CHART_PRICE_SCALE_MARGINS = Object.freeze({ top: 0.12, bottom: 0.12 });
+// Price-scale framing lives in chartPriceFraming.js and is phone-aware:
+// desktop keeps { top: 0.12, bottom: 0.12 } + 10% padding, phones tighten it
+// so candles stop surrendering a third of a small screen to empty band.
 const OI_CHART_AXIS_LABEL_BACKGROUND = "#0c0c0d";
 // Mirrors --terminal-font in index.css. The chart draws to a canvas, so it
 // cannot read the CSS variable and needs the stack spelled out here; keep the
@@ -828,12 +1033,54 @@ function mergeDashboardPayload(current, payload) {
       next[key] = existing;
     }
   });
+  // Keep the EXISTING array reference whenever the poll delivered identical
+  // content. React re-renders on identity, not value, so a 5s poll that
+  // rebuilt every array made every consumer of every list re-render even
+  // though nothing changed. Measured in the running app: 43KB of payload per
+  // poll but 22.5% of the main thread blocked, in 600-990ms tasks - the cost
+  // was rendering, not parsing.
+  //
+  // The comparison is over ~43KB of already-parsed JSON, which is orders of
+  // magnitude cheaper than the re-render it avoids. Applied only to array
+  // keys, so scalars and status objects keep their existing merge semantics.
+  Object.keys(next).forEach((key) => {
+    const incoming = next[key];
+    const existing = current?.[key];
+    if (incoming === existing) return;
+    // Objects as well as arrays: JSON.parse hands back a fresh object for
+    // every nested value each poll, so without this the top-level bail-out
+    // below could never fire even when the payload was byte-identical.
+    if (!incoming || !existing || typeof incoming !== "object" || typeof existing !== "object") return;
+    if (Array.isArray(incoming) !== Array.isArray(existing)) return;
+    if (Array.isArray(incoming) && incoming.length !== existing.length) return;
+    try {
+      if (JSON.stringify(incoming) === JSON.stringify(existing)) next[key] = existing;
+    } catch {
+      /* a non-serialisable payload simply keeps the new reference */
+    }
+  });
   if (payload?.status?.marketStatus === "Loading" && current?.status) {
     next.status = { ...current.status, ...payload.status };
     if (!payload.status.clockTime && current.status.clockTime) next.status.clockTime = current.status.clockTime;
     if (!payload.status.lastRefresh && current.status.lastRefresh) next.status.lastRefresh = current.status.lastRefresh;
   }
-  return next;
+  // Return the CURRENT object when nothing changed at all.
+  //
+  // A profile attributed 550ms per render to TradingWorkspace, which holds
+  // this state - 7,775 lines of hooks and element creation re-run on every
+  // 5s poll. Preserving individual array references (above) still handed
+  // React a NEW top-level object, so it re-rendered regardless.
+  //
+  // Handing back the SAME reference makes React bail out of the render
+  // entirely: the cheapest render is the one that never runs. Nested objects
+  // are compared by identity only, so this is a cheap key scan, and the
+  // reference preservation above is what makes it hit at all.
+  const nextKeys = Object.keys(next);
+  const currentKeys = current ? Object.keys(current) : [];
+  const unchanged = current
+    && nextKeys.length === currentKeys.length
+    && nextKeys.every((key) => next[key] === current[key]);
+  return unchanged ? current : next;
 }
 
 function isWithinOiExpiryWindow(row, maxDte = OI_SCANNER_MAX_DTE) {
@@ -862,54 +1109,58 @@ function renderStockSetupMatches(row) {
   );
 }
 
+// 2026-08-27, trader's call: the primary bar carries charts, options, alerts,
+// scanner and MomX. Everything else - including Settings - lives behind the
+// phone's "More" sheet, which is fed automatically by whatever this list holds
+// that BOTTOM_NAV_LABELS does not name.
 const optionNavItems = [
-  { label: "Scanner", icon: Activity },
-  { label: "OI Finder", icon: ScanSearch },
-  { label: "Charts & OI", icon: ChartCandlestick },
-  { label: "ROI Calc", icon: WalletCards },
-  { label: "OI Level Script TOS", displayLabel: "OI Level Scripts", icon: NotebookTabs },
-  { label: "Learning Lab", icon: BrainCircuit },
-  { label: "Backtesting", icon: FlaskConical },
-  { label: "Journal", icon: NotebookTabs },
-  { label: "Option Journal", icon: ListChecks },
+  // The full chart workstation. This is the view KEY "Charts & OI" now - the
+  // old "OI Finder" key belonged to a chart+chain board, since removed.
+  { label: "Charts & OI", icon: Crosshair },
+  { label: "Quick Options", displayLabel: "Options", icon: Database },
+  // Automatic OI-ladder alerts (MAG7 + manual tickers). The bell carries the
+  // unseen-alert count.
+  { label: "Auto Alert", displayLabel: "Alerts", icon: Bell },
+  // "Premarket", not "Scanner": MomX is also a scanner, so the old label
+  // made the two indistinguishable in the nav. The view KEY stays
+  // "Premarket Scanner" - it is persisted and referenced by learnContent.
+  { label: "Premarket Scanner", displayLabel: "Premarket", icon: Sunrise },
+  // MomX Scanner: the trader's TOS "AlertX Bull Momo" scan plus the dense
+  // watchlist board it feeds.
+  { label: "MomX Scanner", icon: Radar },
+  // Learn: the new-user page. Deliberately absent from BOTTOM_NAV_LABELS, so it
+  // lands in the phone "More" sheet - and sits first there, where a new user
+  // looking for help will actually find it.
+  { label: "Learn + Setup", icon: GraduationCap },
+  // Secondary destinations: reachable from the "More" sheet, in this order.
+  { label: "Watchlist", icon: Star },
   { label: "News Feed", icon: Newspaper },
   { label: "Earnings Calendar", icon: CalendarDays },
-  { label: "Memory", icon: BrainCircuit },
-  { label: "Watchlist", icon: Star },
-  { label: "OI Scanner", icon: CircleDot },
-  { label: "Mag7 Scanner", icon: ScanSearch },
-  { label: "Option Watchlist", icon: WalletCards },
+  { label: "Mag7 Scanner", displayLabel: "Mag7 Watchlist", icon: Trophy },
+  { label: "ROI Calc", icon: WalletCards },
+  { label: "OI Level Script TOS", displayLabel: "OI Level Scripts", icon: NotebookTabs },
+  // Directly above Settings, at the trader's request. What changed and
+  // WHEN - the page you check when the app starts behaving differently.
+  { label: "Release Notes", icon: ScrollText },
   { label: "Settings", icon: Settings },
 ];
 
-function loadHiddenNavigationPanels() {
-  const defaultHidden = new Set(MANAGEABLE_NAVIGATION_PANELS);
-  if (typeof window === "undefined") return defaultHidden;
-  try {
-    const saved = window.localStorage.getItem(NAVIGATION_HIDDEN_PANELS_STORAGE_KEY);
-    if (!saved) return defaultHidden;
-    const parsed = JSON.parse(saved);
-    if (!Array.isArray(parsed)) return defaultHidden;
-    return new Set(parsed.filter((label) => MANAGEABLE_NAVIGATION_PANELS.includes(label)));
-  } catch {
-    return defaultHidden;
-  }
-}
-
 function viewDescription(view) {
-  if (view === "Backtesting") return "MAG7 and custom historical strategy validation";
-  if (view === "OI Scanner") return "Live options liquidity, flow, and momentum intelligence";
   if (view === "Pre Market Mag7") return "Paced Mag7 premarket option-flow plan from the latest saved chain snapshots";
-  if (view === "OI Finder") return "Live option-chain call and put OI walls, volume, and expiry flow";
   if (view === "Charts & OI") return "Live price chart alongside the selected ticker's OTM call and put option-chain levels";
-  if (view === "ROI Calc") return "Manual expected-move and option-premium ROI screening shortcut";
-  if (view === "OI Level Script TOS") return "Generate Thinkorswim and TradingView OI levels that match the Charts & OI front expiry";
-  if (view === "Earnings Calendar") return "Upcoming earnings releases for your saved watchlist";
-  if (view === "Learning Lab") return "Persistent signal outcomes, trade memory, and shadow-model improvement";
-  if (view === "Scanner") return "Live stock momentum across MAG7 and your watchlist";
+  if (view === "Auto Alert") return "Automatic OI-level alerts: 9:15 AM ET ladders for MAG7 + your tickers, confirmed on 5-minute closes";
+  if (view === "MomX Scanner") return "TOS AlertX Bull Momo scan and watchlist board: RVOL, squeeze, and Skittles across 5m to monthly";
   if (view === "Option Paper Trading") return "Option planning, approvals, and paper execution";
   if (view === "Paper Trading") return "Stock paper positions, automation, and risk controls";
+  if (view === "Watchlist") return "Your saved tickers, shared by the scanners and the chart rails";
+  if (view === "News Feed") return "Headlines and catalysts across MAG7 and your watchlist";
+  if (view === "Earnings Calendar") return "Upcoming earnings releases for your saved watchlist";
+  if (view === "Mag7 Scanner") return "The dense MAG7 board: signals, flow, and review rows per ticker";
+  if (view === "ROI Calc") return "Manual expected-move and option-premium ROI screening shortcut";
+  if (view === "OI Level Script TOS") return "Generate Thinkorswim and TradingView OI levels that match the Charts & OI front expiry";
+  if (view === "Release Notes") return "Every dated change to AGX, newest first - what shipped and exactly when";
   if (view === "Settings") return "Account, personal API keys, and workspace preferences";
+  if (view === "Learn + Setup") return "How AGX works: charts, indicators, options, alerts, and the two scanners - plus every first-time-setup step";
   return "US market agentic trading workstation";
 }
 
@@ -956,12 +1207,16 @@ function isoDate(daysBack = 0) {
   return value.toISOString().slice(0, 10);
 }
 
+// Built once. Constructing an Intl formatter costs far more than using one, and
+// this runs per cell of the option chain on every chart render.
+const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 2,
+});
+
 function formatCurrency(value) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }).format(Number(value ?? 0));
+  return CURRENCY_FORMATTER.format(Number(value ?? 0));
 }
 
 function formatPercent(value) {
@@ -1212,6 +1467,14 @@ function renderMtfSignalBadges(value, row) {
   );
 }
 
+// Groups the three signal columns under one "SIGNALS" band in the dense-grid
+// scanner header (4/8 · 9/20 · D-M all describe crosses).
+const PREMARKET_SCANNER_SIGNAL_GROUPS = Object.freeze({
+  signals48: "SIGNALS",
+  signals920: "SIGNALS",
+  signalsCyanHigher: "SIGNALS",
+});
+
 function renderPremarketChartSignalBadges(value, tone) {
   const labels = Array.isArray(value)
     ? value.map((label) => String(label || "").trim()).filter(Boolean)
@@ -1271,7 +1534,7 @@ function renderFiveMinuteChartSignalEvents(value) {
   if (!signals.length) return "--";
   return (
     <div className="five-minute-chart-signal-events">
-      {signals.map((signal) => {
+      {signals.map((signal, index) => {
         const tone = fiveMinuteChartSignalTone(signal?.family);
         const candleLabel = formatTimeLabel(signal?.candleAt);
         const candleDateLabel = formatEtDate(signal?.candleAt);
@@ -1281,7 +1544,7 @@ function renderFiveMinuteChartSignalEvents(value) {
         return (
           <span
             className={`mtf-table-signal mtf-table-signal-${tone}`}
-            key={signal?.key || `${signal?.family}-${signal?.label}-${signal?.candleAt}`}
+            key={signal?.key || `${signal?.family}-${signal?.label}-${signal?.candleAt}-${index}`}
             title={timeTitle}
           >
             {signal?.label || "CALL"}
@@ -1431,6 +1694,87 @@ function signedPercent(value) {
   return formatted;
 }
 
+const TICKER_DAY_MOVE_POLL_MS = 15_000;
+
+// Day move for a LIST of tickers (the quick-chart rails), on its own slow
+// timer. Deliberately NOT subscribed to the 1s chart quote poller: that would
+// add every rail ticker to the 1s fetch set and re-render the rail once a
+// second for a number that only needs to be roughly current. 15s is plenty for
+// a scan-at-a-glance badge and costs one small request.
+function useTickerDayMoves(symbols) {
+  const [moves, setMoves] = useState({});
+  const key = Array.isArray(symbols)
+    ? [...new Set(symbols.map((symbol) => String(symbol || "").trim().toUpperCase()).filter(Boolean))].join(",")
+    : "";
+  useEffect(() => {
+    if (!key) {
+      setMoves({});
+      return undefined;
+    }
+    let cancelled = false;
+    let timer = 0;
+    const load = async () => {
+      try {
+        const response = await fetch(`/api/live-chart-quotes?symbols=${encodeURIComponent(key)}`);
+        const payload = await response.json();
+        if (cancelled) return;
+        const next = {};
+        (Array.isArray(payload?.rows) ? payload.rows : []).forEach((row) => {
+          // Number(null) is 0, NOT NaN - so the isFinite guard below let a
+          // null percentage through as a confident zero, which is the exact
+          // opposite of what the comment promised. On 2026-09-04, with Schwab
+          // refusing every request and /api/live-chart-quotes returning
+          // "changePercent": null for all 13 symbols, the rail showed every
+          // ticker at 0.00%: not "we don't know", but "flat", during a move.
+          // Only undefined and non-numeric strings ever hit the NaN path.
+          const reported = row?.changePercent;
+          const percent = reported == null ? Number.NaN : Number(reported);
+          const symbol = String(row?.symbol || "").trim().toUpperCase();
+          // Only a REPORTED move lands in the map. A missing percentage stays
+          // absent so the badge is omitted entirely, rather than rendering a
+          // confident 0.00% the data never said.
+          if (symbol && Number.isFinite(percent)) next[symbol] = percent;
+        });
+        setMoves((current) => (sameTickerDayMoves(current, next) ? current : next));
+      } catch {
+        // A rail badge must never take the page down, and a failed poll keeps
+        // the last good numbers rather than blanking the row.
+      } finally {
+        if (!cancelled) timer = window.setTimeout(load, TICKER_DAY_MOVE_POLL_MS);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [key]);
+  return moves;
+}
+
+// Compare at DISPLAY precision. The raw percent wobbles on most polls; keeping
+// the same object unless a rendered digit actually changes stops the rail (and
+// everything memoised below it) re-rendering for an invisible difference.
+function sameTickerDayMoves(current, next) {
+  const currentKeys = Object.keys(current || {});
+  const nextKeys = Object.keys(next || {});
+  if (currentKeys.length !== nextKeys.length) return false;
+  return nextKeys.every((symbol) => (
+    symbol in (current || {})
+    && Number(current[symbol]).toFixed(2) === Number(next[symbol]).toFixed(2)
+  ));
+}
+
+function TickerDayMoveBadge({ percent }) {
+  if (!Number.isFinite(Number(percent))) return null;
+  const numeric = Number(percent);
+  return (
+    <em className={`ticker-day-move ${numeric >= 0 ? "is-up" : "is-down"}`}>
+      {signedPercent(numeric)}
+    </em>
+  );
+}
+
 function HorizonOutcomeCell({ value }) {
   const latest = value?.latest;
   const average = value?.average;
@@ -1482,12 +1826,28 @@ function formatSchwabRefreshRemaining(status) {
   return `${days}d ${hours}h`;
 }
 
+// "Out of time" and "Schwab refused us" are DIFFERENT failures and must not
+// share a label. refreshTokenValid means "the token works", not "the token has
+// time left" - reading it as expiry is what made this badge lie.
+//
+// 2026-08-27: the market-data client secret in .env had been overwritten with
+// the placeholder "EVIL". Schwab answered `invalid_client: Unauthorized`, so
+// refreshTokenValid went false while refreshTokenRemainingSeconds still read
+// 233424 (2.7 days). The badge showed EXPIRED next to its own "2D 16H"
+// countdown and sent the trader to re-authenticate - which could never work,
+// because the OAuth flow reuses the same rejected secret.
+function schwabCredentialRejected(status) {
+  const remaining = Number(status?.refreshTokenRemainingSeconds);
+  const hasRemaining = status?.refreshTokenRemainingSeconds != null && Number.isFinite(remaining);
+  return hasRemaining && remaining > 0 && status?.refreshTokenValid === false;
+}
+
 function schwabRefreshExpiryTone(status) {
   const remaining = Number(status?.refreshTokenRemainingSeconds);
+  if (schwabCredentialRejected(status)) return "is-critical";
   if (
     status?.refreshTokenRemainingSeconds == null
     || !Number.isFinite(remaining)
-    || status?.refreshTokenValid === false
     || remaining <= 0
   ) return "is-expired";
   if (remaining < 86400) return "is-critical";
@@ -1507,12 +1867,17 @@ function SchwabExpiryBadge({ status }) {
   }
   const remaining = Number(status?.refreshTokenRemainingSeconds);
   const hasRemaining = status?.refreshTokenRemainingSeconds != null && Number.isFinite(remaining);
-  const expired = !hasRemaining || status?.refreshTokenValid === false || remaining <= 0;
+  const outOfTime = !hasRemaining || remaining <= 0;
+  const rejected = schwabCredentialRejected(status);
+  const reason = String(status?.acceptedError || "").trim();
   return (
-    <span className={`schwab-expiry-badge ${schwabRefreshExpiryTone(status)}`}>
-      <span>Expiry</span>
-      <strong>{formatSchwabRefreshRemaining(status)}</strong>
-      <span>{expired ? "expired" : "refresh left"}</span>
+    <span
+      className={`schwab-expiry-badge ${schwabRefreshExpiryTone(status)}`}
+      title={rejected && reason ? `Schwab rejected the app credentials: ${reason}` : undefined}
+    >
+      <span>{rejected ? "Key" : "Expiry"}</span>
+      <strong>{rejected ? "Rejected" : formatSchwabRefreshRemaining(status)}</strong>
+      <span>{outOfTime ? "expired" : rejected ? "check app secret" : "refresh left"}</span>
     </span>
   );
 }
@@ -1547,39 +1912,48 @@ function formatSchwabConnectionStatus(status) {
   }
   if (status?.connected === false) return "Connection test failed";
   if (status?.accessTokenValid) return "Authenticated · not tested";
+  // Say WHY when Schwab told us. "OAuth authentication required" sends the
+  // trader through a login that reuses the same refused credentials.
+  if (schwabCredentialRejected(status) && status?.acceptedError) {
+    return `Schwab rejected the app key/secret - ${status.acceptedError}`;
+  }
   if (status?.credentialsConfigured) return "OAuth authentication required";
   return "App keys required";
 }
+
+// toLocaleDateString/toLocaleTimeString build a fresh formatter on every call.
+// This one labels every expiry row, so hold the three formatters instead.
+const EXPIRY_UTC_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "UTC",
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+const EXPIRY_EASTERN_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: MARKET_TIMEZONE,
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+const EXPIRY_EASTERN_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: MARKET_TIMEZONE,
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+});
 
 function formatExpiryEastern(value) {
   if (!value) return "--";
   const raw = String(value).trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
     const [year, month, day] = raw.split("-").map(Number);
-    return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString("en-US", {
-      timeZone: "UTC",
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
+    return EXPIRY_UTC_DATE_FORMATTER.format(new Date(Date.UTC(year, month - 1, day)));
   }
   const parsed = parseApiDate(raw);
   if (!parsed) return raw;
-  const dateLabel = parsed.toLocaleDateString("en-US", {
-    timeZone: MARKET_TIMEZONE,
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-  const timeLabel = parsed.toLocaleTimeString("en-US", {
-    timeZone: MARKET_TIMEZONE,
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-  return `${dateLabel} · ${timeLabel} ET`;
+  return `${EXPIRY_EASTERN_DATE_FORMATTER.format(parsed)} · ${EXPIRY_EASTERN_TIME_FORMATTER.format(parsed)} ET`;
 }
 
 function newsFreshnessMeta(value) {
@@ -1646,6 +2020,86 @@ function formatTimeLabel(value) {
     hour12: true,
   });
   return `${formatted} ET`;
+}
+
+// Schwab refresh tokens die exactly 7 days after login (2026-09-03 the
+// market-data one expired mid-evening and took the charts down overnight).
+// The header lamps carry the countdown so the deadline is seen daily, not
+// discovered in Settings after the fact. Under 2 days it turns amber.
+function schwabLoginCountdown(status) {
+  const iso = status?.refreshTokenExpiresAt;
+  if (!iso) return null;
+  const expires = parseApiDate(iso);
+  if (!expires) return null;
+  const remainingMs = expires.getTime() - Date.now();
+  const when = expires.toLocaleString("en-US", {
+    timeZone: MARKET_TIMEZONE,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  if (remainingMs <= 0) return { text: "EXPIRED", tone: "is-expiring", when };
+  const hours = Math.floor(remainingMs / 3600000);
+  const days = Math.floor(hours / 24);
+  const text = days >= 2 ? `${days}d` : days === 1 ? `1d ${hours - 24}h` : `${Math.max(hours, 1)}h`;
+  return { text, tone: days >= 2 ? "" : "is-expiring", when };
+}
+
+// The levels footer must never let a day-old ladder look like this morning's.
+// formatTimeLabel prints "9:15:00 AM ET" with no date at all, so a build from
+// Wed Aug 26 rendered identically to one from Thu Aug 27 - which is exactly
+// what hid two days of stale OI walls on the Mag7 cards while the backend was
+// quietly arming them. Same session: time only, unchanged. Any other session:
+// the DATE leads, because that is the fact that changes what the time means.
+function formatBuildStamp(value) {
+  if (!value) return "--";
+  const parsed = parseApiDate(value);
+  if (!parsed) return String(value);
+  const marketDay = (date) =>
+    date.toLocaleDateString("en-US", { timeZone: MARKET_TIMEZONE });
+  if (marketDay(parsed) === marketDay(new Date())) return formatTimeLabel(value);
+  const day = parsed.toLocaleDateString("en-US", {
+    timeZone: MARKET_TIMEZONE,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+  return `${day}, ${formatTimeLabel(value)}`;
+}
+
+// A chain the backend flagged STALE - a disk copy replayed because a refresh
+// could not be made - still carries live:true, because `live` only means "this
+// build parsed at least one row" (api_server.py:4864), and the disk cache will
+// serve a file up to five days old. Measured 2026-08-27: an AVGO chain 2 days
+// 21 hours old, sourced from a provider that was 401-refused at that moment,
+// rendered a green FEED LIVE lamp with a caption of "11:56:00 PM ET" - time
+// only, no date, so Monday night read as tonight. The lamp follows freshness
+// now, not row count.
+// Name the WINDOW that is missing, not merely that something is late.
+// "Tape behind" sends the trader to the chart hunting a rendering fault;
+// "No data 04:00-07:00" tells him it is the Tradier hole, that his premarket
+// scanner is blind for its first hour, and that his 2H and 4H labels are
+// computed from a partial window. He has lost a day to exactly that ambiguity.
+// The window is READ OUT of the backend note rather than hardcoded here, so if
+// the gap ever moves, this cannot go on confidently naming the old hours.
+// The server's note when Tradier is refused but the Alpaca SIP backup filled
+// the window ("...is running on the Alpaca SIP backup..."); a backup that
+// ALSO failed says "returned nothing" and stays a GAP.
+function premarketScannerOnBackup(note) {
+  const text = String(note || "");
+  return /backup/i.test(text) && !/returned nothing/i.test(text);
+}
+
+function premarketGapWindow(note) {
+  const match = /(\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2})/.exec(String(note || ""));
+  return match ? match[1].replace(/\s+/g, "") : "";
+}
+
+function isChainFeedFresh(data) {
+  return Boolean(data?.live) && !data?.stale;
 }
 
 function formatOptionStrike(value) {
@@ -1915,7 +2369,7 @@ async function readJsonResponse(response) {
   try {
     return JSON.parse(raw);
   } catch {
-    throw new Error("API returned an invalid or empty JSON response.");
+    throw nonJsonResponseError(response, raw);
   }
 }
 
@@ -2903,10 +3357,7 @@ function OiFinderHeatmapActivityRecord({ heatmap, symbol, contract }) {
     const parsed = new Date(`${day}T12:00:00Z`);
     return Number.isNaN(parsed.getTime()) ? day : dayFormatter.format(parsed);
   };
-  const metricLabel = activityMetric === "volume" ? "Live volume" : "Reported OI";
   const metricValue = (point) => Math.max(Number(point?.[activityMetric] || 0), 0);
-  const metricChange = activityMetric === "volume" ? record.volumeChange : record.oiChange;
-  const maxMetric = Math.max(...record.points.map(metricValue), metricValue(record.latest), 1);
   const maxExpiryMetric = Math.max(...record.expiryPoints.map(metricValue), 1);
   const maxVolume = Math.max(record.prior?.volume || 0, record.latest.volume || 0, 1);
   const maxOi = Math.max(record.prior?.oi || 0, record.latest.oi || 0, 1);
@@ -2945,7 +3396,13 @@ function OiFinderDteHeatmap({ heatmap, symbol, underlyingPrice, expiryExpectedMo
     const snapshotDays = [...new Set(Array.isArray(heatmap?.days)
       ? heatmap.days.filter(Boolean).filter((day) => heatmap?.liveOnly || isWeekday(day))
       : [])].sort();
-    const latestDay = snapshotDays.at(-1) || "";
+    // Overnight the broker stops publishing greeks, so the recorder can write a
+    // whole new day whose rows are all delta 0 and therefore outside the
+    // 0.20-0.80 band below. Render the newest day that still has contracts.
+    const latestDay = latestUsableHeatmapDay(
+      snapshotDays,
+      [...(Array.isArray(heatmap?.call) ? heatmap.call : []), ...(Array.isArray(heatmap?.put) ? heatmap.put : [])],
+    );
     const spot = Number(underlyingPrice || 0);
     const oiLevelModelsByExpiry = new Map((Array.isArray(tosScriptLevels) ? tosScriptLevels : [])
       .map((levelSet) => {
@@ -3073,8 +3530,6 @@ function OiFinderDteHeatmap({ heatmap, symbol, underlyingPrice, expiryExpectedMo
       Math.abs(Number(item.put?.change || 0)),
     ]), 1);
     const atmStrike = nearestAtmStrike;
-    const high = strikes[0] || 0;
-    const low = strikes[strikes.length - 1] || 0;
     // Anchor the live line to its actual strike row.  A percentage of the
     // whole grid drifts when expected-move cells make some rows taller.
     const firstBelowSpotIndex = spot > 0 ? strikes.findIndex((strike) => strike < spot) : -1;
@@ -3159,8 +3614,6 @@ function OiFinderDteHeatmap({ heatmap, symbol, underlyingPrice, expiryExpectedMo
               const callPalette = ["#0e0e10", "#176985", "#20bfe5", "#a4f2ff"];
               const putPalette = ["#150910", "#792152", "#d52b95", "#ffabe3"];
               const heatColor = !cell ? "rgba(9, 9, 10, 0.9)" : (side === "CALL" ? callPalette : putPalette)[tier === "hot" ? 3 : tier === "high" ? 2 : tier === "normal" ? 1 : 0];
-              const callScaled = cell?.call ? Math.log1p(cell.call.value) / Math.log1p(model.maxValue) : 0;
-              const putScaled = cell?.put ? Math.log1p(cell.put.value) / Math.log1p(model.maxValue) : 0;
               const colorFor = (palette, value) => palette[value >= 0.86 ? 3 : value >= 0.56 ? 2 : value >= 0.30 ? 1 : 0];
               const currentDominantSide = (cell?.call?.value || 0) >= (cell?.put?.value || 0) ? "CALL" : "PUT";
               const combinedDominantSide = currentDominantSide;
@@ -3326,9 +3779,19 @@ function OiFinderActivityHeatmap({ heatmap, symbol, volumeMomentum }) {
 
   useEffect(() => {
     if (!chartElementRef.current || !matrix.expiries.length || !matrix.strikes.length) return undefined;
-    const chart = echarts.init(chartElementRef.current, null, { renderer: "canvas" });
-    const visibleMax = Math.max(matrix.maxValue, 1);
-    chart.setOption({
+    let cancelled = false;
+    let chart = null;
+    let observer = null;
+    const mountChart = async () => {
+      // ECharts is used only by this research heatmap. Loading it from the
+      // application entry point made every phone chart parse the heatmap
+      // engine before its first candle; defer the chunk until this panel is
+      // actually visible and has cells to draw.
+      const { createHeatmapChart } = await import("./heatmapChartRuntime.js");
+      if (cancelled || !chartElementRef.current) return;
+      chart = createHeatmapChart(chartElementRef.current);
+      const visibleMax = Math.max(matrix.maxValue, 1);
+      chart.setOption({
       animation: false,
       backgroundColor: "transparent",
       grid: { left: 64, right: 96, top: 16, bottom: 70, containLabel: false },
@@ -3396,11 +3859,19 @@ function OiFinderActivityHeatmap({ heatmap, symbol, volumeMomentum }) {
         itemStyle: { borderColor: "#07110b", borderWidth: 1 },
         emphasis: { itemStyle: { borderColor: "#d4ffe1", borderWidth: 1.5 } },
       }],
-    }, true);
-    const resize = () => chart.resize();
-    const observer = new ResizeObserver(resize);
-    observer.observe(chartElementRef.current);
-    return () => { observer.disconnect(); chart.dispose(); };
+      }, true);
+      const resize = () => chart?.resize();
+      observer = new ResizeObserver(resize);
+      observer.observe(chartElementRef.current);
+    };
+    mountChart().catch((error) => {
+      if (!cancelled) console.error("Unable to load the option heatmap renderer.", error);
+    });
+    return () => {
+      cancelled = true;
+      observer?.disconnect();
+      chart?.dispose();
+    };
   }, [matrix, metricLabel]);
 
   return (
@@ -4019,7 +4490,6 @@ function OiFinderLiveWallTrend({ trend, symbol }) {
     return () => chart.remove();
   }, [chartSeries, hasTrend, easternDateFormatter, easternTimeFormatter]);
 
-  const metricLabel = metric === "flow" ? "5-min gamma-weighted volume flow" : (trend?.metricLabel || "Gamma x OI");
   return (
     <section className="oi-finder-live-wall-trend" aria-label="Live call and put wall strength over time">
       <header>
@@ -4364,6 +4834,26 @@ function OiFinderExpiryLeaderBars({ heatmap, symbol }) {
   </section>;
 }
 
+// How many of the four score comparisons the two DISPLAYED picks actually
+// have. Deliberately not activity.historyReady: that is
+// all(history_days >= 5) across EVERY scanned OTM contract, so a handful of
+// thin far-OTM strikes hold it false while the picks on screen are fully
+// backed. Measured TSLA 2026-08-26: 80 signals, 71 with 10-11 days of history,
+// both picks at 4/4 comparisons - and historyReady still false.
+function oiFinderPickComparisons(call, put) {
+  const counts = [call, put]
+    .filter(Boolean)
+    .map((signal) => signal.comparisonsAvailable)
+    // null/undefined mean "not reported", NOT "zero comparisons" - Number(null)
+    // is 0 and would silently label a complete read as still collecting.
+    .filter((count) => count != null)
+    .map(Number)
+    .filter((count) => Number.isFinite(count));
+  // No count at all (an older payload without the field) reads as complete, so
+  // the board keeps its previous behaviour rather than claiming a gap.
+  return counts.length ? Math.max(...counts) : 4;
+}
+
 function OiFinderDecisionBoard({ activity, heatmap, symbol }) {
   const overview = useMemo(() => {
     const days = [...new Set(Array.isArray(heatmap?.days) ? heatmap.days.filter(Boolean) : [])].sort();
@@ -4400,8 +4890,18 @@ function OiFinderDecisionBoard({ activity, heatmap, symbol }) {
   const put = activity?.strongestBearish;
   const callScore = Number(call?.score || 0);
   const putScore = Number(put?.score || 0);
+  // Three of the four score comparisons (volume vs yesterday, volume vs the
+  // 5-day average, OI vs yesterday) need saved daily chain history; only
+  // "OTM volume > ATM volume" is live-only. While those are missing every
+  // score is 0/4 or 1/4 and the two sides tie, which rendered as
+  // "MIXED - WAIT" - a claim about the market drawn from one comparison. Say
+  // what is actually true instead, and say how much of the evidence is in.
+  const pickComparisons = oiFinderPickComparisons(call, put);
+  const historyPending = (call || put) && pickComparisons < 4;
   const leader = !call && !put
     ? { key: "wait", title: "WAIT FOR DATA", note: "No qualifying OTM contract is available yet." }
+    : historyPending
+      ? { key: "mixed", title: "LIVE VOLUME ONLY", note: `Only ${pickComparisons} of the 4 comparisons is in for these contracts - the rest need yesterday's and the five-day chain history, which is still collecting. The volume and OI below are live; do not read direction from the score yet.` }
     : Math.abs(callScore - putScore) < 1
       ? { key: "mixed", title: "MIXED — WAIT", note: "Call and put activity are too close. Do not force a directional read from this data." }
       : callScore > putScore
@@ -4805,6 +5305,211 @@ function RoiCalc({ data, loading = false }) {
   );
 }
 
+function MobileQuickOptionsBoard({
+  data,
+  loading,
+  requestedSymbol,
+  newsRows = [],
+  newsIndex = [],
+  onLinkedSymbolChange,
+  onRequestResearch,
+  onRefreshNews,
+  newsLoading = false,
+  onRefresh,
+  quickTickers = null,
+}) {
+  // Pinned names first, then My Watchlist. A hardcoded rail is what made an
+  // added ticker invisible here; fall back to the constant only if the prop is
+  // missing, which can only happen in an older embedding of this component.
+  const railTickers = Array.isArray(quickTickers) && quickTickers.length ? quickTickers : OI_FINDER_QUICK_TICKERS;
+  const symbol = String(data?.symbol || requestedSymbol || "").trim().toUpperCase();
+  const requestedTicker = String(requestedSymbol || symbol || "").trim().toUpperCase();
+  const [tickerDraft, setTickerDraft] = useState(requestedTicker);
+  const [activeSection, setActiveSection] = useState("chain");
+  const [loadedSections, setLoadedSections] = useState(() => new Set(["chain"]));
+  const [researchLoading, setResearchLoading] = useState("");
+  const [researchError, setResearchError] = useState("");
+  const researchRequestRef = useRef(0);
+  const sectionNavRef = useRef(null);
+  useEffect(() => {
+    setTickerDraft(requestedTicker);
+    setActiveSection("chain");
+    setLoadedSections(new Set(["chain"]));
+    setResearchLoading("");
+    setResearchError("");
+    researchRequestRef.current += 1;
+  }, [requestedTicker]);
+
+  // Shared frozen fallback keeps the identity stable for the memoized panels.
+  const currentAtm = data?.currentAtm || EMPTY_CHART_CONTEXT;
+  const selectedChainRows = Array.isArray(data?.selectedExpiryChainRows) ? data.selectedExpiryChainRows : [];
+  const fallbackChainRows = [
+    ...(Array.isArray(data?.callRows) ? data.callRows : []),
+    ...(Array.isArray(data?.putRows) ? data.putRows : []),
+  ];
+  const expiry = String(currentAtm?.expiry || selectedChainRows[0]?.expiry || fallbackChainRows[0]?.expiry || "").slice(0, 10);
+  const feedReady = requestedTicker === symbol && (selectedChainRows.length > 0 || fallbackChainRows.length > 0);
+  const loadResearchSection = async (nextSection) => {
+    const mode = mobileOptionsSectionRequestMode(nextSection);
+    if (mode === "none" || loadedSections.has(nextSection)) return;
+    const requestId = researchRequestRef.current + 1;
+    researchRequestRef.current = requestId;
+    setResearchLoading(nextSection);
+    setResearchError("");
+    try {
+      const result = mode === "news"
+        ? await onRefreshNews?.(requestedTicker)
+        : await onRequestResearch?.(nextSection);
+      if (!result?.started || result?.failed) {
+        throw new Error(`Unable to load ${nextSection} research.`);
+      }
+      if (researchRequestRef.current !== requestId) return;
+      setLoadedSections((current) => new Set([...current, nextSection]));
+    } catch (error) {
+      if (researchRequestRef.current !== requestId) return;
+      setResearchError(error instanceof Error ? error.message : `Unable to load ${nextSection} research.`);
+    } finally {
+      if (researchRequestRef.current === requestId) setResearchLoading("");
+    }
+  };
+  const selectSection = (nextSection) => {
+    setActiveSection(nextSection);
+    loadResearchSection(nextSection);
+    // The chain is deliberately long on a phone. A selection made from the
+    // research launcher below it replaces that table with the chosen desktop
+    // research surface, so return the viewport to the persistent section bar
+    // where the loading/result state begins instead of leaving the trader at
+    // the old table's now-empty scroll offset.
+    window.requestAnimationFrame(() => {
+      sectionNavRef.current?.scrollIntoView?.({ block: "start", behavior: "auto" });
+    });
+  };
+  const submitTicker = () => {
+    const target = String(tickerDraft || "").trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(target)) return;
+    setActiveSection("chain");
+    if (target === symbol) onRefresh?.();
+    else onLinkedSymbolChange?.(target);
+  };
+  return (
+    <section className="mobile-quick-options" data-testid="mobile-quick-options" aria-label={`${requestedTicker || "Ticker"} fast option chain`}>
+      <header className="mobile-quick-options-header">
+        <div className="mobile-quick-options-title">
+          <span>FAST OPTIONS</span>
+          <div><b>{requestedTicker || "TICKER"} LIVE CHAIN</b><i className={isChainFeedFresh(data) ? "is-live" : ""} /></div>
+          <small>{expiry ? `${formatExpiryEastern(expiry)} · ${currentAtm?.daysToExpiration ?? "--"} DTE` : "Loading nearest expiry"}</small>
+        </div>
+        <div className="mobile-quick-options-search" role="search">
+          <input
+            aria-label="Fast option ticker"
+            autoCapitalize="characters"
+            autoComplete="off"
+            inputMode="text"
+            onChange={(event) => setTickerDraft(event.target.value.toUpperCase())}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submitTicker();
+            }}
+            placeholder="Ticker"
+            value={tickerDraft}
+          />
+          <button type="button" onClick={submitTicker} disabled={loading && !feedReady}>Go</button>
+          <button type="button" className="is-refresh" onClick={onRefresh} disabled={loading && !feedReady} aria-label={`Refresh ${requestedTicker || "ticker"} fast option chain`}>
+            <RefreshCw className={loading ? "is-spinning" : ""} size={15} />
+          </button>
+        </div>
+        <nav className="mobile-quick-options-tickers" aria-label="Fast option tickers">
+          {railTickers.map((ticker) => (
+            <button
+              aria-current={ticker === requestedTicker ? "true" : undefined}
+              className={ticker === requestedTicker ? "is-active" : ""}
+              disabled={loading && ticker === requestedTicker && !feedReady}
+              key={`fast-option-${ticker}`}
+              onClick={() => {
+                setActiveSection("chain");
+                onLinkedSymbolChange?.(ticker);
+              }}
+              type="button"
+            >
+              {ticker}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      <nav ref={sectionNavRef} className="mobile-options-sections" aria-label="Mobile option research">
+        {MOBILE_OPTIONS_SECTIONS.map((section) => (
+          <button
+            aria-current={section.key === activeSection ? "page" : undefined}
+            className={section.key === activeSection ? "is-active" : ""}
+            data-testid={`mobile-options-section-${section.key}`}
+            key={`mobile-options-section-${section.key}`}
+            onClick={() => selectSection(section.key)}
+            type="button"
+          >
+            {researchLoading === section.key ? <RefreshCw className="is-spinning" size={11} /> : null}
+            {section.label}
+          </button>
+        ))}
+      </nav>
+
+      {activeSection === "chain" ? <>
+      <FullChartsAndOiBoard
+        data={data}
+        loading={loading && !feedReady}
+        newsRows={newsRows}
+        newsIndex={newsIndex}
+        onLinkedSymbolChange={onLinkedSymbolChange}
+        onRefresh={onRefresh}
+        surfaceMode="mobile-options"
+      />
+      <footer className="mobile-options-research-launcher">
+        <div>
+          <b>Desktop option research</b>
+          <span>Load one section without slowing the live chain.</span>
+        </div>
+        <nav aria-label="Load more option research">
+          {MOBILE_OPTIONS_SECTIONS.filter((section) => section.key !== "chain").map((section) => (
+            <button
+              data-testid={`mobile-options-launch-${section.key}`}
+              key={`mobile-options-launch-${section.key}`}
+              onClick={() => selectSection(section.key)}
+              type="button"
+            >
+              {researchLoading === section.key ? <RefreshCw className="is-spinning" size={11} /> : null}
+              {section.label}
+            </button>
+          ))}
+        </nav>
+        <small>Tap any strike to set an alert. Research loads only when selected.</small>
+      </footer></> : (
+        <section className="mobile-options-research" aria-live="polite">
+          {researchLoading === activeSection ? (
+            <div className="mobile-options-research-loading" role="status">
+              <RefreshCw className="is-spinning" size={18} />
+              <b>Loading {MOBILE_OPTIONS_SECTIONS.find((item) => item.key === activeSection)?.label || "research"}</b>
+              <small>The live chain stays available while this section loads.</small>
+            </div>
+          ) : researchError ? (
+            <div className="mobile-quick-options-error" role="alert">{researchError}</div>
+          ) : (
+            <OiFinderBoard
+              data={data}
+              loading={false}
+              newsRows={newsRows}
+              newsIndex={newsIndex}
+              requestedSymbol={requestedSymbol}
+              onLinkedSymbolChange={onLinkedSymbolChange}
+              onRefreshNews={onRefreshNews}
+              newsLoading={newsLoading}
+              section={activeSection}
+            />
+          )}
+        </section>
+      )}
+    </section>
+  );
+}
+
 function OiFinderBoard({
   data,
   loading,
@@ -4815,10 +5520,52 @@ function OiFinderBoard({
   onLinkedSymbolChange,
   onRefreshNews,
   newsLoading = false,
+  section = "all",
 }) {
-  const summary = data?.summary || {};
+  // The DTE heatmap renders exactly one day, so it wants the LIVE chain, not
+  // the daily snapshot history. Intraday the historical heatmap is empty for
+  // any ticker whose after-close snapshot has not been written yet - measured
+  // 2026-08-20 10:45 ET, NFLX: the full payload carried 0 heatmap rows while
+  // section=heatmap carried 614. This fetches the live one alongside; the
+  // multi-day trend and strike panels keep using data.dailyLiquidityHeatmap.
+  const liveHeatmapSymbol = String(data?.symbol || requestedSymbol || "").trim().toUpperCase();
+  const [liveHeatmap, setLiveHeatmap] = useState(null);
+  useEffect(() => {
+    if (!liveHeatmapSymbol) {
+      setLiveHeatmap(null);
+      return undefined;
+    }
+    let cancelled = false;
+    let timer = 0;
+    // A new ticker must never keep showing the previous ticker's heatmap.
+    setLiveHeatmap(null);
+    const load = async () => {
+      try {
+        const response = await fetch(`/api/oi-finder?symbol=${encodeURIComponent(liveHeatmapSymbol)}&section=heatmap`);
+        const payload = await readJsonResponse(response);
+        if (cancelled) return;
+        const next = payload?.dailyLiquidityHeatmap;
+        // Never replace a drawn heatmap with an empty warming response.
+        if (next && (next.call?.length || next.put?.length)) setLiveHeatmap(next);
+      } catch {
+        // The historical heatmap below stays as the fallback.
+      } finally {
+        if (!cancelled) timer = window.setTimeout(load, 15_000);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [liveHeatmapSymbol]);
   const symbol = String(data?.symbol || "").toUpperCase();
   const requestedTicker = String(requestedSymbol || symbol || "").trim().toUpperCase();
+  const requestedSection = ["heatmap", "flow", "levels", "news"].includes(String(section || "").toLowerCase())
+    ? String(section).toLowerCase()
+    : "all";
+  const showAll = requestedSection === "all";
+  const showAtm = showAll || ["levels", "news"].includes(requestedSection);
   const relatedNews = [...(Array.isArray(newsRows) ? newsRows : []), ...(Array.isArray(newsIndex) ? newsIndex : [])]
     .filter((row) => String(row?.symbol || "").trim().toUpperCase() === symbol)
     .filter((row, index, rows) => rows.findIndex((candidate) => String(candidate?.id || candidate?.url || candidate?.headline || "") === String(row?.id || row?.url || row?.headline || "")) === index)
@@ -4849,6 +5596,14 @@ function OiFinderBoard({
       ? "is-down"
       : "is-flat";
   const spotPrice = Number(data?.underlyingPrice || 0);
+  // The single ATM strike shown on the levels board: prefer the same value the
+  // side tables print (row.atm_strike), fall back to the current-ATM metrics.
+  const atmStrikeValue = [
+    data?.callRows?.[0]?.atm_strike,
+    data?.putRows?.[0]?.atm_strike,
+    currentAtm?.call?.strike,
+    currentAtm?.put?.strike,
+  ].map(Number).find((value) => Number.isFinite(value) && value > 0) ?? null;
   const oiLevelModelsByExpiry = new Map((Array.isArray(data?.tosScriptLevels) ? data.tosScriptLevels : [])
     .map((levelSet) => {
       const expiry = String(levelSet?.expiry || "").slice(0, 10);
@@ -4947,13 +5702,19 @@ function OiFinderBoard({
     <section className="data-card oi-finder-board" aria-label="Single ticker OI finder results">
       {data?.sourceNote ? <div className="oi-finder-source-note">{data.sourceNote}</div> : null}
       {data?.errors?.length ? <div className="oi-finder-source-note is-error">{data.errors[0]?.error}</div> : null}
-      <section className="oi-finder-current-atm" aria-label="Current expiry at the money metrics">
+      {/* The chart leads. This is the surface the phone nav opens, and the ATM
+          card is 234px tall - rendering it first pushed the plot below the fold
+          and left the chart's own controls off-screen entirely. TradingView
+          puts its stats under the chart for the same reason. Both are full-width
+          bands, so the desktop stack reads the same either way. */}
+      {showAll ? <FullChartsAndOiBoard data={data} loading={loading} embedded tickerOptions={tickerOptions} newsRows={newsRows} newsIndex={newsIndex} onLinkedSymbolChange={onLinkedSymbolChange} /> : null}
+      {showAtm ? <section className="oi-finder-current-atm" aria-label="Current expiry at the money metrics">
         <header>
           <div className="oi-finder-current-atm-title">
             <b>Current ATM</b>
             <span className={`oi-finder-current-atm-feed ${data?.live ? "is-live" : data?.errors?.length ? "is-error" : ""}`}>
               <i />
-              {loading ? "FEED LOADING" : data?.live ? "FEED LIVE" : "FEED READY"}
+              {loading ? "FEED LOADING" : isChainFeedFresh(data) ? "FEED LIVE" : data?.live ? "FEED CACHED" : "FEED READY"}
               <small>{data?.scannedAt ? formatTimeLabel(data.scannedAt) : "Waiting for update"}</small>
             </span>
           </div>
@@ -4984,9 +5745,8 @@ function OiFinderBoard({
           {renderCurrentAtmSide("call")}
           {renderCurrentAtmSide("put")}
         </div>
-      </section>
-      <FullChartsAndOiBoard data={data} loading={loading} embedded tickerOptions={tickerOptions} newsRows={newsRows} newsIndex={newsIndex} onLinkedSymbolChange={onLinkedSymbolChange} />
-      <section className="oi-finder-related-news data-card" aria-label={`${symbol || "Ticker"} related news`}>
+      </section> : null}
+      {showAll || requestedSection === "news" ? <section className="oi-finder-related-news data-card" aria-label={`${symbol || "Ticker"} related news`}>
         <header>
           <div className="oi-finder-related-news-title"><b>RELATED NEWS</b><small>Fetched for this ticker from the News Feed · information only</small></div>
           <div className="oi-finder-related-news-actions">
@@ -5006,13 +5766,31 @@ function OiFinderBoard({
           <div><span className={`news-sentiment news-sentiment-${String(item?.sentiment || "neutral").toLowerCase()}`}>{item?.sentiment || "Neutral"}</span><small>{item?.published_at ? formatTimeLabel(item.published_at) : "Stored news"} · {item?.source || "News Feed"}</small></div>
           {item?.url ? <a href={item.url} rel="noreferrer" target="_blank">{item?.headline || "Open article"}</a> : <b>{item?.headline || "Headline unavailable"}</b>}
         </article>)}</div> : <div className="oi-finder-related-news-empty">No stored headlines for {symbol || "this ticker"} yet. News is fetched automatically when a ticker opens; use Refresh news to try again.</div>}
-      </section>
-      <div className="oi-finder-side-stack">
-        {renderSideTable("call")}
-        {renderSideTable("put")}
-      </div>
-      <OiFinderDecisionBoard activity={data?.unusualOtmActivity} heatmap={data?.dailyLiquidityHeatmap} symbol={symbol} />
-      <OiFinderDteHeatmap heatmap={data?.dailyLiquidityHeatmap} symbol={symbol} underlyingPrice={data?.underlyingPrice} expiryExpectedMoves={data?.expiryExpectedMoves} tosScriptLevels={data?.tosScriptLevels} loading={loading} />
+      </section> : null}
+      {showAll || requestedSection === "levels" ? <>
+        {spotPrice > 0 ? <div className="oi-finder-live-atm" aria-label="Live price and at-the-money strike">
+          <span className="oi-finder-live-atm-cell is-price">
+            <small>LIVE {symbol || "PRICE"}</small>
+            <strong>{formatCurrency(spotPrice)}</strong>
+            {hasTodayMove ? <em className={`oi-finder-today-change ${todayMoveTone}`}>{signedCurrency(todayMove)} ({signedPercent(todayMovePercent)})</em> : null}
+          </span>
+          <span className="oi-finder-live-atm-cell is-atm">
+            <small>ATM STRIKE</small>
+            <strong>{atmStrikeValue == null ? "--" : formatOptionStrike(atmStrikeValue)}</strong>
+          </span>
+          {hasExpectedRange ? <span className="oi-finder-live-atm-cell is-range">
+            <small>EXP RANGE (±{formatCurrency(expectedMove)})</small>
+            <strong>{formatCurrency(expectedLow)} — {formatCurrency(expectedHigh)}</strong>
+          </span> : null}
+        </div> : null}
+        <div className="oi-finder-side-stack">
+          {renderSideTable("call")}
+          {renderSideTable("put")}
+        </div>
+      </> : null}
+      {showAll || requestedSection === "flow" ? <OiFinderDecisionBoard activity={data?.unusualOtmActivity} heatmap={data?.dailyLiquidityHeatmap} symbol={symbol} /> : null}
+      {showAll || requestedSection === "heatmap" ? <OiFinderDteHeatmap heatmap={liveHeatmap || data?.dailyLiquidityHeatmap} symbol={symbol} underlyingPrice={data?.underlyingPrice} expiryExpectedMoves={data?.expiryExpectedMoves} tosScriptLevels={data?.tosScriptLevels} loading={loading} /> : null}
+      {showAll || requestedSection === "flow" ? <>
       <OiFinderVolumeRate
         symbol={symbol}
         currentAtm={rawCurrentAtm}
@@ -5030,7 +5808,8 @@ function OiFinderBoard({
         currentAtm={rawCurrentAtm}
         volumeMomentum={data?.volumeMomentum}
       />
-      <p className="mag7-wall-footnote">High OI Strong / Moderate / Weak badges use the same per-expiry, per-side OI concentration scale as the chart. The separate Strength column also considers volume, OTM-versus-ATM dominance, and confirmation. Flow and scanner tags describe liquidity shape only; they do not bypass scanner entry gates.</p>
+      </> : null}
+      {showAll || requestedSection === "levels" ? <p className="mag7-wall-footnote">High OI Strong / Moderate / Weak badges use the same per-expiry, per-side OI concentration scale as the chart. The separate Strength column also considers volume, OTM-versus-ATM dominance, and confirmation. Flow and scanner tags describe liquidity shape only; they do not bypass scanner entry gates.</p> : null}
     </section>
   );
 }
@@ -5065,7 +5844,7 @@ function ChartsAndOiBoard({ data, loading }) {
   return <section className="charts-oi-page" data-testid="charts-and-oi-view">
     <header className="charts-oi-heading">
       <div><span>LIVE CHART + OPTION CHAIN</span><h2>{symbol || "Ticker"} — Charts & OI</h2><p>Use the same live OI Finder chain: chart on the left, strongest OTM calls and puts on the right.</p></div>
-      <div className={`mag7-wall-live ${data?.live ? "is-live" : data?.errors?.length ? "is-error" : ""}`}><i />{loading ? "LOADING" : data?.live ? "LIVE DATA" : "DATA READY"}<small>{data?.scannedAt ? formatTimeLabel(data.scannedAt) : "Waiting for ticker"}</small></div>
+      <div className={`mag7-wall-live ${isChainFeedFresh(data) ? "is-live" : data?.errors?.length ? "is-error" : ""}`}><i />{loading ? "LOADING" : isChainFeedFresh(data) ? "LIVE DATA" : data?.live ? "CACHED DATA" : "DATA READY"}<small>{data?.scannedAt ? formatBuildStamp(data.scannedAt) : "Waiting for ticker"}</small></div>
     </header>
     {data?.sourceNote ? <div className="oi-finder-source-note">{data.sourceNote}</div> : null}
     {data?.errors?.length ? <div className="oi-finder-source-note is-error">{data.errors[0]?.error}</div> : null}
@@ -5081,17 +5860,7 @@ function ChartsAndOiBoard({ data, loading }) {
   </section>;
 }
 
-const TOS_LINK_GROUPS = Object.freeze([
-  { value: 1, name: "Red", color: "#ff475c", text: "#ffffff" },
-  { value: 2, name: "Yellow", color: "#f5d000", text: "#171400" },
-  { value: 3, name: "Green", color: "#26d07c", text: "#041b10" },
-  { value: 4, name: "Blue", color: "#38a8ff", text: "#041420" },
-  { value: 5, name: "Purple", color: "#a975ff", text: "#ffffff" },
-  { value: 6, name: "Cyan", color: "#35d8e8", text: "#03191d" },
-  { value: 7, name: "Orange", color: "#ff9f2d", text: "#211000" },
-  { value: 8, name: "Pink", color: "#ff66b3", text: "#210615" },
-  { value: 9, name: "Gray", color: "#a3a3ae", text: "#0f0f11" },
-]);
+// TOS_LINK_GROUPS lives in ./tosLinkGroups.js (shared with the MomX scanner).
 
 function TosSyncTag({ group = 2, onChange, title = "Chart and option chain are linked" }) {
   const safeGroup = TOS_LINK_GROUPS.some((item) => item.value === Number(group)) ? Number(group) : 2;
@@ -5437,20 +6206,6 @@ function TosAtmPositionedScroll({ positionKey, children }) {
   return <div ref={scrollRef} className="charts-oi-tos-scroll">{children}</div>;
 }
 
-// Limits an ascending-strike chain to N strikes above and below the ATM
-// pivot ("all"/invalid depth shows the full delta-band chain).
-function limitChainRowsAroundAtm(rows, pivotStrike, depth) {
-  const list = Array.isArray(rows) ? rows : [];
-  const perSide = Number(depth);
-  if (!Number.isFinite(perSide) || perSide <= 0) return list;
-  const pivot = Number(pivotStrike);
-  if (!Number.isFinite(pivot) || pivot <= 0) return list;
-  const below = list.filter((row) => Number(row?.strike) < pivot);
-  const at = list.filter((row) => Number(row?.strike) === pivot);
-  const above = list.filter((row) => Number(row?.strike) > pivot);
-  return [...below.slice(-perSide), ...at, ...above.slice(0, perSide)];
-}
-
 function ChainStrikeDepthSelect({ value, onChange }) {
   return <label className="chain-strike-depth" title="Strikes shown above and below the ATM strike">±
     <select
@@ -5464,66 +6219,70 @@ function ChainStrikeDepthSelect({ value, onChange }) {
   </label>;
 }
 
-function HighOiContractRow({ row, peakOi, peakVolume, isLeader, tone = "" }) {
+// Daily-sheet row, MomoX column order: C/P | Imp | Δ | Vol | Price | Mark |
+// OI (heat vs the side leader) | Exp. Mark shows the row's `last` field,
+// which highOiContractList.js fills from the option's last trade and falls
+// back to the chain mark — overnight (no prints yet) it IS the mark.
+function HighOiContractRow({ row, sideLeaderOi, isLeader, tone = "", insideEm = false }) {
   const side = row.side === "PUT" ? "put" : "call";
-  const oiPercent = peakOi > 0 ? Math.round((row.openInterest / peakOi) * 100) : 0;
-  const volumePercent = peakVolume > 0 ? Math.round((row.volume / peakVolume) * 100) : 0;
-  const imp = Number(row.imp) || 1;
-  return <tr className={`high-oi-row is-${side} is-imp-${imp}${isLeader ? " is-leader" : ""}${tone ? ` is-tone-${tone}` : ""}`}>
+  const oiPercent = sideLeaderOi > 0 ? Math.round((row.openInterest / sideLeaderOi) * 100) : 0;
+  // The chain feed reports delta as a magnitude for BOTH sides (measured: 0
+  // negative deltas across 1,010 AAPL rows; deep-ITM puts arrive as 1). The
+  // board's spec is signed deltas (calls 0.43, puts -0.34), so puts are signed
+  // here by side. -Math.abs, not plain negation, so a feed that one day sends
+  // already-negative put deltas cannot flip them positive. -0 still reads as
+  // the dead-feed zero and renders "-".
+  const signedDelta = side === "put" ? -Math.abs(Number(row.delta) || 0) : row.delta;
+  return <tr className={`high-oi-row is-${side}${isLeader ? " is-leader" : ""}${tone ? ` is-tone-${tone}` : ""}${insideEm ? " is-inside-em" : ""}`}>
     <td className="high-oi-side">{row.side === "PUT" ? "Put" : "Call"}</td>
-    <td className="high-oi-imp" title={`Importance ${imp}/5 against the leading ${side} wall`}>{imp}</td>
-    <td className="high-oi-delta">{row.delta.toFixed(2)}</td>
-    <td className="high-oi-volume"><i style={{ width: `${volumePercent}%` }} aria-hidden="true" /><span>{formatCompactNumber(row.volume)}</span></td>
-    <td className="high-oi-oi"><i style={{ width: `${oiPercent}%` }} aria-hidden="true" /><span>{formatCompactNumber(row.openInterest)}</span></td>
+    <td className="high-oi-imp">{row.importance}</td>
+    <td className="high-oi-delta">{formatDelta(signedDelta)}</td>
+    <td className="high-oi-vol">{formatCompactVolume(row.volume)}</td>
     <td className="high-oi-strike">{formatOptionStrike(row.strike)}</td>
-    <td className="high-oi-last">{row.last > 0 ? row.last.toFixed(2) : "--"}</td>
+    <td className="high-oi-mark">{formatMark(row.last)}</td>
+    <td className="high-oi-oi"><i style={{ width: `${oiPercent}%` }} aria-hidden="true" /><span>{formatCompactNumber(row.openInterest)}</span></td>
     <td className="high-oi-exp">{formatExpiryShort(row.expiry)}</td>
-    <td className="high-oi-dte">{row.dte}</td>
   </tr>;
 }
 
+// "2026-08-21" -> "8/21", the daily sheet's Expiry column format.
 function formatExpiryShort(value) {
   const key = String(value || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return "--";
-  const [year, month, day] = key.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString("en-US", {
-    timeZone: "UTC",
-    month: "short",
-    day: "numeric",
-  });
+  return `${Number(key.slice(5, 7))}/${Number(key.slice(8, 10))}`;
 }
 
 function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, error }) {
-  // MomoX ranks pure OI: no delta floor unless the trader dials one in.
-  const [minDelta, setMinDelta] = useState(0);
   const [topPerSide, setTopPerSide] = useState(8);
   const [scope, setScope] = useState("monthly");
 
   const spot = Number(underlyingPrice) || 0;
-  const todayChange = Number(data?.todayChange || 0);
-  // BMO - the pre-market-open price MomoX prints between its call and put
-  // blocks. It anchors both the expected-move rails and the call/put split, so
-  // an intraday swing never flips a wall from one side of the ladder to the
-  // other while the trader is reading it.
-  const bmo = spot > 0 && todayChange ? spot - todayChange : spot;
+  // The 1-day (nearest-expiry) expected move places the daily sheet's +EM and
+  // -EM separator rows; it never filters the walls. Skips an expiry whose
+  // straddle has been spent (post-close 0-DTE) while keeping a live same-day
+  // one. See expectedMoveFromExpiries.
+  const expectedMove = resolveExpectedMove({
+    expectedMove: expectedMoveFromExpiries(data?.expiryExpectedMoves)
+      || Number(data?.currentAtm?.expectedMove || 0),
+    impliedVolatilityPercent: Number(data?.impliedVolatility || 0),
+    underlyingPrice,
+  });
 
   const model = useMemo(() => buildHighOiContractList({
     rows,
     underlyingPrice,
-    anchorPrice: bmo,
-    minDelta,
     topPerSide,
     scope,
     frontExpiry,
-  }), [rows, underlyingPrice, bmo, minDelta, topPerSide, scope, frontExpiry]);
-
-  const expectedMove = Number(data?.expiryExpectedMoves?.[frontExpiry] || data?.currentAtm?.expectedMove || 0);
-  const emHigh = bmo > 0 && expectedMove > 0 ? bmo + expectedMove : 0;
-  const emLow = bmo > 0 && expectedMove > 0 ? bmo - expectedMove : 0;
+    expectedMove,
+  }), [rows, underlyingPrice, topPerSide, scope, frontExpiry, expectedMove]);
+  const todayChange = Number(data?.todayChange || 0);
+  const openPrice = spot > 0 && todayChange ? spot - todayChange : 0;
   const hasRows = model.calls.length > 0 || model.puts.length > 0;
-  // Live price-relative tones, matching the chart walls: crossed call walls
-  // and the active put support glow green (bullish), the contested call wall
-  // and broken put walls glow red (bearish). Recomputed as spot moves.
+  // Live price-relative tones, matching the chart walls: the contested call
+  // wall glows red, the active put support glows green. Recomputed as spot
+  // moves. (With the sheet's side-by-spot split, calls sit above and puts
+  // below, so only the two nearest walls carry a tone.)
   const nearestCallAbove = Math.min(...model.calls.map((row) => row.strike).filter((strike) => strike > spot), Infinity);
   const nearestPutBelow = Math.max(...model.puts.map((row) => row.strike).filter((strike) => strike < spot), -Infinity);
   const rowTone = (row) => {
@@ -5535,43 +6294,37 @@ function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, er
     if (row.strike > spot) return "red";
     return row.strike === nearestPutBelow ? "green" : "";
   };
+  const callLeaderOi = Math.max(...model.calls.map((row) => row.openInterest), 0);
+  const putLeaderOi = Math.max(...model.puts.map((row) => row.openInterest), 0);
+  const insideEm = (strike) => model.emUp > 0 && strike <= model.emUp && strike >= model.emDown;
 
-  // MomoX prints one strike-descending ladder with the +EM / BMO / -EM rails
-  // inline at their own price, not a call block, a divider and a put block.
-  // Calls all sit above the anchor and puts below it, so concatenating the two
-  // sides is already sorted.
-  const rails = [
-    emHigh > 0 ? { key: "em-high", label: "+EM", price: emHigh, tone: "up" } : null,
-    bmo > 0 ? { key: "bmo", label: "BMO", price: bmo, tone: "anchor" } : null,
-    emLow > 0 ? { key: "em-low", label: "-EM", price: emLow, tone: "down" } : null,
-  ].filter(Boolean).sort((left, right) => right.price - left.price);
-  const ladder = [];
-  let railIndex = 0;
+  // Daily-sheet board: calls then puts, strikes descending, with the +EM /
+  // Last / -EM separator rows placed inline where their prices fall.
+  const separators = [
+    ...(model.emUp > 0 ? [{ key: "em-up", label: "+EM", value: model.emUp, className: "is-up" }] : []),
+    ...(spot > 0 ? [{ key: "last", label: "Last", value: spot, className: "is-spot" }] : []),
+    ...(model.emDown > 0 ? [{ key: "em-down", label: "-EM", value: model.emDown, className: "is-down" }] : []),
+  ];
+  const boardRows = [];
+  let separatorIndex = 0;
   [...model.calls, ...model.puts].forEach((row) => {
-    while (railIndex < rails.length && rails[railIndex].price > row.strike) {
-      ladder.push({ kind: "rail", rail: rails[railIndex] });
-      railIndex += 1;
+    while (separatorIndex < separators.length && separators[separatorIndex].value >= row.strike) {
+      boardRows.push({ type: "separator", ...separators[separatorIndex] });
+      separatorIndex += 1;
     }
-    ladder.push({ kind: "row", row });
+    boardRows.push({ type: "wall", row });
   });
-  while (railIndex < rails.length) {
-    ladder.push({ kind: "rail", rail: rails[railIndex] });
-    railIndex += 1;
+  while (separatorIndex < separators.length) {
+    boardRows.push({ type: "separator", ...separators[separatorIndex] });
+    separatorIndex += 1;
   }
 
-  return <div className="high-oi-panel" aria-label="Highest open interest contracts">
+  return <div className="high-oi-panel" aria-label="Highest open interest walls">
     <div className="high-oi-controls">
-      <label>|Δ| ≥
-        <input
-          type="number" min="0" max="1" step="0.01" value={minDelta}
-          aria-label="Minimum absolute delta"
-          onChange={(event) => setMinDelta(Math.max(0, Math.min(1, Number(event.target.value) || 0)))}
-        />
-      </label>
       <label>Top
         <input
           type="number" min="1" max="50" step="1" value={topPerSide}
-          aria-label="Contracts shown per side"
+          aria-label="Walls shown per side"
           onChange={(event) => setTopPerSide(Math.max(1, Math.min(50, Number(event.target.value) || 1)))}
         />
       </label>
@@ -5579,16 +6332,16 @@ function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, er
         type="button"
         className={scope === "monthly" ? "is-active" : ""}
         onClick={() => setScope((current) => (current === "monthly" ? "front" : "monthly"))}
-        title={scope === "monthly" ? "Showing every expiry through the next monthly OPEX" : "Showing the front expiry only"}
+        title={scope === "monthly" ? "Showing every expiry through the sheet window (the next monthly OPEX, rolled to the following monthly when it is days away)" : "Showing the front expiry only"}
       >
         {scope === "monthly" ? "to monthly" : "front expiry"}
       </button>
     </div>
     <div className="high-oi-stats">
       <span><small>ExMo</small><b className="is-move">{expectedMove > 0 ? `±${formatCurrency(expectedMove)}` : "--"}</b></span>
-      <span><small>BMO</small><b>{bmo > 0 ? bmo.toFixed(2) : "--"}</b></span>
-      <span><small>+EM</small><b className="is-up">{emHigh > 0 ? emHigh.toFixed(2) : "--"}</b></span>
-      <span><small>-EM</small><b className="is-down">{emLow > 0 ? emLow.toFixed(2) : "--"}</b></span>
+      <span><small>Open</small><b>{openPrice > 0 ? openPrice.toFixed(2) : "--"}</b></span>
+      <span><small>+EM</small><b className="is-up">{spot > 0 && expectedMove > 0 ? (spot + expectedMove).toFixed(2) : "--"}</b></span>
+      <span><small>-EM</small><b className="is-down">{spot > 0 && expectedMove > 0 ? (spot - expectedMove).toFixed(2) : "--"}</b></span>
       <span><small>Last</small><b>{spot > 0 ? spot.toFixed(2) : "--"}</b></span>
       <span><small>P/C</small><b>{model.putCallRatio > 0 ? model.putCallRatio.toFixed(2) : "--"}</b></span>
       <span><small>Call OI</small><b className="is-call">{formatCompactNumber(model.callOi)}</b></span>
@@ -5596,21 +6349,21 @@ function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, er
     </div>
     <div className="high-oi-scroll">
       <table>
-        <thead><tr><th>C/P</th><th title="Importance 1-5: this wall's OI against the leading wall on its own side">Imp</th><th>Δ</th><th>Vol</th><th>OI</th><th>Strike</th><th>Last</th><th>Exp</th><th>DTE</th></tr></thead>
+        <thead><tr><th>C/P</th><th>Imp</th><th>Δ</th><th>Vol</th><th>Price</th><th>Mark</th><th>OI</th><th>Exp</th></tr></thead>
         <tbody>
-          {hasRows ? ladder.map((entry) => (entry.kind === "rail"
-            ? <tr className={`high-oi-rail is-${entry.rail.tone}`} key={entry.rail.key}>
-              <td colSpan="9">{entry.rail.label} {entry.rail.price.toFixed(2)}</td>
+          {hasRows ? boardRows.map((item) => (item.type === "separator"
+            ? <tr className={`high-oi-em ${item.className}`} key={item.key}>
+              <td colSpan="8">{item.label} {item.value.toFixed(2)}</td>
             </tr>
             : <HighOiContractRow
-              key={`${entry.row.side}-${entry.row.expiry}-${entry.row.strike}`}
-              row={entry.row}
-              peakOi={model.peakOi}
-              peakVolume={model.peakVolume}
-              isLeader={entry.row.openInterest === model.peakOi}
-              tone={rowTone(entry.row)}
-            />)) : <tr><td className="charts-oi-empty" colSpan="9">
-            {error || (loading ? "Loading option chain..." : "No contracts match this delta floor.")}
+              key={`${item.row.side}-${item.row.expiry}-${item.row.strike}`}
+              row={item.row}
+              sideLeaderOi={item.row.side === "PUT" ? putLeaderOi : callLeaderOi}
+              isLeader={item.row.openInterest === model.peakOi}
+              tone={rowTone(item.row)}
+              insideEm={insideEm(item.row.strike)}
+            />)) : <tr><td className="charts-oi-empty" colSpan="8">
+            {error || (loading ? "Loading option chain..." : "No open-interest walls in this window.")}
           </td></tr>}
         </tbody>
       </table>
@@ -5714,7 +6467,7 @@ function TosExpiryAccordion({
             <span>ATM {chain.atmStrike ? formatOptionStrike(chain.atmStrike) : "--"}</span>
             <b>{chain.expectedMove > 0 ? `Expected move +/-${formatCurrency(chain.expectedMove)}` : "Expected move --"}</b>
             {spotPrice > 0 && chain.expectedMove > 0 ? <small>Range {formatCurrency(spotPrice - chain.expectedMove)} - {formatCurrency(spotPrice + chain.expectedMove)}</small> : null}
-            <small>0.05–0.90 delta band · extreme deltas appear only for High OI / High Vol</small>
+            <small>Use the ± selector for 5, 10, or 15 strikes per side; All shows every listed strike</small>
           </div>
           {/* Reposition to the ATM row only when the trader changes what they
               are looking at (ticker/expiry) or the chain first fills. Live
@@ -5734,7 +6487,16 @@ function TosExpiryAccordion({
               <td className={`call-value ${Number(row.strike) < spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.call))}`}>{value(row.call, "volume")}</td>
               <td className={`call-value ${Number(row.strike) < spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.call))}`}>{value(row.call, "open_interest")}</td>
               <td className={`call-value is-delta ${Number(row.strike) < spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.call))}`}>{row.call ? Number(row.call.delta || 0).toFixed(2) : "--"}</td>
-              <td className="tos-strike"><b>{formatOptionStrike(row.strike)}</b><OptionStrikeBadges row={row} oiLevelModel={chain.oiLevelModel} isEmHigh={isEmHigh} isEmLow={isEmLow} /></td>
+              <td className="tos-strike"><button
+                className="tos-strike-alert"
+                type="button"
+                onClick={() => {
+                  const detail = buildStrikePriceAlertDraft(symbol, row.strike, spotPrice);
+                  if (detail) window.dispatchEvent(new CustomEvent(OI_PRICE_ALERT_DRAFT_EVENT, { detail }));
+                }}
+                title={`Set ${symbol || "ticker"} price alert at strike ${formatOptionStrike(row.strike)}`}
+                aria-label={`Set ${symbol || "ticker"} price alert at strike ${formatOptionStrike(row.strike)}`}
+              ><b>{formatOptionStrike(row.strike)}</b><OptionStrikeBadges row={row} oiLevelModel={chain.oiLevelModel} isEmHigh={isEmHigh} isEmLow={isEmLow} /></button></td>
               <td className={`put-value is-delta ${Number(row.strike) > spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.put))}`}>{row.put ? Number(row.put.delta || 0).toFixed(2) : "--"}</td>
               <td className={`put-value ${Number(row.strike) > spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.put))}`}>{value(row.put, "open_interest")}</td>
               <td className={`put-value ${Number(row.strike) > spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.put))}`}>{value(row.put, "volume")}</td>
@@ -5902,6 +6664,833 @@ function ChainWatchlistPanel({ symbols, activeSymbol, onSelect, onClose }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Auto Alert — its own page, opened from the "Auto Alert" tab in the left
+// nav (right below Charts & OI). The server builds one directional High-OI
+// strike ladder per ticker every trading morning (MAG7 + manual tickers) and
+// advances it only when a completed 5-minute regular-hours candle closes
+// through the active level. useOiAutoAlertFeed polls that state app-wide
+// (so alerts fire on any page) and OiAutoAlertDrawer renders the page;
+// nothing here touches the Charts & OI workspace.
+// ---------------------------------------------------------------------------
+const OI_AUTO_ALERT_TOAST_MS = 9000;
+
+function formatOiAutoAlertClock(value) {
+  const parsed = parseApiDate(value);
+  if (!parsed) return "";
+  return parsed.toLocaleString("en-US", {
+    timeZone: MARKET_TIMEZONE,
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+// "9:40 AM" in market time — the panel's answer to "when did it fire?".
+function formatOiAutoAlertShortTime(value) {
+  const parsed = parseApiDate(value);
+  if (!parsed) return "";
+  return parsed.toLocaleTimeString("en-US", { timeZone: MARKET_TIMEZONE, hour: "numeric", minute: "2-digit", hour12: true });
+}
+
+function OiAutoAlertSideRow({ side, row, livePrice = 0 }) {
+  const isCall = side === "CALL";
+  // With a live price, re-pick the targets from it (same rule as the chart
+  // lines) so a card can never show a level price has already passed.
+  const picked = Number(livePrice) > 0 ? activeLevelsForPrice(row, livePrice) : null;
+  const active = picked ? (isCall ? picked.activeCall : picked.activePut) : (isCall ? row.activeCall : row.activePut);
+  const next = picked ? (isCall ? picked.nextCall : picked.nextPut) : (isCall ? row.nextCall : row.nextPut);
+  const state = isCall ? row.callState : row.putState;
+  const confirmed = Array.isArray(isCall ? row.confirmedCallStrikes : row.confirmedPutStrikes)
+    ? (isCall ? row.confirmedCallStrikes : row.confirmedPutStrikes)
+    : [];
+  const lastEvent = isCall ? row.lastCallEvent : row.lastPutEvent;
+  const summary = oiAutoAlertSideSummary(state);
+  const firedAt = lastEvent?.at ? formatOiAutoAlertShortTime(lastEvent.at) : "";
+  const stateLabel = summary.tone === "touched" || summary.tone === "confirmed"
+    ? `${summary.tone === "touched" ? "Touched" : "Confirmed"}${firedAt ? ` ${firedAt}` : ""}`
+    : summary.label;
+  return (
+    <div className={`auto-alert-side is-${isCall ? "call" : "put"} is-${summary.tone}`}>
+      <div className="auto-alert-side-head">
+        <b>{isCall ? <ArrowUp size={12} /> : <ArrowDown size={12} />}{isCall ? "CALL · resistance" : "PUT · support"}</b>
+        <span className="auto-alert-state" title={summary.label}>{stateLabel}</span>
+      </div>
+      {confirmed.length ? (
+        <div className="auto-alert-confirmed" title="Levels confirmed by a completed 5-minute close">
+          {confirmed.map((strike) => <em key={`${side}-${strike}`}>✓ {oiAutoAlertStrikeText(strike)}</em>)}
+        </div>
+      ) : null}
+      <div className="auto-alert-target">
+        <span>{confirmed.length ? "Next target" : "Target"}</span>
+        <b>{oiAutoAlertLevelText(active)}</b>
+        <small>{oiAutoAlertDistanceText(active)}</small>
+      </div>
+      <div className="auto-alert-target is-next">
+        <span>Then</span>
+        <b>{next ? oiAutoAlertLevelText(next) : "—"}</b>
+        <small>{oiAutoAlertDistanceText(next)}</small>
+      </div>
+      {lastEvent?.message ? (
+        <small className="auto-alert-last" title={lastEvent.message}>
+          {splitOiAutoAlertMessage(lastEvent.message).title}
+          {lastEvent.at ? ` · ${formatTimeLabel(lastEvent.at)}` : ""}
+        </small>
+      ) : null}
+    </div>
+  );
+}
+
+function OiAutoAlertTickerCard({ row, active, busy, onSelect, onRefresh, onRearm, lastEvent = null, recent = false, livePrice = 0 }) {
+  const unavailable = row.status === "unavailable";
+  const shownPrice = Number(livePrice) > 0 ? Number(livePrice) : Number(row.spot) || 0;
+  const isLive = Number(livePrice) > 0;
+  // Each side fires once per session. When one has, offer the ticker back:
+  // re-arming watches the NEXT wall, not the one price already closed through.
+  const spentSides = ["CALL", "PUT"].filter((side) => (
+    row[side === "CALL" ? "callState" : "putState"] === "fired"
+  ));
+  return (
+    <article className={`auto-alert-card${active ? " is-active" : ""}${unavailable ? " is-unavailable" : ""}${recent ? " is-triggered" : ""}`}>
+      {recent && lastEvent ? (
+        <div className={`auto-alert-card-ribbon is-${lastEvent.side === "PUT" ? "put" : "call"} is-${lastEvent.kind === "confirm" ? "confirm" : "touch"}`} title={lastEvent.message || ""}>
+          <i />
+          <b>{formatOiAutoAlertShortTime(lastEvent.at || lastEvent.recordedAt)}</b>
+          <span>{oiAutoAlertEventLabel(lastEvent)}</span>
+        </div>
+      ) : null}
+      <header>
+        <button type="button" className="auto-alert-symbol" onClick={() => onSelect?.(row.symbol)} title={`Open ${row.symbol} on the chart`}>
+          <b>{row.symbol}</b>
+        </button>
+        <span className={`auto-alert-spot${isLive ? " is-live" : ""}`} title={isLive ? "Live last price" : "Price at the 9:15 ladder build"}>
+          {shownPrice ? formatCurrency(shownPrice) : "--"}
+        </span>
+        <small>
+          {row.sourceGroup === "mag7" ? "MAG7" : "Manual"}
+          {row.lastClose ? ` · 5m close ${formatCurrency(row.lastClose)}` : ""}
+        </small>
+        <button
+          type="button"
+          className="auto-alert-card-refresh"
+          onClick={() => onRefresh?.(row.symbol)}
+          disabled={busy}
+          title={`Rebuild the ${row.symbol} OI ladder from the live chain`}
+          aria-label={`Rebuild the ${row.symbol} OI ladder`}
+        >
+          <RefreshCw size={12} />
+        </button>
+      </header>
+      {unavailable ? (
+        <p className="auto-alert-card-error">{row.message || "Option chain unavailable."}</p>
+      ) : (
+        <>
+          <OiAutoAlertSideRow side="CALL" row={row} livePrice={livePrice} />
+          <OiAutoAlertSideRow side="PUT" row={row} livePrice={livePrice} />
+        </>
+      )}
+      {spentSides.length ? (
+        <div className="auto-alert-card-rearm">
+          <span>{spentSides.join(" + ")} alert{spentSides.length > 1 ? "s" : ""} used today</span>
+          <button
+            type="button"
+            onClick={() => onRearm?.(row.symbol)}
+            disabled={busy}
+            title={`Let ${row.symbol} alert once more on each side (watches the next OI wall)`}
+          >
+            Re-arm
+          </button>
+        </div>
+      ) : null}
+      {row.providerNote ? (
+        <p className="auto-alert-card-note">{row.providerNote}</p>
+      ) : null}
+      {row.levelsUpdatedAt ? <footer>Levels {formatBuildStamp(row.levelsUpdatedAt)}{row.monthlyExpiry ? ` · through ${formatExpiryEastern(row.monthlyExpiry)}` : ""}</footer> : null}
+    </article>
+  );
+}
+
+// The morning read: which tickers actually fired, newest session first. Built
+// from the server's persisted event log, so it survives a restart.
+function OiAutoAlertSessionSummary({ summary, onSelectSymbol, onSelectDate, activeDate = "" }) {
+  const days = Array.isArray(summary?.days) ? summary.days : [];
+  if (!days.length) return null;
+  return (
+    <section className="auto-alert-summary">
+      <header>
+        <b>ALERTS BY SESSION</b>
+        <small>click a ticker to open its chart</small>
+      </header>
+      {days.map((day) => (
+        <div className="auto-alert-summary-day" key={day.date}>
+          <div className="auto-alert-summary-date">
+            <button
+              type="button"
+              className={`auto-alert-summary-pick${activeDate === day.date ? " is-active" : ""}`}
+              onClick={() => onSelectDate?.(day.date)}
+              title={`Show ${day.date} in the alert history below`}
+            >
+              {day.date}
+            </button>
+            <small>{day.symbolCount} ticker{day.symbolCount === 1 ? "" : "s"} · {day.alertCount} alert{day.alertCount === 1 ? "" : "s"}</small>
+          </div>
+          <div className="auto-alert-summary-symbols">
+            {(day.symbols || []).map((item) => (
+              <button
+                type="button"
+                key={item.symbol}
+                onClick={() => onSelectSymbol?.(item.symbol)}
+                title={(item.alerts || [])
+                  .map((alert) => `${alert.side} ${alert.strike} at ${formatOiAutoAlertShortTime(alert.at)}`)
+                  .join("\n")}
+              >
+                <b>{item.symbol}</b>
+                <span>{(item.sides || []).join("/")}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+// Auto-adding charted tickers is GONE. It repeatedly signed tickers up for
+// alerts just because they were opened on the chart (SPY, SLV, and on
+// app.agxtrade.com every ticker the trader searched). Turning it off by default
+// was not enough: the preference lived in localStorage, so the prod origin kept
+// its saved "true" and behaved differently from dev with identical code.
+// Tickers are added to Auto Alert one way now - the Add box.
+const OI_AUTO_ALERT_TRACK_CHARTED_KEY = "oiAutoAlertTrackChartedTickers";
+
+function forgetOiAutoAlertTrackCharted() {
+  try {
+    window.localStorage.removeItem(OI_AUTO_ALERT_TRACK_CHARTED_KEY);
+  } catch {
+    // Storage can be disabled; nothing reads the flag any more regardless.
+  }
+}
+
+// App-level feed: mounted once in the shell so touch/confirm alerts play their
+// tone and notification on every page, drawer open or not. `chartSymbol` is
+// the ticker currently on the chart: with "Track charted tickers" on, opening
+// a ticker that has no ladder adds it to Auto Alert so its lines appear.
+function useOiAutoAlertFeed({ drawerOpen, chartSymbol = "" }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState("");
+  const [toast, setToast] = useState(null);
+  const [unseen, setUnseen] = useState(0);
+  const [notifyState, setNotifyState] = useState(() => (
+    typeof window !== "undefined" && "Notification" in window ? Notification.permission : "unsupported"
+  ));
+  // Live last price per auto ticker. The ladder rows carry the 9:15 build spot,
+  // which read as stale/wrong on the cards ("AMZN $265.65" while price was 264)
+  // and made a crossed level look un-fired. One cached quotes call per poll
+  // keeps every card and its call/put pick on the current price.
+  const [livePrices, setLivePrices] = useState({});
+  const seenIdsRef = useRef(null);
+  const collapsedRef = useRef(!drawerOpen);
+  const regularHoursRef = useRef(false);
+  const toastTimerRef = useRef(0);
+
+  useEffect(() => {
+    collapsedRef.current = !drawerOpen;
+    if (drawerOpen) setUnseen(0);
+  }, [drawerOpen]);
+
+  useEffect(() => () => {
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+  }, []);
+
+  const showToast = useCallback((event) => {
+    const { title, detail } = splitOiAutoAlertMessage(event?.message);
+    setToast({ id: event?.id, title, detail, kind: event?.kind, side: event?.side });
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), OI_AUTO_ALERT_TOAST_MS);
+  }, []);
+
+  const announce = useCallback((events) => {
+    if (!events.length) return;
+    playPriceAlertTone();
+    showToast(events[events.length - 1]);
+    if (collapsedRef.current) setUnseen((current) => current + events.length);
+    if ("Notification" in window && Notification.permission === "granted") {
+      events.slice(-3).forEach((event) => {
+        const { title, detail } = splitOiAutoAlertMessage(event.message);
+        try {
+          // Some embedded browsers expose Notification but refuse construction.
+          new Notification(title, { body: detail, tag: `oi-auto-alert-${event.id}` });
+        } catch {
+          // The tone and toast already fired.
+        }
+      });
+    }
+  }, [showToast]);
+
+  const applyPayload = useCallback((payload) => {
+    if (!payload || typeof payload !== "object") return;
+    setData(payload);
+    setError(payload.lastError ? String(payload.lastError) : "");
+    regularHoursRef.current = Boolean(payload?.session?.regularHours);
+    // Keep the chart chips and the top-bar bell in step with the server:
+    // 2 lines per ticker (current call/put targets) + today's confirmations.
+    syncOiAutoAlertMirror(payload);
+    const events = Array.isArray(payload.events) ? payload.events : [];
+    if (!seenIdsRef.current) {
+      // First payload primes the seen-set: history is shown, not replayed.
+      seenIdsRef.current = new Set(events.map((event) => event?.id).filter(Boolean));
+      return;
+    }
+    const fresh = findNewOiAutoAlertEvents(events, seenIdsRef.current);
+    if (!fresh.length) return;
+    fresh.forEach((event) => seenIdsRef.current.add(event.id));
+    announce(fresh);
+  }, [announce]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = 0;
+    const load = async () => {
+      try {
+        const response = await fetch("/api/oi-auto-alerts");
+        const payload = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (!response.ok || !payload) {
+          setError(String(payload?.error || `Auto alerts unavailable (${response.status}).`));
+        } else {
+          applyPayload(payload);
+          // Live last price for every watched ticker (5s-cached upstream), so a
+          // card never shows the stale 9:15 build spot next to a live level.
+          const symbols = [...new Set((payload.rows || []).map((row) => String(row?.symbol || "").toUpperCase()).filter(Boolean))];
+          if (symbols.length) {
+            const quotes = await fetch(`/api/watchlist-quotes?symbols=${encodeURIComponent(symbols.join(","))}`)
+              .then((res) => (res.ok ? res.json() : null))
+              .catch(() => null);
+            if (!cancelled && Array.isArray(quotes?.rows)) {
+              const next = {};
+              quotes.rows.forEach((row) => {
+                const price = Number(row?.lastPrice);
+                if (Number.isFinite(price) && price > 0) next[String(row.symbol).toUpperCase()] = price;
+              });
+              if (Object.keys(next).length) {
+                setLivePrices(next);
+                // Feed the shared map too: the chart's amber lines and the bell
+                // then track price for every auto ticker, not just the charted one.
+                Object.entries(next).forEach(([symbol, price]) => {
+                  oiAlertLivePrices.set(symbol, { price, receivedAt: Date.now() });
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        if (!cancelled) setError("Auto alerts API unavailable — retrying.");
+      }
+      if (!cancelled) timer = window.setTimeout(load, oiAutoAlertPollDelay(regularHoursRef.current));
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [applyPayload]);
+
+  const post = useCallback(async (path, body, label) => {
+    setBusy(label);
+    // Bounded, because 'busy' disables the control that started the request. A
+    // hung POST used to leave the Remove buttons greyed out with no error and
+    // no way back - the trader simply could not drop a ticker from the list.
+    const abort = new AbortController();
+    const timer = window.setTimeout(() => abort.abort(), 20000);
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+        signal: abort.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(String(payload?.error || `Request failed (${response.status}).`));
+        return false;
+      }
+      applyPayload(payload);
+      return true;
+    } catch (requestError) {
+      setError(
+        requestError?.name === "AbortError"
+          ? "Auto alerts API did not answer in 20s - nothing was changed. Try again."
+          : "Auto alerts API unavailable.",
+      );
+      return false;
+    } finally {
+      window.clearTimeout(timer);
+      setBusy("");
+    }
+  }, [applyPayload]);
+
+  const addSymbol = useCallback(async (value) => {
+    const symbol = normalizeOiAutoAlertSymbol(value);
+    if (!symbol) {
+      setError("Enter a valid ticker (letters, digits, . or -), e.g. AMD.");
+      return false;
+    }
+    return post("/api/oi-auto-alerts/symbols", { add: symbol }, "add");
+  }, [post]);
+  const removeSymbol = useCallback((symbol) => post("/api/oi-auto-alerts/symbols", { remove: symbol }, `remove-${symbol}`), [post]);
+  const refreshAll = useCallback(() => post("/api/oi-auto-alerts/refresh", {}, "refresh"), [post]);
+  const refreshOne = useCallback((symbol) => post("/api/oi-auto-alerts/refresh", { symbol }, `refresh-${symbol}`), [post]);
+  const rearmOne = useCallback((symbol) => post("/api/oi-auto-alerts/rearm", { symbol }, `rearm-${symbol}`), [post]);
+  const toggleEnabled = useCallback(() => post("/api/oi-auto-alerts/settings", { enabled: !data?.enabled }, "enabled"), [post, data?.enabled]);
+  const toggleMag7 = useCallback(() => post("/api/oi-auto-alerts/settings", { includeMag7: !data?.includeMag7 }, "mag7"), [post, data?.includeMag7]);
+  const enableNotifications = useCallback(() => {
+    unlockPriceAlertAudio().catch(() => false);
+    playPriceAlertTone();
+    if ("Notification" in window && Notification.permission === "default") {
+      Promise.resolve(Notification.requestPermission())
+        .then((permission) => setNotifyState(permission))
+        .catch(() => {});
+    } else if ("Notification" in window) {
+      setNotifyState(Notification.permission);
+    }
+  }, []);
+  useEffect(() => { forgetOiAutoAlertTrackCharted(); }, []);
+  const dismissToast = useCallback(() => setToast(null), []);
+
+  return {
+    data,
+    error,
+    busy,
+    toast,
+    unseen,
+    notifyState,
+    livePrices,
+    addSymbol,
+    removeSymbol,
+    refreshAll,
+    refreshOne,
+    rearmOne,
+    toggleEnabled,
+    toggleMag7,
+    enableNotifications,
+    dismissToast,
+  };
+}
+
+// While a chart is maximized it is painted over EVERYTHING at z-index 1200 -
+// the nav rail, the bell and its unseen count, the Auto Alert drawer. The feed
+// kept running and the tone kept playing, but the toast sat at z-index 95
+// underneath the chart, so an alert that fired while the trader was in the
+// view where they actually trade was invisible. This strip floats above the
+// maximized chart, shows the unseen count and the latest confirmations, and
+// opens the Auto Alert view on click. It renders only while a chart is
+// maximized; the normal layout already has the bell and the drawer.
+function OiAutoAlertMaximizedStrip({ feed, onOpenAlerts }) {
+  const [chartMaximized, setChartMaximized] = useState(false);
+  useEffect(() => {
+    // Two different "maximized" states exist (a whole-workspace one and a
+    // per-card one) and neither is lifted to the app root. Both add
+    // .is-maximized to the chart card, so the DOM is the one honest source.
+    const check = () => setChartMaximized(Boolean(document.querySelector(".oi-finder-chart-card.is-maximized")));
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"], subtree: true });
+    return () => observer.disconnect();
+  }, []);
+  // Hooks first, unconditionally - the early return below must come after.
+  // Dismissed is keyed to the newest confirmation id, so closing the strip
+  // hides THIS set of alerts and the next one that fires brings it straight
+  // back. Without the key a single close would silence it for the session.
+  const [dismissedFor, setDismissedFor] = useState("");
+  const events = Array.isArray(feed?.data?.events) ? feed.data.events : [];
+  const confirmed = events.filter((event) => event.kind === "confirm").slice(0, 3);
+  const unseen = Number(feed?.unseen) || 0;
+  const latestId = confirmed[0]?.id || "";
+  if (!chartMaximized || !confirmed.length || dismissedFor === latestId) return null;
+  return (
+    <div
+      className={`auto-alert-max-strip${unseen ? " has-unseen" : ""}`}
+      role="status"
+      aria-live="polite"
+    >
+      <button
+        type="button"
+        className="auto-alert-max-strip-open"
+        onClick={onOpenAlerts}
+        title="Open Auto Alert"
+        aria-label={unseen ? `${unseen} unseen alerts - open Auto Alert` : "Open Auto Alert"}
+      >
+        <Bell size={13} />
+        {unseen ? <b className="auto-alert-max-strip-count">{unseen}</b> : null}
+        <span className="auto-alert-max-strip-list">
+          {confirmed.map((event) => (
+            <span key={event.id} className={`is-${event.side === "PUT" ? "put" : "call"}`}>
+              {formatOiAutoAlertShortTime(event.at || event.recordedAt)} {event.symbol} {oiAutoAlertEventLabel(event)}
+            </span>
+          ))}
+        </span>
+      </button>
+      <button
+        type="button"
+        className="auto-alert-max-strip-close"
+        onClick={() => setDismissedFor(latestId)}
+        title="Hide until the next alert"
+        aria-label="Hide alert banner until the next alert"
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+function OiAutoAlertToast({ toast, onDismiss }) {
+  if (!toast) return null;
+  return (
+    <div className={`auto-alert-toast is-${toast.side === "PUT" ? "put" : "call"} is-${toast.kind || "touch"}`} role="status" aria-live="assertive">
+      <b>{toast.title}</b>
+      <small>{toast.detail}</small>
+      <button type="button" onClick={onDismiss} aria-label="Dismiss alert"><X size={12} /></button>
+    </div>
+  );
+}
+
+// The dashboard PRICE alert bell and its unseen count live in the top rail,
+// which a maximized chart paints over at z-index 1200 - the same gap the Auto
+// Alert strip above already closes for OI alerts. A price alert that triggered
+// while the trader was inside the fullscreen chart left only an 8s toast and
+// then nothing, so the alert was missed (reported 2026-08-25). This strip
+// floats above the maximized chart with the triggered count and the latest
+// triggers; clicking it un-maximizes and opens the Alert Center.
+function GlobalAlertMaximizedStrip({ alerts, count, onOpen }) {
+  const [chartMaximized, setChartMaximized] = useState(false);
+  useEffect(() => {
+    const check = () => setChartMaximized(Boolean(document.querySelector(".oi-finder-chart-card.is-maximized")));
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"], subtree: true });
+    return () => observer.disconnect();
+  }, []);
+  const [dismissedFor, setDismissedFor] = useState("");
+  const shown = Array.isArray(alerts) ? alerts.slice(0, 3) : [];
+  const latestId = shown[0]?.id || "";
+  if (!chartMaximized || !shown.length || dismissedFor === latestId) return null;
+  return (
+    <div className="global-alert-max-strip" role="status" aria-live="assertive">
+      <button
+        type="button"
+        className="global-alert-max-strip-open"
+        onClick={onOpen}
+        title="Open Alert Center"
+        aria-label={`${count} triggered price alert${count === 1 ? "" : "s"} - open Alert Center`}
+      >
+        <Bell size={13} />
+        {count ? <b className="global-alert-max-strip-count">{count}</b> : null}
+        <span className="global-alert-max-strip-list">
+          {shown.map((alert) => (
+            <span key={alert.id} className={alert.tone === "put" ? "is-put" : "is-call"}>
+              {alert.symbol ? `${alert.symbol} ` : ""}{alert.label}
+            </span>
+          ))}
+        </span>
+      </button>
+      <button
+        type="button"
+        className="global-alert-max-strip-close"
+        onClick={() => setDismissedFor(latestId)}
+        title="Hide until the next alert"
+        aria-label="Hide alert banner until the next alert"
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+// The alert history: one trading session at a time, with a calendar.
+//
+// Today renders straight from the live poll payload, so a confirmation shows up
+// the moment it fires. Past sessions are fetched on demand from the same 30-day
+// event log the server already persists - which is why "which tickers alerted
+// yesterday" survives a restart without a second store. Only confirmations are
+// listed: a touch still warns, but it is not a record of a level going.
+function OiAutoAlertHistory({ events, summary, serverTime, date, onDateChange, onSelectSymbol }) {
+  const days = Array.isArray(summary?.days) ? summary.days : [];
+  // Eastern date from the SERVER clock, not the browser's - a trader on Pacific
+  // time would otherwise see "today" flip seven hours late.
+  const todayKey = String(serverTime || "").slice(0, 10);
+  const activeDate = date || todayKey || String(days[0]?.date || "");
+  const isToday = Boolean(todayKey) && activeDate === todayKey;
+  const [history, setHistory] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState("");
+
+  // Sessions that actually have alerts, newest first. The arrows step through
+  // these rather than the calendar, so they never land on an empty weekend.
+  const datesWithAlerts = useMemo(
+    () => days.map((day) => String(day?.date || "")).filter(Boolean),
+    [days],
+  );
+  const olderDate = datesWithAlerts.find((day) => day < activeDate) || "";
+  const newerDate = datesWithAlerts.filter((day) => day > activeDate).pop() || "";
+
+  useEffect(() => {
+    if (!activeDate || isToday) {
+      setHistory(null);
+      setFailed("");
+      setLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    const abort = new AbortController();
+    setLoading(true);
+    setFailed("");
+    fetch(`/api/oi-auto-alerts/history?date=${encodeURIComponent(activeDate)}`, { signal: abort.signal })
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+      .then((payload) => {
+        if (cancelled) return;
+        setHistory(payload);
+        setLoading(false);
+      })
+      .catch((historyError) => {
+        if (cancelled || historyError?.name === "AbortError") return;
+        setFailed("Could not load that session.");
+        setLoading(false);
+      });
+    return () => { cancelled = true; abort.abort(); };
+  }, [activeDate, isToday]);
+
+  const rows = isToday
+    ? (Array.isArray(events) ? events : []).filter((event) => event.kind === "confirm")
+    : (Array.isArray(history?.events) ? history.events : []);
+  const tickerCount = new Set(
+    rows.map((row) => String(row?.symbol || "").toUpperCase()).filter(Boolean),
+  ).size;
+  const countText = `${rows.length} alert${rows.length === 1 ? "" : "s"} · ${tickerCount} ticker${tickerCount === 1 ? "" : "s"}`;
+
+  return (
+    <section className="auto-alert-drawer-feed" aria-label="OI alert history">
+      <header>
+        <b>Alerts</b>
+        <div className="auto-alert-history-nav">
+          <button
+            type="button"
+            onClick={() => onDateChange?.(olderDate)}
+            disabled={!olderDate}
+            title="Earlier session with alerts"
+            aria-label="Earlier session with alerts"
+          >&lsaquo;</button>
+          <input
+            type="date"
+            value={activeDate}
+            max={todayKey || undefined}
+            onChange={(event) => onDateChange?.(event.target.value || todayKey)}
+            aria-label="Show alerts for this date"
+          />
+          <button
+            type="button"
+            onClick={() => onDateChange?.(newerDate)}
+            disabled={!newerDate}
+            title="Later session with alerts"
+            aria-label="Later session with alerts"
+          >&rsaquo;</button>
+        </div>
+        <small>{loading ? "Loading…" : failed || `${countText}${isToday ? " · today" : ""}`}</small>
+      </header>
+      {rows.map((event) => {
+        const { title, detail } = splitOiAutoAlertMessage(event.message);
+        return (
+          <button
+            type="button"
+            key={event.id}
+            className={`is-confirm is-${event.side === "PUT" ? "put" : "call"}`}
+            onClick={() => onSelectSymbol?.(event.symbol)}
+            title={`${event.message || title} — open ${event.symbol} on the chart`}
+          >
+            <b>{title}</b>
+            {detail ? <small>{detail}</small> : null}
+            <time>{formatTimeLabel(event.at || event.recordedAt)}</time>
+          </button>
+        );
+      })}
+      {!rows.length && !loading && !failed ? (
+        <p className="auto-alert-history-empty">No confirmed alerts on {activeDate || "this session"}.</p>
+      ) : null}
+    </section>
+  );
+}
+
+function OiAutoAlertDrawer({ feed, onClose, onSelectSymbol, activeSymbol }) {
+  const { data, error, busy, notifyState } = feed;
+  const [draft, setDraft] = useState("");
+  // Which session the history panel is showing. Lifted here so clicking a date
+  // in ALERTS BY SESSION drives the panel below it.
+  const [historyDate, setHistoryDate] = useState("");
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  const pendingSymbols = Array.isArray(data?.pendingSymbols) ? data.pendingSymbols : [];
+  const manualSymbols = Array.isArray(data?.manualSymbols) ? data.manualSymbols : [];
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const status = String(data?.status || (error ? "Offline" : "Loading"));
+  const statusTone = /monitor|armed/i.test(status) ? "live" : /paus|offline/i.test(status) ? "paused" : /partial|error/i.test(status) ? "warn" : "idle";
+  const nextRefresh = data?.nextRefreshAt ? formatOiAutoAlertClock(data.nextRefreshAt) : "";
+  // Tickers that fired in the last 30 minutes float to the top with a ribbon.
+  const orderedRows = sortOiAutoAlertRows(rows, Date.now());
+  // Every confirmation, never a slice. The old cap of 5 was hiding fired OI
+  // levels outright - NFLX and TSLA both confirmed at 9:40 and were visible in
+  // the feed below while missing from this panel. Touch warnings stay out: they
+  // still sound and ribbon the card, they are simply not confirmations.
+  const confirmedEvents = events.filter((event) => event.kind === "confirm");
+  const submitSymbol = async (event) => {
+    event.preventDefault();
+    if (await feed.addSymbol(draft)) setDraft("");
+  };
+
+  return (
+    <aside className="auto-alert-drawer" aria-label="Auto OI alerts" data-testid="oi-auto-alert-drawer">
+      <header className="auto-alert-drawer-header">
+        <div>
+          <b><Bell size={13} /> AUTO ALERT</b>
+          <span className={`auto-alert-drawer-status is-${statusTone}`} title={data?.message || ""}>{status}</span>
+        </div>
+        <div className="auto-alert-drawer-header-actions">
+          <button
+            type="button"
+            onClick={feed.refreshAll}
+            disabled={busy === "refresh" || Boolean(data?.refreshing)}
+            title="Rebuild every OI ladder from the live option chain now"
+            aria-label="Rebuild every OI ladder now"
+          >
+            <RefreshCw size={14} className={data?.refreshing ? "is-spinning" : ""} />
+          </button>
+          {onClose ? <button type="button" onClick={onClose} title="Close the Auto Alert panel" aria-label="Close the Auto Alert panel">
+            <X size={16} />
+          </button> : null}
+        </div>
+      </header>
+      <p className="auto-alert-drawer-message">{data?.message || "Connecting to the auto-alert service…"}</p>
+      <div className="auto-alert-drawer-meta">
+        <span>Levels 9:15 AM ET · confirm on 5m close</span>
+        {nextRefresh ? <span>Next build {nextRefresh}</span> : null}
+      </div>
+      {error ? <p className="auto-alert-drawer-error" role="alert">{error}</p> : null}
+      <div className="auto-alert-drawer-controls">
+        <label title="Master switch for automatic OI alerts">
+          <input type="checkbox" checked={Boolean(data?.enabled)} onChange={feed.toggleEnabled} disabled={!data || Boolean(busy)} />
+          <span>Alerts on</span>
+        </label>
+        <label title="Watch AAPL, MSFT, NVDA, AMZN, META, GOOGL and TSLA automatically">
+          <input type="checkbox" checked={Boolean(data?.includeMag7)} onChange={feed.toggleMag7} disabled={!data || Boolean(busy)} />
+          <span>MAG7</span>
+        </label>
+        <button
+          type="button"
+          className={notifyState === "granted" ? "is-active" : ""}
+          onClick={feed.enableNotifications}
+          title={notifyState === "granted" ? "Sound and browser notifications are enabled (click to test the tone)" : "Enable the alert tone and browser notifications"}
+        >
+          <Bell size={12} />
+          {notifyState === "granted" ? "Sound on" : notifyState === "denied" ? "Sound only" : "Enable sound"}
+        </button>
+      </div>
+      <form className="auto-alert-drawer-add" onSubmit={submitSymbol}>
+        <input
+          value={draft}
+          onChange={(event) => setDraft(event.target.value.toUpperCase())}
+          placeholder="Add ticker, e.g. AMD"
+          aria-label="Add a ticker to the automatic OI alerts"
+          spellCheck="false"
+          autoComplete="off"
+          maxLength={10}
+        />
+        <button type="submit" disabled={!draft.trim() || busy === "add"}><Plus size={13} />Add</button>
+      </form>
+      {manualSymbols.length ? (
+        <div className="auto-alert-drawer-chips" aria-label="Manual tickers">
+          {manualSymbols.map((symbol) => (
+            <span key={symbol}>
+              {symbol}
+              <button type="button" onClick={() => feed.removeSymbol(symbol)} disabled={busy === `remove-${symbol}`} aria-label={`Remove ${symbol} from auto alerts`} title={`Remove ${symbol}`}><X size={11} /></button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <section className="auto-alert-latest" aria-label="Latest triggered alerts">
+        <header>
+          <b>Latest alerts</b>
+          <small>
+            {confirmedEvents.length
+              ? `${confirmedEvents.length} confirmed today · newest first · click to open the chart`
+              : "who fired, which level, when"}
+          </small>
+        </header>
+        {confirmedEvents.length ? (
+          <div className="auto-alert-latest-list">
+            {confirmedEvents.map((event) => (
+              <button
+                type="button"
+                key={`latest-${event.id}`}
+                className={`is-confirm is-${event.side === "PUT" ? "put" : "call"}`}
+                onClick={() => onSelectSymbol?.(event.symbol)}
+                title={event.message || ""}
+              >
+                <time>{formatOiAutoAlertShortTime(event.at || event.recordedAt)}</time>
+                <b>{event.symbol}</b>
+                <span>{oiAutoAlertEventLabel(event)}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p>No confirmations yet. When a 5m candle closes through an OI level it appears here (time · ticker · level), its card jumps to the top with a ribbon, and the bell in the nav shows a count.</p>
+        )}
+      </section>
+      <div className="auto-alert-drawer-list">
+        {orderedRows.map(({ row, lastEvent, recent }) => (
+          <OiAutoAlertTickerCard
+            key={row.symbol}
+            row={row}
+            active={row.symbol === activeSymbol}
+            busy={Boolean(busy)}
+            onSelect={onSelectSymbol}
+            onRefresh={feed.refreshOne}
+            onRearm={feed.rearmOne}
+            lastEvent={lastEvent}
+            recent={recent}
+            livePrice={Number(feed.livePrices?.[row.symbol]) || 0}
+          />
+        ))}
+        {pendingSymbols.map((symbol) => (
+          <article key={`pending-${symbol}`} className="auto-alert-card is-pending">
+            <header><b>{symbol}</b><small>Building OI ladder…</small></header>
+          </article>
+        ))}
+        {!rows.length && !pendingSymbols.length ? (
+          <p className="auto-alert-drawer-empty">
+            {data ? "No tickers yet — turn on MAG7 or add a ticker above." : error || "Loading auto alerts…"}
+          </p>
+        ) : null}
+      </div>
+      {/* Between the support/resistance ticker cards and the Alerts history,
+          at the trader's request (2026-08-23): the session roll-up reads as a
+          bridge from "where the levels are" to "what fired when". */}
+      <OiAutoAlertSessionSummary
+        summary={data?.sessionAlerts}
+        onSelectSymbol={onSelectSymbol}
+        onSelectDate={setHistoryDate}
+        activeDate={historyDate}
+      />
+      <OiAutoAlertHistory
+        events={events}
+        summary={data?.sessionAlerts}
+        serverTime={data?.serverTime}
+        date={historyDate}
+        onDateChange={setHistoryDate}
+        onSelectSymbol={onSelectSymbol}
+      />
+    </aside>
+  );
+}
+
 function FullChartsAndOiBoard({
   data,
   loading,
@@ -5914,6 +7503,7 @@ function FullChartsAndOiBoard({
   navigationIntent = null,
   onNavigationIntentHandled,
   onRefresh,
+  mobileOptionsRequest = 0,
   surfaceMode = "combined",
   popoutTimeframe = "5m",
   popoutLinkGroup = 2,
@@ -5926,10 +7516,46 @@ function FullChartsAndOiBoard({
   const streamConnected = Boolean(data?.streaming?.connected && data?.streaming?.transportConnected !== false);
   const streamNeedsAuthentication = /401|unauthorized/i.test(String(data?.streaming?.lastError || data?.streaming?.error || ""));
   const [linkedGroup, setLinkedGroup] = useState(() => Math.min(9, Math.max(1, Number(popoutLinkGroup) || 2)));
+  // The option chain, filling the screen INSIDE the app. This replaces a
+  // window.open that Chrome was serving him as an ordinary tab (2026-09-02,
+  // same complaint as the MomX pop-out). A plain class rather than a portal:
+  // measured, nothing above the chain creates a containing block, so
+  // position:fixed reaches the viewport - and not re-parenting it means the
+  // expiry accordion keeps its state and scroll instead of remounting.
+  const [chainFullscreen, setChainFullscreen] = useState(false);
+  useEffect(() => {
+    if (!chainFullscreen) return undefined;
+    const onKey = (event) => {
+      if (event.key === "Escape") setChainFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chainFullscreen]);
   const [selectedExpiry, setSelectedExpiry] = useState("");
   const [expandedExpiries, setExpandedExpiries] = useState([]);
   const [legacyStrikeDepth, setLegacyStrikeDepth] = useState(10);
-  const [chainView, setChainView] = useState("chain");
+  // Ganesh, 2026-08-27: "when i search any tickers i see this option chain, but
+  // i want High OI instead of Chain". High OI is the read he opens a ticker for,
+  // so it is the default now. The choice is still remembered if he switches -
+  // forcing High OI back on every ticker would fight him the moment he wants a
+  // strike-by-strike look, and "the app keeps resetting my tab" is its own
+  // complaint. Only the two known values are accepted, so a stale or hand-edited
+  // entry cannot leave the panel on a tab that does not exist.
+  const [chainView, setChainView] = useState(() => {
+    try {
+      return window.localStorage.getItem(CHAIN_VIEW_STORAGE_KEY) === "chain" ? "chain" : "highOi";
+    } catch {
+      return "highOi";
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CHAIN_VIEW_STORAGE_KEY, chainView === "chain" ? "chain" : "highOi");
+    } catch {
+      // A browser with storage blocked still gets the High OI default every
+      // load; only the memory of a deliberate switch is lost.
+    }
+  }, [chainView]);
   const pageRef = useRef(null);
   const [chainSide, setChainSide] = useState(() => {
     try {
@@ -5948,30 +7574,35 @@ function FullChartsAndOiBoard({
   });
   const [isChainResizing, setIsChainResizing] = useState(false);
   const [chainOpen, setChainOpen] = useState(() => {
-    if (embedded) return true;
     try {
-      // The chart and the option chain form one trading surface.  Keep a
-      // trader's explicit preference, but make the first visit open both
-      // panels so phones and tablets immediately resemble a terminal.
       const saved = window.localStorage.getItem("chartsOiChainOpen");
-      return saved == null ? true : saved === "true";
+      const isMobile = window.matchMedia?.("(max-width: 760px)")?.matches
+        ?? isMobileChartWidth(window.innerWidth);
+      return initialChartChainOpen({ embedded, isMobile, saved });
     } catch {
-      return true;
+      return initialChartChainOpen({ embedded });
     }
   });
-  const [autoAlertsOpen, setAutoAlertsOpen] = useState(() => {
-    try {
-      const saved = window.localStorage.getItem("chartsOiAutoAlertsOpen");
-      return saved == null ? true : saved === "true";
-    } catch {
-      return true;
+  const handledMobileOptionsRequestRef = useRef(0);
+  useEffect(() => {
+    if (!mobileOptionsRequest || handledMobileOptionsRequestRef.current === mobileOptionsRequest) return undefined;
+    if (!chainOpen) {
+      try { window.localStorage.setItem("chartsOiChainOpen", "true"); } catch { /* storage can be disabled */ }
+      setChainOpen(true);
+      return undefined;
     }
-  });
-  const toggleAutoAlerts = () => setAutoAlertsOpen((current) => {
-    const next = !current;
-    try { window.localStorage.setItem("chartsOiAutoAlertsOpen", String(next)); } catch { /* storage can be disabled */ }
-    return next;
-  });
+    handledMobileOptionsRequestRef.current = mobileOptionsRequest;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        document.getElementById("charts-oi-option-chain")?.scrollIntoView({ behavior: "auto", block: "start" });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [chainOpen, mobileOptionsRequest]);
   const toggleChain = () => setChainOpen((current) => {
     const next = !current;
     try { window.localStorage.setItem("chartsOiChainOpen", String(next)); } catch { /* storage can be disabled */ }
@@ -6110,21 +7741,12 @@ function FullChartsAndOiBoard({
     if (!atm?.strike || rows.some((row) => Number(row?.strike) === Number(atm.strike))) return rows;
     return [...rows, { strike: atm.strike, volume: atm.volume, open_interest: atm.openInterest, delta: 0.5, is_atm: true }];
   };
-  const keepChainContract = (row) => {
-    if (!row) return false;
-    const delta = Math.abs(Number(row?.delta || 0));
-    const isNotable = row?.is_liquidity_wall || row?.is_high_open_interest || row?.is_high_volume;
-    // Keep the useful 0.05-0.90 delta band. Extreme contracts remain visible
-    // only when they carry a meaningful OI/volume flag, so a 0.01-delta wall
-    // is preserved without filling the chain with inactive 0.00/0.01 rows.
-    return row?.is_atm || isNotable || (delta >= 0.05 && delta <= 0.90);
-  };
   const calls = selectedChainRows.length
-    ? activeChainRows.filter((row) => row?.side === "CALL" && keepChainContract(row))
-    : appendAtm((Array.isArray(data?.callRows) ? data.callRows : []).filter((row) => (!activeExpiry || row?.expiry === activeExpiry) && keepChainContract(row)), "call");
+    ? activeChainRows.filter((row) => row?.side === "CALL")
+    : appendAtm((Array.isArray(data?.callRows) ? data.callRows : []).filter((row) => !activeExpiry || row?.expiry === activeExpiry), "call");
   const puts = selectedChainRows.length
-    ? activeChainRows.filter((row) => row?.side === "PUT" && keepChainContract(row))
-    : appendAtm((Array.isArray(data?.putRows) ? data.putRows : []).filter((row) => (!activeExpiry || row?.expiry === activeExpiry) && keepChainContract(row)), "put");
+    ? activeChainRows.filter((row) => row?.side === "PUT")
+    : appendAtm((Array.isArray(data?.putRows) ? data.putRows : []).filter((row) => !activeExpiry || row?.expiry === activeExpiry), "put");
   const selectedAtm = activeChainRows.find((row) => row?.is_atm && row?.side === "CALL")
     || activeChainRows.find((row) => row?.is_atm && row?.side === "PUT");
   const activeScriptLevelSet = (Array.isArray(data?.tosScriptLevels) ? data.tosScriptLevels : [])
@@ -6136,14 +7758,18 @@ function FullChartsAndOiBoard({
     || currentAtm?.call?.strike
     || currentAtm?.put?.strike;
   const activeExpectedMove = Number(data?.expiryExpectedMoves?.[activeExpiry] || selectedAtm?.expected_move || calls[0]?.expected_move || puts[0]?.expected_move || currentAtm?.expectedMove || 0);
-  const chartCurrentAtm = {
+  // Identity-stable while its inputs are: the chart panels are memoized, and
+  // a fresh object here on every board render re-rendered the linked panel on
+  // every workspace poll even when the chain had not changed.
+  const activeExpiryDte = activeExpiryMeta?.dte;
+  const chartCurrentAtm = useMemo(() => ({
     ...currentAtm,
     expiry: activeExpiry || currentAtm?.expiry,
-    daysToExpiration: activeExpiryMeta?.dte ?? currentAtm?.daysToExpiration,
+    daysToExpiration: activeExpiryDte ?? currentAtm?.daysToExpiration,
     expectedMove: activeExpectedMove,
     call: { ...(currentAtm?.call || {}), strike: activeAtmStrike || currentAtm?.call?.strike },
     put: { ...(currentAtm?.put || {}), strike: activeAtmStrike || currentAtm?.put?.strike },
-  };
+  }), [currentAtm, activeExpiry, activeExpiryDte, activeExpectedMove, activeAtmStrike]);
   const spotPrice = Number(data?.underlyingPrice || 0);
   const activeOiLevelModel = buildHighOiLevelModel({
     levelSets: data?.tosScriptLevels,
@@ -6258,8 +7884,12 @@ function FullChartsAndOiBoard({
     const rawPutContracts = selectedChainRows.length
       ? rawRows.filter((row) => row?.side === "PUT")
       : appendAtm((Array.isArray(data?.putRows) ? data.putRows : []).filter((row) => row?.expiry === expiry), "put", expiry);
-    const callContracts = rawCallContracts.filter(keepChainContract);
-    const putContracts = rawPutContracts.filter(keepChainContract);
+    // Preserve every listed contract here. The ±5/10/15/All selector is the
+    // display boundary; filtering by delta before applying it made 15 and All
+    // indistinguishable whenever the 0.05-0.90 band contained only ten rows
+    // per side of ATM.
+    const callContracts = rawCallContracts;
+    const putContracts = rawPutContracts;
     const byStrike = new Map();
     callContracts.forEach((row) => byStrike.set(Number(row?.strike), { ...(byStrike.get(Number(row?.strike)) || {}), strike: Number(row?.strike), call: row }));
     putContracts.forEach((row) => byStrike.set(Number(row?.strike), { ...(byStrike.get(Number(row?.strike)) || {}), strike: Number(row?.strike), put: row }));
@@ -6283,7 +7913,6 @@ function FullChartsAndOiBoard({
       }),
     };
   };
-  const visibleExpiryRows = expandedExpiries.length ? expiryRows.filter((item) => expandedExpiries.includes(item.expiry)) : expiryRows.filter((item) => item.expiry === activeExpiry);
   const toggleExpiry = (expiry) => {
     setSelectedExpiry(expiry);
     setExpandedExpiries((current) => {
@@ -6322,6 +7951,40 @@ function FullChartsAndOiBoard({
           workspacePopoutEnabled={false}
         />
       </div>
+    </section>;
+  }
+
+  if (surfaceMode === "mobile-options") {
+    return <section className="charts-oi-tos-chain mobile-full-option-chain" data-testid="mobile-full-option-chain">
+      <header>
+        <div>
+          <b>LIVE OPTION CHAIN</b>
+          <small>{activeExpiry ? `${formatExpiryEastern(activeExpiry)} · ${activeExpiryMeta?.dte ?? "--"} DTE` : "Waiting for nearest expiry"}</small>
+        </div>
+        <div className="charts-oi-chain-header-actions">
+          <span>Spot {data?.underlyingPrice ? formatCurrency(data.underlyingPrice) : "--"}</span>
+          <TosSyncTag group={linkedGroup} />
+          <button type="button" onClick={() => setChainFullscreen((open) => !open)} title="Fill the screen with the option chain, inside the app (Esc to exit)" aria-label="Fill the screen with the option chain"><ExternalLink size={16} /></button>
+          {dockPanelMenu}
+        </div>
+      </header>
+      {dockPanelStack}
+      {chainViewTabs}
+      {chainView === "highOi" ? highOiListPanel : <>
+        <TosChainColorKey />
+        <TosExpiryAccordion
+          symbol={symbol}
+          expiryRows={expiryRows}
+          buildChainForExpiry={buildChainForExpiry}
+          spotPrice={spotPrice}
+          highlight={highlight}
+          value={value}
+          loading={loading}
+          error={chainError}
+          onRetry={onRefresh}
+          onSelect={setSelectedExpiry}
+        />
+      </>}
     </section>;
   }
 
@@ -6383,7 +8046,7 @@ function FullChartsAndOiBoard({
           onKeyDown={resizeChainWithKeyboard}
           title="Drag left or right to resize chart and option chain. Double-click to reset."
         ><i /></div> : null}
-        {chainOpen ? <section className="charts-oi-tos-chain is-popout-chain">
+        {chainOpen ? <section className={`charts-oi-tos-chain is-popout-chain${chainFullscreen ? " is-fullscreen" : ""}`}>
           <header>
             <div>
               <b>{symbol || "Ticker"} LIVE OPTION CHAIN</b>
@@ -6430,7 +8093,7 @@ function FullChartsAndOiBoard({
           <button type="button" onClick={() => window.close()} title="Close detached option chain">Close</button>
         </div>
       </header>
-      <section className="charts-oi-tos-chain is-popout-chain">
+      <section className={`charts-oi-tos-chain is-popout-chain${chainFullscreen ? " is-fullscreen" : ""}`}>
         <header>
           <div>
             <b>{symbol || "Ticker"} LIVE OPTION CHAIN</b>
@@ -6462,7 +8125,7 @@ function FullChartsAndOiBoard({
   }
 
   return <section
-    className={`charts-oi-page charts-oi-page-full has-auto-oi-alerts chain-${chainSide} ${embedded ? "is-embedded" : ""} ${chainOpen ? "is-chain-open" : "is-chain-closed"} ${autoAlertsOpen ? "" : "is-auto-alerts-collapsed"} ${isChainResizing ? "is-resizing" : ""}`}
+    className={`charts-oi-page charts-oi-page-full chain-${chainSide} ${embedded ? "is-embedded" : ""} ${chainOpen ? "is-chain-open" : "is-chain-closed"} ${isChainResizing ? "is-resizing" : ""}`}
     data-testid="charts-and-oi-view"
     id="charts-oi-workspace"
     ref={pageRef}
@@ -6483,18 +8146,12 @@ function FullChartsAndOiBoard({
       {streamNeedsAuthentication ? <div className="oi-finder-source-note is-error">Live streaming is unavailable in data-only mode. Private REST market-data refresh remains active.</div> : null}
       {data?.errors?.length ? <div className="oi-finder-source-note is-error">{data.errors[0]?.error}</div> : null}
     </div> : null}
-    <AutoOiAlertsPanel
-      activeSymbol={symbol}
-      collapsed={!autoAlertsOpen}
-      onToggle={toggleAutoAlerts}
-      onSelectSymbol={onLinkedSymbolChange}
-    />
     <section className={`charts-oi-full-chart${activeOiLevelModel.allLevels.length ? " has-external-oi-levels" : ""}`}>
       <OiFinderMultiChart
         symbol={symbol}
         collapsedChainControls={!chainOpen ? {
           onShowChain: toggleChain,
-          onPopOutChain: () => openTradingPopout("chain", symbol, linkedGroup),
+          onPopOutChain: () => setChainFullscreen((open) => !open),
         } : null}
         tickerOptions={tickerOptions}
         callRows={data?.callRows}
@@ -6510,7 +8167,6 @@ function FullChartsAndOiBoard({
         navigationIntent={navigationIntent}
         onNavigationIntentHandled={onNavigationIntentHandled}
         popoutEnabled
-        allowPageScroll
         showOiLevelSummary={false}
         bigScreenCompanion={({ linkGroup = linkedGroup, onHide } = {}) => (
           <section className="charts-oi-tos-chain is-big-screen-chain">
@@ -6522,7 +8178,7 @@ function FullChartsAndOiBoard({
               <div className="charts-oi-chain-header-actions">
                 <span>Spot {data?.underlyingPrice ? formatCurrency(data.underlyingPrice) : "--"}</span>
                 <TosSyncTag group={linkGroup} />
-                <button type="button" onClick={() => openTradingPopout("chain", symbol, linkGroup)} title="Open option chain in a separate window" aria-label="Pop out option chain"><ExternalLink size={16} /></button>
+                <button type="button" onClick={() => setChainFullscreen((open) => !open)} title="Fill the screen with the option chain, inside the app (Esc to exit)" aria-label="Fill the screen with the option chain"><ExternalLink size={16} /></button>
                 {dockPanelMenu}
                 {onHide ? (
                   <button type="button" onClick={onHide} title="Hide option chain" aria-label="Hide option chain">
@@ -6579,8 +8235,8 @@ function FullChartsAndOiBoard({
       onKeyDown={resizeChainWithKeyboard}
       title="Drag left or right to resize. Double-click to reset."
     ><i /></div> : null}
-    {chainOpen ? <section className="charts-oi-tos-chain" id="charts-oi-option-chain">
-      <header><div><b>LIVE OPTION CHAIN</b><small>{activeExpiry ? `${formatExpiryEastern(activeExpiry)} · ${activeExpiryMeta?.dte ?? "--"} DTE` : "Waiting for nearest expiry"}</small></div><div className="charts-oi-chain-header-actions"><span>Spot {data?.underlyingPrice ? formatCurrency(data.underlyingPrice) : "--"}</span><TosSyncTag group={linkedGroup} /><button type="button" onClick={() => openTradingPopout("chain", symbol, linkedGroup)} title="Open option chain in a separate window" aria-label="Pop out option chain"><ExternalLink size={16} /></button><button className="charts-oi-chain-side-toggle" type="button" onClick={() => setChainSide((current) => current === "right" ? "left" : "right")} title={`Move option chain to the ${chainSide === "right" ? "left" : "right"}`} aria-label={`Move option chain to the ${chainSide === "right" ? "left" : "right"}`}><ArrowUpDown size={16} /></button>{dockPanelMenu}<button type="button" onClick={toggleChain} title="Hide option chain" aria-label="Hide option chain"><ChevronDown size={16} /></button></div></header>
+    {chainOpen ? <section className={`charts-oi-tos-chain${chainFullscreen ? " is-fullscreen" : ""}`} id="charts-oi-option-chain">
+      <header><div><b>LIVE OPTION CHAIN</b><small>{activeExpiry ? `${formatExpiryEastern(activeExpiry)} · ${activeExpiryMeta?.dte ?? "--"} DTE` : "Waiting for nearest expiry"}</small></div><div className="charts-oi-chain-header-actions"><span>Spot {data?.underlyingPrice ? formatCurrency(data.underlyingPrice) : "--"}</span><TosSyncTag group={linkedGroup} /><button type="button" onClick={() => setChainFullscreen((open) => !open)} title="Fill the screen with the option chain, inside the app (Esc to exit)" aria-label="Fill the screen with the option chain"><ExternalLink size={16} /></button><button className="charts-oi-chain-side-toggle" type="button" onClick={() => setChainSide((current) => current === "right" ? "left" : "right")} title={`Move option chain to the ${chainSide === "right" ? "left" : "right"}`} aria-label={`Move option chain to the ${chainSide === "right" ? "left" : "right"}`}><ArrowUpDown size={16} /></button>{dockPanelMenu}<button type="button" onClick={toggleChain} title="Hide option chain" aria-label="Hide option chain"><ChevronDown size={16} /></button></div></header>
       {dockPanelStack}
       <div className="charts-oi-chain-view-tabs" role="tablist" aria-label="Option chain view">
         <button type="button" role="tab" aria-selected={chainView === "chain"} className={chainView === "chain" ? "is-active" : ""} onClick={() => setChainView("chain")}>Chain</button>
@@ -6614,7 +8270,16 @@ function FullChartsAndOiBoard({
         <thead><tr><th colSpan="3" className="call-head">CALLS</th><th className="strike-head"><ChainStrikeDepthSelect value={legacyStrikeDepth} onChange={setLegacyStrikeDepth} /></th><th colSpan="3" className="put-head">PUTS</th></tr><tr><th>Vol</th><th>OI</th><th>Δ</th><th>Strike</th><th>Δ</th><th>OI</th><th>Vol</th></tr></thead>
         <tbody>{chainRows.length ? limitChainRowsAroundAtm(chainRows, activeAtmStrike || spotPrice, legacyStrikeDepth).map((row) => <tr key={row.strike} className={Number(row.strike) === Number(activeAtmStrike) ? "is-atm" : ""}>
           <td className={`call-value ${Number(row.strike) < spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.call))}`}>{value(row.call, "volume")}</td><td className={`call-value ${Number(row.strike) < spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.call))}`}>{value(row.call, "open_interest")}</td><td className={`call-value is-delta ${Number(row.strike) < spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.call))}`}>{row.call ? Number(row.call.delta || 0).toFixed(2) : "--"}</td>
-          <td className="tos-strike"><b>{formatOptionStrike(row.strike)}</b><OptionStrikeBadges row={row} oiLevelModel={activeOiLevelModel} /></td>
+          <td className="tos-strike"><button
+            className="tos-strike-alert"
+            type="button"
+            onClick={() => {
+              const detail = buildStrikePriceAlertDraft(symbol, row.strike, spotPrice);
+              if (detail) window.dispatchEvent(new CustomEvent(OI_PRICE_ALERT_DRAFT_EVENT, { detail }));
+            }}
+            title={`Set ${symbol || "ticker"} price alert at strike ${formatOptionStrike(row.strike)}`}
+            aria-label={`Set ${symbol || "ticker"} price alert at strike ${formatOptionStrike(row.strike)}`}
+          ><b>{formatOptionStrike(row.strike)}</b><OptionStrikeBadges row={row} oiLevelModel={activeOiLevelModel} /></button></td>
           <td className={`put-value is-delta ${Number(row.strike) > spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.put))}`}>{row.put ? Number(row.put.delta || 0).toFixed(2) : "--"}</td><td className={`put-value ${Number(row.strike) > spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.put))}`}>{value(row.put, "open_interest")}</td><td className={`put-value ${Number(row.strike) > spotPrice ? "is-itm" : ""} ${highlightClassNames(highlight(row.put))}`}>{value(row.put, "volume")}</td>
         </tr>) : <tr><td className="charts-oi-empty" colSpan="7">{loading ? "Loading nearest-expiry chain..." : "No nearest-expiry option contracts returned."}</td></tr>}</tbody>
       </table></div>
@@ -6698,10 +8363,30 @@ function reorderColumnKeys(savedKeys, fallbackKeys) {
 
 function readColumnProfile(storageKey, columns) {
   const fallback = (columns || []).map((column) => column.key);
-  const profileSchemaVersion = 9;
+  const profileSchemaVersion = 13;
   const newsColumnKeys = ["__news"];
   const mtfColumnKeys = ["mtf_bullish_signal_labels", "stock_mtf_bullish_signal_labels"];
   const premarketChartSignalColumnKeys = ["intraday48Signals", "higher48Signals"];
+  // v10 (2026-08-23): saved premarket-scanner profiles predate the catalyst
+  // column, and a saved visibleKeys list wins verbatim - so every browser
+  // that had ever opened the scanner silently hid the new column forever
+  // (adversarial review). Migrations only run when the saved schemaVersion
+  // is below profileSchemaVersion, hence the bump.
+  // v11: the D-M column (signalsCyanHigher) merged into the single scanner
+  // table and Date/Time re-keyed to latestSignalAt.
+  // v12: %Chg (changePct) - the TOS scan's sort column.
+  // v13: First seen (firstSeenAt). It was ADDED to the table but never to this
+  // list, so every profile that had already opened the scanner kept it hidden -
+  // he was looking at "9/10 columns" and the missing one was the exact column
+  // that answers his question. He checked at 09:00, saw no AAPL, and later
+  // found a row stamped "9:00:00 AM"; measured by replay, the 2H cross did not
+  // become true until 09:25 and the row arrived at 09:39:47. "Signal bar" is
+  // the BUCKET the signal sits on, "First seen" is when it reached the board,
+  // and without the second one the first reads as a promise the scanner never
+  // made.
+  const premarketScannerColumnKeys = [
+    "catalyst", "signalsCyanHigher", "latestSignalAt", "changePct", "firstSeenAt",
+  ];
   const wallColumnKeys = [
     "call_wall_strike",
     "call_wall_open_interest",
@@ -6756,6 +8441,17 @@ function readColumnProfile(storageKey, columns) {
     }
     if (Number(parsed.schemaVersion || 1) < profileSchemaVersion && String(storageKey).includes("scanner")) {
       visibleKeys = [...visibleKeys, ...mtfColumnKeys.filter((key) => fallback.includes(key) && !visibleKeys.includes(key))];
+    }
+    if (
+      Number(parsed.schemaVersion || 1) < profileSchemaVersion
+      && String(storageKey).includes("premarket-scanner")
+    ) {
+      visibleKeys = [
+        ...visibleKeys,
+        ...premarketScannerColumnKeys.filter(
+          (key) => fallback.includes(key) && !visibleKeys.includes(key),
+        ),
+      ];
     }
     if (
       Number(parsed.schemaVersion || 1) < profileSchemaVersion
@@ -6904,7 +8600,7 @@ function useStableTableRows(rows, signatureBuilder = buildOiTableRowSignature) {
   return stableRows;
 }
 
-const DataTable = memo(function DataTable({ columns, rows, emptyMessage, onRowClick, getRowClassName, getRowKey, tableId = "" }) {
+const DataTable = memo(function DataTable({ columns, rows, emptyMessage, onRowClick, getRowClassName, getRowKey, tableId = "", columnGroups = null }) {
   const [sortKey, setSortKey] = useState("");
   const [sortDirection, setSortDirection] = useState("desc");
   const storageKey = useMemo(() => columnProfileStorageKey(columns, tableId), [columns, tableId]);
@@ -7078,8 +8774,37 @@ const DataTable = memo(function DataTable({ columns, rows, emptyMessage, onRowCl
         <div className="table-scroll">
           <table>
             <thead>
+              {columnGroups ? (
+                <tr className="table-group-row" aria-hidden="true">
+                  {(() => {
+                    // Merge consecutive visible columns that share a group into
+                    // one spanning header cell; ungrouped columns get an empty
+                    // spacer. Built from visibleColumns so it stays aligned
+                    // when columns are hidden or reordered.
+                    const cells = [];
+                    let run = null;
+                    const flush = () => { if (run) { cells.push(run); run = null; } };
+                    visibleColumns.forEach((column) => {
+                      const group = columnGroups[column.key] || null;
+                      if (run && run.group === group && group) { run.span += 1; return; }
+                      flush();
+                      run = { group, span: 1, key: column.key };
+                    });
+                    flush();
+                    return cells.map((cell) => (
+                      <th
+                        key={`group-${cell.key}`}
+                        colSpan={cell.span}
+                        className={cell.group ? "table-group-label" : "table-group-empty"}
+                      >
+                        {cell.group || ""}
+                      </th>
+                    ));
+                  })()}
+                </tr>
+              ) : null}
               <tr>{visibleColumns.map((column, index) => (
-                <th key={`${column.key}-${index}`}>
+                <th key={`${column.key}-${index}`} data-col={column.key}>
                   {column.sortable === false ? (
                     column.label
                   ) : (
@@ -7110,7 +8835,7 @@ const DataTable = memo(function DataTable({ columns, rows, emptyMessage, onRowCl
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
                 >
                   {visibleColumns.map((column, columnIndex) => (
-                    <td key={`${column.key}-${columnIndex}`}>{column.render ? column.render(row[column.key], row) : row[column.key] ?? "--"}</td>
+                    <td key={`${column.key}-${columnIndex}`} data-col={column.key}>{column.render ? column.render(row[column.key], row) : row[column.key] ?? "--"}</td>
                   ))}
                 </tr>
               ))}
@@ -7127,6 +8852,7 @@ const DataTable = memo(function DataTable({ columns, rows, emptyMessage, onRowCl
   && prevProps.getRowClassName === nextProps.getRowClassName
   && prevProps.getRowKey === nextProps.getRowKey
   && prevProps.tableId === nextProps.tableId
+  && prevProps.columnGroups === nextProps.columnGroups
   && sameColumnShape(prevProps.columns, nextProps.columns)
 ));
 
@@ -7285,6 +9011,65 @@ function formatProminentMtfSignalLabel(label, timeframe) {
   }).join("");
 }
 
+// Intl.DateTimeFormat.format() costs microseconds per call - invisible once,
+// ruinous across thousands of bars recomputed on every symbol switch. The
+// previous-OHLC study alone formatted every chart bar twice per pass and ran ten
+// times during one switch, which profiled at ~1.0s of the ~6s of blocked main
+// thread. Bars keep their timestamps between passes, so memoizing per formatter
+// turns every repeat into a Map hit.
+const EASTERN_DATE_KEY_CACHE_LIMIT = 40000;
+const easternDateKeyCaches = new WeakMap();
+
+function easternDateKey(formatter, timeSeconds) {
+  const time = Number(timeSeconds || 0);
+  if (!Number.isFinite(time) || time <= 0) return "";
+  if (!formatter?.format) return "";
+  let cache = easternDateKeyCaches.get(formatter);
+  if (!cache) {
+    cache = new Map();
+    easternDateKeyCaches.set(formatter, cache);
+  }
+  const cached = cache.get(time);
+  if (cached !== undefined) return cached;
+  const value = formatter.format(new Date(time * 1000));
+  // Whole-cache reset rather than LRU bookkeeping: the keys are bar timestamps,
+  // so the working set turns over with the chart, not one entry at a time.
+  if (cache.size >= EASTERN_DATE_KEY_CACHE_LIMIT) cache.clear();
+  cache.set(time, value);
+  return value;
+}
+
+// Same story for the session formatter, but worse: formatToParts allocates an
+// array of parts which is then filtered, mapped and turned into an object for
+// every bar it touches. Callers only ever want the date key and the minute of
+// day, so compute that once per timestamp and hand back the same frozen pair.
+const easternSessionPartCaches = new WeakMap();
+const EMPTY_SESSION_PARTS = Object.freeze({ dateKey: "", minutes: 0 });
+
+function easternSessionParts(formatter, timeSeconds) {
+  const time = Number(timeSeconds || 0);
+  if (!Number.isFinite(time) || time <= 0 || !formatter?.formatToParts) return EMPTY_SESSION_PARTS;
+  let cache = easternSessionPartCaches.get(formatter);
+  if (!cache) {
+    cache = new Map();
+    easternSessionPartCaches.set(formatter, cache);
+  }
+  const cached = cache.get(time);
+  if (cached !== undefined) return cached;
+  const values = Object.fromEntries(
+    formatter.formatToParts(new Date(time * 1000))
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+  const entry = Object.freeze({
+    dateKey: `${values.year || ""}-${values.month || ""}-${values.day || ""}`,
+    minutes: Number(values.hour || 0) * 60 + Number(values.minute || 0),
+  });
+  if (cache.size >= EASTERN_DATE_KEY_CACHE_LIMIT) cache.clear();
+  cache.set(time, entry);
+  return entry;
+}
+
 function calculateNumericEma(values, period) {
   const source = Array.isArray(values) ? values : [];
   if (!source.length) return [];
@@ -7294,38 +9079,9 @@ function calculateNumericEma(values, period) {
   return source.map((value) => (ema = Number(value || 0) * multiplier + ema * (1 - multiplier)));
 }
 
-function calculateRollingAverage(values, period) {
-  const length = Math.max(1, Number(period) || 1);
-  let total = 0;
-  const window = [];
-  return (Array.isArray(values) ? values : []).map((value) => {
-    const numeric = Number(value || 0);
-    window.push(numeric);
-    total += numeric;
-    if (window.length > length) total -= window.shift();
-    return total / window.length;
-  });
-}
-
-function calculateRollingStdDev(values, period) {
-  const length = Math.max(1, Number(period) || 1);
-  return (Array.isArray(values) ? values : []).map((_, index) => {
-    const window = values.slice(Math.max(0, index - length + 1), index + 1).map((value) => Number(value || 0));
-    const average = window.reduce((sum, value) => sum + value, 0) / Math.max(window.length, 1);
-    return Math.sqrt(window.reduce((sum, value) => sum + (value - average) ** 2, 0) / Math.max(window.length, 1));
-  });
-}
-
-function calculateTrueRanges(bars) {
-  return (Array.isArray(bars) ? bars : []).map((bar, index, source) => {
-    const high = Number(bar?.high || 0);
-    const low = Number(bar?.low || 0);
-    if (index === 0) return high - low;
-    const previousClose = Number(source[index - 1]?.close || 0);
-    return Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose));
-  });
-}
-
+// calculateRollingAverage / calculateRollingStdDev / calculateTrueRanges and
+// the squeeze-release detector now live in ./squeezeRelease.js, so the Python
+// scanner can be pinned against the exact code this chart runs.
 
 function calculateChartSma(bars, period) {
   if (!Array.isArray(bars) || !bars.length || period <= 0) return [];
@@ -7406,8 +9162,7 @@ function calculateMtfCloudLabelStudy(sourceBars, dailyBars, easternDateFormatter
 
   const dateKeyFor = (bar) => {
     if (typeof bar?.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(bar.date)) return bar.date;
-    const time = Number(bar?.time || 0);
-    return time > 0 ? easternDateFormatter.format(new Date(time * 1000)) : "";
+    return easternDateKey(easternDateFormatter, bar?.time);
   };
   const dailyByDate = new Map();
   suppliedDaily.forEach((bar) => {
@@ -7634,6 +9389,55 @@ const MTF_SQUEEZE_410_DEFINITIONS = Object.freeze([
   { key: "squeeze7", plotName: "Squeeze7", label: "D", level: 3.5, aggregationKey: "mtfSqueeze410Ap7" },
   { key: "squeeze8", plotName: "Squeeze8", label: "W", level: 4, aggregationKey: "mtfSqueeze410Ap8" },
 ]);
+
+// The 4/10 squeeze is the one lower study that owns a pane of its own (pane 2).
+// Switching it on therefore CREATES that pane rather than revealing a hidden
+// series, so both the chart build and the checkbox share this one factory —
+// two copies of it would drift, and the difference would only show up as a
+// subtly wrong lower pane.
+const EMPTY_MTF_SQUEEZE_410_SERIES = Object.freeze({ series: {}, rangeAnchor: null });
+
+const mtfSqueeze410PriceFormat = {
+  type: "custom",
+  minMove: 0.5,
+  formatter: (value) => (Number.isInteger(Number(value))
+    ? String(Number(value))
+    : Number(value).toFixed(1)),
+};
+
+function createMtfSqueeze410Series(chart, indicatorOptions) {
+  const series = Object.fromEntries(MTF_SQUEEZE_410_DEFINITIONS.map((definition) => [
+    definition.key,
+    {
+      histogram: chart.addSeries(HistogramSeries, {
+        title: "",
+        color: indicatorOptions.mtfSqueeze410NoSqueezeColor,
+        base: definition.level - 0.18,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        priceFormat: mtfSqueeze410PriceFormat,
+      }, 2),
+      bubble: chart.addSeries(LineSeries, {
+        title: "",
+        color: indicatorOptions.mtfSqueeze410NoSqueezeColor,
+        priceLineColor: OI_CHART_AXIS_LABEL_BACKGROUND,
+        lineVisible: false,
+        lastValueVisible: true,
+        priceLineVisible: false,
+        crosshairMarkerVisible: false,
+        priceFormat: mtfSqueeze410PriceFormat,
+      }, 2),
+    },
+  ]));
+  const rangeAnchor = chart.addSeries(LineSeries, {
+    color: "rgba(0, 0, 0, 0)",
+    lineVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false,
+    crosshairMarkerVisible: false,
+  }, 2);
+  return { series, rangeAnchor };
+}
 
 const MTF_SQUEEZE_410_DEFAULT_PLOT_CONTROLS = Object.freeze(Object.fromEntries(
   MTF_SQUEEZE_410_DEFINITIONS.map(({ plotName }) => [
@@ -7903,17 +9707,38 @@ const MTF_MA_LEVEL_TIMEFRAMES = Object.freeze([
   { key: "MONTH", option: "mtfMaShowMonthly", suffix: "Mo", lineWidth: 4 },
 ]);
 
+// Smallest series an average may be computed from. calculateNumericEma seeds
+// itself with source[0], so a short series returns roughly that seed no matter
+// how long the requested period is - a 200-period EMA of three closes is just
+// the last close wearing a 200 label. Long periods still plot once the series
+// is at least this deep (a decade of dailies is ~120 monthly closes, so 200eMo
+// keeps rendering); stub tapes plot nothing.
+const MTF_MA_MIN_AVERAGE_SAMPLES = 30;
+
 function buildMtfMaLevelsStudy(chartBars, dailyBars, easternDateFormatter, options = {}) {
+  // Family toggles gate the whole ribbon, so switching EMA off clears its four
+  // lines - and their name bubbles - across daily, weekly and monthly at once.
+  // Profiles saved before these keys existed have neither, and `!== false`
+  // keeps both families drawn for them without needing a migration.
+  const visibleDefinitions = MTF_MA_LEVEL_DEFINITIONS.filter((definition) => (
+    definition.average === "EMA" ? options.mtfMaShowEma !== false : options.mtfMaShowSma !== false
+  ));
+  if (!visibleDefinitions.length) return [];
   const intraday = Array.isArray(chartBars) ? chartBars : [];
   const suppliedDaily = Array.isArray(dailyBars) ? dailyBars : [];
   const latestChartBar = intraday.at(-1);
   const latestClose = Number(latestChartBar?.close || 0);
   if (!latestChartBar || !Number.isFinite(latestClose) || latestClose <= 0) return [];
+  // These averages need the symbol's OWN daily history. On a ticker switch the
+  // intraday seed tape arrives first; synthesizing a "live day" bar from it left
+  // exactly one daily close, and an EMA of one close equals that close for every
+  // period - so all twelve labels stacked on the price line for a second or two
+  // until the real history landed. Draw nothing rather than draw them wrong.
+  if (suppliedDaily.length < MTF_MA_MIN_AVERAGE_SAMPLES) return [];
 
   const dateKeyFor = (bar) => {
     if (typeof bar?.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(bar.date)) return bar.date;
-    const time = Number(bar?.time || 0);
-    return time > 0 ? easternDateFormatter.format(new Date(time * 1000)) : "";
+    return easternDateKey(easternDateFormatter, bar?.time);
   };
   const dailyByDate = new Map();
   suppliedDaily.forEach((bar) => {
@@ -7964,14 +9789,17 @@ function buildMtfMaLevelsStudy(chartBars, dailyBars, easternDateFormatter, optio
   const proximity = Math.max(0, Math.min(100, Number(options.mtfMaProximity) || 0));
   const averageValue = (values, average, period) => {
     if (!values.length || (average === "SMA" && values.length < period)) return null;
-    if (average === "EMA") return calculateNumericEma(values, period).at(-1);
+    if (average === "EMA") {
+      if (values.length < Math.min(period, MTF_MA_MIN_AVERAGE_SAMPLES)) return null;
+      return calculateNumericEma(values, period).at(-1);
+    }
     return values.slice(-period).reduce((sum, value) => sum + Number(value || 0), 0) / period;
   };
 
   return MTF_MA_LEVEL_TIMEFRAMES.flatMap((timeframe) => {
     if (options[timeframe.option] === false) return [];
     const closes = closesFor(timeframe.key);
-    return MTF_MA_LEVEL_DEFINITIONS.flatMap((definition) => {
+    return visibleDefinitions.flatMap((definition) => {
       const period = Math.max(1, Math.min(500, Number(options[definition.periodOption]) || definition.fallbackPeriod));
       const value = averageValue(closes, definition.average, period);
       if (!Number.isFinite(Number(value)) || Number(value) <= 0) return [];
@@ -8010,10 +9838,7 @@ function chartMtfCloudSessionCutoff(source, easternSessionFormatter, {
   source.forEach((bar) => {
     const time = Number(bar?.time || 0);
     if (!time) return;
-    const parts = easternSessionFormatter.formatToParts(new Date(time * 1000));
-    const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
-    const date = `${values.year || ""}-${values.month || ""}-${values.day || ""}`;
-    const minute = Number(values.hour || 0) * 60 + Number(values.minute || 0);
+    const { dateKey: date, minutes: minute } = easternSessionParts(easternSessionFormatter, time);
     if (minute >= rthStart && minute < rthEnd && !seenRthDates.has(date)) {
       seenRthDates.add(date);
       sessionStarts.push(time);
@@ -8073,13 +9898,7 @@ function calculateAutoFibSingleTfStudies(
   const lookback = Math.max(1, Math.min(500, Number(options.autoFibLookbackPeriod) || 40));
   const sessionsBack = Math.max(1, Math.min(30, Number(options.autoFibSessionsBack) || 1));
   const limitRecentSessions = options.autoFibLimitRecentSessions !== false;
-  const dateKeyForTime = (time) => {
-    const parts = easternSessionFormatter.formatToParts(new Date(Number(time) * 1000));
-    const values = Object.fromEntries(
-      parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
-    );
-    return `${values.year || ""}-${values.month || ""}-${values.day || ""}`;
-  };
+  const dateKeyForTime = (time) => easternSessionParts(easternSessionFormatter, time).dateKey;
   const suppliedDailyByDate = new Map();
   (Array.isArray(suppliedDailyBars) ? suppliedDailyBars : []).forEach((bar) => {
     const time = Number(bar?.time || 0);
@@ -8626,26 +10445,23 @@ function calculateMtfSqueezeReleaseClouds(bars, currentMinutes, easternSessionFo
   ];
   return definitions.flatMap((definition) => {
     if (definition.minutes < displayedMinutes || options[definition.optionKey] === false) return [];
+    // Detection lives in ./squeezeRelease.js so premarket_scanner.py can be
+    // pinned against the exact code this chart runs. Everything below is
+    // chart presentation: session cutoff, anchor price, bubble label.
     const timeframeBars = aggregateChartBars(source, definition.minutes);
-    const closes = timeframeBars.map((bar) => Number(bar.close || 0));
-    const average = calculateRollingAverage(closes, 20);
-    const standardDeviation = calculateRollingStdDev(closes, 20);
-    const averageTrueRange = calculateRollingAverage(calculateTrueRanges(timeframeBars), 20);
-    const inSqueeze = timeframeBars.map((_, index) => (
-      average[index] + 2 * standardDeviation[index] - (average[index] + 1.5 * averageTrueRange[index]) <= 0
-    ));
-    return timeframeBars.flatMap((bar, index) => {
-      if (index < 20 || Number(bar.time) < cutoffTime || inSqueeze[index] || !inSqueeze[index - 1]) return [];
-      const tone = Number(bar.close) > Number(timeframeBars[index - 1]?.close) ? "bull" : "bear";
-      const anchor = tone === "bull" ? Number(bar.low) : Number(bar.high);
+    const barsByTime = new Map(timeframeBars.map((bar) => [Number(bar.time), bar]));
+    return squeezeReleaseEvents(source, definition.minutes).flatMap((event) => {
+      if (event.bucketTime < cutoffTime) return [];
+      const bar = barsByTime.get(event.bucketTime);
+      const anchor = event.tone === "bull" ? Number(bar?.low) : Number(bar?.high);
       if (!Number.isFinite(anchor)) return [];
       return [{
-        key: `${definition.key}-${bar.time}-${tone}`,
+        key: `${definition.key}-${event.bucketTime}-${event.tone}`,
         timeframe: definition.label,
-        startTime: Number(bar.time),
-        endTime: Number(bar.time) + definition.minutes * 60,
+        startTime: event.bucketTime,
+        endTime: event.closeTime,
         anchor,
-        tone,
+        tone: event.tone,
         family: "mtf-squeeze-release",
         bubbleLabel: `🔥${definition.bubbleLabel}`,
       }];
@@ -8736,6 +10552,10 @@ function calculateCloudMaxMtfStudy(bars, currentMinutes, options = {}) {
     return study.ema9[index] >= study.ema20[index] ? "bull" : "bear";
   };
   const signals = [];
+  // Signals confirm at bucket close: the forming bucket's EMAs move with
+  // every tick, so its CALL1/PUT1/CALL5/P5 bubbles appeared, vanished and
+  // slid with the live candle (2026-08-20 "put signals are moving").
+  const lastPrimaryBarStart = Number(source[source.length - 1]?.time || 0);
   const addSignal = (bar, tone, label, shape, sourceName) => {
     signals.push({
       key: `cloudmax-${sourceName}-${bar.time}-${tone}-${label || shape}`,
@@ -8749,6 +10569,7 @@ function calculateCloudMaxMtfStudy(bars, currentMinutes, options = {}) {
   };
   currentBars.forEach((bar, index) => {
     if (index === 0) return;
+    if (Number(bar.time) + displayedMinutes * 60 > lastPrimaryBarStart) return;
     const crossed = (fast, slow, direction) => direction === "bull"
       ? fast[index - 1] <= slow[index - 1] && fast[index] > slow[index]
       : fast[index - 1] >= slow[index - 1] && fast[index] < slow[index];
@@ -8779,6 +10600,7 @@ function calculateCloudMaxMtfStudy(bars, currentMinutes, options = {}) {
   if (fifteen) {
     fifteen.bars.forEach((bar, index) => {
       if (index === 0) return;
+      if (Number(bar.time) + 15 * 60 > lastPrimaryBarStart) return;
       const crossedUp = fifteen.ema9[index - 1] <= fifteen.ema20[index - 1] && fifteen.ema9[index] > fifteen.ema20[index];
       const crossedDown = fifteen.ema9[index - 1] >= fifteen.ema20[index - 1] && fifteen.ema9[index] < fifteen.ema20[index];
       if (options.cloudMaxShow15mArrows !== false && crossedUp) addSignal(bar, "bull", "", "arrowUp", "920-15");
@@ -8879,10 +10701,7 @@ function formatEasternChartTick(timestamp, tickMarkType, easternTimeFormatter, t
 }
 
 function chartSessionBand(timestamp, easternSessionFormatter) {
-  const parts = easternSessionFormatter.formatToParts(new Date(Number(timestamp) * 1000));
-  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
-  const minutes = Number(values.hour || 0) * 60 + Number(values.minute || 0);
-  const dateKey = `${values.year || ""}-${values.month || ""}-${values.day || ""}`;
+  const { dateKey, minutes } = easternSessionParts(easternSessionFormatter, timestamp);
   if (minutes < 9 * 60 + 30) return { key: `${dateKey}-premarket`, tone: "premarket", label: "PRE" };
   if (minutes >= 16 * 60) return { key: `${dateKey}-postmarket`, tone: "postmarket", label: "POST" };
   return null;
@@ -8916,12 +10735,11 @@ function chartSessionTimeMarkers(bars, easternSessionFormatter, options = {}) {
     return Math.min(23, Number(raw.slice(0, 2)) || 0) * 60 + Math.min(59, Number(raw.slice(2, 4)) || 0);
   };
   const barDetails = (Array.isArray(bars) ? bars : []).map((bar) => {
-    const parts = easternSessionFormatter.formatToParts(new Date(Number(bar.time) * 1000));
-    const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+    const { dateKey, minutes } = easternSessionParts(easternSessionFormatter, bar?.time);
     return {
       time: bar.time,
-      date: `${values.year || ""}-${values.month || ""}-${values.day || ""}`,
-      minute: Number(values.hour || 0) * 60 + Number(values.minute || 0),
+      date: dateKey,
+      minute: minutes,
     };
   });
   const rthStart = hhmmToMinutes(options.sessionLineRthStartTime, 500);
@@ -8973,25 +10791,38 @@ function chartSessionTimeMarkers(bars, easternSessionFormatter, options = {}) {
   });
 }
 
+// Called once per chart bar per timeframe, and the WEEK branch builds a Date and
+// an ISO string every time. The result depends only on (dateKey, timeframe) and
+// the date domain is tiny next to the bar count, so memoize it.
+const previousOhlcPeriodKeyCache = new Map();
+
 function previousOhlcPeriodKey(dateKey, timeframe) {
   if (!dateKey) return "";
   if (timeframe === "DAY") return dateKey;
+  const cacheKey = `${timeframe}|${dateKey}`;
+  const cached = previousOhlcPeriodKeyCache.get(cacheKey);
+  if (cached !== undefined) return cached;
   const [year, month, day] = String(dateKey).split("-").map(Number);
-  if (![year, month, day].every(Number.isFinite)) return "";
-  if (timeframe === "MONTH") return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`;
-  const date = new Date(Date.UTC(year, month - 1, day));
-  const mondayOffset = (date.getUTCDay() + 6) % 7;
-  date.setUTCDate(date.getUTCDate() - mondayOffset);
-  return date.toISOString().slice(0, 10);
+  let value = "";
+  if ([year, month, day].every(Number.isFinite)) {
+    if (timeframe === "MONTH") {
+      value = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`;
+    } else {
+      const date = new Date(Date.UTC(year, month - 1, day));
+      const mondayOffset = (date.getUTCDay() + 6) % 7;
+      date.setUTCDate(date.getUTCDate() - mondayOffset);
+      value = date.toISOString().slice(0, 10);
+    }
+  }
+  if (previousOhlcPeriodKeyCache.size >= EASTERN_DATE_KEY_CACHE_LIMIT) previousOhlcPeriodKeyCache.clear();
+  previousOhlcPeriodKeyCache.set(cacheKey, value);
+  return value;
 }
 
 function buildPreviousOhlcStudy(chartBars, dailyBars, easternDateFormatter, options) {
-  const dateForBar = (bar) => {
-    const time = Number(bar?.time || 0);
-    return String(bar?.date || (time ? easternDateFormatter.format(new Date(time * 1000)) : ""));
-  };
+  const dateForBar = (bar) => String(bar?.date || easternDateKey(easternDateFormatter, bar?.time));
   const orderedDays = mergeDailyAndChartOhlcDays(dailyBars, chartBars, dateForBar);
-  const chartDates = [...new Set(chartBars.map((bar) => easternDateFormatter.format(new Date(Number(bar.time) * 1000))))];
+  const chartDates = [...new Set(chartBars.map((bar) => easternDateKey(easternDateFormatter, bar?.time)))];
   const result = {};
   ["DAY", "WEEK", "MONTH"].forEach((timeframe) => {
     const prefix = `previous${timeframe[0]}${timeframe.slice(1).toLowerCase()}`;
@@ -9013,7 +10844,7 @@ function buildPreviousOhlcStudy(chartBars, dailyBars, easternDateFormatter, opti
     const visibleDates = new Set(chartDates.slice(-showForDays));
     const series = { high: [], low: [], open: [], close: [] };
     chartBars.forEach((bar) => {
-      const date = easternDateFormatter.format(new Date(Number(bar.time) * 1000));
+      const date = easternDateKey(easternDateFormatter, bar?.time);
       if (!visibleDates.has(date)) return;
       const key = previousOhlcPeriodKey(date, timeframe);
       const index = periodIndex.get(key);
@@ -9075,10 +10906,7 @@ function buildPivotStudyContext(chartBars, dailyBars, easternDateFormatter, time
   // TOS derives Day/Week/Month PivotPoints from regular-session daily OHLC.
   // Do not let the visible intraday/extended-hours tail overwrite historical
   // daily closes; use it only as a fallback while daily history is loading.
-  const dateForBar = (bar) => {
-    const time = Number(bar?.time || 0);
-    return String(bar?.date || (time ? easternDateFormatter.format(new Date(time * 1000)) : ""));
-  };
+  const dateForBar = (bar) => String(bar?.date || easternDateKey(easternDateFormatter, bar?.time));
   const orderedDays = mergeDailyAndChartOhlcDays(dailyBars, chartSource, dateForBar);
   const dayIndex = new Map(orderedDays.map((day, index) => [day.date, index]));
   const periods = new Map();
@@ -9278,10 +11106,10 @@ const EMA_CLOUD_VISIBILITY_VERSION = "ema-clouds-and-background-visible-v2";
 const TOS_OI_LEVEL_STYLE_VERSION = "tos-oi-five-tier-v8";
 const TOS_PIVOT_POINTS_STYLE_VERSION = "tos-built-in-pivotpoints-v3";
 const TOS_PIVOT_POINTS_VISIBILITY_VERSION = "tos-pivotpoints-visible-v1";
-const FOCUSED_CHART_INDICATOR_SETTINGS_VERSION = "focused-chart-indicators-v17";
+const FOCUSED_CHART_INDICATOR_SETTINGS_VERSION = "focused-chart-indicators-v18";
 
 const FOCUSED_CHART_INDICATOR_OVERRIDES = Object.freeze({
-  // Keep the main MomoX price context and one useful lower study visible.
+  // Keep the main MomoX price context and both lower study panes visible.
   // The remaining studies stay one click away in Indicators instead of all
   // thirty-plus optional overlays loading into every new chart at once.
   mtfMacdClouds: false,
@@ -9298,16 +11126,30 @@ const FOCUSED_CHART_INDICATOR_OVERRIDES = Object.freeze({
   cloudMaxMtf: false,
   autoFibSingleTf: false,
   squeezeMomentumLower: false,
-  mtfSqueeze410Lower: false,
+  mtfAdxCloudsLower: true,
+  mtfCloudLabelLower: true,
+  mtfSqueeze410Lower: true,
   pivotPoints: false,
   personsPivots: false,
-  mtfMaLevels: false,
+  // Matches the DEFAULT_OI_CHART_INDICATORS value: a saved profile that has
+  // never carried this key should gain it switched ON, not off.
+  mtfMaLevels: true,
 });
 
 function migrateFocusedChartIndicatorSettings(saved = {}) {
   if (saved.indicatorSettingsVersion === FOCUSED_CHART_INDICATOR_SETTINGS_VERSION) return {};
+  // ADDITIVE. This spread the whole override map over the saved profile, so
+  // every version bump silently re-unchecked studies the trader had turned on
+  // - the v17 -> v18 bump wiped ~17 of them, and the constant has been bumped
+  // 18 times. A migration exists to introduce keys that did not exist before,
+  // not to overrule choices the trader has already made. Only fill in keys
+  // absent from the saved profile; anything they have set stays set.
+  const additions = {};
+  Object.entries(FOCUSED_CHART_INDICATOR_OVERRIDES).forEach(([key, value]) => {
+    if (!(key in (saved || {}))) additions[key] = value;
+  });
   return {
-    ...FOCUSED_CHART_INDICATOR_OVERRIDES,
+    ...additions,
     indicatorSettingsVersion: FOCUSED_CHART_INDICATOR_SETTINGS_VERSION,
   };
 }
@@ -9422,10 +11264,15 @@ const DEFAULT_OI_CHART_INDICATORS = Object.freeze({
   squeezeMomentumLower: false,
   mtfCloudLabelLower: true,
   mtfAdxCloudsLower: true,
-  mtfSqueeze410Lower: false,
+  mtfSqueeze410Lower: true,
   pivotPoints: false,
   personsPivots: false,
-  mtfMaLevels: false,
+  // On by default. A browser with no saved profile takes the early return in
+  // the indicatorSettings initialiser, which hands back these defaults WITHOUT
+  // running any migration - so a false here is unreachable by the one-shot
+  // visibility migration. That is exactly what kept the study dark on the
+  // app.agxtrade.com origin, whose localStorage is separate from localhost's.
+  mtfMaLevels: true,
   signals: true,
   signals48: true,
   signals920: true,
@@ -9438,6 +11285,7 @@ const DEFAULT_OI_CHART_INDICATORS = Object.freeze({
   sessionTimeLines: true,
   previousOhlcLevels: true,
   tosCandleColors: true,
+  candleCyanMagentaOnly: true,
 });
 const GANESH_MACD_STUDY_VERSION = "tos-literal-secondary-crosses-v1";
 
@@ -9491,6 +11339,16 @@ const DEFAULT_OI_CHART_OPTIONS = Object.freeze({
   mtfAdxShowCloudBig: true,
   mtfAdxShowDirectionalWeakClouds: false,
   mtfAdxCloudOpacity: 32,
+  // Round point markers on study lines. OFF by default - Ganesh, 2026-08-27:
+  // "i dont want round dots on the charts distrubing". A dot per bar on every
+  // MTF plot turns a readable line into a bead chain, and on a phone the beads
+  // are most of what you see.
+  //
+  // Turning them off must never HIDE a plot. Several series are drawn with
+  // lineVisible:false and rely on the markers to render at all, so wherever
+  // that is true the line is switched on in their place - the data reads as a
+  // line instead of as dots, and nothing disappears.
+  chartRoundDots: false,
   mtfAdxPlotControlVersion: "tos-plot-controls-v1",
   mtfAdxPlotControls: MTF_ADX_DEFAULT_PLOT_CONTROLS,
   mtfAdxAgg1: 15,
@@ -9705,6 +11563,8 @@ const DEFAULT_OI_CHART_OPTIONS = Object.freeze({
   mtfMaShowDaily: true,
   mtfMaShowWeekly: true,
   mtfMaShowMonthly: true,
+  mtfMaShowEma: true,
+  mtfMaShowSma: true,
   mtfMaShowBubbles: true,
   mtfMaProximity: 10,
   mtfMaVioletColor: "#ff66ff",
@@ -9877,6 +11737,7 @@ const OI_CHART_MAX_PANELS = 10;
 const OI_CHART_DEFAULT_TIMEFRAMES = Object.freeze(["5m", "15m", "1h", "4h", "3m", "10m", "30m", "2h", "D", "W"]);
 const OI_CHART_INDICATOR_PROFILES_STORAGE_KEY = "oiFinderChartIndicatorProfiles";
 const OI_CHART_LAYOUT_PROFILES_STORAGE_KEY = "oiFinderChartLayoutProfiles";
+const MAXIMIZED_CHAIN_WIDTH_STORAGE_KEY = "oiFinderMaximizedChainWidth";
 const OI_CHART_FOUR_HOUR_VIEWPORT_VERSION = 1;
 const OI_CHART_LAYOUTS = Object.freeze([
   { id: "single", label: "Single", count: 1, columns: 1 },
@@ -9890,35 +11751,25 @@ const OI_CHART_LAYOUTS = Object.freeze([
   { id: "four-rows", label: "4 stacked", count: 4, columns: 1 },
   { id: "six-grid", label: "6 grid", count: 6, columns: 3 },
   { id: "six-columns", label: "6 across", count: 6, columns: 6 },
-  { id: "mag7", label: "MAG7", count: 7, columns: 3, maximizedColumns: 4, mag7: true },
+  // Same one-row parallel layout as "6 across" (resizable column dividers,
+  // dense-mode floating toolbar) for the trader's wider Mag7 views.
+  { id: "seven-columns", label: "7 across", count: 7, columns: 7 },
+  { id: "eight-columns", label: "8 across", count: 8, columns: 8 },
+  // MAG7 is a parallel one-row layout (trader request 2026-08-24): all seven
+  // side by side like "7 across", with resizable dividers, in both the normal
+  // and big-screen workspace.
+  { id: "mag7", label: "MAG7", count: 7, columns: 7, maximizedColumns: 7, mag7: true },
   { id: "eight-grid", label: "8 grid", count: 8, columns: 4 },
   { id: "nine-grid", label: "9 grid", count: 9, columns: 3 },
   { id: "ten-grid", label: "10 grid", count: 10, columns: 5 },
 ]);
 
-function openTradingPopout(surface, symbol, linkGroup = 2, timeframe = "5m") {
-  if (typeof window === "undefined") return null;
-  const normalizedSurface = surface === "chain" ? "chain" : surface === "mag7" ? "mag7" : "chart";
-  const normalizedSymbol = normalizeOiChartSymbol(symbol);
-  const url = new URL(window.location.href);
-  url.searchParams.set("popout", normalizedSurface);
-  url.searchParams.set("symbol", normalizedSymbol);
-  url.searchParams.set("link", String(Math.min(9, Math.max(1, Number(linkGroup) || 2))));
-  if (normalizedSurface === "chart") url.searchParams.set("timeframe", String(timeframe || "5m"));
-  else url.searchParams.delete("timeframe");
-  const dimensions = normalizedSurface === "chain"
-    ? "popup=yes,width=720,height=920,resizable=yes,scrollbars=yes"
-    : normalizedSurface === "mag7"
-      ? "popup=yes,width=1600,height=1000,resizable=yes,scrollbars=yes"
-      : "popup=yes,width=1280,height=860,resizable=yes,scrollbars=yes";
-  const popup = window.open(
-    url.toString(),
-    `agentic-${normalizedSurface}-${normalizedSymbol}-${linkGroup}`,
-    dimensions,
-  );
-  popup?.focus();
-  return popup;
-}
+// openTradingPopout lived here. Every surface it served now opens INSIDE the
+// app - the chain fills the screen via .is-fullscreen, MAG7 uses the Big
+// screen workspace, and a single chart uses the panel Maximize. Deleted
+// rather than left dead: he asked twice for no Chrome tabs, and a helper
+// sitting here named `open...Popout` is how one comes back.
+// The ?popout= URLs still RENDER standalone for anyone holding a link.
 
 const OI_PRICE_ALERTS_STORAGE_KEY = "oiFinderPriceAlerts";
 const OI_PRICE_ALERTS_CHANGED_EVENT = "oi-finder-price-alerts-changed";
@@ -9933,6 +11784,7 @@ const oiAlertLivePrices = new Map();
 
 const oiChartPayloadCache = new Map();
 const oiFinderChainPrefetchCache = new Map();
+const mobileQuickOptionsPrefetchCache = new Map();
 
 function setOiChartPayloadCacheEntry(key, value) {
   return setBoundedCacheEntry(
@@ -9991,6 +11843,53 @@ function warmOiFinderCompactChain(symbol) {
   });
 }
 
+function warmMobileQuickOptions(symbol) {
+  const key = String(symbol || "").trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(key)) return Promise.resolve();
+  const existing = mobileQuickOptionsPrefetchCache.get(key);
+  if (existing?.promise) return existing.promise;
+  if (existing?.warmedAt && Date.now() - existing.warmedAt < 15_000) return Promise.resolve(existing.payload);
+
+  const promise = (async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), OI_FINDER_CHAIN_PREFETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(
+        // Keep the nearest-expiry payload, but do not apply the server's
+        // 13-total-strike phone cap. The visible chain selector promises
+        // ±5/10/15 and All, so it needs the complete front-expiry strike set.
+        // This remains a small response compared with multi-expiry research.
+        `/api/oi-finder-chain?symbol=${encodeURIComponent(key)}&initial=true`,
+        { signal: controller.signal },
+      );
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload?.error || "Mobile option-chain warm-up failed.");
+      setBoundedCacheEntry(
+        mobileQuickOptionsPrefetchCache,
+        key,
+        { warmedAt: Date.now(), payload },
+        OI_FINDER_CHAIN_PREFETCH_MAX_ENTRIES,
+        (entry) => Boolean(entry?.promise),
+      );
+      return payload;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  })();
+  setBoundedCacheEntry(
+    mobileQuickOptionsPrefetchCache,
+    key,
+    { ...(existing || {}), promise },
+    OI_FINDER_CHAIN_PREFETCH_MAX_ENTRIES,
+    (entry) => Boolean(entry?.promise),
+  );
+  promise.catch(() => {
+    const current = mobileQuickOptionsPrefetchCache.get(key);
+    if (current?.promise === promise) mobileQuickOptionsPrefetchCache.delete(key);
+  });
+  return promise;
+}
+
 function readOiPriceAlerts() {
   try {
     const saved = JSON.parse(localStorage.getItem(OI_PRICE_ALERTS_STORAGE_KEY) || "[]");
@@ -10024,6 +11923,54 @@ function updateOiPriceAlerts(updater) {
 function priceAlertId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return `price-alert-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+// Auto Alert mirror: the server's current OI targets (2 lines per ticker) and
+// today's confirmations are kept in the same saved list as manual price
+// alerts, so the chart chips and the top-bar bell show them. Deleting one
+// from the bell only hides it (the server keeps monitoring); the id set below
+// remembers those so the next poll does not bring them back.
+const OI_AUTO_ALERT_MIRROR_DISMISSED_KEY = "oiAutoAlertMirrorDismissed";
+
+function readOiAutoAlertMirrorDismissed() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OI_AUTO_ALERT_MIRROR_DISMISSED_KEY) || "[]");
+    return new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function dismissOiAutoAlertMirror(ids) {
+  const list = (Array.isArray(ids) ? ids : [ids]).filter((id) => typeof id === "string" && id.startsWith("auto:"));
+  if (!list.length) return;
+  const dismissed = readOiAutoAlertMirrorDismissed();
+  list.forEach((id) => dismissed.add(id));
+  // Ids embed the session date; keep only the last few hundred so the set
+  // cannot grow forever across trading days.
+  const kept = [...dismissed].slice(-400);
+  try {
+    localStorage.setItem(OI_AUTO_ALERT_MIRROR_DISMISSED_KEY, JSON.stringify(kept));
+  } catch {
+    // Storage can be disabled; the mirror simply re-appears on the next poll.
+  }
+}
+
+function syncOiAutoAlertMirror(payload) {
+  if (!payload || !Array.isArray(payload.rows)) return;
+  try {
+    const mirror = buildOiAutoAlertMirror(payload, {
+      dismissedIds: readOiAutoAlertMirrorDismissed(),
+      // The live-stream price map (shared with manual price alerts) keeps the
+      // drawn call/put on the correct side of the current price pre-market and
+      // after any gap; the server still confirms on a completed 5-minute close.
+      livePrices: oiAlertLivePrices,
+    });
+    const merged = mergeOiAutoAlertMirror(readOiPriceAlerts(), mirror);
+    if (merged) saveOiPriceAlerts(merged);
+  } catch {
+    // The Auto Alert page and toasts still work without the chart/bell mirror.
+  }
 }
 
 function buildSchwabExpiryAlerts(status) {
@@ -10300,8 +12247,12 @@ function GlobalPriceAlertCenter({
 
   useEffect(() => {
     let cancelled = false;
+    // Only stream MANUAL price alerts here. Auto Alert tickers are NOT streamed
+    // en masse (that opened ~9 extra streams and slowed the chart/chain); the
+    // charted symbol already shares its live price via the chart effect above,
+    // which is all the mirror needs to keep the visible ticker's lines correct.
     const monitoredSymbols = [...new Set(priceAlerts
-      .filter((alert) => alert.enabled !== false && alert.status !== "triggered")
+      .filter((alert) => alert.enabled !== false && alert.status !== "triggered" && alert.source !== OI_AUTO_ALERT_MIRROR_SOURCE)
       .map((alert) => normalizeOiChartSymbol(alert.symbol))
       .filter(Boolean))];
     const restFallbackAllowedAt = Date.now() + OI_PRICE_ALERT_STREAM_GRACE_MS;
@@ -10319,6 +12270,7 @@ function GlobalPriceAlertCenter({
       const activeAlerts = priceAlerts.filter((alert) => (
         alert.enabled !== false
         && alert.status !== "triggered"
+        && alert.source !== OI_AUTO_ALERT_MIRROR_SOURCE
         && !priceAlertTriggerLocks.has(alert.id)
       ));
       if (!activeAlerts.length) return;
@@ -10455,6 +12407,8 @@ function GlobalPriceAlertCenter({
   };
   const deleteAlert = (alertId) => {
     priceAlertTriggerLocks.delete(alertId);
+    // Auto mirrors: hide here only — the server keeps monitoring the ladder.
+    dismissOiAutoAlertMirror(alertId);
     updateOiPriceAlerts((current) => current.filter((alert) => alert.id !== alertId));
   };
   const testAlertSound = async () => {
@@ -10464,20 +12418,74 @@ function GlobalPriceAlertCenter({
   const clearTriggeredAlerts = () => {
     const triggeredIds = priceAlerts.filter((alert) => alert.status === "triggered").map((alert) => alert.id);
     triggeredIds.forEach((alertId) => priceAlertTriggerLocks.delete(alertId));
+    dismissOiAutoAlertMirror(triggeredIds);
     updateOiPriceAlerts((current) => current.filter((alert) => alert.status !== "triggered"));
   };
+  // "Clear all" used window.confirm(), which some phone in-app browsers
+  // (WKWebView without a dialog delegate) resolve to false without ever
+  // showing — the tap did nothing. A two-tap in-popover confirmation works
+  // everywhere.
+  //
+  // It clears the trader's own price alerts, the OAuth notices, AND the Auto
+  // Alert rows that have already fired. Fired rows are history — the whole
+  // reason the bell reads "39 alerts". Counting only manual alerts meant a list
+  // of 39 auto rows with no manual ones hit the guard below and the button did
+  // nothing at all. Rows still ARMED are left alone: they are the levels drawn
+  // on the chart, so clearing them would erase the plan rather than the history.
+  const [clearAllArmed, setClearAllArmed] = useState(false);
+  useEffect(() => {
+    if (!clearAllArmed) return undefined;
+    const timer = window.setTimeout(() => setClearAllArmed(false), 6000);
+    return () => window.clearTimeout(timer);
+  }, [clearAllArmed]);
+  const manualAlertCount = priceAlerts.filter((alert) => alert.source !== OI_AUTO_ALERT_MIRROR_SOURCE).length;
+  const firedAutoAlerts = priceAlerts.filter((alert) => (
+    alert.source === OI_AUTO_ALERT_MIRROR_SOURCE && alert.status === "triggered"
+  ));
+  // Armed auto rows are clearable from the LIST too. They are hidden only -
+  // the server keeps evaluating them and the chart keeps drawing them, the
+  // same way deleting a fired row from the bell works. The trader asked for
+  // this on 2026-08-19 after Clear all left 20 armed rows sitting in the
+  // Alert Center; they return on the next 9:15 build, which mints new ids.
+  const armedAutoAlertsForClear = priceAlerts.filter((alert) => (
+    alert.source === OI_AUTO_ALERT_MIRROR_SOURCE && alert.status !== "triggered"
+  ));
+  const clearableAlertCount = manualAlertCount + firedAutoAlerts.length + armedAutoAlertsForClear.length;
   const clearAllAlerts = () => {
-    const allAlertCount = priceAlerts.length + visibleSchwabExpiryAlerts.length;
-    if (!allAlertCount) return;
-    if (!window.confirm("Clear every saved price alert and dismiss the current OAuth renewal notices?")) return;
-    priceAlerts.forEach((alert) => priceAlertTriggerLocks.delete(alert.id));
-    updateOiPriceAlerts([]);
+    if (!clearableAlertCount && !visibleSchwabExpiryAlerts.length) return;
+    if (!clearAllArmed) {
+      setClearAllArmed(true);
+      return;
+    }
+    priceAlerts
+      .filter((alert) => alert.source !== OI_AUTO_ALERT_MIRROR_SOURCE)
+      .forEach((alert) => priceAlertTriggerLocks.delete(alert.id));
+    // Dismiss every auto row by id - fired AND armed - otherwise the next poll
+    // rebuilds the mirror from the server payload and they all come straight
+    // back. Display-only: see dismissOiAutoAlertMirror.
+    dismissOiAutoAlertMirror([...firedAutoAlerts, ...armedAutoAlertsForClear].map((alert) => alert.id));
+    updateOiPriceAlerts(() => []);
     setDismissedSchwabExpiryAlerts(dismissSchwabExpiryAlerts(visibleSchwabExpiryAlerts));
     setAlertToast(null);
+    setClearAllArmed(false);
   };
   const sortedAlerts = [...priceAlerts].sort((left, right) => (
     Number(right.createdAt || 0) - Number(left.createdAt || 0)
   ));
+  // Auto Alert rows: fired ones stay in the main list (that is what the bell
+  // badge points at); armed/paused ones fold into a collapsible group so a
+  // phone list is not 16 rows of ladders. Collapsed by default on phones.
+  const [autoGroupOpen, setAutoGroupOpen] = useState(() => {
+    try {
+      return !(window.matchMedia?.("(max-width: 760px)")?.matches);
+    } catch {
+      return true;
+    }
+  });
+  const primaryAlerts = sortedAlerts.filter((alert) => alert.source !== OI_AUTO_ALERT_MIRROR_SOURCE || alert.status === "triggered");
+  const armedAutoAlerts = sortedAlerts
+    .filter((alert) => alert.source === OI_AUTO_ALERT_MIRROR_SOURCE && alert.status !== "triggered")
+    .sort((left, right) => String(left.symbol).localeCompare(String(right.symbol)) || Number(right.price) - Number(left.price));
   const triggeredCount = priceAlerts.filter((alert) => alert.status === "triggered").length;
   const attentionCount = triggeredCount + visibleSchwabExpiryAlerts.length;
   const alertCenterTitle = attentionCount
@@ -10501,19 +12509,27 @@ function GlobalPriceAlertCenter({
       {isOpen ? (
         <div className="oi-finder-price-alert-popover global-price-alert-popover">
           <header>
-            <div><strong>ALERT CENTER</strong><small>Schwab OAuth renewal and live price alerts</small></div>
+            <div><strong>ALERT CENTER</strong><small>Schwab OAuth renewal, live price alerts and Auto Alert OI levels</small></div>
             <div className="global-price-alert-clear-actions">
               <button className="is-sound" type="button" onClick={testAlertSound}>♪ Test sound</button>
               <button type="button" disabled={!triggeredCount} onClick={clearTriggeredAlerts}>Clear price triggers</button>
-              <button
-                className="is-danger"
-                type="button"
-                disabled={!priceAlerts.length && !visibleSchwabExpiryAlerts.length}
-                title="Clear saved price alerts and dismiss current OAuth renewal notices"
-                onClick={clearAllAlerts}
-              >
-                Clear all
-              </button>
+              {clearAllArmed ? (
+                <span className="global-price-alert-clear-confirm" role="group" aria-label="Confirm clear all">
+                  <b>{`Clear ${clearableAlertCount} alert${clearableAlertCount === 1 ? "" : "s"}${visibleSchwabExpiryAlerts.length ? " + OAuth notices" : ""}?`}</b>
+                  <button className="is-danger" type="button" onClick={clearAllAlerts}>Yes, clear</button>
+                  <button type="button" onClick={() => setClearAllArmed(false)}>Cancel</button>
+                </span>
+              ) : (
+                <button
+                  className="is-danger"
+                  type="button"
+                  disabled={!clearableAlertCount && !visibleSchwabExpiryAlerts.length}
+                  title="Clear your saved price alerts, the fired Auto Alert rows and the current OAuth renewal notices (levels still armed stay on the chart)"
+                  onClick={clearAllAlerts}
+                >
+                  Clear all
+                </button>
+              )}
             </div>
           </header>
           <section className={`schwab-expiry-alert-list ${schwabExpiryAlerts.length ? "" : "is-healthy"}`}>
@@ -10586,32 +12602,70 @@ function GlobalPriceAlertCenter({
             <button type="submit"><Bell size={13} />Create alert</button>
           </form>
           <div className="oi-finder-price-alert-list">
-            <b>{sortedAlerts.length ? `${sortedAlerts.length} alerts across all tickers` : "No price alerts yet"}</b>
-            {sortedAlerts.map((alert) => {
+            <b>{sortedAlerts.length ? `${primaryAlerts.length} alert${primaryAlerts.length === 1 ? "" : "s"}${armedAutoAlerts.length ? ` · ${armedAutoAlerts.length} auto level${armedAutoAlerts.length === 1 ? "" : "s"} armed` : ""}` : "No price alerts yet"}</b>
+            {[...primaryAlerts, ...(autoGroupOpen ? armedAutoAlerts : [])].map((alert, index) => {
               const isTriggered = alert.status === "triggered";
+              const groupHeader = index === primaryAlerts.length && armedAutoAlerts.length ? (
+                <button
+                  type="button"
+                  className="price-alert-auto-group-toggle"
+                  key="auto-group-toggle-open"
+                  onClick={() => setAutoGroupOpen(false)}
+                  aria-expanded="true"
+                >
+                  <em className="price-alert-auto-tag">AUTO</em>
+                  {`Auto Alert levels · ${armedAutoAlerts.length} armed`}
+                  <ChevronUp size={13} />
+                </button>
+              ) : null;
+              const isAuto = alert.source === OI_AUTO_ALERT_MIRROR_SOURCE;
+              const autoStatus = isAuto
+                ? isTriggered
+                  ? `Confirmed ${alert.triggeredAt ? formatOiAutoAlertShortTime(new Date(alert.triggeredAt).toISOString()) : ""} · 5m close`
+                  : alert.enabled === false
+                    ? "Paused (Auto Alert off)"
+                    : alert.autoState === "touched"
+                      ? "Touched · waiting for a 5m close"
+                      : "Armed · confirms on 5m close"
+                : "";
               return (
-                <article className={isTriggered ? "is-triggered" : alert.enabled === false ? "is-paused" : ""} key={alert.id}>
-                  <label title={isTriggered ? "Triggered alerts can be rearmed" : "Enable or pause this alert"}>
+                <Fragment key={alert.id}>
+                {groupHeader}
+                <article className={`${isTriggered ? "is-triggered" : alert.enabled === false ? "is-paused" : ""}${isAuto ? " is-auto" : ""}`}>
+                  <label title={isAuto ? "Managed by the Auto Alert tab (server-side 5-minute confirmation)" : isTriggered ? "Triggered alerts can be rearmed" : "Enable or pause this alert"}>
                     <input
                       type="checkbox"
                       checked={!isTriggered && alert.enabled !== false}
-                      disabled={isTriggered}
+                      disabled={isTriggered || isAuto}
                       onChange={(event) => setAlertEnabled(alert.id, event.target.checked)}
                     />
                     <span>
-                      <strong>{alert.symbol} · {alert.condition === "above" ? "≥" : "≤"} {formatCurrency(alert.price)}</strong>
-                      <small>{isTriggered ? `Triggered at ${formatCurrency(alert.triggeredPrice || alert.price)}` : alert.enabled === false ? "Paused" : "Active"}{alert.note ? ` · ${alert.note}` : ""}</small>
+                      <strong>{alert.symbol} · {alert.condition === "above" ? "≥" : "≤"} {formatCurrency(alert.price)}{isAuto ? <em className="price-alert-auto-tag">{`AUTO ${alert.autoSide === "PUT" ? "PUT" : "CALL"}`}</em> : null}</strong>
+                      <small>{isAuto ? autoStatus : isTriggered ? `Triggered at ${formatCurrency(alert.triggeredPrice || alert.price)}` : alert.enabled === false ? "Paused" : "Active"}{alert.note ? ` · ${alert.note}` : ""}</small>
                     </span>
                   </label>
                   <div>
-                    {isTriggered ? <button type="button" onClick={() => rearmAlert(alert.id)}>Rearm</button> : null}
-                    <button className="is-delete" type="button" onClick={() => deleteAlert(alert.id)} aria-label={`Delete ${alert.symbol} ${formatCurrency(alert.price)} alert`}>×</button>
+                    {isTriggered && !isAuto ? <button type="button" onClick={() => rearmAlert(alert.id)}>Rearm</button> : null}
+                    <button className="is-delete" type="button" onClick={() => deleteAlert(alert.id)} aria-label={`${isAuto ? "Hide" : "Delete"} ${alert.symbol} ${formatCurrency(alert.price)} alert`} title={isAuto ? "Hide from this list (the Auto Alert tab keeps monitoring)" : "Delete alert"}>×</button>
                   </div>
                 </article>
+                </Fragment>
               );
             })}
+            {armedAutoAlerts.length && !autoGroupOpen ? (
+              <button
+                type="button"
+                className="price-alert-auto-group-toggle"
+                onClick={() => setAutoGroupOpen(true)}
+                aria-expanded="false"
+              >
+                <em className="price-alert-auto-tag">AUTO</em>
+                {`Auto Alert levels · ${armedAutoAlerts.length} armed · show`}
+                <ChevronDown size={13} />
+              </button>
+            ) : null}
           </div>
-          <footer>OAuth is checked throughout the app. Price alerts use the live Schwab/TOS stream and evaluate at most every 2 seconds, with REST fallback.</footer>
+          <footer>OAuth is checked throughout the app. Price alerts use the live Schwab/TOS stream and evaluate at most every 2 seconds, with REST fallback. Auto Alert levels confirm server-side on a completed 5-minute close.</footer>
         </div>
       ) : null}
       {alertToast ? (
@@ -10621,6 +12675,30 @@ function GlobalPriceAlertCenter({
           <i>×</i>
         </button>
       ) : null}
+      <GlobalAlertMaximizedStrip
+        count={attentionCount}
+        alerts={[
+          ...priceAlerts
+            .filter((alert) => alert.status === "triggered")
+            .sort((left, right) => Number(right.triggeredAt || 0) - Number(left.triggeredAt || 0))
+            .map((alert) => ({
+              id: alert.id,
+              symbol: alert.symbol,
+              label: `${alert.condition === "above" ? "≥" : "≤"} ${formatCurrency(alert.price)}${alert.triggeredPrice ? ` (${formatCurrency(alert.triggeredPrice)})` : ""}`,
+              tone: alert.condition === "above" ? "call" : "put",
+            })),
+          ...visibleSchwabExpiryAlerts.map((alert) => ({
+            id: alert.id,
+            symbol: "SCHWAB",
+            label: alert.threshold === "expired" ? "OAuth expired" : "OAuth renewal due",
+            tone: "put",
+          })),
+        ]}
+        onOpen={() => {
+          window.dispatchEvent(new CustomEvent(OI_CHART_MOBILE_NAVIGATION_EVENT, { detail: { target: "alerts" } }));
+          openCenter();
+        }}
+      />
     </div>
   );
 }
@@ -10632,6 +12710,7 @@ async function loadSharedOiChartPayload(
   prefetch = false,
   forceFullTape = false,
   initialStudySeed = false,
+  compactHistory = false,
 ) {
   const key = String(symbol || "").trim().toUpperCase();
   if (!key) throw new Error("Select a ticker to load live candles.");
@@ -10666,6 +12745,7 @@ async function loadSharedOiChartPayload(
       prefetch,
       forceFullTape,
       initialStudySeed,
+      compactHistory,
     );
   }
 
@@ -10677,7 +12757,8 @@ async function loadSharedOiChartPayload(
       // first paint. Downloading the full 20-year indicator tape on hover made
       // the eventual click join a multi-megabyte promise and freeze for
       // seconds before showing even one candle.
-      const initialPaint = !bypassCache && (!cached?.payload || missingRequestedStudySeed);
+      const initialPaint = compactHistory
+        || (!bypassCache && (!cached?.payload || missingRequestedStudySeed));
       // TradingView-style reconcile: once a complete tape is held, periodic
       // refreshes fetch only the tail since the last candle (a few KB) and
       // merge locally, instead of re-downloading the whole study payload.
@@ -10686,7 +12767,11 @@ async function loadSharedOiChartPayload(
         ? chartDeltaRequestTime(heldPayload, { forceFullTape })
         : 0;
       const requestUrl = (since) => (
-        `/api/oi-finder-chart?symbol=${encodeURIComponent(key)}${refreshServerHistory ? "&refresh=true" : ""}${prefetch ? "&prefetch=true" : ""}${initialPaint ? "&initial=true" : ""}${initialPaint && initialStudySeed ? "&initialStudy=true" : ""}${since > 0 ? `&since=${since}` : ""}`
+        // forceFullTape is the DEFERRED deep-history pull (fired after first
+        // paint). Route it to the deep-tapes variant: the server returns just
+        // the tapes once, from cache, with historyLoading=false so the next
+        // reconcile drops to a cheap delta instead of re-downloading ~4MB.
+        `/api/oi-finder-chart?symbol=${encodeURIComponent(key)}${refreshServerHistory ? "&refresh=true" : ""}${prefetch ? "&prefetch=true" : ""}${initialPaint ? "&initial=true" : ""}${initialPaint && initialStudySeed ? "&initialStudy=true" : ""}${forceFullTape ? "&deep=true" : ""}${since > 0 ? `&since=${since}` : ""}`
       );
       let response = await fetch(requestUrl(deltaSince), { signal: controller.signal });
       // The deadline bounds time-to-first-byte only: never let a busy main
@@ -10729,7 +12814,10 @@ async function loadSharedOiChartPayload(
       return payload;
     } catch (error) {
       if (isTransientOiChartTransportError(error)) {
-        return createOiChartWarmingPayload(key);
+        // Still a warming-shaped payload (the workspace must survive one lost
+        // request), but it now carries the cause so a repeated failure can
+        // stop pretending the server is merely warming up.
+        return createOiChartTransportFailurePayload(key, error);
       }
       throw error;
     } finally {
@@ -10809,6 +12897,33 @@ function updateCachedOiChartPrice(symbol, packet) {
   });
 }
 
+const EMPTY_GRADE_TAPE_STATE = Object.freeze({ symbol: "", entries: Object.freeze([]) });
+
+// Scanner grade for one chart bubble: only bullish CALL labels, from the
+// latest tape entry recorded within the bubble's OWN candle window (its
+// open through its close, capped at now) - not a look-back before the open.
+// PUT labels read the BEAR grade tape (spec 2026-09-24): the caller passes
+// the tape of the label's own direction (see gradeEntriesFor below), and a
+// bear entry is "underwater" when price has since closed ABOVE it.
+function scannerGradeForBubble(entries, text, direction, candleOpenSec, candleSeconds, bars) {
+  if (!entries.length) return undefined;
+  const bearish = direction === "PUT" || isBearishPutLabel(text, direction);
+  if (!bearish && !isBullishCallLabel(text, direction)) return undefined;
+  const entry = gradeWithinCandle(entries, Number(candleOpenSec), Number(candleSeconds));
+  if (!entry || typeof entry.letter !== "string" || !entry.letter) return undefined;
+  // Whether price is NOW past where this fired - the letter itself is never
+  // rewritten, only drawn faded and struck through (see gradeUnderwaterNow).
+  const failedAt = gradeUnderwaterNow(entry.last, bars, Number(candleOpenSec), bearish ? "bear" : "bull");
+  return {
+    letter: entry.letter,
+    reasons: entry.reasons,
+    at: entry.t,
+    trigger: entry.trigger,
+    failedAt: failedAt === null ? undefined : failedAt,
+    direction: bearish ? "bear" : "bull",
+  };
+}
+
 function normalizeOiChartSymbol(value, fallback = "AAPL") {
   const normalized = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9./-]/g, "");
   return normalized || String(fallback || "AAPL").trim().toUpperCase();
@@ -10843,11 +12958,16 @@ function normalizeChartsAndOiNavigationIntent(value) {
   const timeframe = OI_CHART_TIMEFRAMES.find(({ key }) => (
     key.toLowerCase() === requestedTimeframe.toLowerCase()
   ))?.key;
-  if (!symbol || !timeframe) return null;
+  // A TOS colour link (MomX scanner) carries a linkGroup and NO timeframe:
+  // every chart of that colour keeps its own timeframe.
+  const group = Number(value.linkGroup);
+  const linkGroup = Number.isInteger(group) && group >= 1 && group <= 9 ? group : null;
+  if (!symbol || (!timeframe && !linkGroup)) return null;
   return {
-    id: String(value.id ?? `${symbol}:${timeframe}`),
+    id: String(value.id ?? `${symbol}:${linkGroup ? `link${linkGroup}` : timeframe}`),
     symbol,
-    timeframe,
+    timeframe: timeframe || null,
+    linkGroup,
   };
 }
 
@@ -10869,6 +12989,22 @@ function OiChartLayoutPreview({ layout }) {
   </span>;
 }
 
+// Memoized panel for the multi-chart workspace. Every App-level poll (option
+// chain, watchlist quotes, dashboard) re-rendered the workspace, and without
+// memo that re-rendered all six panels and re-ran their effects in one pass -
+// measured at 3-4.6s of blocked main thread per pass, every 3-4s, which is
+// what starved the study ladder in the six-across layout. memo only helps
+// with stable props, so the workspace hands each panel identity-stable
+// callbacks (panelCallbacks) and a content-keyed tickerOptions.
+// Diagnostics: per-child render cost inside a chart panel (window.__prof).
+const ProfiledOiChartDrawingTools = (props) => <Profiler id="child:OiChartDrawingTools" onRender={window.__recordProfile || (() => {})}><OiChartDrawingTools {...props} /></Profiler>;
+const ProfiledOiChartScrollbar = (props) => <Profiler id="child:OiChartScrollbar" onRender={window.__recordProfile || (() => {})}><OiChartScrollbar {...props} /></Profiler>;
+const ProfiledOiChartOhlcStrip = (props) => <Profiler id="child:OiChartOhlcStrip" onRender={window.__recordProfile || (() => {})}><OiChartOhlcStrip {...props} /></Profiler>;
+const ProfiledOiFinderOiLevelDisclosure = (props) => <Profiler id="child:OiFinderOiLevelDisclosure" onRender={window.__recordProfile || (() => {})}><OiFinderOiLevelDisclosure {...props} /></Profiler>;
+const ProfiledTickerIdentityStrip = (props) => <Profiler id="child:TickerIdentityStrip" onRender={window.__recordProfile || (() => {})}><TickerIdentityStrip {...props} /></Profiler>;
+const ProfiledTosSyncTag = (props) => <Profiler id="child:TosSyncTag" onRender={window.__recordProfile || (() => {})}><TosSyncTag {...props} /></Profiler>;
+const OiFinderCandleChartPanel = memo(OiFinderCandleChart);
+
 function OiFinderMultiChart({
   bigScreenCompanion = null,
   collapsedChainControls = null,
@@ -10884,6 +13020,7 @@ function OiFinderMultiChart({
   ...chartProps
 }) {
   const baseSymbol = normalizeOiChartSymbol(chartProps.symbol);
+  const quickTickerMoves = useTickerDayMoves(quickTickers);
   const normalizedNavigationIntent = normalizeChartsAndOiNavigationIntent(navigationIntent);
   const initialNavigationIntentRef = useRef(normalizedNavigationIntent);
   const workspaceStorageKey = initialLayoutId === "mag7"
@@ -10918,10 +13055,14 @@ function OiFinderMultiChart({
         } catch {
           legacyColumnWidths = {};
         }
-        const legacyNumber = (key, minimum, maximum, fallback = null) => {
-          const value = Number(localStorage.getItem(key));
-          return Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
-        };
+        // Reads a missing key as its fallback, not as 0-clamped-to-minimum. The
+        // inline version this replaced tested Number(localStorage.getItem(key))
+        // with isFinite, and Number(null) is 0 -- so every never-written key
+        // clamped up to its minimum and the fallback was unreachable. That is
+        // what pinned twoPanelSplit at 25 and rendered "2 side by side" as 25/75.
+        const legacyNumber = (key, minimum, maximum, fallback = null) => (
+          readLegacyGeometryNumber(localStorage, key, minimum, maximum, fallback)
+        );
         initialWorkspace = normalizeChartWorkspace({
           layoutId: OI_CHART_LAYOUTS.some((layout) => layout.id === initialLayoutId)
             ? initialLayoutId
@@ -10936,7 +13077,7 @@ function OiFinderMultiChart({
             twoPanelSplit: legacyNumber("oiFinderTwoPanelSplit", 25, 75, 50),
             columnWidthProfiles: legacyColumnWidths,
             chartHeight: legacyNumber("oiFinderWorkspaceChartHeight", 240, 1200, null),
-            companionWidth: legacyNumber("oiFinderBigScreenCompanionWidth", 340, 1200, null),
+            companionWidth: legacyNumber("oiFinderBigScreenCompanionWidth", 240, 1200, null),
           },
         }, workspaceStateOptions);
       }
@@ -10956,7 +13097,31 @@ function OiFinderMultiChart({
         )),
       }, workspaceStateOptions);
     }
-    if (initialNavigationIntentRef.current) {
+    if (initialNavigationIntentRef.current?.linkGroup) {
+      // TOS colour link from the MomX scanner: every panel of that colour,
+      // own timeframes kept (chartWorkspaceState.applyWorkspaceLinkedNavigationIntent).
+      const initialLayout = resolveOiChartLayout(initialWorkspace.layoutId);
+      const visiblePanelCount = initialLayout.count;
+      const initialGroups = new Set(initialWorkspace.panels
+        .slice(0, Math.max(1, visiblePanelCount))
+        .map((config) => Number(config?.linkGroup) || 2));
+      initialWorkspace = applyWorkspaceLinkedNavigationIntent(
+        {
+          ...initialWorkspace,
+          activePanel: Math.min(initialWorkspace.activePanel, visiblePanelCount - 1),
+        },
+        initialNavigationIntentRef.current,
+        {
+          ...workspaceStateOptions,
+          visibleCount: visiblePanelCount,
+          order: initialWorkspace.widePanel != null && initialWorkspace.widePanel < visiblePanelCount && visiblePanelCount !== 2
+            ? [initialWorkspace.widePanel, ...Array.from({ length: visiblePanelCount }, (_, index) => index)
+              .filter((index) => index !== initialWorkspace.widePanel)]
+            : null,
+          syncWholeWorkspace: initialWorkspace.syncSymbols !== false && !initialLayout.mag7 && initialGroups.size <= 1,
+        },
+      ).state;
+    } else if (initialNavigationIntentRef.current) {
       const visiblePanelCount = resolveOiChartLayout(initialWorkspace.layoutId).count;
       initialWorkspace = applyWorkspaceNavigationIntent(
         {
@@ -10987,6 +13152,14 @@ function OiFinderMultiChart({
   );
   const [activePanel, setActivePanel] = useState(initialWorkspace.activePanel);
   const [widePanel, setWidePanel] = useState(initialWorkspace.widePanel);
+  useEffect(() => {
+    const exitBigScreenForMobileNavigation = (event) => {
+      if (!["options", "alerts"].includes(event?.detail?.target)) return;
+      setIsWorkspaceMaximized(false);
+    };
+    window.addEventListener(OI_CHART_MOBILE_NAVIGATION_EVENT, exitBigScreenForMobileNavigation);
+    return () => window.removeEventListener(OI_CHART_MOBILE_NAVIGATION_EVENT, exitBigScreenForMobileNavigation);
+  }, []);
   const [twoPanelSplit, setTwoPanelSplit] = useState(
     Number.isFinite(Number(initialWorkspace.geometry?.twoPanelSplit))
       ? Number(initialWorkspace.geometry.twoPanelSplit)
@@ -11059,6 +13232,19 @@ function OiFinderMultiChart({
     visiblePanelIndexes.includes(index) && items.indexOf(index) === position
   ));
   const activeConfig = panelConfigs[activePanel] || panelConfigs[0] || { symbol: baseSymbol, linkGroup: 2 };
+  // Explicit colour tags outrank the global "Link ticker across charts"
+  // toggle. A trader who tagged the visible panes differently - red on the
+  // left, yellow on the right - has said they want those panes independent.
+  // Letting the toggle flatten them anyway is not linking, it is overriding,
+  // and it made the tags look broken: every MAG7/watchlist pick drove BOTH
+  // panes to the same ticker. When the panes all carry the same group there
+  // is nothing to protect, so the toggle keeps its original meaning.
+  const panesShareOneLinkGroup = useMemo(() => {
+    const groups = panelConfigs
+      .slice(0, Math.max(1, chartCount))
+      .map((config) => Number(config?.linkGroup) || 2);
+    return new Set(groups).size <= 1;
+  }, [panelConfigs, chartCount]);
   const columnCount = isWorkspaceMaximized
     ? Number(activeLayout.maximizedColumns || activeLayout.columns)
     : Number(activeLayout.columns);
@@ -11128,66 +13314,63 @@ function OiFinderMultiChart({
   };
 
   // Grids are server-backed so they follow the user to any browser or the
-  // installed app. The server set is authoritative at boot; every local
-  // save/delete pushes the full local set back up (last write wins).
+  // installed app. Boot MERGES the server copy with this browser's (newer
+  // save per name wins, deletes carry tombstones) and pushes the merged set
+  // back; every local save/delete pushes too. The push result is shown in
+  // the grid menu - a silently swallowed failure is how the trader's first
+  // saved grid never left his Mac.
+  const [gridSyncStatus, setGridSyncStatus] = useState({ state: "idle", detail: "" });
+  // Pushes send the WHOLE store, so two in flight at once could land in
+  // either order and leave the older set on the server. Chain them: each
+  // push reads the store when its turn comes, so the last one always
+  // carries the newest set.
+  const gridPushChainRef = useRef(Promise.resolve(true));
   const pushGridsToServer = () => {
-    try {
-      const grids = JSON.parse(localStorage.getItem(OI_CHART_GRIDS_STORAGE_KEY) || "{}");
-      fetch("/api/chart-grids", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ grids }),
-      }).catch(() => {});
-    } catch {
-      // Unreadable local store — nothing worth pushing.
-    }
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
+    const run = async () => {
+      const grids = readChartGridStoreFrom(localStorage);
+      setGridSyncStatus({ state: "saving", detail: "Saving to server…" });
       try {
-        const response = await fetch("/api/chart-grids");
-        if (!response.ok || cancelled) return;
-        const payload = await response.json();
-        const serverGrids = payload?.grids && typeof payload.grids === "object" ? payload.grids : {};
-        const localRaw = localStorage.getItem(OI_CHART_GRIDS_STORAGE_KEY);
-        const localGrids = localRaw ? JSON.parse(localRaw) : {};
-        if (Object.keys(serverGrids).length) {
-          localStorage.setItem(OI_CHART_GRIDS_STORAGE_KEY, JSON.stringify(serverGrids));
-          if (!cancelled) setGridListVersion((version) => version + 1);
-        } else if (Object.keys(localGrids).length) {
-          // First run after this feature: seed the server from this browser.
-          pushGridsToServer();
-        }
-      } catch {
-        // Offline/unreachable — the local store keeps working.
+        const response = await fetch("/api/chart-grids", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ grids }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        setGridSyncStatus({ state: "saved", detail: "Saved to server — opens on every device." });
+        return true;
+      } catch (error) {
+        setGridSyncStatus({
+          state: "failed",
+          detail: `Server save failed (${error?.message || "offline"}) — kept on this device only. It retries next time the app opens.`,
+        });
+        return false;
       }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const saveCurrentGridAs = () => {
-    const saved = saveChartGridAs(localStorage, gridNameDraft, {
-      workspace: currentWorkspaceState(),
-      indicators: readCurrentIndicatorToggles(),
-    });
-    if (saved) {
-      setGridNameDraft("");
-      setGridListVersion((version) => version + 1);
-      pushGridsToServer();
-    }
-    return saved;
+    };
+    const next = gridPushChainRef.current.then(run, run);
+    gridPushChainRef.current = next;
+    return next;
   };
 
-  const loadGridIntoWindow = (name) => {
-    const grid = loadChartGrid(localStorage, name, workspaceStateOptions);
-    if (!grid) return;
-    // Persist the grid as the live workspace, then re-enter through the boot
-    // path. A reload applies layout, panels, and per-panel indicator state via
-    // the exact code that restores them at startup — no second sync path that
-    // can drift from it.
+  // Persist a grid as the live workspace, then re-enter through the boot
+  // path. A reload applies layout, panels, and per-panel indicator state via
+  // the exact code that restores them at startup — no second sync path that
+  // can drift from it. The applied stamp is written first so the reload does
+  // not see this same grid as "pending" and loop.
+  const applyGridToWindow = (grid, { requireStamp = false } = {}) => {
+    if (!grid?.workspace) return false;
+    // The applied stamp means "this browser has acknowledged the store's
+    // current DEFAULT save" - not "this grid is on screen". Stamping the
+    // loaded grid instead made every manual Load of an older grid bounce
+    // straight back to the last-saved one on the reload. A manual load inside
+    // the MAG7 pop-out must not consume the stamp at all.
+    if (workspaceStorageKey === OI_CHART_WORKSPACE_STORAGE_KEY) {
+      const { defaultGrid } = readChartGridMeta(readChartGridStoreFrom(localStorage));
+      const acknowledged = defaultGrid ? chartGridStamp(defaultGrid.name, defaultGrid.savedAt) : grid.stamp;
+      const stamped = markChartGridApplied(localStorage, acknowledged);
+      // Boot auto-apply with a storage that refuses the stamp would reload
+      // forever (every reload sees the grid as pending again). Stay put.
+      if (!stamped && requireStamp) return false;
+    }
     saveChartWorkspace(localStorage, grid.workspace, workspaceStorageKey);
     try {
       localStorage.setItem("oiFinderChartLayout", String(grid.workspace.layoutId || "single"));
@@ -11199,7 +13382,102 @@ function OiFinderMultiChart({
       // Storage quota/serialization problems leave the current view untouched.
     }
     window.location.reload();
+    return true;
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let serverReachable = false;
+      try {
+        const response = await fetch("/api/chart-grids");
+        if (!response.ok || cancelled) return;
+        const payload = await response.json();
+        serverReachable = true;
+        const serverStore = payload?.grids && typeof payload.grids === "object" ? payload.grids : {};
+        const merged = mergeChartGridStores(readChartGridStoreFrom(localStorage), serverStore);
+        if (cancelled) return;
+        if (merged.changedFromLocal) {
+          writeChartGridStoreTo(localStorage, merged.store);
+          setGridListVersion((version) => version + 1);
+        }
+        // The server is missing something this browser has (a save whose
+        // push failed, or a delete it never heard about): send the merge up.
+        if (merged.changedFromRemote) await pushGridsToServer();
+      } catch {
+        // Offline/unreachable — the local store keeps working.
+      }
+      if (cancelled) return;
+      if (!serverReachable) {
+        setGridSyncStatus({ state: "offline", detail: "Server not reachable — grids on this device only." });
+      }
+      // "Save grid" on any device opens that grid on every other device the
+      // next time the charts page loads (once per save, tracked by stamp).
+      // Only the MAIN charts workspace applies it: the detached MAG7 pop-out
+      // mounts this same component with its own storage key but shares the
+      // applied stamp, and it forces its layout back to mag7 on reload - so
+      // applying there would burn the once-per-save stamp without the main
+      // window ever opening the grid.
+      if (workspaceStorageKey !== OI_CHART_WORKSPACE_STORAGE_KEY) return;
+      const pending = pendingDefaultChartGrid(localStorage, workspaceStateOptions);
+      if (pending) applyGridToWindow(pending, { requireStamp: true });
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const saveCurrentGridAs = () => {
+    const stamp = saveChartGridAs(localStorage, gridNameDraft, {
+      workspace: currentWorkspaceState(),
+      indicators: readCurrentIndicatorToggles(),
+    });
+    if (stamp) {
+      // The saving device already shows this grid; only other devices apply it.
+      markChartGridApplied(localStorage, stamp);
+      setGridNameDraft("");
+      setGridListVersion((version) => version + 1);
+      pushGridsToServer();
+    }
+    return Boolean(stamp);
+  };
+
+  const loadGridIntoWindow = (name) => {
+    const grid = loadChartGrid(localStorage, name, workspaceStateOptions);
+    if (!grid) return;
+    applyGridToWindow(grid);
+  };
+
+  // The floppy "Save layout" button. It used to persist only to THIS browser
+  // (workspace + per-panel indicator profiles), which the trader read as
+  // "save layout is not working" when another device did not show it. It now
+  // also publishes the workspace as the default grid under a fixed name, so
+  // one press makes the layout open on every device. The MAG7 pop-out keeps
+  // the local-only behavior: its forced mag7 layout must not become the
+  // main window's default.
+  const saveLayoutEverywhere = () => {
+    persistWorkspaceState();
+    setWorkspaceSaveVersion((version) => version + 1);
+    if (workspaceStorageKey !== OI_CHART_WORKSPACE_STORAGE_KEY) return;
+    const stamp = saveChartGridAs(localStorage, SAVED_LAYOUT_GRID_NAME, {
+      workspace: currentWorkspaceState(),
+      indicators: readCurrentIndicatorToggles(),
+    });
+    if (!stamp) {
+      setGridSyncStatus({ state: "failed", detail: "Could not write the layout to this browser's storage." });
+      return;
+    }
+    markChartGridApplied(localStorage, stamp);
+    setGridListVersion((version) => version + 1);
+    pushGridsToServer();
+  };
+
+  // A green "saved" confirmation clears itself; a failure stays until the
+  // next attempt so it cannot be missed.
+  useEffect(() => {
+    if (gridSyncStatus.state !== "saved") return undefined;
+    const timer = window.setTimeout(() => setGridSyncStatus({ state: "idle", detail: "" }), 8000);
+    return () => window.clearTimeout(timer);
+  }, [gridSyncStatus]);
 
   const deleteGridByName = (name) => {
     if (deleteChartGrid(localStorage, name)) {
@@ -11434,6 +13712,33 @@ function OiFinderMultiChart({
       || appliedNavigationIntentIdRef.current === normalizedNavigationIntent.id
     ) return;
     appliedNavigationIntentIdRef.current = normalizedNavigationIntent.id;
+    if (normalizedNavigationIntent.linkGroup) {
+      // TOS colour link (MomX scanner): every panel of that colour, own
+      // timeframes kept, first visible one made active.
+      const linked = applyWorkspaceLinkedNavigationIntent({
+        activePanel,
+        panels: panelConfigs,
+      }, normalizedNavigationIntent, {
+        ...workspaceStateOptions,
+        visibleCount: chartCount,
+        order: visiblePanelIndexes,
+        syncWholeWorkspace: syncPanelSymbols && !activeLayout.mag7 && panesShareOneLinkGroup,
+      });
+      // The parent changed the base symbol in the SAME batch as this intent.
+      // The base-symbol effect below runs next in this commit and would push
+      // the ticker into the OLD active panel's colour group as well - the
+      // cross-colour bleed TOS linking must not have. This intent already
+      // placed it, so mark the base symbol as seen.
+      previousBaseSymbolRef.current = baseSymbol;
+      if (linked.state.panels !== panelConfigs) setPanelConfigs(linked.state.panels);
+      if (linked.state.activePanel !== activePanel) setActivePanel(linked.state.activePanel);
+      const bumped = new Set([...linked.changed, linked.state.activePanel]);
+      setPanelFocusVersions((current) => current.map((version, index) => (
+        bumped.has(index) ? version + 1 : version
+      )));
+      onNavigationIntentHandled?.(normalizedNavigationIntent.id);
+      return;
+    }
     setPanelConfigs((current) => applyWorkspaceNavigationIntent({
       activePanel,
       panels: current,
@@ -11447,6 +13752,7 @@ function OiFinderMultiChart({
     normalizedNavigationIntent?.id,
     normalizedNavigationIntent?.symbol,
     normalizedNavigationIntent?.timeframe,
+    normalizedNavigationIntent?.linkGroup,
     onNavigationIntentHandled,
   ]);
 
@@ -11467,7 +13773,7 @@ function OiFinderMultiChart({
     previousBaseSymbolRef.current = baseSymbol;
     if (!baseSymbolChanged) return;
     const activeLinkGroup = Number(panelConfigs[activePanel]?.linkGroup || 2);
-    const syncWholeWorkspace = syncPanelSymbols && !activeLayout.mag7;
+    const syncWholeWorkspace = syncPanelSymbols && !activeLayout.mag7 && panesShareOneLinkGroup;
     setPanelConfigs((current) => {
       if (syncWholeWorkspace) {
         return updateSharedWorkspaceSymbol({
@@ -11516,7 +13822,7 @@ function OiFinderMultiChart({
   const changePanelSymbol = (index, nextSymbol) => {
     const symbol = normalizeOiChartSymbol(nextSymbol, panelConfigs[index]?.symbol || baseSymbol);
     const sourceGroup = Number(panelConfigs[index]?.linkGroup || 2);
-    const syncWholeWorkspace = syncPanelSymbols && !activeLayout.mag7;
+    const syncWholeWorkspace = syncPanelSymbols && !activeLayout.mag7 && panesShareOneLinkGroup;
     setPanelConfigs((current) => {
       if (syncWholeWorkspace) {
         return updateSharedWorkspaceSymbol({
@@ -11673,6 +13979,51 @@ function OiFinderMultiChart({
     }));
   };
 
+  // Identity-stable per-panel callbacks so the memoized panels do not
+  // re-render on every workspace render. Each callback reads the CURRENT
+  // handlers through a ref, so stale closures are impossible.
+  const panelHandlersRef = useRef({});
+  panelHandlersRef.current = {
+    changePanelTimeframe,
+    changePanelPriceLock,
+    changePanelLink,
+    changePanelSymbol,
+    activatePanel,
+    togglePanelWidth,
+    bigScreenCompanion,
+    panelConfigs,
+  };
+  const panelCallbacksRef = useRef(new Map());
+  const panelCallbacks = (index) => {
+    let entry = panelCallbacksRef.current.get(index);
+    if (!entry) {
+      const handlers = () => panelHandlersRef.current;
+      entry = {
+        onTimeframeChange: (timeframe) => handlers().changePanelTimeframe(index, timeframe),
+        onPriceLockChange: (enabled) => handlers().changePanelPriceLock(index, enabled),
+        onLinkGroupChange: (group) => handlers().changePanelLink(index, group),
+        onSymbolChange: (nextSymbol) => handlers().changePanelSymbol(index, nextSymbol),
+        onActivate: () => handlers().activatePanel(index),
+        onToggleWidth: () => handlers().togglePanelWidth(index),
+        maximizeCompanion: (controls = {}) => {
+          const { bigScreenCompanion: companion, panelConfigs: configs } = handlers();
+          const config = configs[index] || {};
+          return typeof companion === "function" ? companion({ ...config, ...controls }) : companion;
+        },
+      };
+      panelCallbacksRef.current.set(index, entry);
+    }
+    return entry;
+  };
+  // The watchlist ticker list is rebuilt on every App render; key it by
+  // content so an unchanged list keeps its identity for the memoized panels.
+  const tickerOptionsKey = (Array.isArray(chartProps.tickerOptions) ? chartProps.tickerOptions : []).join("|");
+  const stableTickerOptions = useMemo(
+    () => (Array.isArray(chartProps.tickerOptions) ? chartProps.tickerOptions : EMPTY_CHART_ROWS),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tickerOptionsKey],
+  );
+
   return (
     <section
       className={`oi-chart-multilayout charts-${chartCount} rows-${rowCount} layout-${activeLayout.id}${chartCount >= 5 ? " is-dense" : ""}${widePanel != null ? " has-wide-panel" : ""}${hasCustomWorkspaceHeight ? " has-custom-panel-height" : ""}${isWorkspaceMaximized ? " is-workspace-maximized" : ""}${isWorkspaceMaximized && bigScreenCompanion && isWorkspaceCompanionVisible ? " has-big-screen-companion" : ""}`}
@@ -11693,7 +14044,7 @@ function OiFinderMultiChart({
         </div>
         {quickTickers?.length ? (
           <nav className="oi-chart-quick-tickers" aria-label="Quick-access OI Finder tickers">
-            <span>QUICK CHART + CHAIN</span>
+            <span>FAV TICKERS</span>
             {quickTickers.map((symbol) => {
               const normalized = normalizeOiChartSymbol(symbol);
               const isActive = normalized === normalizeOiChartSymbol(panelConfigs[activePanel]?.symbol, baseSymbol);
@@ -11712,6 +14063,7 @@ function OiFinderMultiChart({
                   type="button"
                 >
                   {normalized}
+                  <TickerDayMoveBadge percent={quickTickerMoves[normalized]} />
                 </button>
               );
             })}
@@ -11731,8 +14083,36 @@ function OiFinderMultiChart({
           >
             <Star size={13} />
           </button>
-          <details className="oi-chart-layout-picker" ref={layoutPickerRef}>
-            <summary aria-label="Choose chart layout">
+          <details
+            className="oi-chart-layout-picker"
+            ref={layoutPickerRef}
+          >
+            <summary
+              aria-label="Choose chart layout"
+              onClick={(event) => {
+                // The menu draws position: fixed to escape the toolbar's overflow
+                // clip (see index.css), so it needs the summary's viewport coords.
+                // Measured here and written straight onto the element rather than
+                // in onToggle or through state: `toggle` fires asynchronously and
+                // a re-render lands a frame late, either of which paints the menu
+                // once at the previous anchor - harmless at the width it was last
+                // opened at, off-screen after the toolbar reflows at another.
+                // A click is what keyboard Enter/Space dispatches too, so both
+                // ways of opening the disclosure are covered.
+                const summary = event.currentTarget;
+                const details = summary.closest("details");
+                if (!details) return;
+                const rect = summary.getBoundingClientRect();
+                // Right-anchored, so clamp it out of the left gutter: near the
+                // start of a narrow toolbar the raw offset is wider than the gap
+                // the menu needs and it hangs off the left edge.
+                const menuWidth = Math.min(390, window.innerWidth - 28);
+                const rightLimit = Math.max(8, window.innerWidth - menuWidth - 8);
+                const right = Math.min(rightLimit, Math.max(8, Math.round(window.innerWidth - rect.right)));
+                details.style.setProperty("--oi-layout-menu-top", `${Math.round(rect.bottom + 6)}px`);
+                details.style.setProperty("--oi-layout-menu-right", `${right}px`);
+              }}
+            >
               <OiChartLayoutPreview layout={activeLayout} />
               <span>{chartCount}</span>
               <ChevronDown size={13} />
@@ -11760,23 +14140,30 @@ function OiFinderMultiChart({
               </div>
             </div>
           </details>
-          <div className="oi-chart-layout-buttons" role="group" aria-label="Quick chart count">
-            {[1, 2, 3, 4].map((count) => {
-              const layout = OI_CHART_LAYOUTS.find((item) => item.count === count);
-              return (
-              <button
-                className={chartCount === count && !activeLayout.mag7 ? "is-active" : ""}
-                key={count}
-                type="button"
-                onClick={() => selectLayout(layout)}
-                aria-label={`${count} ${count === 1 ? "chart" : "charts"}`}
-                aria-pressed={chartCount === count && !activeLayout.mag7}
-              >
-                {count}
-              </button>
-              );
-            })}
-          </div>
+          {/* A select, not four buttons (trader, 2026-09-01: "in chart make it
+              dropdown"). Four always-visible buttons cost four toolbar slots to
+              express one choice, and that toolbar is the most crowded strip in
+              the app - the phone has to fit it too. The value stays a plain
+              number so the keyboard and screen readers get the same behaviour
+              the buttons had. */}
+          <label className="oi-chart-count-picker" aria-label="Quick chart count">
+            <select
+              value={activeLayout.mag7 ? "" : String(chartCount)}
+              onChange={(event) => {
+                const wanted = Number(event.target.value);
+                const layout = OI_CHART_LAYOUTS.find((item) => item.count === wanted && !item.mag7);
+                if (layout) selectLayout(layout);
+              }}
+              title="How many charts on screen"
+            >
+              {activeLayout.mag7 ? <option value="">MAG7</option> : null}
+              {[1, 2, 3, 4].map((count) => (
+                <option value={String(count)} key={count}>
+                  {count} {count === 1 ? "chart" : "charts"}
+                </option>
+              ))}
+            </select>
+          </label>
           {!activeLayout.mag7 ? (
             <button
               className={`oi-chart-workspace-toggle${syncPanelSymbols ? " is-active" : ""}`}
@@ -11802,15 +14189,25 @@ function OiFinderMultiChart({
           >
             <Bell size={14} />
           </button>
+          {gridSyncStatus.state !== "idle" ? (
+            <span
+              className="oi-chart-workspace-sync"
+              role="status"
+              data-grid-sync={gridSyncStatus.state}
+              title={gridSyncStatus.detail}
+            >
+              {gridSyncStatus.state === "saving" ? "Saving…"
+                : gridSyncStatus.state === "saved" ? "Saved — opens on every device"
+                  : gridSyncStatus.state === "offline" ? "Server offline — saved here only"
+                    : "Server save failed — saved here only"}
+            </span>
+          ) : null}
           <button
             className="oi-chart-workspace-toggle oi-chart-workspace-save"
             type="button"
-            onClick={() => {
-              persistWorkspaceState();
-              setWorkspaceSaveVersion((version) => version + 1);
-            }}
-            title="Save layout — this layout, every panel timeframe, indicator set, and pane sizing (charts always reopen at the default zoom)"
-            aria-label="Save the complete chart workspace"
+            onClick={saveLayoutEverywhere}
+            title="Save layout — this layout, every panel ticker and timeframe, indicator set, and pane sizing. Opens on every device you sign in from (charts always reopen at the default zoom)"
+            aria-label="Save the complete chart workspace and open it on every device"
           >
             <Save size={14} />
           </button>
@@ -11924,6 +14321,18 @@ function OiFinderMultiChart({
                     No saved grids yet. Name this workspace and press Save grid.
                   </span>
                 )}
+                {gridSyncStatus.state !== "idle" ? (
+                  <span
+                    role="status"
+                    data-grid-sync={gridSyncStatus.state}
+                    style={{
+                      fontSize: 11,
+                      color: gridSyncStatus.state === "saved" ? "#7fe0b0" : gridSyncStatus.state === "saving" ? "#8f8f9a" : "#f4bd37",
+                    }}
+                  >
+                    {gridSyncStatus.detail}
+                  </span>
+                ) : null}
               </div>
             ) : null}
           </span>
@@ -11931,9 +14340,9 @@ function OiFinderMultiChart({
             <button
               className="oi-chart-workspace-toggle"
               type="button"
-              onClick={() => openTradingPopout("mag7", activeConfig.symbol, activeConfig.linkGroup)}
-              title="Pop out MAG7 — open the complete MAG7 workspace in a separate window"
-              aria-label="Pop out the complete MAG7 workspace"
+              onClick={() => setIsWorkspaceMaximized(true)}
+              title="MAG7 full screen — fill the app with the complete MAG7 workspace"
+              aria-label="Fill the screen with the complete MAG7 workspace"
             >
               <ExternalLink size={14} />
             </button>
@@ -12082,8 +14491,10 @@ function OiFinderMultiChart({
                 title={`Drag left or right to resize columns ${position} and ${position + 1}. Double-click to reset all columns.`}
               ><i /></div> : null}
               {panelMounted ? <ChartRenderBoundary resetKey={`${config.symbol}-${index}`}>
-                <OiFinderCandleChart
+                <Profiler id={`panel:${config.symbol}`} onRender={window.__recordProfile || (() => {})}>
+                <OiFinderCandleChartPanel
                   {...chartProps}
+                  tickerOptions={stableTickerOptions}
                   symbol={config.symbol}
                   callRows={hasLinkedOptionData ? chartProps.callRows : EMPTY_CHART_ROWS}
                   putRows={hasLinkedOptionData ? chartProps.putRows : EMPTY_CHART_ROWS}
@@ -12092,26 +14503,28 @@ function OiFinderMultiChart({
                   tosScriptLevels={hasLinkedOptionData ? chartProps.tosScriptLevels : EMPTY_CHART_ROWS}
                   underlyingPrice={hasLinkedOptionData ? chartProps.underlyingPrice : 0}
                   initialTimeframe={config.timeframe || OI_CHART_DEFAULT_TIMEFRAMES[index]}
-                  onTimeframeChange={(timeframe) => changePanelTimeframe(index, timeframe)}
+                  onTimeframeChange={panelCallbacks(index).onTimeframeChange}
                   priceLockEnabled={config.priceLock === true}
-                  onPriceLockChange={(enabled) => changePanelPriceLock(index, enabled)}
+                  onPriceLockChange={panelCallbacks(index).onPriceLockChange}
                   layoutPanel={chartCount !== 1}
+                  denseLayout={chartCount >= 5}
                   focusLatestVersion={panelFocusVersions[index] || 0}
                   workspaceMaximized={isWorkspaceMaximized}
                   workspaceProfileScope={`workspace:${activeLayout.id}:panel-${index}`}
                   saveWorkspaceVersion={workspaceSaveVersion}
                   linkGroup={config.linkGroup}
-                  onLinkGroupChange={(group) => changePanelLink(index, group)}
-                  onSymbolChange={(symbol) => changePanelSymbol(index, symbol)}
-                  onActivate={() => activatePanel(index)}
+                  onLinkGroupChange={panelCallbacks(index).onLinkGroupChange}
+                  onSymbolChange={panelCallbacks(index).onSymbolChange}
+                  onActivate={panelCallbacks(index).onActivate}
                   isActiveLinked={index === activePanel}
                   isWidthExpanded={index === widePanel}
-                  onToggleWidth={() => togglePanelWidth(index)}
+                  onToggleWidth={panelCallbacks(index).onToggleWidth}
                   maximizeCompanion={hasLinkedOptionData && bigScreenCompanion
-                    ? (controls = {}) => (typeof bigScreenCompanion === "function" ? bigScreenCompanion({ ...config, ...controls }) : bigScreenCompanion)
+                    ? panelCallbacks(index).maximizeCompanion
                     : null}
                   key={`chart-panel-${index}`}
                 />
+                </Profiler>
               </ChartRenderBoundary> : <section
               className="oi-finder-chart-card is-layout-panel oi-chart-progressive-placeholder"
               aria-label={`${config.symbol} chart loading`}
@@ -12262,6 +14675,66 @@ const OiChartCandleCountdown = memo(function OiChartCandleCountdown({ minutes, l
   );
 });
 
+// The scanner's CURRENT letter for a symbol, for the chart header badge.
+//
+// Added 2026-09-22 because the circles alone do not work on a phone: GOOGL's
+// four Call signals that day all fired between 09:00 and 09:30 and sat stacked
+// in the leftmost ~20px of the phone chart, behind a PUT bubble. Everything
+// after was PUTs, which never carry a letter. The trader reasonably read that
+// as "the letters are missing on mobile".
+//
+// One module-level cache keyed by symbol, so six open panels on the same
+// ticker make ONE request a minute between them, not six. Same shape as
+// MomxTickerCard's wallsCache. A failure caches nothing and simply shows no
+// badge - a chart must never break because the scanner is down.
+const CHART_GRADE_TTL_MS = 60_000;
+const chartGradeCache = new Map(); // SYMBOL -> { at, letter }
+
+function useChartGradeLetter(symbol) {
+  const [letter, setLetter] = useState(null);
+  useEffect(() => {
+    const key = String(symbol || "").trim().toUpperCase();
+    if (!key) {
+      setLetter(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const cached = chartGradeCache.get(key);
+    if (cached && Date.now() - cached.at < CHART_GRADE_TTL_MS) setLetter(cached.letter);
+    const load = async () => {
+      const hit = chartGradeCache.get(key);
+      if (hit && Date.now() - hit.at < CHART_GRADE_TTL_MS) {
+        if (!cancelled) setLetter(hit.letter);
+        return;
+      }
+      let next = null;
+      try {
+        const response = await fetch(
+          `/api/momx-scanner/grade-tape?symbol=${encodeURIComponent(key)}&days=1`,
+          { cache: "no-store", credentials: "include" },
+        );
+        if (response.ok) {
+          const payload = await response.json();
+          const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+          const newest = entries.length ? entries[entries.length - 1] : null;
+          next = typeof newest?.letter === "string" && newest.letter ? newest.letter : null;
+          chartGradeCache.set(key, { at: Date.now(), letter: next });
+        }
+      } catch {
+        next = null; // not cached: try again on the next tick
+      }
+      if (!cancelled) setLetter(next);
+    };
+    load();
+    const timer = setInterval(load, CHART_GRADE_TTL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [symbol]);
+  return letter;
+}
+
 const OiChartOhlcStrip = memo(function OiChartOhlcStrip({
   chartId,
   symbol,
@@ -12270,6 +14743,10 @@ const OiChartOhlcStrip = memo(function OiChartOhlcStrip({
   easternDateFormatter,
   easternTimeFormatter,
   streamConnected,
+  historyPending = false,
+  studiesPending = false,
+  premarketGapNote = "",
+  premarketGapState = "",
 }) {
   const [liveBar, setLiveBar] = useState(initialBar || null);
   const [hoverBar, setHoverBar] = useState(null);
@@ -12290,22 +14767,154 @@ const OiChartOhlcStrip = memo(function OiChartOhlcStrip({
     window.addEventListener(OI_CHART_OHLC_EVENT, updateOhlc);
     return () => window.removeEventListener(OI_CHART_OHLC_EVENT, updateOhlc);
   }, [chartId]);
+  // Day move, from the quote poll this chart ALREADY runs for its price
+  // line - so the percentage costs no extra request. subscribeLiveChartQuoteFallback
+  // keys subscribers by symbol, and the price line has this symbol subscribed
+  // already, so this adds a listener rather than a fetch.
+  const [dayMovePercent, setDayMovePercent] = useState(null);
+  useEffect(() => {
+    if (!symbol) return undefined;
+    setDayMovePercent(null);
+    return subscribeLiveChartQuoteFallback(symbol, (packet) => {
+      // Number(null) is 0, NOT NaN. The isFinite guard below therefore let a
+      // null percentage through as a confident zero, and the strip rendered
+      // "Chg 0.00%" - flat - when the feed had simply not reported a move.
+      // Seen on QQQ at 08:12 ET on 2026-09-04 while the quote endpoint was
+      // returning changePercent 0.4152 for the same symbol at the same moment.
+      // This is the second site of the identical coercion bug; the first was
+      // useTickerDayMoves, which feeds the ticker rail.
+      const reported = packet?.data?.changePercent;
+      const percent = reported == null ? Number.NaN : Number(reported);
+      if (!Number.isFinite(percent)) return;
+      // Compare at DISPLAY precision: the raw percent moves on nearly every
+      // 1s poll and this strip re-renders on every tick already.
+      setDayMovePercent((current) => (
+        Number.isFinite(Number(current)) && Number(current).toFixed(2) === percent.toFixed(2)
+          ? current
+          : percent
+      ));
+    });
+  }, [symbol]);
+  const gradeLetter = useChartGradeLetter(symbol);
   const displayedBar = hoverBar || liveBar || initialBar;
   if (!displayedBar) return null;
   return (
     <div className="oi-finder-chart-ohlc" aria-live="polite">
       <b>{symbol || "Ticker"} · {timeframeLabel}</b>
+      {/* The scanner's letter RIGHT NOW, always in the same place. The circles
+          on the bubbles stay what they are - the grade at the moment each
+          signal fired - and this is the only thing on the chart that follows
+          the live board.
+          A ticker with NO letter shows a muted dash, never nothing. Rendering
+          nothing was the first version and it was wrong: "no setup right now"
+          and "the badge did not load" looked identical, and the trader read a
+          blank GOOGL header - correctly ungraded, 320 of 358 rows are - as the
+          feature being broken on his phone, twice. The dash costs one
+          character and makes absence a statement. */}
+      <span
+        className={"oi-chart-grade is-" + (
+          !gradeLetter ? "none" : gradeLetter === "A+" ? "aplus" : gradeLetter.toLowerCase()
+        )}
+        title={gradeLetter
+          ? "Scanner setup grade right now: " + gradeLetter
+          : "No scanner setup grade right now"}
+      >
+        {gradeLetter || "–"}
+      </span>
       <span>O <strong>{formatCurrency(displayedBar.open ?? 0)}</strong></span>
       <span>H <strong>{formatCurrency(displayedBar.high ?? 0)}</strong></span>
       <span>L <strong>{formatCurrency(displayedBar.low ?? 0)}</strong></span>
       <span>C <strong className={Number(displayedBar.close ?? 0) >= Number(displayedBar.open ?? 0) ? "is-up" : "is-down"}>{formatCurrency(displayedBar.close ?? 0)}</strong></span>
-      <span>Vol <strong>{formatCompactNumber(displayedBar.volume ?? 0)}</strong></span>
+      {/* "Vol 0" and "we don't know this bar's volume" are different claims and
+          `?? 0` printed the same thing for both. The live/forming candle is
+          assembled from price ticks, which carry no volume, so the strip read
+          "Vol 0" over a bar the server had at 22,821 (QQQ, 08:10 ET
+          2026-09-04). A real zero still prints as 0 - only an ABSENT volume
+          becomes a dash, so "nothing traded" stays distinguishable from
+          "not reported". */}
+      <span>Vol <strong>{
+        displayedBar.volume == null || !Number.isFinite(Number(displayedBar.volume))
+          ? "--"
+          : formatCompactNumber(Number(displayedBar.volume))
+      }</strong></span>
+      {/* Labelled "Chg", not bare: an unlabelled percentage sitting next to Vol
+          reads as a share OF the volume. This is the day move against the prior
+          session close - the same number as the ticker rail and the panel
+          header, so the three agree. Absent rather than 0.00% when the feed has
+          not reported one; a flat tape and no data must not look identical. */}
+      {Number.isFinite(Number(dayMovePercent)) ? (
+        <span>Chg <strong className={Number(dayMovePercent) >= 0 ? "is-up" : "is-down"}>
+          {signedPercent(Number(dayMovePercent))}
+        </strong></span>
+      ) : null}
       <small className={hoverBar ? "is-crosshair-time" : ""}>
         {hoverBar
           ? `Crosshair ${easternDateFormatter.format(new Date(Number(hoverBar.time) * 1000))} ${easternTimeFormatter.format(new Date(Number(hoverBar.time) * 1000))}`
           : `Live ${easternDateFormatter.format(new Date(Number(displayedBar.time || 0) * 1000))} ${easternTimeFormatter.format(new Date(Number(displayedBar.time || 0) * 1000))}`} ET
         {" · "}{streamConnected ? "STREAMING" : "REST FALLBACK"}
+        {/* NO STALE LABEL HERE, deliberately. chartStaleLabel measures against a
+            90s window that assumes a ONE-MINUTE tape, but displayedBar.time is
+            the start of the CURRENT TIMEFRAME's bucket - so on a 5m chart a
+            perfectly live tape reads "STALE (2m)" for most of every bucket, and
+            on 4H it would read stale for hours. Verified in a browser
+            2026-09-04: a live ALAB 5m chart showed "STALE (2m)" while its raw
+            tape was current.
+            The staleness signal that IS correct is latestRawBarTimeRef, which
+            the wake handler above already uses; surfacing it here needs that
+            value threaded into this component as a prop rather than derived
+            from the bucket. Left undone rather than shipped wrong. */}
       </small>
+      {(() => {
+        // The chart serves its cached tape instantly and refreshes behind it,
+        // so during premarket a just-opened ticker can silently show
+        // YESTERDAY for ~20-40s. That silence read as "chart broken /
+        // premarket missing" (2026-08-21). Say it out loud instead; the
+        // badge disappears on its own when today's bars land.
+        const newest = liveBar || initialBar;
+        const newestTime = Number(newest?.time || 0);
+        if (!newestTime) return null;
+        const now = new Date();
+        const barDay = easternDateFormatter.format(new Date(newestTime * 1000));
+        if (barDay === easternDateFormatter.format(now)) return null;
+        const eastern = new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/New_York", weekday: "short", hour: "numeric", hourCycle: "h23",
+        }).formatToParts(now);
+        const weekday = eastern.find((part) => part.type === "weekday")?.value || "";
+        const hour = Number(eastern.find((part) => part.type === "hour")?.value || 0);
+        // Outside 04:00-20:00 ET weekdays a prior-session tape is simply the
+        // newest data that exists; warning then would cry wolf all night.
+        if (["Sat", "Sun"].includes(weekday) || hour < 4 || hour >= 20) return null;
+        return (
+          <small className="is-prev-session" title="This tape ends in a previous session. Fresh bars are being fetched now; this notice clears by itself when they arrive.">
+            <RefreshCw size={9} className="is-spinning" /> PREV SESSION · updating…
+          </small>
+        );
+      })()}
+      {(() => {
+        // Two different situations, and only one is an outage: Tradier
+        // refused but Alpaca SIP filled the window (candles present, ~15
+        // min behind), versus nothing arrived at all. Both used to read
+        // "FEED DOWN", which is how a badge stops being believed.
+        const badge = premarketGapBadge(premarketGapState, premarketGapNote);
+        if (!badge) return null;
+        return (
+          <small
+            className={"is-premarket-gap is-premarket-" + badge.tone}
+            title={badge.title}
+          >
+            {badge.text}
+          </small>
+        );
+      })()}
+      {historyPending ? (
+        <small className="is-history-pending" title="The multi-year tape this timeframe aggregates from is still downloading. Candles shown so far are correct but cover only the recent session.">
+          <RefreshCw size={9} className="is-spinning" /> Collecting history…
+        </small>
+      ) : studiesPending ? (
+        <small className="is-history-pending" title="Candles are live; the MTF and Ganesh indicator replays are still computing on the server and will appear in a few seconds.">
+          <RefreshCw size={9} className="is-spinning" /> Loading indicators…
+        </small>
+      ) : null}
     </div>
   );
 });
@@ -12322,6 +14931,10 @@ function OiFinderCandleChart({
   initialTimeframe,
   onTimeframeChange,
   layoutPanel = false,
+  // Five or more panels on one screen: the drawing toolbar floats over the
+  // chart instead of reserving a 42px gutter, so clicking a panel (which
+  // moves the toolbar to it) no longer slides every chart sideways.
+  denseLayout = false,
   linkGroup = 2,
   onLinkGroupChange,
   onSymbolChange,
@@ -12332,7 +14945,6 @@ function OiFinderCandleChart({
   maximizeCompanion = null,
   popoutEnabled = false,
   disableKineticScroll = false,
-  allowPageScroll = false,
   showOiLevelSummary = true,
   focusLatestVersion = 0,
   workspaceMaximized = false,
@@ -12341,6 +14953,9 @@ function OiFinderCandleChart({
   priceLockEnabled = false,
   onPriceLockChange,
 }) {
+  const renderStartedAt = performance.now();
+  const renderMarks = [];
+  const renderMark = (name) => renderMarks.push([name, Math.round(performance.now() - renderStartedAt)]);
   const chartInstanceIdRef = useRef(`oi-chart-${Math.random().toString(36).slice(2)}`);
   const chartRef = useRef(null);
   const candleChartRef = useRef(null);
@@ -12352,13 +14967,17 @@ function OiFinderCandleChart({
   const previousOhlcPriceLinesRef = useRef([]);
   const sessionWindowsRef = useRef([]);
   const sessionTimeMarkersRef = useRef([]);
-  const updateSessionShadesRef = useRef(null);
-  const updateSessionTimeLinesRef = useRef(null);
-  const updateStudyCloudsRef = useRef(null);
-  const updateBoldMtfLabelsRef = useRef(null);
   const updateIndicatorAxisLabelsRef = useRef(null);
   const updateDrawingGeometryRef = useRef(null);
   const drawingWheelZoomRef = useRef(null);
+  // The TOS scrollbar under the time axis has to drive a chart instance that
+  // only exists inside the chart effect. `...ControlRef` carries the commit
+  // callback out of that effect; `...ApplyRef` carries each new logical window
+  // back in. Both are refs on purpose - this component is thousands of lines,
+  // so publishing a per-frame scroll position through state would re-render the
+  // entire chart tree on every wheel notch and every pixel of a thumb drag.
+  const chartScrollbarControlRef = useRef(null);
+  const chartScrollbarApplyRef = useRef(null);
   const fitVisibleCandlePriceRangeRef = useRef(null);
   const saveChartLayoutProfileRef = useRef(null);
   const chartLayoutAutoSaveTimerRef = useRef(0);
@@ -12368,14 +14987,39 @@ function OiFinderCandleChart({
   const lastAppliedPaneFactorsRef = useRef(null);
   const wallLevelsForAutoscaleRef = useRef([]);
   const refreshChartHistoryRef = useRef(null);
+  // The cheap sibling of refreshChartHistoryRef: reload the payload WITHOUT
+  // asking the server to rebuild its history. ~1.4s against ~20s.
+  const refreshChartTapeRef = useRef(null);
+  const requestDeepChartHistoryRef = useRef(null);
+  const chartHistoryLoadingRef = useRef(false);
+  // Reactive mirror: a ref alone cannot drive the re-render when tapes land.
+  const [chartHistoryLoading, setChartHistoryLoading] = useState(false);
+  // Candles-first paint: the server sends bars with studiesPending=true while
+  // it computes indicators in the background; the badge says so.
+  const [chartStudiesPending, setChartStudiesPending] = useState(false);
+  // Why the 04:00-07:00 band is empty, when it is. Blank when it filled.
+  const [chartPremarketGapNote, setChartPremarketGapNote] = useState("");
+  const [chartPremarketGapState, setChartPremarketGapState] = useState("");
+  const mobileDeepHistoryRequestedRef = useRef(false);
   const latestRawBarTimeRef = useRef(0);
   const latestEquityTradeMinuteRef = useRef(0);
   const latestEquityPacketReceivedAtRef = useRef(0);
   const renderedRawBarTimeRef = useRef(0);
+  // Latest display-bar time the live-follow re-frame has already acted on.
+  // The chart mega-effect runs on every study/indicator recompute, not only
+  // on new bars, so the live-follow re-frame must fire ONLY when this advances
+  // - otherwise it re-frames on every recompute and the chart visibly jitters.
+  const lastFollowedLatestBarTimeRef = useRef(0);
   const lastGapBackfillAtRef = useRef(0);
   const streamedBarsRef = useRef([]);
   const streamRenderTimerRef = useRef(0);
   const pendingNativeChartBarRef = useRef(null);
+  // Newest bar time written into the native candle series, by ANY path
+  // (full setData, the React last-bar update, or the 250ms stream paint).
+  // The stream can open a newer bucket before React's tape catches up; a
+  // later last-bar update on the older bucket makes Lightweight Charts throw
+  // "Cannot update oldest data" and the panel drops into the error boundary.
+  const nativeSeriesLastTimeRef = useRef(0);
   const activeChartSymbolRef = useRef("");
   const nativeChartFrameRef = useRef(0);
   const chartStreamConnectedRef = useRef(false);
@@ -12395,6 +15039,10 @@ function OiFinderCandleChart({
   const cloudMaxOptionsRef = useRef({});
   const ichimokuDataRef = useRef([]);
   const ichimokuOptionsRef = useRef({});
+  // The EMA cloud painter runs inside the chart's own render closure. Reading
+  // the flag from a ref — as its CloudMAX/AutoFib/Ichimoku neighbours already
+  // do — keeps ticking this checkbox from rebuilding the entire chart.
+  const emaCloudsEnabledRef = useRef(true);
   const lowerStudyVisibilityRef = useRef({
     adx: true,
     squeeze: true,
@@ -12430,14 +15078,60 @@ function OiFinderCandleChart({
   const drawingRedoRef = useRef([]);
   const [isMaximized, setIsMaximized] = useState(false);
   const [isMaximizedCompanionVisible, setIsMaximizedCompanionVisible] = useState(true);
+  // Width of the option chain beside a per-panel maximized chart. null means
+  // "never dragged": CSS then uses its own clamp(390px, 31vw, 560px). Kept
+  // separate from the big-screen companion width because the two modes have
+  // different chart widths and he sizes them differently.
+  const [maximizedChainWidth, setMaximizedChainWidth] = useState(() => {
+    try {
+      const raw = Number(localStorage.getItem(MAXIMIZED_CHAIN_WIDTH_STORAGE_KEY));
+      return Number.isFinite(raw) && raw >= 240 && raw <= 1200 ? raw : null;
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    try {
+      if (maximizedChainWidth == null) localStorage.removeItem(MAXIMIZED_CHAIN_WIDTH_STORAGE_KEY);
+      else localStorage.setItem(MAXIMIZED_CHAIN_WIDTH_STORAGE_KEY, String(Math.round(maximizedChainWidth)));
+    } catch {
+      /* private mode: the width simply is not remembered */
+    }
+  }, [maximizedChainWidth]);
+  const resizeMaximizedChain = (event) => {
+    const card = event.currentTarget.closest(".oi-finder-chart-card");
+    const bounds = card?.getBoundingClientRect?.();
+    if (!bounds) return;
+    const nextWidth = workspaceCompanionWidthAtPointer({
+      containerLeft: bounds.left,
+      containerWidth: bounds.width,
+      pointerX: event.clientX,
+    });
+    if (nextWidth != null) setMaximizedChainWidth(nextWidth);
+  };
+  useEffect(() => {
+    const exitFullScreenForMobileNavigation = (event) => {
+      if (!["options", "alerts"].includes(event?.detail?.target)) return;
+      setIsMaximized(false);
+    };
+    window.addEventListener(OI_CHART_MOBILE_NAVIGATION_EVENT, exitFullScreenForMobileNavigation);
+    return () => window.removeEventListener(OI_CHART_MOBILE_NAVIGATION_EVENT, exitFullScreenForMobileNavigation);
+  }, []);
   const [symbolDraft, setSymbolDraft] = useState(symbol || "");
   const [tickerDropdownOpen, setTickerDropdownOpen] = useState(false);
   const [chartTimeframe, setChartTimeframe] = useState(() => initialTimeframe || localStorage.getItem("oiFinderChartTimeframe") || "5m");
   const [bars, setBars] = useState([]);
   const [barsOwnerSymbol, setBarsOwnerSymbol] = useState(() => normalizeOiChartSymbol(symbol, ""));
   const [studyBars, setStudyBars] = useState([]);
+  // 60-day FIVE-minute tape: history for 3m/5m/10m/15m, which cannot be
+  // rebuilt from the 30-minute studyBars.
+  const [fineStudyTape, setFineStudyTape] = useState([]);
   const [dailyBars, setDailyBars] = useState([]);
   const [tosMtfSignals, setTosMtfSignals] = useState([]);
+  // TOS evaluates the MTF study once per CHART bar, so the server ships one
+  // label set per chart timeframe ({"15": [...], "60": [...]}); the 5m set is
+  // `tosMtfSignals` itself (it also carries the live-forming reconcile).
+  const [tosMtfSignalsByTimeframe, setTosMtfSignalsByTimeframe] = useState({});
   const [backendGaneshHigherTimeframeSignals, setBackendGaneshHigherTimeframeSignals] = useState([]);
   const [watchlistMtfStates, setWatchlistMtfStates] = useState([]);
   const [chartSource, setChartSource] = useState("Schwab/TOS API");
@@ -12449,9 +15143,6 @@ function OiFinderCandleChart({
     setChartStreamConnected(nextConnected);
   };
   const [chartError, setChartError] = useState("");
-  const [, setSessionShades] = useState([]);
-  const [, setSessionTimeLines] = useState([]);
-  const [, setBoldMtfLabels] = useState([]);
   const [indicatorAxisLabels, setIndicatorAxisLabels] = useState([]);
   // Pan/zoom moves the label chips imperatively (style.top) so they stay
   // glued to their indicator lines; React re-renders only on content changes
@@ -12490,7 +15181,8 @@ function OiFinderCandleChart({
   const [drawingColor, setDrawingColor] = useState("#e1e1e4");
   const [drawingMagnetEnabled, setDrawingMagnetEnabled] = useState(true);
   const [drawingsHidden, setDrawingsHidden] = useState(false);
-  const [drawingToolbarCollapsed, setDrawingToolbarCollapsed] = useState(false);
+  const [drawingToolbarCollapsed, setDrawingToolbarCollapsed] = useState(() => isPhoneChartViewport() || denseLayout);
+  const [indicatorMenuOpen, setIndicatorMenuOpen] = useState(false);
   const [drawingHistoryVersion, setDrawingHistoryVersion] = useState(0);
   const [mainPricePaneWidth, setMainPricePaneWidth] = useState(null);
   const [mainPricePaneHeight, setMainPricePaneHeight] = useState(null);
@@ -12524,6 +15216,7 @@ function OiFinderCandleChart({
         ...migratePersonsPivotVisibility(saved),
         ...migrateTosMtfSignalVisibility(saved),
         ...migrateFocusedChartIndicatorSettings(saved),
+        ...migrateMtfMaLevelsVisibility(saved),
         indicatorSettingsVersion: FOCUSED_CHART_INDICATOR_SETTINGS_VERSION,
       };
     } catch {
@@ -12536,6 +15229,7 @@ function OiFinderCandleChart({
     cloudLabels: indicatorSettings.mtfCloudLabelLower === true,
     mtfSqueeze410: indicatorSettings.mtfSqueeze410Lower === true,
   };
+  emaCloudsEnabledRef.current = indicatorSettings.clouds === true;
   const [indicatorOptions, setIndicatorOptions] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("oiFinderChartIndicatorOptions") || "null");
@@ -12675,6 +15369,7 @@ function OiFinderCandleChart({
           ...migratePersonsPivotVisibility(profile.indicatorSettings),
           ...migrateTosMtfSignalVisibility(profile.indicatorSettings),
           ...migrateFocusedChartIndicatorSettings(profile.indicatorSettings),
+          ...migrateMtfMaLevelsVisibility(profile.indicatorSettings),
         }));
       }
       if (profile.indicatorOptions && typeof profile.indicatorOptions === "object") {
@@ -12714,7 +15409,7 @@ function OiFinderCandleChart({
           mtfSqueeze410PlotControlVersion: "tos-squeeze410-plots-v1",
         }));
       }
-      setIndicatorSaveStatus(`Loaded saved ${chartTimeframe} indicators for all tickers`);
+      setIndicatorSaveStatus("saved");
     } catch {
       setIndicatorSaveStatus("");
     }
@@ -12729,7 +15424,7 @@ function OiFinderCandleChart({
       if (detail.indicatorOptions && typeof detail.indicatorOptions === "object") {
         setIndicatorOptions(detail.indicatorOptions);
       }
-      setIndicatorSaveStatus(`Synced ${chartTimeframe} indicators across the workspace`);
+      setIndicatorSaveStatus("saved");
     };
     window.addEventListener(OI_CHART_INDICATOR_PROFILE_EVENT, syncIndicatorProfile);
     return () => window.removeEventListener(OI_CHART_INDICATOR_PROFILE_EVENT, syncIndicatorProfile);
@@ -12766,7 +15461,7 @@ function OiFinderCandleChart({
           indicatorOptions: nextOptions,
         },
       }));
-      setIndicatorSaveStatus(`${announce ? "Saved" : "Auto-saved"} ${chartTimeframe} indicators for all tickers`);
+      setIndicatorSaveStatus("saved");
     } catch {
       setIndicatorSaveStatus(`Unable to save ${chartTimeframe} settings`);
     }
@@ -12854,23 +15549,168 @@ function OiFinderCandleChart({
   selectedTimeframeMinutesRef.current = selectedTimeframe.minutes;
   const normalizedChartSymbol = normalizeOiChartSymbol(symbol, "");
   activeChartSymbolRef.current = normalizedChartSymbol;
+  // Scanner-grade tape for THIS panel's ticker (A+/A/B circles beside bullish
+  // CALL bubbles). Tagged with the symbol it was fetched for so the render
+  // between a ticker switch and this effect never decorates the new ticker
+  // with the old one's grades. State only changes when the tape actually
+  // changed (length + last stamp): a fresh array every minute would re-run the
+  // whole chart study/bubble effect for nothing. Any failure (older backend
+  // 404, network) means no circles, never an error.
+  const [gradeTape, setGradeTape] = useState(EMPTY_GRADE_TAPE_STATE);
+  useEffect(() => {
+    if (!normalizedChartSymbol) return undefined;
+    let cancelled = false;
+    let lastSignature = null;
+    const loadGradeTape = async () => {
+      let entries = [];
+      try {
+        const response = await fetch(
+          `/api/momx-scanner/grade-tape?symbol=${encodeURIComponent(normalizedChartSymbol)}&days=5`,
+          { cache: "no-store", credentials: "include" },
+        );
+        if (response.ok) {
+          const payload = await response.json();
+          if (Array.isArray(payload?.entries)) {
+            // Pre-parse each entry's timestamp once here so per-bubble
+            // lookups (gradeWithinCandle, once per label per render) don't
+            // re-run Date.parse on the same string repeatedly.
+            entries = payload.entries.map((entry) => {
+              if (!entry || typeof entry !== "object") return entry;
+              const ms = typeof entry.t === "string" ? Date.parse(entry.t) : NaN;
+              return Number.isNaN(ms) ? entry : { ...entry, _sec: ms / 1000 };
+            });
+          }
+        }
+      } catch {
+        entries = [];
+      }
+      if (cancelled) return;
+      const signature = `${entries.length}|${entries.at(-1)?.t ?? ""}`;
+      if (signature === lastSignature) return;
+      lastSignature = signature;
+      setGradeTape(entries.length ? { symbol: normalizedChartSymbol, entries } : EMPTY_GRADE_TAPE_STATE);
+    };
+    loadGradeTape();
+    const timer = setInterval(loadGradeTape, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      setGradeTape(EMPTY_GRADE_TAPE_STATE);
+    };
+  }, [normalizedChartSymbol]);
+  const gradeTapeEntries = gradeTape.symbol === normalizedChartSymbol
+    ? gradeTape.entries
+    : EMPTY_GRADE_TAPE_STATE.entries;
+  // The BEAR grade tape (spec 2026-09-24): same shape, ?dir=bear, read for the
+  // PUT labels' red circles. Loaded and refreshed exactly like the bull one.
+  const [bearGradeTape, setBearGradeTape] = useState(EMPTY_GRADE_TAPE_STATE);
+  useEffect(() => {
+    if (!normalizedChartSymbol) return undefined;
+    let cancelled = false;
+    let lastSignature = null;
+    const loadBearGradeTape = async () => {
+      let entries = [];
+      try {
+        const response = await fetch(
+          `/api/momx-scanner/grade-tape?symbol=${encodeURIComponent(normalizedChartSymbol)}&days=5&dir=bear`,
+          { cache: "no-store", credentials: "include" },
+        );
+        if (response.ok) {
+          const payload = await response.json();
+          if (Array.isArray(payload?.entries)) {
+            entries = payload.entries.map((entry) => {
+              if (!entry || typeof entry !== "object") return entry;
+              const ms = typeof entry.t === "string" ? Date.parse(entry.t) : NaN;
+              return Number.isNaN(ms) ? entry : { ...entry, _sec: ms / 1000 };
+            });
+          }
+        }
+      } catch {
+        entries = [];
+      }
+      if (cancelled) return;
+      const signature = `${entries.length}|${entries.at(-1)?.t ?? ""}`;
+      if (signature === lastSignature) return;
+      lastSignature = signature;
+      setBearGradeTape(entries.length ? { symbol: normalizedChartSymbol, entries } : EMPTY_GRADE_TAPE_STATE);
+    };
+    loadBearGradeTape();
+    const timer = setInterval(loadBearGradeTape, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      setBearGradeTape(EMPTY_GRADE_TAPE_STATE);
+    };
+  }, [normalizedChartSymbol]);
+  const bearGradeTapeEntries = bearGradeTape.symbol === normalizedChartSymbol
+    ? bearGradeTape.entries
+    : EMPTY_GRADE_TAPE_STATE.entries;
+  // The tape a label reads: PUT-direction labels take the bear tape.
+  const gradeEntriesFor = useCallback(
+    (direction, label) => (direction === "PUT" || isBearishPutLabel(String(label || ""), direction)
+      ? bearGradeTapeEntries
+      : gradeTapeEntries),
+    [bearGradeTapeEntries, gradeTapeEntries],
+  );
   // The API supplies one-minute bars.  Always aggregate to the timeframe the
   // trader selected (including 5m) so the plotted index range, candles, and
   // higher-timeframe markers share the same time base. Never render the prior
   // ticker's candles during the one React frame between a symbol change and
   // the clearing effect; doing so can consume the new ticker's initial focus.
+  // The React tape adopts a FORMING-bar-only change at most every 30s. Every
+  // new chartBars reference recomputes every active study over the whole tape
+  // (1-2s per panel) and re-applies every series; during market hours the
+  // forming bar changed the reference 3-6 times a minute per panel (one-minute
+  // closes plus each 30s reconcile), and six panels of that kept the main
+  // thread ~90% blocked - the study ladder never reached the lower panes. The
+  // candles themselves never wait: the stream paints the forming candle and
+  // the LIVE line imperatively on every tick. A new display bar, a backfill,
+  // a shorter tape, or a ticker/timeframe switch is adopted immediately.
+  // Each panel gets its own adoption window (30-45s, fixed per chart instance)
+  // so six panels never adopt - and recompute every study - in the same tick:
+  // aligned adoptions batched into one React pass and froze the page for up
+  // to 14s in the production six-across workspace.
+  const chartBarsAdoptWindowMsRef = useRef(0);
+  if (!chartBarsAdoptWindowMsRef.current) {
+    let hash = 0;
+    for (const char of chartInstanceIdRef.current) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+    chartBarsAdoptWindowMsRef.current = OI_CHART_STUDY_TAPE_ADOPT_MS + (hash % 15_000);
+  }
+  const chartBarsHoldRef = useRef({ bars: [], key: "", firstTime: 0, lastTime: 0, length: 0, adoptedAt: 0 });
   const chartBars = useMemo(
-    () => barsOwnerSymbol === normalizedChartSymbol
-      ? buildChartDisplayBars({
-        studyBars,
-        liveBars: bars,
-        dailyBars,
-        aggregationMinutes: selectedTimeframe.minutes,
-        sourcesNormalized: true,
-      })
-      : [],
-    [bars, barsOwnerSymbol, dailyBars, normalizedChartSymbol, selectedTimeframe.minutes, studyBars],
+    () => {
+      const next = barsOwnerSymbol === normalizedChartSymbol
+        ? buildChartDisplayBars({
+          studyBars,
+          fineStudyBars: fineStudyTape,
+          liveBars: bars,
+          dailyBars,
+          aggregationMinutes: selectedTimeframe.minutes,
+          sourcesNormalized: true,
+        })
+        : [];
+      const held = chartBarsHoldRef.current;
+      const key = `${normalizedChartSymbol}|${selectedTimeframe.minutes}`;
+      const firstTime = Number(next[0]?.time || 0);
+      const lastTime = Number(next.at(-1)?.time || 0);
+      const now = Date.now();
+      const formingBarOnly = held.key === key
+        && held.length > 0
+        && next.length === held.length
+        && firstTime === held.firstTime
+        && lastTime === held.lastTime;
+      if (formingBarOnly && now - held.adoptedAt < chartBarsAdoptWindowMsRef.current) return held.bars;
+      chartBarsHoldRef.current = { bars: next, key, firstTime, lastTime, length: next.length, adoptedAt: now };
+      return next;
+    },
+    [bars, barsOwnerSymbol, dailyBars, fineStudyTape, normalizedChartSymbol, selectedTimeframe.minutes, studyBars],
   );
+  // Keep the candles (they are real) but say history is still coming.
+  const deepHistoryPending = chartDeepHistoryPending({
+    renderedCandleCount: chartBars.length,
+    aggregationMinutes: selectedTimeframe.minutes,
+    historyLoading: chartHistoryLoading,
+  });
   const drawingScopeKey = chartDrawingScopeKey(normalizedChartSymbol, selectedTimeframe.key);
   const selectedDrawing = chartDrawings.find((drawing) => drawing.id === selectedDrawingId) || null;
   chartDrawingsRef.current = chartDrawings;
@@ -13319,11 +16159,17 @@ function OiFinderCandleChart({
     window.dispatchEvent(new CustomEvent(OI_CHART_LIVE_PRICE_EVENT, {
       detail: { symbol: normalizedChartSymbol, price: latestChartPrice },
     }));
+    // The charted symbol already streams for its candles — share that price so
+    // the Auto Alert mirror can keep this ticker's call/put lines on the right
+    // side of price without opening a separate stream for every auto ticker.
+    oiAlertLivePrices.set(normalizedChartSymbol, { price: latestChartPrice, receivedAt: Date.now() });
   }, [latestChartPrice, normalizedChartSymbol]);
   const symbolAlerts = useMemo(() => {
     const normalizedSymbol = normalizeOiChartSymbol(symbol);
     return priceAlerts
-      .filter((alert) => normalizeOiChartSymbol(alert.symbol) === normalizedSymbol)
+      // Auto Alert mirrors draw only the current call/put targets (2 lines per
+      // ticker); their confirmed levels stay in the bell list, not on the chart.
+      .filter((alert) => normalizeOiChartSymbol(alert.symbol) === normalizedSymbol && !alert.hideOnChart)
       .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
   }, [priceAlerts, symbol]);
   // One counter drives the staged study activation. Each study's memo keys on
@@ -13334,28 +16180,95 @@ function OiFinderCandleChart({
   // replacing the short live seed) the very same render must see stage 0 —
   // waiting for an effect to reset the counter would let that render compute
   // every study against the new tape in one multi-second blocked task.
+  renderMark("hooks-a");
   const [chartStudyStageState, setChartStudyStageState] = useState({ key: "", stage: 0, bars: null });
   // Bumped whenever the Lightweight Charts series tree is rebuilt: the new
   // (empty) series must receive the studies again, so the ladder restarts and
   // re-applies them one stage at a time instead of in one full-cost pass.
   const [chartSeriesResetVersion, setChartSeriesResetVersion] = useState(0);
-  const chartStudyStageResetKey = `${normalizedChartSymbol}|${selectedTimeframe.key}|${chartSeriesResetVersion}|${Number(chartBars[0]?.time || 0)}`;
-  // The stage is earned for one exact tape reference. Any tape change — a
-  // closed live candle, a delta merge, growing history — drops the effective
-  // stage to 0 in the same render, so the ~15 study memos never all recompute
-  // against the new tape inside one synchronous render (the original
-  // multi-second freeze). While the ladder re-climbs, each memo returns its
-  // held previous output, so the studies stay visible instead of flickering.
+  // Which symbol the current Lightweight Charts tree was built for. The tree
+  // is torn down and rebuilt whenever an indicator activates, and only a
+  // genuine symbol change should reset the viewport - see the rebuild branch.
+  const chartTreeSymbolRef = useRef("");
+  // Deliberately NOT keyed on the first bar's time. The server paints a small
+  // fast-start tape and streams the real history in behind it, so the first bar
+  // moves backwards mid-load (measured: 0 -> 236 -> 6,107 bars). While that was
+  // part of the key, every backfill wave changed the key and threw away every
+  // held study output, so the whole indicator set blanked and re-climbed the
+  // ladder up to four times per switch - which is what "indicators load slow"
+  // actually was. Symbol and timeframe are already in the key, so a first-bar
+  // change with both unchanged can only mean "same chart, more history": the
+  // one case where discarding the outputs is wrong. Held values from the short
+  // tape stay on screen for the few hundred ms the ladder needs to recompute
+  // against the full one, instead of the trader watching them disappear.
+  const chartStudyStageResetKey = `${normalizedChartSymbol}|${selectedTimeframe.key}|${chartSeriesResetVersion}`;
+  // The stage is earned for one exact tape reference, so that ~15 study memos
+  // never all recompute against a genuinely new tape inside one synchronous
+  // render (the original multi-second freeze). While the ladder re-climbs each
+  // memo returns its held output, so studies stay visible instead of flickering.
+  //
+  // But a routine poll response only ever APPENDS to the tape, and dropping to
+  // stage 0 for it made every poll re-climb the whole ladder - each hop a full
+  // workspace render plus a setData across 15 canvases. Measured on production
+  // while idle and market-closed: 6,263ms of long tasks in 8.1s (77% of wall
+  // time), and stalling the chart polls took that to exactly zero. A tape that
+  // still starts on the same bar and only grew is not the case the reset was
+  // built for, so keep the earned stage and let the memos refresh in place.
+  const stageBars = chartStudyStageState.bars;
+  const tapeOnlyGrewAtTail = Array.isArray(stageBars)
+    && stageBars.length > 0
+    && chartBars.length >= stageBars.length
+    && Number(stageBars[0]?.time || 0) === Number(chartBars[0]?.time || 0);
+  // A same-chart tape SWAP that is not a big backfill keeps the stage too.
+  // Measured in the six-across workspace during market hours: a panel's
+  // stream drops to the REST fallback and its 11,782-bar tape is replaced by
+  // a 2,656-bar one (first bar moved forward), then swaps back when the
+  // stream recovers. Each swap dropped the stage to 0, and with six panels
+  // sharing the thread a full twenty-stage climb takes longer than the gap
+  // between swaps - so the lower studies (stages 9-11) were never reached on
+  // the later panels ("lower indicators are not working"). Recomputing the
+  // already-active studies against a tape no larger than ~1.25x the one they
+  // were earned on costs no more than the hop that computed them, so only a
+  // genuinely larger tape (the fast-start -> full-history backfill this reset
+  // was built for) still restarts the ladder.
+  const tapeSwappedWithinBudget = Array.isArray(stageBars)
+    && stageBars.length > 0
+    && chartBars.length > 0
+    && chartBars.length <= Math.ceil(stageBars.length * 1.25);
   const chartStudyStage = chartStudyStageState.key === chartStudyStageResetKey
-    && chartStudyStageState.bars === chartBars
+    && (chartStudyStageState.bars === chartBars || tapeOnlyGrewAtTail || tapeSwappedWithinBudget)
     ? chartStudyStageState.stage
     : 0;
-  // Held outputs survive tail growth (same reset key); a ticker/timeframe
-  // switch or a first-bar change discards them so a new chart can never
-  // briefly paint the previous tape's studies.
+  // Diagnostics: how often, and why, this panel's ladder dropped to 0, and how
+  // often the tape identity changed (every change re-runs every active study).
+  const studyStageResetDiagRef = useRef({ key: 0, tape: 0, lastKey: "", lastStage: 0, tapeVersions: 0, lastTape: null, studyRuns: 0 });
+  {
+    const diag = studyStageResetDiagRef.current;
+    diag.renders = (diag.renders || 0) + 1;
+    if (diag.lastTape !== chartBars) {
+      diag.tapeVersions += 1;
+      diag.lastTape = chartBars;
+    }
+    if (chartStudyStage === 0 && diag.lastStage > 0) {
+      if (diag.lastKey !== chartStudyStageResetKey) diag.key += 1;
+      else diag.tape += 1;
+    }
+    diag.lastKey = chartStudyStageResetKey;
+    diag.lastStage = chartStudyStage;
+  }
+  // Held outputs survive tape growth at either end (same reset key); a
+  // ticker/timeframe switch or a series-tree rebuild discards them so a new
+  // chart can never briefly paint the previous SYMBOL's studies.
   const heldChartStudyOutputsRef = useRef({ key: "", values: {} });
   if (heldChartStudyOutputsRef.current.key !== chartStudyStageResetKey) {
     heldChartStudyOutputsRef.current = { key: chartStudyStageResetKey, values: {} };
+  }
+  // How far the ladder jumps per hop. It starts at one stage and only widens
+  // after it has MEASURED that a hop was cheap, so the first climb on a new
+  // chart can never gamble a multi-second render - see the advance effect.
+  const stageAdvanceRef = useRef({ step: 1, startedAt: 0, stage: -1, key: "" });
+  if (stageAdvanceRef.current.key !== chartStudyStageResetKey) {
+    stageAdvanceRef.current = { step: 1, startedAt: 0, stage: -1, key: chartStudyStageResetKey };
   }
   const heldStudyOutput = (name, fallback) => {
     const { values } = heldChartStudyOutputsRef.current;
@@ -13394,17 +16307,78 @@ function OiFinderCandleChart({
   // paints interleave; a reset-key or tape change cancels the pending advance
   // via cleanup and the climb restarts from the freshly derived stage 0.
   const hasChartBarsForStudies = chartBars.length > 0;
+  // The hop reads the LATEST stage/tape when it fires instead of the values
+  // closed over when it was queued, and a panel holds at most one queue slot.
+  // Before, every dependency change (a 30s tape adoption, a poll landing)
+  // cancelled the queued hop and re-queued it at the back - with six panels
+  // taking turns, a panel could lose its slot for a minute at a time - and a
+  // re-run between "hop fired" and "hop landed" zeroed the timing marker, so
+  // the landed hop never released the shared gate and every hop waited out
+  // the 2.5s safety timeout. Measured: stage 1 after 60s in all six panels.
+  const ladderLatestRef = useRef(null);
+  ladderLatestRef.current = { chartStudyStage, chartStudyStageResetKey, chartBars, hasChartBarsForStudies };
+  const ladderPendingCancelRef = useRef(null);
   useEffect(() => {
-    if (!hasChartBarsForStudies || chartStudyStage >= OI_CHART_STUDY_STAGE_MAX) return undefined;
-    const timerHandle = window.setTimeout(() => {
-      setChartStudyStageState({
-        key: chartStudyStageResetKey,
-        stage: chartStudyStage + 1,
-        bars: chartBars,
+    const advance = stageAdvanceRef.current;
+    // Price the hop that just landed. Most stages belong to studies the trader
+    // has switched off, so they cost a render and no arithmetic; climbing those
+    // one render at a time is why a full activation took twenty paints. Widen
+    // the stride while hops stay under budget and collapse straight back to one
+    // as soon as a hop gets expensive, which keeps the guarantee that matters:
+    // no single task blocks long enough to be felt.
+    if (advance.startedAt && advance.stage === chartStudyStage) {
+      const cost = performance.now() - advance.startedAt;
+      advance.lastCostMs = Math.round(cost);
+      advance.step = cost <= OI_CHART_STUDY_STAGE_BUDGET_MS
+        ? Math.min(advance.step * 2, OI_CHART_STUDY_STAGE_MAX_STEP)
+        : 1;
+      advance.startedAt = 0;
+      {
+        const diag = studyStageResetDiagRef.current;
+        diag.stageCosts = { ...(diag.stageCosts || {}), [chartStudyStage]: Math.round(cost) };
+        const hostElement = chartRef.current?.closest?.(".oi-finder-chart-card");
+        if (hostElement) hostElement.dataset.stageCosts = JSON.stringify(diag.stageCosts);
+      }
+    } else if (advance.startedAt && chartStudyStage !== advance.fromStage) {
+      // The hop fired from `fromStage` but the ladder is now somewhere else
+      // (a tape swap or key change reset it to 0 before the hop landed). The
+      // hop is abandoned: clear the marker so this panel can re-arm.
+      advance.startedAt = 0;
+    }
+    if (!hasChartBarsForStudies || chartStudyStage >= OI_CHART_STUDY_STAGE_MAX) {
+      ladderPendingCancelRef.current?.();
+      ladderPendingCancelRef.current = null;
+      return undefined;
+    }
+    // A hop is in flight (fired, not yet landed) or already queued: keep it.
+    if (advance.startedAt || ladderPendingCancelRef.current) return undefined;
+    ladderPendingCancelRef.current = scheduleStudyLadderHop(() => {
+      ladderPendingCancelRef.current = null;
+      const latest = ladderLatestRef.current;
+      if (!latest || !latest.hasChartBarsForStudies || latest.chartStudyStage >= OI_CHART_STUDY_STAGE_MAX) return;
+      // Read the CURRENT advance record, not the one captured when the hop was
+      // queued: a ticker/timeframe switch replaces it (step back to 1), and a
+      // hop queued before the switch must not carry the old chart's widened
+      // stride onto the new tape (up to 8 stages in one render).
+      const liveAdvance = stageAdvanceRef.current;
+      const nextStage = Math.min(OI_CHART_STUDY_STAGE_MAX, latest.chartStudyStage + liveAdvance.step);
+      liveAdvance.startedAt = performance.now();
+      liveAdvance.fromStage = latest.chartStudyStage;
+      liveAdvance.stage = nextStage;
+      flushSync(() => {
+        setChartStudyStageState({
+          key: latest.chartStudyStageResetKey,
+          stage: nextStage,
+          bars: latest.chartBars,
+        });
       });
-    }, 0);
-    return () => window.clearTimeout(timerHandle);
+    });
+    return undefined;
   }, [chartBars, chartStudyStage, chartStudyStageResetKey, hasChartBarsForStudies]);
+  useEffect(() => () => {
+    ladderPendingCancelRef.current?.();
+    ladderPendingCancelRef.current = null;
+  }, []);
   const previousOhlcStudy = useMemo(
     () => stagePreviousOhlcReady
       ? holdStudyOutput("previousOhlc", buildPreviousOhlcStudy(chartBars, dailyBars, easternDateFormatter, indicatorOptions))
@@ -13462,6 +16436,7 @@ function OiFinderCandleChart({
   }, [layoutPanel, selectedTimeframe.key]);
   // Shared 4:00 AM ET start for every MomoX level family. Null on D/W/M, where
   // the levels stay full-width because a daily bar has no premarket open.
+  renderMark("stage");
   const momoxLevelAnchor = useMemo(
     () => stageSessionContextReady
       ? holdStudyOutput("momoxLevelAnchor", momoxLevelAnchorTime(chartBars, {
@@ -13639,11 +16614,12 @@ function OiFinderCandleChart({
       stageMtfCloudLabelReady,
     ],
   );
+  renderMark("studies-a");
   const mtfAdxStudies = useMemo(
     () => !stageMtfAdxReady
       ? heldStudyOutput("mtfAdx", [])
       : holdStudyOutput("mtfAdx", indicatorSettings.mtfAdxCloudsLower
-        ? MTF_ADX_SERIES_DEFINITIONS.flatMap((definition) => {
+        ? ((studyStageResetDiagRef.current.studyRuns += 1), MTF_ADX_SERIES_DEFINITIONS).flatMap((definition) => {
         if (definition.showKey && indicatorOptions[definition.showKey] === false) return [];
         const aggregationMinutes = definition.key === "current"
           ? selectedTimeframe.minutes
@@ -13939,6 +16915,7 @@ function OiFinderCandleChart({
           chartWidth: Number(chartRef.current?.clientWidth) || 960,
         }),
         isBigScreen: usesBigScreenProfile,
+        timeframeMinutes: selectedTimeframe.minutes,
       });
       const savedRange = chartExplicitSavedLogicalRange({
         latestIndex: latestCandleIndex,
@@ -14040,7 +17017,7 @@ function OiFinderCandleChart({
         savedAt: new Date().toISOString(),
       };
       localStorage.setItem(OI_CHART_LAYOUT_PROFILES_STORAGE_KEY, JSON.stringify(profiles));
-      setIndicatorSaveStatus(`Saved ${selectedTimeframe.label} ${usesBigScreenProfile ? "big-screen" : "normal"} layout for all tickers`);
+      setIndicatorSaveStatus("saved");
     } catch {
       setIndicatorSaveStatus("Unable to save chart layout");
     }
@@ -14189,6 +17166,7 @@ function OiFinderCandleChart({
     const futureSlots = chartDefaultFutureSlots({
       historySlots,
       isBigScreen: usesBigScreenProfile,
+      timeframeMinutes: selectedTimeframe.minutes,
     });
     // Ceiling was 16px, which is the root cause of "still zoomed in on a wide
     // pane": once the candle count was capped, this spread those few bars
@@ -14223,36 +17201,100 @@ function OiFinderCandleChart({
       bars: chartBars,
       timeToIndex: (time) => timeScale.timeToIndex(time, true),
     });
-    timeScale.applyOptions({
-      barSpacing: logicalScaleSpacing.barSpacing,
-      rightOffset: logicalScaleSpacing.rightOffset,
-      minBarSpacing: logicalScaleSpacing.minBarSpacing,
-    });
+    // Only write spacing that actually changed. This runs once per study
+    // stage, and applyOptions repaints the scale even when every value is
+    // identical - another contributor to the visible twitching while a new
+    // ticker loads. slotsPerCandle shifts as study series are added, so the
+    // computed numbers wobble slightly between stages; comparing first keeps
+    // the no-op stages silent.
+    const currentScale = timeScale.options?.() || {};
+    const spacingChanged = (key, value) => Math.abs(Number(currentScale[key] ?? NaN) - Number(value)) > 0.01;
+    const nextScaleOptions = {};
+    if (spacingChanged("barSpacing", logicalScaleSpacing.barSpacing)) {
+      nextScaleOptions.barSpacing = logicalScaleSpacing.barSpacing;
+    }
+    if (spacingChanged("rightOffset", logicalScaleSpacing.rightOffset)) {
+      nextScaleOptions.rightOffset = logicalScaleSpacing.rightOffset;
+    }
+    if (spacingChanged("minBarSpacing", logicalScaleSpacing.minBarSpacing)) {
+      nextScaleOptions.minBarSpacing = logicalScaleSpacing.minBarSpacing;
+    }
+    if (Object.keys(nextScaleOptions).length) timeScale.applyOptions(nextScaleOptions);
     // First establish the window using candle TIMES. Logical indexes belong
     // to the combined chart and are made much denser by 30m indicator points;
     // using them before the shared scale has settled is what reduced a 207-bar
     // 4H tape to roughly a dozen visible candles.
     const firstVisibleCandle = chartBars[Math.max(0, chartBars.length - historySlots)];
     const latestVisibleCandle = chartBars.at(-1);
-    const firstVisibleTime = Number(firstVisibleCandle?.time || 0);
-    const latestVisibleTime = Number(latestVisibleCandle?.time || 0);
-    if (firstVisibleTime > 0 && latestVisibleTime >= firstVisibleTime) {
-      timeScale.setVisibleRange({ from: firstVisibleTime, to: latestVisibleTime });
+    let firstVisibleTime = Number(firstVisibleCandle?.time || 0);
+    let latestVisibleTime = Number(latestVisibleCandle?.time || 0);
+    // TradingView-style zoom memory (user decision 2026-08-12, reversing the
+    // 2026-08-07 always-default-composition rule): when this panel has a
+    // remembered span for the symbol+timeframe, open on that span instead of
+    // the default window. The remembered value is SECONDS anchored to the
+    // newest candle (chartTimeViewportRange), so it survives index reflow —
+    // restoring an index span here is what caused the 2026-08-05 ratchet.
+    // Framing still goes through the same time-based writer below, so staged
+    // studies land on the identical window and nothing dances.
+    const rememberedRange = chartTimeViewportRange(
+      latestVisibleTime,
+      readChartTimeViewport(window.sessionStorage, chartTimeViewportKey),
+    );
+    if (rememberedRange) {
+      // Only the FROM edge moves. setVisibleRange cannot express times past
+      // the newest data point (the scale clamps, which would defeat the
+      // already-framed comparison below and re-twitch every study stage), so
+      // the forward breathing room keeps coming from rightOffset exactly as
+      // the default path's does. rememberedRange.from = latest + forward -
+      // span, so the candle window keeps the same seconds-per-pixel the
+      // trader saved. Clamped to the oldest candle so a span deeper than
+      // this symbol's history never frames blank canvas.
+      firstVisibleTime = Math.max(rememberedRange.from, Number(chartBars[0]?.time || 0));
+    }
+    const framedByTime = firstVisibleTime > 0 && latestVisibleTime >= firstVisibleTime;
+    if (framedByTime) {
+      // Skip the write when the chart is already showing this exact window.
+      // Framing runs once per study stage, and even an identical
+      // setVisibleRange makes Lightweight Charts re-fit and repaint, which is
+      // visible as a twitch. Frame-differencing the user's recording showed
+      // four such jumps while one ticker loaded. Comparing first tells the
+      // repeat calls to do nothing at all rather than land in the same place
+      // noisily.
+      const current = timeScale.getVisibleRange?.();
+      const alreadyFramed = current
+        && Math.abs(Number(current.from) - firstVisibleTime) < 1
+        && Math.abs(Number(current.to) - latestVisibleTime) < 1;
+      if (!alreadyFramed) {
+        timeScale.setVisibleRange({ from: firstVisibleTime, to: latestVisibleTime });
+      }
     }
     // Anchor the viewport to the candle series' actual newest timestamp. Some
     // MTF studies contribute their own logical points, so positioning from the
     // chart-wide data edge can leave the searched ticker's latest candle out
     // of view and autoscale an older, compressed section of the session.
-    const candleWindow = chartCandleLogicalWindow({
-      bars: chartBars,
-      historySlots,
-      futureSlots,
-      timeToIndex: (time) => timeScale.timeToIndex(time, true),
-    });
-    if (candleWindow) {
-      timeScale.setVisibleLogicalRange(candleWindow);
-    } else {
-      timeScale.scrollToPosition(logicalScaleSpacing.rightOffset, false);
+    // FALLBACK ONLY. This used to run unconditionally and overrode the
+    // time-based range above, which is what made a new ticker's chart "dance":
+    // studies are staged after the candles, every stage re-runs this framing,
+    // and a logical-index window moves each time a study series contributes
+    // more timestamps. Frame-differencing a screen recording showed four
+    // distinct jumps in the first 3.3s of loading a ticker, with the chart
+    // still in between - one per study stage, not an animation.
+    //
+    // A TIME range is invariant under that reflow, so re-framing at each stage
+    // now lands on exactly the same window and nothing moves. The index path
+    // still covers the case where candle times are unusable.
+    if (!framedByTime) {
+      const candleWindow = chartCandleLogicalWindow({
+        bars: chartBars,
+        historySlots,
+        futureSlots,
+        timeToIndex: (time) => timeScale.timeToIndex(time, true),
+      });
+      if (candleWindow) {
+        timeScale.setVisibleLogicalRange(candleWindow);
+      } else {
+        timeScale.scrollToPosition(logicalScaleSpacing.rightOffset, false);
+      }
     }
   };
 
@@ -14279,10 +17321,39 @@ function OiFinderCandleChart({
       timeToIndex: (time) => timeScale.timeToIndex(time, true),
     });
     const visibleFutureSlots = Math.min(futureLogicalSlots, Math.max(2, visibleSpan * 0.3));
-    timeScale.setVisibleLogicalRange({
-      from: Number(latestCandleIndex) - (visibleSpan - visibleFutureSlots),
-      to: Number(latestCandleIndex) + visibleFutureSlots,
-    });
+    const nextFrom = Number(latestCandleIndex) - (visibleSpan - visibleFutureSlots);
+    const nextTo = Number(latestCandleIndex) + visibleFutureSlots;
+    // Defense in depth: skip the write when the view is already here. Even an
+    // identical setVisibleLogicalRange makes Lightweight Charts re-fit and
+    // repaint, which reads as a twitch; a caller that re-invokes this on an
+    // unchanged view must be a no-op, not a re-frame.
+    if (Math.abs(Number(visibleRange.from) - nextFrom) < 0.5
+      && Math.abs(Number(visibleRange.to) - nextTo) < 0.5) {
+      return;
+    }
+    timeScale.setVisibleLogicalRange({ from: nextFrom, to: nextTo });
+  };
+
+  // TradingView keeps following new candles as long as your view still SHOWS
+  // the newest bar - zooming or nudging at the right edge does not opt you out.
+  // Ours gated live-follow on manualTimeNavigation/autoFollow flags, and a
+  // single wheel notch or 3px drag sets those permanently, so after any
+  // interaction new candles marched off the right edge until Reset was pressed.
+  // barsAfter is the count of bars to the RIGHT of the visible range: <= 1 means
+  // the newest candle is still on screen (negative = forward whitespace), while
+  // a trader scrolled back into history has a large positive value and is
+  // correctly left alone.
+  const chartViewIsAtLiveEdge = () => {
+    try {
+      const range = chartApiRef.current?.timeScale?.()?.getVisibleLogicalRange?.();
+      if (!range) return false;
+      const bars = chartSeriesRef.current?.candleSeries?.barsInLogicalRange?.(range);
+      if (!bars) return false;
+      return Number(bars.barsAfter) <= 1;
+    } catch {
+      // Never let a viewport probe break the render path.
+      return false;
+    }
   };
 
   const enableCandleAutoScale = () => {
@@ -14294,11 +17365,11 @@ function OiFinderCandleChart({
     // bails (e.g. bars not yet loaded). Momo-Chart does the same.
     chartApiRef.current?.priceScale?.("right")?.applyOptions?.({
       autoScale: true,
-      scaleMargins: OI_CHART_PRICE_SCALE_MARGINS,
+      scaleMargins: priceScaleMargins(isPhoneChartViewport()),
     });
     chartSeriesRef.current?.candleSeries?.priceScale?.()?.applyOptions?.({
       autoScale: true,
-      scaleMargins: OI_CHART_PRICE_SCALE_MARGINS,
+      scaleMargins: priceScaleMargins(isPhoneChartViewport()),
     });
   };
 
@@ -14373,6 +17444,7 @@ function OiFinderCandleChart({
   // trader can still pan mid-bar; the lock reasserts at the next close.
   // Surfaces without a workspace panel (detached popouts) fall back to local
   // state via the missing onPriceLockChange prop.
+  renderMark("studies-b");
   const [localPriceLock, setLocalPriceLock] = useState(false);
   const priceLockActive = onPriceLockChange ? priceLockEnabled === true : localPriceLock;
   const setPriceLockActive = (next) => {
@@ -14445,6 +17517,141 @@ function OiFinderCandleChart({
     queueChartLayoutSave();
   };
 
+  // ---- Toolbar pan arrows --------------------------------------------------
+  // The trader has drag-panning and jump-to-latest but no way to step through
+  // time by clicking; his phone scrollbar has arrows and he wanted the same on
+  // desktop. One click walks a third of the visible span; press-and-hold
+  // repeats. TIME AXIS ONLY - these reach the chart the same way Latest/Reset
+  // do (chartApiRef -> timeScale) and only ever write a logical range. Nothing
+  // here may touch the price scale: that is exactly why the native
+  // pressedMouseMove drag is disabled (see the handleScroll comment), because
+  // it slides a manual price scale and every price study visibly drifts.
+  const [panStepReady, setPanStepReady] = useState({ back: true, forward: true });
+  const panBoundsCacheRef = useRef({ at: 0, bounds: null });
+  const panHoldRef = useRef({ timer: 0, detach: null });
+  const refreshPanStepReadyRef = useRef(null);
+
+  const chartPanBounds = () => {
+    // timeToIndex is the only honest way to turn a candle time into a logical
+    // index, but the disabled-state probe below runs on the scroll hot path,
+    // so the answer is cached for a beat - the mapping only moves when bars
+    // arrive, and a slightly stale bound can only shorten a step, never
+    // reverse one.
+    const cache = panBoundsCacheRef.current;
+    const now = performance.now();
+    if (cache.bounds && now - cache.at < 400) return cache.bounds;
+    const timeScale = chartApiRef.current?.timeScale?.();
+    const bars = Array.isArray(displayedChartBarsRef.current?.bars)
+      ? displayedChartBarsRef.current.bars
+      : [];
+    if (!timeScale || !bars.length) return null;
+    const firstCandleTime = Number(bars[0]?.time || 0);
+    const latestCandleTime = Number(bars.at(-1)?.time || 0);
+    if (!(firstCandleTime > 0) || !(latestCandleTime > 0)) return null;
+    const firstIndex = Number(timeScale.timeToIndex?.(firstCandleTime, true));
+    const latestIndex = Number(timeScale.timeToIndex?.(latestCandleTime, true));
+    if (![firstIndex, latestIndex].every(Number.isFinite)) return null;
+    const { futureSlots } = defaultTradingViewScale();
+    const futureLogicalSlots = futureSlots * chartLogicalSlotsPerCandle({
+      bars,
+      timeToIndex: (time) => timeScale.timeToIndex(time, true),
+    });
+    const bounds = { firstIndex, lastIndex: latestIndex + futureLogicalSlots };
+    panBoundsCacheRef.current = { at: now, bounds };
+    return bounds;
+  };
+
+  const chartPanTargetRange = (direction, logicalRange) => {
+    const range = logicalRange || chartApiRef.current?.timeScale?.()?.getVisibleLogicalRange?.();
+    if (!range) return null;
+    const bounds = chartPanBounds();
+    return chartPanStepLogicalRange({
+      logicalRange: range,
+      direction,
+      firstIndex: bounds?.firstIndex,
+      lastIndex: bounds?.lastIndex,
+    });
+  };
+
+  const refreshPanStepReady = (logicalRange) => {
+    const back = Boolean(chartPanTargetRange("back", logicalRange));
+    const forward = Boolean(chartPanTargetRange("forward", logicalRange));
+    // Handing back the SAME object when nothing changed is what keeps this off
+    // the render path: React bails out, so the scroll subscription may call it
+    // every frame and only an actual edge crossing costs a render.
+    setPanStepReady((current) => (
+      current.back === back && current.forward === forward ? current : { back, forward }
+    ));
+  };
+
+  useEffect(() => {
+    refreshPanStepReadyRef.current = refreshPanStepReady;
+  });
+
+  const panChartStep = (direction) => {
+    const timeScale = chartApiRef.current?.timeScale?.();
+    const nextRange = chartPanTargetRange(direction);
+    if (!timeScale || !nextRange) {
+      // Nothing further that way: repaint the arrows as disabled rather than
+      // re-applying the same range, which would make the candles jitter.
+      refreshPanStepReady();
+      return false;
+    }
+    // A deliberate navigation, exactly like the zoom controls: delayed REST
+    // history must not replace it with the opening preset, and the chart must
+    // stop auto-following the live bar.
+    manualTimeNavigationRef.current = true;
+    chartInitialViewRef.current = false;
+    lastAutoFocusedSymbolRef.current = normalizedChartSymbol;
+    autoFollowLatestSymbolRef.current = "";
+    timeScale.setVisibleLogicalRange(nextRange);
+    persistChartTimeViewport(timeScale);
+    queueChartLayoutSave();
+    refreshPanStepReady(nextRange);
+    return true;
+  };
+
+  const stopPanHold = () => {
+    const hold = panHoldRef.current;
+    if (hold.timer) window.clearTimeout(hold.timer);
+    if (hold.detach) hold.detach();
+    panHoldRef.current = { timer: 0, detach: null };
+  };
+
+  const startPanHold = (direction) => {
+    stopPanHold();
+    if (!panChartStep(direction)) return;
+    // Mild acceleration with a pause before the first repeat, so a normal click
+    // stays exactly one step.
+    const queue = (delay) => {
+      panHoldRef.current.timer = window.setTimeout(() => {
+        panHoldRef.current.timer = 0;
+        if (!panChartStep(direction)) {
+          stopPanHold();
+          return;
+        }
+        queue(Math.max(90, Math.round(delay * 0.62)));
+      }, delay);
+    };
+    // The button's own handlers cannot see a release that lands outside it, and
+    // an alt-tab mid-hold fires neither. Both are caught here, and the whole
+    // set is torn down together so a hold can never outlive its press.
+    const release = () => stopPanHold();
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    window.addEventListener("blur", release);
+    panHoldRef.current.detach = () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      window.removeEventListener("blur", release);
+    };
+    queue(350);
+  };
+
+  // Unmounting mid-hold (a panel closed, a layout switched) must not leave the
+  // repeat timer or its window listeners behind.
+  useEffect(() => stopPanHold, []);
+
   useEffect(() => {
     if (!usesBigScreenProfile) {
       let normalSecondFrame = 0;
@@ -14500,6 +17707,7 @@ function OiFinderCandleChart({
     const previousOverflow = document.body.style.overflow;
     if (isMaximized) {
       document.body.style.overflow = "hidden";
+      document.body.classList.add("oi-chart-card-maximized");
       document.addEventListener("keydown", closeOnEscape);
     }
     return () => {
@@ -14514,6 +17722,7 @@ function OiFinderCandleChart({
       lastAppliedPaneFactorsRef.current = panes.map((pane) => pane.getStretchFactor());
       if (isMaximized) {
         document.body.style.overflow = previousOverflow;
+        document.body.classList.remove("oi-chart-card-maximized");
         document.removeEventListener("keydown", closeOnEscape);
       }
     };
@@ -14602,17 +17811,6 @@ function OiFinderCandleChart({
   // quote packet cannot resend the complete indicator stack while the trader
   // is dragging or zooming.
   const chartReferencePrice = Number(latestChartPrice || underlyingPrice || 0);
-  // BMO for the chart: the last print before the 4:00 AM ET session anchor.
-  // MomoX splits call walls from put walls here rather than at the live tick,
-  // which is what keeps a crossed wall drawn instead of deleting it the moment
-  // price trades through, and keeps the chart identical to the High OI list.
-  const chartSessionBmo = useMemo(() => {
-    if (!momoxLevelAnchor || !Array.isArray(chartBars) || !chartBars.length) return 0;
-    for (let index = chartBars.length - 1; index >= 0; index -= 1) {
-      if (Number(chartBars[index]?.time) < momoxLevelAnchor) return Number(chartBars[index]?.close) || 0;
-    }
-    return 0;
-  }, [chartBars, momoxLevelAnchor]);
   const persistentChartOiLevelModel = useMemo(() => buildHighOiLevelModel({
     levelSets: chartOiLevelSets,
     requestedExpiry: chartOiScopeExpiry,
@@ -14676,6 +17874,7 @@ function OiFinderCandleChart({
     chartReferencePrice,
   ]);
 
+  const chartExpectedMove = Number(currentAtm?.expectedMove || currentAtm?.expected_move || 0);
   const nextWallLevels = useMemo(() => {
     const requestedExpiry = String(currentAtm?.expiry || "");
     const rankWalls = (rows, side, color, secondaryColor) => {
@@ -14758,9 +17957,9 @@ function OiFinderCandleChart({
       reportedChartOiLevelModel.visibleLevels,
     ]);
     // MomoX parity: in window scope the chart draws exactly the High OI list
-    // walls — calls only above the session anchor and puts only below it, one
-    // row per strike at its dominant expiry, top N per side — instead of a
-    // wall at every ranked strike, labeled like "1.3K 8/7".
+    // walls — delta-banded (default 0.14-0.50), one row per strike at its
+    // dominant expiry, top N per side — instead of a wall at every ranked
+    // strike, labeled like "1.3K 8/7".
     const buildWindowWallLevels = () => {
       const chainSource = Array.isArray(selectedChainRows) && selectedChainRows.length
         ? selectedChainRows
@@ -14772,8 +17971,10 @@ function OiFinderCandleChart({
       const listModel = buildHighOiContractList({
         rows: chainSource,
         underlyingPrice: liveSpot,
-        anchorPrice: chartSessionBmo,
         topPerSide: Math.max(1, Math.min(30, Number(indicatorOptions.oiLevelsMaxPerSide) || 8)),
+        // Same MomoX ±6·EM rule as the High OI list so the chart's call/put OI
+        // lines are the exact strikes the sheet and TOS script draw.
+        expectedMove: chartExpectedMove,
       });
       const expiryTag = (expiry) => (/^\d{4}-\d{2}-\d{2}$/.test(String(expiry || ""))
         ? ` ${Number(String(expiry).slice(5, 7))}/${Number(String(expiry).slice(8, 10))}`
@@ -14891,7 +18092,8 @@ function OiFinderCandleChart({
       });
     });
     return [...levelsByPrice.values()];
-  }, [callRows, putRows, selectedChainRows, persistentChartOiLevelModel, reportedChartOiLevelModel, indicatorOptions.oiLevelsCallColor, indicatorOptions.oiLevelsCallWeakColor, indicatorOptions.oiLevelsMaxPerSide, indicatorOptions.oiLevelsPutColor, indicatorOptions.oiLevelsPutWeakColor, indicatorOptions.oiLevelsShowWeak, indicatorSettings.oiLevels, chartReferencePrice, chartSessionBmo, chartOiScopeExpiry]);
+  }, [callRows, putRows, selectedChainRows, persistentChartOiLevelModel, reportedChartOiLevelModel, indicatorOptions.oiLevelsCallColor, indicatorOptions.oiLevelsCallWeakColor, indicatorOptions.oiLevelsMaxPerSide, indicatorOptions.oiLevelsPutColor, indicatorOptions.oiLevelsPutWeakColor, indicatorOptions.oiLevelsShowWeak, indicatorSettings.oiLevels, chartReferencePrice, chartOiScopeExpiry, chartExpectedMove]);
+  renderMark("walls");
   const nextWallLevelsSignature = `${normalizedChartSymbol}|${String(currentAtm?.expiry || "")}|${chartWallLevelSignature(nextWallLevels)}`;
   const stableWallLevelsRef = useRef({ signature: "", levels: [] });
   if (stableWallLevelsRef.current.signature !== nextWallLevelsSignature) {
@@ -14932,6 +18134,33 @@ function OiFinderCandleChart({
     // still be true when the user switches tickers, which skips the new
     // ticker's first request and leaves it waiting for the 30-second timer.
     let requestInFlight = false;
+    // WHEN the in-flight request started. requestInFlight is cleared in a
+    // `finally`, which covers a rejected fetch - but not a promise that never
+    // settles at all. A phone that sleeps mid-request has its socket killed
+    // without the browser ever rejecting, so the `finally` never runs, the flag
+    // stays true forever, and every later loadChart returns early at the guard
+    // above. The chart then holds one frame indefinitely while the countdown
+    // keeps animating: measured on CRWV 2026-09-04, frozen at 19:55 the
+    // previous evening with price, day-move and candles all stopped at that
+    // instant, twelve hours after the fact.
+    let requestStartedAt = 0;
+    // Consecutive transport failures (5xx / timeout / lost connection) for THIS
+    // symbol. Scoped to the effect so switching ticker starts clean. Without
+    // it every failure looked like "warming" and the chart showed the loading
+    // placeholder forever with nothing to act on.
+    let transportFailureStreak = 0;
+    // How many readiness polls have come back with nothing paintable.
+    //
+    // 2026-08-28: `hasBars` on the status endpoint reflects only the SERVER'S
+    // IN-MEMORY cache (api_server.py: `bool(cached and cached["payload"]["bars"])`).
+    // A symbol with no memory entry reports hasBars:false even though the chart
+    // endpoint serves it from disk immediately - measured on GAP, status said
+    // hasBars:false/warming:true while the very next request returned 900 bars
+    // in 6s. The phone waits for that flag before painting, so a cold ticker sat
+    // on "Loading live one-minute candles from Schwab/TOS..." indefinitely while
+    // its data was one request away. Believing a narrow flag over the data it
+    // claims to describe is the same trap as the EA / momx snapshot.
+    let emptyStatusPolls = 0;
     const scheduleHistoryRefresh = (delayMs = 450) => {
       if (cancelled || historyRefreshTimer) return;
       historyRefreshTimer = window.setTimeout(async () => {
@@ -14940,14 +18169,34 @@ function OiFinderCandleChart({
           const status = await loadOiChartHistoryStatus(symbol);
           if (cancelled) return;
           if (status?.historyReady) {
-            // Download and normalize the large indicator tape exactly once,
-            // only after the tiny readiness poll says it is complete.
-            loadChart(true, false, true);
+            // Desktop promotes the complete research tape as soon as it is
+            // ready. Phones keep the compact, immediately usable window until
+            // the trader pans near its beginning; downloading and replaying
+            // several megabytes behind the latest candles is what made every
+            // mobile gesture stall after first paint.
+            if (shouldAutoLoadDeepChartHistory({
+              isMobile: isPhoneChartViewport(),
+              requested: mobileDeepHistoryRequestedRef.current,
+            })) {
+              loadChart(true, false, true);
+            }
           } else if (status?.hasBars) {
             // The fast background seed is ready. Paint those candles now;
             // loadChart will continue polling for the heavier study tape.
+            emptyStatusPolls = 0;
             loadChart(true);
           } else {
+            // Ask the chart endpoint DIRECTLY rather than waiting on a flag
+            // that only sees the memory cache. It answers from disk, so the
+            // worst case is one wasted request; the best case is the candles
+            // the trader has been staring at a spinner for. Kept to a couple of
+            // polls first so a genuinely warming symbol still gets its cheap
+            // status path rather than a tape request per poll.
+            emptyStatusPolls += 1;
+            if (emptyStatusPolls >= 3) {
+              emptyStatusPolls = 0;
+              loadChart(true);
+            }
             scheduleHistoryRefresh(status?.refreshing ? 450 : 900);
           }
         } catch {
@@ -14970,6 +18219,7 @@ function OiFinderCandleChart({
         return;
       }
       requestInFlight = true;
+      requestStartedAt = Date.now();
       const cacheDecision = oiChartClientCacheDecision(
         oiChartPayloadCache.get(normalizeOiChartSymbol(symbol, "")),
         {
@@ -14979,6 +18229,9 @@ function OiFinderCandleChart({
         },
       );
       try {
+        const compactHistory = isPhoneChartViewport()
+          && !mobileDeepHistoryRequestedRef.current
+          && !forceFullTape;
         const payload = await loadSharedOiChartPayload(
           symbol,
           bypassCache,
@@ -14986,7 +18239,21 @@ function OiFinderCandleChart({
           false,
           forceFullTape,
           oiChartNeedsInitialStudySeed(selectedTimeframeMinutesRef.current),
+          compactHistory,
         );
+        chartHistoryLoadingRef.current = Boolean(payload?.historyLoading);
+        setChartHistoryLoading(Boolean(payload?.historyLoading));
+        // Only when the key is PRESENT: delta reconciles ship tail+scalars and
+        // omit it, and Boolean(undefined) would clear the badge early.
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "studiesPending")) {
+          setChartStudiesPending(Boolean(payload.studiesPending));
+        }
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "premarketGapNote")) {
+          // Only when PRESENT: a delta reconcile omits it, and Boolean(undefined)
+          // would clear a live notice on the next tail fetch.
+          setChartPremarketGapNote(String(payload.premarketGapNote || ""));
+          setChartPremarketGapState(String(payload.premarketGapState || ""));
+        }
         // The shared loader normalizes the large history arrays once per
         // symbol/request. Every panel can reuse those exact arrays instead of
         // independently Map-copying and sorting up to ~16K records.
@@ -15000,20 +18267,34 @@ function OiFinderCandleChart({
         // The server answers with partial series while it promotes a cold
         // ticker's full history. Series guards below use this to prefer the
         // data already on screen over a temporarily empty replacement.
-        const isHistoryStillLoading = payload?.historyLoading === true
-          || payload?.warming === true
-          || payload?.refreshing === true;
+        // Also true for a slim first-paint payload, which OMITS studyBars /
+        // fineStudyBars / dailyBars rather than reporting them as absent.
+        const isHistoryStillLoading = chartHistorySeriesGuarded(payload);
         if (!normalizedBars.length) {
           if (payload?.warming || payload?.refreshing || payload?.bars?.length) {
             if (!cancelled) {
-              setChartError("");
+              if (payload?.transportFailure) {
+                transportFailureStreak += 1;
+                setChartError(oiChartTransportFailureNotice(
+                  transportFailureStreak,
+                  payload.transportError,
+                ));
+              } else {
+                // A genuine server-side warm-up: the request itself succeeded.
+                transportFailureStreak = 0;
+                setChartError("");
+              }
               scheduleHistoryRefresh(350);
             }
             return;
           }
           throw new Error(`No valid live one-minute candles are available for ${symbol}.`);
         }
-        if (!cancelled) {
+        // One synchronous render per payload: while the thread was busy with one
+        // panel, the other panels' payloads queued into the SAME React pass and
+        // six full study recomputes ran back to back (measured 14-22s stalls).
+        // flushSync bounds a pass to this panel's own work.
+        if (!cancelled) flushSync(() => {
           // Preserve a streamed in-progress candle if the slower REST
           // reconciliation response ends at the same (or an older) minute.
           setBars((current) => {
@@ -15054,6 +18335,11 @@ function OiFinderCandleChart({
             normalizedStudyBars,
             isHistoryStillLoading,
           ));
+          setFineStudyTape((current) => resolveHistorySeriesUpdate(
+            current,
+            normalizeChartCandleBars(payload?.fineStudyBars),
+            isHistoryStillLoading,
+          ));
           setDailyBars((current) => resolveHistorySeriesUpdate(
             current,
             normalizedDailyBars,
@@ -15086,12 +18372,22 @@ function OiFinderCandleChart({
             ? payload.mtfLiveSignalContexts
             : [];
           tosMtfLiveContextsRef.current = incomingLiveContexts;
+          setTosMtfSignalsByTimeframe((current) => {
+            const incomingByTimeframe = payload?.mtfSignalsByTimeframe;
+            // Slim/live-price responses omit the key; keep what we have.
+            return incomingByTimeframe && typeof incomingByTimeframe === "object"
+              ? incomingByTimeframe
+              : current;
+          });
           setTosMtfSignals((current) => {
             const incoming = Array.isArray(payload?.mtfSignals) ? payload.mtfSignals : [];
             // A lightweight live-price response can arrive while the 60-day
             // secondary study is still refreshing. Never erase already valid
             // higher-timeframe bubbles with that temporary empty payload.
-            const baseSignals = !incoming.length && payload?.historyLoading && current.length
+            // Same for a fast-start build whose tape was too short to run
+            // the TOS studies (mtfSignalsPending) or skipped them outright.
+            const keepCurrent = payload?.historyLoading || payload?.mtfSignalsPending || payload?.studiesPending;
+            const baseSignals = !incoming.length && keepCurrent && current.length
               ? current
               : incoming;
             const latestStreamBar = streamedBarsRef.current.at(-1);
@@ -15122,6 +18418,18 @@ function OiFinderCandleChart({
               : next;
           });
           setChartSource(payload.source || "Schwab/TOS API");
+          // Candles arrived, so the transport is healthy again: the next lost
+          // request gets the full grace window rather than instantly
+          // re-surfacing a notice the trader already watched clear.
+          //
+          // Deliberately NO viewport refit here. A refit was tried when a
+          // recovered pane appeared blank, but that blankness was an empty
+          // study seed (see nextStudySeedRetryDelayMs) - a series with no data,
+          // which no amount of reframing can rescue. Meanwhile the refit ran
+          // unguarded by manualTimeNavigationRef, so every recovery from a
+          // brief outage threw the trader back to the latest candles and
+          // destroyed the pan they were reading older price action with.
+          transportFailureStreak = 0;
           setChartError("");
           if (payload.historyLoading && !historyRefreshTimer && !cacheDecision.revalidate) {
             scheduleHistoryRefresh();
@@ -15137,7 +18445,7 @@ function OiFinderCandleChart({
               loadChart(true);
             }, OI_CHART_STALE_REVALIDATE_DELAY_MS);
           }
-        }
+        });
       } catch (requestError) {
         if (!cancelled) setChartError(requestError instanceof Error ? requestError.message : "Live candle chart unavailable.");
       } finally {
@@ -15157,6 +18465,14 @@ function OiFinderCandleChart({
       }
     };
     refreshChartHistoryRef.current = () => loadChart(true, true);
+    // Same reload WITHOUT asking the server to rebuild its history. Serves the
+    // tape already on disk, so it returns in ~1.4s instead of ~20s.
+    refreshChartTapeRef.current = () => loadChart(true, false);
+    requestDeepChartHistoryRef.current = () => {
+      if (!isPhoneChartViewport() || mobileDeepHistoryRequestedRef.current) return;
+      mobileDeepHistoryRequestedRef.current = true;
+      scheduleHistoryRefresh(0);
+    };
 
     setBarsOwnerSymbol(normalizeOiChartSymbol(symbol, ""));
     if (streamRenderTimerRef.current) {
@@ -15174,6 +18490,7 @@ function OiFinderCandleChart({
     renderedRawBarTimeRef.current = 0;
     lastGapBackfillAtRef.current = 0;
     setStudyBars([]);
+    setFineStudyTape([]);
     updateChartStreamConnected(false);
     setDailyBars([]);
     setBackendGaneshHigherTimeframeSignals([]);
@@ -15189,6 +18506,8 @@ function OiFinderCandleChart({
     // it started. Reusing that manual range for the next symbol can put every
     // new candle off-screen (for example TSLA $328 inside an old $495 range).
     manualPriceNavigationRef.current = false;
+    chartHistoryLoadingRef.current = false;
+    mobileDeepHistoryRequestedRef.current = false;
     loadChart();
     let lastFullHistoryRefreshAt = Date.now();
     const timer = setInterval(
@@ -15200,8 +18519,51 @@ function OiFinderCandleChart({
       },
       OI_CHART_REST_RECONCILE_MS,
     );
+    // Phone tabs suspend, and the dashboard already learned this lesson (see
+    // the visibilitychange handler on loadDashboard): the last frame painted
+    // before suspension stays on screen for HOURS. The chart had no such
+    // handler, so a suspended tab came back showing last night's candles, last
+    // night's price and last night's day-move, with nothing marking them stale.
+    // On a trading screen that is the worst possible failure - CRWV showed
+    // $84.35 / +2.47% while the market was at $85.73 / +1.38%.
+    // WAKE. Driven by the AGE OF THE DATA ON SCREEN, not by how long the tab was
+    // hidden - a request that died while the phone slept and a server tape that
+    // stalled while the tab stayed visible leave the identical shape (a price
+    // that ticks over candles that never extend), so one rule must catch both.
+    //
+    // Three events, because a phone can come back in three different ways:
+    // visibilitychange (tab refocused), pageshow (restored from the bfcache,
+    // which fires NO visibilitychange), and online (radio came back).
+    //
+    // A fresh tape does nothing at all. The previous version reloaded on every
+    // wake, which spent a request each time the trader glanced at the app.
+    const onChartWake = (event) => {
+      if (
+        event && event.type === "visibilitychange"
+        && (typeof document === "undefined" || document.visibilityState !== "visible")
+      ) return;
+      const decision = chartWakeDecision({
+        nowMs: Date.now(),
+        latestBarTime: latestRawBarTimeRef.current,
+        requestInFlight,
+        requestStartedAt,
+      });
+      // A request older than the abandon window cannot still be running: its
+      // socket died with the suspension and its `finally` will never clear the
+      // in-flight flag, so every later loadChart returns early forever. This is
+      // what left CRWV frozen on 19:55 candles for twelve hours.
+      if (decision.abandonRequest) requestInFlight = false;
+      if (decision.mode === "full") loadChart(true, true);
+      else if (decision.mode === "delta") loadChart(true);
+    };
+    document.addEventListener("visibilitychange", onChartWake);
+    window.addEventListener("pageshow", onChartWake);
+    window.addEventListener("online", onChartWake);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onChartWake);
+      window.removeEventListener("pageshow", onChartWake);
+      window.removeEventListener("online", onChartWake);
       if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
       if (staleRefreshTimer) clearTimeout(staleRefreshTimer);
       if (queuedFullHistoryRefreshTimer) clearTimeout(queuedFullHistoryRefreshTimer);
@@ -15211,6 +18573,8 @@ function OiFinderCandleChart({
       }
       clearInterval(timer);
       refreshChartHistoryRef.current = null;
+      refreshChartTapeRef.current = null;
+      requestDeepChartHistoryRef.current = null;
     };
   }, [symbol]);
 
@@ -15224,32 +18588,92 @@ function OiFinderCandleChart({
     if (!oiChartNeedsInitialStudySeed(selectedTimeframe.minutes)
       || oiChartHasInitialStudySeed({ studyBars })) return undefined;
     let cancelled = false;
-    loadSharedOiChartPayload(symbol, false, false, false, false, true)
-      .then((payload) => {
-        if (cancelled) return;
-        const incoming = normalizeChartCandleBars(payload?.studyBars);
-        if (incoming.length) {
-          setStudyBars((current) => resolveHistorySeriesUpdate(current, incoming, false));
-          chartInitialViewRef.current = true;
-          manualTimeNavigationRef.current = false;
-          setChartError("");
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
+    let retryTimer = 0;
+    let attempt = 0;
+    // An EMPTY payload is the dangerous case, not a thrown one: it sets no
+    // state, so studyBars.length never changes and this effect would never be
+    // re-run. Without an explicit retry the pane stays blank forever - a
+    // populated header and live price lines over a canvas with no candles and
+    // no price axis. Retry until a real tape arrives.
+    const requestSeed = () => {
+      attempt += 1;
+      loadSharedOiChartPayload(symbol, false, false, false, false, true)
+        .then((payload) => {
+          if (cancelled) return;
+          const incoming = normalizeChartCandleBars(payload?.studyBars);
+          if (incoming.length) {
+            setStudyBars((current) => resolveHistorySeriesUpdate(current, incoming, false));
+            chartInitialViewRef.current = true;
+            manualTimeNavigationRef.current = false;
+            setChartError("");
+            return;
+          }
+          scheduleRetry();
+        })
+        .catch((error) => {
+          if (cancelled) return;
           setChartError(error instanceof Error ? error.message : "4-hour chart history unavailable.");
-        }
-      });
+          scheduleRetry();
+        });
+    };
+    const scheduleRetry = () => {
+      if (cancelled || retryTimer) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = 0;
+        requestSeed();
+      }, nextStudySeedRetryDelayMs(attempt));
+    };
+    requestSeed();
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [symbol, selectedTimeframe.minutes, studyBars.length]);
+
+  // The MAIN tape has no equivalent of the study-seed retry above, and the
+  // same trap applies to it: the symbol effect clears bars to [] and cancels
+  // the in-flight request on every run, so a pane whose fetch is cancelled
+  // mid-flight - a rapid ticker change, a workspace sync forcing a symbol -
+  // is left with zero bars and nothing to re-trigger it. That is the
+  // "Loading live one-minute candles from Schwab/TOS..." pane that never
+  // recovers until a hard reload. An error already shows its own message, so
+  // only the silent-empty case is retried here.
+  useEffect(() => {
+    // Deliberately NOT gated on chartError: the common way a pane ends up
+    // empty is a TIMEOUT, which sets an error. Gating on it disabled this
+    // recovery in precisely the case it exists for.
+    if (!normalizedChartSymbol || bars.length) return undefined;
+    let attempt = 0;
+    let timer = 0;
+    const tryAgain = () => {
+      attempt += 1;
+      refreshChartHistoryRef.current?.();
+      timer = window.setTimeout(tryAgain, nextStudySeedRetryDelayMs(attempt));
+    };
+    timer = window.setTimeout(tryAgain, nextStudySeedRetryDelayMs(0));
+    return () => { if (timer) window.clearTimeout(timer); };
+  }, [normalizedChartSymbol, bars.length, chartError]);
 
   useEffect(() => {
     const normalizedSymbol = normalizeOiChartSymbol(symbol, "");
     if (!normalizedSymbol) return undefined;
 
+    // How many times this symbol's live tape has run ahead of the rendered one.
+    // Scoped to the effect, so switching ticker starts clean - see the gap
+    // handler below for why the FIRST occurrence must not be expensive.
+    let gapBackfillAttempts = 0;
+
     const mergeStreamBar = (incoming, fromTrade = false, preserveExistingClose = false) => {
+      const mergeStartedAt = performance.now();
+      const diag = studyStageResetDiagRef.current;
+      diag.streamMerges = (diag.streamMerges || 0) + 1;
+      try {
+        mergeStreamBarInner(incoming, fromTrade, preserveExistingClose);
+      } finally {
+        diag.streamMsTotal = (diag.streamMsTotal || 0) + (performance.now() - mergeStartedAt);
+      }
+    };
+    const mergeStreamBarInner = (incoming, fromTrade = false, preserveExistingClose = false) => {
       const time = Math.floor(Number(incoming?.time || 0) / 60) * 60;
       if (!Number.isFinite(time) || time <= 0) return;
       const previousTime = Number(latestRawBarTimeRef.current || 0);
@@ -15260,11 +18684,25 @@ function OiFinderCandleChart({
         && now - Number(lastGapBackfillAtRef.current || 0) > 10_000
       ) {
         // A newly subscribed ticker can receive its live bar before Schwab's
-        // REST snapshot has caught up. Refresh the short history once so the
-        // completed minutes between REST and streaming are filled rather than
-        // leaving a visual hole. A genuine no-trade/halt interval remains empty.
+        // REST snapshot has caught up. Fill the completed minutes between REST
+        // and streaming rather than leaving a visual hole. A genuine
+        // no-trade/halt interval remains empty.
+        //
+        // ESCALATE - do not open with the expensive call. refreshChartHistory
+        // is loadChart(true, TRUE), and that second argument asks the SERVER to
+        // rebuild its history: measured 2026-09-04, 20.2s against 1.4s for a
+        // plain reload of the same symbol. Because a cached tape is routinely
+        // more than 90s behind at open, that fired on virtually every chart
+        // open and IS the 20-60s wait the trader reports. A plain reload serves
+        // the server's existing tape from disk and closes most of the gap; only
+        // a gap that survives it justifies making the server rebuild.
         lastGapBackfillAtRef.current = now;
-        refreshChartHistoryRef.current?.();
+        gapBackfillAttempts += 1;
+        if (gapBackfillAttempts >= 3) {
+          refreshChartHistoryRef.current?.();
+        } else {
+          refreshChartTapeRef.current?.();
+        }
       }
       latestRawBarTimeRef.current = Math.max(previousTime, time);
       const currentBars = streamedBarsRef.current;
@@ -15329,6 +18767,8 @@ function OiFinderCandleChart({
             // paint the correct bar, so discard any cross-context callback.
             if (pendingUpdate.symbol !== activeChartSymbolRef.current
               || Number(pendingUpdate.timeframeMinutes) !== Number(selectedTimeframeMinutesRef.current)) return;
+            if (Number(pendingBar.time) < nativeSeriesLastTimeRef.current) return;
+            nativeSeriesLastTimeRef.current = Number(pendingBar.time);
             liveSeries.candleSeries.update({
               time: pendingBar.time,
               open: pendingBar.open,
@@ -15431,7 +18871,15 @@ function OiFinderCandleChart({
           Number(latestEquityTradeMinuteRef.current || 0),
           Math.floor(eventMillis / 60_000) * 60,
         );
-        mergeStreamBar({ time: Math.floor(eventMillis / 1000), close: price }, true);
+        // Pass the DAY cumulative volume through. The forming candle's own
+        // volume is derived from it in chartStreamBars (today's total minus
+        // what it stood at when the minute opened); without it that bar was
+        // stamped a hard 0 and the strip read "Vol 0" over real volume.
+        mergeStreamBar({
+          time: Math.floor(eventMillis / 1000),
+          close: price,
+          totalVolume: liveNumber(quote.totalVolume),
+        }, true);
       }
       if (restFallback) {
         setChartSource("Schwab 1s quote + REST history");
@@ -15487,8 +18935,33 @@ function OiFinderCandleChart({
   useEffect(() => {
     if (!chartRef.current || !chartBars.length) return undefined;
     const chartHost = chartRef.current;
-    const chartWidth = Math.max(Math.floor(chartHost.clientWidth), 320);
-    const chartHeight = Math.max(Math.floor(chartHost.clientHeight), 240);
+    const chartHostSize = () => {
+      const styles = window.getComputedStyle(chartHost);
+      const hostClientWidth = Math.floor(Number(chartHost.clientWidth) || 0);
+      return chartHostContentBoxSize({
+        clientWidth: hostClientWidth,
+        clientHeight: chartHost.clientHeight,
+        paddingLeft: styles.paddingLeft,
+        paddingRight: styles.paddingRight,
+        paddingTop: styles.paddingTop,
+        paddingBottom: styles.paddingBottom,
+        // The 320px floor only covers a host with no measurable width. A real
+        // host - phone panel or a "6 across" desktop column (~288px) - must
+        // never be forced wider than its own box, or the right price scale
+        // with the OI strike labels is clipped off the panel.
+        minimumWidth: chartHostMinimumWidth({
+          clientWidth: hostClientWidth,
+          paddingLeft: styles.paddingLeft,
+          paddingRight: styles.paddingRight,
+        }),
+      });
+    };
+    const { width: chartWidth, height: chartHeight } = chartHostSize();
+    // Diagnostic: how many times the whole chart tree has been torn down and
+    // rebuilt. A rebuild is the expensive, visibly-shaking path, so this must
+    // stay flat while indicators are toggled. Kept on document.body.dataset
+    // because page `window.*` globals are invisible to the browser tooling.
+    document.body.dataset.chartBuilds = String(Number(document.body.dataset.chartBuilds || 0) + 1);
     const chart = createChart(chartRef.current, {
       // Explicit sizing is more reliable than autoSize when this panel is
       // mounted after a route/layout change. ResizeObserver keeps it fluid.
@@ -15515,7 +18988,7 @@ function OiFinderCandleChart({
       rightPriceScale: {
         borderColor: "#34343a",
         autoScale: true,
-        scaleMargins: OI_CHART_PRICE_SCALE_MARGINS,
+        scaleMargins: priceScaleMargins(isPhoneChartViewport()),
         entireTextOnly: true,
       },
       localization: {
@@ -15569,6 +19042,14 @@ function OiFinderCandleChart({
           labelBackgroundColor: "#344957",
         },
       },
+      // TradingView mobile: a long press raises the crosshair, dragging moves
+      // it, and LIFTING THE FINGER dismisses it so the legend returns to the
+      // live bar. The library default is OnNextTap, which leaves _startTrackPoint
+      // set after touchend - so the OHLC readout stayed frozen on the inspected
+      // bar and every later drag moved the crosshair instead of panning the
+      // chart. It also re-syncs with our own bottom time label, which is already
+      // hidden on pointerleave at touch-end.
+      trackingMode: { exitMode: TrackingModeExitMode.OnTouchEnd },
       // Let the price scale be adjusted independently. The prior setup only
       // permitted horizontal time movement, so the right price axis was inert.
       handleScroll: {
@@ -15578,7 +19059,17 @@ function OiFinderCandleChart({
         // any vertical delta, which makes every price study visibly drift.
         pressedMouseMove: false,
         horzTouchDrag: true,
-        vertTouchDrag: !allowPageScroll,
+        // TradingView parity on a phone: the chart owns the finger, both axes.
+        // This was `!allowPageScroll` so a vertical swipe over the candles
+        // scrolled the page instead — but Lightweight Charts feeds this ONE
+        // option to both the candle pane's and the right price axis'
+        // MouseEventHandler (each built with
+        // `treatVertTouchDragAsPageScroll: () => !handleScroll.vertTouchDrag`),
+        // and that handler latches the decision on the first move past 5px.
+        // So it did not merely hand vertical swipes to the page: it also froze
+        // the price axis, leaving nothing on a touch device that could move the
+        // chart up or down. Everywhere else in the app this was already true.
+        vertTouchDrag: true,
       },
       handleScale: {
         axisPressedMouseMove: true,
@@ -15771,6 +19262,7 @@ function OiFinderCandleChart({
       priceFormat: { type: "custom", minMove: 0.01, formatter: (value) => `${Number(value).toFixed(2)}%` },
     }, 1);
     const addMtfAdxSignalHistogramSeries = (title, color) => chart.addSeries(HistogramSeries, {
+      crosshairMarkerVisible: false,
       title,
       color,
       priceLineColor: OI_CHART_AXIS_LABEL_BACKGROUND,
@@ -15831,11 +19323,11 @@ function OiFinderCandleChart({
       lineWidth: 3,
       lineStyle: 0,
       lineVisible: true,
-      pointMarkersVisible: true,
+      pointMarkersVisible: indicatorOptions.chartRoundDots === true,
       pointMarkersRadius: 3,
       lastValueVisible: true,
       priceLineVisible: false,
-      crosshairMarkerVisible: true,
+      crosshairMarkerVisible: indicatorOptions.chartRoundDots === true,
       priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
     }, 1);
     squeezeMomentumSeries.priceScale().applyOptions({
@@ -15852,52 +19344,12 @@ function OiFinderCandleChart({
       axisLabelVisible: false,
       title: "",
     });
-    const mtfSqueeze410Series = indicatorSettings.mtfSqueeze410Lower
-      ? Object.fromEntries(MTF_SQUEEZE_410_DEFINITIONS.map((definition) => [
-        definition.key,
-        {
-          histogram: chart.addSeries(HistogramSeries, {
-            title: "",
-            color: indicatorOptions.mtfSqueeze410NoSqueezeColor,
-            base: definition.level - 0.18,
-            lastValueVisible: false,
-            priceLineVisible: false,
-            priceFormat: {
-              type: "custom",
-              minMove: 0.5,
-              formatter: (value) => Number.isInteger(Number(value))
-                ? String(Number(value))
-                : Number(value).toFixed(1),
-            },
-          }, 2),
-          bubble: chart.addSeries(LineSeries, {
-            title: "",
-            color: indicatorOptions.mtfSqueeze410NoSqueezeColor,
-            priceLineColor: OI_CHART_AXIS_LABEL_BACKGROUND,
-            lineVisible: false,
-            lastValueVisible: true,
-            priceLineVisible: false,
-            crosshairMarkerVisible: false,
-            priceFormat: {
-              type: "custom",
-              minMove: 0.5,
-              formatter: (value) => Number.isInteger(Number(value))
-                ? String(Number(value))
-                : Number(value).toFixed(1),
-            },
-          }, 2),
-        },
-      ]))
-      : {};
-    const mtfSqueeze410RangeAnchorSeries = indicatorSettings.mtfSqueeze410Lower
-      ? chart.addSeries(LineSeries, {
-        color: "rgba(0, 0, 0, 0)",
-        lineVisible: false,
-        lastValueVisible: false,
-        priceLineVisible: false,
-        crosshairMarkerVisible: false,
-      }, 2)
-      : null;
+    const {
+      series: mtfSqueeze410Series,
+      rangeAnchor: mtfSqueeze410RangeAnchorSeries,
+    } = indicatorSettings.mtfSqueeze410Lower
+      ? createMtfSqueeze410Series(chart, indicatorOptions)
+      : EMPTY_MTF_SQUEEZE_410_SERIES;
     const panes = chart.panes();
     // Keep the candle pane dominant while giving both lower studies the same
     // baseline height. Traders can still resize a pane and save that choice.
@@ -15926,11 +19378,19 @@ function OiFinderCandleChart({
     // stale defaults never matter here because an indicator toggle rebuilds
     // the whole chart and every pane is explicitly configured right here, and
     // enableCandleAutoScale() re-asserts pane 0's contract on Latest/Reset.
+    // crosshairMarkerVisible DEFAULTS TO TRUE in lightweight-charts, so a series
+    // that simply omits it paints a filled circle on itself wherever the
+    // crosshair sits. These four are the dots Ganesh photographed - magenta /
+    // yellow / cyan is ema9 / ema21 / ema50 exactly - and they are why the dots
+    // survived switching point markers off: crosshair markers are a separate
+    // option. Tied to the same chartRoundDots switch so one control governs
+    // every circle on the chart.
+    const crosshairDots = indicatorOptions.chartRoundDots === true;
     const cloudMaxSeries = {
-      ema9: chart.addSeries(LineSeries, { color: "#ff00ff", lineWidth: 1, lastValueVisible: false, priceLineVisible: false, autoscaleInfoProvider: excludeStudyFromMainAutoscale }),
-      ema21: chart.addSeries(LineSeries, { color: "#ffff00", lineWidth: 1, lastValueVisible: false, priceLineVisible: false, autoscaleInfoProvider: excludeStudyFromMainAutoscale }),
-      ema50: chart.addSeries(LineSeries, { color: "#00ffff", lineWidth: 1, lastValueVisible: false, priceLineVisible: false, autoscaleInfoProvider: excludeStudyFromMainAutoscale }),
-      sma200: chart.addSeries(LineSeries, { color: "#006400", lineWidth: 2, lastValueVisible: false, priceLineVisible: false, autoscaleInfoProvider: excludeStudyFromMainAutoscale }),
+      ema9: chart.addSeries(LineSeries, { color: "#ff00ff", lineWidth: 1, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: crosshairDots, autoscaleInfoProvider: excludeStudyFromMainAutoscale }),
+      ema21: chart.addSeries(LineSeries, { color: "#ffff00", lineWidth: 1, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: crosshairDots, autoscaleInfoProvider: excludeStudyFromMainAutoscale }),
+      ema50: chart.addSeries(LineSeries, { color: "#00ffff", lineWidth: 1, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: crosshairDots, autoscaleInfoProvider: excludeStudyFromMainAutoscale }),
+      sma200: chart.addSeries(LineSeries, { color: "#006400", lineWidth: 2, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: crosshairDots, autoscaleInfoProvider: excludeStudyFromMainAutoscale }),
     };
     const addPivotSeries = (title, color, lineWidth = 1, lineStyle = 2) => chart.addSeries(LineSeries, {
       title,
@@ -15956,8 +19416,13 @@ function OiFinderCandleChart({
         S3: addPivotSeries("", indicatorOptions.pivotPointsSupportColor, 1, lineStyle),
       },
     ]));
+    // Every Persons timeframe gets its series up front, exactly like the
+    // pivot-point series above. Creating only the ticked ones meant each
+    // timeframe checkbox changed the shape of the series tree, which forced
+    // this whole effect — and the chart with it — to be rebuilt. The study
+    // returns empty arrays for an unticked timeframe, so an idle series
+    // simply holds no data.
     const personsPivotSeries = Object.fromEntries(PERSONS_PIVOT_TIMEFRAMES
-      .filter(({ optionKey }) => indicatorOptions[optionKey] === true)
       .map(({ key: timeframe, lineStyle }) => [
       timeframe,
       {
@@ -15991,294 +19456,6 @@ function OiFinderCandleChart({
     const signalMarkers = createSeriesMarkers(candleSeries, [], { zOrder: "top" });
     const nativeTosPrimitive = new TosNativeChartPrimitive();
     candleSeries.attachPrimitive(nativeTosPrimitive);
-    const updateSessionShades = () => {
-      const shades = sessionWindowsRef.current.flatMap((window) => {
-        const start = chart.timeScale().timeToCoordinate(window.start);
-        const end = chart.timeScale().timeToCoordinate(window.end);
-        if (start == null || end == null) return [];
-        return [{
-          key: window.key,
-          tone: window.tone,
-          label: window.label,
-          left: Math.round(Math.min(start, end)),
-          width: Math.max(Math.round(Math.abs(end - start)) + 8, 1),
-        }];
-      });
-      setSessionShades(shades);
-    };
-    const updateSessionTimeLines = () => {
-      const displayed = displayedChartBarsRef.current;
-      const displayedBars = Array.isArray(displayed?.bars) ? displayed.bars : [];
-      const latestBar = displayedBars.at(-1);
-      const latestTime = Number(latestBar?.time || 0);
-      const latestLeft = latestTime ? chart.timeScale().timeToCoordinate(latestTime) : null;
-      const secondsPerBar = Math.max(1, Number(displayed?.minutes) || 1) * 60;
-      const barSpacing = Math.max(1, Number(chart.timeScale().options?.().barSpacing) || 6);
-      const lines = sessionTimeMarkersRef.current.flatMap((marker) => {
-        let left = chart.timeScale().timeToCoordinate(marker.time);
-        // lightweight-charts returns no coordinate for a timestamp beyond the
-        // latest real candle. Project that fixed session time into the chart's
-        // reserved future slots so today's complete layout remains visible.
-        if ((left == null || !Number.isFinite(Number(left)))
-          && Number(marker.time) > latestTime
-          && latestLeft != null
-          && Number.isFinite(Number(latestLeft))) {
-          left = Number(latestLeft)
-            + ((Number(marker.time) - latestTime) / secondsPerBar) * barSpacing;
-        }
-        if (left == null || !Number.isFinite(Number(left))) return [];
-        return [{ ...marker, left: Math.round(left) }];
-      });
-      setSessionTimeLines(lines);
-    };
-    const updateStudyClouds = () => {
-      const timeScale = chart.timeScale();
-      const timeCoordinateCache = new Map();
-      const priceCoordinateCache = new Map();
-      const timeCoordinate = (value) => {
-        const key = Number(value);
-        if (!timeCoordinateCache.has(key)) {
-          timeCoordinateCache.set(key, timeScale.timeToCoordinate(key));
-        }
-        return timeCoordinateCache.get(key);
-      };
-      const priceCoordinate = (value) => {
-        const key = Number(value);
-        if (!priceCoordinateCache.has(key)) {
-          priceCoordinateCache.set(key, candleSeries.priceToCoordinate(key));
-        }
-        return priceCoordinateCache.get(key);
-      };
-      const displayedCloudBars = Array.isArray(displayedChartBarsRef.current?.bars)
-        ? displayedChartBarsRef.current.bars
-        : [];
-      const displayedCloudSeconds = Math.max(
-        1,
-        Number(displayedChartBarsRef.current?.minutes) || 1,
-      ) * 60;
-      const lowerBoundCloudTime = (target) => {
-        let low = 0;
-        let high = displayedCloudBars.length;
-        while (low < high) {
-          const middle = Math.floor((low + high) / 2);
-          if (Number(displayedCloudBars[middle]?.time || 0) < target) low = middle + 1;
-          else high = middle;
-        }
-        return low;
-      };
-      const overlappingCloudBars = (startTime, endTime) => {
-        const startIndex = lowerBoundCloudTime(Number(startTime) - displayedCloudSeconds + 1);
-        const endIndex = lowerBoundCloudTime(Number(endTime));
-        return displayedCloudBars.slice(startIndex, endIndex);
-      };
-      const buildCloudSegments = (fastPoints, slowPoints, family) => {
-        const slowByTime = new Map(slowPoints.map((point) => [point.time, point.value]));
-        const aligned = fastPoints.flatMap((point) => slowByTime.has(point.time) ? [{ time: point.time, fast: point.value, slow: slowByTime.get(point.time) }] : []);
-        const plotWidth = Math.max(
-          Number(chart.paneSize(0)?.width || 0),
-          Number(chartHost.clientWidth || 0) - 72,
-        );
-        const visibilityPadding = Math.max(
-          8,
-          Number(chart.timeScale().options?.().barSpacing || 6) * 2,
-        );
-        const pathsByTone = { bull: [], bear: [] };
-        for (let index = 1; index < aligned.length; index += 1) {
-          const previous = aligned[index - 1];
-          const current = aligned[index];
-          const x1 = timeCoordinate(previous.time);
-          const x2 = timeCoordinate(current.time);
-          if ([x1, x2].some((value) => value == null || !Number.isFinite(Number(value)))) continue;
-          if (
-            Math.max(Number(x1), Number(x2)) < -visibilityPadding
-            || Math.min(Number(x1), Number(x2)) > plotWidth + visibilityPadding
-          ) continue;
-          const fastY1 = priceCoordinate(previous.fast);
-          const fastY2 = priceCoordinate(current.fast);
-          const slowY1 = priceCoordinate(previous.slow);
-          const slowY2 = priceCoordinate(current.slow);
-          if ([fastY1, fastY2, slowY1, slowY2].some((value) => value == null || !Number.isFinite(Number(value)))) continue;
-          const tone = current.fast >= current.slow ? "bull" : "bear";
-          pathsByTone[tone].push(`M ${x1} ${fastY1} L ${x2} ${fastY2} L ${x2} ${slowY2} L ${x1} ${slowY1} Z`);
-        }
-        return Object.entries(pathsByTone).flatMap(([tone, paths]) => paths.length ? [{
-          key: `${family}-${tone}`,
-          tone,
-          family,
-          path: paths.join(" "),
-        }] : []);
-      };
-      const buildOneSidedSegments = (events) => {
-        const barSpacing = Math.max(2, Number(chart.timeScale().options?.().barSpacing) || 6);
-        const plotBottom = Math.max(
-          0,
-          Number(chart.paneSize(0)?.height || chartHost.clientHeight - 29),
-        );
-        return (Array.isArray(events) ? events : []).flatMap((event) => {
-          const overlappingBars = overlappingCloudBars(event.startTime, event.endTime);
-          if (!overlappingBars.length) return [];
-          const firstX = timeCoordinate(overlappingBars[0].time);
-          const lastX = timeCoordinate(overlappingBars.at(-1).time);
-          const anchorCoordinate = priceCoordinate(event.anchor);
-          if ([firstX, lastX, anchorCoordinate].some((value) => value == null || !Number.isFinite(Number(value)))) return [];
-          const left = Number(firstX) - barSpacing / 2;
-          const right = Number(lastX) + barSpacing / 2;
-          const anchorY = Math.max(0, Math.min(plotBottom, Number(anchorCoordinate)));
-          const edgeY = event.tone === "bull" ? 0 : plotBottom;
-          const family = event.family || "mtf-4x8";
-          return [{
-            key: `${family}-${event.key}`,
-            tone: event.tone,
-            family,
-            timeframe: event.timeframe,
-            path: `M ${left} ${edgeY} L ${right} ${edgeY} L ${right} ${anchorY} L ${left} ${anchorY} Z`,
-          }];
-        });
-      };
-      const buildBandSegments = (points) => {
-        const barSpacing = Math.max(2, Number(chart.timeScale().options?.().barSpacing) || 6);
-        const options = cloudBandOptionsRef.current || {};
-        const segments = [];
-        const addShape = (point, key, firstValue, secondValue, color, opacity, kind = "band-fill") => {
-          const overlappingBars = overlappingCloudBars(point.time, point.endTime);
-          if (!overlappingBars.length) return;
-          const firstX = timeCoordinate(overlappingBars[0].time);
-          const lastX = timeCoordinate(overlappingBars.at(-1).time);
-          const firstY = priceCoordinate(firstValue);
-          const secondY = priceCoordinate(secondValue);
-          if ([firstX, lastX, firstY, secondY].some((value) => value == null || !Number.isFinite(Number(value)))) return;
-          const left = Number(firstX) - barSpacing / 2;
-          const right = Number(lastX) + barSpacing / 2;
-          segments.push({
-            key: `cloud-bands-${point.timeframeKey}-${key}-${point.time}`,
-            family: "cloud-bands",
-            timeframe: point.timeframe,
-            kind,
-            color,
-            opacity,
-            path: kind === "band-line"
-              ? `M ${left} ${firstY} L ${right} ${firstY}`
-              : `M ${left} ${firstY} L ${right} ${firstY} L ${right} ${secondY} L ${left} ${secondY} Z`,
-          });
-        };
-        (Array.isArray(points) ? points : []).forEach((point) => {
-          const option = (suffix, fallback) => cloudBandOption(options, point.indicatorKey, suffix, fallback);
-          const highColor = option("HighColor", "#ffffff");
-          const midColor = option("MidColor", "#c9b200");
-          const lowColor = option("LowColor", "#c9b200");
-          const opacity = Math.max(0.05, Math.min(0.8, Number(option("Opacity", 11)) / 100));
-          if (option("ShowLow", true) !== false && point.upperLow > point.upperBand) {
-            addShape(point, "low-upper", point.upperLow, point.upperBand, lowColor, opacity);
-          }
-          if (option("ShowLow", true) !== false && point.lowerBand > point.lowerLow) {
-            addShape(point, "low-lower", point.lowerBand, point.lowerLow, lowColor, opacity);
-          }
-          if (option("ShowMid", true) !== false && point.upperMid > point.upperBand) {
-            addShape(point, "mid-upper", point.upperMid, point.upperBand, midColor, opacity);
-          }
-          if (option("ShowMid", true) !== false && point.lowerBand > point.lowerMid) {
-            addShape(point, "mid-lower", point.lowerBand, point.lowerMid, midColor, opacity);
-          }
-          // TOS default-draws the white high-squeeze cloud; the old white
-          // suppression guard hid a plot the script always shows.
-          if (option("ShowHigh", true) !== false && point.upperHigh > point.upperBand) {
-            addShape(point, "high-upper", point.upperHigh, point.upperBand, highColor, opacity);
-          }
-          if (option("ShowHigh", true) !== false && point.lowerBand > point.lowerHigh) {
-            addShape(point, "high-lower", point.lowerBand, point.lowerHigh, highColor, opacity);
-          }
-          if (option("ShowBollingerLines", false) === true) {
-            addShape(point, "bb-upper", point.upperBand, point.upperBand, "#0000ff", 0.9, "band-line");
-            addShape(point, "bb-lower", point.lowerBand, point.lowerBand, "#0000ff", 0.9, "band-line");
-          }
-          if (option("ShowKeltnerChannels", false) === true) {
-            [
-              ["kh-upper", point.upperHigh, highColor],
-              ["kh-lower", point.lowerHigh, highColor],
-              ["km-upper", point.upperMid, "#ffc800"],
-              ["km-lower", point.lowerMid, "#ffc800"],
-              ["kl-upper", point.upperLow, "#ee82ee"],
-              ["kl-lower", point.lowerLow, "#ee82ee"],
-            ].forEach(([key, value, color]) => addShape(point, key, value, value, color, 0.9, "band-line"));
-          }
-        });
-        return segments;
-      };
-
-      const cloudData = studyCloudDataRef.current;
-      const cloudMaxOptions = cloudMaxOptionsRef.current || {};
-      const cloudMaxData = cloudData.cloudMax || {};
-      const autoFibOptions = autoFibOptionsRef.current || {};
-      const autoFibCloudStudies = Array.isArray(autoFibDataRef.current)
-        ? autoFibDataRef.current
-        : [];
-      const ichimokuOptions = ichimokuOptionsRef.current || {};
-      const ichimokuCloudStudies = Array.isArray(ichimokuDataRef.current)
-        ? ichimokuDataRef.current
-        : [];
-      const nextClouds = [
-        ...(indicatorSettings.clouds ? buildCloudSegments(cloudData.ema9, cloudData.ema21, "9-21") : []),
-        ...(indicatorSettings.clouds ? buildCloudSegments(cloudData.ema21, cloudData.ema50, "21-50") : []),
-        ...(cloudMaxOptions.enabled && cloudMaxOptions.cloudMaxShowMACloud !== false
-          ? buildCloudSegments(cloudMaxData.ema9 || [], cloudMaxData.ema21 || [], "cloudmax-9-21")
-          : []),
-        ...(cloudMaxOptions.enabled && cloudMaxOptions.cloudMaxShowMACloud !== false
-          ? buildCloudSegments(cloudMaxData.ema21 || [], cloudMaxData.ema50 || [], "cloudmax-21-50")
-          : []),
-        ...(ichimokuOptions.enabled && ichimokuOptions.ichimokuShowCloudIchimoku === true
-          ? ichimokuCloudStudies.flatMap((study) => buildCloudSegments(
-            study.cloud?.spanA || [],
-            study.cloud?.spanB || [],
-            `ichimoku-span-${study.timeframeKey}`,
-          ))
-          : []),
-        ...(ichimokuOptions.enabled && ichimokuOptions.ichimokuShowCloudTenkan === true
-          ? ichimokuCloudStudies.flatMap((study) => buildCloudSegments(
-            study.cloud?.tenkan || [],
-            study.cloud?.kijun || [],
-            `ichimoku-tenkan-${study.timeframeKey}`,
-          ))
-          : []),
-        ...(autoFibOptions.enabled && autoFibOptions.autoFibShowCloud !== false
-          ? autoFibCloudStudies.flatMap((study) => buildCloudSegments(
-            study.cloud?.fibGold || [],
-            study.cloud?.fib50 || [],
-            `autofib-${study.key}`,
-          ))
-          : []),
-        ...buildOneSidedSegments(mtfCloudDataRef.current),
-        ...buildBandSegments(cloudBandDataRef.current),
-      ];
-      window.dispatchEvent(new CustomEvent(OI_CHART_CLOUD_EVENT, {
-        detail: { chartId: chartInstanceIdRef.current, clouds: nextClouds },
-      }));
-    };
-    const updateBoldMtfLabels = () => {
-      const displayedBars = Array.isArray(displayedChartBarsRef.current?.bars)
-        ? displayedChartBarsRef.current.bars
-        : [];
-      const barsByTime = new Map(displayedBars.map((bar) => [Number(bar.time), bar]));
-      const stackCounts = new Map();
-      setBoldMtfLabels(boldMtfSignalsRef.current.flatMap((signal) => {
-        const time = Number(signal.time);
-        const bar = barsByTime.get(time);
-        const xCoordinate = chart.timeScale().timeToCoordinate(time);
-        const price = signal.position === "belowBar" ? Number(bar?.low) : Number(bar?.high);
-        const yCoordinate = candleSeries.priceToCoordinate(price);
-        if (!bar || xCoordinate == null || yCoordinate == null
-          || !Number.isFinite(Number(xCoordinate)) || !Number.isFinite(Number(yCoordinate))) return [];
-        const stackKey = `${time}-${signal.position}`;
-        const stackIndex = stackCounts.get(stackKey) || 0;
-        stackCounts.set(stackKey, stackIndex + 1);
-        const offset = 7 + stackIndex * 21;
-        return [{
-          ...signal,
-          left: Number(xCoordinate),
-          top: Number(yCoordinate) + (signal.position === "belowBar" ? offset : -offset),
-          placement: signal.position === "belowBar" ? "below" : "above",
-        }];
-      }));
-    };
     let lastIndicatorAxisLabelsSignature = "";
     const updateIndicatorAxisLabels = () => {
       const paneHeight = Number(chart.paneSize(0)?.height || 0);
@@ -16377,6 +19554,43 @@ function OiFinderCandleChart({
         };
         applyBadge("up", nearestAbove);
         applyBadge("down", nearestBelow);
+        // Same courtesy for alert lines: an armed Auto Alert target (or a
+        // manual price alert) that sits outside the framed price range gets
+        // an amber edge badge, so "why don't I see the put alert" answers
+        // itself — it is 4% below, and this is where.
+        const alertLabels = Number.isFinite(topPrice) && Number.isFinite(bottomPrice)
+          ? (indicatorAxisLabelDefinitionsRef.current || []).filter((label) => (
+            String(label.key || "").startsWith("price-alert-") && Number(label.price) > 0
+          ))
+          : [];
+        let nearestAlertAbove = null;
+        let nearestAlertBelow = null;
+        alertLabels.forEach((label) => {
+          const price = Number(label.price);
+          if (price > topPrice) {
+            if (!nearestAlertAbove || price < Number(nearestAlertAbove.price)) nearestAlertAbove = label;
+          } else if (price < bottomPrice) {
+            if (!nearestAlertBelow || price > Number(nearestAlertBelow.price)) nearestAlertBelow = label;
+          }
+        });
+        const applyAlertBadge = (edge, label) => {
+          const chip = badgesHost.querySelector(`[data-edge="alert-${edge}"]`);
+          if (!chip) return;
+          if (!label) {
+            chip.style.display = "none";
+            return;
+          }
+          const liveDefinition = (indicatorAxisLabelDefinitionsRef.current || []).find((item) => String(item.key || "") === "live-price");
+          const reference = Number(liveDefinition?.price || 0);
+          const distance = reference > 0
+            ? ` · ${(Math.abs(Number(label.price) - reference) / reference * 100).toFixed(1)}% ${edge === "up" ? "above" : "below"}`
+            : "";
+          chip.style.display = "";
+          chip.style.top = edge === "up" ? "30px" : `${Math.max(30, paneHeight - 54)}px`;
+          chip.textContent = `${edge === "up" ? "▲" : "▼"} ${label.title || ""}${distance}`;
+        };
+        applyAlertBadge("up", nearestAlertAbove);
+        applyAlertBadge("down", nearestAlertBelow);
       }
       // Position is owned by the imperative pass above, so it is deliberately
       // absent from this signature: a pan changes every top and would
@@ -16503,29 +19717,49 @@ function OiFinderCandleChart({
     };
     const updateLowerStudyPaneGeometry = () => {
       const visibility = lowerStudyVisibilityRef.current || {};
+      const headerOffsets = chartLowerStudyHeaderOffsets({
+        isPhone: isPhoneChartViewport(),
+        hasAdx: visibility.adx,
+        hasCloudLabels: visibility.cloudLabels,
+      });
       const mainPaneWidth = Number(chart.paneSize(0)?.width || 0);
       const mainPaneHeight = Number(chart.paneSize(0)?.height || 0);
       const firstLowerPaneHeight = Number(chart.paneSize(1)?.height || 0);
+      const chartWrapper = chartHost.closest?.(".oi-finder-candle-chart") || chartHost.parentElement;
+      const chartWrapperTop = chartWrapper?.getBoundingClientRect?.().top;
+      const paneElementTop = (index) => chart.panes()[index]
+        ?.getHTMLElement?.()
+        ?.getBoundingClientRect?.()
+        ?.top;
+      const firstLowerPaneTop = chartPaneOverlayTop({
+        chartTop: chartWrapperTop,
+        paneTop: paneElementTop(1),
+        fallbackTop: mainPaneHeight > 0 ? mainPaneHeight + 10 : null,
+        inset: 1,
+      });
+      const secondLowerPaneTop = chartPaneOverlayTop({
+        chartTop: chartWrapperTop,
+        paneTop: paneElementTop(2),
+        fallbackTop: mainPaneHeight > 0 && firstLowerPaneHeight > 0
+          ? mainPaneHeight + firstLowerPaneHeight + 18
+          : null,
+        inset: 8,
+      });
       setMainPricePaneWidth(mainPaneWidth > 0 ? Math.round(mainPaneWidth) : null);
       setMainPricePaneHeight(mainPaneHeight > 0 ? Math.round(mainPaneHeight) : null);
       setLowerStudyPaneTop(
-        (visibility.adx || visibility.cloudLabels || visibility.squeeze) && mainPaneHeight > 0
-          ? Math.round(mainPaneHeight + 10)
+        (visibility.adx || visibility.cloudLabels || visibility.squeeze) && firstLowerPaneTop != null
+          ? firstLowerPaneTop
           : null,
       );
       setSqueezeStudyPaneTop(
-        visibility.squeeze && mainPaneHeight > 0
-          ? Math.round(
-            mainPaneHeight
-              + 10
-              + (visibility.adx ? 18 : 0)
-              + (visibility.cloudLabels ? 22 : 0),
-          )
+        visibility.squeeze && firstLowerPaneTop != null
+          ? Math.round(firstLowerPaneTop + headerOffsets.squeezeTop)
           : null,
       );
       setMtfSqueeze410PaneTop(
-        visibility.mtfSqueeze410 && mainPaneHeight > 0 && firstLowerPaneHeight > 0
-          ? Math.round(mainPaneHeight + firstLowerPaneHeight + 18)
+        visibility.mtfSqueeze410 && secondLowerPaneTop != null
+          ? secondLowerPaneTop
           : null,
       );
     };
@@ -16741,7 +19975,7 @@ function OiFinderCandleChart({
       // what squeezed candles into a thin band on wall-heavy tickers.
       const visibleLow = candleLow;
       const visibleHigh = candleHigh;
-      const pricePadding = Math.max(candleSpan * 0.10, 0.03);
+      const pricePadding = pricePaddingFor(candleSpan, isPhoneChartViewport());
       const nextPriceRange = {
         from: visibleLow - pricePadding,
         to: visibleHigh + pricePadding,
@@ -16811,7 +20045,18 @@ function OiFinderCandleChart({
     // are already visible. Preserve the captured viewport across that rebuild;
     // treating every new tree as a first opening is what made 4H jump back to
     // the narrow default a moment after the trader zoomed out.
-    if (!pendingChartLayoutRestoreRef.current) {
+    //
+    // This effect re-runs on ~20 indicator settings and colours, so EVERY
+    // study that activates tears the tree down and builds a new one. Forcing a
+    // refit on each of those made the chart jump once per stage of the study
+    // activation ladder - that is the shaking while indicators load, and it is
+    // worst on maximize because the resize adds another rebuild on top.
+    // A refit is only correct when the SYMBOL changed; a study switching on is
+    // not a new chart. Timeframe changes do not reach here at all (the deps
+    // carry Boolean(chartBars.length), not the bars themselves).
+    const rebuildIsNewSymbol = chartTreeSymbolRef.current !== normalizedChartSymbol;
+    chartTreeSymbolRef.current = normalizedChartSymbol;
+    if (!pendingChartLayoutRestoreRef.current && rebuildIsNewSymbol) {
       chartInitialViewRef.current = true;
       manualPriceNavigationRef.current = false;
     }
@@ -16820,6 +20065,77 @@ function OiFinderCandleChart({
     fitVisibleCandlePriceRangeRef.current = scheduleVisibleCandlePriceRange;
     chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleDrawingGeometry);
     chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleVisibleCandlePriceRangeAfterInteraction);
+    // Publish the live logical window straight to the scrollbar, which repaints
+    // its thumb by writing to the element's style. No React state - going
+    // through setState here re-rendered the whole chart component on every
+    // scroll event, which is what made scrolling feel slow.
+    //
+    // Two costs are deliberately kept off the touch-pan hot path, where the
+    // range-change subscription fires every animation frame on a phone:
+    // `timeScale.options()` deep-clones its options object, so the rightOffset
+    // read is cached briefly (it only changes on timeframe/layout edits), and
+    // publishes coalesce to one per frame with a LEADING synchronous call -
+    // trailing-only rAF throttling would leave the thumb unpainted in a tab
+    // that is not compositing, which is how every chart starts life.
+    let scrollbarRightOffsetAt = 0;
+    let scrollbarRightOffset = 0;
+    let scrollbarViewFrame = 0;
+    let scrollbarViewQueued = false;
+    const publishChartScrollbarViewNow = () => {
+      const apply = chartScrollbarApplyRef.current;
+      if (!apply) return;
+      const timeScale = chart.timeScale();
+      const range = timeScale.getVisibleLogicalRange();
+      const from = Number(range?.from);
+      const to = Number(range?.to);
+      if (!Number.isFinite(from) || !Number.isFinite(to) || !(to > from)) {
+        apply(null);
+        return;
+      }
+      const now = performance.now();
+      if (now - scrollbarRightOffsetAt > 400) {
+        scrollbarRightOffset = Number(timeScale.options?.()?.rightOffset) || 0;
+        scrollbarRightOffsetAt = now;
+      }
+      const barCount = Math.max(
+        Number(displayedChartBarsRef.current?.bars?.length || 0),
+        Number(chartBars.length || 0),
+      );
+      if (manualTimeNavigationRef.current && shouldRequestDeepChartHistory({
+        isMobile: isPhoneChartViewport(),
+        historyLoading: chartHistoryLoadingRef.current,
+        alreadyRequested: mobileDeepHistoryRequestedRef.current,
+        logicalRange: { from, to },
+        barCount,
+      })) {
+        requestDeepChartHistoryRef.current?.();
+      }
+      apply({
+        from,
+        to,
+        futureSlots: scrollbarRightOffset,
+        barCount,
+      });
+      // Same already-throttled beat as the scrollbar thumb: keep the toolbar
+      // pan arrows' disabled state honest after a body drag, a wheel pan or a
+      // thumb drag. It only calls setState on an actual edge crossing.
+      refreshPanStepReadyRef.current?.({ from, to });
+    };
+    const scheduleChartScrollbarView = () => {
+      if (scrollbarViewFrame) {
+        scrollbarViewQueued = true;
+        return;
+      }
+      publishChartScrollbarViewNow();
+      scrollbarViewFrame = requestAnimationFrame(() => {
+        scrollbarViewFrame = 0;
+        if (!scrollbarViewQueued) return;
+        scrollbarViewQueued = false;
+        publishChartScrollbarViewNow();
+      });
+    };
+    chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleChartScrollbarView);
+    scheduleChartScrollbarView();
     let hoverBarFrame = 0;
     let pendingHoverTime = null;
     let renderedHoverTime = null;
@@ -16914,6 +20230,15 @@ function OiFinderCandleChart({
     interactionHost?.addEventListener("pointerleave", hideBottomCrosshairTime, { passive: true });
     let chartPointerActive = false;
     let chartPointerOnPriceScale = false;
+    let chartPointerOnTimeScale = false;
+    // A finger drag is panned by Lightweight Charts itself (useCustomBodyPan
+    // below is mouse-only), so this gesture writes both scales without ever
+    // reaching applyBodyDragTimePan — the one place that claims them.
+    let touchDragActive = false;
+    let touchAlertTimer = 0;
+    let touchAlertPointerId = null;
+    let touchAlertStartX = 0;
+    let touchAlertStartY = 0;
     let bodyDragStartLogicalRange = null;
     let bodyDragStartX = 0;
     let bodyDragPendingX = 0;
@@ -16931,7 +20256,7 @@ function OiFinderCandleChart({
     };
     const applyBodyDragTimePan = () => {
       bodyDragTimePanFrame = 0;
-      if (!chartPointerActive || chartPointerOnPriceScale) return;
+      if (!chartPointerActive || chartPointerOnPriceScale || chartPointerOnTimeScale) return;
       if (!bodyDragStartLogicalRange && !bodyDragStartPriceRange) return;
       const horizontalDistance = Math.abs(bodyDragPendingX - bodyDragStartX);
       if (!bodyDragOwnsTimeScale && horizontalDistance > 3) {
@@ -16983,12 +20308,11 @@ function OiFinderCandleChart({
       }
       scheduleDrawingGeometry();
     };
-    const openAlertAtChartPrice = (event) => {
-      event.preventDefault();
+    const alertDraftAtChartPoint = (clientX, clientY) => {
       const bounds = chartHost.getBoundingClientRect();
-      const pointerY = event.clientY - bounds.top;
+      const pointerY = Number(clientY) - bounds.top;
       const price = candleSeries.coordinateToPrice(pointerY);
-      if (!Number.isFinite(Number(price)) || Number(price) <= 0) return;
+      if (!Number.isFinite(Number(price)) || Number(price) <= 0) return null;
       // MomoX names an alert after the level it lands on rather than the raw
       // pixel price, so a right-click near a drawn level adopts that level's
       // exact price and title; open space still alerts exactly where clicked.
@@ -17000,17 +20324,56 @@ function OiFinderCandleChart({
       const alertPrice = level ? Number(level.price) : Number(price);
       const latest = Number(chartBars.at(-1)?.close || 0);
       const menuBounds = candleChartRef.current?.getBoundingClientRect() || bounds;
-      setChartAlertMenu({
+      return {
         price: alertPrice,
         levelLabel: level ? level.label : "",
         condition: alertPrice >= latest ? "above" : "below",
         // Clamp against the compact chip's own footprint; reserving the old
         // card's 226x122 shoved it far off the click near a chart edge.
-        left: Math.max(8, Math.min(event.clientX - menuBounds.left, menuBounds.width - 200)),
-        top: Math.max(8, Math.min(event.clientY - menuBounds.top, menuBounds.height - 62)),
-      });
+        left: Math.max(8, Math.min(Number(clientX) - menuBounds.left, menuBounds.width - 200)),
+        top: Math.max(8, Math.min(Number(clientY) - menuBounds.top, menuBounds.height - 62)),
+      };
+    };
+    const openAlertAtChartPrice = (event) => {
+      event.preventDefault();
+      if (event.pointerType === "touch" || event.sourceCapabilities?.firesTouchEvents) return;
+      const alertDraft = alertDraftAtChartPoint(event.clientX, event.clientY);
+      if (alertDraft) setChartAlertMenu(alertDraft);
+    };
+    const clearTouchAlertHold = () => {
+      if (touchAlertTimer) window.clearTimeout(touchAlertTimer);
+      touchAlertTimer = 0;
+      touchAlertPointerId = null;
+    };
+    const beginTouchAlertHold = (event) => {
+      if (event.pointerType !== "touch") return;
+      clearTouchAlertHold();
+      if (event.isPrimary === false) return;
+      const bounds = chartHost.getBoundingClientRect();
+      const pointerY = Number(event.clientY) - bounds.top;
+      const paneZeroHeight = Number(chart.paneSize?.(0)?.height || 0);
+      if (pointerY < 0 || (paneZeroHeight > 0 && pointerY > paneZeroHeight)) return;
+      touchAlertPointerId = event.pointerId;
+      touchAlertStartX = Number(event.clientX);
+      touchAlertStartY = Number(event.clientY);
+      touchAlertTimer = window.setTimeout(() => {
+        touchAlertTimer = 0;
+        touchAlertPointerId = null;
+        const alertDraft = alertDraftAtChartPoint(touchAlertStartX, touchAlertStartY);
+        if (!alertDraft) return;
+        setChartAlertMenu(null);
+        window.dispatchEvent(new CustomEvent(OI_PRICE_ALERT_DRAFT_EVENT, {
+          detail: {
+            symbol: normalizeOiChartSymbol(symbol),
+            price: alertDraft.price,
+            condition: alertDraft.condition,
+            levelLabel: alertDraft.levelLabel,
+          },
+        }));
+      }, CHART_TOUCH_ALERT_HOLD_MS);
     };
     chartHost.addEventListener("contextmenu", openAlertAtChartPrice, { capture: true });
+    chartHost.addEventListener("pointerdown", beginTouchAlertHold, { capture: true });
     const releaseAutomaticTimeFrame = (event) => {
       if (event.button !== 0) return;
       chartPointerActive = true;
@@ -17027,7 +20390,17 @@ function OiFinderCandleChart({
       const pointerInMainPane = paneZeroHeight <= 0
         || event.clientY <= bounds.top + paneZeroHeight;
       chartPointerOnPriceScale = pointerOnPriceAxis && pointerInMainPane;
-      const useCustomBodyPan = !pointerOnPriceAxis && event.pointerType !== "touch";
+      // The bottom time axis needs the same exemption the price axis already
+      // has. Without it a drag starting on the axis armed the custom logical
+      // pan AND the library's own scaleTimeTo(), so two writers fought over the
+      // time scale on every mousemove and drag-to-compress juddered.
+      const timeAxisHeight = Number(chart.timeScale().height?.() || 0);
+      chartPointerOnTimeScale = timeAxisHeight > 0
+        && event.clientY >= bounds.bottom - timeAxisHeight;
+      touchDragActive = event.pointerType === "touch";
+      const useCustomBodyPan = !pointerOnPriceAxis
+        && !chartPointerOnTimeScale
+        && event.pointerType !== "touch";
       bodyDragStartLogicalRange = useCustomBodyPan
         ? chart.timeScale().getVisibleLogicalRange?.() || null
         : null;
@@ -17043,6 +20416,15 @@ function OiFinderCandleChart({
       nativeTosPrimitive?.setInteractionActive(true);
     };
     const syncOverlaysDuringNativeDrag = (event) => {
+      if (
+        touchAlertPointerId === event.pointerId
+        && touchAlertGestureShouldCancel(
+          touchAlertStartX,
+          touchAlertStartY,
+          event.clientX,
+          event.clientY,
+        )
+      ) clearTouchAlertHold();
       if (!chartPointerActive) return;
       if (chartPointerOnPriceScale) {
         if (Math.abs(Number(event.clientY) - bodyDragStartY) > 3) {
@@ -17053,6 +20435,14 @@ function OiFinderCandleChart({
       else {
         bodyDragPendingX = Number(event.clientX);
         bodyDragPendingY = Number(event.clientY);
+        // The library has already moved whichever scale the finger dragged, so
+        // claim it here or the autoscale pass reads the pan as an idle view and
+        // snaps the candles back under the moving finger. Same few dead pixels
+        // the mouse path uses, so a straight sideways pan leaves price alone.
+        if (touchDragActive) {
+          if (Math.abs(bodyDragPendingX - bodyDragStartX) > 3) claimManualTimeNavigation();
+          if (Math.abs(bodyDragPendingY - bodyDragStartY) > 3) manualPriceNavigationRef.current = true;
+        }
         if ((bodyDragStartLogicalRange || bodyDragStartPriceRange) && !bodyDragTimePanFrame) {
           bodyDragTimePanFrame = requestAnimationFrame(applyBodyDragTimePan);
         }
@@ -17060,6 +20450,7 @@ function OiFinderCandleChart({
       }
     };
     const finishNativeChartDrag = () => {
+      clearTouchAlertHold();
       if (!chartPointerActive) return;
       if (bodyDragTimePanFrame) {
         cancelAnimationFrame(bodyDragTimePanFrame);
@@ -17068,6 +20459,8 @@ function OiFinderCandleChart({
       applyBodyDragTimePan();
       chartPointerActive = false;
       chartPointerOnPriceScale = false;
+      chartPointerOnTimeScale = false;
+      touchDragActive = false;
       bodyDragStartLogicalRange = null;
       bodyDragStartPriceRange = null;
       bodyDragOwnsPriceScale = false;
@@ -17119,8 +20512,44 @@ function OiFinderCandleChart({
       scheduleDrawingGeometry();
       queueChartLayoutSave();
     };
-    const smoothWheelZoom = (event) => {
-      if (!Number.isFinite(Number(event.deltaY)) || Number(event.deltaY) === 0) return;
+    // TOS drives time with the wheel, so panning gets its own rAF-batched pump
+    // alongside the zoom one above. applySmoothWheelZoom is deliberately left
+    // untouched - every span limit and cursor anchor it already tunes still
+    // owns zooming, this only changes which gesture reaches it.
+    let wheelPanFrame = 0;
+    let wheelPanDeltaPx = 0;
+    const currentChartBarCount = () => Math.max(
+      Number(displayedChartBarsRef.current?.bars?.length || 0),
+      Number(chartBars.length || 0),
+    );
+    const applySmoothWheelPan = () => {
+      wheelPanFrame = 0;
+      const deltaPx = wheelPanDeltaPx;
+      wheelPanDeltaPx = 0;
+      if (!deltaPx) return;
+      const timeScale = chart.timeScale();
+      const scaleOptions = timeScale.options?.() || {};
+      const next = chartWheelPanLogicalRange({
+        logicalRange: timeScale.getVisibleLogicalRange(),
+        deltaPx,
+        barSpacingPx: scaleOptions.barSpacing,
+        barCount: currentChartBarCount(),
+        futureSlots: scaleOptions.rightOffset,
+      });
+      if (!next) return;
+      timeScale.setVisibleLogicalRange(next);
+      scheduleDrawingGeometry();
+      queueChartLayoutSave();
+    };
+    // TOS wheel model: a vertical wheel ZOOMS at the cursor - this is the
+    // gesture traders lead with, and it must never be reassigned. Scrolling
+    // through time belongs to the scrollbar under the axis, the body drag, and
+    // a trackpad's horizontal swipe (deltaX), which is unambiguous scroll
+    // intent a mouse wheel can never produce.
+    const handleChartWheel = (event) => {
+      const deltaY = Number.isFinite(Number(event.deltaY)) ? Number(event.deltaY) : 0;
+      const deltaX = Number.isFinite(Number(event.deltaX)) ? Number(event.deltaX) : 0;
+      if (!deltaY && !deltaX) return;
       event.preventDefault();
       event.stopPropagation();
       releaseAutomaticTimeFrameOnWheel();
@@ -17136,12 +20565,55 @@ function OiFinderCandleChart({
         : event.deltaMode === 2
           ? Math.max(chartHost.clientHeight, 240)
           : 1;
-      wheelZoomDelta += Number(event.deltaY) * deltaScale;
+      // A dominant horizontal component only ever comes from a trackpad swipe.
+      if (Math.abs(deltaX) > Math.abs(deltaY)) {
+        wheelPanDeltaPx += deltaX * deltaScale;
+        if (!wheelPanFrame) wheelPanFrame = requestAnimationFrame(applySmoothWheelPan);
+        return;
+      }
       const bounds = chartHost.getBoundingClientRect();
+      wheelZoomDelta += deltaY * deltaScale;
       wheelZoomX = Math.max(0, Math.min(bounds.width, event.clientX - bounds.left));
       if (!wheelZoomFrame) wheelZoomFrame = requestAnimationFrame(applySmoothWheelZoom);
     };
-    drawingWheelZoomRef.current = smoothWheelZoom;
+    drawingWheelZoomRef.current = handleChartWheel;
+    // Every scrollbar gesture commits through the same path the wheel uses, so
+    // dragging the thumb releases auto-framing, redraws the drawing layer and
+    // queues the layout save exactly like panning the candles by hand.
+    const commitChartScrollbarRange = (range) => {
+      if (!range || !Number.isFinite(Number(range.from)) || !Number.isFinite(Number(range.to))) return;
+      releaseAutomaticTimeFrameOnWheel();
+      chart.timeScale().setVisibleLogicalRange({ from: Number(range.from), to: Number(range.to) });
+      if (shouldRequestDeepChartHistory({
+        isMobile: isPhoneChartViewport(),
+        historyLoading: chartHistoryLoadingRef.current,
+        alreadyRequested: mobileDeepHistoryRequestedRef.current,
+        logicalRange: range,
+        barCount: currentChartBarCount(),
+      })) {
+        requestDeepChartHistoryRef.current?.();
+      }
+      scheduleDrawingGeometry();
+      queueChartLayoutSave();
+      scheduleChartScrollbarView();
+    };
+    // A thumb drag is a sustained gesture, so it needs the same interaction
+    // guard the body drag uses. Without it the native TOS primitive rebuilds
+    // its full geometry on every frame of the drag - the exact stutter
+    // scheduleOverlayGeometry above already documents. The one-shot gestures
+    // (arrows, track paging) go straight through commit and never latch it.
+    const chartScrollbarControl = {
+      scrollTo: commitChartScrollbarRange,
+      begin: () => {
+        nativeTosPrimitive?.setInteractionActive(true);
+      },
+      end: () => {
+        nativeTosPrimitive?.setInteractionActive(false);
+        scheduleOverlayGeometry();
+        queueChartLayoutSave();
+      },
+    };
+    chartScrollbarControlRef.current = chartScrollbarControl;
     const resetCandlePriceRangeOnDoubleClick = (event) => {
       const bounds = chartHost.getBoundingClientRect();
       if (event.clientX < bounds.right - 72) return;
@@ -17151,7 +20623,18 @@ function OiFinderCandleChart({
     };
     interactionHost?.addEventListener("pointerdown", releaseAutomaticTimeFrame, { capture: true });
     interactionHost?.addEventListener("mousedown", releaseAutomaticTimeFrame, { capture: true });
-    chartHost.addEventListener("wheel", smoothWheelZoom, { passive: false });
+    // Lightweight Charts applies touch pans itself, so the mouse-only body pan
+    // never runs and nothing sets the manual-navigation flags. Without them the
+    // idle autoscale re-fits mid-drag and the candles snap back under the
+    // finger. A one-finger drag is a deliberate pan on both axes; a pinch is a
+    // zoom and is left to the library.
+    const claimTouchNavigation = (event) => {
+      if (event.touches?.length !== 1) return;
+      manualTimeNavigationRef.current = true;
+      manualPriceNavigationRef.current = true;
+    };
+    interactionHost?.addEventListener("touchstart", claimTouchNavigation, { passive: true });
+    chartHost.addEventListener("wheel", handleChartWheel, { passive: false });
     chartHost.addEventListener("dblclick", resetCandlePriceRangeOnDoubleClick, { capture: true });
     window.addEventListener("pointermove", syncOverlaysDuringNativeDrag, { passive: true });
     window.addEventListener("mousemove", syncOverlaysDuringNativeDrag, { passive: true });
@@ -17163,8 +20646,7 @@ function OiFinderCandleChart({
     let lastChartHeight = chartHeight;
     const resizeChart = () => {
       if (chartDisposed) return;
-      const width = Math.max(Math.floor(chartHost.clientWidth), 320);
-      const height = Math.max(Math.floor(chartHost.clientHeight), 240);
+      const { width, height } = chartHostSize();
       if (width === lastChartWidth && height === lastChartHeight) return;
       lastChartWidth = width;
       lastChartHeight = height;
@@ -17173,10 +20655,12 @@ function OiFinderCandleChart({
     };
     const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resizeChart);
     resizeObserver?.observe(chartRef.current);
-    // Pane separators resize the internal pane element without changing the
-    // outer chart host. Observe pane 0 directly so all HTML/SVG overlays keep
-    // the same hard boundary as the native Lightweight Charts price pane.
-    const mainPaneElement = chart.panes()[0]?.getHTMLElement?.();
+    // Pane separators resize internal pane elements without changing the
+    // outer chart host. Observe every native pane so both lower-study captions
+    // keep the same boundary as their plots after either separator is dragged.
+    const paneElements = chart.panes()
+      .map((pane) => pane.getHTMLElement?.())
+      .filter(Boolean);
     let paneFactorSaveTimer = 0;
     const persistUserPaneResize = () => {
       paneFactorSaveTimer = 0;
@@ -17189,14 +20673,14 @@ function OiFinderCandleChart({
       lastAppliedPaneFactorsRef.current = factors;
       storeChartPaneFactors(window.localStorage, chartLayoutProfileKeyRef.current, factors);
     };
-    const mainPaneResizeObserver = typeof ResizeObserver === "undefined" || !mainPaneElement
+    const paneResizeObserver = typeof ResizeObserver === "undefined" || !paneElements.length
       ? null
       : new ResizeObserver(() => {
         scheduleOverlayGeometry();
         if (paneFactorSaveTimer) window.clearTimeout(paneFactorSaveTimer);
         paneFactorSaveTimer = window.setTimeout(persistUserPaneResize, 400);
       });
-    mainPaneResizeObserver?.observe(mainPaneElement);
+    paneElements.forEach((paneElement) => paneResizeObserver?.observe(paneElement));
     const initialResizeFrame = requestAnimationFrame(resizeChart);
     return () => {
       // Indicator option changes can rebuild the native chart. Capture the
@@ -17208,14 +20692,19 @@ function OiFinderCandleChart({
       cancelAnimationFrame(initialResizeFrame);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleDrawingGeometry);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleVisibleCandlePriceRangeAfterInteraction);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleChartScrollbarView);
+      if (scrollbarViewFrame) cancelAnimationFrame(scrollbarViewFrame);
+      if (chartScrollbarControlRef.current === chartScrollbarControl) chartScrollbarControlRef.current = null;
       chart.unsubscribeCrosshairMove(updateHoverBar);
       interactionHost?.removeEventListener("pointermove", updateBottomCrosshairTime, { capture: true });
       interactionHost?.removeEventListener("pointerleave", hideBottomCrosshairTime);
       chartHost.removeEventListener("contextmenu", openAlertAtChartPrice, { capture: true });
+      chartHost.removeEventListener("pointerdown", beginTouchAlertHold, { capture: true });
       interactionHost?.removeEventListener("pointerdown", releaseAutomaticTimeFrame, { capture: true });
       interactionHost?.removeEventListener("mousedown", releaseAutomaticTimeFrame, { capture: true });
-      chartHost.removeEventListener("wheel", smoothWheelZoom);
-      if (drawingWheelZoomRef.current === smoothWheelZoom) drawingWheelZoomRef.current = null;
+      interactionHost?.removeEventListener("touchstart", claimTouchNavigation);
+      chartHost.removeEventListener("wheel", handleChartWheel);
+      if (drawingWheelZoomRef.current === handleChartWheel) drawingWheelZoomRef.current = null;
       chartHost.removeEventListener("dblclick", resetCandlePriceRangeOnDoubleClick, { capture: true });
       window.removeEventListener("pointermove", syncOverlaysDuringNativeDrag);
       window.removeEventListener("mousemove", syncOverlaysDuringNativeDrag);
@@ -17225,15 +20714,17 @@ function OiFinderCandleChart({
       if (overlayGeometryFrame) cancelAnimationFrame(overlayGeometryFrame);
       if (mappingSyncFrame) cancelAnimationFrame(mappingSyncFrame);
       if (bodyDragTimePanFrame) cancelAnimationFrame(bodyDragTimePanFrame);
+      clearTouchAlertHold();
       if (candlePriceRangeFrame) cancelAnimationFrame(candlePriceRangeFrame);
       if (candlePriceRangeIdleTimer) window.clearTimeout(candlePriceRangeIdleTimer);
       if (wheelZoomFrame) cancelAnimationFrame(wheelZoomFrame);
+      if (wheelPanFrame) cancelAnimationFrame(wheelPanFrame);
       if (wheelInteractionTimer) window.clearTimeout(wheelInteractionTimer);
       if (hoverBarFrame) cancelAnimationFrame(hoverBarFrame);
       if (bottomCrosshairFrame) cancelAnimationFrame(bottomCrosshairFrame);
       resizeObserver?.disconnect();
       if (paneFactorSaveTimer) window.clearTimeout(paneFactorSaveTimer);
-      mainPaneResizeObserver?.disconnect();
+      paneResizeObserver?.disconnect();
       if (chartApiRef.current === chart) chartApiRef.current = null;
       if (chartSeriesRef.current?.candleSeries === candleSeries) chartSeriesRef.current = null;
       if (updateIndicatorAxisLabelsRef.current === scheduleOverlayGeometry) updateIndicatorAxisLabelsRef.current = null;
@@ -17257,28 +20748,95 @@ function OiFinderCandleChart({
       }
       chart.remove();
     };
+    // Only a genuine change to the SHAPE of the chart belongs here. Every
+    // dependency in this list costs a full teardown and rebuild of the
+    // Lightweight Charts tree — the visible "shake" — so NO indicator colour or
+    // visibility toggle appears below. They are applied to the live series by
+    // the effects that follow, including the 4/10 squeeze, which builds and
+    // drops its own pane in place.
   }, [
     symbol,
     Boolean(chartBars.length),
     disableKineticScroll,
     easternDateFormatter,
     easternTimeFormatter,
-    indicatorSettings.clouds,
-    indicatorSettings.mtfSqueeze410Lower,
+  ]);
+
+  // A line colour is pure paint: it never changes the shape of the series
+  // tree, so it must never rebuild it. Recolouring the live series turns a
+  // colour change into a repaint instead of a full chart teardown.
+  useEffect(() => {
+    const series = chartSeriesRef.current;
+    if (!series) return;
+    series.ema9Series?.applyOptions({ color: indicatorOptions.ema9Color });
+    series.ema21Series?.applyOptions({ color: indicatorOptions.ema21Color });
+    series.ema50Series?.applyOptions({ color: indicatorOptions.ema50Color });
+    series.sma200Series?.applyOptions({ color: indicatorOptions.sma200Color });
+    series.vwapSeries?.applyOptions({ color: indicatorOptions.vwapColor });
+  }, [
     indicatorOptions.ema9Color,
     indicatorOptions.ema21Color,
     indicatorOptions.ema50Color,
     indicatorOptions.sma200Color,
     indicatorOptions.vwapColor,
-    indicatorOptions.personsPivotsDay,
-    indicatorOptions.personsPivots2Days,
-    indicatorOptions.personsPivots3Days,
-    indicatorOptions.personsPivots4Days,
-    indicatorOptions.personsPivotsWeek,
-    indicatorOptions.personsPivotsMonth,
-    indicatorOptions.personsPivotsOptExp,
-    indicatorOptions.personsPivotsQuarter,
-    indicatorOptions.personsPivotsYear,
+  ]);
+
+  // The 4/10 squeeze owns pane 2, so its checkbox adds or removes a whole pane
+  // instead of hiding a series — which is why it was the last toggle still
+  // rebuilding the chart. Building just that pane's series in place keeps the
+  // candles, the studies and the trader's zoom exactly where they were.
+  //
+  // Declared BEFORE the apply effect below on purpose: both run in the same
+  // commit when the checkbox changes, and the apply effect has to see the new
+  // series in order to fill them.
+  useEffect(() => {
+    const chart = chartApiRef.current;
+    const series = chartSeriesRef.current;
+    if (!chart || !series) return;
+    const enabled = indicatorSettings.mtfSqueeze410Lower === true;
+    if (enabled === Boolean(series.mtfSqueeze410RangeAnchorSeries)) return;
+    if (enabled) {
+      const created = createMtfSqueeze410Series(chart, indicatorOptions);
+      // New series need the same setData guard the built tree gets, or a
+      // malformed study point here could blank the whole workspace.
+      guardLightweightChartSeriesTree(created);
+      series.mtfSqueeze410Series = created.series;
+      series.mtfSqueeze410RangeAnchorSeries = created.rangeAnchor;
+    } else {
+      Object.values(series.mtfSqueeze410Series || {}).forEach((target) => {
+        try {
+          chart.removeSeries(target.histogram);
+          chart.removeSeries(target.bubble);
+        } catch {
+          // Already detached; the pane removal below still applies.
+        }
+      });
+      try {
+        chart.removeSeries(series.mtfSqueeze410RangeAnchorSeries);
+      } catch {
+        // As above.
+      }
+      series.mtfSqueeze410Series = {};
+      series.mtfSqueeze410RangeAnchorSeries = null;
+      // Emptying a pane does not remove it: without this the chart keeps a
+      // permanent blank strip where the study used to be.
+      try {
+        if (chart.panes().length > 2) chart.removePane(2);
+      } catch {
+        // A build that cannot drop the pane still renders correctly.
+      }
+    }
+    // The pane count just changed, so re-apply the intended split.
+    const panes = chart.panes();
+    defaultChartPaneFactors(usesBigScreenProfile).forEach((factor, index) => {
+      panes[index]?.setStretchFactor(factor);
+    });
+    lastAppliedPaneFactorsRef.current = panes.map((pane) => pane.getStretchFactor());
+  }, [
+    indicatorSettings.mtfSqueeze410Lower,
+    chartSeriesResetVersion,
+    indicatorOptions,
+    usesBigScreenProfile,
   ]);
 
   useEffect(() => {
@@ -17335,7 +20893,16 @@ function OiFinderCandleChart({
     } = series;
     // Preserve a manual price-scale adjustment during live updates. “Latest”
     // is the explicit action that returns the chart to automatic scaling.
-    const tosCandlePaints = indicatorSettings.tosCandleColors ? calculateTosCandlePaints(chartBars) : [];
+    // Cyan or magenta, ALWAYS - unconditional, no longer gated on the saved
+    // "TOS candle colors" toggle. The trader's standing rule (2026-08, restated
+    // 2026-08-28): candles are the two MomoX momentum colours only, never the
+    // white high-squeeze / orange mid-squeeze paints, and never the default
+    // green/red - even on bars where a signal fires. The toggle gate was the
+    // last path that could still show green/red (toggle off -> empty paints ->
+    // the series' default colours), so a chart the trader had never toggled on
+    // looked wrong; removing it makes every chart match. The collapse to two
+    // colours lives in tosCandleColors.js.
+    const tosCandlePaints = calculateTosCandlePaints(chartBars, { cyanMagentaOnly: true });
     const previousRender = detachedRenderMetaRef.current;
     const nextRender = {
       bars: chartBars,
@@ -17361,6 +20928,8 @@ function OiFinderCandleChart({
         .sort()
         .join(","),
       ganeshSignalVisualSignature(projectedGaneshHigherTimeframeSignals),
+      `${gradeTapeEntries.length}:${gradeTapeEntries.at(-1)?.t ?? ""}`,
+      `bear:${bearGradeTapeEntries.length}:${bearGradeTapeEntries.at(-1)?.t ?? ""}`,
     ].join("|");
     const nativeLiveOverlayChanged = nativeLiveOverlaySignatureRef.current !== nativeLiveOverlaySignature;
     nativeLiveOverlaySignatureRef.current = nativeLiveOverlaySignature;
@@ -17375,20 +20944,26 @@ function OiFinderCandleChart({
     if (updateLiveLastBarOnly) {
       const index = chartBars.length - 1;
       const latest = chartBars[index];
-      candleSeries.update({
-        time: latest.time,
-        open: latest.open,
-        high: latest.high,
-        low: latest.low,
-        close: latest.close,
-        ...(tosCandlePaints[index] || {}),
-        ...(relativeVolumeCandleStudy.candleStyles[index] || {}),
-      });
-      volumeSeries.update({
-        time: latest.time,
-        value: latest.volume,
-        color: latest.close >= latest.open ? "rgba(24, 221, 235, 0.42)" : "rgba(197, 42, 174, 0.42)",
-      });
+      // The stream paint may already hold a NEWER bucket than React's tape;
+      // updating the older one throws inside Lightweight Charts. The next
+      // tape poll carries the new bucket, so skipping is the safe move.
+      if (Number(latest.time) >= nativeSeriesLastTimeRef.current) {
+        nativeSeriesLastTimeRef.current = Number(latest.time);
+        candleSeries.update({
+          time: latest.time,
+          open: latest.open,
+          high: latest.high,
+          low: latest.low,
+          close: latest.close,
+          ...(tosCandlePaints[index] || {}),
+          ...(relativeVolumeCandleStudy.candleStyles[index] || {}),
+        });
+        volumeSeries.update({
+          time: latest.time,
+          value: latest.volume,
+          color: latest.close >= latest.open ? "rgba(24, 221, 235, 0.42)" : "rgba(197, 42, 174, 0.42)",
+        });
+      }
       nativeTosPrimitive?.updateLastBar(latest);
       const livePriceColor = Number(latest.close) >= Number(latest.open) ? "#00ffff" : "#ff00ff";
       livePriceLineRef.current?.applyOptions?.({
@@ -17438,6 +21013,23 @@ function OiFinderCandleChart({
     // at a time. Without this, a chart created after the ladder already
     // finished would receive every study in one multi-second pass.
     const seriesTreeReplaced = appliedSections.series !== series;
+    // One switch for every round point marker on this chart. Default OFF; see
+    // chartRoundDots in the indicator-option defaults. Declared here, at the
+    // top of the scope, because it is read in two separate sections below and
+    // a const referenced above its declaration throws at runtime rather than
+    // reading as undefined.
+    const showRoundDots = indicatorOptions.chartRoundDots === true;
+    // Diagnostics: wall time per applied section, readable from the DOM.
+    const applyDiag = studyStageResetDiagRef.current;
+    const applyStartedAt = performance.now();
+    const sectionTimings = { treeReplaced: seriesTreeReplaced ? 1 : 0 };
+    let openSection = null;
+    let openSectionAt = 0;
+    const closeSection = () => {
+      if (!openSection) return;
+      sectionTimings[openSection] = Math.round(performance.now() - openSectionAt);
+      openSection = null;
+    };
     // The candle tape is deliberately NOT part of this blanket context: a
     // closed live candle or a growing history changes the tape reference on
     // every reconcile, and re-sending every study series for that produced
@@ -17455,16 +21047,22 @@ function OiFinderCandleChart({
     appliedSections.indicatorSettings = indicatorSettings;
     appliedSections.indicatorOptions = indicatorOptions;
     const sectionInputsChanged = (sectionKey, inputs) => {
+      closeSection();
       const previous = appliedSections.inputs[sectionKey];
       const changed = sectionContextChanged
         || !previous
         || previous.length !== inputs.length
         || inputs.some((input, index) => input !== previous[index]);
-      if (changed) appliedSections.inputs[sectionKey] = inputs;
+      if (changed) {
+        appliedSections.inputs[sectionKey] = inputs;
+        openSection = sectionKey;
+        openSectionAt = performance.now();
+      }
       return changed;
     };
     if (sectionInputsChanged("candles", [chartBars, relativeVolumeCandleStudy])) {
-      candleSeries.setData(chartBars.map(({ time, open, high, low, close }, index) => ({
+      nativeSeriesLastTimeRef.current = Number(chartBars.at(-1)?.time || 0);
+      applySeriesData(candleSeries, chartBars.map(({ time, open, high, low, close }, index) => ({
         time,
         open,
         high,
@@ -17473,10 +21071,10 @@ function OiFinderCandleChart({
         ...(tosCandlePaints[index] || {}),
         ...(relativeVolumeCandleStudy.candleStyles[index] || {}),
       })));
-      futureTimeSeries.setData(
+      applySeriesData(futureTimeSeries, 
         buildFutureChartTimes(chartBars, selectedTimeframe.minutes, 320).map((time) => ({ time })),
       );
-      volumeSeries.setData(chartBars.map(({ time, volume, open, close }) => ({
+      applySeriesData(volumeSeries, chartBars.map(({ time, volume, open, close }) => ({
         time,
         value: volume,
         color: close >= open ? "rgba(24, 221, 235, 0.42)" : "rgba(197, 42, 174, 0.42)",
@@ -17507,16 +21105,16 @@ function OiFinderCandleChart({
       cloudMax: cloudMaxMtfStudy.lines,
     };
     if (runEmaVwapSection) {
-      ema9Series.setData(indicatorSettings.ema9 ? ema9Data : []);
-      ema21Series.setData(indicatorSettings.ema21 ? ema21Data : []);
-      ema50Series.setData(indicatorSettings.ema50 ? ema50Data : []);
+      applySeriesData(ema9Series, indicatorSettings.ema9 ? ema9Data : []);
+      applySeriesData(ema21Series, indicatorSettings.ema21 ? ema21Data : []);
+      applySeriesData(ema50Series, indicatorSettings.ema50 ? ema50Data : []);
       ema9Series.applyOptions({ color: indicatorOptions.ema9Color });
       ema21Series.applyOptions({ color: indicatorOptions.ema21Color });
       ema50Series.applyOptions({ color: indicatorOptions.ema50Color });
       sma200Series.applyOptions({ color: indicatorOptions.sma200Color });
       vwapSeries.applyOptions({ color: indicatorOptions.vwapColor });
-      sma200Series.setData(indicatorSettings.sma200 ? sma200Data : []);
-      vwapSeries.setData(indicatorSettings.vwap ? vwapData : []);
+      applySeriesData(sma200Series, indicatorSettings.sma200 ? sma200Data : []);
+      applySeriesData(vwapSeries, indicatorSettings.vwap ? vwapData : []);
     }
     const showAutoFib = indicatorSettings.autoFibSingleTf === true;
     const autoFibStudyByTimeframe = new Map(
@@ -17544,10 +21142,10 @@ function OiFinderCandleChart({
           lineWidth: 1,
           lineStyle: 2,
         });
-        timeframeSeries.fib50.setData(showAutoFib && study ? study.lines.fib50 : []);
-        timeframeSeries.fibGold.setData(showAutoFib && study ? study.lines.fibGold : []);
-        timeframeSeries.high.setData(showAutoFib && study ? study.lines.high : []);
-        timeframeSeries.low.setData(showAutoFib && study ? study.lines.low : []);
+        applySeriesData(timeframeSeries.fib50, showAutoFib && study ? study.lines.fib50 : []);
+        applySeriesData(timeframeSeries.fibGold, showAutoFib && study ? study.lines.fibGold : []);
+        applySeriesData(timeframeSeries.high, showAutoFib && study ? study.lines.high : []);
+        applySeriesData(timeframeSeries.low, showAutoFib && study ? study.lines.low : []);
       });
     }
     const showIchimoku = indicatorSettings.ichimoku === true;
@@ -17562,27 +21160,27 @@ function OiFinderCandleChart({
         timeframeSeries.spanA.applyOptions({ color: indicatorOptions.ichimokuSpanAColor });
         timeframeSeries.spanB.applyOptions({ color: indicatorOptions.ichimokuSpanBBullColor });
         timeframeSeries.chikou.applyOptions({ color: indicatorOptions.ichimokuChikouColor });
-        timeframeSeries.tenkan.setData(
+        applySeriesData(timeframeSeries.tenkan, 
           showIchimoku && study && indicatorOptions.ichimokuShowTenkanKijun === true
             ? study.lines.tenkan
             : [],
         );
-        timeframeSeries.kijun.setData(
+        applySeriesData(timeframeSeries.kijun, 
           showIchimoku && study && indicatorOptions.ichimokuShowTenkanKijun === true
             ? study.lines.kijun
             : [],
         );
-        timeframeSeries.spanA.setData(
+        applySeriesData(timeframeSeries.spanA, 
           showIchimoku && study && indicatorOptions.ichimokuShowSpanA !== false
             ? study.lines.spanA
             : [],
         );
-        timeframeSeries.spanB.setData(
+        applySeriesData(timeframeSeries.spanB, 
           showIchimoku && study && indicatorOptions.ichimokuShowSpanB !== false
             ? study.lines.spanB
             : [],
         );
-        timeframeSeries.chikou.setData(
+        applySeriesData(timeframeSeries.chikou, 
           showIchimoku && study && indicatorOptions.ichimokuShowChikou === true
             ? study.lines.chikou
             : [],
@@ -17663,12 +21261,12 @@ function OiFinderCandleChart({
           bottomFillColor1: showCloud ? chartColorWithAlpha(indicatorOptions.mtfAdxWeakColor, cloudOpacity * 0.88) : transparent,
           bottomFillColor2: showCloud ? chartColorWithAlpha(indicatorOptions.mtfAdxWeakColor, cloudOpacity * 0.88) : transparent,
         });
-        target.plus.setData(showMtfAdx && study ? study.lines.plus : []);
-        target.minus.setData(showMtfAdx && study ? study.lines.minus : []);
-        target.adx.setData(showMtfAdx && study ? study.lines.adx : []);
-        target.plusWeakCloud.setData(showMtfAdx && study && showDirectionalWeakClouds ? study.lines.plus : []);
-        target.minusWeakCloud.setData(showMtfAdx && study && showDirectionalWeakClouds ? study.lines.minus : []);
-        target.adxWeakCloud.setData(showMtfAdx && study && showCloud ? study.lines.adx : []);
+        applySeriesData(target.plus, showMtfAdx && study ? study.lines.plus : []);
+        applySeriesData(target.minus, showMtfAdx && study ? study.lines.minus : []);
+        applySeriesData(target.adx, showMtfAdx && study ? study.lines.adx : []);
+        applySeriesData(target.plusWeakCloud, showMtfAdx && study && showDirectionalWeakClouds ? study.lines.plus : []);
+        applySeriesData(target.minusWeakCloud, showMtfAdx && study && showDirectionalWeakClouds ? study.lines.minus : []);
+        applySeriesData(target.adxWeakCloud, showMtfAdx && study && showCloud ? study.lines.adx : []);
         const signalColors = {
           call: indicatorOptions.mtfAdxUpColor,
           put: indicatorOptions.mtfAdxDownColor,
@@ -17688,13 +21286,17 @@ function OiFinderCandleChart({
             title: control.showTitle ? plotName : "",
             color: control.showPlot ? signalColors[signalKey] : transparent,
             lastValueVisible: showLatestBubble,
+            // With dots off these plots draw as LINES rather than vanishing:
+            // markers were their only rendering, so hiding the markers alone
+            // would silently remove the plot.
             ...(isHistogram ? {} : {
-              lineVisible: false,
-              pointMarkersVisible: control.showPlot,
+              lineVisible: control.showPlot && !showRoundDots,
+              lineWidth: 1,
+              pointMarkersVisible: control.showPlot && showRoundDots,
               pointMarkersRadius: signalKey === "call" || signalKey === "put" ? 3 : 4,
             }),
           });
-          signalSeries.setData(signalData);
+          applySeriesData(signalSeries, signalData);
         });
       });
       // A ticker can initially receive only one aggregated candle while its
@@ -17720,13 +21322,13 @@ function OiFinderCandleChart({
         lineVisible: weakControl.showPlot,
         lastValueVisible: weakControl.showBubble,
       });
-      mtfAdxStrongSeries?.setData(showMtfAdx && adxLevelTimes.length
+      applySeriesData(mtfAdxStrongSeries, showMtfAdx && adxLevelTimes.length
         ? adxLevelTimes.map((time) => ({ time, value: 25 }))
         : []);
-      mtfAdxWeakSeries?.setData(showMtfAdx && adxLevelTimes.length
+      applySeriesData(mtfAdxWeakSeries, showMtfAdx && adxLevelTimes.length
         ? adxLevelTimes.map((time) => ({ time, value: 20 }))
         : []);
-      mtfAdxRangeAnchorSeries?.setData(showMtfAdx && adxLevelTimes.length >= 2
+      applySeriesData(mtfAdxRangeAnchorSeries, showMtfAdx && adxLevelTimes.length >= 2
         ? [
           { time: adxLevelTimes[0], value: 0 },
           { time: adxLevelTimes[1], value: 100 },
@@ -17737,10 +21339,11 @@ function OiFinderCandleChart({
       squeezeMomentumSeries?.applyOptions({
         color: indicatorOptions.squeezeMomentumUpColor,
         lineWidth: 3,
-        pointMarkersVisible: true,
+        // Decoration only here - the line is drawn either way.
+        pointMarkersVisible: showRoundDots,
         pointMarkersRadius: 3,
       });
-      squeezeMomentumSeries?.setData(
+      applySeriesData(squeezeMomentumSeries, 
         indicatorSettings.squeezeMomentumLower ? squeezeMomentumLowerStudy : [],
       );
       squeezeMomentumZeroLine?.applyOptions({
@@ -17766,13 +21369,13 @@ function OiFinderCandleChart({
           base: Number(definition?.level || 0) - 0.18,
           color: indicatorOptions.mtfSqueeze410NoSqueezeColor,
         });
-        target.histogram?.setData(control.showPlot ? data : []);
+        applySeriesData(target.histogram, control.showPlot ? data : []);
         target.bubble?.applyOptions({
           title: control.showTitle && !control.showPlot ? definition.plotName : "",
           color: study?.latestColor || indicatorOptions.mtfSqueeze410NoSqueezeColor,
           lastValueVisible: control.showBubble,
         });
-        target.bubble?.setData(
+        applySeriesData(target.bubble, 
           control.showBubble
             ? data.map(({ time }) => ({ time, value: Number(definition?.level || 0) }))
             : [],
@@ -17784,7 +21387,7 @@ function OiFinderCandleChart({
           Number(chartBars.at(-1).time),
         ])].filter((time) => Number.isFinite(time) && time > 0)
         : [];
-      mtfSqueeze410RangeAnchorSeries?.setData(
+      applySeriesData(mtfSqueeze410RangeAnchorSeries, 
         showMtfSqueeze410 && mtfSqueeze410Times.length >= 2
           ? [
             { time: mtfSqueeze410Times[0], value: 0 },
@@ -17796,7 +21399,7 @@ function OiFinderCandleChart({
     const showCloudMaxLines = indicatorSettings.cloudMaxMtf && indicatorOptions.cloudMaxShowMALines === true;
     if (!seriesTreeReplaced && sectionInputsChanged("cloudmax-lines", [cloudMaxMtfStudy])) {
       Object.entries(cloudMaxSeries || {}).forEach(([key, targetSeries]) => {
-        targetSeries.setData(showCloudMaxLines ? (cloudMaxMtfStudy.lines?.[key] || []) : []);
+        applySeriesData(targetSeries, showCloudMaxLines ? (cloudMaxMtfStudy.lines?.[key] || []) : []);
       });
     }
     const fullWidthStudyLevels = [];
@@ -17812,7 +21415,7 @@ function OiFinderCandleChart({
         const points = indicatorSettings.pivotPoints ? (pivotPointsStudy?.[timeframe]?.[level] || []) : [];
         const latestPoint = points.at(-1);
         if (!Number.isFinite(Number(latestPoint?.value))) {
-          if (runPivotSetData) targetSeries.setData([]);
+          if (runPivotSetData) applySeriesData(targetSeries, []);
           return;
         }
         // Draw the stepped per-period pivot history like TOS (segments are
@@ -17820,7 +21423,7 @@ function OiFinderCandleChart({
         // price line at the latest value, then trim to the 4:00 AM session
         // anchor so the plot covers the current session like MomoX.
         if (runPivotSetData) {
-          targetSeries.setData(
+          applySeriesData(targetSeries, 
             trimPointsToAnchor(points, momoxLevelAnchor).map(({ time, value }) => ({ time, value })),
           );
         }
@@ -17845,7 +21448,7 @@ function OiFinderCandleChart({
         const points = indicatorSettings.personsPivots ? (personsPivotsStudy?.[timeframe]?.[level] || []) : [];
         const latestPoint = [...points].reverse().find((point) => Number.isFinite(Number(point?.value)));
         if (!Number.isFinite(Number(latestPoint?.value))) {
-          if (runPersonsPivotSetData) targetSeries.setData([]);
+          if (runPersonsPivotSetData) applySeriesData(targetSeries, []);
           return;
         }
         // Per-bar data trimmed to the current session's 4:00 AM anchor — MomoX
@@ -17854,7 +21457,7 @@ function OiFinderCandleChart({
         // candle renders exactly like TOS. Whitespace points are preserved so
         // an intraday gap still breaks the line instead of reconnecting.
         if (runPersonsPivotSetData) {
-          targetSeries.setData(trimPointsToAnchor(points, momoxLevelAnchor).map(({ time, value, color }) => (
+          applySeriesData(targetSeries, trimPointsToAnchor(points, momoxLevelAnchor).map(({ time, value, color }) => (
             Number.isFinite(Number(value)) ? { time, value, color } : { time }
           )));
         }
@@ -17891,7 +21494,7 @@ function OiFinderCandleChart({
         const fieldName = `${field[0].toUpperCase()}${field.slice(1)}`;
         const showField = timeframeEnabled && indicatorOptions[`${prefix}Show${fieldName}`] !== false;
         const points = showField ? (previousOhlcStudy?.[timeframe]?.[field] || []) : [];
-        targetSeries.setData([]);
+        applySeriesData(targetSeries, []);
         if (!points.length) return;
         const latestPoint = points.at(-1);
         const label = String(indicatorOptions[`${prefix}${fieldName}Label`] || "").trim();
@@ -17934,14 +21537,13 @@ function OiFinderCandleChart({
     };
     const signalRthStartMinutes = hhmmToMinutes(indicatorOptions.signalRthStartTime, 500);
     const signalRthEndMinutes = hhmmToMinutes(indicatorOptions.signalRthEndTime, 1600);
-    const signalSessionDate = (time) => easternDateFormatter.format(
-      new Date((Number(time || 0) - signalRthStartMinutes * 60) * 1000),
+    const signalSessionDate = (time) => easternDateKey(
+      easternDateFormatter,
+      Number(time || 0) - signalRthStartMinutes * 60,
     );
     const recentRthDates = [...new Set(chartBars
       .filter((bar) => {
-        const parts = easternSessionFormatter.formatToParts(new Date(Number(bar.time) * 1000));
-        const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
-        const minutes = Number(values.hour || 0) * 60 + Number(values.minute || 0);
+        const { minutes } = easternSessionParts(easternSessionFormatter, bar?.time);
         return minutes >= signalRthStartMinutes && minutes < signalRthEndMinutes;
       })
       .map((bar) => signalSessionDate(bar.time)))]
@@ -17953,7 +21555,18 @@ function OiFinderCandleChart({
       const timeframe = String(signal?.timeframe || "").toUpperCase();
       return ({ "30": "signal92030m", "30M": "signal92030m", "1H": "signal9201h", "2H": "signal9202h", "4H": "signal9204h" })[timeframe] || "signal92030m";
     };
-    const chartSignals = layoutTosMtfChartSignals(tosMtfSignals
+    // Backend stamps sit on the 5m candle where the developing cross fired
+    // (TOS semantics). Pin each one to this timeframe's containing candle
+    // first: the native primitive drops any bubble whose time is not a bar.
+    // Each chart timeframe gets the label set TOS would compute on ITS bars;
+    // daily and above carry no intraday secondary-aggregation bubbles.
+    const chartMinutes = Number(selectedTimeframe.minutes) || 5;
+    const timeframeSignals = chartMinutes === 5
+      ? tosMtfSignals
+      : chartMinutes > 240
+        ? []
+        : (tosMtfSignalsByTimeframe[String(chartMinutes)] || tosMtfSignals);
+    const chartSignals = layoutTosMtfChartSignals(snapTosMtfSignalsToBars(timeframeSignals, chartBars)
       .filter((signal) => {
         if (!signal || !enabledTimeframe(signal) || !isRecentSignalSession(signal)) return false;
         if (signal.family !== "9x20") {
@@ -18031,11 +21644,18 @@ function OiFinderCandleChart({
         key: `tos-bubble-${signal.time}-${signal.family}-${label}`,
         time: Number(signal.time),
         position,
+        // Live signals sit on the FORMING candle - pin them to the price
+        // where the cross first appeared instead of the candle's moving
+        // high/low. Closed signals stay bar-relative, pixel-identical.
+        anchorPrice: signal.isLiveSignal === true && Number.isFinite(Number(signal.price))
+          ? Number(signal.price)
+          : undefined,
         text: label.toUpperCase(),
         color,
         direction: signal.direction,
         family: "tos-mtf",
         compact: signal.compact === true,
+        grade: scannerGradeForBubble(gradeEntriesFor(signal.direction, label), label, signal.direction, signal.time, selectedTimeframe.minutes * 60, chartBars),
       });
       return true;
     };
@@ -18071,7 +21691,22 @@ function OiFinderCandleChart({
         color: signal.direction === "CALL"
           ? indicatorOptions.signal920CallColor
           : indicatorOptions.signal920PutColor,
-        text: "",
+        // The grade rides the SIGNAL, not one way of drawing it. The circle is
+        // painted by the bubble renderer, so a profile with bubbles off and
+        // arrows on lost the letter completely - which is what "no A/A+ on
+        // mobile" turned out to be: this phone draws the 9x20 family as arrows
+        // while the desktop draws bubbles. Only when no bubble carries it, so
+        // a chart showing both does not print the letter twice.
+        text: showBubble
+          ? ""
+          : (scannerGradeForBubble(
+            gradeEntriesFor(signal.direction, signal.label),
+            String(signal.label || ""),
+            signal.direction,
+            signal.time,
+            selectedTimeframe.minutes * 60,
+            chartBars,
+          )?.letter || ""),
         size: 1.35,
       });
     });
@@ -18107,6 +21742,7 @@ function OiFinderCandleChart({
           direction,
           family: signal.family,
           compact: false,
+          grade: scannerGradeForBubble(gradeEntriesFor(direction, signal.label), String(signal.label || ""), direction, signal.time, selectedTimeframe.minutes * 60, chartBars),
         });
       }
       if (signal.family === "ganesh48"
@@ -18116,7 +21752,18 @@ function OiFinderCandleChart({
           position: signal.position,
           shape: isCall ? "arrowUp" : "arrowDown",
           color,
-          text: "",
+          // Same rule as the 9x20 arrows above: carry the letter only when no
+          // bubble is drawn to carry it.
+          text: showBubble
+            ? ""
+            : (scannerGradeForBubble(
+              gradeEntriesFor(direction, signal.label),
+              String(signal.label || ""),
+              direction,
+              signal.time,
+              selectedTimeframe.minutes * 60,
+              chartBars,
+            )?.letter || ""),
           size: 1.2,
         });
       }
@@ -18161,6 +21808,9 @@ function OiFinderCandleChart({
             direction: signal.tone === "bull" ? "CALL" : "PUT",
             family: "cloudmax",
             compact: /^(C|P)\d/.test(label),
+            grade: signal.tone === "bull"
+              ? scannerGradeForBubble(gradeTapeEntries, label, "CALL", markerTime, selectedTimeframe.minutes * 60, chartBars)
+              : scannerGradeForBubble(bearGradeTapeEntries, label, "PUT", markerTime, selectedTimeframe.minutes * 60, chartBars),
           });
           nativeCandleHighlights.push({
             time: markerTime,
@@ -18178,6 +21828,49 @@ function OiFinderCandleChart({
           // TOS arrow weights: 4/8 family SetLineWeight(5), 9/20 weight 3,
           // 0m pair weight 2 — keep that visual hierarchy in marker sizes.
           size: signal.shape === "circle" ? 1.05 : is48 ? 1.7 : is23 ? 1 : 1.3,
+        });
+      });
+    }
+    // The scanner's A+ / A letter where it APPEARS (gradeMarkers.js): on the
+    // candle of the snapshot the letter stepped up, whether or not a CALL
+    // arrow fired there - TSLA's 09:47 A and FSLY's 13:19 A+ on 2026-09-23
+    // had no arrow, so the chart showed no letter at all.
+    if (gradeTapeEntries.length) {
+      const barTimes = chartBars.map((bar) => Number(bar.time));
+      gradeStepMarkers(gradeTapeEntries).forEach((step) => {
+        const markerTime = candleTimeFor(step.time, barTimes);
+        const markerKey = `${markerTime}-grade-${step.letter}`;
+        if (!markerTime || projectedSignalTimes.has(markerKey)) return;
+        projectedSignalTimes.add(markerKey);
+        nativeSupplementalSignals.push({
+          key: markerKey,
+          time: markerTime,
+          position: "belowBar",
+          color: step.letter === "A+" ? "#22c55e" : "#86efac",
+          text: step.letter,
+          direction: "CALL",
+          family: "grade",
+          compact: true,
+        });
+      });
+    }
+    // The BEAR letter's step-ups, above the bar in red (spec 2026-09-24).
+    if (bearGradeTapeEntries.length) {
+      const barTimes = chartBars.map((bar) => Number(bar.time));
+      gradeStepMarkers(bearGradeTapeEntries).forEach((step) => {
+        const markerTime = candleTimeFor(step.time, barTimes);
+        const markerKey = `${markerTime}-grade-bear-${step.letter}`;
+        if (!markerTime || projectedSignalTimes.has(markerKey)) return;
+        projectedSignalTimes.add(markerKey);
+        nativeSupplementalSignals.push({
+          key: markerKey,
+          time: markerTime,
+          position: "aboveBar",
+          color: step.letter === "A+" ? "#ef4444" : "#fca5a5",
+          text: step.letter,
+          direction: "PUT",
+          family: "grade",
+          compact: true,
         });
       });
     }
@@ -18282,6 +21975,8 @@ function OiFinderCandleChart({
       previousOhlcStudy,
       momoxLevelAnchor,
       symbolAlerts,
+      gradeTapeEntries,
+      bearGradeTapeEntries,
     ])) {
       const nativeCloudPairs = [
         ...(indicatorSettings.clouds
@@ -18413,10 +22108,11 @@ function OiFinderCandleChart({
         signals: [...boldSignals, ...nativeSupplementalSignals],
         candleHighlights: nativeCandleHighlights,
         // MomoX draws the MTF MA levels as short segments over the most recent
-        // bars that run into the price axis, coloured by side of price: levels
-        // above the last close print magenta, levels below print cyan. Session
-        // levels (pre-market/day/week high-low, ATH) anchor at their session
-        // start with the same side colouring; ATH keeps its orange dotted look.
+        // bars that run into the price axis. They keep their ThinkScript colour
+        // per average rather than the side-of-price pair, so each one stays
+        // readable against the walls it sits beside. Session levels (pre-market
+        // /day/week high-low, ATH) do use side colouring: levels above the last
+        // close print magenta, below print cyan; ATH keeps its orange dotted look.
         levelSegments: [
           // Prior-period OHLC, pivot points and Persons ranges used to draw as
           // full-width price lines. MomoX starts them at the session open like
@@ -18454,7 +22150,13 @@ function OiFinderCandleChart({
           ...(indicatorSettings.mtfMaLevels
             ? mtfMaLevelsStudy.map((level) => ({
               price: Number(level.value),
-              color: Number(level.value) >= Number(chartBars.at(-1)?.close || 0) ? "#ff00ff" : "#00ffff",
+              // buildMtfMaLevelsStudy already resolves each average to its
+              // ThinkScript colour (9e violet, 21e gold, 50e aqua, 200s green,
+              // 50s blue, 200e mint). Side-of-price magenta/cyan overwrote all
+              // six with the same two hues the OI walls use, so a level landing
+              // beside a wall became invisible against it: 50sD at 510.08 sits
+              // ~1.5px from the 4K wall at 510.00. Keep the script palette.
+              color: level.color,
               lineWidth: level.lineWidth,
               labelText: level.label,
               // Was a fixed 40-bar lookback, which drifted against the session
@@ -18523,7 +22225,7 @@ function OiFinderCandleChart({
       color,
       visible = true,
       key = "",
-      { preservePricePosition = false, priority = 0 } = {},
+      { preservePricePosition = false, priority = 0, mergeWhenBlocked = false } = {},
     ) => {
       const numericPrice = Number(price);
       const normalizedTitle = String(title || "").trim();
@@ -18535,6 +22237,7 @@ function OiFinderCandleChart({
         color: color || "#a5a5af",
         preservePricePosition,
         priority: Number(priority) || 0,
+        mergeWhenBlocked,
       });
     };
     const latestBar = chartBars[chartBars.length - 1];
@@ -18614,8 +22317,16 @@ function OiFinderCandleChart({
         addIndicatorName(
           level.value,
           level.label,
-          Number(level.value) >= Number(latestBar?.close || 0) ? "#ff00ff" : "#00ffff",
+          level.color,
           indicatorOptions.mtfMaShowBubbles !== false,
+          `mtf-ma-${level.key}`,
+          // These chips sit in the lowest priority band (400 + priority) while
+          // OI walls sit at 800 + tier, so a level within 18px of a wall could
+          // never win the row on priority alone - that is why 50sD stayed
+          // hidden while 21eD and 9eD showed. Rather than inflate the number
+          // past the wall band, the chip merges into the wall's chip, which
+          // reads "4K 8/14 · 50sD" and hides nothing.
+          { priority: 1, mergeWhenBlocked: true },
         );
       });
     }
@@ -18678,7 +22389,14 @@ function OiFinderCandleChart({
     symbolAlerts.forEach((alert) => {
       const isTriggered = alert.status === "triggered";
       const isPaused = alert.enabled === false && !isTriggered;
-      const alertColor = isTriggered ? "#ff6d8d" : isPaused ? "#71717f" : "#00df70";
+      // 2026-09-25 (his ask): "if it paused, no show in the chart". A paused
+      // alert stays in the Alerts list, where it can be resumed, but draws
+      // no line or chip on the chart.
+      if (isPaused) return;
+      // Auto Alert targets draw amber so the armed OI wall stands out from
+      // the wall palette and from a manual (green) price alert on the chart.
+      const isAutoAlert = alert.source === OI_AUTO_ALERT_MIRROR_SOURCE;
+      const alertColor = isTriggered ? "#ff6d8d" : isPaused ? "#71717f" : isAutoAlert ? "#ffd54f" : "#00df70";
       const alertHighlightColor = isTriggered ? "#ff6d8d" : isPaused ? "#71717f" : "#ffd54f";
       priceLines.push(candleSeries.createPriceLine({
         price: Number(alert.price),
@@ -18757,9 +22475,58 @@ function OiFinderCandleChart({
       lastAutoFocusedSymbolRef.current = normalizedChartSymbol;
       autoFollowLatestSymbolRef.current = normalizedChartSymbol;
       chartInitialViewRef.current = false;
+      // The opening path just framed the current latest bar. Seed the gate so
+      // the live-follow re-frame below only acts on a bar NEWER than this - not
+      // on the study stages that keep re-running this effect right after open.
+      lastFollowedLatestBarTimeRef.current = Number(chartBars.at(-1)?.time || 0);
+    } else if (
+      !restoredRebuiltChart
+      && (chartViewIsAtLiveEdge()
+        || (!manualTimeNavigationRef.current
+          && autoFollowLatestSymbolRef.current === normalizedChartSymbol))
+    ) {
+      // Plain live-bar append. focusLatestTimeScale reserves the forward gap
+      // at open with setVisibleRange, which puts the time scale into a FIXED
+      // time-window state that no longer honours rightOffset - so the base
+      // rightOffset:2 + shiftVisibleRangeOnNewBar cannot restore the gap. None
+      // of the opening/restore framing writers run on a tail append either
+      // (this branch), so each new candle marches one slot into the reserved
+      // whitespace until the forming candle sits flush against the price axis
+      // ("current candle too right, I have to scroll each ticker").
+      //
+      // Re-open the gap with the EXISTING live-follow writer - no new competing
+      // writer. It keeps the trader's current span and leaves visibleFutureSlots
+      // ahead of the newest candle (timeframe-aware: ~5-10 intraday, up to ~24
+      // on 4h), so latest stays visible and never scrolls off.
+      //
+      // Fire ONLY when a genuinely new display bar has appeared. This effect
+      // also runs on every study/indicator recompute (its dep array is huge),
+      // and re-framing on each of those - with the SAME latest candle - is what
+      // made the chart jitter ("dancing"). The bar-time gate collapses all the
+      // recompute runs to nothing and lets only a true new bar shift the view.
+      const latestBarTime = Number(chartBars.at(-1)?.time || 0);
+      if (latestBarTime > lastFollowedLatestBarTimeRef.current) {
+        lastFollowedLatestBarTimeRef.current = latestBarTime;
+        followLatestTimeScale(chart.timeScale());
+      }
     }
+    closeSection();
+    const fitStartedAt = performance.now();
     fitVisibleCandlePriceRangeRef.current?.();
-  }, [allowPageScroll, chartBars, disableKineticScroll, tosMtfSignals, projectedGaneshHigherTimeframeSignals, expectedMoveRange, wallLevels, easternDateFormatter, sessionWindows, sessionTimeMarkers, symbol, normalizedChartSymbol, symbolAlerts, indicatorSettings, indicatorOptions, previousOhlcStudy, selectedTimeframe.minutes, mtfOneSidedCloudStudy, mtfMacdTrendCloudStudy, mtfEma920CloudStudy, mtfSqueezeCloudStudy, mtfCloudBandStudy, relativeVolumeCandleStudy, cloudMaxMtfStudy, autoFibStudies, ichimokuStudies, mtfAdxStudies, squeezeMomentumLowerStudy, mtfSqueeze410Study, pivotPointsStudy, personsPivotsStudy, mtfMaLevelsStudy, sessionLevelsStudy]);
+    sectionTimings.fit = Math.round(performance.now() - fitStartedAt);
+    sectionTimings.total = Math.round(performance.now() - applyStartedAt);
+    applyDiag.lastApply = sectionTimings;
+    applyDiag.applyRuns = (applyDiag.applyRuns || 0) + 1;
+    applyDiag.applyTotalMs = (applyDiag.applyTotalMs || 0) + sectionTimings.total;
+    if (!applyDiag.slowestApply || sectionTimings.total > applyDiag.slowestApply.total) applyDiag.slowestApply = sectionTimings;
+    const hostElement = chartRef.current?.closest?.(".oi-finder-chart-card");
+    if (hostElement) {
+      hostElement.dataset.applyLast = JSON.stringify(sectionTimings);
+      hostElement.dataset.applySlowest = JSON.stringify(applyDiag.slowestApply);
+      hostElement.dataset.applyRuns = String(applyDiag.applyRuns);
+      hostElement.dataset.applyTotalMs = String(applyDiag.applyTotalMs);
+    }
+  }, [chartBars, disableKineticScroll, tosMtfSignals, tosMtfSignalsByTimeframe, projectedGaneshHigherTimeframeSignals, expectedMoveRange, wallLevels, easternDateFormatter, sessionWindows, sessionTimeMarkers, symbol, normalizedChartSymbol, symbolAlerts, indicatorSettings, indicatorOptions, previousOhlcStudy, selectedTimeframe.minutes, mtfOneSidedCloudStudy, mtfMacdTrendCloudStudy, mtfEma920CloudStudy, mtfSqueezeCloudStudy, mtfCloudBandStudy, relativeVolumeCandleStudy, cloudMaxMtfStudy, autoFibStudies, ichimokuStudies, mtfAdxStudies, squeezeMomentumLowerStudy, mtfSqueeze410Study, pivotPointsStudy, personsPivotsStudy, mtfMaLevelsStudy, sessionLevelsStudy, gradeTapeEntries, bearGradeTapeEntries, gradeEntriesFor]);
 
   // Only a ticker change or older REST backfill is an opening-layout event.
   // Appending a live candle must preserve the current zoom and pan.
@@ -18877,6 +22644,7 @@ function OiFinderCandleChart({
       ? {}
       : { width: `${mainPricePaneWidth}px`, right: "auto" }),
   };
+  renderMark("effects");
   const showDrawingToolbar = !layoutPanel || isActiveLinked;
 
   useEffect(() => {
@@ -18894,13 +22662,86 @@ function OiFinderCandleChart({
     };
   }, [chartAlertMenu]);
 
+  renderMark("pre-return");
+  // Diagnostics: which inputs changed between renders (a per-second render
+  // storm across six panels is what starves the study ladder), and how long
+  // a render + commit of this component takes.
+  {
+    const diag = studyStageResetDiagRef.current;
+    const fingerprint = {
+      symbol, callRows, putRows, selectedChainRows, currentAtm, tosScriptLevels, underlyingPrice, tickerOptions,
+      initialTimeframe, onTimeframeChange, linkGroup, onLinkGroupChange, onSymbolChange, onActivate, isActiveLinked,
+      isWidthExpanded, onToggleWidth, maximizeCompanion, focusLatestVersion, saveWorkspaceVersion, priceLockEnabled,
+      onPriceLockChange, bars, studyBars, fineStudyTape, dailyBars, tosMtfSignals, backendGaneshHigherTimeframeSignals,
+      watchlistMtfStates, chartSource, chartStreamConnected, chartError, indicatorAxisLabels, drawingGeometry,
+      chartDrawings, drawingDraft, selectedDrawingId, drawingTool, priceAlerts, chartAlertMenu, indicatorSettings,
+      indicatorOptions, chartStudyStageState, chartSeriesResetVersion, mainPricePaneWidth, mainPricePaneHeight,
+      lowerStudyPaneTop, squeezeStudyPaneTop, mtfSqueeze410PaneTop, chartHistoryLoading, chartStudiesPending,
+      localPriceLock, symbolDraft, tickerDropdownOpen, chartTimeframe, indicatorMenuOpen, drawingHistoryVersion,
+      expandedIndicator, indicatorSaveStatus, isMaximized,
+    };
+    const previous = diag.fingerprint || {};
+    const changes = diag.changes || (diag.changes = {});
+    Object.keys(fingerprint).forEach((key) => {
+      if (previous[key] !== fingerprint[key]) changes[key] = (changes[key] || 0) + 1;
+    });
+    diag.fingerprint = fingerprint;
+  }
+  useLayoutEffect(() => {
+    renderMarks.push(["commit", Math.round(performance.now() - renderStartedAt)]);
+    const diag = studyStageResetDiagRef.current;
+    const bodyMs = renderMarks.find(([name]) => name === "pre-return")?.[1] || 0;
+    diag.bodyMsTotal = (diag.bodyMsTotal || 0) + bodyMs;
+    diag.bodyMsMax = Math.max(diag.bodyMsMax || 0, bodyMs);
+    const hostElement = chartRef.current?.closest?.(".oi-finder-chart-card");
+    if (hostElement) {
+      hostElement.dataset.bodyMsTotal = String(Math.round(diag.bodyMsTotal));
+      hostElement.dataset.bodyMsMax = String(Math.round(diag.bodyMsMax));
+    }
+  });
+  useEffect(() => {
+    const diag = studyStageResetDiagRef.current;
+    const elapsed = performance.now() - renderStartedAt;
+    renderMarks.push(["effects-done", Math.round(elapsed)]);
+    diag.renderMsTotal = (diag.renderMsTotal || 0) + elapsed;
+    diag.renderMsLast = Math.round(elapsed);
+    const hostElement = chartRef.current?.closest?.(".oi-finder-chart-card");
+    if (!hostElement) return;
+    hostElement.dataset.renderMsTotal = String(Math.round(diag.renderMsTotal));
+    hostElement.dataset.renderMsLast = String(diag.renderMsLast);
+    hostElement.dataset.streamMsTotal = String(Math.round(diag.streamMsTotal || 0));
+    hostElement.dataset.streamMerges = String(diag.streamMerges || 0);
+    if (elapsed >= (diag.slowestRenderMs || 0)) {
+      diag.slowestRenderMs = elapsed;
+      hostElement.dataset.renderMarks = JSON.stringify(renderMarks);
+    }
+    const top = Object.entries(diag.changes || {}).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    hostElement.dataset.renderChanges = JSON.stringify(Object.fromEntries(top));
+  });
+
   return (
     <section
       className={`oi-finder-chart-card ${isMaximized ? "is-maximized" : ""} ${isMaximized && maximizeCompanion && isMaximizedCompanionVisible ? "has-maximized-option-chain" : ""} ${layoutPanel ? "is-layout-panel" : ""} ${isActiveLinked ? "is-linked-active" : ""} ${isWidthExpanded ? "is-wide-panel" : ""}`}
-      style={{ "--active-link-color": linkConfig.color }}
+      style={{
+        "--active-link-color": linkConfig.color,
+        "--oi-maximized-chain-width": maximizedChainWidth == null ? undefined : `${maximizedChainWidth}px`,
+      }}
       aria-label={`${symbol || "Ticker"} live price and OI wall chart`}
       data-chart-symbol={String(symbol || "").trim().toUpperCase()}
       data-chart-timeframe={selectedTimeframe.key}
+      // Diagnostics for the study ladder (readable from browser tooling without
+      // React internals): which stage this panel has climbed to, and the tape
+      // identity that stage was earned for.
+      data-study-stage={chartStudyStage}
+      data-study-resets-key={studyStageResetDiagRef.current.key}
+      data-study-resets-tape={studyStageResetDiagRef.current.tape}
+      data-study-step={stageAdvanceRef.current.step}
+      data-tape-versions={studyStageResetDiagRef.current.tapeVersions}
+      data-renders={studyStageResetDiagRef.current.renders}
+      data-study-runs={studyStageResetDiagRef.current.studyRuns}
+      data-study-hop-ms={stageAdvanceRef.current.lastCostMs || 0}
+      data-tape-first={Number(chartBars[0]?.time || 0)}
+      data-tape-length={chartBars.length}
       onPointerDown={() => onActivate?.()}
     >
       <header>
@@ -18961,12 +22802,12 @@ function OiFinderCandleChart({
               </button> : null}
               {!chartTickerMatches.length && !chartTypedTicker ? <p>No matching watchlist ticker</p> : null}
             </div> : null}
-            <TosSyncTag
+            <ProfiledTosSyncTag
               group={linkGroup}
               onChange={onLinkGroupChange}
               title={`Link chart and option chain to TOS color group ${linkGroup}`}
             />
-            <TickerIdentityStrip symbol={symbol} />
+            <ProfiledTickerIdentityStrip symbol={symbol} />
           </div>
           <div className="oi-finder-timeframes" aria-label="Chart timeframe">
             {OI_CHART_TIMEFRAMES.map((timeframe) => <button
@@ -18983,9 +22824,68 @@ function OiFinderCandleChart({
               }}
             >{timeframe.label}</button>)}
           </div>
+          {/* Quick tickers live INSIDE the card on purpose. The standalone
+              .mobile-chart-quick-tickers row sits outside it, carries a base
+              display:none, and is un-hidden by separate .is-chart-view rules -
+              three rules in different places co-owning whether it appears. It
+              renders in every browser that can be driven here and not on the
+              reported iPhone, and three fixes aimed at those rules missed.
+              Everything inside this card renders on that device, so the row is
+              rendered here instead: no base display:none, no .is-chart-view
+              dependency, no fixed positioning at the viewport edge. Shown only
+              on the phone chart tab; the desktop layout is untouched. */}
+          <div className="oi-finder-chart-quick-row" aria-label="Quick tickers">
+            {OI_FINDER_QUICK_TICKERS.map((quickSymbol) => (
+              <button
+                key={`card-quick-${quickSymbol}`}
+                className={quickSymbol === symbol ? "is-active" : ""}
+                type="button"
+                onClick={() => chooseChartTicker(quickSymbol)}
+              >{quickSymbol}</button>
+            ))}
+          </div>
         </div>
         <div className="oi-finder-chart-actions">
-          <span className="oi-finder-chart-source-status">{bars.length ? `LIVE · ${chartSource}` : "LOADING LIVE CANDLES"}</span>
+          {/* Phone only (CSS hides it elsewhere): the eleven-button timeframe
+              strip costs a full 30px row on a phone, and TradingView collapses
+              the same choice to one control. A native select is deliberate -
+              iOS renders it as a wheel picker, so it is one tap rather than a
+              custom menu to hit-test. The desktop keeps its button row. */}
+          <select
+            className="oi-finder-timeframe-select"
+            aria-label="Chart timeframe"
+            value={selectedTimeframe.key}
+            onChange={(event) => {
+              const nextKey = event.target.value;
+              if (nextKey === selectedTimeframe.key) return;
+              saveChartLayoutProfile(false);
+              manualTimeNavigationRef.current = false;
+              manualPriceNavigationRef.current = false;
+              setChartTimeframe(nextKey);
+              onTimeframeChange?.(nextKey);
+            }}
+          >
+            {OI_CHART_TIMEFRAMES.map((timeframe) => (
+              <option key={`tf-opt-${timeframe.key}`} value={timeframe.key}>{timeframe.label}</option>
+            ))}
+          </select>
+          {/* The "LIVE · Schwab 1s quote + REST history" readout is gone from
+              every chart layout: it spent a lot of toolbar width restating a
+              transport detail the trader does not act on. Connection health is
+              still visible on the OHLC strip (STREAMING / REST FALLBACK). */}
+          {/* Phone only. Deliberately NOT a revival of the readout removed
+              above: that one spent ~82px restating the transport in words.
+              This is a 16px dot - green while candles stream, amber while they
+              load - so connection health stays glanceable on a surface where
+              the OHLC strip is hidden whenever the chart is maximized. The
+              full source string lives in the title for a long press. */}
+          <span
+            className="oi-finder-chart-live-dot"
+            data-live={bars.length ? "1" : "0"}
+            title={bars.length ? `LIVE · ${chartSource}` : "Loading live candles"}
+            aria-label={bars.length ? `Live data from ${chartSource}` : "Loading live candles"}
+            role="img"
+          />
           <OiChartCandleCountdown minutes={selectedTimeframe.minutes} label={selectedTimeframe.label} />
           <button className="oi-finder-chart-control" type="button" onClick={() => zoomChart("out")} title="Zoom out" aria-label="Zoom out">−</button>
           <button className="oi-finder-chart-control" type="button" onClick={() => zoomChart("in")} title="Zoom in" aria-label="Zoom in">+</button>
@@ -19006,7 +22906,57 @@ function OiFinderCandleChart({
           >
             <Pin size={14} />
           </button>
-          <button className="oi-finder-chart-latest chart-icon-action" type="button" onClick={returnToLatestCandle} title="Return to latest candle" data-tooltip="Latest candle" aria-label="Return to the newest live candle while preserving the selected horizontal zoom"><ChevronRight size={16} /></button>
+          <button
+            className="oi-finder-chart-latest oi-finder-chart-pan chart-icon-action"
+            type="button"
+            disabled={!panStepReady.back}
+            onPointerDown={(event) => {
+              if (event.button > 0) return;
+              startPanHold("back");
+            }}
+            onPointerUp={stopPanHold}
+            onPointerLeave={stopPanHold}
+            onPointerCancel={stopPanHold}
+            onClick={(event) => {
+              // Pointer input already stepped on pointerdown - that is what
+              // makes press-and-hold possible - so this is the keyboard path
+              // only (a keyboard-activated click reports detail 0).
+              if (event.detail === 0) panChartStep("back");
+            }}
+            title="Pan left (older)"
+            data-tooltip="Pan left"
+            aria-label="Pan the chart back in time to older candles"
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <button
+            className="oi-finder-chart-latest oi-finder-chart-pan chart-icon-action"
+            type="button"
+            disabled={!panStepReady.forward}
+            onPointerDown={(event) => {
+              if (event.button > 0) return;
+              startPanHold("forward");
+            }}
+            onPointerUp={stopPanHold}
+            onPointerLeave={stopPanHold}
+            onPointerCancel={stopPanHold}
+            onClick={(event) => {
+              if (event.detail === 0) panChartStep("forward");
+            }}
+            title="Pan right (newer)"
+            data-tooltip="Pan right"
+            aria-label="Pan the chart forward in time to newer candles"
+          >
+            <ChevronRight size={16} />
+          </button>
+          {/* Double chevron, not a single one: the pan-right arrow that now sits
+              immediately to its left is a single ChevronRight, and the two read
+              as the same button at 16px - worse still, pan-right is disabled at
+              the live edge, which is where the chart opens, so a trader saw a
+              greyed ">" beside a live ">" (confirmed in a 4x capture on both
+              desktop and phone). ChevronsRight is the app's own existing glyph
+              for "jump to live" - OiChartScrollbar's .is-live arrow uses it. */}
+          <button className="oi-finder-chart-latest oi-finder-jump-latest chart-icon-action" type="button" onClick={returnToLatestCandle} title="Return to latest candle" data-tooltip="Latest candle" aria-label="Return to the newest live candle while preserving the selected horizontal zoom"><ChevronsRight size={16} /></button>
           <button className="oi-finder-chart-latest chart-icon-action" type="button" onClick={focusLatestCandle} title="Reset chart zoom" data-tooltip="Reset zoom" aria-label="Reset both chart axes to the default candle-focused view"><RotateCcw size={14} /></button>
           {layoutPanel && onToggleWidth ? (
             <button
@@ -19045,11 +22995,12 @@ function OiFinderCandleChart({
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
-                openTradingPopout("chart", symbol, linkGroup, chartTimeframe);
+                setIsMaximized(true);
+                setIsMaximizedCompanionVisible(true);
               }}
-              title={`Open ${symbol || "this chart"} in a separate window for another monitor`}
-              data-tooltip="Pop out"
-              aria-label={`Pop out ${symbol || "chart"} to a separate window`}
+              title={`Fill the screen with ${symbol || "this chart"} and its option chain`}
+              data-tooltip="Full screen"
+              aria-label={`Fill the screen with ${symbol || "chart"}`}
             >
               <ExternalLink size={14} />
             </button>
@@ -19101,6 +23052,20 @@ function OiFinderCandleChart({
             <Save size={14} />
           </button>
           <button
+            className={`oi-finder-mobile-draw-toggle${drawingToolbarCollapsed ? "" : " is-active"}`}
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              setDrawingToolbarCollapsed((current) => !current);
+            }}
+            title={drawingToolbarCollapsed ? "Show drawing tools" : "Hide drawing tools"}
+            aria-label={drawingToolbarCollapsed ? "Show drawing tools" : "Hide drawing tools"}
+            aria-pressed={!drawingToolbarCollapsed}
+          >
+            <Pencil size={14} />
+            Draw
+          </button>
+          <button
             className="oi-finder-chart-alert"
             type="button"
             onClick={(event) => {
@@ -19112,16 +23077,43 @@ function OiFinderCandleChart({
             title={`Create a price alert for ${normalizeOiChartSymbol(symbol)}`}
             aria-label={`Create a price alert for ${normalizeOiChartSymbol(symbol)}`}
           >
+            {/* Icon only - the title and aria-label carry the meaning. */}
             <Bell size={14} />
-            Alert
           </button>
-          <details className="oi-finder-indicators-menu">
-            <summary title="Indicators and studies" aria-label="Add or remove chart indicators"><Activity size={15} /> Indicators <ChevronDown size={13} /></summary>
-            <div className="oi-finder-indicators-popover">
+          <details
+            className="oi-finder-indicators-menu"
+            open={indicatorMenuOpen}
+            onToggle={(event) => setIndicatorMenuOpen(event.currentTarget.open)}
+          >
+            {/* The label is a real element, not a bare text node, so the phone
+                can hide it with one rule. Three CSS attempts to zero it failed:
+                two `font` shorthands were discarded (a var(), then a unitless
+                zero the shorthand rejects), and clipping alone left the middle
+                of the word showing because the summary centres its content -
+                while flex crushed the ICON to zero width, since an svg shrinks
+                and an anonymous text node does not. */}
+            <summary title="Indicators and studies" aria-label="Add or remove chart indicators"><Activity size={15} /> <ChevronDown size={13} /></summary>
+            {indicatorMenuOpen ? <div className="oi-finder-indicators-popover">
+            <button
+              className="oi-finder-indicators-close"
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setIndicatorMenuOpen(false);
+              }}
+              title="Close indicators"
+              aria-label="Close indicators editor"
+            >
+              <X size={16} />
+            </button>
             <strong>Indicators &amp; studies</strong>
             <small>Choose what appears on the live chart. Settings are saved.</small>
             <div className="oi-finder-indicator-profile-actions">
               <button type="button" onClick={saveIndicatorProfile}>Save {selectedTimeframe.label} for all tickers</button>
+              {/* Phone chrome hides the toolbar's own save-layout icon (the
+                  actions row was 170px of wrapped controls); this is where it
+                  lives instead, so nothing is lost on a small screen. */}
+              <button type="button" onClick={() => saveChartLayoutProfile()}>Save {selectedTimeframe.label} chart layout</button>
               <button type="button" onClick={resetIndicatorProfile}>Reset {selectedTimeframe.label}</button>
               {indicatorSaveStatus ? <small aria-live="polite">{indicatorSaveStatus}</small> : null}
             </div>
@@ -19556,6 +23548,8 @@ function OiFinderCandleChart({
                       <label><input type="checkbox" checked={indicatorOptions.mtfMaShowDaily !== false} onChange={() => setIndicatorOption("mtfMaShowDaily", indicatorOptions.mtfMaShowDaily === false)} /><span>Show daily</span></label>
                       <label><input type="checkbox" checked={indicatorOptions.mtfMaShowWeekly !== false} onChange={() => setIndicatorOption("mtfMaShowWeekly", indicatorOptions.mtfMaShowWeekly === false)} /><span>Show weekly</span></label>
                       <label><input type="checkbox" checked={indicatorOptions.mtfMaShowMonthly !== false} onChange={() => setIndicatorOption("mtfMaShowMonthly", indicatorOptions.mtfMaShowMonthly === false)} /><span>Show monthly</span></label>
+                      <label><input type="checkbox" checked={indicatorOptions.mtfMaShowEma !== false} onChange={() => setIndicatorOption("mtfMaShowEma", indicatorOptions.mtfMaShowEma === false)} /><span>Show EMA</span></label>
+                      <label><input type="checkbox" checked={indicatorOptions.mtfMaShowSma !== false} onChange={() => setIndicatorOption("mtfMaShowSma", indicatorOptions.mtfMaShowSma === false)} /><span>Show SMA</span></label>
                       <label><input type="checkbox" checked={indicatorOptions.mtfMaShowBubbles !== false} onChange={() => setIndicatorOption("mtfMaShowBubbles", indicatorOptions.mtfMaShowBubbles === false)} /><span>Display names</span></label>
                       <label><span>EMA 1 violet</span><input type="color" value={indicatorOptions.mtfMaVioletColor} onChange={(event) => setIndicatorOption("mtfMaVioletColor", event.target.value)} /></label>
                       <label><span>EMA 2 gold</span><input type="color" value={indicatorOptions.mtfMaGoldColor} onChange={(event) => setIndicatorOption("mtfMaGoldColor", event.target.value)} /></label>
@@ -19668,11 +23662,11 @@ function OiFinderCandleChart({
                 </section>
               );
             })}
-          </div>
+          </div> : null}
         </details>
         </div>
       </header>
-      {chartBars.length ? <OiChartOhlcStrip
+      {chartBars.length ? <ProfiledOiChartOhlcStrip
         chartId={chartInstanceIdRef.current}
         symbol={symbol}
         timeframeLabel={selectedTimeframe.label}
@@ -19680,6 +23674,10 @@ function OiFinderCandleChart({
         easternDateFormatter={easternDateFormatter}
         easternTimeFormatter={easternTimeFormatter}
         streamConnected={chartStreamConnected}
+        historyPending={deepHistoryPending}
+        studiesPending={chartStudiesPending}
+        premarketGapNote={chartPremarketGapNote}
+        premarketGapState={chartPremarketGapState}
       /> : null}
       {false && <div className="oi-finder-chart-legend" aria-label="OI wall chart legend">
         <span className="is-call"><i />Call wall</span>
@@ -19717,10 +23715,17 @@ function OiFinderCandleChart({
           className={`oi-finder-candle-chart${showDrawingToolbar ? " has-drawing-toolbar" : ""}`}
           ref={candleChartRef}
           style={showDrawingToolbar ? {
-            "--oi-drawing-toolbar-gutter": drawingToolbarCollapsed ? "36px" : "42px",
+            "--oi-drawing-toolbar-gutter": denseLayout ? "0px" : drawingToolbarCollapsed ? "36px" : "42px",
           } : undefined}
         >
           <div className="oi-finder-chart-canvas" ref={chartRef} />
+          <ProfiledOiChartScrollbar
+            applyRef={chartScrollbarApplyRef}
+            label={normalizeOiChartSymbol(symbol)}
+            onScrollTo={(range) => chartScrollbarControlRef.current?.scrollTo?.(range)}
+            onInteractionStart={() => chartScrollbarControlRef.current?.begin?.()}
+            onInteractionEnd={() => chartScrollbarControlRef.current?.end?.()}
+          />
           {chartAlertMenu ? (
             <div
               className="oi-finder-chart-alert-menu"
@@ -19761,7 +23766,7 @@ function OiFinderCandleChart({
             className="oi-finder-crosshair-bottom-time"
             aria-hidden="true"
           />
-          <OiChartDrawingTools
+          <ProfiledOiChartDrawingTools
             activeTool={drawingTool}
             color={drawingColor}
             collapsed={drawingToolbarCollapsed}
@@ -19801,6 +23806,8 @@ function OiFinderCandleChart({
           <div className="oi-finder-oi-edge-badges" style={mainPaneClipStyle} aria-hidden="true" ref={oiEdgeBadgesHostRef}>
             <span data-edge="up" />
             <span data-edge="down" />
+            <span data-edge="alert-up" className="is-alert" style={{ display: "none" }} />
+            <span data-edge="alert-down" className="is-alert" style={{ display: "none" }} />
           </div>
           <div className="oi-finder-indicator-axis-labels" style={mainPaneClipStyle} aria-hidden="true" ref={indicatorAxisLabelsHostRef}>
             {indicatorAxisLabels.map((label) => {
@@ -19843,7 +23850,13 @@ function OiFinderCandleChart({
           {indicatorSettings.mtfCloudLabelLower && lowerStudyPaneTop != null ? (
             <div
               className="oi-finder-mtf-cloud-labels"
-              style={{ top: `${lowerStudyPaneTop + (indicatorSettings.mtfAdxCloudsLower ? 18 : 0)}px` }}
+              style={{
+                top: `${lowerStudyPaneTop + chartLowerStudyHeaderOffsets({
+                  isPhone: isPhoneChartViewport(),
+                  hasAdx: indicatorSettings.mtfAdxCloudsLower,
+                  hasCloudLabels: indicatorSettings.mtfCloudLabelLower,
+                }).cloudTop}px`,
+              }}
             >
               {mtfCloudLabelStudy.map((label) => (
                 <span
@@ -19894,13 +23907,54 @@ function OiFinderCandleChart({
         && indicatorSettings.oiLevels
         && indicatorOptions.oiLevelsShowSummary !== false
         && highOiLevelModel.allLevels.length ? (
-        <OiFinderOiLevelDisclosure
+        <ProfiledOiFinderOiLevelDisclosure
           symbol={symbol}
           model={highOiLevelModel}
           currentPrice={chartBars.at(-1)?.close || underlyingPrice}
           atmStrike={currentAtm?.call?.strike || currentAtm?.put?.strike || highOiLevelModel.atmStrike}
           expectedMove={currentAtm?.expectedMove}
         />
+      ) : null}
+      {isMaximized && maximizeCompanion && isMaximizedCompanionVisible ? (
+        <div
+          className="oi-finder-chart-maximized-chain-handle"
+          role="separator"
+          aria-label="Resize chart and option chain"
+          aria-orientation="vertical"
+          tabIndex="0"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (!event.currentTarget.hasPointerCapture?.(event.pointerId)) return;
+            resizeMaximizedChain(event);
+          }}
+          onPointerUp={(event) => event.currentTarget.releasePointerCapture?.(event.pointerId)}
+          onPointerCancel={(event) => event.currentTarget.releasePointerCapture?.(event.pointerId)}
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            setMaximizedChainWidth(null);
+          }}
+          onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+            event.preventDefault();
+            const bounds = event.currentTarget.closest(".oi-finder-chart-card")?.getBoundingClientRect?.();
+            if (!bounds) return;
+            const chain = event.currentTarget.parentElement?.querySelector(".oi-finder-chart-maximized-chain");
+            const currentWidth = maximizedChainWidth || chain?.getBoundingClientRect?.().width || bounds.width * 0.31;
+            const requestedWidth = currentWidth + (event.key === "ArrowLeft" ? 24 : -24);
+            const nextWidth = workspaceCompanionWidthAtPointer({
+              containerLeft: bounds.left,
+              containerWidth: bounds.width,
+              pointerX: bounds.left + bounds.width - requestedWidth,
+            });
+            if (nextWidth != null) setMaximizedChainWidth(nextWidth);
+          }}
+          title="Drag left or right to resize the chart and option chain. Double-click to reset."
+        ><i /></div>
       ) : null}
       {isMaximized && maximizeCompanion && isMaximizedCompanionVisible ? (
         <aside
@@ -20615,7 +24669,6 @@ function OptionJournalWorkspace({ rows, accounts, positions = [] }) {
   const selectedDay = dateFilter ? dailyRows.find((row) => row.period === dateFilter) : null;
   const greenDays = dailyRows.filter((row) => Number(row.total_pnl) > 0).length;
   const redDays = dailyRows.filter((row) => Number(row.total_pnl) < 0).length;
-  const streak = calculateWinStreak(dailyRows);
   const totalPnl = closedAccountRows.reduce((sum, row) => sum + Number(row.tradePnl ?? row.pnl ?? 0), 0);
   const wins = closedAccountRows.filter((row) => Number(row.tradePnl ?? row.pnl ?? 0) > 0);
   const losses = closedAccountRows.filter((row) => Number(row.tradePnl ?? row.pnl ?? 0) < 0);
@@ -21051,8 +25104,17 @@ function OiLevelScriptTos({ data, loading, symbol, symbols, onSymbolChange, onRe
   );
 }
 
-function AuthenticationScreen({ bootstrapRequired, bootstrapRequiresToken, onAuthenticated }) {
+function AuthenticationScreen({ bootstrapRequired, bootstrapRequiresToken, accessStatus, accessEmail, onAuthenticated }) {
   const ownerSetupMode = Boolean(bootstrapRequired);
+  // Cloudflare vouched for someone this app has no account for. Saying so is
+  // the whole point: the old behaviour was a password box they could never
+  // get past, with nothing on screen explaining why.
+  const accessNotice =
+    accessStatus === "no_account"
+      ? `No AGX account for ${accessEmail || "this address"}. Ask your administrator to add you in Settings.`
+      : accessStatus === "disabled"
+      ? `The AGX account for ${accessEmail || "this address"} has been switched off. Contact your administrator.`
+      : "";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -21088,8 +25150,8 @@ function AuthenticationScreen({ bootstrapRequired, bootstrapRequiresToken, onAut
     <main className="auth-page">
       <section className="auth-card">
         <div className="auth-brand">
-          <span><ChartCandlestick size={24} strokeWidth={2.1} /></span>
-          <div><b>AGENTIC</b><small>TRADING INTELLIGENCE</small></div>
+          <span><AgxMark size={24} /></span>
+          <div><b>AGX</b><small>TRADING INTELLIGENCE</small></div>
         </div>
         <div className="auth-heading">
           <ShieldCheck size={22} />
@@ -21098,6 +25160,12 @@ function AuthenticationScreen({ bootstrapRequired, bootstrapRequiresToken, onAut
             <p>{ownerSetupMode ? "The first account is the administrator. Public sign-up stays disabled." : "Sign in to open your private analytics workspace."}</p>
           </div>
         </div>
+        {accessNotice ? (
+          <div className="auth-access-notice" role="alert">
+            <ShieldCheck size={15} />
+            <span>{accessNotice}</span>
+          </div>
+        ) : null}
         <form className="auth-form" onSubmit={submit}>
           {ownerSetupMode ? (
             <>
@@ -21210,8 +25278,18 @@ export default function App() {
     let active = true;
     let retryTimer = 0;
     const checkAuth = (attempt) => {
-      fetch("/api/auth/status")
+      // Bound each attempt. /api/auth/status is fast ~95% of the time but under
+      // heavy background DB load it occasionally stalls 20-50s (measured
+      // 2026-08-28), and the browser has no default timeout - so one unlucky
+      // boot call left the trader staring at "Loading secure workspace" for
+      // most of a minute. Abort after 6s and let the existing retry hit a fresh
+      // (almost always fast) call instead of waiting out the stall. Reads are
+      // idempotent, so retrying is safe.
+      const controller = new AbortController();
+      const abortTimer = window.setTimeout(() => controller.abort(), 6000);
+      fetch("/api/auth/status", { signal: controller.signal })
         .then(async (response) => {
+          window.clearTimeout(abortTimer);
           const payload = await readJsonResponse(response);
           if (!response.ok) throw new Error(payload.error || "Authentication is unavailable.");
           if (active) {
@@ -21220,10 +25298,13 @@ export default function App() {
               bootstrapRequired: Boolean(payload.bootstrapRequired),
               bootstrapRequiresToken: Boolean(payload.bootstrapRequiresToken),
               user: payload.user || null,
+              accessStatus: String(payload.accessStatus || ""),
+              accessEmail: String(payload.accessEmail || ""),
             });
           }
         })
         .catch(() => {
+          window.clearTimeout(abortTimer);
           if (!active) return;
           // The api_server restarts routinely (supervisor auto-recover, boot
           // warmup) and can be unreachable or very slow for tens of seconds.
@@ -21231,7 +25312,7 @@ export default function App() {
           // login page; keep the loading state and retry briefly before
           // concluding the session is gone.
           if (attempt < 5) {
-            retryTimer = window.setTimeout(() => checkAuth(attempt + 1), 1500 * (attempt + 1));
+            retryTimer = window.setTimeout(() => checkAuth(attempt + 1), 800 * (attempt + 1));
             return;
           }
           setAuthState({ loading: false, bootstrapRequired: false, bootstrapRequiresToken: false, user: null });
@@ -21260,6 +25341,8 @@ export default function App() {
       <AuthenticationScreen
         bootstrapRequired={authState.bootstrapRequired}
         bootstrapRequiresToken={authState.bootstrapRequiresToken}
+        accessStatus={authState.accessStatus}
+        accessEmail={authState.accessEmail}
         onAuthenticated={(user) => setAuthState({ loading: false, bootstrapRequired: false, bootstrapRequiresToken: false, user })}
       />
     );
@@ -21272,11 +25355,19 @@ function TradingWorkspace({ authUser, onLogout }) {
     if (typeof window === "undefined") return { mode: "", symbol: "AAPL", linkGroup: 2, timeframe: "5m" };
     const params = new URLSearchParams(window.location.search);
     const requestedMode = params.get("popout");
-    const mode = requestedMode === "chart" || requestedMode === "chain" || requestedMode === "mag7"
-      ? requestedMode
-      : "";
+    const mode =
+      requestedMode === "chart"
+      || requestedMode === "chain"
+      || requestedMode === "mag7"
+      || requestedMode === "momx"
+        ? requestedMode
+        : "";
     return {
       mode,
+      // Which MomX list this detached window is for. Without it every
+      // detached window would show whatever list the MAIN app was last on,
+      // which defeats the entire point of opening two of them.
+      list: (params.get("list") || "").trim(),
       symbol: normalizeOiChartSymbol(params.get("symbol"), "AAPL"),
       linkGroup: Math.min(9, Math.max(1, Number(params.get("link")) || 2)),
       timeframe: OI_CHART_TIMEFRAMES.some((item) => item.key === params.get("timeframe"))
@@ -21285,11 +25376,135 @@ function TradingWorkspace({ authUser, onLogout }) {
     };
   });
   const [dashboard, setDashboard] = useState(defaultDashboard);
-  const [activeView, setActiveView] = useState(() => (
-    authUser?.mustChangePassword
-      ? "Settings"
-      : popoutConfig.mode ? "Charts & OI" : "OI Scanner"
-  ));
+  const [activeView, setActiveView] = useState(() => {
+    if (authUser?.mustChangePassword) return "Settings";
+    // The view a popout reports is not cosmetic: oiFinderInitialLoadPlan keys
+    // its `enabled` off it, so a MomX popout claiming "Charts & OI" would sit
+    // there pulling AAPL option chains in the background forever. "MomX
+    // Scanner" is not in that function's supported list, which is exactly
+    // right - this window loads the scanner and nothing else.
+    if (popoutConfig.mode === "momx") return "MomX Scanner";
+    if (popoutConfig.mode) return "Charts & OI";
+    // He TAPPED "New version available", so he chose the reload and the
+    // notes are what he asked to see. The silent auto-reload deliberately
+    // does NOT set this mark - see appVersion.js - because that one fires
+    // when he is merely returning to a chart he left open.
+    try {
+      if (consumeReleaseNotesMark(window.sessionStorage)) return "Release Notes";
+    } catch {
+      // Storage unavailable: fall through, exactly as below.
+    }
+    try {
+      const stored = window.localStorage.getItem(ACTIVE_VIEW_STORAGE_KEY);
+      if (stored === "Settings" || optionNavItems.some((item) => item.label === stored)) return stored;
+    } catch {
+      // Storage unavailable: fall through to the default page.
+    }
+    return "Charts & OI";
+  });
+  // How many release notes he has not read. The SILENT auto-reload does not
+  // navigate anywhere - being thrown onto a notes page when you came back to a
+  // chart is worse than the silent update was - so this dot is the only thing
+  // that tells him a version landed while he was away.
+  const [releaseNotesUnread, setReleaseNotesUnread] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    // Same no-store fetch the page itself uses: the notes file ships beside
+    // the bundle, so a cached copy would under-report.
+    fetch(`/release-notes.json?t=${Date.now()}`, { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setReleaseNotesUnread(unreadCount(parseReleases(data), readSeen(window.localStorage)));
+      })
+      .catch(() => {
+        // Offline or blocked. No dot is better than a wrong dot.
+      });
+    return () => { cancelled = true; };
+  }, []);
+  // Opening the page IS reading it; the panel persists the marker, and this
+  // clears the dot in the same breath so the two never disagree on screen.
+  useEffect(() => {
+    if (activeView === "Release Notes") setReleaseNotesUnread(0);
+  }, [activeView]);
+
+  // Show a brand-new browser the Learn page, once. Every condition in
+  // shouldAutoOpenLearn is load-bearing - a pop-out chart window must never
+  // become a help page, and a browser that already remembers a page is
+  // mid-workflow and must not be yanked away from it.
+  // This MUST stay declared above the effect that persists activeView: mount
+  // effects run in declaration order, so if that one wrote first, savedView
+  // would never be empty and this page would never open by itself.
+  // Declaration order is not enough on its own, though: the chart-grid effect
+  // below steers to "Charts & OI" from inside an await, which lands after every
+  // mount effect regardless of order. This ref is how that effect knows to
+  // stand down. See the guard on it there.
+  const learnAutoOpenedRef = useRef(false);
+  useEffect(() => {
+    let savedView = "";
+    try {
+      savedView = window.localStorage.getItem(ACTIVE_VIEW_STORAGE_KEY) || "";
+    } catch {
+      savedView = "";
+    }
+    const storage = (() => { try { return window.localStorage; } catch { return null; } })();
+    if (!shouldAutoOpenLearn({
+      seenVersion: readLearnSeen(storage),
+      popoutMode: popoutConfig.mode,
+      savedView,
+      mustChangePassword: authUser?.mustChangePassword,
+    })) return;
+    markLearnSeen(storage, LEARN_CONTENT_VERSION);
+    // Claim the view in the same tick the seen-version is burned, so the async
+    // chart-grid steer cannot overwrite it and leave the user marked as having
+    // seen a page they were never shown.
+    learnAutoOpenedRef.current = true;
+    setActiveView("Learn + Setup");
+    // Mount only. This must never re-fire on a view change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    // Pop-out windows must not overwrite the main window's remembered page.
+    if (popoutConfig.mode) return;
+    try {
+      window.localStorage.setItem(ACTIVE_VIEW_STORAGE_KEY, activeView);
+    } catch {
+      // Storage unavailable: the page simply is not remembered.
+    }
+  }, [activeView, popoutConfig.mode]);
+  // "Save grid" on one device should open that grid on every other device -
+  // including a device that reopens on a different page. The merge/apply
+  // itself lives in the charts workspace (it needs the layout options), so
+  // when the server holds a default grid this browser has not applied yet,
+  // steer the app to the charts page and let the workspace apply it.
+  useEffect(() => {
+    if (popoutConfig.mode || authUser?.mustChangePassword) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch("/api/chart-grids");
+        if (!response.ok || cancelled) return;
+        const payload = await response.json();
+        const { defaultGrid } = readChartGridMeta(payload?.grids);
+        if (!defaultGrid) return;
+        const applied = String(window.localStorage.getItem(OI_CHART_APPLIED_GRID_STORAGE_KEY) || "");
+        // NOT dead code: a first-time visitor has both no applied grid AND an
+        // auto-opened Learn page. This resolves after an await, so it lands
+        // after the Learn effect no matter how the effects are ordered - and
+        // without this guard it silently steered the new user to the charts
+        // while their one-shot Learn visit had already been burned. The grid
+        // still applies; it just waits until they reach the charts page.
+        if (learnAutoOpenedRef.current) return;
+        if (applied !== chartGridStamp(defaultGrid.name, defaultGrid.savedAt) && !cancelled) {
+          setActiveView("Charts & OI");
+        }
+      } catch {
+        // Offline: stay on the remembered page.
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -21298,43 +25513,101 @@ function TradingWorkspace({ authUser, onLogout }) {
       return false;
     }
   });
-  const [hiddenNavigationPanels, setHiddenNavigationPanels] = useState(loadHiddenNavigationPanels);
-  const [scannerUniverse, setScannerUniverse] = useState("mag7");
+  // The phone's "More" sheet. Everything the six-button bar cannot name lives
+  // behind it - without it Mag7 Scanner and Option Watchlist had no phone
+  // entry point at all.
+  // The premarket scanner polls its OWN endpoint, not the dashboard payload:
+  // dashboard_payload() is cached 60s server-side, which would have made the
+  // table staler than the live tape it is built on.
+  const [premarketScanner, setPremarketScanner] = useState({
+    status: "WARMING",
+    windowLabel: "6:00 AM - 9:30 AM ET",
+    rows: [],
+    matchCount: 0,
+    readySymbols: [],
+    pendingSymbols: [],
+    message: "",
+  });
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [submitting, setSubmitting] = useState("");
+  // Morning briefing: built server-side every 5 minutes (05:30-09:35 ET);
+  // this endpoint only reads memory, so a 3-minute poll costs nothing.
+  const [morningBriefing, setMorningBriefing] = useState({ status: "WAITING", lines: [] });
+  // Tap-to-explain: which scanner row the explain panel is showing.
+  const [explainScannerTarget, setExplainScannerTarget] = useState(null);
+  // 30-day scanner history (server archives rows with first-seen stamps).
+  const [scannerHistory, setScannerHistory] = useState({ days: [] });
+  const [scannerHistoryOpen, setScannerHistoryOpen] = useState(false);
+  const [scannerHistoryView, setScannerHistoryView] = useState(() => {
+    try {
+      return window.localStorage.getItem("scannerHistoryView") || "table";
+    } catch {
+      return "table";
+    }
+  });
+  const [scannerHistorySelectedDate, setScannerHistorySelectedDate] = useState(null);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("scannerHistoryView", scannerHistoryView);
+    } catch {
+      // per-viewer convenience only
+    }
+  }, [scannerHistoryView]);
+  useEffect(() => {
+    if (popoutConfig.mode || activeView !== "Premarket Scanner") return undefined;
+    let cancelled = false;
+    const loadScannerHistory = async () => {
+      try {
+        const response = await fetch("/api/premarket-scanner/history", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (!cancelled && payload && Array.isArray(payload.days)) setScannerHistory(payload);
+      } catch {
+        // next poll is 5 minutes away
+      }
+    };
+    loadScannerHistory();
+    const timer = window.setInterval(loadScannerHistory, 300000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [activeView, popoutConfig.mode]);
+  useEffect(() => {
+    if (popoutConfig.mode) return undefined;
+    let cancelled = false;
+    const loadBriefing = async () => {
+      try {
+        const response = await fetch("/api/morning-briefing", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (!cancelled && payload && Array.isArray(payload.lines)) setMorningBriefing(payload);
+      } catch {
+        // next poll is 3 minutes away
+      }
+    };
+    loadBriefing();
+    const timer = window.setInterval(loadBriefing, 180000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [popoutConfig.mode]);
   const [error, setError] = useState("");
-  const [symbols, setSymbols] = useState(MAG7);
-  const [fromDate, setFromDate] = useState(isoDate(365 * 6));
-  const [toDate, setToDate] = useState(isoDate(0));
   const [selectedSymbol, setSelectedSymbol] = useState("AAPL");
   const [symbolLookup, setSymbolLookup] = useState("AAPL");
   const [oiChartSymbol, setOiChartSymbol] = useState("AAPL");
   const [oiChartLookup, setOiChartLookup] = useState("AAPL");
   const [oiFinderSymbol, setOiFinderSymbol] = useState(popoutConfig.symbol);
+  // Auto Alert page feed: polls app-wide so touch/confirm alerts play their
+  // tone, toast and browser notification on every page; the nav bell shows
+  // the unseen count until the Auto Alert page is opened. The chart's ticker
+  // feeds "Track charted tickers".
+  const oiAutoAlertFeed = useOiAutoAlertFeed({ drawerOpen: activeView === "Auto Alert", chartSymbol: oiFinderSymbol });
   const [oiFinderDraft, setOiFinderDraft] = useState(popoutConfig.symbol);
   const [oiFinderDropdownOpen, setOiFinderDropdownOpen] = useState(false);
   const [oiFinderFeed, setOiFinderFeed] = useState({ symbol: popoutConfig.symbol, callRows: [], putRows: [], scannedAt: null, live: false, errors: [] });
   const [oiFinderLoading, setOiFinderLoading] = useState(false);
   const [oiFinderNewsRefreshingSymbol, setOiFinderNewsRefreshingSymbol] = useState("");
   const [chartsAndOiNavigationIntent, setChartsAndOiNavigationIntent] = useState(null);
+  const [mobileChartSection, setMobileChartSection] = useState("chart");
+  const [mobileOptionsRequest, setMobileOptionsRequest] = useState(0);
   const chartsAndOiNavigationSequenceRef = useRef(0);
-  const [whyNotData, setWhyNotData] = useState(null);
-  const [whyNotLoading, setWhyNotLoading] = useState(false);
-  const [stockScannerHistoryDate, setStockScannerHistoryDate] = useState("");
-  const [mag7StockScannerHistoryDate, setMag7StockScannerHistoryDate] = useState("");
-  const [oiScannerHistoryDate, setOiScannerHistoryDate] = useState("");
-  const [mag7OiScannerHistoryDate, setMag7OiScannerHistoryDate] = useState("");
-  const [mag7FiveMinuteSignalHistoryDate, setMag7FiveMinuteSignalHistoryDate] = useState("");
-  const [mag7PremarketSignalHistoryDate, setMag7PremarketSignalHistoryDate] = useState("");
-  const [journalView, setJournalView] = useState("daily");
-  const [journalCalendarAnchor, setJournalCalendarAnchor] = useState(() => new Date());
   const [journalDateFilter, setJournalDateFilter] = useState("");
-  const [journalTradeFilter, setJournalTradeFilter] = useState("all");
-  const [journalSearch, setJournalSearch] = useState("");
-  const [journalSideFilter, setJournalSideFilter] = useState("all");
-  const [journalSetupFilter, setJournalSetupFilter] = useState("all");
-  const [journalSessionFilter, setJournalSessionFilter] = useState("all");
-  const [journalPnLFilter, setJournalPnLFilter] = useState("all");
-  const [selectedJournalTradeId, setSelectedJournalTradeId] = useState("");
   const [optionBotState, setOptionBotState] = useState("Stopped");
   const [optionContractPolicy, setOptionContractPolicy] = useState("only_long_call");
   const [optionApprovalMode, setOptionApprovalMode] = useState("automatic");
@@ -21375,15 +25648,36 @@ function TradingWorkspace({ authUser, onLogout }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [accountMessage, setAccountMessage] = useState("");
   const [adminUsers, setAdminUsers] = useState([]);
+  // Two-tap delete, not window.confirm(): some phone in-app browsers
+  // (WKWebView without a dialog delegate) resolve confirm() to false
+  // without ever showing it, so the tap silently does nothing. Same
+  // reasoning as the alert centre's "Clear all".
+  const [deleteArmedUserId, setDeleteArmedUserId] = useState("");
   const [adminDeviceAccess, setAdminDeviceAccess] = useState({ pendingRequests: [], approvedDevices: [] });
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newUserRole, setNewUserRole] = useState("user");
   const [adminMessage, setAdminMessage] = useState("");
+  // Admin-only preflight health checklist. Kept in four separate pieces of
+  // state on purpose: "loading", "running" and "error" are distinguishable
+  // from "we have a result", so the panel can never show a forever-spinner
+  // and can never render an empty payload as if it were a pass.
+  const [preflightPayload, setPreflightPayload] = useState(null);
+  const [preflightError, setPreflightError] = useState("");
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightRunning, setPreflightRunning] = useState(false);
+  const [preflightSelectedDay, setPreflightSelectedDay] = useState("");
+  // Ticks so "ran 41 min ago" keeps counting up while Settings stays open;
+  // a frozen age label is how a stale result passes for a fresh one.
+  const [preflightNowMs, setPreflightNowMs] = useState(() => Date.now());
+  const [inviteMessage, setInviteMessage] = useState("");
+  const [inviteCopied, setInviteCopied] = useState(false);
   const [watchlistSymbol, setWatchlistSymbol] = useState("");
   const [editingWatchlistSymbol, setEditingWatchlistSymbol] = useState("");
   const [watchlistEditValue, setWatchlistEditValue] = useState("");
+  const [watchlistSearchDraft, setWatchlistSearchDraft] = useState("");
+  const [watchlistSearch, setWatchlistSearch] = useState("");
   const [mag7ScannerSymbol, setMag7ScannerSymbol] = useState("");
   const [editingMag7ScannerSymbol, setEditingMag7ScannerSymbol] = useState("");
   const [mag7ScannerEditValue, setMag7ScannerEditValue] = useState("");
@@ -21392,22 +25686,6 @@ function TradingWorkspace({ authUser, onLogout }) {
   const [optionWatchlistSymbol, setOptionWatchlistSymbol] = useState("");
   const [editingOptionWatchlistSymbol, setEditingOptionWatchlistSymbol] = useState("");
   const [optionWatchlistEditValue, setOptionWatchlistEditValue] = useState("");
-  const [stockScannerHistorySearchDraft, setStockScannerHistorySearchDraft] = useState("");
-  const [stockScannerHistorySearch, setStockScannerHistorySearch] = useState("");
-  const [mag7StockScannerHistorySearchDraft, setMag7StockScannerHistorySearchDraft] = useState("");
-  const [mag7StockScannerHistorySearch, setMag7StockScannerHistorySearch] = useState("");
-  const [oiScannerHistorySearchDraft, setOiScannerHistorySearchDraft] = useState("");
-  const [oiScannerHistorySearch, setOiScannerHistorySearch] = useState("");
-  const [mag7OiScannerHistorySearchDraft, setMag7OiScannerHistorySearchDraft] = useState("");
-  const [mag7OiScannerHistorySearch, setMag7OiScannerHistorySearch] = useState("");
-  const [mag7FiveMinuteSignalHistorySearchDraft, setMag7FiveMinuteSignalHistorySearchDraft] = useState("");
-  const [mag7FiveMinuteSignalHistorySearch, setMag7FiveMinuteSignalHistorySearch] = useState("");
-  const [mag7PremarketSignalHistorySearchDraft, setMag7PremarketSignalHistorySearchDraft] = useState("");
-  const [mag7PremarketSignalHistorySearch, setMag7PremarketSignalHistorySearch] = useState("");
-  const [oiResultSearchDraft, setOiResultSearchDraft] = useState("");
-  const [oiResultSearch, setOiResultSearch] = useState("");
-  const [learningTickerSearch, setLearningTickerSearch] = useState("");
-  const [learningReportDate, setLearningReportDate] = useState("");
   const [newsSearchDraft, setNewsSearchDraft] = useState("");
   const [newsSearch, setNewsSearch] = useState("");
   const [newsUniverse, setNewsUniverse] = useState("watchlist");
@@ -21420,18 +25698,40 @@ function TradingWorkspace({ authUser, onLogout }) {
   const [earningsCalendar, setEarningsCalendar] = useState({ live: false, source: "", watchlistCount: 0, horizonDays: 45, rows: [], errors: [] });
   const [earningsCalendarLoading, setEarningsCalendarLoading] = useState(false);
   const dashboardRequestInFlight = useRef(false);
+  // Orders the two writers of `dashboard` state against each other. Without
+  // this a poll in flight during a delete lands afterwards and puts the row
+  // back, which reads as "delete is broken".
+  const dashboardWriteOrder = useRef(createDashboardWriteOrder());
   const dashboardHeavyRequestPending = useRef(false);
+  const dashboardFailureStreak = useRef(0);
   // Version of the scanner-history tape we currently hold. Scanner history is
   // ~80% of the 5s dashboard payload but only changes when a scan runs, so we
   // tell the server what we have and it omits the arrays when they match.
   const scannerHistoryVersionRef = useRef("");
   const oiFinderRequestStateRef = useRef(createOiFinderRequestState(popoutConfig.symbol));
   const oiFinderRequestControllersRef = useRef(new Map());
+  // Same defect the chart had: every transient chain failure was folded into a
+  // warming feed, so "Loading live option chain" could persist indefinitely
+  // against a backend that was actually returning 5xx. Count them.
+  const oiFinderTransportFailureStreakRef = useRef(0);
   const oiFinderNewsRequestRef = useRef({ sequence: 0, fetchedSymbols: new Set() });
   const pendingOptionStreamUpdates = useRef(new Map());
   const optionStreamFrame = useRef(0);
   const forexFactoryUsNewsRequestInFlight = useRef(false);
   const earningsCalendarRequestInFlight = useRef(false);
+
+  useEffect(() => {
+    if (popoutConfig.mode || typeof window === "undefined") return undefined;
+    if (!window.matchMedia("(max-width: 760px)").matches) return undefined;
+    if (["Quick Options", "Charts & OI"].includes(activeView)) return undefined;
+    // TradingView-class navigation keeps the active instrument warm before a
+    // trader taps its tab. This request is small, deduplicated, and never
+    // mounts the research workspace or blocks the current screen.
+    const timerId = window.setTimeout(() => {
+      warmMobileQuickOptions(oiFinderSymbol).catch(() => {});
+    }, 250);
+    return () => window.clearTimeout(timerId);
+  }, [activeView, oiFinderSymbol, popoutConfig.mode]);
 
   const loadDashboard = async ({ includeHeavy = false } = {}) => {
     if (dashboardRequestInFlight.current) {
@@ -21440,6 +25740,7 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
     dashboardRequestInFlight.current = true;
     try {
+      const pollToken = dashboardWriteOrder.current.beginPoll();
       const heldHistory = scannerHistoryVersionRef.current;
       const params = new URLSearchParams();
       if (heldHistory) params.set("scannerHistoryVersion", heldHistory);
@@ -21456,10 +25757,36 @@ function TradingWorkspace({ authUser, onLogout }) {
       // When the server omits scannerHistory/scannerHistoryDays, the spread in
       // mergeDashboardPayload keeps the cached arrays at their existing
       // identity, so nothing downstream recomputes.
-      setDashboard((current) => mergeDashboardPayload(current, payload));
+      //
+      // Marked non-urgent. A CPU profile of the running app attributed 13.5%
+      // of all samples - 550ms per render - to TradingWorkspace, which holds
+      // this state, so every background poll re-rendered the whole workstation
+      // in one uninterruptible task. That is what made the UI feel frozen:
+      // 600-990ms tasks arriving every five seconds.
+      //
+      // startTransition lets React interrupt that render for anything the
+      // trader does - typing a ticker, clicking a timeframe - instead of
+      // making them wait behind a poll. The data still lands; it just stops
+      // outranking input.
+      // A mutation committed while this poll was in flight, so the payload in
+      // hand predates it. Applying it would undo the trader's action - this is
+      // the "delete does nothing" bug. Drop it; the next poll is <=5s away.
+      if (!dashboardWriteOrder.current.shouldApplyPoll(pollToken)) return;
+      startTransition(() => {
+        setDashboard((current) => mergeDashboardPayload(current, payload));
+      });
+      dashboardFailureStreak.current = 0;
       setError("");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Dashboard unavailable.");
+      // Two consecutive failures before the banner (same grace the chart
+      // loader has). A phone hopping between Wi-Fi and cellular, or one
+      // transient edge 502, drops exactly one poll — painting the
+      // "API is unavailable" banner for that was noise, not signal
+      // (diagnosis 2026-08-23).
+      dashboardFailureStreak.current += 1;
+      if (dashboardFailureStreak.current >= 2) {
+        setError(requestError instanceof Error ? requestError.message : "Dashboard unavailable.");
+      }
     } finally {
       dashboardRequestInFlight.current = false;
       if (dashboardHeavyRequestPending.current) {
@@ -21469,22 +25796,6 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
   };
 
-  const loadWhyNotTraded = async (symbol = selectedSymbol) => {
-    const target = String(symbol || "").trim().toUpperCase();
-    if (!target) return;
-    setWhyNotLoading(true);
-    try {
-      const response = await fetch(`/api/why-not-traded?symbol=${encodeURIComponent(target)}`);
-      const payload = await readJsonResponse(response);
-      if (!response.ok) throw new Error(payload.error || "Diagnostic request failed.");
-      setWhyNotData(payload);
-      setError("");
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Diagnostic request failed.");
-    } finally {
-      setWhyNotLoading(false);
-    }
-  };
 
   const invalidateOiFinderRequests = (symbol) => {
     const target = String(symbol || "").trim().toUpperCase();
@@ -21520,10 +25831,17 @@ function TradingWorkspace({ authUser, onLogout }) {
       || !canContinueOiFinderRequest(oiFinderRequestStateRef.current, owner)
     ) return { started: false };
 
-    const useCompactChainFeed = Boolean(
+    const forceFullAnalytics = Boolean(requestOptions.fullAnalytics);
+    const requestedResearchSection = ["heatmap", "flow"].includes(String(requestOptions.researchSection || "").toLowerCase())
+      ? String(requestOptions.researchSection).toLowerCase()
+      : "";
+    const useCompactChainFeed = !forceFullAnalytics && Boolean(
       requestOptions.compactOnly
       || (popoutConfig.mode && popoutConfig.mode !== "mag7")
-      || ["Charts & OI", "ROI Calc", "OI Level Script TOS"].includes(activeView),
+      || ["Quick Options", "Charts & OI", "ROI Calc", "OI Level Script TOS"].includes(activeView),
+    );
+    const useMobileQuickOptionsFeed = useCompactChainFeed && Boolean(
+      requestOptions.fastOptions ?? (!popoutConfig.mode && activeView === "Quick Options"),
     );
     const started = startOiFinderRequest(oiFinderRequestStateRef.current, {
       owner,
@@ -21552,15 +25870,18 @@ function TradingWorkspace({ authUser, onLogout }) {
     try {
       const endpoint = useCompactChainFeed ? "/api/oi-finder-chain" : "/api/oi-finder";
       let payload = null;
-      if (useCompactChainFeed && !requestOptions.force) {
-        let warmed = oiFinderChainPrefetchCache.get(target);
+      if (useCompactChainFeed && !requestOptions.force && !requestOptions.skipPrefetch) {
+        const prefetchCache = useMobileQuickOptionsFeed
+          ? mobileQuickOptionsPrefetchCache
+          : oiFinderChainPrefetchCache;
+        let warmed = prefetchCache.get(target);
         if (warmed?.promise) {
           try {
             await warmed.promise;
           } catch {
             // The visible request owns its own fallback/error handling.
           }
-          warmed = oiFinderChainPrefetchCache.get(target);
+          warmed = prefetchCache.get(target);
         }
         if (
           warmed?.payload
@@ -21572,7 +25893,7 @@ function TradingWorkspace({ authUser, onLogout }) {
       }
       if (!payload) {
         const response = await fetch(
-          `${endpoint}?symbol=${encodeURIComponent(target)}${requestOptions.force ? "&force=true" : ""}${useCompactChainFeed && requestOptions.initialPaint ? "&initial=true" : ""}`,
+          `${endpoint}?symbol=${encodeURIComponent(target)}${requestOptions.force ? "&force=true" : ""}${useCompactChainFeed && requestOptions.initialPaint ? "&initial=true" : ""}${!useCompactChainFeed && requestedResearchSection ? `&section=${encodeURIComponent(requestedResearchSection)}` : ""}`,
           { signal: controller.signal },
         );
       // The deadline bounds the server's time-to-first-byte only. Once headers
@@ -21590,6 +25911,9 @@ function TradingWorkspace({ authUser, onLogout }) {
       } else {
         window.clearTimeout(timeoutId);
       }
+      // The request itself completed, so the transport is healthy: give the
+      // next lost request the whole grace window again.
+      oiFinderTransportFailureStreakRef.current = 0;
       responsePayload = payload;
       responseIsWarming = Boolean(
         payload?.warming
@@ -21601,7 +25925,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             ? mergeOiFinderFeedResponse(
               current,
               payload,
-              { compact: useCompactChainFeed },
+              { compact: useCompactChainFeed, mobileFast: Boolean(payload?.mobileFast) },
             )
             : current
         ));
@@ -21610,7 +25934,17 @@ function TradingWorkspace({ authUser, onLogout }) {
       // Backoff cares that the provider request failed regardless of whether
       // this request still owns the visible UI. A client-side abort/timeout
       // stays on the warming path instead.
-      const requestIsTransient = isTransientOiChartTransportError(requestError);
+      // A transient failure is only "transient" while it is rare. Past the
+      // grace window it is the real state of the API and must be shown instead
+      // of an endless "Loading live option chain".
+      const transportNotice = isTransientOiChartTransportError(requestError)
+        ? oiChartTransportFailureNotice(
+          (oiFinderTransportFailureStreakRef.current += 1),
+          requestError,
+        )
+        : "";
+      const requestIsTransient = isTransientOiChartTransportError(requestError)
+        && !transportNotice;
       if (!requestIsTransient) {
         requestFailed = true;
         requestFailureStatus = Number(requestError?.httpStatus) || null;
@@ -21624,13 +25958,14 @@ function TradingWorkspace({ authUser, onLogout }) {
               ? mergeOiFinderFeedResponse(
                 current,
                 responsePayload,
-                { compact: useCompactChainFeed },
+                { compact: useCompactChainFeed, mobileFast: Boolean(responsePayload?.mobileFast) },
               )
               : current
           ));
           return { started: true, request, payload: responsePayload };
         }
-        const message = requestError instanceof Error ? requestError.message : "OI Finder feed unavailable.";
+        const message = transportNotice
+          || (requestError instanceof Error ? requestError.message : "OI Finder feed unavailable.");
         // A timeout must never erase a complete same-symbol chain. New ticker
         // failures still clear the old symbol so stale contracts cannot appear
         // under the newly requested ticker.
@@ -21670,6 +26005,33 @@ function TradingWorkspace({ authUser, onLogout }) {
     };
   };
 
+  const loadMobileOptionsResearch = async (section) => {
+    const target = String(oiFinderSymbol || "").trim().toUpperCase();
+    const normalizedSection = String(section || "").trim().toLowerCase();
+    if (!target || !["levels", "heatmap", "flow"].includes(normalizedSection)) {
+      return { started: false, failed: true };
+    }
+    const owner = currentOiFinderRequestOwner(oiFinderRequestStateRef.current);
+    if (normalizedSection === "levels") {
+      return loadOiFinderFeed(target, {
+        owner,
+        compactOnly: true,
+        fastOptions: false,
+        initialPaint: false,
+        skipPrefetch: true,
+        intent: "required",
+        showLoading: false,
+      });
+    }
+    return loadOiFinderFeed(target, {
+      owner,
+      fullAnalytics: true,
+      researchSection: normalizedSection,
+      intent: "required",
+      showLoading: false,
+    });
+  };
+
   const refreshOiFinderFeed = async (symbol = oiFinderSymbol, force = true) => {
     const target = String(symbol || "").trim().toUpperCase();
     if (!target) return;
@@ -21682,13 +26044,11 @@ function TradingWorkspace({ authUser, onLogout }) {
       compactOnly: true,
       intent: "required",
       showLoading: true,
+      initialPaint: plan.fastOptions,
+      fastOptions: plan.fastOptions,
     });
     if (!canContinueOiFinderRequest(oiFinderRequestStateRef.current, owner)) return;
-    if (
-      plan.enrichFinder
-      && !compactResult?.payload?.refreshing
-      && hasUsableOiFinderChain(compactResult?.payload)
-    ) {
+    if (shouldEnrichOiFinderFeed(plan, compactResult?.payload)) {
       loadOiFinderFeed(target, {
         owner,
         force,
@@ -21827,12 +26187,27 @@ function TradingWorkspace({ authUser, onLogout }) {
   useEffect(() => {
     if (popoutConfig.mode) return undefined;
     loadDashboard();
+    // Phone tabs freeze: the last thing painted before suspension (often an
+    // error banner from a mid-suspend failed poll) stays on screen for HOURS
+    // until the next poll happens to run. On wake, drop any stale banner
+    // immediately and fetch fresh - the truth is one request away.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        dashboardFailureStreak.current = 0;
+        setError("");
+        loadDashboard();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
     const fastPolling = dashboard.backtestJob?.running
       || dashboard.scanJob?.running
       || dashboard.mag7SignalScanJob?.running;
     const intervalMs = fastPolling ? 2000 : 5000;
     const timer = setInterval(loadDashboard, intervalMs);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [
     dashboard.backtestJob?.running,
     dashboard.scanJob?.running,
@@ -21840,17 +26215,50 @@ function TradingWorkspace({ authUser, onLogout }) {
     popoutConfig.mode,
   ]);
 
+  // Own five-second poll, deliberately not folded into loadDashboard: the
+  // dashboard payload is cached 60s server-side and the scanner's whole point
+  // is that a fire shows up here as fast as it shows up on the chart.
   useEffect(() => {
     if (popoutConfig.mode) return undefined;
+    let cancelled = false;
+    const loadPremarketScanner = async () => {
+      try {
+        const response = await fetch("/api/premarket-scanner", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (!cancelled && payload && Array.isArray(payload.rows)) setPremarketScanner(payload);
+      } catch {
+        // A dropped poll is not worth surfacing; the next one is 5s away.
+      }
+    };
+    // Self-rescheduling rather than setInterval: the cadence depends on the ET
+    // clock (see premarketScannerPollIntervalMs), and this effect has no
+    // dependency that changes when 06:00 ET arrives. Re-reading the clock after
+    // every poll lets the window open and close on its own.
+    let timer = null;
+    const scheduleNext = () => {
+      if (cancelled) return;
+      timer = setTimeout(async () => {
+        await loadPremarketScanner();
+        scheduleNext();
+      }, premarketScannerPollIntervalMs());
+    };
+    loadPremarketScanner().then(scheduleNext);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [popoutConfig.mode]);
+
+  useEffect(() => {
+    if (popoutConfig.mode) return undefined;
+    // 2026-08-27: this Set is the ONLY thing that ever asks for the non-compact
+    // dashboard payload, and the payload is where `catalysts` lives. It used to
+    // name Dashboard and News Feed; both are gone, so the heavy request became
+    // unreachable and the News panel on the two surviving surfaces was blank for
+    // good, under an empty state that blamed the data. Name the surfaces that
+    // actually render catalysts.
     const heavyDashboardViews = new Set([
-      "Dashboard",
-      "Learning Lab",
-      "Scanner",
-      "OI Scanner",
-      "Journal",
-      "Option Journal",
+      "Charts & OI",
+      "Quick Options",
       "News Feed",
-      "Memory",
     ]);
     if (!heavyDashboardViews.has(activeView)) return undefined;
     // Paint the visible workspace and start its dedicated requests first.
@@ -21860,7 +26268,7 @@ function TradingWorkspace({ authUser, onLogout }) {
   }, [activeView, popoutConfig.mode]);
 
   useEffect(() => {
-    if (popoutConfig.mode || activeView !== "OI Finder") return;
+    if (popoutConfig.mode || (activeView !== "Charts & OI" && activeView !== "Quick Options")) return;
     const target = String(oiFinderSymbol || "").trim().toUpperCase();
     if (!target || oiFinderNewsRequestRef.current.fetchedSymbols.has(target)) return;
     refreshOiFinderNews(target, { automatic: true });
@@ -21892,9 +26300,20 @@ function TradingWorkspace({ authUser, onLogout }) {
     let chainPollTimer = 0;
     let compactChainReady = false;
     let chainPollFailures = 0;
+    // Gate on whether the chain is real, NOT on `refreshing` - the same trap
+    // shouldEnrichOiFinderFeed already documents. `refreshing` only says the
+    // server is revalidating its 15s cache in the background, which is true of
+    // almost every cached response, so requiring !refreshing left
+    // compactChainReady false forever. That had two effects, both permanent:
+    // the enrich pass below never fired, and scheduleChainPoll's
+    // `compactOnly = !plan.enrichFinder || !compactChainReady` pinned every
+    // poll to the compact endpoint, which carries no Finder analytics at all.
+    // The decision board therefore sat on WAIT FOR DATA for as long as the
+    // ticker stayed open. It only recovered when the trader hit Refresh Chain,
+    // because that path goes through shouldEnrichOiFinderFeed, where the same
+    // bug was already fixed - the automatic mount/poll path was missed.
     const compactResponseReady = (result) => Boolean(
       result?.payload
-      && !result.payload.refreshing
       && hasUsableOiFinderChain(result.payload)
     );
     const compactResponseWarming = (result) => Boolean(
@@ -21925,6 +26344,8 @@ function TradingWorkspace({ authUser, onLogout }) {
           compactOnly,
           intent: "poll",
           showLoading: false,
+          initialPaint: plan.fastOptions,
+          fastOptions: plan.fastOptions,
         });
         if (cancelled || !canContinueOiFinderRequest(oiFinderRequestStateRef.current, pollOwner)) return;
         if (
@@ -21938,6 +26359,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             compactOnly: false,
             intent: "required",
             showLoading: false,
+            fastOptions: plan.fastOptions,
           });
         }
         scheduleChainPoll(chainPollDelayFor(result));
@@ -21954,6 +26376,7 @@ function TradingWorkspace({ authUser, onLogout }) {
         intent: "required",
         showLoading: true,
         initialPaint: true,
+        fastOptions: plan.fastOptions,
       });
       if (
         cancelled
@@ -21966,6 +26389,7 @@ function TradingWorkspace({ authUser, onLogout }) {
           compactOnly: false,
           intent: "required",
           showLoading: false,
+          fastOptions: plan.fastOptions,
         });
       }
       return compactResult;
@@ -21991,7 +26415,7 @@ function TradingWorkspace({ authUser, onLogout }) {
 
   useEffect(() => {
     if (popoutConfig.mode === "mag7") return undefined;
-    if (activeView !== "OI Finder" && activeView !== "Charts & OI" && activeView !== "ROI Calc" && activeView !== "OI Level Script TOS") return undefined;
+    if (activeView !== "Quick Options" && activeView !== "Charts & OI" && activeView !== "ROI Calc" && activeView !== "OI Level Script TOS") return undefined;
     const target = String(oiFinderSymbol || "").trim().toUpperCase();
     if (!target) return undefined;
 
@@ -22009,13 +26433,23 @@ function TradingWorkspace({ authUser, onLogout }) {
           }
       ));
     };
-    const handleEquity = (packet) => {
-      if (!packet || String(packet.symbol || "").toUpperCase() !== target) return;
-      const quote = packet.data || {};
-      const bid = liveNumber(quote.bid);
-      const ask = liveNumber(quote.ask);
-      const midpoint = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : null;
-      const price = liveNumber(quote.last, liveNumber(quote.mark, midpoint));
+    // Every setOiFinderFeed re-renders the ENTIRE App tree (~300ms with the
+    // option chain and a six-chart workspace on screen). Level-1 quotes
+    // arrive several times a second and the option packets were flushed per
+    // animation frame, so the app was re-rendering about once a second from
+    // this effect alone - measured at 37% of the main thread, starving the
+    // charts' study ladder. Coalesce both into one state update per interval;
+    // the charts paint their own live candle and LIVE line imperatively and
+    // never wait on this.
+    let equityFlushTimer = 0;
+    let latestEquityPrice = null;
+    let latestEquityReceivedAt = "";
+    const flushEquity = () => {
+      equityFlushTimer = 0;
+      if (latestEquityPrice == null) return;
+      const price = latestEquityPrice;
+      const receivedAt = latestEquityReceivedAt;
+      latestEquityPrice = null;
       setOiFinderFeed((current) => (
         String(current?.symbol || "").toUpperCase() !== target
           ? current
@@ -22026,16 +26460,28 @@ function TradingWorkspace({ authUser, onLogout }) {
               ...(current.streaming || {}),
               connected: true,
               transportConnected: true,
-              lastEventAt: packet.receivedAt || new Date().toISOString(),
+              lastEventAt: receivedAt,
             },
           }
       ));
+    };
+    const handleEquity = (packet) => {
+      if (!packet || String(packet.symbol || "").toUpperCase() !== target) return;
+      const quote = packet.data || {};
+      const bid = liveNumber(quote.bid);
+      const ask = liveNumber(quote.ask);
+      const midpoint = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : null;
+      const price = liveNumber(quote.last, liveNumber(quote.mark, midpoint));
+      if (!Number.isFinite(price)) return;
+      latestEquityPrice = price;
+      latestEquityReceivedAt = packet.receivedAt || new Date().toISOString();
+      if (!equityFlushTimer) equityFlushTimer = window.setTimeout(flushEquity, OI_FINDER_LIVE_FEED_FLUSH_MS);
     };
     const handleOption = (packet) => {
       if (!packet || String(packet.underlying || "").toUpperCase() !== target) return;
       pendingOptionStreamUpdates.current.set(String(packet.symbol || "").toUpperCase(), packet);
       if (optionStreamFrame.current) return;
-      optionStreamFrame.current = window.requestAnimationFrame(() => {
+      optionStreamFrame.current = window.setTimeout(() => {
         optionStreamFrame.current = 0;
         const packets = [...pendingOptionStreamUpdates.current.values()];
         pendingOptionStreamUpdates.current.clear();
@@ -22060,7 +26506,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             },
           };
         });
-      });
+      }, OI_FINDER_LIVE_FEED_FLUSH_MS);
     };
 
     const unsubscribe = subscribeLiveMarketStream(target, {
@@ -22084,8 +26530,11 @@ function TradingWorkspace({ authUser, onLogout }) {
     });
     return () => {
       unsubscribe();
-      if (optionStreamFrame.current) window.cancelAnimationFrame(optionStreamFrame.current);
+      if (optionStreamFrame.current) window.clearTimeout(optionStreamFrame.current);
       optionStreamFrame.current = 0;
+      if (equityFlushTimer) window.clearTimeout(equityFlushTimer);
+      equityFlushTimer = 0;
+      latestEquityPrice = null;
       pendingOptionStreamUpdates.current.clear();
     };
   }, [activeView, oiFinderSymbol, popoutConfig.mode]);
@@ -22154,6 +26603,94 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
   };
 
+  // The health checklist is ADMIN ONLY, and the guard is here rather than only
+  // in the render: a normal user's browser must not even issue the request. A
+  // 403 sitting in their network tab still tells them the endpoint exists.
+  const loadPreflight = async (options = {}) => {
+    if (!authUser?.isAdmin) return;
+    if (!options.quiet) setPreflightLoading(true);
+    try {
+      const response = await fetch(PREFLIGHT_ENDPOINT);
+      const payload = await readJsonResponse(response);
+      if (!response.ok) {
+        // Never silently keep the previous result on screen: a failed refresh
+        // that leaves yesterday's green tick up is the exact failure this
+        // whole panel exists to stop. The comment said so; the code did not -
+        // it set the error and left fourteen PASS/WARN rows and the warn-tone
+        // banner standing, which reads as this morning's health.
+        setPreflightError(preflightErrorMessage(response.status, payload?.error));
+        setPreflightPayload(null);
+        return;
+      }
+      setPreflightPayload(payload);
+      setPreflightError("");
+    } catch (requestError) {
+      setPreflightError(preflightErrorMessage(0, requestError instanceof Error ? requestError.message : ""));
+    } finally {
+      setPreflightLoading(false);
+      setPreflightNowMs(Date.now());
+    }
+  };
+
+  const runPreflightNow = async () => {
+    if (!authUser?.isAdmin) return;
+    setPreflightRunning(true);
+    setPreflightError("");
+    // A live run is ~14s and holds a server-side lock while it makes broker
+    // calls; if the backend stalls, the button would sit on "Running checks..."
+    // with no way out but a page reload. Bounded, and the timeout SAYS the
+    // server may still be finishing rather than pretending the run died.
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), PREFLIGHT_RUN_TIMEOUT_MS);
+    try {
+      const response = await fetch(PREFLIGHT_RUN_ENDPOINT, {
+        method: "POST",
+        signal: controller.signal,
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) {
+        setPreflightError(preflightErrorMessage(response.status, payload?.error));
+        return;
+      }
+      // The POST may answer with just the fresh run and no archive, so merge
+      // over what we had and then re-read GET, which is authoritative for the
+      // day strip.
+      setPreflightPayload((previous) => ({ ...(previous || {}), ...(payload || {}) }));
+      setPreflightNowMs(Date.now());
+      await loadPreflight({ quiet: true });
+    } catch (requestError) {
+      const aborted = requestError && requestError.name === "AbortError";
+      setPreflightError(
+        aborted
+          ? `The checklist run did not answer within ${Math.round(PREFLIGHT_RUN_TIMEOUT_MS / 1000)}s. The server may still be finishing it - press "Run check now" again in a minute to read the result.`
+          : preflightErrorMessage(0, requestError instanceof Error ? requestError.message : ""),
+      );
+    } finally {
+      clearTimeout(abortTimer);
+      setPreflightRunning(false);
+    }
+  };
+
+  // All the decisions (headline wording, worst-first ordering, tone classes,
+  // the 30-day strip, staleness) live in preflightPanel.js so they are tested
+  // under `node --test`. This component only renders what it is handed.
+  const preflightView = useMemo(
+    () => buildPreflightView({
+      payload: preflightPayload,
+      error: preflightError,
+      loading: preflightLoading,
+      running: preflightRunning,
+      isAdmin: Boolean(authUser?.isAdmin),
+      nowMs: preflightNowMs,
+    }),
+    [preflightPayload, preflightError, preflightLoading, preflightRunning, authUser?.isAdmin, preflightNowMs],
+  );
+
+  const preflightSelectedDayDetail = useMemo(
+    () => (preflightView.strip || []).find((day) => day.date === preflightSelectedDay) || null,
+    [preflightView.strip, preflightSelectedDay],
+  );
+
   useEffect(() => {
     loadSchwabStatus();
     const timer = setInterval(loadSchwabStatus, activeView === "Settings" ? 10000 : 5 * 60 * 1000);
@@ -22161,15 +26698,27 @@ function TradingWorkspace({ authUser, onLogout }) {
   }, [activeView]);
 
   useEffect(() => {
+    if (activeView !== "Settings" || !authUser?.isAdmin) return undefined;
+    const timer = setInterval(() => setPreflightNowMs(Date.now()), 30000);
+    return () => clearInterval(timer);
+  }, [activeView, authUser?.isAdmin]);
+
+  useEffect(() => {
     if (activeView !== "Settings") return;
     loadApiKeySummary();
     loadAdminUsers();
     loadAdminDevices();
+    loadPreflight();
   }, [activeView, authUser?.isAdmin]);
 
-  useEffect(() => {
-    loadWhyNotTraded(selectedSymbol);
-  }, [selectedSymbol]);
+  // The eager why-not-traded fetch is GONE. WhyNotTradedCard is never
+  // rendered and whyNotData is never read, so this ran on every app load and
+  // every ticker switch purely to throw the answer away - measured 6.0s
+  // locally, 8.5s under concurrency and 16.9s through the Cloudflare tunnel.
+  // Being pure-Python CPU on the server it also held the GIL, which is why
+  // /api/auth/status - 400 bytes and no work - took 2,025ms in the browser.
+  // If the card is ever wired up, call loadWhyNotTraded from ITS mount, not
+  // from the symbol effect. The endpoint is cached server-side either way.
 
   useEffect(() => {
     const config = dashboard.riskConfig || defaultDashboard.riskConfig;
@@ -22234,6 +26783,9 @@ function TradingWorkspace({ authUser, onLogout }) {
       const response = await fetch(endpoint, options);
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Request failed.");
+      // Claim the write BEFORE handing the payload to React, so any poll
+      // already in flight is invalidated by the time its response lands.
+      dashboardWriteOrder.current.commitMutation();
       setDashboard((current) => mergeDashboardPayload(current, (payload.dashboard || payload)));
       setError("");
     } catch (requestError) {
@@ -22245,7 +26797,7 @@ function TradingWorkspace({ authUser, onLogout }) {
 
   const refreshOiFinderNews = async (symbol = oiFinderSymbol, { automatic = false } = {}) => {
     const target = String(symbol || "").trim().toUpperCase();
-    if (!target) return;
+    if (!target) return { started: false, failed: true };
     const request = oiFinderNewsRequestRef.current;
     const sequence = request.sequence + 1;
     request.sequence = sequence;
@@ -22259,10 +26811,15 @@ function TradingWorkspace({ authUser, onLogout }) {
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || `News refresh failed for ${target}.`);
+      // Third writer of dashboard state, same rule as runAction: claim the
+      // write so a poll already in flight cannot land on top of it.
+      dashboardWriteOrder.current.commitMutation();
       setDashboard((current) => mergeDashboardPayload(current, payload.dashboard || payload));
       setError("");
+      return { started: true, failed: false };
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : `News refresh failed for ${target}.`);
+      return { started: true, failed: true };
     } finally {
       if (oiFinderNewsRequestRef.current.sequence === sequence) {
         setOiFinderNewsRefreshingSymbol("");
@@ -22270,29 +26827,7 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
   };
 
-  const applyPreset = (preset) => {
-    setToDate(isoDate(0));
-    if (preset === "6M") setFromDate(isoDate(183));
-    if (preset === "1Y") setFromDate(isoDate(365));
-    if (preset === "3Y") setFromDate(isoDate(365 * 3));
-    if (preset === "6Y") setFromDate(isoDate(365 * 6));
-  };
 
-  const startBacktest = () => {
-    runAction(
-      "/api/backtest",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbols: symbols.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean),
-          startDate: fromDate,
-          endDate: toDate,
-        }),
-      },
-      "backtest",
-    );
-  };
 
   const closePosition = (symbol) => {
     runAction(
@@ -22494,22 +27029,100 @@ function TradingWorkspace({ authUser, onLogout }) {
         body: JSON.stringify({
           displayName: newUserName,
           email: newUserEmail,
-          temporaryPassword: newUserPassword,
           role: newUserRole,
         }),
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Unable to create user.");
+      const createdEmail = payload.user?.email || newUserEmail;
+      // Built before the form is cleared: the server hashes the password on
+      // arrival, so this is the last moment it can be recovered at all.
+      setInviteMessage(
+        buildInviteMessage({
+          loginUrl: window.location.origin,
+          email: createdEmail,
+          displayName: payload.user?.displayName || newUserName,
+        })
+      );
+      setInviteCopied(false);
       setNewUserName("");
       setNewUserEmail("");
       setNewUserPassword("");
       setNewUserRole("user");
-      setAdminMessage(`Created ${payload.user?.email || "user"}. Share the temporary password privately.`);
+      setAdminMessage(
+        `Created ${createdEmail}. Add this address to Cloudflare Access, then send them the invite below - there is no password to pass on.`
+      );
       await loadAdminUsers();
     } catch (requestError) {
+      setInviteMessage("");
       setAdminMessage(requestError instanceof Error ? requestError.message : "Unable to create user.");
     } finally {
       setSubmitting("");
+    }
+  };
+
+
+  const deleteWorkspaceUser = async (user) => {
+    setSubmitting(`delete-user-${user.id}`);
+    setAdminMessage("");
+    try {
+      const response = await fetch("/api/admin/users/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || "Unable to delete this account.");
+      setDeleteArmedUserId("");
+      // The two lists are independent: removing the account here does not take
+      // them off the Cloudflare allow-list, and a half-removal leaves them
+      // reaching the login screen forever.
+      setAdminMessage(
+        `Deleted ${user.email}. Remove that address from Cloudflare Access too, or they can still reach the login screen.`
+      );
+      // Devices too: the deleted person's rows are still on screen in DEVICE
+      // ACCESS, now showing their full address, and acting on one hits a row
+      // that no longer exists.
+      await Promise.all([loadAdminUsers(), loadAdminDevices()]);
+    } catch (requestError) {
+      setAdminMessage(requestError instanceof Error ? requestError.message : "Unable to delete this account.");
+    } finally {
+      setSubmitting("");
+    }
+  };
+
+  const setWorkspaceUserActive = async (user, isActive) => {
+    setSubmitting(`active-user-${user.id}`);
+    setAdminMessage("");
+    try {
+      const response = await fetch("/api/admin/users/set-active", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id, isActive }),
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || "Unable to update this account.");
+      setAdminMessage(
+        isActive
+          ? `${user.email} can sign in again.`
+          : `${user.email} is switched off. Any open sessions were ended.`
+      );
+      await loadAdminUsers();
+    } catch (requestError) {
+      setAdminMessage(requestError instanceof Error ? requestError.message : "Unable to update this account.");
+    } finally {
+      setSubmitting("");
+    }
+  };
+
+  const copyInviteMessage = async () => {
+    if (!inviteMessage) return;
+    try {
+      await navigator.clipboard.writeText(inviteMessage);
+      setInviteCopied(true);
+    } catch {
+      setInviteCopied(false);
+      setAdminMessage("Could not copy automatically — select the invite text and copy it manually.");
     }
   };
 
@@ -22621,7 +27234,6 @@ function TradingWorkspace({ authUser, onLogout }) {
 
   const testSchwabConnection = async (profile = "market_data") => {
     const isTrading = profile === "trading";
-    const profileLabel = isTrading ? "Accounts & Trading" : "Market Data";
     setSubmitting(isTrading ? "schwab-test-trading" : "schwab-test-market");
     setSchwabMessage("");
     try {
@@ -22878,435 +27490,9 @@ function TradingWorkspace({ authUser, onLogout }) {
 
   const rawScannerRows = dashboard.candidateResults?.length ? dashboard.candidateResults : dashboard.scanResults;
   const topRows = rawScannerRows.slice(0, 15);
-  const scannerRows = rawScannerRows.slice(0, 50);
-  const mag7ScannerRows = (dashboard.mag7CandidateResults?.length ? dashboard.mag7CandidateResults : dashboard.mag7ScanResults || []).slice(0, 50);
-  const mag7SignalScannerConfig = dashboard.mag7SignalScannerConfig || defaultDashboard.mag7SignalScannerConfig;
-  const mag7SignalScanJob = dashboard.mag7SignalScanJob || defaultDashboard.mag7SignalScanJob;
-  const updateMag7SignalScannerConfig = (changes) => runAction(
-    "/api/mag7-signal-scanner-config",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fourHourVolumeEnabled: changes.fourHourVolumeEnabled
-          ?? mag7SignalScannerConfig.fourHourVolumeEnabled,
-        oneHourCloseEnabled: changes.oneHourCloseEnabled
-          ?? mag7SignalScannerConfig.oneHourCloseEnabled,
-      }),
-    },
-    "mag7-signal-scanner-config",
-  );
-  const runMag7SignalScan = () => runAction(
-    "/api/mag7-signal-scan",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    },
-    "mag7-signal-scan",
-  );
-  const mag7TosAllResults = dashboard.mag7TosAllResults || defaultDashboard.mag7TosAllResults;
-  const mag7TosAllResultRows = Array.isArray(mag7TosAllResults.rows)
-    ? mag7TosAllResults.rows
-    : [];
-  const stableMag7TosAllResultRows = useStableTableRows(
-    mag7TosAllResultRows,
-    buildMag7TosAllResultRowSignature,
-  );
-  const mag7FiveMinuteChartSignals = dashboard.mag7FiveMinuteChartSignals || defaultDashboard.mag7FiveMinuteChartSignals;
-  const mag7FiveMinuteChartSignalRows = Array.isArray(mag7FiveMinuteChartSignals.rows)
-    ? mag7FiveMinuteChartSignals.rows
-    : [];
-  const stableMag7FiveMinuteChartSignalRows = useStableTableRows(
-    mag7FiveMinuteChartSignalRows,
-    buildFiveMinuteChartSignalRowSignature,
-  );
-  const mag7PremarketChartSignals = dashboard.mag7PremarketChartSignals || defaultDashboard.mag7PremarketChartSignals;
-  const mag7PremarketChartSignalRows = Array.isArray(mag7PremarketChartSignals.rows)
-    ? mag7PremarketChartSignals.rows
-    : [];
-  const stableMag7PremarketChartSignalRows = useStableTableRows(
-    mag7PremarketChartSignalRows,
-    buildPremarketChartSignalRowSignature,
-  );
-  const mag7ChartSignalHistory = dashboard.mag7ChartSignalHistory || defaultDashboard.mag7ChartSignalHistory;
-  const activeMag7FiveMinuteSignalHistoryDate = mag7FiveMinuteSignalHistoryDate
-    || mag7ChartSignalHistory.latestFiveMinuteDate
-    || "";
-  const activeMag7PremarketSignalHistoryDate = mag7PremarketSignalHistoryDate
-    || mag7ChartSignalHistory.latestPremarketDate
-    || "";
-  const mag7FiveMinuteSignalHistorySearchTerm = mag7FiveMinuteSignalHistorySearch.trim().toUpperCase();
-  const mag7PremarketSignalHistorySearchTerm = mag7PremarketSignalHistorySearch.trim().toUpperCase();
-  const mag7FiveMinuteSignalHistoryRows = (Array.isArray(mag7ChartSignalHistory.fiveMinuteRows)
-    ? mag7ChartSignalHistory.fiveMinuteRows
-    : [])
-    .filter((row) => !activeMag7FiveMinuteSignalHistoryDate
-      || String(row.scanDate || "") === activeMag7FiveMinuteSignalHistoryDate)
-    .filter((row) => !mag7FiveMinuteSignalHistorySearchTerm
-      || String(row.symbol || "").toUpperCase().includes(mag7FiveMinuteSignalHistorySearchTerm));
-  const mag7PremarketSignalHistoryRows = (Array.isArray(mag7ChartSignalHistory.premarketRows)
-    ? mag7ChartSignalHistory.premarketRows
-    : [])
-    .filter((row) => !activeMag7PremarketSignalHistoryDate
-      || String(row.scanDate || "") === activeMag7PremarketSignalHistoryDate)
-    .filter((row) => !mag7PremarketSignalHistorySearchTerm
-      || String(row.symbol || "").toUpperCase().includes(mag7PremarketSignalHistorySearchTerm));
-  const stableMag7FiveMinuteSignalHistoryRows = useStableTableRows(
-    mag7FiveMinuteSignalHistoryRows,
-    buildFiveMinuteChartSignalRowSignature,
-  );
-  const stableMag7PremarketSignalHistoryRows = useStableTableRows(
-    mag7PremarketSignalHistoryRows,
-    buildPremarketChartSignalRowSignature,
-  );
-  const scannerHistoryToday = String(dashboard.status.clockTime || "").slice(0, 10) || isoDate(0);
-  const latestStockScannerHistoryDate = (dashboard.scannerHistoryDays || [])
-    .filter((row) => String(row.source || "Watchlist") !== "MAG7-Watchlist Options")
-    .map((row) => String(row.scan_date || ""))
-    .filter(Boolean)
-    .sort()
-    .at(-1) || "";
-  const latestMag7StockScannerHistoryDate = (dashboard.scannerHistoryDays || [])
-    .filter((row) => String(row.source || "Watchlist") === "MAG7-Watchlist Options")
-    .map((row) => String(row.scan_date || ""))
-    .filter(Boolean)
-    .sort()
-    .at(-1) || "";
-  const latestOiScannerHistoryDate = (dashboard.scannerHistoryDays || [])
-    .filter((row) => {
-      const source = String(row.source || "");
-      return source === "Watchlist OI Scanner";
-    })
-    .map((row) => String(row.scan_date || ""))
-    .filter(Boolean)
-    .sort()
-    .at(-1) || "";
-  const latestMag7OiScannerHistoryDate = (dashboard.scannerHistoryDays || [])
-    .filter((row) => String(row.source || "") === "MAG7 OI Scanner")
-    .map((row) => String(row.scan_date || ""))
-    .filter(Boolean)
-    .sort()
-    .at(-1) || "";
-  const activeScannerHistoryDate = stockScannerHistoryDate || latestStockScannerHistoryDate || scannerHistoryToday;
-  const activeMag7ScannerHistoryDate = mag7StockScannerHistoryDate || latestMag7StockScannerHistoryDate || scannerHistoryToday;
-  const activeOiScannerHistoryDate = oiScannerHistoryDate || latestOiScannerHistoryDate || scannerHistoryToday;
-  const activeMag7OiScannerHistoryDate = mag7OiScannerHistoryDate || latestMag7OiScannerHistoryDate || scannerHistoryToday;
-  const oiResultSearchTerm = oiResultSearch.trim().toUpperCase();
-  const matchesOiResultSearch = (row) => {
-    if (!oiResultSearchTerm) return true;
-    const contract = optionContractDisplay(row.contract, row.underlying, row.expiry, row.strike);
-    return String(row.underlying || "").toUpperCase().includes(oiResultSearchTerm)
-      || String(contract.contractLabel || "").toUpperCase().includes(oiResultSearchTerm)
-      || String(contract.expiry || "").toUpperCase().includes(oiResultSearchTerm);
-  };
-  const recentThresholdMs = 30 * 60 * 1000;
-  const buildPersistentOiRows = (source, currentRows, lastNonEmptyRows, currentTimestamp, lastNonEmptyTimestamp) => {
-    const todayHistoryRows = (dashboard.scannerHistory || [])
-      .filter((row) => String(row.scan_date || "") === scannerHistoryToday && String(row.source || "") === source)
-      .sort((left, right) => String(right.scanned_at || "").localeCompare(String(left.scanned_at || "")));
-    const firstSeenBySymbol = new Map();
-    const latestSeenBySymbol = new Map();
-    todayHistoryRows.forEach((row) => {
-      const parsed = parseScannerHistoryRawRow(row);
-      const symbolKey = String(parsed?.underlying || row.symbol || "").toUpperCase();
-      const scannedAt = String(row.scanned_at || "");
-      const scannedEpoch = scannedAt ? Date.parse(scannedAt) : NaN;
-      if (!symbolKey || !Number.isFinite(scannedEpoch)) return;
-      if (!firstSeenBySymbol.has(symbolKey) || scannedEpoch < firstSeenBySymbol.get(symbolKey)) {
-        firstSeenBySymbol.set(symbolKey, scannedEpoch);
-      }
-      if (!latestSeenBySymbol.has(symbolKey) || scannedEpoch > latestSeenBySymbol.get(symbolKey)) {
-        latestSeenBySymbol.set(symbolKey, scannedEpoch);
-      }
-    });
-    const mergedBySymbol = new Map();
-    const markRow = (row, timestamp, order, isCurrent = false) => {
-      const symbolKey = String(row?.underlying || "").toUpperCase();
-      const normalizedTimestamp = String(timestamp || "");
-      const parsedTime = normalizedTimestamp ? Date.parse(normalizedTimestamp) : NaN;
-      const firstSeenEpoch = firstSeenBySymbol.get(symbolKey);
-      const latestSeenEpoch = latestSeenBySymbol.get(symbolKey);
-      const appearedRecently = Number.isFinite(firstSeenEpoch) && (Date.now() - firstSeenEpoch) <= recentThresholdMs;
-      const currentIsFirstAppearance = isCurrent
-        && Number.isFinite(parsedTime)
-        && (!Number.isFinite(firstSeenEpoch) || Math.abs(parsedTime - firstSeenEpoch) <= 60 * 1000);
-      const stillFreshCurrent = isCurrent
-        && Number.isFinite(parsedTime)
-        && (Date.now() - parsedTime) <= recentThresholdMs;
-      const isNew = currentIsFirstAppearance || (appearedRecently && (!Number.isFinite(latestSeenEpoch) || latestSeenEpoch === firstSeenEpoch)) || stillFreshCurrent;
-      const normalizedRow = recomputeOiPriorityFields(row);
-      const priority = oiPriorityMeta(normalizedRow);
-      return {
-        ...normalizedRow,
-        __sortTimestamp: normalizedTimestamp,
-        __sortOrder: order,
-        __isNew: isNew,
-        __priorityLabel: priority.label,
-        __priorityTone: priority.tone,
-        __priorityScore: priority.score,
-      };
-    };
-    (currentRows || []).forEach((row, index) => {
-      const symbolKey = String(row?.underlying || "").toUpperCase();
-      if (!symbolKey || mergedBySymbol.has(symbolKey)) return;
-      mergedBySymbol.set(symbolKey, markRow(row, currentTimestamp || dashboard.status.clockTime || "", index, true));
-    });
-    todayHistoryRows.forEach((row) => {
-      const parsed = parseScannerHistoryRawRow(row);
-      const symbolKey = String(parsed?.underlying || row.symbol || "").toUpperCase();
-      if (!parsed || !symbolKey || mergedBySymbol.has(symbolKey)) return;
-      mergedBySymbol.set(symbolKey, markRow(parsed, row.scanned_at || "", 9999));
-    });
-    (lastNonEmptyRows || []).forEach((row) => {
-      const symbolKey = String(row?.underlying || "").toUpperCase();
-      if (!symbolKey || mergedBySymbol.has(symbolKey)) return;
-      mergedBySymbol.set(symbolKey, markRow(row, lastNonEmptyTimestamp || currentTimestamp || "", 9999));
-    });
-    return Array.from(mergedBySymbol.values()).sort((left, right) => {
-      const newCompare = Number(Boolean(right.__isNew)) - Number(Boolean(left.__isNew));
-      if (newCompare !== 0) return newCompare;
-      const priorityCompare = Number(right.__priorityScore || 0) - Number(left.__priorityScore || 0);
-      if (priorityCompare !== 0) return priorityCompare;
-      const timestampCompare = String(right.__sortTimestamp || "").localeCompare(String(left.__sortTimestamp || ""));
-      if (timestampCompare !== 0) return timestampCompare;
-      return Number(left.__sortOrder || 0) - Number(right.__sortOrder || 0);
-    });
-  };
-  const oiMag7CurrentRows = dashboard.oiMag7ScanResults || [];
-  const oiMag7DisplayRows = buildPersistentOiRows(
-    "MAG7 OI Scanner",
-    oiMag7CurrentRows,
-    dashboard.oiMag7LastNonEmptyResults || [],
-    dashboard.oiMag7ScanTimestamp,
-    dashboard.oiMag7LastNonEmptyTimestamp,
-  ).filter((row) => isWithinOiExpiryWindow(row));
-  const oiScannerCurrentRows = dashboard.oiWatchlistScanResults || [];
-  const oiScannerDisplayRows = buildPersistentOiRows(
-    "Watchlist OI Scanner",
-    oiScannerCurrentRows,
-    dashboard.oiWatchlistLastNonEmptyResults || [],
-    dashboard.oiWatchlistScanTimestamp,
-    dashboard.oiWatchlistLastNonEmptyTimestamp,
-  ).filter((row) => isWithinOiExpiryWindow(row));
-  const oiMag7UsingFallback = !oiMag7CurrentRows.length && oiMag7DisplayRows.length > 0;
-  const oiWatchlistUsingFallback = !oiScannerCurrentRows.length && oiScannerDisplayRows.length > 0;
-  const isTradeGradeOiRow = (row) => {
-    const label = String(oiPriorityMeta(row).label || "").trim();
-    return label === "A+ HOT" || label === "A ACTIVE";
-  };
-  const isReviewGradeOiRow = (row) => {
-    const label = String(oiPriorityMeta(row).label || "").trim();
-    const signalShape = String(row?.signal_shape_label || "").trim();
-    return label === "Watchlist" || label === "Mixed Flow" || signalShape === "Mixed Flow";
-  };
-  const oiMag7ScannerRows = oiMag7DisplayRows.filter((row) => isTradeGradeOiRow(row) && matchesOiResultSearch(row));
-  const oiScannerRows = oiScannerDisplayRows.filter((row) => isTradeGradeOiRow(row) && matchesOiResultSearch(row));
-  const oiMag7ReviewRows = oiMag7DisplayRows.filter((row) => isReviewGradeOiRow(row) && matchesOiResultSearch(row));
-  const oiScannerReviewRows = oiScannerDisplayRows.filter((row) => isReviewGradeOiRow(row) && matchesOiResultSearch(row));
-  const stableOiMag7ScannerRows = useStableTableRows(oiMag7ScannerRows);
-  const stableOiScannerRows = useStableTableRows(oiScannerRows);
-  const stableOiMag7ReviewRows = useStableTableRows(oiMag7ReviewRows);
-  const stableOiScannerReviewRows = useStableTableRows(oiScannerReviewRows);
-  const activeScanSource = dashboard.scanJob?.source || "Watchlist";
-  const stockScannerHistorySearchTerm = stockScannerHistorySearch.trim().toUpperCase();
-  const matchesStockScannerHistorySearch = (row) => {
-    if (!stockScannerHistorySearchTerm) return true;
-    return String(row.symbol || "").toUpperCase().includes(stockScannerHistorySearchTerm);
-  };
-  const mag7StockScannerHistorySearchTerm = mag7StockScannerHistorySearch.trim().toUpperCase();
-  const matchesMag7StockScannerHistorySearch = (row) => {
-    if (!mag7StockScannerHistorySearchTerm) return true;
-    return String(row.symbol || "").toUpperCase().includes(mag7StockScannerHistorySearchTerm);
-  };
-  const oiScannerHistorySearchTerm = oiScannerHistorySearch.trim().toUpperCase();
-  const matchesOiScannerHistorySearch = (row) => {
-    if (!oiScannerHistorySearchTerm) return true;
-    const contract = optionContractDisplay(row.contract, row.underlying, row.expiry, row.strike);
-    return String(row.symbol || row.history_symbol || row.underlying || "").toUpperCase().includes(oiScannerHistorySearchTerm)
-      || String(contract.contractLabel || "").toUpperCase().includes(oiScannerHistorySearchTerm)
-      || String(contract.expiry || "").toUpperCase().includes(oiScannerHistorySearchTerm);
-  };
-  const mag7OiScannerHistorySearchTerm = mag7OiScannerHistorySearch.trim().toUpperCase();
-  const matchesMag7OiScannerHistorySearch = (row) => {
-    if (!mag7OiScannerHistorySearchTerm) return true;
-    const contract = optionContractDisplay(row.contract, row.underlying, row.expiry, row.strike);
-    return String(row.symbol || row.history_symbol || row.underlying || "").toUpperCase().includes(mag7OiScannerHistorySearchTerm)
-      || String(contract.contractLabel || "").toUpperCase().includes(mag7OiScannerHistorySearchTerm)
-      || String(contract.expiry || "").toUpperCase().includes(mag7OiScannerHistorySearchTerm);
-  };
-  const isMag7HistoryRow = (row) => String(row.source || "Watchlist") === "MAG7-Watchlist Options";
-  const sortHistoryEvents = (left, right) => {
-    const timestampCompare = String(right.scanned_at || "").localeCompare(String(left.scanned_at || ""));
-    if (timestampCompare !== 0) return timestampCompare;
-    return String(left.symbol || left.history_symbol || "").localeCompare(String(right.symbol || right.history_symbol || ""));
-  };
-  const mag7ScannerHistoryRows = (dashboard.scannerHistory || [])
-    .filter((row) => String(row.scan_date || "") === activeMag7ScannerHistoryDate && isMag7HistoryRow(row))
-    .filter(matchesMag7StockScannerHistorySearch)
-    .sort(sortHistoryEvents);
-  const scannerHistoryRows = (dashboard.scannerHistory || [])
-    .filter((row) => String(row.scan_date || "") === activeScannerHistoryDate && !isMag7HistoryRow(row))
-    .filter(matchesStockScannerHistorySearch)
-    .sort(sortHistoryEvents);
-  const mag7ScannerHistoryDay = (dashboard.scannerHistoryDays || [])
-    .find((row) => String(row.scan_date || "") === activeMag7ScannerHistoryDate && isMag7HistoryRow(row));
-  const scannerHistoryDay = (dashboard.scannerHistoryDays || [])
-    .find((row) => String(row.scan_date || "") === activeScannerHistoryDate && !isMag7HistoryRow(row));
-  const mag7HistoryLastScan = activeMag7ScannerHistoryDate === scannerHistoryToday
-    ? dashboard.mag7ScanTimestamp || mag7ScannerHistoryDay?.last_scanned_at
-    : mag7ScannerHistoryDay?.last_scanned_at;
-  const scannerHistoryLastScan = activeScannerHistoryDate === scannerHistoryToday
-    ? dashboard.status.lastRefresh || scannerHistoryDay?.last_scanned_at
-    : scannerHistoryDay?.last_scanned_at;
-  const isMag7OiHistoryRow = (row) => String(row.source || "") === "MAG7 OI Scanner";
-  const isWatchlistOiHistoryRow = (row) => String(row.source || "") === "Watchlist OI Scanner";
-  const parseOiHistoryRow = (row) => {
-    const raw = parseScannerHistoryRawRow(row) || {};
-    const parsedRow = {
-      ...raw,
-      history_symbol: String(row.symbol || raw.underlying || "").toUpperCase(),
-      scanned_at: row.scanned_at,
-      source: row.source,
-      last_price: row.last_price ?? raw.underlying_price ?? null,
-      change_pct: raw.change_pct ?? row.one_hour_close_change_pct ?? raw.one_hour_close_change_pct ?? null,
-      one_hour_close_change_pct: row.one_hour_close_change_pct ?? raw.one_hour_close_change_pct ?? raw.change_pct ?? null,
-      trigger_source: row.trigger_source || raw.scanner_tag || "",
-      setup_name: row.setup_name || raw.setup_type || "",
-      stock_setup_name: raw.stock_setup_name || row.setup_name || raw.setup_type || "",
-      stock_trigger_source: raw.stock_trigger_source || "",
-      stock_above_vwap: raw.stock_above_vwap ?? null,
-      stock_ema_stack: raw.stock_ema_stack ?? null,
-      stock_volume_trend: raw.stock_volume_trend ?? null,
-      stock_ema9_retest_observed: raw.stock_ema9_retest_observed ?? null,
-      signal_shape_label: raw.signal_shape_label || "",
-      trade_eligible: raw.trade_eligible ?? null,
-      display_row: raw.display_row ?? true,
-      priority_label: raw.priority_label || "",
-      priority_tone: raw.priority_tone || "",
-      priority_score: raw.priority_score ?? null,
-      strength_score: raw.strength_score ?? null,
-      uw_style_score: raw.uw_style_score ?? raw.strength_score ?? null,
-      volume_oi_ratio: raw.volume_oi_ratio ?? null,
-      premium_traded: raw.premium_traded ?? null,
-    };
-    return recomputeOiPriorityFields(parsedRow);
-  };
-  const mag7OiRawHistoryRows = (dashboard.scannerHistory || [])
-    .filter((row) => String(row.scan_date || "") === activeMag7OiScannerHistoryDate && isMag7OiHistoryRow(row))
-    .map(parseOiHistoryRow)
-    .filter((row) => isWithinOiExpiryWindow(row));
-  const watchlistOiRawHistoryRows = (dashboard.scannerHistory || [])
-    .filter((row) => String(row.scan_date || "") === activeOiScannerHistoryDate && isWatchlistOiHistoryRow(row))
-    .map(parseOiHistoryRow)
-    .filter((row) => isWithinOiExpiryWindow(row));
-  const oiMag7ScannerHistoryRows = (dashboard.scannerHistory || [])
-    .filter((row) => String(row.scan_date || "") === activeMag7OiScannerHistoryDate && isMag7OiHistoryRow(row))
-    .map(parseOiHistoryRow)
-    .filter(matchesMag7OiScannerHistorySearch)
-    .filter((row) => isWithinOiExpiryWindow(row))
-    .filter((row) => isTradeGradeOiRow(row))
-    .sort(sortHistoryEvents);
-  const oiScannerHistoryRows = (dashboard.scannerHistory || [])
-    .filter((row) => String(row.scan_date || "") === activeOiScannerHistoryDate && isWatchlistOiHistoryRow(row))
-    .map(parseOiHistoryRow)
-    .filter(matchesOiScannerHistorySearch)
-    .filter((row) => isWithinOiExpiryWindow(row))
-    .filter((row) => isTradeGradeOiRow(row))
-    .sort(sortHistoryEvents);
-  const oiMag7ReviewHistoryRows = (dashboard.scannerHistory || [])
-    .filter((row) => String(row.scan_date || "") === activeMag7OiScannerHistoryDate && isMag7OiHistoryRow(row))
-    .map(parseOiHistoryRow)
-    .filter(matchesMag7OiScannerHistorySearch)
-    .filter((row) => isWithinOiExpiryWindow(row))
-    .filter((row) => isReviewGradeOiRow(row))
-    .sort(sortHistoryEvents);
-  const oiScannerReviewHistoryRows = (dashboard.scannerHistory || [])
-    .filter((row) => String(row.scan_date || "") === activeOiScannerHistoryDate && isWatchlistOiHistoryRow(row))
-    .map(parseOiHistoryRow)
-    .filter(matchesOiScannerHistorySearch)
-    .filter((row) => isWithinOiExpiryWindow(row))
-    .filter((row) => isReviewGradeOiRow(row))
-    .sort(sortHistoryEvents);
-  const latestOiHistoryRowsBySymbol = (rows) => {
-    const seen = new Set();
-    return [...rows]
-      .sort(sortHistoryEvents)
-      .filter((row) => {
-        const symbol = String(row?.underlying || row?.history_symbol || "").trim().toUpperCase();
-        if (!symbol || seen.has(symbol)) return false;
-        seen.add(symbol);
-        return true;
-      });
-  };
-  const selectedMag7DailyRows = activeMag7OiScannerHistoryDate === scannerHistoryToday
-    ? oiMag7ScannerRows
-    : latestOiHistoryRowsBySymbol(mag7OiRawHistoryRows)
-      .filter((row) => isTradeGradeOiRow(row) && matchesOiResultSearch(row));
-  const selectedMag7ReviewRows = activeMag7OiScannerHistoryDate === scannerHistoryToday
-    ? oiMag7ReviewRows
-    : latestOiHistoryRowsBySymbol(mag7OiRawHistoryRows)
-      .filter((row) => isReviewGradeOiRow(row) && matchesOiResultSearch(row));
-  const selectedWatchlistDailyRows = activeOiScannerHistoryDate === scannerHistoryToday
-    ? oiScannerRows
-    : latestOiHistoryRowsBySymbol(watchlistOiRawHistoryRows)
-      .filter((row) => isTradeGradeOiRow(row) && matchesOiResultSearch(row));
-  const selectedWatchlistReviewRows = activeOiScannerHistoryDate === scannerHistoryToday
-    ? oiScannerReviewRows
-    : latestOiHistoryRowsBySymbol(watchlistOiRawHistoryRows)
-      .filter((row) => isReviewGradeOiRow(row) && matchesOiResultSearch(row));
-  const stableSelectedMag7DailyRows = useStableTableRows(selectedMag7DailyRows);
-  const stableSelectedMag7ReviewRows = useStableTableRows(selectedMag7ReviewRows);
-  const stableSelectedWatchlistDailyRows = useStableTableRows(selectedWatchlistDailyRows);
-  const stableSelectedWatchlistReviewRows = useStableTableRows(selectedWatchlistReviewRows);
-  const stableOiMag7ScannerHistoryRows = useStableTableRows(oiMag7ScannerHistoryRows);
-  const stableOiScannerHistoryRows = useStableTableRows(oiScannerHistoryRows);
-  const stableOiMag7ReviewHistoryRows = useStableTableRows(oiMag7ReviewHistoryRows);
-  const stableOiScannerReviewHistoryRows = useStableTableRows(oiScannerReviewHistoryRows);
-  const oiMag7ScannerHistoryDay = (dashboard.scannerHistoryDays || [])
-    .find((row) => String(row.scan_date || "") === activeMag7OiScannerHistoryDate && isMag7OiHistoryRow(row));
-  const oiScannerHistoryDay = (dashboard.scannerHistoryDays || [])
-    .find((row) => String(row.scan_date || "") === activeOiScannerHistoryDate && isWatchlistOiHistoryRow(row));
-  const oiMag7HistoryLastScan = activeMag7OiScannerHistoryDate === scannerHistoryToday
-    ? dashboard.oiMag7ScanTimestamp || oiMag7ScannerHistoryDay?.last_scanned_at
-    : oiMag7ScannerHistoryDay?.last_scanned_at;
-  const oiHistoryLastScan = activeOiScannerHistoryDate === scannerHistoryToday
-    ? dashboard.oiWatchlistScanTimestamp || oiScannerHistoryDay?.last_scanned_at
-    : oiScannerHistoryDay?.last_scanned_at;
-  const oiMag7StoredHistoryCount = mag7OiRawHistoryRows.length;
-  const oiWatchlistStoredHistoryCount = watchlistOiRawHistoryRows.length;
-  const stockSignalRules = dashboard.stockSignalRules || defaultDashboard.stockSignalRules;
-  const stockAllConditions = [
-    { label: "All: Last", value: `>= ${formatCurrency(stockSignalRules.minPrice)}` },
-    { label: "All: Candle Data", value: "Available · live/forming 5m candle" },
-    { label: "All: 4H VOLUME", value: `>= ${Number(stockSignalRules.minFourHourVolumeChangePct ?? 0.5).toFixed(1)}% greater than 2 bars ago · live candle · EXT` },
-    { label: "All: 1H CLOSE", value: `>= ${Number(stockSignalRules.minOneHourCloseChangePct ?? 0.3).toFixed(1)}% greater than 2 bars ago · live candle · EXT` },
-    { label: "Required MTF Gate", value: "CALL2H/CALL4H require yellow + cyan; BOTH requires CALL2H & CALL4H with either/both colors; C2H/C4H accept either/both" },
-    { label: "All: EMA + VWAP", value: "EMA 9 > 21 > 50 and price > VWAP · live 5m" },
-    { label: "All: Cloud", value: "5M and 4H bullish alignment · live candle" },
-    { label: "All: RVOL", value: "Any 5m/15m/30m/1H/2H/4H/D timeframe" },
-    { label: "All: Fast Momentum", value: ">= 2 of 3" },
-    { label: "All: Price Action", value: "Bullish 5m candle closes above previous 5m high" },
-  ];
-  const oiScannerRules = dashboard.oiScannerRules || defaultDashboard.oiScannerRules;
-  const oiScannerConditions = [
-    { label: "All: Last", value: `>= ${formatCurrency(oiScannerRules.minPrice)}` },
-    { label: "All: Candle Data", value: "Available · live/forming 5m candle" },
-    { label: "Optional: Watchlist 4H Volume", value: `>= ${Number(oiScannerRules.minFourHourVolumeChangePct ?? 0.5).toFixed(1)}% greater than 2 bars ago · live candle · EXT` },
-    { label: "Optional: Watchlist 1H Close", value: `>= ${Number(oiScannerRules.minOneHourCloseChangePct ?? 0.3).toFixed(1)}% greater than 2 bars ago · live candle · EXT` },
-    { label: "Optional: MTF Gate", value: "CALL2H/CALL4H yellow + cyan; BOTH requires CALL2H & CALL4H; C2H/C4H accept either/both" },
-    { label: "All: EMA + VWAP", value: "EMA 9 > 21 > 50 and price > VWAP · live 5m" },
-    { label: "All: Cloud", value: "5M and 4H bullish alignment · live candle" },
-    { label: "RVOL Confirmation", value: "Optional; shown in score and timeframe columns" },
-    { label: "All: Fast Momentum", value: ">= 2 of 3" },
-    { label: "All: Price Action", value: "Bullish 5m candle closes above previous 5m high" },
-    { label: "Calls", value: "OTM only" },
-    { label: "Delta", value: `>= ${Number(oiScannerRules.minDelta ?? 0).toFixed(2)}` },
-    { label: "Expected Move", value: `>= ${formatCurrency(oiScannerRules.minExpectedMove)}` },
-    { label: "Expiry", value: `1-${Number(oiScannerRules.maxDaysToExpiration ?? OI_SCANNER_MAX_DTE)} DTE` },
-  ];
   const sessionStatus = dashboard.status.sessionStatus || defaultSessionStatus;
-  const aPlusCount = dashboard.backtestSummary.filter((row) => Number(row.win_rate || 0) >= 80).length;
+  const credentialHealth = dashboard.status.credentialHealth || { anyUnauthorized: false, accounts: [] };
+  const unauthorizedAccounts = (credentialHealth.accounts || []).filter((account) => account && account.unauthorized);
   const avgWinRate = dashboard.backtestSummary.length
     ? dashboard.backtestSummary.reduce((sum, row) => sum + Number(row.win_rate || 0), 0) / dashboard.backtestSummary.length
     : 0;
@@ -23317,109 +27503,20 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
   }, [topRows]);
 
-  const decisionFeed = dashboard.agentDecisions.length
-    ? dashboard.agentDecisions
-    : [
-        { agent: "Market Regime", status: dashboard.status.marketStatus, confidence: sessionStatus.canAutoTrade ? 78 : 45, summary: "Waiting for live scanner context." },
-        { agent: "Strategy Selection", status: "Momentum Price Action Trend", confidence: 84, summary: "Long-only EMA + VWAP + ORB, previous-day high, premarket high, premarket low above candle, previous-day low above candle, or EMA + VWAP continuation." },
-        { agent: "Risk Guardrail", status: "Paper Only", confidence: 92, summary: "$500 per trade, a 2% stop on each stock, and no account-wide daily-loss lock." },
-      ];
 
-  const journalDailyRows = enhanceDailyRollups(
-    dashboard.journalRollups?.daily || [],
-    dashboard.status,
-    dashboard.tradeHistory || [],
-    dashboard.openPositions || [],
-  );
-  const journalRows = journalView === "daily"
-    ? journalDailyRows
-    : dashboard.journalRollups?.[journalView] || [];
-  const journalCalendar = buildJournalCalendar(journalDailyRows, journalCalendarAnchor);
-  const journalWeeklySnapshots = buildWeeklySnapshots(dashboard.journalRollups?.weekly || []);
-  const journalBestDay = [...journalDailyRows].sort((left, right) => Number(right.total_pnl || 0) - Number(left.total_pnl || 0))[0];
-  const journalWorstDay = [...journalDailyRows].sort((left, right) => Number(left.total_pnl || 0) - Number(right.total_pnl || 0))[0];
-  const journalGreenDays = journalDailyRows.filter((row) => Number(row.total_pnl || 0) > 0).length;
-  const journalRedDays = journalDailyRows.filter((row) => Number(row.total_pnl || 0) < 0).length;
-  const journalStreak = calculateWinStreak(journalDailyRows);
-  const journalClosedTrades = (dashboard.tradeHistory || []).filter((row) => row.entry_time);
   const openGreenCount = (dashboard.openPositions || []).filter((row) => Number(row.unrealized_pl || 0) > 0).length;
   const openRedCount = (dashboard.openPositions || []).filter((row) => Number(row.unrealized_pl || 0) < 0).length;
-  const filteredJournalTrades = journalDateFilter
-    ? journalClosedTrades.filter((row) => String(row.entry_time || "").slice(0, 10) === journalDateFilter)
-    : journalClosedTrades;
   const filteredTradeHistory = journalDateFilter
     ? (dashboard.tradeHistory || []).filter((row) => String(row.entry_time || "").slice(0, 10) === journalDateFilter)
     : (dashboard.tradeHistory || []);
-  const journalSetupOptions = [...new Set((dashboard.tradeHistory || [])
-    .map((row) => String(row.setup_name || "").trim())
-    .filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right));
-  const journalSessionOptions = [...new Set((dashboard.tradeHistory || [])
-    .map((row) => String(row.session_name || "").trim())
-    .filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right));
-  const journalPnL = journalRows.reduce((sum, row) => sum + Number(row.total_pnl || 0), 0);
-  const journalTrades = journalRows.reduce((sum, row) => sum + Number(row.trades || 0), 0);
   const activeStopRuleValue = `-${Number(stopLossPercent || 0).toFixed(2)}%`;
-  const activeStopRuleText = `Active initial stop uses a ${Number(stopLossPercent || 0).toFixed(2)}% full-trade exit, with a 5-minute EMA20 close break as the alternate exit trigger.`;
   const visibleTradeOutcomes = summarizeTradeOutcomes(filteredTradeHistory);
   const includeLiveOpenOutcomes = !journalDateFilter || journalDateFilter === String(dashboard.status.clockTime || "").slice(0, 10);
   const journalWins = visibleTradeOutcomes.wins + (includeLiveOpenOutcomes ? openGreenCount : 0);
   const journalLosses = visibleTradeOutcomes.losses + (includeLiveOpenOutcomes ? openRedCount : 0);
   const journalScoredTrades = journalWins + journalLosses;
   const journalWinRate = journalScoredTrades ? (journalWins / journalScoredTrades) * 100 : 0;
-  const journalExpectancy = journalScoredTrades ? journalPnL / journalScoredTrades : 0;
-  const journalWinningTrades = filteredTradeHistory.filter((row) => Number(row.pnl || 0) > 0);
-  const journalLosingTrades = filteredTradeHistory.filter((row) => Number(row.pnl || 0) < 0);
-  const journalGrossProfit = journalWinningTrades.reduce((sum, row) => sum + Number(row.pnl || 0), 0);
-  const journalGrossLoss = Math.abs(journalLosingTrades.reduce((sum, row) => sum + Number(row.pnl || 0), 0));
-  const journalProfitFactor = journalGrossLoss > 0 ? journalGrossProfit / journalGrossLoss : journalGrossProfit > 0 ? journalGrossProfit : 0;
-  const journalAvgWin = journalWinningTrades.length ? journalGrossProfit / journalWinningTrades.length : 0;
-  const journalAvgLoss = journalLosingTrades.length ? journalGrossLoss / journalLosingTrades.length : 0;
-  const journalAvgWinLoss = journalAvgLoss > 0 ? journalAvgWin / journalAvgLoss : 0;
-  const selectedJournalDayRollup = journalDateFilter
-    ? journalDailyRows.find((row) => row.period === journalDateFilter)
-    : null;
-  const moveJournalCalendar = (direction) => {
-    setJournalCalendarAnchor((current) => {
-      const base = current instanceof Date && !Number.isNaN(current.getTime()) ? current : new Date();
-      return new Date(base.getFullYear(), base.getMonth() + direction, 1);
-    });
-  };
-  const resetJournalCalendar = () => {
-    setJournalCalendarAnchor(new Date());
-  };
   const liveRiskSummary = `Stop: -${Number(stopLossPercent || 0).toFixed(2)}% (${formatCurrency(Number(stopLossAmount || 0))}) | Target 1: +${Number(firstProfitTargetPercent || 0).toFixed(2)}% | Sell 80% | Runner: break even, then lock each move above target 1 into stop profit, or exit on 5m EMA20 close break`;
-  const journalReviewRows = filteredTradeHistory.filter((row) => {
-    const status = tradeStatus(row);
-    const search = journalSearch.trim().toLowerCase();
-    const matchesFilter = journalTradeFilter === "all" || status === journalTradeFilter;
-    const matchesSide = journalSideFilter === "all" || String(row.side || "").toLowerCase() === journalSideFilter;
-    const matchesSetup = journalSetupFilter === "all" || String(row.setup_name || "") === journalSetupFilter;
-    const matchesSession = journalSessionFilter === "all" || String(row.session_name || "") === journalSessionFilter;
-    const pnl = Number(row.pnl || 0);
-    const matchesPnL = journalPnLFilter === "all"
-      || (journalPnLFilter === "green" && pnl > 0)
-      || (journalPnLFilter === "red" && pnl < 0)
-      || (journalPnLFilter === "flat" && pnl === 0);
-    const matchesSearch = !search
-      || String(row.symbol || "").toLowerCase().includes(search)
-      || String(row.setup_name || "").toLowerCase().includes(search)
-      || String(row.strategy_family || "").toLowerCase().includes(search)
-      || String(row.llm_advice || "").toLowerCase().includes(search)
-      || String(row.llm_summary || "").toLowerCase().includes(search);
-    return matchesFilter && matchesSide && matchesSetup && matchesSession && matchesPnL && matchesSearch;
-  });
-  const selectedJournalTrade = journalReviewRows.find((row) => String(row.client_order_id || row.id || row.symbol) === selectedJournalTradeId) || null;
-  const hasJournalFilters = Boolean(
-    journalDateFilter
-    || journalSearch.trim()
-    || journalTradeFilter !== "all"
-    || journalSideFilter !== "all"
-    || journalSetupFilter !== "all"
-    || journalSessionFilter !== "all"
-    || journalPnLFilter !== "all"
-  );
 
   const scannerColumns = [
     {
@@ -23462,42 +27559,6 @@ function TradingWorkspace({ authUser, onLogout }) {
     { key: "trigger_source", label: "Trigger" },
   ];
 
-  const scannerHistoryColumns = [
-    {
-      key: "symbol",
-      label: "Symbol",
-      render: (value, row) => (
-        <button className="symbol-pill" onClick={() => setSelectedSymbol(row.symbol)} type="button">
-          {value}
-        </button>
-      ),
-    },
-    { key: "setup_name", label: "Why Setup", render: (_, row) => renderStockSetupMatches(row) },
-    { key: "mtf_bullish_signal_labels", label: "MTF C/CALL", render: renderMtfSignalBadges },
-    { key: "four_hour_cloud_state", label: "4H Cloud", render: renderCloudState },
-    { key: "five_min_cloud_state", label: "5M Cloud", render: renderCloudState },
-    { key: "cloud_alignment_action", label: "Cloud Action", render: renderCloudAction },
-    { key: "four_hour_ema_9", label: "4H EMA9", render: formatCurrency },
-    { key: "four_hour_ema_21", label: "4H EMA21", render: formatCurrency },
-    { key: "four_hour_ema_50", label: "4H EMA50", render: formatCurrency },
-    { key: "fast_momentum_status", label: "Fast Momentum", render: (_, row) => renderFastMomentum(_, row) },
-    { key: "projected_5m_volume_ratio", label: "5M Vol x", render: (value) => value == null ? "--" : `${Number(value).toFixed(2)}x` },
-    { key: "buying_pressure_pct", label: "Buy Pressure", render: (value) => value == null ? "--" : formatPercent(value) },
-    { key: "previous_5m_high", label: "Prev 5M High", render: formatCurrency },
-    { key: "scanned_at", label: "Last Seen", render: formatTimeLabel },
-    { key: "last_price", label: "Last", render: formatCurrency },
-    { key: "tos_rvol_5m", label: "RVOL 5m", render: (_, row) => formatRvolValue(scannerHistoryMetric(row, "tos_rvol_5m")) },
-    { key: "tos_rvol_15m", label: "RVOL 15m", render: (_, row) => formatRvolValue(scannerHistoryMetric(row, "tos_rvol_15m")) },
-    { key: "tos_rvol_30m", label: "RVOL 30m", render: (_, row) => formatRvolValue(scannerHistoryMetric(row, "tos_rvol_30m")) },
-    { key: "tos_rvol_1h", label: "RVOL 1H", render: (_, row) => formatRvolValue(scannerHistoryMetric(row, "tos_rvol_1h")) },
-    { key: "tos_rvol_2h", label: "RVOL 2H", render: (_, row) => formatRvolValue(scannerHistoryMetric(row, "tos_rvol_2h")) },
-    { key: "tos_rvol_4h", label: "RVOL 4H", render: (_, row) => formatRvolValue(scannerHistoryMetric(row, "tos_rvol_4h")) },
-    { key: "tos_rvol_1d", label: "RVOL D", render: (_, row) => formatRvolValue(scannerHistoryMetric(row, "tos_rvol_1d")) },
-    { key: "tos_rvol_timeframes", label: "RVOL TFs", render: (_, row) => scannerHistoryMetric(row, "tos_rvol_timeframes") || "--" },
-    { key: "four_hour_volume_change_pct", label: "4H Volume %", render: (value) => value == null ? "--" : formatPercent(value) },
-    { key: "one_hour_close_change_pct", label: "1H Close %", render: (value) => value == null ? "--" : formatPercent(value) },
-    { key: "trigger_source", label: "Trigger" },
-  ];
 
   const oiNewsBySymbol = new Map();
   (dashboard.catalystIndex?.length ? dashboard.catalystIndex : dashboard.catalysts || []).forEach((item) => {
@@ -23511,40 +27572,11 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
   });
 
-  const openTickerNews = (rawSymbol) => {
-    const symbol = String(rawSymbol || "").trim().toUpperCase();
-    if (!symbol) return;
-    setNewsSearchDraft(symbol);
-    setNewsSearch(symbol);
-    setNewsUniverse("all");
-    setActiveView("News Feed");
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
 
-  const renderOiNewsLink = (_, row) => {
-    const symbol = String(row.underlying || row.history_symbol || "").trim().toUpperCase();
-    const news = oiNewsBySymbol.get(symbol);
-    if (!news) return <span className="oi-news-status oi-news-none">No</span>;
-    const freshness = newsFreshnessMeta(news.published_at);
-    const isFresh = freshness.ageHours <= 24;
-    return (
-      <a
-        className={`oi-news-status ${isFresh ? "oi-news-fresh" : "oi-news-stored"}`}
-        href="#news-feed"
-        onClick={(event) => {
-          event.preventDefault();
-          openTickerNews(symbol);
-        }}
-        title={`${isFresh ? "Fresh" : "Stored"} news for ${symbol}: ${news.headline || "Open News Feed"}`}
-      >
-        {isFresh ? "Fresh" : "Yes"}
-      </a>
-    );
-  };
 
   const beginOiFinderRequestTargetLatestRef = useRef(beginOiFinderRequestTarget);
   beginOiFinderRequestTargetLatestRef.current = beginOiFinderRequestTarget;
-  const openChartSignalChart = useCallback((rawSymbol, timeframe, source) => {
+  const openChartSignalChart = useCallback((rawSymbol, timeframe, source, { linkGroup = null } = {}) => {
     const symbol = String(rawSymbol || "").trim().toUpperCase();
     if (!symbol) return;
     chartsAndOiNavigationSequenceRef.current += 1;
@@ -23573,10 +27605,54 @@ function TradingWorkspace({ authUser, onLogout }) {
       source,
       symbol,
       timeframe,
+      linkGroup,
     });
+    if (linkGroup) {
+      // A scanner link must land on a CHART. On a phone the Charts & OI page
+      // remembers its Options sub-tab, which hides the chart (review 2026-09-26).
+      setMobileChartSection("chart");
+      setMobileOptionsRequest(0);
+    }
     setActiveView("Charts & OI");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
+
+  // TOS-style link from the MomX scanner (2026-09-26): a ticker clicked in the
+  // scanner - in this window (window event) or in the detached scanner window
+  // (BroadcastChannel) - opens Charts & OI with that ticker in every chart of
+  // the scanner's colour. MAIN window only: a popout never navigates itself.
+  // The same click can arrive on both paths, so ids are de-duplicated.
+  const lastChartLinkIdRef = useRef("");
+  useEffect(() => {
+    if (popoutConfig.mode) return undefined;
+    const handle = (message) => {
+      if (!message || typeof message !== "object") return;
+      const id = String(message.id || "");
+      if (id && id === lastChartLinkIdRef.current) return;
+      lastChartLinkIdRef.current = id;
+      const group = Number(message.linkGroup);
+      if (!message.symbol || !Number.isInteger(group) || group < 1 || group > 9) return;
+      openChartSignalChart(message.symbol, null, String(message.source || "momx-scanner"), { linkGroup: group });
+    };
+    const onEvent = (event) => handle(event?.detail);
+    window.addEventListener(CHART_LINK_EVENT, onEvent);
+    let channel = null;
+    try {
+      if (typeof BroadcastChannel !== "undefined") {
+        channel = new BroadcastChannel(CHART_LINK_CHANNEL);
+        channel.onmessage = (event) => {
+          handle(event?.data);
+          try { window.focus(); } catch { /* a browser may refuse; the page still switches */ }
+        };
+      }
+    } catch {
+      channel = null;
+    }
+    return () => {
+      window.removeEventListener(CHART_LINK_EVENT, onEvent);
+      try { channel?.close(); } catch { /* already closed */ }
+    };
+  }, [openChartSignalChart, popoutConfig.mode]);
 
   const handleChartsAndOiNavigationIntent = useCallback((intentId) => {
     setChartsAndOiNavigationIntent((current) => (
@@ -23584,15 +27660,16 @@ function TradingWorkspace({ authUser, onLogout }) {
     ));
   }, []);
 
-  const mag7TosAllResultColumns = useMemo(() => [
+
+  const premarketScannerColumns = useMemo(() => [
     {
       key: "symbol",
-      label: "TOS Result",
+      label: "Ticker",
       render: (value) => (
         <button
           className="symbol-pill"
-          data-testid="mag7-tos-all-result-symbol"
-          onClick={() => openChartSignalChart(value, "5m", "mag7-tos-all-results")}
+          data-testid="premarket-scanner-symbol"
+          onClick={() => openChartSignalChart(value, "5m", "premarket-scanner")}
           aria-label={`Open ${value} on the 5-minute chart`}
           title={`Open ${value} on the 5-minute chart`}
           type="button"
@@ -23601,417 +27678,154 @@ function TradingWorkspace({ authUser, onLogout }) {
         </button>
       ),
     },
-    { key: "tosGateEvaluatedAt", label: "Evaluated Candle", render: formatDateTime },
-    { key: "lastPrice", label: "Last ≥ $3", render: formatTosGateCurrency },
-    { key: "fourHourVolumeChangePct", label: "4H EXT Volume", render: formatTosGatePercent },
-    { key: "oneHourCloseChangePct", label: "1H EXT Close", render: formatTosGatePercent },
-    { key: "tosAllOfPass", label: "All Result", render: renderTosAllGate },
-  ], [openChartSignalChart]);
-
-  const mag7PremarketChartSignalColumns = useMemo(() => [
     {
-      key: "symbol",
-      label: "Symbol",
-      render: (value) => (
+      // TOS's first sort column: last price against the prior session's
+      // regular close. The backend orders rows by it, descending, like TOS.
+      key: "changePct",
+      label: "%Chg",
+      render: (value) => {
+        const pct = Number(value);
+        if (!Number.isFinite(pct)) return "--";
+        return (
+          <span className={pct > 0 ? "positive" : pct < 0 ? "negative" : ""}>
+            {`${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`}
+          </span>
+        );
+      },
+    },
+    {
+      key: "firstSeenAt",
+      // WHEN IT APPEARED - the column the trader actually asked for back in
+      // August ("time also so I know when it came to the scanner"). Distinct
+      // from the signal's bar time beside it: AAPL arrived at 09:39:47 on a
+      // signal that sits on the 09:00 bucket. Shows a dash until the backend
+      // that supplies it is restarted, rather than borrowing the bar time and
+      // repeating the same confusion.
+      label: "First seen (ET)",
+      render: (value) => (value ? formatDateTime(value) : "—"),
+    },
+    {
+      key: "latestSignalAt",
+      // "Signal bar", not "Date/Time". This is the BAR the newest signal sits
+      // on - for a 2h signal that is the bucket start, e.g. 09:00 for a
+      // 09:00-11:00 bucket that is still forming. It is NOT when the ticker
+      // appeared on the scanner, and the old label read as exactly that:
+      // the trader checked at 09:00, saw no AAPL, then found a row stamped
+      // "9/1/2026, 9:00:00 AM ET" (2026-09-01). The archive says AAPL first
+      // appeared at 09:39:47 - the row was right, the column name was not.
+      label: "Signal bar (ET)",
+      render: (value, row) => formatDateTime(value || row?.signalAt),
+    },
+    {
+      key: "signals48",
+      label: "4/8",
+      sortable: false,
+      render: (value) => renderPremarketChartSignalBadges(value, "yellow"),
+    },
+    {
+      key: "signals920",
+      label: "9/20",
+      sortable: false,
+      render: (value) => renderPremarketChartSignalBadges(value, "cyan"),
+    },
+    {
+      key: "signalsCyanHigher",
+      label: "D–M",
+      sortable: false,
+      // CYAN ONLY (trader's rule 2026-08-24: "D to M I need only cyan
+      // (CALL), no need MACD") — CALLD..CALLM from the 9/20 replay, the
+      // same bubbles the chart draws. Hover shows when each one printed.
+      render: (value, row) => {
+        const cyan = Array.isArray(value) ? value : [];
+        if (!cyan.length) return "--";
+        return (
+          <div className="mtf-table-signals">
+            {cyan.map((label) => (
+              <span
+                className="mtf-table-signal mtf-table-signal-cyan"
+                key={`cyan-htf-${label}`}
+                title={row?.higherSignalTimes?.[label] ? `Printed ${formatDateTime(row.higherSignalTimes[label])}` : undefined}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
+      key: "fires",
+      label: "Squeeze Fire",
+      sortable: false,
+      render: (value, row) => {
+        const fires = Array.isArray(value) ? value : [];
+        if (!fires.length) return "--";
+        return (
+          <div className="mtf-table-signals">
+            {fires.map((label) => (
+              <span
+                className="mtf-table-signal mtf-table-signal-fire"
+                key={`fire-${label}`}
+                // A daily candle cannot close during premarket, so a fire-D is
+                // always the prior session's. Show its date on hover so it is
+                // never mistaken for a fresh event.
+                title={row?.fireDates?.[label] ? `Fired ${formatDateTime(row.fireDates[label])}` : undefined}
+              >
+                {`🔥${label}`}
+              </span>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
+      key: "catalyst",
+      label: "Catalyst",
+      sortable: false,
+      render: (value) => {
+        if (!value || !value.headline) return "--";
+        const age = Number.isFinite(value.ageMinutes)
+          ? (value.ageMinutes >= 60 ? `${Math.round(value.ageMinutes / 60)}h ago` : `${value.ageMinutes}m ago`)
+          : "";
+        return (
+          <span className="premarket-catalyst" title={`${value.headline}${age ? ` (${age})` : ""}`}>
+            <em className={`premarket-catalyst-tag is-${String(value.tag || "news").toLowerCase().replace(/[^a-z0-9]/g, "")}`}>
+              {value.tag || "NEWS"}
+            </em>
+            <span className="premarket-catalyst-headline">{value.headline}</span>
+          </span>
+        );
+      },
+    },
+    {
+      key: "strength",
+      label: "Strength",
+      render: (value, row) => (
         <button
-          className="symbol-pill"
-          data-testid="mag7-premarket-signal-symbol"
-          onClick={() => openChartSignalChart(value, "4h", "mag7-4h-premarket")}
-          aria-label={`Open ${value} on the 4h chart`}
-          title={`Open ${value} on the 4h chart`}
+          className={`premarket-strength is-${String(value || "weak").toLowerCase()} premarket-strength-button`}
+          onClick={() => setExplainScannerTarget(row)}
+          title="Tap for a plain-English explanation of this row"
           type="button"
         >
-          {value}
+          {`${value} (${row?.score ?? 0})`}
+          {/* Derived from bucket close vs the tape, not the engine's
+              always-true liveForming flag. FORMING = the candle behind this
+              cross has not locked yet, so the row can still repaint away
+              (META, 08:00 on 2026-08-21). */}
+          {row?.forming ? (
+            <em className="premarket-strength-forming" title="The candle behind this signal has not closed yet — it can still disappear if price reverses."> FORMING</em>
+          ) : null}
+          <span className="premarket-explain-hint" aria-hidden="true"> ⓘ</span>
         </button>
       ),
     },
-    {
-      key: "latestScanCandleAt",
-      label: "Last PRE Scan",
-      render: (value, row) => formatDateTime(value || row?.latestSignalAt),
-    },
-    { key: "tosAllOfPass", label: "TOS All", render: renderTosAllGate },
-    { key: "tosGateEvaluatedAt", label: "Exact Gate Candle", render: formatDateTime },
-    { key: "lastPrice", label: "All: Last ≥ $3", render: formatTosGateCurrency },
-    { key: "fourHourVolumeChangePct", label: "All: 4H EXT Vol ≥ 0.5%", render: formatTosGatePercent },
-    { key: "oneHourCloseChangePct", label: "All: 1H EXT Close ≥ 0.3%", render: formatTosGatePercent },
-    { key: "signalCandles", label: "4H PRE Session Candles", sortable: false, render: renderPremarketChartSignalCandles },
-    {
-      key: "intraday48Signals",
-      label: "4x8 CALL 1H/2H/4H",
-      sortable: false,
-      render: (value) => renderPremarketChartSignalBadges(value, "yellow"),
-    },
-    {
-      key: "higher48Signals",
-      label: "4x8 D to M CALL",
-      sortable: false,
-      render: (value) => renderPremarketChartSignalBadges(value, "yellow"),
-    },
-    {
-      key: "cyanSignals",
-      label: "Cyan 9x20 CALL",
-      sortable: false,
-      render: (value) => renderPremarketChartSignalBadges(value, "cyan"),
-    },
-    {
-      key: "macdSignals",
-      label: "MACD D to M CALL",
-      sortable: false,
-      render: (value) => renderPremarketChartSignalBadges(value, "macd"),
-    },
-    { key: "signalCount", label: "Events", render: formatCompactNumber },
-    {
-      key: "session",
-      label: "Source",
-      render: () => <span className="oi-bot-state oi-bot-state-premarket">4H PRE</span>,
-    },
   ], [openChartSignalChart]);
 
-  const mag7FiveMinuteChartSignalColumns = useMemo(() => [
-    {
-      key: "symbol",
-      label: "Symbol",
-      render: (value) => (
-        <button
-          className="symbol-pill"
-          data-testid="mag7-five-minute-signal-symbol"
-          onClick={() => openChartSignalChart(value, "5m", "mag7-5m-signals")}
-          aria-label={`Open ${value} on the 5-minute chart`}
-          title={`Open ${value} on the 5-minute chart`}
-          type="button"
-        >
-          {value}
-        </button>
-      ),
-    },
-    { key: "tosAllOfPass", label: "TOS All", render: renderTosAllGate },
-    { key: "tosGateEvaluatedAt", label: "Exact Gate Candle", render: formatDateTime },
-    { key: "lastPrice", label: "All: Last ≥ $3", render: formatTosGateCurrency },
-    { key: "fourHourVolumeChangePct", label: "All: 4H EXT Vol ≥ 0.5%", render: formatTosGatePercent },
-    { key: "oneHourCloseChangePct", label: "All: 1H EXT Close ≥ 0.3%", render: formatTosGatePercent },
-    { key: "latestSignalAt", label: "Latest 5M Signal", render: formatDateTime },
-    {
-      key: "signals",
-      label: "Exact 5M Chart Events",
-      sortable: false,
-      render: renderFiveMinuteChartSignalEvents,
-    },
-    {
-      key: "intraday48Signals",
-      label: "4x8 CALL 1H/2H/4H",
-      sortable: false,
-      render: (value) => renderPremarketChartSignalBadges(value, "yellow"),
-    },
-    {
-      key: "intraday920Signals",
-      label: "9x20 CALL 1H/2H/4H",
-      sortable: false,
-      render: (value) => renderPremarketChartSignalBadges(value, "cyan"),
-    },
-    {
-      key: "higher48Signals",
-      label: "4x8 D to M CALL",
-      sortable: false,
-      render: (value) => renderPremarketChartSignalBadges(value, "yellow"),
-    },
-    {
-      key: "higher920Signals",
-      label: "9x20 D to M CALL",
-      sortable: false,
-      render: (value) => renderPremarketChartSignalBadges(value, "cyan"),
-    },
-    {
-      key: "macdSignals",
-      label: "MACD D to M CALL",
-      sortable: false,
-      render: (value) => renderPremarketChartSignalBadges(value, "macd"),
-    },
-    { key: "signalCandles", label: "5M Candles", sortable: false, render: renderPremarketChartSignalCandles },
-    { key: "signalCount", label: "Events", render: formatCompactNumber },
-    {
-      key: "session",
-      label: "Source",
-      render: () => <span className="oi-bot-state oi-bot-state-premarket">5M CHART</span>,
-    },
-  ], [openChartSignalChart]);
 
-  const oiScannerColumns = [
-    {
-      key: "underlying",
-      label: "Symbol",
-      render: (value, row) => (
-        <div className="oi-symbol-cell">
-          <button className="symbol-pill" onClick={() => {
-            const symbol = String(row.underlying || "").trim().toUpperCase();
-            setSelectedSymbol(symbol);
-            setOiChartSymbol(symbol);
-            setOiChartLookup(symbol);
-          }} type="button">
-            {value}
-          </button>
-          <div className="oi-priority-badges">
-            {row.__isNew ? <span className="oi-priority-badge oi-priority-new">NEW</span> : null}
-            <span className={`oi-priority-badge oi-priority-${row.__priorityTone || "low"}`}>{row.__priorityLabel || oiPriorityMeta(row).label}</span>
-            {row.signal_shape_label === "Mixed Flow" ? <span className="oi-priority-badge oi-priority-mixed">Mixed Flow</span> : null}
-          </div>
-        </div>
-      ),
-    },
-    { key: "__news", label: "News", sortable: false, render: renderOiNewsLink },
-    {
-      key: "__sortTimestamp",
-      label: "Timestamp",
-      render: (value) => formatDateTime(value),
-    },
-    { key: "__botState", label: "Bot State", render: renderOiBotState },
-    {
-      key: "strength_score",
-      label: "Strength",
-      render: (_, row) => row.priority_label || oiPriorityMeta(row).label,
-    },
-    { key: "uw_style_score", label: "UW Style Score", render: renderUwScoreCell },
-    {
-      key: "contract",
-      label: "Contract",
-      render: (value, row) => {
-        const contract = optionContractDisplay(value, row.underlying, row.expiry, row.strike);
-        return `${contract.underlying} ${contract.expiry} ${contract.contractLabel}`;
-      },
-    },
-    { key: "stock_setup_name", label: "Stock Setup", render: (_, row) => renderStockSetupMatches(row) },
-    { key: "stock_mtf_bullish_signal_labels", label: "MTF C/CALL", render: renderMtfSignalBadges },
-    { key: "stock_four_hour_cloud_state", label: "4H Cloud", render: renderCloudState },
-    { key: "stock_five_min_cloud_state", label: "5M Cloud", render: renderCloudState },
-    { key: "stock_cloud_alignment_action", label: "Cloud Action", render: renderCloudAction },
-    { key: "stock_four_hour_ema_9", label: "4H EMA9", render: formatCurrency },
-    { key: "stock_four_hour_ema_21", label: "4H EMA21", render: formatCurrency },
-    { key: "stock_four_hour_ema_50", label: "4H EMA50", render: formatCurrency },
-    { key: "stock_fast_momentum_status", label: "Fast Momentum", render: (_, row) => renderFastMomentum(_, row, true) },
-    { key: "stock_projected_5m_volume_ratio", label: "5M Vol x", render: (value) => value == null ? "--" : `${Number(value).toFixed(2)}x` },
-    { key: "stock_buying_pressure_pct", label: "Buy Pressure", render: (value) => value == null ? "--" : formatPercent(value) },
-    { key: "stock_previous_5m_high", label: "Prev 5M High", render: formatCurrency },
-    { key: "underlying_price", label: "Last", render: formatCurrency },
-    { key: "change_pct", label: "Change %", render: (value, row) => value == null ? (row.one_hour_close_change_pct == null ? "--" : formatPercent(row.one_hour_close_change_pct)) : formatPercent(value) },
-    { key: "stock_tos_rvol_5m", label: "RVOL 5m", render: formatRvolValue },
-    { key: "stock_tos_rvol_15m", label: "RVOL 15m", render: formatRvolValue },
-    { key: "stock_tos_rvol_30m", label: "RVOL 30m", render: formatRvolValue },
-    { key: "stock_tos_rvol_1h", label: "RVOL 1H", render: formatRvolValue },
-    { key: "stock_tos_rvol_2h", label: "RVOL 2H", render: formatRvolValue },
-    { key: "stock_tos_rvol_4h", label: "RVOL 4H", render: formatRvolValue },
-    { key: "stock_tos_rvol_1d", label: "RVOL D", render: formatRvolValue },
-    { key: "stock_tos_rvol_timeframes", label: "RVOL TFs", render: (value) => value || "--" },
-    { key: "expected_move", label: "Exp Move", render: formatCurrency },
-    { key: "days_to_expiration", label: "DTE" },
-    { key: "delta", label: "Delta", render: (value) => value == null ? "--" : Number(value).toFixed(2) },
-    { key: "strike", label: "OTM Strike", render: formatOptionStrike },
-    { key: "volume", label: "OTM Vol", render: (value, row) => renderOiMetricCell(value, row.atm_volume, "volume") },
-    { key: "open_interest", label: "OTM OI", render: (value, row) => renderOiMetricCell(value, row.atm_open_interest, "oi") },
-    { key: "volume_oi_ratio", label: "Vol/OI", render: (value) => value == null ? "--" : Number(value).toFixed(2) },
-    { key: "premium_traded", label: "Premium", render: formatCurrency },
-    { key: "atm_strike", label: "ATM Strike", render: (value) => value == null ? "--" : formatOptionStrike(value) },
-    { key: "atm_volume", label: "ATM Vol", render: (value, row) => renderOiMetricCell(value, row.volume, "volume") },
-    { key: "atm_open_interest", label: "ATM OI", render: (value, row) => renderOiMetricCell(value, row.open_interest, "oi") },
-    { key: "call_wall_strike", label: "Call Wall", render: (_, row) => { const value = oiWallDisplayMeta(row).callStrike; return value == null ? "--" : formatOptionStrike(value); } },
-    { key: "call_wall_open_interest", label: "Call Wall OI", render: (_, row) => formatCompactNumber(oiWallDisplayMeta(row).callOpenInterest) },
-    { key: "call_wall_volume", label: "Call Wall Vol", render: (_, row) => formatCompactNumber(oiWallDisplayMeta(row).callVolume) },
-    { key: "call_wall_concentration", label: "Call Wall x", render: (_, row) => { const value = oiWallDisplayMeta(row).callConcentration; return value == null ? "--" : `${Number(value).toFixed(2)}x`; } },
-    { key: "call_wall_distance_pct", label: "Wall Distance", render: (_, row) => { const value = oiWallDisplayMeta(row).callDistancePct; return value == null ? "--" : formatPercent(value); } },
-    { key: "put_wall_strike", label: "Put Wall", render: (value) => value == null ? "--" : formatOptionStrike(value) },
-    { key: "put_wall_open_interest", label: "Put Wall OI", render: formatCompactNumber },
-    { key: "oi_wall_signal", label: "OI Wall", render: renderOiWallSignal },
-    {
-      key: "flow_type",
-      label: "Flow Type",
-      render: (_, row) => (
-        <div className="oi-flow-badges">
-          {oiFlowSignals(row).map((signal) => (
-            <span className={`oi-flow-badge oi-flow-${signal.tone}`} key={signal.label}>{signal.label}</span>
-          ))}
-        </div>
-      ),
-    },
-    { key: "liquidity_winner", label: "Liquidity Winner", render: (_, row) => oiLiquidityWinnerLabel(row) },
-    { key: "setup_type", label: "Setup Type" },
-    {
-      key: "why",
-      label: "Why",
-      render: (_, row) => (
-        <div className="oi-why-badges">
-          {oiWhyBadges(row).map((badge) => (
-            <span className={`oi-why-badge oi-why-${badge.tone}`} key={badge.label}>{badge.label}</span>
-          ))}
-        </div>
-      ),
-    },
-    { key: "scanner_tag", label: "Scanner Tag" },
-  ];
 
-  const oiScannerHistoryColumns = [
-    {
-      key: "history_symbol",
-      label: "Symbol",
-      render: (value, row) => (
-        <div className="oi-symbol-cell">
-          <button className="symbol-pill" onClick={() => {
-            const symbol = String(row.history_symbol || row.underlying || "").trim().toUpperCase();
-            setSelectedSymbol(symbol);
-            setOiChartSymbol(symbol);
-            setOiChartLookup(symbol);
-          }} type="button">
-            {value}
-          </button>
-          <div className="oi-priority-badges">
-            {row.__isNew ? <span className="oi-priority-badge oi-priority-new">NEW</span> : null}
-            <span className={`oi-priority-badge oi-priority-${row.__priorityTone || "low"}`}>{row.__priorityLabel || oiPriorityMeta(row).label}</span>
-            {row.signal_shape_label === "Mixed Flow" ? <span className="oi-priority-badge oi-priority-mixed">Mixed Flow</span> : null}
-          </div>
-        </div>
-      ),
-    },
-    { key: "__news", label: "News", sortable: false, render: renderOiNewsLink },
-    {
-      key: "scanned_at",
-      label: "Timestamp",
-      render: (value) => formatDateTime(value),
-    },
-    { key: "__botState", label: "Bot State", render: renderOiBotState },
-    {
-      key: "strength_score",
-      label: "Strength",
-      render: (_, row) => row.priority_label || oiPriorityMeta(row).label,
-    },
-    { key: "uw_style_score", label: "UW Style Score", render: renderUwScoreCell },
-    {
-      key: "contract",
-      label: "Contract",
-      render: (value, row) => {
-        const contract = optionContractDisplay(value, row.underlying, row.expiry, row.strike);
-        return `${contract.underlying} ${contract.expiry} ${contract.contractLabel}`;
-      },
-    },
-    { key: "stock_setup_name", label: "Stock Setup", render: (_, row) => renderStockSetupMatches(row) },
-    { key: "stock_mtf_bullish_signal_labels", label: "MTF C/CALL", render: renderMtfSignalBadges },
-    { key: "stock_four_hour_cloud_state", label: "4H Cloud", render: renderCloudState },
-    { key: "stock_five_min_cloud_state", label: "5M Cloud", render: renderCloudState },
-    { key: "stock_cloud_alignment_action", label: "Cloud Action", render: renderCloudAction },
-    { key: "stock_four_hour_ema_9", label: "4H EMA9", render: formatCurrency },
-    { key: "stock_four_hour_ema_21", label: "4H EMA21", render: formatCurrency },
-    { key: "stock_four_hour_ema_50", label: "4H EMA50", render: formatCurrency },
-    { key: "stock_fast_momentum_status", label: "Fast Momentum", render: (_, row) => renderFastMomentum(_, row, true) },
-    { key: "stock_projected_5m_volume_ratio", label: "5M Vol x", render: (value) => value == null ? "--" : `${Number(value).toFixed(2)}x` },
-    { key: "stock_buying_pressure_pct", label: "Buy Pressure", render: (value) => value == null ? "--" : formatPercent(value) },
-    { key: "stock_previous_5m_high", label: "Prev 5M High", render: formatCurrency },
-    { key: "last_price", label: "Last", render: formatCurrency },
-    { key: "change_pct", label: "Change %", render: (value, row) => value == null ? (row.one_hour_close_change_pct == null ? "--" : formatPercent(row.one_hour_close_change_pct)) : formatPercent(value) },
-    { key: "stock_tos_rvol_5m", label: "RVOL 5m", render: formatRvolValue },
-    { key: "stock_tos_rvol_15m", label: "RVOL 15m", render: formatRvolValue },
-    { key: "stock_tos_rvol_30m", label: "RVOL 30m", render: formatRvolValue },
-    { key: "stock_tos_rvol_1h", label: "RVOL 1H", render: formatRvolValue },
-    { key: "stock_tos_rvol_2h", label: "RVOL 2H", render: formatRvolValue },
-    { key: "stock_tos_rvol_4h", label: "RVOL 4H", render: formatRvolValue },
-    { key: "stock_tos_rvol_1d", label: "RVOL D", render: formatRvolValue },
-    { key: "stock_tos_rvol_timeframes", label: "RVOL TFs", render: (value) => value || "--" },
-    { key: "expected_move", label: "Exp Move", render: formatCurrency },
-    { key: "days_to_expiration", label: "DTE" },
-    { key: "delta", label: "Delta", render: (value) => value == null ? "--" : Number(value).toFixed(2) },
-    { key: "strike", label: "OTM Strike", render: formatOptionStrike },
-    { key: "volume", label: "OTM Vol", render: (value, row) => renderOiMetricCell(value, row.atm_volume, "volume") },
-    { key: "open_interest", label: "OTM OI", render: (value, row) => renderOiMetricCell(value, row.atm_open_interest, "oi") },
-    { key: "volume_oi_ratio", label: "Vol/OI", render: (value) => value == null ? "--" : Number(value).toFixed(2) },
-    { key: "premium_traded", label: "Premium", render: formatCurrency },
-    { key: "atm_strike", label: "ATM Strike", render: (value) => value == null ? "--" : formatOptionStrike(value) },
-    { key: "atm_volume", label: "ATM Vol", render: (value, row) => renderOiMetricCell(value, row.volume, "volume") },
-    { key: "atm_open_interest", label: "ATM OI", render: (value, row) => renderOiMetricCell(value, row.open_interest, "oi") },
-    { key: "call_wall_strike", label: "Call Wall", render: (_, row) => { const value = oiWallDisplayMeta(row).callStrike; return value == null ? "--" : formatOptionStrike(value); } },
-    { key: "call_wall_open_interest", label: "Call Wall OI", render: (_, row) => formatCompactNumber(oiWallDisplayMeta(row).callOpenInterest) },
-    { key: "call_wall_volume", label: "Call Wall Vol", render: (_, row) => formatCompactNumber(oiWallDisplayMeta(row).callVolume) },
-    { key: "call_wall_concentration", label: "Call Wall x", render: (_, row) => { const value = oiWallDisplayMeta(row).callConcentration; return value == null ? "--" : `${Number(value).toFixed(2)}x`; } },
-    { key: "call_wall_distance_pct", label: "Wall Distance", render: (_, row) => { const value = oiWallDisplayMeta(row).callDistancePct; return value == null ? "--" : formatPercent(value); } },
-    { key: "put_wall_strike", label: "Put Wall", render: (value) => value == null ? "--" : formatOptionStrike(value) },
-    { key: "put_wall_open_interest", label: "Put Wall OI", render: formatCompactNumber },
-    { key: "oi_wall_signal", label: "OI Wall", render: renderOiWallSignal },
-    {
-      key: "flow_type",
-      label: "Flow Type",
-      render: (_, row) => (
-        <div className="oi-flow-badges">
-          {oiFlowSignals(row).map((signal) => (
-            <span className={`oi-flow-badge oi-flow-${signal.tone}`} key={signal.label}>{signal.label}</span>
-          ))}
-        </div>
-      ),
-    },
-    { key: "liquidity_winner", label: "Liquidity Winner", render: (_, row) => oiLiquidityWinnerLabel(row) },
-    { key: "setup_type", label: "Setup Type" },
-    {
-      key: "why",
-      label: "Why",
-      render: (_, row) => (
-        <div className="oi-why-badges">
-          {oiWhyBadges(row).map((badge) => (
-            <span className={`oi-why-badge oi-why-${badge.tone}`} key={badge.label}>{badge.label}</span>
-          ))}
-        </div>
-      ),
-    },
-    { key: "scanner_tag", label: "Scanner Tag" },
-  ];
 
-  const backtestColumns = [
-    { key: "symbol", label: "Symbol", render: (value) => <span className="symbol-pill">{value}</span> },
-    { key: "trades", label: "Trades" },
-    { key: "wins", label: "Wins" },
-    { key: "losses", label: "Losses" },
-    { key: "win_rate", label: "Win Rate", render: formatPercent },
-    { key: "average_ai_score", label: "Avg AI" },
-    { key: "average_ai_confidence", label: "Avg Conf" },
-    { key: "average_rule_score", label: "Avg Rule" },
-    { key: "average_ml_score", label: "Avg ML" },
-    { key: "average_catalyst_score", label: "Avg News" },
-    { key: "average_regime_score", label: "Avg Regime" },
-    { key: "total_pnl", label: "Total P/L", render: formatCurrency },
-    { key: "total_r", label: "Total R" },
-    { key: "data_start", label: "Data Start" },
-    { key: "data_end", label: "Data End" },
-  ];
 
-  const tradeColumns = [
-    { key: "symbol", label: "Symbol", render: (value) => <span className="symbol-pill">{value}</span> },
-    { key: "strategy_family", label: "Family" },
-    { key: "setup_name", label: "Strategy" },
-    { key: "policy_status", label: "Policy" },
-    { key: "execution_route", label: "Route" },
-    { key: "ai_trade_score", label: "AI Score" },
-    { key: "ai_confidence", label: "AI Conf" },
-    { key: "ai_model_name", label: "AI Model" },
-    { key: "model_win_probability", label: "Win Prob", render: (value) => value == null ? "--" : `${(Number(value) * 100).toFixed(1)}%` },
-    { key: "model_expected_r", label: "Exp R", render: (value) => value == null ? "--" : Number(value).toFixed(2) },
-    { key: "llm_advice", label: "LLM", render: (_, row) => llmAdviceLabel(row) },
-    { key: "rule_score", label: "Rule" },
-    { key: "ml_score", label: "ML" },
-    { key: "catalyst_score", label: "News" },
-    { key: "regime_score", label: "Regime" },
-    { key: "one_hour_price_change_pct", label: "1H Price %", render: (value, row) => value == null ? (row.one_hour_close_change_pct == null ? "--" : formatPercent(row.one_hour_close_change_pct)) : formatPercent(value) },
-    { key: "four_hour_price_change_pct", label: "4H Price %", render: (value) => value == null ? "--" : formatPercent(value) },
-    { key: "four_hour_volume_change_pct", label: "4H Vol", render: (value) => value == null ? "--" : formatPercent(value) },
-    { key: "stock_all_conditions_pass", label: "All Gates", render: (value) => value == null ? "--" : (value ? "Pass" : "Block") },
-    { key: "ema9_retest_5m", label: "EMA9 Retest", render: (value) => value == null ? "--" : (value ? "Pass" : "Block") },
-    { key: "entry_date", label: "Entry Date" },
-    { key: "entry", label: "Entry", render: formatCurrency },
-    { key: "stop", label: "Stop", render: formatCurrency },
-    { key: "target", label: "Ref Target", render: formatCurrency },
-    { key: "partial_exit_taken", label: "Partial Exit", render: yesNoLabel },
-    { key: "partial_exit_price", label: "Partial Price", render: (value) => value == null ? "--" : formatCurrency(value) },
-    { key: "runner_stop_locked_pct", label: "Runner Lock %", render: (value) => value == null ? "--" : formatPercent(value) },
-    { key: "runner_exit_price", label: "Runner Exit", render: (value) => value == null ? "--" : formatCurrency(value) },
-    { key: "runner_exit_reason", label: "Runner Exit Reason" },
-    { key: "exit_price", label: "Exit", render: formatCurrency },
-    { key: "exit_reason", label: "Exit Reason" },
-    { key: "pnl", label: "P/L", render: formatCurrency },
-    { key: "profit_pct", label: "Profit %", render: formatPercent },
-    { key: "stop_loss_pct", label: "SL %", render: formatPercent },
-  ];
+
 
   const optionStructureLabel = optionContractPolicy === "only_long_call" ? "Only Long Call" : "Long Call";
   const optionApprovalLabel = optionExecutionModeLabel(optionApprovalMode);
@@ -24056,7 +27870,7 @@ function TradingWorkspace({ authUser, onLogout }) {
     ? oiFinderSearchText
     : null;
   useEffect(() => {
-    const chartSurfaceActive = ["OI Finder", "Charts & OI", "ROI Calc", "OI Level Script TOS"]
+    const chartSurfaceActive = ["Charts & OI", "ROI Calc", "OI Level Script TOS"]
       .includes(activeView);
     const target = resolveOiChartPrefetchSymbol(
       oiFinderDraft,
@@ -24096,6 +27910,12 @@ function TradingWorkspace({ authUser, onLogout }) {
     const aliases = optionAliasMap[mapped] || [];
     return { source, mapped, aliases };
   });
+  // The Alpaca watchlist runs to ~358 tickers, which is far past what anyone can
+  // scan by eye on a phone, so it gets the same commit-on-press search the MAG7
+  // list has. Filtering the rendered list, not the stored one - nothing here
+  // mutates dashboard.watchlist.
+  const watchlistSearchTerm = normalizeWatchlistSearch(watchlistSearch);
+  const visibleWatchlistSymbols = filterWatchlistSymbols(dashboard.watchlist, watchlistSearch);
   const mag7ScannerSearchTerm = mag7ScannerSearch.trim().toUpperCase();
   const visibleMag7OptionRows = mag7OptionRows.filter((row) => {
     if (!mag7ScannerSearchTerm) return true;
@@ -24403,67 +28223,207 @@ function TradingWorkspace({ authUser, onLogout }) {
   const optionSupervisorCatalysts = optionSupervisorReport.catalysts || [];
   const optionSupervisorWeakTrades = optionSupervisorReport.weakTrades || [];
   const optionSupervisorSuggestions = optionSupervisorReport.suggestions || [];
+  // A user who must change their password is held on Settings until they do.
   const visibleNavItems = optionNavItems.filter((item) => (
-    (!authUser.mustChangePassword || item.label === "Settings")
-    && !hiddenNavigationPanels.has(item.label)
+    !authUser.mustChangePassword || item.label === "Settings"
   ));
-  const saveHiddenNavigationPanels = (nextHidden) => {
-    try {
-      window.localStorage.setItem(
-        NAVIGATION_HIDDEN_PANELS_STORAGE_KEY,
-        JSON.stringify(MANAGEABLE_NAVIGATION_PANELS.filter((label) => nextHidden.has(label))),
-      );
-    } catch {
-      // Browser storage is optional; the current session still updates.
-    }
-  };
-  const setNavigationPanelVisible = (label, visible) => {
-    if (!MANAGEABLE_NAVIGATION_PANELS.includes(label)) return;
-    setHiddenNavigationPanels((current) => {
-      const next = new Set(current);
-      if (visible) next.delete(label);
-      else next.add(label);
-      saveHiddenNavigationPanels(next);
-      return next;
-    });
-  };
-  const setAllManagedNavigationPanelsVisible = (visible) => {
-    setHiddenNavigationPanels((current) => {
-      const next = new Set(current);
-      MANAGEABLE_NAVIGATION_PANELS.forEach((label) => {
-        if (visible) next.delete(label);
-        else next.add(label);
-      });
-      saveHiddenNavigationPanels(next);
-      return next;
-    });
+  // Derived from the same visibleNavItems the sidebar uses, so the phone sheet
+  // and the desktop sidebar can never disagree about what exists.
+  const mobileOverflowDestinations = selectOverflowDestinations(visibleNavItems);
+  const openMobileOverflowDestination = (label) => {
+    setMobileMoreOpen(false);
+    navigateMobileTerminal(label);
   };
 
-  const optionPageActive = activeView === "Option Paper Trading";
-  const oiScannerPageActive = activeView === "OI Scanner";
-  const oiFinderPageActive = activeView === "OI Finder";
+  // One table, one row per ticker (trader's rule, 2026-08-23: "I don't want
+  // duplicate tickers") — a row collects every signal class as it prints.
+  const premarketScannerRows = Array.isArray(premarketScanner.rows) ? premarketScanner.rows : [];
+
+  // Scanner history flattened for the Table view: one row per (day, ticker),
+  // newest first, carrying the archived signal labels and strength.
+  const scannerHistoryTableRows = useMemo(() => {
+    const days = Array.isArray(scannerHistory.days) ? scannerHistory.days : [];
+    const rows = [];
+    days.forEach((day) => {
+      (day.rows || []).forEach((entry) => {
+        const signals = [
+          ...(entry.row?.signalsCyanHigher || []),
+          ...(entry.row?.signals920 || []),
+          ...(entry.row?.signals48 || []),
+          ...((entry.row?.fires || []).map((fire) => `🔥${fire}`)),
+        ];
+        rows.push({
+          id: `${day.date}-${entry.symbol}`,
+          date: day.date,
+          symbol: entry.symbol,
+          firstSeenAt: entry.firstSeenAt,
+          signals,
+          signals48: entry.row?.signals48 || [],
+          signals920: entry.row?.signals920 || [],
+          signalsCyanHigher: entry.row?.signalsCyanHigher || [],
+          fires: entry.row?.fires || [],
+          strength: entry.row?.strength || "",
+          score: entry.row?.score ?? 0,
+        });
+      });
+    });
+    rows.sort((left, right) => Number(right.firstSeenAt || 0) - Number(left.firstSeenAt || 0));
+    return rows;
+  }, [scannerHistory]);
+
+  // Month grid for the Calendar view: each cell is a day with its ticker
+  // matches. Defaults to the newest month that has history.
+  const scannerHistoryByDate = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(scannerHistory.days) ? scannerHistory.days : []).forEach((day) => {
+      map.set(day.date, day.rows || []);
+    });
+    return map;
+  }, [scannerHistory]);
+
+  // That day's archived morning briefing, shown under the history table so a
+  // past day reads as "what the scan found AND what the morning looked like".
+  const scannerBriefingByDate = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(scannerHistory.days) ? scannerHistory.days : []).forEach((day) => {
+      if (day && day.briefing && Array.isArray(day.briefing.lines) && day.briefing.lines.length) {
+        map.set(day.date, day.briefing);
+      }
+    });
+    return map;
+  }, [scannerHistory]);
+
+  // Days that actually have history, oldest -> newest, for the day navigator.
+  const scannerHistoryDates = useMemo(
+    () => [...scannerHistoryByDate.keys()].sort(),
+    [scannerHistoryByDate],
+  );
+
+  // The day the Table/Calendar are scoped to. Defaults to (and follows) the
+  // newest day with history until the trader steps away from it.
+  const premarketHistoryDay = useMemo(() => {
+    if (!scannerHistoryDates.length) return null;
+    const newest = scannerHistoryDates[scannerHistoryDates.length - 1];
+    const selected = scannerHistorySelectedDate && scannerHistoryByDate.has(scannerHistorySelectedDate)
+      ? scannerHistorySelectedDate
+      : newest;
+    const index = scannerHistoryDates.indexOf(selected);
+    const matches = [...(scannerHistoryByDate.get(selected) || [])];
+    matches.sort((left, right) => Number(right.firstSeenAt || 0) - Number(left.firstSeenAt || 0));
+    const [year, month, dayOfMonth] = selected.split("-").map((part) => Number(part));
+    return {
+      iso: selected,
+      label: new Date(Date.UTC(year, month - 1, dayOfMonth)).toLocaleDateString("en-US", {
+        month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
+      }),
+      matches,
+      tickerCount: new Set(matches.map((entry) => entry.symbol)).size,
+      prevDate: index > 0 ? scannerHistoryDates[index - 1] : null,
+      nextDate: index >= 0 && index < scannerHistoryDates.length - 1 ? scannerHistoryDates[index + 1] : null,
+      briefing: scannerBriefingByDate.get(selected) || null,
+    };
+  }, [scannerHistoryDates, scannerHistoryByDate, scannerBriefingByDate, scannerHistorySelectedDate]);
+
+  // Table rows scoped to the selected day (the header carries the day nav).
+  const premarketHistoryDayRows = useMemo(() => {
+    if (!premarketHistoryDay) return [];
+    return scannerHistoryTableRows.filter((row) => row.date === premarketHistoryDay.iso);
+  }, [scannerHistoryTableRows, premarketHistoryDay]);
+
+  // Morning-briefing lines arrive as plain strings with the ticker wrapped in
+  // ** ** (morning_briefing.describe). Split on the marker and bold the odd
+  // segments. An unmatched ** stays literal rather than swallowing the rest of
+  // the line, so a malformed marker can never blank a briefing line.
+  const renderBriefingLine = useCallback((line) => {
+    const text = String(line ?? "");
+    const parts = text.split("**");
+    if (parts.length < 3) return text;
+    return parts.map((part, index) => (
+      index % 2 === 1
+        ? <b className="morning-briefing-ticker" key={`b-${index}`}>{part}</b>
+        : <span key={`t-${index}`}>{part}</span>
+    ));
+  }, []);
+
+  const premarketHistoryColumns = useMemo(() => [
+    { key: "date", label: "Date" },
+    {
+      key: "symbol",
+      label: "Ticker",
+      render: (value) => (
+        <button className="symbol-pill" onClick={() => openChartSignalChart(value, "5m", "scanner-history")} type="button">{value}</button>
+      ),
+    },
+    { key: "firstSeenAt", label: "First Seen (ET)", render: (value) => formatDateTime(value) },
+    {
+      key: "signals48",
+      label: "4/8",
+      sortable: false,
+      render: (value) => renderPremarketChartSignalBadges(value, "yellow"),
+    },
+    {
+      key: "signals920",
+      label: "9/20",
+      sortable: false,
+      render: (value) => renderPremarketChartSignalBadges(value, "cyan"),
+    },
+    {
+      key: "signalsCyanHigher",
+      label: "D–M",
+      sortable: false,
+      render: (value) => renderPremarketChartSignalBadges(value, "cyan"),
+    },
+    {
+      key: "strength",
+      label: "Strength",
+      render: (value, row) => (
+        <span className={`premarket-strength-pill is-${String(value || "weak").toLowerCase()}`}>{`${value || "—"} (${row.score ?? 0})`}</span>
+      ),
+    },
+  ], [openChartSignalChart]);
+  const quickOptionsPageActive = activeView === "Quick Options";
   const chartsAndOiPageActive = activeView === "Charts & OI";
+  // The one-tap Options rail is the fixed quick list, on desktop and phone
+  // alike. It was briefly made to follow My Watchlist, but this board is shared
+  // by both layouts and the ~357-name watchlist rendered as a wall of tickers
+  // on the desktop Options view (2026-08-28). A rail is a short strip; the full
+  // watchlist stays reachable through the Go box, the chart search (which
+  // carries every watchlist name), and the Watchlist page.
+  const quickTickerRail = OI_FINDER_QUICK_TICKERS;
+  const quickSymbolMoves = useTickerDayMoves(OI_FINDER_QUICK_TICKERS);
   const roiCalcPageActive = activeView === "ROI Calc";
-  const premarketMag7PageActive = activeView === "Pre Market Mag7";
   const oiLevelScriptPageActive = activeView === "OI Level Script TOS";
-  const oiFinderSurfacePageActive = oiFinderPageActive || chartsAndOiPageActive || roiCalcPageActive || oiLevelScriptPageActive;
   const newsPageActive = activeView === "News Feed";
-  const learningPageActive = activeView === "Learning Lab";
-  const scannerPageActive = activeView === "Scanner";
-  const scannerSurfaceActive = scannerPageActive || oiScannerPageActive;
-  const openMobilePriceAlert = () => {
-    const symbol = normalizeOiChartSymbol(oiFinderSymbol || selectedSymbol, "AAPL");
-    const price = Number(oiFinderFeed?.underlyingPrice || 0);
-    window.dispatchEvent(new CustomEvent(OI_PRICE_ALERT_DRAFT_EVENT, {
-      detail: { symbol, price, condition: "above" },
-    }));
-  };
+  const oiFinderSurfacePageActive = quickOptionsPageActive || chartsAndOiPageActive || roiCalcPageActive || oiLevelScriptPageActive;
   const navigateMobileTerminal = (view) => {
     setActiveView(view);
-    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "auto" }));
   };
   const focusMobileCharting = () => {
-    document.getElementById("charts-oi-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setMobileChartSection("chart");
+    setMobileOptionsRequest(0);
+    document.getElementById("charts-oi-workspace")?.scrollIntoView({ behavior: "auto", block: "start" });
+  };
+  const focusMobileOptions = () => {
+    setMobileChartSection("options");
+    window.dispatchEvent(new CustomEvent(OI_CHART_MOBILE_NAVIGATION_EVENT, { detail: { target: "options" } }));
+    setMobileOptionsRequest((current) => current + 1);
+  };
+  const openMobileChart = () => {
+    setMobileChartSection("chart");
+    setMobileOptionsRequest(0);
+    if (chartsAndOiPageActive) focusMobileCharting();
+    else navigateMobileTerminal("Charts & OI");
+  };
+  const openMobileOptions = () => {
+    // A primary tab must have one destination. Previously this opened the
+    // legacy chart-chain panel only when the current page happened to be the
+    // chart, but opened Fast Options from every other page. That made the same
+    // tap intermittently lose Heatmap / Flow / Levels / News. Keep the chart's
+    // legacy chain behind its explicit in-page Chain control and always route
+    // the bottom tab to the complete mobile Options workspace.
+    warmMobileQuickOptions(oiFinderSymbol).catch(() => {});
+    navigateMobileTerminal("Quick Options");
   };
   const normalizedNewsSearch = newsSearch.trim().toLowerCase();
   const mag7NewsSymbols = new Set((dashboard.mag7OptionWatchlist || MAG7.split(",")).map((symbol) => String(symbol || "").toUpperCase()));
@@ -24503,37 +28463,10 @@ function TradingWorkspace({ authUser, onLogout }) {
     : newsUniverse === "watchlist"
       ? [...watchlistNewsSymbols].slice(0, 40)
       : [...new Set([...mag7NewsSymbols, ...watchlistNewsSymbols])].slice(0, 40);
-  const optionWorkflowActive = activeView === "Option Paper Trading" || activeView === "Option Journal";
+  const optionWorkflowActive = activeView === "Option Paper Trading";
   const activeNavItem = optionNavItems.find((item) => item.label === activeView) || optionNavItems[0];
   const ActiveViewIcon = activeNavItem.icon;
-  const stockCommandRows = scannerUniverse === "mag7" ? mag7ScannerRows : scannerRows;
-  const oiCommandRows = oiScannerPageActive ? stableOiMag7ScannerRows : (scannerUniverse === "mag7" ? stableOiMag7ScannerRows : stableOiScannerRows);
-  const oiHotCount = oiCommandRows.filter((row) => String(oiPriorityMeta(row).label || "") === "A+ HOT").length;
-  const oiActiveCount = oiCommandRows.filter((row) => String(oiPriorityMeta(row).label || "") === "A ACTIVE").length;
-  const oiNewCount = oiCommandRows.filter((row) => Boolean(row.__isNew)).length;
   const marketDataConnected = Boolean(dashboard.streaming?.marketDataConnected || dashboard.streaming?.enabled);
-  const scannerAutoConfig = oiScannerPageActive ? dashboard.oiScannerAuto : dashboard.scannerAuto;
-  const scannerAutoInterval = oiScannerPageActive
-    ? dashboard.oiScannerAuto?.mag7IntervalSeconds
-    : dashboard.scannerAuto?.intervalSeconds;
-  const scannerAutoLabel = oiScannerPageActive && dashboard.oiScannerAuto?.mag7Mode === "continuous_full_list"
-    ? "Continuous"
-    : scannerAutoInterval ? `${scannerAutoInterval}s` : "--";
-  const commandScanKey = oiScannerPageActive
-    ? "oi-scan-mag7"
-    : scannerUniverse === "mag7" ? "scan-mag7" : "scan";
-  const commandScanBusy = submitting === commandScanKey || Boolean(
-    oiScannerPageActive ? dashboard.oiScanJob?.running : (dashboard.scanJob?.running && scannerPageActive)
-  );
-  const runCommandScan = () => runAction(
-    oiScannerPageActive ? "/api/oi-scan" : "/api/scan",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ universe: oiScannerPageActive ? "mag7" : scannerUniverse }),
-    },
-    commandScanKey,
-  );
   const optionAccount = dashboard.optionAccount || dashboard.optionBot?.account || defaultDashboard.optionAccount;
   const optionAccounts = dashboard.optionAccounts || [];
   const optionAccountStatus = optionAccount.status || defaultDashboard.optionAccount.status;
@@ -24680,9 +28613,7 @@ function TradingWorkspace({ authUser, onLogout }) {
   const workflowWatchlistCount = optionWorkflowActive
     ? (dashboard.optionBot?.watchlistCount || activeOptionWatchlist.length)
     : dashboard.status.watchlistCount;
-  const workflowAgentLabel = optionWorkflowActive ? "Option Bot" : "Agent Alpha";
-  const workflowAgentState = optionWorkflowActive ? optionBotState : dashboard.botState;
-  const workflowOverviewViews = ["Paper Trading", "Option Paper Trading", "Journal", "Option Journal"];
+  const workflowOverviewViews = ["Paper Trading", "Option Paper Trading"];
   const showWorkflowOverview = workflowOverviewViews.includes(activeView);
   const showStockWorkflowStatus = !optionWorkflowActive && showWorkflowOverview;
   const homeSummary = dashboard.dashboardSummary || defaultDashboard.dashboardSummary;
@@ -24699,59 +28630,33 @@ function TradingWorkspace({ authUser, onLogout }) {
   const homeActivity = homeSummary.recentActivity || [];
   const learning = dashboard.learning || defaultDashboard.learning;
   const learningAgent = learning.agent || defaultDashboard.learning.agent;
-  const catalystShadowStudy = learning.catalystShadowStudy || {
-    status: "COLLECTING",
-    verdict: "COLLECTING",
-    message: "Waiting for point-in-time catalyst observations.",
-    thresholds: {},
-  };
-  const learningRequirements = Object.values(learning.requirements || {});
-  const learningCohorts = learning.cohortComparison || [];
-  const learningBooks = learning.bookComparison || [];
   const learningDailyReports = learning.dailyReports || [];
   const latestDashboardLearningReport = learningDailyReports[0] || null;
-  const activeLearningReportDate = learningReportDate || learningDailyReports[0]?.date || "";
-  const selectedLearningDailyReport = learningDailyReports.find((row) => row.date === activeLearningReportDate) || null;
   const learningModelDiagnostics = learning.modelDiagnostics || defaultDashboard.learning.modelDiagnostics;
-  const learningPredictionTrend = learningDailyReports.slice(0, 14).reverse();
-  const learningTickerQuery = learningTickerSearch.trim().toLowerCase();
-  const learningTickerRows = (learning.tickerAnalysis || [])
-    .filter((row) => {
-      if (!learningTickerQuery) return true;
-      return [row.symbol, row.contract, row.cohort_label, row.product, row.setup_name, row.why_summary]
-        .some((value) => String(value || "").toLowerCase().includes(learningTickerQuery));
-    })
-    .map((row) => {
-      const horizonCell = (minutes) => {
-        const latest = row.latest_outcomes?.[String(minutes)] || {};
-        const aggregate = row.horizons?.[String(minutes)] || {};
-        return {
-          latest: latest.return_pct,
-          average: aggregate.avg_return_pct,
-          winRate: aggregate.win_rate,
-          resolved: aggregate.resolved || 0,
-        };
-      };
-      return {
-        ...row,
-        horizon_5m: horizonCell(5),
-        horizon_15m: horizonCell(15),
-        horizon_30m: horizonCell(30),
-        horizon_60m: horizonCell(60),
-      };
-    });
-  const learningTradeProgress = Math.min(
-    100,
-    Math.round((Number(learning.tradeOutcomes || 0) / Math.max(Number(learning.baselineTargetTrades || 50), 1)) * 100),
-  );
-  const latestLearningModel = (learning.models || [])[0] || null;
-  const learningTradeWinRate = Number(learning.tradeOutcomes || 0)
-    ? (Number(learning.winningTrades || 0) / Number(learning.tradeOutcomes || 1)) * 100
-    : 0;
   const recentDashboardTrades = [
     ...(dashboard.tradeHistory || []).map((row) => ({ ...row, product: "Stock", contractLabel: row.symbol, eventTime: row.exit_time || row.entry_time || row.created_at })),
     ...(dashboard.optionTradeHistory || []).map((row) => ({ ...row, product: "Option", contractLabel: row.option_symbol || row.contract || row.symbol, eventTime: row.closed_at || row.exit_time || row.entry_time || row.created_at })),
   ].sort((left, right) => Date.parse(right.eventTime || 0) - Date.parse(left.eventTime || 0)).slice(0, 8);
+
+  // The scanner popout renders the panel and NOTHING else - no chart board,
+  // no alert centre. A detached window is genuinely just this.
+  //
+  // `initialList` is what makes two detached windows worth having: each is
+  // pinned to the list named in its own URL. `embedded` stops it writing that
+  // list back into the shared active-list key - without it, opening a Mag7
+  // window would reach across and flip the MAIN app window to Mag7, because
+  // the panel persists whatever list it is showing and every window here
+  // shares one localStorage.
+  if (popoutConfig.mode === "momx") {
+    return (
+      <main className="trading-popout-root is-momx" data-testid="momx-popout-root">
+        <MomoAlertWatcher />
+        <section className="momx-scanner-view" data-testid="momx-scanner-view">
+          <MomxScannerPanel initialList={popoutConfig.list || null} embedded={Boolean(popoutConfig.list)} />
+        </section>
+      </main>
+    );
+  }
 
   if (popoutConfig.mode) {
     return (
@@ -24783,12 +28688,12 @@ function TradingWorkspace({ authUser, onLogout }) {
   return (
     // charts-workstation is applied on every view: the whole product uses the
     // compact MomoX3-style terminal chrome, not just the chart pages.
-    <div className={`app-shell charts-workstation${sidebarCollapsed ? " sidebar-collapsed" : ""}`} data-testid="app-shell">
+    <div className={`app-shell charts-workstation${sidebarCollapsed ? " sidebar-collapsed" : ""}${chartsAndOiPageActive ? " is-chart-view" : ""}${quickOptionsPageActive ? " is-fast-options-view" : ""}${chartsAndOiPageActive && mobileChartSection === "chart" ? " is-chart-tab" : ""}${chartsAndOiPageActive && mobileChartSection === "options" ? " is-options-tab" : ""}`} data-testid="app-shell">
       <aside className="sidebar" data-testid="primary-navigation" aria-label="Primary navigation">
         <div className="brand">
-          <div className="brand-mark"><ChartCandlestick size={20} strokeWidth={2.2} /></div>
+          <div className="brand-mark"><AgxMark size={18} /></div>
           <div className="brand-copy">
-            <b>AGENTIC</b>
+            <b>AGX</b>
             <small>TRADING INTELLIGENCE</small>
           </div>
           <button
@@ -24818,13 +28723,22 @@ function TradingWorkspace({ authUser, onLogout }) {
           {visibleNavItems.map((item) => (
             <button
               key={item.label}
-              className={`nav-item ${activeView === item.label ? "nav-active" : ""}`}
+              className={`nav-item ${activeView === item.label ? "nav-active" : ""}${item.label === "Auto Alert" ? " nav-auto-alert" : ""}${item.label === "Release Notes" ? " nav-release-notes" : ""}`}
               onClick={() => setActiveView(item.label)}
               aria-current={activeView === item.label ? "page" : undefined}
               title={item.displayLabel || item.label}
               type="button"
+              data-testid={item.label === "Auto Alert" ? "nav-auto-alert" : undefined}
             >
-              <span className="nav-icon"><item.icon size={18} strokeWidth={1.8} /></span>
+              <span className="nav-icon">
+                <item.icon size={18} strokeWidth={1.8} />
+                {item.label === "Auto Alert" && oiAutoAlertFeed.unseen ? (
+                  <i className="nav-auto-alert-badge">{oiAutoAlertFeed.unseen > 9 ? "9+" : oiAutoAlertFeed.unseen}</i>
+                ) : null}
+                {item.label === "Release Notes" && releaseNotesUnread ? (
+                  <i className="nav-unread-dot" data-testid="release-notes-unread" />
+                ) : null}
+              </span>
               <span className="nav-label">{item.displayLabel || item.label}</span>
             </button>
           ))}
@@ -24842,6 +28756,17 @@ function TradingWorkspace({ authUser, onLogout }) {
         </div>
       </aside>
 
+      <OiAutoAlertToast toast={oiAutoAlertFeed.toast} onDismiss={oiAutoAlertFeed.dismissToast} />
+      <OiAutoAlertMaximizedStrip
+        feed={oiAutoAlertFeed}
+        onOpenAlerts={() => {
+          // Un-maximize first (both maximize modes listen for this), or the
+          // fixed chart card stays painted over the drawer we are opening.
+          window.dispatchEvent(new CustomEvent(OI_CHART_MOBILE_NAVIGATION_EVENT, { detail: { target: "alerts" } }));
+          setActiveView("Auto Alert");
+        }}
+      />
+
       <main className="workspace">
         <header className="topbar trading-header">
           <div className="market-strip">
@@ -24850,25 +28775,83 @@ function TradingWorkspace({ authUser, onLogout }) {
             </span>
             <span className="market-clock">{formatTimeLabel(dashboard.status.clockTime || dashboard.status.lastRefresh)}</span>
             <div className="session-tape" aria-label="Market sessions">
-              <span>CORE <b>{String(sessionStatus.core || "Closed").toUpperCase()}</b></span>
-              <span>EXT <b>{String(sessionStatus.extended || "Closed").toUpperCase()}</b></span>
-              <span>OVERNIGHT <b>{String(sessionStatus.overnight || "Closed").toUpperCase()}</b></span>
+              {[
+                ["CORE", sessionStatus.core],
+                ["EXT", sessionStatus.extended],
+                ["OVERNIGHT", sessionStatus.overnight],
+              ].map(([sessionLabel, sessionValue]) => {
+                const sessionText = String(sessionValue || "Closed").toUpperCase();
+                const sessionOpen = sessionText === "OPEN";
+                return (
+                  <span key={sessionLabel} className={sessionOpen ? "session-live" : ""}>
+                    {sessionLabel} <b className={sessionOpen ? "is-open" : ""}>{sessionText}</b>
+                  </span>
+                );
+              })}
             </div>
             <div className="market-strip-right">
               <span className="last-scan-label">Last scan: <b>{formatTimeLabel(dashboard.status.lastRefresh)}</b></span>
+              {/* TOS MARKET and TOS TRADING are the SIGNED-IN user's own Schwab.
+                  /api/schwab/status is caller-scoped, so a user who has
+                  connected their own app sees their keys and their expiry
+                  here, and someone who has not sees the house connection they
+                  are being served from. Honest either way, so shown to all. */}
               <span
-                className={`connection-state ${schwabStatus.marketData?.refreshTokenValid ? "is-live" : "is-down"}`}
-                title={`Schwab Market Data key: charts, option chains, OI. ${schwabStatus.marketData?.refreshTokenValid ? "Connected." : "Reconnect in Settings."}`}
-              ><i />TOS DATA</span>
+                className={`connection-state ${schwabStatus.marketData?.healthy ? "is-live" : "is-down"} ${schwabLoginCountdown(schwabStatus.marketData)?.tone || ""}`}
+                title={schwabStatus.marketData?.healthy
+                  ? `Your Schwab Market Data key: charts, option chains, OI. Verified working. Login expires ${schwabLoginCountdown(schwabStatus.marketData)?.when || "(unknown)"} ET - re-authenticate in Settings before then.`
+                  : schwabStatus.marketData?.accepted === false
+                  ? `Schwab is REFUSING this key: ${schwabStatus.marketData?.acceptedError || "rejected"}. Re-enter the app key and secret in Settings.`
+                  : schwabStatus.marketData?.credentialsConfigured
+                  ? "Not verified yet - checking. If this stays grey, re-authenticate in Settings."
+                  : "You have not connected your own Schwab app. Charts are served from the workspace owner's connection until you do."}
+              ><i />TOS MARKET{schwabLoginCountdown(schwabStatus.marketData) && (
+                  <em className="login-countdown">{schwabLoginCountdown(schwabStatus.marketData).text}</em>
+                )}</span>
               <span
-                className={`connection-state ${schwabStatus.trading?.refreshTokenValid ? "is-live" : "is-down"}`}
-                title={`Schwab Accounts & Trading key: live tick stream for the open chart. ${schwabStatus.trading?.refreshTokenValid ? "Connected." : "Reconnect in Settings."}`}
-              ><i />TOS STREAM</span>
-              <span
-                className={`connection-state ${(schwabStatus.alpacaBarStream?.connected || schwabStatus.alpacaBarStream?.standby) ? "is-live" : "is-down"}`}
-                title={`Alpaca key: failover feed (${schwabStatus.alpacaBarStream?.source || "no key"} · ${schwabStatus.alpacaBarStream?.subscribedSymbols || 0} tickers). ${schwabStatus.alpacaBarStream?.connected ? "Connected." : schwabStatus.alpacaBarStream?.standby ? "Standing by - Schwab feed is serving." : schwabStatus.alpacaBarStream?.lastError || "Not connected."}`}
-              ><i />ALPACA</span>
-              <span className="connection-state"><i />DATA ONLY</span>
+                className={`connection-state ${schwabStatus.trading?.healthy ? "is-live" : "is-down"} ${schwabLoginCountdown(schwabStatus.trading)?.tone || ""}`}
+                title={schwabStatus.trading?.healthy
+                  ? `Your Schwab Accounts & Trading key: live tick stream for the open chart. Verified working. Login expires ${schwabLoginCountdown(schwabStatus.trading)?.when || "(unknown)"} ET - re-authenticate in Settings before then.`
+                  : schwabStatus.trading?.accepted === false
+                  ? `Schwab is REFUSING this key: ${schwabStatus.trading?.acceptedError || "rejected"}. Re-enter the app key and secret in Settings.`
+                  : schwabStatus.trading?.credentialsConfigured
+                  ? "Not verified yet - checking. If this stays grey, re-authenticate in Settings."
+                  : "Optional. Connect your own Schwab Accounts & Trading app in Settings for a live tick stream."}
+              ><i />TOS TRADING{schwabLoginCountdown(schwabStatus.trading) && (
+                  <em className="login-countdown">{schwabLoginCountdown(schwabStatus.trading).text}</em>
+                )}</span>
+              {authUser.isAdmin ? (
+                <>
+                  {/* The shared Alpaca bar stream and ACCT KEY are server-level:
+                      the stream runs on the house key and ACCT KEY is about the
+                      owner's trading accounts. Neither describes a user's own
+                      setup. (A decorative DATA ONLY lamp lived here until
+                      2026-09-04; it meant nothing and the trader asked for it
+                      to go.) */}
+                  <span
+                    className={`connection-state ${(schwabStatus.alpacaBarStream?.connected || schwabStatus.alpacaBarStream?.standby) ? "is-live" : "is-down"}`}
+                    title={`Alpaca key: failover feed (${schwabStatus.alpacaBarStream?.source || "no key"} · ${schwabStatus.alpacaBarStream?.subscribedSymbols || 0} tickers). ${schwabStatus.alpacaBarStream?.connected ? "Connected." : schwabStatus.alpacaBarStream?.standby ? "Standing by - Schwab feed is serving." : schwabStatus.alpacaBarStream?.lastError || "Not connected."}`}
+                  ><i />ALPACA</span>
+                  {unauthorizedAccounts.length > 0 && (
+                    <span
+                      className="connection-state is-down"
+                      title={`Alpaca account key unauthorized (401) — trading and account balances are offline. Refresh the key in .env: ${unauthorizedAccounts
+                        .map((account) => `${account.label || account.profileId} [${account.profileId}]`)
+                        .join(", ")}`}
+                    ><i />ACCT KEY</span>
+                  )}
+                </>
+              ) : (
+                <span
+                  className={`connection-state ${apiKeySummary.alpaca?.configured ? "is-live" : "is-down"}`}
+                  title={apiKeySummary.alpaca?.configured
+                    ? "Your own Alpaca key, used for your prices when your Schwab app has no quote."
+                    : "No Alpaca key of your own yet. Add one in Settings to use it as a fallback."}
+                ><i />ALPACA</span>
+              )}
+              {!authUser.mustChangePassword && (
+                <button className="header-icon-button" onClick={() => setActiveView("Learn + Setup")} title="Learn how to use AGX" aria-label="Learn how to use AGX" type="button"><HelpCircle size={18} /></button>
+              )}
               <button className="header-icon-button" onClick={() => setActiveView("Settings")} title="Settings" aria-label="Settings" type="button"><Settings size={18} /></button>
               <GlobalPriceAlertCenter
                 defaultSymbol={oiFinderSymbol || selectedSymbol}
@@ -24929,7 +28912,6 @@ function TradingWorkspace({ authUser, onLogout }) {
                     const target = symbolLookup.trim().toUpperCase();
                     if (target) {
                       setSelectedSymbol(target);
-                      loadWhyNotTraded(target);
                     }
                   }
                 }}
@@ -24964,6 +28946,11 @@ function TradingWorkspace({ authUser, onLogout }) {
               </div> : null}
             </label>
 
+            {/* Only the chart/options surfaces get a header action. The old
+                fallback was a "Scan Now" button wired to the deleted stock
+                Scanner's job: it rendered on Alerts, Scanner, MomX and Settings
+                and, if pressed, started a 358-symbol backend scan whose results
+                no surviving page can display. */}
             {newsPageActive ? (
               <button
                 className="scan-now-button"
@@ -24973,20 +28960,6 @@ function TradingWorkspace({ authUser, onLogout }) {
                 <Search size={17} />
                 Search
               </button>
-            ) : learningPageActive ? (
-              <button
-                className="scan-now-button"
-                disabled={submitting === "learning-cycle"}
-                onClick={() => runAction(
-                  "/api/learning-cycle",
-                  { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ forceTraining: false }) },
-                  "learning-cycle",
-                )}
-                type="button"
-              >
-                <BrainCircuit className={submitting === "learning-cycle" ? "is-spinning" : ""} size={17} />
-                {submitting === "learning-cycle" ? "Starting..." : "Run Learning Cycle"}
-              </button>
             ) : oiFinderSurfacePageActive ? (
               <>
                 <button className="scan-now-button" disabled={oiFinderLoading || !oiFinderDraft} onClick={submitOiFinderTicker} type="button">
@@ -24995,43 +28968,7 @@ function TradingWorkspace({ authUser, onLogout }) {
                 </button>
                 <OiFinderHeaderAtm data={oiFinderFeed} loading={oiFinderLoading} />
               </>
-            ) : scannerSurfaceActive ? (
-              <>
-                {oiScannerPageActive ? (
-                  <div className="scanner-universe-control" aria-label="OI scanner scope">
-                    <button data-testid="scanner-universe-mag7" className="is-active" type="button">MAG7 watchlist</button>
-                  </div>
-                ) : (
-                  <div className="scanner-universe-control" aria-label="Scanner universe">
-                    <button data-testid="scanner-universe-mag7" className={scannerUniverse === "mag7" ? "is-active" : ""} onClick={() => setScannerUniverse("mag7")} type="button">MAG7</button>
-                    <button data-testid="scanner-universe-watchlist" className={scannerUniverse === "watchlist" ? "is-active" : ""} onClick={() => setScannerUniverse("watchlist")} type="button">Watchlist</button>
-                  </div>
-                )}
-                <div className={`auto-scan-state ${scannerAutoConfig?.enabled ? "is-on" : ""}`} role="status">
-                  <span>Auto Scan</span><i /><small>{scannerAutoLabel}</small>
-                </div>
-                <button data-testid="scanner-scan-now" className="scan-now-button" disabled={Boolean(submitting) || commandScanBusy} onClick={runCommandScan} type="button">
-                  <RefreshCw className={commandScanBusy ? "is-spinning" : ""} size={17} />
-                  {commandScanBusy ? "Scanning..." : "Scan Now"}
-                </button>
-              </>
-            ) : (
-              <button
-                className="scan-now-button"
-                disabled={submitting === "scan" || submitting === "option-scan" || dashboard.scanJob?.running}
-                onClick={() => runAction(
-                  optionPageActive ? "/api/option-scan" : "/api/scan",
-                  { method: "POST" },
-                  optionPageActive ? "option-scan" : "scan",
-                )}
-                type="button"
-              >
-                <RefreshCw className={dashboard.scanJob?.running || submitting === "option-scan" ? "is-spinning" : ""} size={17} />
-                {dashboard.scanJob?.running || submitting === "option-scan"
-                  ? "Scanning..."
-                  : optionPageActive ? "Scan Options" : "Scan Now"}
-              </button>
-            )}
+            ) : null}
 
           </div>
         </header>
@@ -25040,7 +28977,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             chartless OI surfaces keep the standalone row. */}
         {roiCalcPageActive || oiLevelScriptPageActive ? (
           <nav className="oi-finder-quick-symbols oi-finder-quick-symbols-row" aria-label="Quick-access OI Finder tickers">
-            <span>QUICK CHART + CHAIN</span>
+            <span>FAV TICKERS</span>
             {OI_FINDER_QUICK_TICKERS.map((symbol) => (
               <button
                 aria-current={symbol === oiFinderSymbol ? "true" : undefined}
@@ -25052,28 +28989,43 @@ function TradingWorkspace({ authUser, onLogout }) {
                 type="button"
               >
                 {symbol}
+                <TickerDayMoveBadge percent={quickSymbolMoves[symbol]} />
               </button>
             ))}
           </nav>
         ) : null}
 
         {chartsAndOiPageActive ? (
-          <nav className="mobile-terminal-action-bar" aria-label="Mobile trading actions">
-            <button type="button" onClick={openMobilePriceAlert}>
-              <Bell size={15} />
-              <span>Set alert</span>
-            </button>
-            <button className="is-active" type="button" onClick={focusMobileCharting}>
+          <nav className="mobile-chart-quick-tickers" aria-label="Mobile quick chart and chain tickers">
+            <span>FAV TICKERS</span>
+            <div>
+              {OI_FINDER_QUICK_TICKERS.map((symbol) => (
+                <button
+                  aria-current={symbol === oiFinderSymbol ? "true" : undefined}
+                  className={symbol === oiFinderSymbol ? "is-active" : ""}
+                  disabled={oiFinderLoading && symbol === oiFinderSymbol}
+                  key={`mobile-chart-quick-${symbol}`}
+                  onClick={() => chooseOiFinderTicker(symbol)}
+                  title={`Load ${symbol} chart and option chain`}
+                  type="button"
+                >
+                  {symbol}
+                  <TickerDayMoveBadge percent={quickSymbolMoves[symbol]} />
+                </button>
+              ))}
+            </div>
+          </nav>
+        ) : null}
+
+        {chartsAndOiPageActive ? (
+          <nav className="mobile-terminal-action-bar" aria-label="Chart sections" data-testid="mobile-chart-section-tabs">
+            <button className={mobileChartSection === "chart" ? "is-active" : ""} type="button" onClick={focusMobileCharting}>
               <ChartCandlestick size={15} />
-              <span>Charting</span>
+              <span>Chart</span>
             </button>
-            <button type="button" onClick={() => navigateMobileTerminal("OI Level Script TOS")}>
-              <NotebookTabs size={15} />
-              <span>OI levels</span>
-            </button>
-            <button type="button" onClick={() => navigateMobileTerminal("OI Scanner")}>
-              <ScanSearch size={15} />
-              <span>Scan results</span>
+            <button className={mobileChartSection === "options" ? "is-active" : ""} type="button" onClick={focusMobileOptions}>
+              <Database size={15} />
+              <span>Chain</span>
             </button>
           </nav>
         ) : null}
@@ -25367,10 +29319,6 @@ function TradingWorkspace({ authUser, onLogout }) {
                   </div>
                   <p>Scanner follow-through and closed paper trades are reviewed independently from trade execution.</p>
                 </div>
-                <button type="button" onClick={() => setActiveView("Learning Lab")}>
-                  <BrainCircuit size={16} />
-                  <span>Open Learning Lab</span>
-                </button>
               </header>
               <div className="dashboard-learning-metrics">
                 <div><span>Closed trades</span><b>{latestDashboardLearningReport?.trades || 0}</b><small>{latestDashboardLearningReport?.wins || 0}W / {latestDashboardLearningReport?.losses || 0}L</small></div>
@@ -25429,1462 +29377,337 @@ function TradingWorkspace({ authUser, onLogout }) {
             </div>
           </section>
         )}
-        {activeView === "Learning Lab" && (
-          <section className="learning-lab" data-testid="learning-lab">
-            <section className="learning-status-band">
-              <div className="learning-status-copy">
-                <span className="learning-eyebrow">SELF-IMPROVEMENT CONTROL ROOM</span>
-                <div className="learning-title-row">
-                  <h2>Trading Learning Lab</h2>
-                  <span className="learning-mode-chip">MAG7 VS WATCHLIST 400</span>
-                  <span className="learning-mode-chip">ADVISORY ONLY</span>
-                  <span className="learning-safety-chip">CAN BLOCK TRADES: NO</span>
-                </div>
-                <p>
-                  Mag7 and the non-Mag7 watchlist are captured as separate learning cohorts.
-                  Compare signal follow-through and completed paper trades without changing scanner gates, approval, or execution.
-                </p>
-              </div>
-              <div className="learning-agent-state">
-                <span>Learning agent</span>
-                <b className={learningAgent.lastError ? "has-error" : "is-live"}>{learningAgent.status || "Idle"}</b>
-                <small>{learningAgent.message || "Waiting for the next cycle."}</small>
-                <time>{learningAgent.lastRun ? "Last cycle " + formatDateTime(learningAgent.lastRun) : "No completed cycle yet"}</time>
-              </div>
-              <button
-                className="learning-run-button"
-                disabled={submitting === "learning-cycle-page"}
-                onClick={() => runAction(
-                  "/api/learning-cycle",
-                  { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ forceTraining: false }) },
-                  "learning-cycle-page",
-                )}
-                type="button"
-              >
-                <BrainCircuit size={18} />
-                <span><b>{submitting === "learning-cycle-page" ? "Starting Cycle..." : "Run Learning Cycle"}</b><small>Resolve labels and sync trades</small></span>
-              </button>
-            </section>
-
-            <section className="data-card catalyst-shadow-study" data-testid="catalyst-shadow-study">
-              <div className="table-toolbar">
-                <span>CATALYST SHADOW STUDY · INFORMATION ONLY</span>
-                <span>{catalystShadowStudy.status || "COLLECTING"} · CANNOT INFLUENCE EXECUTION</span>
-              </div>
-              <div className="learning-metric-grid">
-                <article><span>Market sessions</span><b>{formatCompactNumber(catalystShadowStudy.sessions || 0)}</b><small>Target {formatCompactNumber(catalystShadowStudy.thresholds?.sessions || 20)}</small></article>
-                <article><span>Effective samples</span><b>{formatCompactNumber(catalystShadowStudy.effectiveSamples || 0)}</b><small>Target {formatCompactNumber(catalystShadowStudy.thresholds?.effectiveSamples || 1000)}</small></article>
-                <article><span>Positive events</span><b>{formatCompactNumber(catalystShadowStudy.positiveEvents || 0)}</b><small>Target {formatCompactNumber(catalystShadowStudy.thresholds?.positiveEvents || 50)}</small></article>
-                <article><span>Negative events</span><b>{formatCompactNumber(catalystShadowStudy.negativeEvents || 0)}</b><small>Target {formatCompactNumber(catalystShadowStudy.thresholds?.negativeEvents || 50)}</small></article>
-                <article><span>Leakage excluded</span><b>{formatCompactNumber(catalystShadowStudy.leakageExcluded || 0)}</b><small>First seen after observation</small></article>
-                <article><span>Measured verdict</span><b>{catalystShadowStudy.verdict || "COLLECTING"}</b><small>{catalystShadowStudy.brierImprovement == null ? "Paired baseline not ready" : `Brier improvement ${Number(catalystShadowStudy.brierImprovement).toFixed(4)}`}</small></article>
-              </div>
-              <p className="learning-daily-summary">
-                {catalystShadowStudy.message || "News is retained as a point-in-time feature for paired shadow research only."}
-                {" "}Positive or negative news cannot qualify, reject, rank, size, or delay a trade.
-              </p>
-            </section>
-
-            <section className="learning-daily-overview" data-testid="learning-daily-overview">
-              <header className="learning-daily-header">
-                <div>
-                  <span className="learning-eyebrow">DAILY OVERALL RESULT</span>
-                  <div className="learning-daily-title-row">
-                    <h3>{selectedLearningDailyReport?.date || "Awaiting first learning day"}</h3>
-                    <span className={`learning-verdict learning-verdict-${String(selectedLearningDailyReport?.verdict || "collecting").toLowerCase().replaceAll(" ", "-")}`}>
-                      {selectedLearningDailyReport?.verdict || "Collecting evidence"}
-                    </span>
-                  </div>
-                </div>
-                <label className="learning-date-control">
-                  <span>Date</span>
-                  <select value={activeLearningReportDate} onChange={(event) => setLearningReportDate(event.target.value)}>
-                    {!learningDailyReports.length ? <option value="">No reports yet</option> : null}
-                    {learningDailyReports.map((row) => <option key={row.date} value={row.date}>{row.date}</option>)}
-                  </select>
-                </label>
-              </header>
-
-              <div className="learning-daily-metrics">
-                <article><span>Closed trades</span><b>{selectedLearningDailyReport?.trades || 0}</b><small>{selectedLearningDailyReport?.wins || 0}W / {selectedLearningDailyReport?.losses || 0}L</small></article>
-                <article><span>Trade win rate</span><b>{selectedLearningDailyReport?.trade_win_rate == null ? "--" : formatPercent(selectedLearningDailyReport.trade_win_rate)}</b><small>Realized paper outcomes</small></article>
-                <article><span>Realized P/L</span><b className={pnlClass(selectedLearningDailyReport?.pnl)}>{signedCurrency(selectedLearningDailyReport?.pnl || 0)}</b><small>All four learning books</small></article>
-                <article><span>Scanner follow-through</span><b>{selectedLearningDailyReport?.signal_win_rate == null ? "--" : formatPercent(selectedLearningDailyReport.signal_win_rate)}</b><small>{selectedLearningDailyReport?.resolved_60m || 0} resolved 60m signals</small></article>
-                <article><span>Predicted win rate</span><b>{selectedLearningDailyReport?.predicted_win_rate == null ? "--" : formatPercent(selectedLearningDailyReport.predicted_win_rate)}</b><small>{selectedLearningDailyReport?.prediction_samples || 0} scored outcomes</small></article>
-                <article><span>Calibration gap</span><b>{selectedLearningDailyReport?.calibration_gap == null ? "--" : formatPercent(selectedLearningDailyReport.calibration_gap)}</b><small>Lower is better</small></article>
-              </div>
-
-              <section className="learning-daily-explanation" data-testid="learning-daily-explanation">
-                <div className="table-toolbar"><span>DAILY EXPLANATION</span><span>Generated from retained signals and closed paper trades</span></div>
-                <p className="learning-daily-summary">
-                  {selectedLearningDailyReport?.explanation || "The explanation will appear after the Learning Lab resolves signals or closed trades for this date."}
-                </p>
-                <div className="learning-daily-explanation-grid">
-                  <article className="is-positive">
-                    <span>WHAT WORKED</span>
-                    <ul>
-                      {(selectedLearningDailyReport?.what_worked || ["No confirmed winner is available for this date yet."]).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
-                    </ul>
-                  </article>
-                  <article className="is-review">
-                    <span>WHAT FAILED / NEEDS REVIEW</span>
-                    <ul>
-                      {(selectedLearningDailyReport?.what_failed || ["No confirmed failure pattern is available for this date yet."]).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
-                    </ul>
-                  </article>
-                  <article className="is-focus">
-                    <span>NEXT-SESSION FOCUS</span>
-                    <ul>
-                      {(selectedLearningDailyReport?.next_session_focus || ["Continue collecting evidence without changing live rules from one observation."]).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
-                    </ul>
-                  </article>
-                </div>
-              </section>
-
-              <div className="learning-daily-grid">
-                <section className="learning-prediction-panel">
-                  <div className="table-toolbar"><span>PREDICTION PROGRESS</span><span>Predicted vs realized 60m outcome</span></div>
-                  <div className="learning-prediction-chart" aria-label="Daily predicted and realized win rates">
-                    {learningPredictionTrend.length ? learningPredictionTrend.map((row) => (
-                      <div className="learning-prediction-day" key={row.date} title={`${row.date}: predicted ${row.predicted_win_rate ?? "--"}%, realized ${row.realized_prediction_win_rate ?? "--"}%`}>
-                        <div className="learning-prediction-bars">
-                          <i className="is-predicted" style={{ height: row.predicted_win_rate == null ? "0%" : `${Math.max(Math.min(Number(row.predicted_win_rate), 100), 2)}%` }} />
-                          <i className="is-realized" style={{ height: row.realized_prediction_win_rate == null ? "0%" : `${Math.max(Math.min(Number(row.realized_prediction_win_rate), 100), 2)}%` }} />
-                        </div>
-                        <small>{String(row.date || "").slice(5)}</small>
-                      </div>
-                    )) : <div className="learning-chart-empty">Prediction progress appears after scored 60-minute outcomes.</div>}
-                  </div>
-                  <div className="learning-chart-legend"><span><i className="is-predicted" />Predicted</span><span><i className="is-realized" />Realized</span></div>
-                  <div className="learning-model-diagnostics">
-                    <span>Model status <b>{learningModelDiagnostics.status}</b></span>
-                    <span>Prediction samples <b>{formatCompactNumber(learningModelDiagnostics.predictionSamples)}</b></span>
-                    <span>Brier score <b>{learningModelDiagnostics.brierScore == null ? "--" : Number(learningModelDiagnostics.brierScore).toFixed(4)}</b></span>
-                    <span>Latest accuracy <b>{learningModelDiagnostics.latestPredictionAccuracy == null ? "--" : formatPercent(learningModelDiagnostics.latestPredictionAccuracy)}</b></span>
-                  </div>
-                </section>
-
-                <section className="learning-daily-insights">
-                  <div className="table-toolbar"><span>MODEL ANALYSIS</span><span>Advisory only</span></div>
-                  <div className="learning-insight-list">
-                    <article><span>Best symbol</span><b>{selectedLearningDailyReport?.best_symbol || "--"}</b><small>{selectedLearningDailyReport?.best_symbol_value == null ? "No scored result" : selectedLearningDailyReport.symbol_value_type === "return_pct" ? `${signedPercent(selectedLearningDailyReport.best_symbol_value)} avg 60m` : signedCurrency(selectedLearningDailyReport.best_symbol_value)}</small></article>
-                    <article><span>Review symbol</span><b>{selectedLearningDailyReport?.worst_symbol || "--"}</b><small>{selectedLearningDailyReport?.worst_symbol_value == null ? "No scored result" : selectedLearningDailyReport.symbol_value_type === "return_pct" ? `${signedPercent(selectedLearningDailyReport.worst_symbol_value)} avg 60m` : signedCurrency(selectedLearningDailyReport.worst_symbol_value)}</small></article>
-                    <article><span>Best setup</span><b>{selectedLearningDailyReport?.best_setup || "--"}</b><small>{selectedLearningDailyReport?.best_setup_return == null ? "No resolved signal" : `${signedPercent(selectedLearningDailyReport.best_setup_return)} avg 60m`}</small></article>
-                    <article><span>Setup to review</span><b>{selectedLearningDailyReport?.worst_setup || "--"}</b><small>{selectedLearningDailyReport?.worst_setup_return == null ? "No resolved signal" : `${signedPercent(selectedLearningDailyReport.worst_setup_return)} avg 60m`}</small></article>
-                  </div>
-                </section>
-              </div>
-
-              <section className="data-card scanner-table learning-daily-books">
-                <div className="table-toolbar"><span>DAILY BOOK BREAKDOWN</span><span>MAG7 and Watchlist remain isolated</span></div>
-                <DataTable
-                  tableId="learning-daily-books"
-                  columns={[
-                    { key: "label", label: "Trading Book" },
-                    { key: "trades", label: "Closed Trades", render: formatCompactNumber },
-                    { key: "wins", label: "Wins", render: formatCompactNumber },
-                    { key: "losses", label: "Losses", render: formatCompactNumber },
-                    { key: "win_rate", label: "Trade Win %", render: (value) => value == null ? "--" : formatPercent(value) },
-                    { key: "pnl", label: "P/L", render: (value) => <span className={pnlClass(value)}>{signedCurrency(value)}</span> },
-                    { key: "resolved_60m", label: "Resolved 60m", render: formatCompactNumber },
-                    { key: "signal_win_rate", label: "Signal Win %", render: (value) => value == null ? "--" : formatPercent(value) },
-                    { key: "avg_return_60m", label: "Avg 60m Return", render: (value) => value == null ? "--" : signedPercent(value) },
-                  ]}
-                  rows={selectedLearningDailyReport?.books || []}
-                  emptyMessage="Daily book results appear after scanner outcomes or paper trades are resolved."
-                />
-              </section>
-            </section>
-
-            <section className="data-card scanner-table">
-              <div className="table-toolbar"><span>COHORT COMPARISON</span><span>Mag7 and Watchlist 400 stay isolated</span></div>
-              <DataTable
-                tableId="learning-cohort-comparison"
-                columns={[
-                  { key: "label", label: "Cohort" },
-                  { key: "observations", label: "Signals", render: formatCompactNumber },
-                  { key: "resolved_60m", label: "Resolved 60m", render: formatCompactNumber },
-                  { key: "win_rate_60m", label: "Signal Win %", render: (value) => value == null ? "--" : formatPercent(value) },
-                  { key: "avg_return_60m", label: "Avg 60m Return", render: (value) => value == null ? "--" : signedPercent(value) },
-                  { key: "trades", label: "Closed Trades", render: formatCompactNumber },
-                  { key: "trade_win_rate", label: "Trade Win %", render: (value) => value == null ? "--" : formatPercent(value) },
-                  { key: "trade_pnl", label: "Trade P/L", render: (value) => <span className={pnlClass(value)}>{signedCurrency(value)}</span> },
-                  { key: "avg_hold_minutes", label: "Avg Hold", render: (value) => value == null ? "--" : Number(value).toFixed(0) + "m" },
-                ]}
-                rows={learningCohorts}
-                emptyMessage="Cohort metrics appear after Mag7 or Watchlist scanner observations are stored."
+        {activeView === "Premarket Scanner" && (
+          <section className="scanner-results-view" data-testid="premarket-scanner-view">
+            <section className="scanner-overview-grid" aria-label="Premarket scanner overview">
+              <ScannerOverviewCard
+                icon={ScanSearch}
+                label="MATCHES"
+                value={premarketScanner.matchCount || 0}
+                note={premarketScanner.windowLabel || "6:00 AM - 9:30 AM ET"}
+                tone="cyan"
+              />
+              <ScannerOverviewCard
+                icon={Zap}
+                label="STRONG"
+                value={premarketScannerRows.filter((row) => row.strength === "STRONG").length}
+                note="More than 3 confirmations"
+                tone="hot"
+              />
+              <ScannerOverviewCard
+                icon={Activity}
+                label="LIVE TAPES"
+                value={`${(premarketScanner.readySymbols || []).length}/${(premarketScanner.symbols || []).length || 9}`}
+                // A ticker with no data for today is NOT scannable. Saying so
+                // matters: a stale tape scans yesterday and reports a
+                // confident "no setups" that looks identical to a real one.
+                note={
+                  (premarketScanner.staleSymbols || []).length
+                    ? `No data yet today: ${(premarketScanner.staleSymbols || []).join(", ")}`
+                    : (premarketScanner.laggingSymbols || []).length
+                      ? `Scanned over a gap${
+                          premarketGapWindow(premarketScanner.premarketGapNote)
+                            ? ` (${premarketGapWindow(premarketScanner.premarketGapNote)} ET missing)`
+                            : ""
+                        }: ${(premarketScanner.laggingSymbols || []).join(", ")}`
+                      : (premarketScanner.pendingSymbols || []).length
+                        ? `Warming ${(premarketScanner.pendingSymbols || []).join(", ")}`
+                        : "All tickers live"
+                }
+                tone={
+                  (premarketScanner.staleSymbols || []).length
+                  || (premarketScanner.laggingSymbols || []).length
+                    ? "hot"
+                    : "amber"
+                }
+              />
+              <ScannerOverviewCard
+                icon={Database}
+                label="FEED"
+                // Was hardcoded to LIVE / green. It therefore asserted a
+                // healthy feed while the scanner was reading across a
+                // three-hour hole with the only provider that fills it
+                // refused - the same "says LIVE, means nothing observed"
+                // shape as the option-chain lamp.
+                // 2026-09-25: Tradier made his login inactive ($0 balance), and
+                // the server fills 04:00-07:00 from the Alpaca SIP backup. The
+                // card said "GAP / No data" while the candles were there, 15
+                // minutes late - say BACKUP when the server says the backup
+                // ran (its note contains "backup" but not "returned nothing").
+                value={
+                  premarketScannerOnBackup(premarketScanner.premarketGapNote)
+                    ? "BACKUP"
+                    : premarketScanner.premarketGapNote ? "GAP" : "LIVE"
+                }
+                note={
+                  premarketScannerOnBackup(premarketScanner.premarketGapNote)
+                    ? "04:00-07:00 from the Alpaca backup, about 15 min behind (Tradier account inactive). Complete from ~7:15 AM"
+                    : premarketScanner.premarketGapNote
+                    ? `${
+                        premarketGapWindow(premarketScanner.premarketGapNote)
+                          ? `No data ${premarketGapWindow(premarketScanner.premarketGapNote)} ET`
+                          : "Premarket data gap"
+                      } - renew the Tradier token in Settings; 2H/4H labels use a partial window`
+                    : "Live streamed tape, refreshed every 5s"
+                }
+                tone={
+                  premarketScannerOnBackup(premarketScanner.premarketGapNote)
+                    ? "amber"
+                    : premarketScanner.premarketGapNote ? "hot" : "green"
+                }
               />
             </section>
-
-            <section className="data-card scanner-table">
-              <div className="table-toolbar"><span>TRADING BOOK READINESS</span><span>Independent paper-trade learning targets</span></div>
-              <DataTable
-                tableId="learning-book-comparison"
-                columns={[
-                  { key: "label", label: "Trading Book" },
-                  { key: "trades", label: "Closed Trades", render: formatCompactNumber },
-                  { key: "initial_target", label: "Initial Target", render: formatCompactNumber },
-                  { key: "advanced_target", label: "Advanced Target", render: formatCompactNumber },
-                  { key: "progress_pct", label: "Progress", render: (value) => formatPercent(value) },
-                  { key: "win_rate", label: "Win Rate", render: (value) => value == null ? "--" : formatPercent(value) },
-                  { key: "pnl", label: "P/L", render: (value) => <span className={pnlClass(value)}>{signedCurrency(value)}</span> },
-                  { key: "advanced_ready", label: "Ready", render: (value) => <span className={value ? "learning-yes-chip" : "learning-off-chip"}>{value ? "YES" : "COLLECTING"}</span> },
-                ]}
-                rows={learningBooks}
-                emptyMessage="Paper-trade learning books are waiting for closed trades."
-              />
-            </section>
-
-            <section className="learning-progress-panel">
-              <div className="learning-progress-header">
-                <div><span>INITIAL SHADOW TRAINING</span><b>{learning.tradeOutcomes || 0} / {learning.baselineTargetTrades || 50} closed paper trades</b></div>
-                <strong>{learningTradeProgress}%</strong>
-              </div>
-              <div className="learning-progress-track"><i style={{ width: String(learningTradeProgress) + "%" }} /></div>
-              <div className="learning-progress-notes">
-                <span>Phase: <b>{learning.phase || "Outcome Collection"}</b></span>
-                <span>Resolved scanner 60m: <b>{learning.resolved60mOutcomes || 0} / 100</b></span>
-                <span>Unseen validation trades: <b>{learning.unseenValidationTrades || 0} / {learning.validationTargetTrades || 25}</b></span>
-                <span>Retention: <b>{String(learning.retention?.policy || "indefinite").toUpperCase()}</b></span>
-              </div>
-            </section>
-
-            <section className="learning-metric-grid">
-              <article><span>Stored observations</span><b>{formatCompactNumber(learning.observations)}</b><small>Five-minute source snapshots</small></article>
-              <article><span>Resolved outcomes</span><b>{formatCompactNumber(learning.resolvedOutcomes)}</b><small>5m, 15m, 30m, and 60m labels</small></article>
-              <article><span>Resolved 60m</span><b>{formatCompactNumber(learning.resolved60mOutcomes)}</b><small>Primary shadow-training label</small></article>
-              <article><span>Closed paper trades</span><b>{formatCompactNumber(learning.tradeOutcomes)}</b><small>{formatPercent(learningTradeWinRate)} actual win rate</small></article>
-              <article><span>Trade outcome P/L</span><b className={pnlClass(learning.tradePnl)}>{signedCurrency(learning.tradePnl)}</b><small>Stock and option learning memory</small></article>
-              <article><span>Latest shadow model</span><b>{latestLearningModel?.version || "Awaiting data"}</b><small>{latestLearningModel ? formatPercent(Number(latestLearningModel.accuracy || 0) * 100) + " validation accuracy" : "50 closed trades and 100 resolved scanner 60m outcomes required"}</small></article>
-            </section>
-
-            <section className="data-card scanner-table learning-ticker-analysis">
-              <div className="table-toolbar learning-ticker-toolbar">
-                <div><span>TICKER ANALYSIS</span><small>Search PYPL, CRM, USO, or any observed ticker to see why it moved and what the lab learned.</small></div>
-                <label className="learning-ticker-search">
-                  <Search size={16} />
-                  <input
-                    aria-label="Search Learning Lab ticker analysis"
-                    placeholder="Search ticker, contract, setup..."
-                    value={learningTickerSearch}
-                    onChange={(event) => setLearningTickerSearch(event.target.value)}
-                  />
-                </label>
-              </div>
-              <DataTable
-                tableId="learning-ticker-analysis"
-                columns={[
-                  { key: "symbol", label: "Ticker", render: (value) => <span className="symbol-pill">{value}</span> },
-                  { key: "cohort_label", label: "Cohort" },
-                  { key: "product", label: "Book" },
-                  { key: "move_label", label: "Move", render: (value, row) => <span className={Number(row.move_score || 0) >= 3 ? "learning-move-chip is-explosive" : Number(row.move_score || 0) >= 1 ? "learning-move-chip is-strong" : "learning-move-chip"}>{value}</span> },
-                  { key: "why_summary", label: "Why It Moved", render: (_, row) => <div className="learning-why-tags">{(row.why_tags || []).map((tag) => <span key={tag}>{tag}</span>)}</div> },
-                  { key: "horizon_5m", label: "5m", render: (value) => <HorizonOutcomeCell value={value} /> },
-                  { key: "horizon_15m", label: "15m", render: (value) => <HorizonOutcomeCell value={value} /> },
-                  { key: "horizon_30m", label: "30m", render: (value) => <HorizonOutcomeCell value={value} /> },
-                  { key: "horizon_60m", label: "60m", render: (value) => <HorizonOutcomeCell value={value} /> },
-                  { key: "observations", label: "Seen", render: formatCompactNumber },
-                  { key: "trades", label: "Closed Trades", render: formatCompactNumber },
-                  { key: "trade_win_rate", label: "Trade Win %", render: (value) => value == null ? "--" : formatPercent(value) },
-                  { key: "trade_pnl", label: "Trade P/L", render: (value) => <span className={pnlClass(value)}>{signedCurrency(value)}</span> },
-                  { key: "setup_name", label: "Latest Setup" },
-                  { key: "last_observed_at", label: "Last Observed", render: formatDateTime },
-                ]}
-                rows={learningTickerRows}
-                emptyMessage={learningTickerQuery ? `No Learning Lab evidence found for ${learningTickerSearch.trim().toUpperCase()}.` : "Ticker analysis appears after the scanners store their first observation."}
-              />
-            </section>
-
-            <section className="learning-readiness-grid">
-              {learningRequirements.map((requirement) => {
-                const current = Number(requirement.current || 0);
-                const target = Math.max(Number(requirement.target || 1), 1);
-                const progress = Math.min(100, Math.round((current / target) * 100));
-                return (
-                  <article key={requirement.label}>
-                    <header><span>{requirement.label}</span><b>{current.toLocaleString()} / {target.toLocaleString()}</b></header>
-                    <div><i style={{ width: String(progress) + "%" }} /></div>
-                    <small>{progress >= 100 ? "Ready" : String(progress) + "% complete"}</small>
-                  </article>
-                );
-              })}
-            </section>
-
-            <div className="learning-two-column">
-              <section className="data-card scanner-table">
-                <div className="table-toolbar"><span>SOURCE COVERAGE</span><span>What is feeding the learner</span></div>
-                <DataTable
-                  tableId="learning-source-coverage"
-                  columns={[
-                    { key: "source", label: "Source" },
-                    { key: "product", label: "Book" },
-                    { key: "observations", label: "Signals", render: formatCompactNumber },
-                    { key: "resolved_60m", label: "60m Labels", render: formatCompactNumber },
-                    { key: "win_rate_60m", label: "60m Win %", render: (value) => value == null ? "--" : formatPercent(value) },
-                    { key: "avg_return_60m", label: "Avg 60m Return", render: (value) => value == null ? "--" : signedPercent(value) },
-                  ]}
-                  rows={learning.sources || []}
-                  emptyMessage="No learning observations yet. The live scanners will populate this automatically."
-                />
-              </section>
-              <section className="data-card scanner-table">
-                <div className="table-toolbar"><span>FORWARD OUTCOMES</span><span>Live signal follow-through</span></div>
-                <DataTable
-                  tableId="learning-horizon-performance"
-                  columns={[
-                    { key: "horizon_minutes", label: "Horizon", render: (value) => String(value) + "m" },
-                    { key: "scheduled", label: "Scheduled", render: formatCompactNumber },
-                    { key: "resolved", label: "Resolved", render: formatCompactNumber },
-                    { key: "win_rate", label: "Positive %", render: (value) => value == null ? "--" : formatPercent(value) },
-                    { key: "avg_return_pct", label: "Avg Return", render: (value) => value == null ? "--" : signedPercent(value) },
-                  ]}
-                  rows={learning.horizonPerformance || []}
-                  emptyMessage="Forward labels appear after the first 5-minute horizon is due."
-                />
-              </section>
-            </div>
-
-            <section className="data-card scanner-table">
-              <div className="table-toolbar"><span>MODEL IMPROVEMENT</span><span>Champion/challenger audit, never an execution gate</span></div>
-              <DataTable
-                tableId="learning-model-registry"
-                columns={[
-                  { key: "version", label: "Version" },
-                  { key: "status", label: "Mode", render: (value) => <span className="learning-shadow-chip">{String(value || "shadow").toUpperCase()}</span> },
-                  { key: "trained_at", label: "Trained", render: formatDateTime },
-                  { key: "training_rows", label: "Train Rows", render: formatCompactNumber },
-                  { key: "validation_rows", label: "Validation Rows", render: formatCompactNumber },
-                  { key: "accuracy", label: "Accuracy", render: (value) => value == null ? "--" : formatPercent(Number(value) * 100) },
-                  { key: "accuracy_change", label: "Accuracy Change", render: (value) => value == null ? "--" : <span className={pnlClass(value)}>{signedPercent(value)}</span> },
-                  { key: "brier_score", label: "Brier", render: (value) => value == null ? "--" : Number(value).toFixed(4) },
-                  { key: "brier_change", label: "Brier Change", render: (value) => value == null ? "--" : <span className={Number(value) <= 0 ? "pnl-positive" : "pnl-negative"}>{Number(value).toFixed(4)}</span> },
-                  { key: "is_active", label: "Can Influence Trades", render: () => <span className="learning-off-chip">NO</span> },
-                ]}
-                rows={learning.models || []}
-                emptyMessage="No shadow model yet. Collection continues until the minimum baseline is complete."
-              />
-            </section>
-
-            <div className="learning-two-column learning-audit-grid">
-              <section className="data-card scanner-table">
-                <div className="table-toolbar"><span>DAILY IMPROVEMENT TREND</span><span>60-minute signal outcomes</span></div>
-                <DataTable
-                  tableId="learning-daily-trend"
-                  columns={[
-                    { key: "observation_date", label: "Date" },
-                    { key: "resolved", label: "Outcomes", render: formatCompactNumber },
-                    { key: "win_rate", label: "Positive %", render: (value) => formatPercent(value) },
-                    { key: "avg_return_pct", label: "Avg Return", render: (value) => signedPercent(value) },
-                  ]}
-                  rows={learning.outcomeTrend || []}
-                  emptyMessage="Daily trend starts after 60-minute outcomes resolve."
-                />
-              </section>
-              <section className="data-card scanner-table">
-                <div className="table-toolbar"><span>ACTUAL TRADE MEMORY</span><span>Closed paper-trade labels</span></div>
-                <DataTable
-                  tableId="learning-trade-breakdown"
-                  columns={[
-                    { key: "product", label: "Book" },
-                    { key: "trades", label: "Trades", render: formatCompactNumber },
-                    { key: "wins", label: "Wins", render: formatCompactNumber },
-                    { key: "win_rate", label: "Win Rate", render: (value) => formatPercent(value) },
-                    { key: "pnl", label: "P/L", render: (value) => <span className={pnlClass(value)}>{signedCurrency(value)}</span> },
-                    { key: "avg_hold_minutes", label: "Avg Hold", render: (value) => value == null ? "--" : Number(value).toFixed(0) + "m" },
-                  ]}
-                  rows={learning.tradeBreakdown || []}
-                  emptyMessage="Closed stock and option paper trades will appear here automatically."
-                />
-              </section>
-            </div>
-
-            <section className="data-card scanner-table">
-              <div className="table-toolbar"><span>RECENT LEARNING OBSERVATIONS</span><span>Full audit trail</span></div>
-              <DataTable
-                tableId="learning-recent-observations"
-                columns={[
-                  { key: "observed_at", label: "Observed", render: formatDateTime },
-                  { key: "last_seen_at", label: "Last Seen", render: formatDateTime },
-                  { key: "source", label: "Source" },
-                  { key: "cohort", label: "Cohort", render: (value) => value === "mag7" ? "Mag7" : "Watchlist 400" },
-                  { key: "product", label: "Book" },
-                  { key: "symbol", label: "Symbol", render: (value) => <span className="symbol-pill">{value}</span> },
-                  { key: "contract", label: "Contract" },
-                  { key: "setup_name", label: "Setup" },
-                  { key: "entry_price", label: "Reference Price", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "fast_momentum_score", label: "Fast Momentum", render: (value) => String(value || 0) + "/3" },
-                  { key: "traded", label: "Submitted Trade", render: (value) => <span className={Number(value) ? "learning-yes-chip" : "learning-off-chip"}>{Number(value) ? "YES" : "NO"}</span> },
-                ]}
-                rows={learning.recentObservations || []}
-                emptyMessage="The next scanner result will create the first learning observation."
-              />
-            </section>
-
-            <section className="learning-policy-note">
-              <Database size={18} />
-              <div><b>Persistent by design</b><p>{learning.retention?.note || "Learning records are retained until manually archived."}</p><small>{learning.retention?.snapshotCadence}</small></div>
-              <div><b>Safe deployment path</b><p>Baseline collection → shadow validation → human review → optional model-guided sizing.</p><small>No learned model can block a scanner result or place an order.</small></div>
-            </section>
-          </section>
-        )}
-        {activeView === "Backtesting" && (
-          <>
-            <BacktestStatus job={dashboard.backtestJob} />
-            <TradeIntentCard trade={dashboard.exampleTrade} />
-            <section className="data-card">
-              <div className="table-toolbar">
-                <span>MAG7 BACKTEST CONTROLS</span>
-                <span>{dashboard.backtestJob?.message || "Ready"}</span>
-              </div>
-              <div className="backtest-control-grid">
-                <label>
-                  Symbols
-                  <input value={symbols} onChange={(event) => setSymbols(event.target.value)} />
-                </label>
-                <label>
-                  From Date
-                  <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} />
-                </label>
-                <label>
-                  To Date
-                  <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} />
-                </label>
-                <div className="preset-row">
-                  {["6M", "1Y", "3Y", "6Y"].map((preset) => <button key={preset} onClick={() => applyPreset(preset)} type="button">{preset}</button>)}
-                  <button onClick={() => setSymbols(MAG7)} type="button">MAG7</button>
-                </div>
-                <button className="run-backtest" disabled={dashboard.backtestJob?.running || submitting === "backtest"} onClick={startBacktest} type="button">
-                  {dashboard.backtestJob?.running ? "Running..." : "Run Backtest"}
-                </button>
-              </div>
-            </section>
-
-            <section className="data-card scanner-table">
-              <div className="table-toolbar"><span>BACKTEST RESULTS</span><span>Win/loss per symbol</span></div>
-              <DataTable columns={backtestColumns} rows={dashboard.backtestSummary} emptyMessage="No backtest results yet. Choose MAG7/date range and run backtest." />
-            </section>
-
-            <section className="data-card scanner-table">
-              <div className="table-toolbar"><span>BACKTEST TRADE LOG</span><span>5m EMA20 trail exit with hard stop protection</span></div>
-              <DataTable columns={tradeColumns} rows={dashboard.backtestTrades} emptyMessage="No trade log yet." />
-            </section>
-          </>
-        )}
-
-        {activeView === "Scanner" && (
-          <section className="scanner-results-view">
-            <section className="scanner-overview-grid" aria-label="Stock scanner overview">
-              <ScannerOverviewCard icon={Activity} label="LIVE MATCHES" value={stockCommandRows.length} note={`${scannerUniverse === "mag7" ? "MAG7" : "Watchlist"} current results`} tone="cyan" />
-              <ScannerOverviewCard icon={Star} label="MAG7 MATCHES" value={mag7ScannerRows.length} note="Option-mapped momentum names" tone="green" />
-              <ScannerOverviewCard icon={ListChecks} label="WATCHLIST MATCHES" value={scannerRows.length} note={`${dashboard.watchlist?.length || dashboard.status.watchlistCount || 0} symbols monitored`} tone="amber" />
-              <ScannerOverviewCard icon={Database} label="CONNECTED DATA" value={marketDataConnected ? "LIVE" : "READY"} note={dashboard.streaming?.signalSource || "Market data"} tone="green" />
-            </section>
-            <section className="data-card scanner-watchlist-scan">
-              <div className="table-toolbar">
-                <span>WATCHLIST SCAN</span>
-                <span>{dashboard.scanJob?.running ? dashboard.scanJob.message : dashboard.scannerAuto?.message || dashboard.actionMessage || `${dashboard.watchlist?.length || dashboard.status.watchlistCount || 0} symbols ready`}</span>
-              </div>
-              <div className="filter-row option-filter-row">
-                {stockAllConditions.map((rule) => (
-                  <div className="filter-control" key={rule.label}>
-                    <span>{rule.label}</span>
-                    <b>{rule.value}</b>
-                  </div>
-                ))}
-                <button
-                  className="scanner-watchlist-button"
-                  disabled={Boolean(submitting) || dashboard.scanJob?.running}
-                  onClick={() => runAction("/api/scan", { method: "POST" }, "scan")}
-                  type="button"
-                >
-                  {(dashboard.scanJob?.running && activeScanSource !== "MAG7-Watchlist Options") || submitting === "scan" ? "Scanning Watchlist..." : "Scan My Watchlist"}
-                </button>
-                <button
-                  className="scanner-watchlist-button"
-                  disabled={Boolean(submitting) || dashboard.scanJob?.running}
-                  onClick={() => runAction(
-                    "/api/scan",
-                    {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ universe: "mag7" }),
-                    },
-                    "scan-mag7",
-                  )}
-                  type="button"
-                >
-                  {(dashboard.scanJob?.running && activeScanSource === "MAG7-Watchlist Options") || submitting === "scan-mag7" ? "Scanning MAG7 Options..." : "Scan MAG7 Options"}
-                </button>
-              </div>
-            </section>
-            <section className="data-card scanner-table scanner-results-card">
-              <div className="table-toolbar">
-                <span>SCANNER RESULT - MAG7</span>
-                <span>{dashboard.scannerAuto?.enabled ? `Auto every ${dashboard.scannerAuto.intervalSeconds || 60}s` : "Manual only"}</span>
-              </div>
-              <DataTable tableId="stock-scanner-mag7-results" columns={scannerColumns} rows={mag7ScannerRows} emptyMessage="No MAG7-Watchlist Options scanner results yet." />
-            </section>
-            <section className="data-card scanner-table scanner-results-card">
-              <div className="table-toolbar"><span>SCANNER RESULTS</span><span>5m yellow/cyan C/CALL 2H/4H matches</span></div>
-              <DataTable tableId="stock-scanner-watchlist-results" columns={scannerColumns} rows={scannerRows} emptyMessage={dashboard.actionMessage || "No scanner results yet. Click Scan My Watchlist."} />
-            </section>
-            <section className="data-card scanner-table scanner-results-card">
-              <div className="table-toolbar">
-                <span>SCANNER HISTORY - MAG7</span>
-                <span>{mag7ScannerHistoryRows.length} entr{mag7ScannerHistoryRows.length === 1 ? "y" : "ies"} on {activeMag7ScannerHistoryDate}</span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={mag7StockScannerHistorySearchDraft}
-                      onChange={(event) => setMag7StockScannerHistorySearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setMag7StockScannerHistorySearch(mag7StockScannerHistorySearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker"
-                    />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setMag7StockScannerHistorySearch(mag7StockScannerHistorySearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {mag7StockScannerHistorySearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setMag7StockScannerHistorySearch("");
-                        setMag7StockScannerHistorySearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    value={activeMag7ScannerHistoryDate}
-                    onChange={(event) => setMag7StockScannerHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Last scan: {mag7HistoryLastScan ? formatTimeLabel(mag7HistoryLastScan) : "--"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Daily symbols: {mag7ScannerHistoryDay?.ticker_count ?? mag7ScannerHistoryRows.length}
-                </span>
-              </div>
-              <DataTable
-                tableId="stock-scanner-mag7-history"
-                columns={scannerHistoryColumns}
-                rows={mag7ScannerHistoryRows}
-                emptyMessage="No MAG7 scanner history for this date yet."
-              />
-            </section>
-            <section className="data-card scanner-table scanner-results-card">
-              <div className="table-toolbar">
-                <span>SCANNER HISTORY</span>
-                <span>{scannerHistoryRows.length} entr{scannerHistoryRows.length === 1 ? "y" : "ies"} on {activeScannerHistoryDate}</span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={stockScannerHistorySearchDraft}
-                      onChange={(event) => setStockScannerHistorySearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setStockScannerHistorySearch(stockScannerHistorySearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker"
-                    />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setStockScannerHistorySearch(stockScannerHistorySearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {stockScannerHistorySearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setStockScannerHistorySearch("");
-                        setStockScannerHistorySearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    value={activeScannerHistoryDate}
-                    onChange={(event) => setStockScannerHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Last scan: {scannerHistoryLastScan ? formatTimeLabel(scannerHistoryLastScan) : "--"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Daily symbols: {scannerHistoryDay?.ticker_count ?? scannerHistoryRows.length}
-                </span>
-              </div>
-              <DataTable
-                tableId="stock-scanner-watchlist-history"
-                columns={scannerHistoryColumns}
-                rows={scannerHistoryRows}
-                emptyMessage="No scanner history for this date yet."
-              />
-            </section>
-          </section>
-        )}
-
-        {activeView === "OI Scanner" && (
-          <section className="scanner-results-view">
-            <section className="scanner-overview-grid" aria-label="OI scanner overview">
-              <ScannerOverviewCard icon={Zap} label="A+ HOT" value={oiHotCount} note="MAG7 trade-grade flow" tone="hot" />
-              <ScannerOverviewCard icon={Activity} label="A ACTIVE" value={oiActiveCount} note="Qualified active setups" tone="amber" />
-              <ScannerOverviewCard icon={ScanSearch} label="NEW SIGNALS" value={oiNewCount} note={`${oiCommandRows.length} current result${oiCommandRows.length === 1 ? "" : "s"}`} tone="cyan" />
-              <ScannerOverviewCard icon={Database} label="OPTION CHAIN" value="SCHWAB" note={dashboard.oiScannerAuto?.optionChainSource || "Schwab/TOS option chain"} tone="green" />
-            </section>
-            <section className="data-card scanner-watchlist-scan">
-              <div className="table-toolbar">
-                <span>OI SCANNER</span>
-                <span>{dashboard.oiScannerAuto?.message || dashboard.oiActionMessage || `${dashboard.mag7OptionWatchlist?.length || 0} MAG7 symbols ready`}</span>
-              </div>
-              <div className="journal-review-controls">
-                <span className="journal-toolbar-pill is-active">
-                  Scope: {dashboard.oiScannerAuto?.scope || "MAG7 only"} · {dashboard.oiScannerAuto?.symbols?.length || 7} symbols
-                </span>
-                <span className="journal-toolbar-pill is-active">
-                  Chain: {dashboard.oiScannerAuto?.optionChainSource || "Schwab/TOS option chain"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Last manual OI scan: {dashboard.oiScanTimestamp ? formatTimeLabel(dashboard.oiScanTimestamp) : "--"}
-                </span>
-                <span className={`journal-toolbar-pill ${dashboard.oiScanJob?.running ? "is-active" : ""}`} role="status">
-                  Manual scan: {dashboard.oiScanJob?.running
-                    ? `${dashboard.oiScanJob.scanLabel || "OI Scanner"} running (${dashboard.oiScanJob.symbolCount || 0} symbols)`
-                    : dashboard.oiScanJob?.error
-                      ? `Failed: ${dashboard.oiScanJob.error}`
-                      : dashboard.oiScanJob?.message || "Idle"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Background OI loop: {dashboard.oiScannerAuto?.status || "Idle"}
-                  {dashboard.oiScannerAuto?.lastRun ? ` | ${formatTimeLabel(dashboard.oiScannerAuto.lastRun)}` : ""}
-                </span>
-              </div>
-              <div className="filter-row option-filter-row">
-                {oiScannerConditions.map((rule) => (
-                  <div className="filter-control" key={rule.label}>
-                    <span>{rule.label}</span>
-                    <b>{rule.value}</b>
-                  </div>
-                ))}
-                <button
-                  className="scanner-watchlist-button"
-                  disabled={Boolean(submitting) || Boolean(dashboard.oiScanJob?.running)}
-                  onClick={() => runAction(
-                    "/api/oi-scan",
-                    {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ universe: "mag7" }),
-                    },
-                    "oi-scan-mag7",
-                  )}
-                  type="button"
-                >
-                  {dashboard.oiScanJob?.running && String(dashboard.oiScanJob?.scanLabel || "").includes("MAG7") ? "Scanning MAG7 OI..." : "Scan MAG7 OI"}
-                </button>
-              </div>
-              <div className="journal-review-controls oi-results-search-toolbar">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search Results
-                    <input
-                      className="journal-review-search"
-                      value={oiResultSearchDraft}
-                      onChange={(event) => setOiResultSearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setOiResultSearch(oiResultSearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker or contract"
-                    />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setOiResultSearch(oiResultSearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {oiResultSearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setOiResultSearch("");
-                        setOiResultSearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <span className="journal-toolbar-pill">
-                  MAG7 rows: {selectedMag7DailyRows.length}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Watchlist rows: {oiScannerRows.length}
-                </span>
-                {oiResultSearch ? (
-                  <span className="journal-toolbar-pill">
-                    Filter: {oiResultSearch}
-                  </span>
-                ) : null}
-              </div>
-            </section>
-            <section
-              className="data-card mag7-tos-scanner-logic"
-              data-testid="mag7-tos-scanner-logic"
-            >
-              <div className="table-toolbar">
-                <span>TOS SCANNER LOGIC - MAG7</span>
-                <span>Every enabled All filter must pass; chart signals are display-only</span>
-              </div>
-              <div className="mag7-tos-logic-controls">
-                <button
-                  className={`mag7-signal-scan-button${mag7SignalScanJob.running ? " is-waiting" : ""}`}
-                  data-testid="mag7-signal-scan-button"
-                  disabled={submitting === "mag7-signal-scan" || Boolean(mag7SignalScanJob.running)}
-                  onClick={runMag7SignalScan}
-                  type="button"
-                >
-                  {mag7SignalScanJob.running
-                    ? "Waiting for result…"
-                    : "Manual Scan MAG7 — Anytime"}
-                </button>
-                <button
-                  aria-pressed={Boolean(mag7SignalScannerConfig.fourHourVolumeEnabled)}
-                  className={`mag7-signal-gate-toggle${mag7SignalScannerConfig.fourHourVolumeEnabled ? " is-enabled" : " is-disabled"}`}
-                  data-testid="mag7-four-hour-volume-toggle"
-                  disabled={submitting === "mag7-signal-scanner-config"}
-                  onClick={() => updateMag7SignalScannerConfig({
-                    fourHourVolumeEnabled: !mag7SignalScannerConfig.fourHourVolumeEnabled,
-                  })}
-                  type="button"
-                >
-                  4H EXT Volume: {mag7SignalScannerConfig.fourHourVolumeEnabled ? "Enabled" : "Disabled"}
-                </button>
-                <button
-                  aria-pressed={Boolean(mag7SignalScannerConfig.oneHourCloseEnabled)}
-                  className={`mag7-signal-gate-toggle${mag7SignalScannerConfig.oneHourCloseEnabled ? " is-enabled" : " is-disabled"}`}
-                  data-testid="mag7-one-hour-close-toggle"
-                  disabled={submitting === "mag7-signal-scanner-config"}
-                  onClick={() => updateMag7SignalScannerConfig({
-                    oneHourCloseEnabled: !mag7SignalScannerConfig.oneHourCloseEnabled,
-                  })}
-                  type="button"
-                >
-                  1H EXT Close: {mag7SignalScannerConfig.oneHourCloseEnabled ? "Enabled" : "Disabled"}
-                </button>
-                <span
-                  className={`mag7-signal-scan-status${mag7SignalScanJob.running ? " is-waiting" : ""}`}
-                  role="status"
-                  aria-live="polite"
-                >
-                  {mag7SignalScanJob.error || mag7SignalScanJob.message}
-                </span>
-              </div>
-              <div className="mag7-tos-logic-groups">
-                <div className="mag7-tos-logic-group is-all">
-                  <strong>All of the following</strong>
-                  <span>Stock Last ≥ $3.00</span>
-                  <span className={mag7SignalScannerConfig.fourHourVolumeEnabled ? "" : "is-disabled-rule"}>
-                    4H EXT Volume ≥ 0.5% greater than 2 bars ago · {mag7SignalScannerConfig.fourHourVolumeEnabled ? "ON" : "OFF"}
-                  </span>
-                  <span className={mag7SignalScannerConfig.oneHourCloseEnabled ? "" : "is-disabled-rule"}>
-                    1H EXT Close ≥ 0.3% greater than 2 bars ago · {mag7SignalScannerConfig.oneHourCloseEnabled ? "ON" : "OFF"}
-                  </span>
-                </div>
-                <div className="mag7-tos-logic-group is-any">
-                  <strong>Displayed columns — not scan filters</strong>
-                  <span>5 MINS MAG7 CALL/MACD signals</span>
-                  <span>4H PREMARKET CALL/MACD signals</span>
-                </div>
-              </div>
-              <div className="mag7-tos-all-results" data-testid="mag7-tos-all-results">
+            {morningBriefing.status === "READY" && morningBriefing.lines.length ? (
+              <section className="data-card morning-briefing" data-testid="morning-briefing">
                 <div className="table-toolbar">
-                  <span>
-                    TOS ALL RESULTS - SCAN LIST ({mag7TosAllResults.coverage?.total || mag7SignalScannerConfig.symbols?.length || 0})
-                  </span>
-                  <span role="status" aria-live="polite">{mag7TosAllResults.message}</span>
+                  <span>MORNING BRIEFING</span>
+                  <span>{morningBriefing.generatedAt ? `Updated ${formatTimeLabel(morningBriefing.generatedAt)}` : ""}</span>
                 </div>
-                <div className="journal-review-controls premarket-chart-signal-summary">
-                  <span className={`journal-toolbar-pill ${mag7TosAllResultRows.length ? "is-active" : ""}`}>
-                    TOS matches: {mag7TosAllResults.matchCount || 0}
-                  </span>
-                  <span className="journal-toolbar-pill">
-                    Ready: {mag7TosAllResults.coverage?.ready || 0}/{mag7TosAllResults.coverage?.total || 0}
-                  </span>
-                  <span className="journal-toolbar-pill">
-                    Passing every enabled All filter lists the ticker; chart signals do not control this result.
-                  </span>
-                </div>
-                <DataTable
-                  tableId="oi-scanner-mag7-tos-all-results"
-                  columns={mag7TosAllResultColumns}
-                  rows={stableMag7TosAllResultRows}
-                  getRowKey={(row) => row.symbol}
-                  emptyMessage={mag7TosAllResults.message || "No fixed-list TOS All matches."}
-                />
-              </div>
-            </section>
-            <section
-              className="data-card scanner-table scanner-results-card premarket-chart-signal-card five-minute-chart-signal-card"
-              data-testid="mag7-five-minute-chart-signals"
-            >
+                <ul className="morning-brief-list">
+                  {morningBriefing.lines.map((line, index) => (
+                    <li key={`brief-${index}`}>{renderBriefingLine(line)}</li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+            <section className="data-card scanner-table premarket-scanner-card">
               <div className="table-toolbar">
-                <span>5 MINS MAG7 SIGNALS</span>
-                <span role="status" aria-live="polite">{mag7FiveMinuteChartSignals.message}</span>
-              </div>
-              <div className="journal-review-controls premarket-chart-signal-summary">
-                <span className={`journal-toolbar-pill ${mag7FiveMinuteChartSignalRows.length ? "is-active" : ""}`}>
-                  Matches: {mag7FiveMinuteChartSignals.matchCount || 0}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Chart tapes: {mag7FiveMinuteChartSignals.coverage?.ready || 0}/{mag7FiveMinuteChartSignals.coverage?.total || 0} ready
-                </span>
-                <span className="journal-toolbar-pill is-all-gate">
-                  TOS All passed: {mag7FiveMinuteChartSignals.coverage?.allOfPassed || 0}
-                  {` · blocked: ${mag7FiveMinuteChartSignals.coverage?.allOfBlocked || 0}`}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Session: 9:00 AM → 3:30 PM ET · latest signal candle per ticker
-                </span>
-                <span className="journal-toolbar-pill is-yellow-signal">
-                  Yellow: 4x8 CALL + D to M
-                </span>
-                <span className="journal-toolbar-pill is-cyan-signal">
-                  Cyan: 9x20 CALL + D to M
-                </span>
-                <span className="journal-toolbar-pill is-macd-signal">
-                  Green: MACD CALL D to M
-                </span>
-                {mag7FiveMinuteChartSignals.refreshingSymbols?.length ? (
-                  <span className="journal-toolbar-pill">
-                    Refreshing: {mag7FiveMinuteChartSignals.refreshingSymbols.join(", ")}
-                  </span>
-                ) : null}
-                <span className="journal-toolbar-pill">
-                  Tape updated: {mag7FiveMinuteChartSignals.refreshedAt ? formatTimeLabel(mag7FiveMinuteChartSignals.refreshedAt) : "Warming"}
-                </span>
-              </div>
-              <DataTable
-                tableId="oi-scanner-mag7-five-minute-chart-signals"
-                columns={mag7FiveMinuteChartSignalColumns}
-                rows={stableMag7FiveMinuteChartSignalRows}
-                getRowKey={buildPremarketChartSignalRowKey}
-                emptyMessage={mag7FiveMinuteChartSignals.message || "No requested 5m MAG7 chart signals yet."}
-              />
-            </section>
-            <section
-              className="data-card scanner-table scanner-results-card premarket-chart-signal-card"
-              data-testid="mag7-premarket-chart-signals"
-            >
-              <div className="table-toolbar">
-                <span>4H PREMARKET SIGNALS - MAG7</span>
-                <span role="status" aria-live="polite">{mag7PremarketChartSignals.message}</span>
-              </div>
-              <div className="journal-review-controls premarket-chart-signal-summary">
-                <span className={`journal-toolbar-pill ${mag7PremarketChartSignalRows.length ? "is-active" : ""}`}>
-                  Matches: {mag7PremarketChartSignals.matchCount || 0}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Chart tapes: {mag7PremarketChartSignals.coverage?.ready || 0}/{mag7PremarketChartSignals.coverage?.total || 0} ready
-                </span>
-                <span className="journal-toolbar-pill is-all-gate">
-                  TOS All passed: {mag7PremarketChartSignals.coverage?.allOfPassed || 0}
-                  {` · blocked: ${mag7PremarketChartSignals.coverage?.allOfBlocked || 0}`}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Session: prior 5:00 PM → 9:29 AM ET · chart 4h candles
-                </span>
-                <span className="journal-toolbar-pill is-active">
-                  Last PRE scan candle: {mag7PremarketChartSignals.latestScanCandleAt
-                    ? formatTimeLabel(mag7PremarketChartSignals.latestScanCandleAt)
-                    : "Warming"}
-                </span>
-                <span className="journal-toolbar-pill is-yellow-signal">
-                  Yellow: 4x8 CALL + D to M
-                </span>
-                <span className="journal-toolbar-pill is-cyan-signal">
-                  Cyan: 9x20 CALL D to M
-                </span>
-                <span className="journal-toolbar-pill is-macd-signal">
-                  Green: MACD CALL D to M
-                </span>
-                {mag7PremarketChartSignals.refreshingSymbols?.length ? (
-                  <span className="journal-toolbar-pill">
-                    Refreshing: {mag7PremarketChartSignals.refreshingSymbols.join(", ")}
-                  </span>
-                ) : null}
-                <span className="journal-toolbar-pill">
-                  Tape updated: {mag7PremarketChartSignals.refreshedAt ? formatTimeLabel(mag7PremarketChartSignals.refreshedAt) : "Warming"}
-                </span>
-              </div>
-              <DataTable
-                tableId="oi-scanner-mag7-premarket-chart-signals"
-                columns={mag7PremarketChartSignalColumns}
-                rows={stableMag7PremarketChartSignalRows}
-                getRowKey={buildPremarketChartSignalRowKey}
-                emptyMessage={mag7PremarketChartSignals.message || "No 4h premarket 4x8/cyan/MACD CALL signals yet."}
-              />
-            </section>
-            <section
-              className="data-card scanner-table scanner-results-card premarket-chart-signal-card chart-signal-history-card"
-              data-testid="mag7-five-minute-chart-signal-history"
-            >
-              <div className="table-toolbar">
-                <span>HISTORY - 5 MINS MAG7 SIGNALS</span>
+                <span>PREMARKET SCANNER · {premarketScanner.windowLabel || "12:00 AM - 9:30 AM ET"}</span>
                 <span>
-                  {mag7FiveMinuteSignalHistoryRows.length} ticker{mag7FiveMinuteSignalHistoryRows.length === 1 ? "" : "s"}
-                  {activeMag7FiveMinuteSignalHistoryDate ? ` on ${activeMag7FiveMinuteSignalHistoryDate}` : " · waiting for first completed day"}
-                </span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={mag7FiveMinuteSignalHistorySearchDraft}
-                      onChange={(event) => setMag7FiveMinuteSignalHistorySearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setMag7FiveMinuteSignalHistorySearch(mag7FiveMinuteSignalHistorySearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker"
-                    />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setMag7FiveMinuteSignalHistorySearch(mag7FiveMinuteSignalHistorySearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {mag7FiveMinuteSignalHistorySearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setMag7FiveMinuteSignalHistorySearch("");
-                        setMag7FiveMinuteSignalHistorySearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    min={mag7ChartSignalHistory.archiveCutoffDate || undefined}
-                    max={mag7ChartSignalHistory.archiveThroughDate || undefined}
-                    value={activeMag7FiveMinuteSignalHistoryDate}
-                    onChange={(event) => setMag7FiveMinuteSignalHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Retention: {mag7ChartSignalHistory.retentionDays || 30} days
-                </span>
-                <span className="journal-toolbar-pill">
-                  Daily rollover: {mag7ChartSignalHistory.rolloverTimeEt || "8:00 PM ET"}
+                  {`TOS AlertX Bull Momo: 2h cross 8–9:30 AM · 4h cross 7–9:30 AM · last 12 bars · Last ≥ $3 (4/8 yellow · 9/20 cyan) · Cyan D–M from 12 AM · 🔥 shown, not a match · sorted by %Chg · ${(premarketScanner.readySymbols || []).length + (premarketScanner.pendingSymbols || []).length} tickers`}
                 </span>
               </div>
               <DataTable
-                tableId="oi-scanner-mag7-five-minute-chart-signal-history"
-                columns={mag7FiveMinuteChartSignalColumns}
-                rows={stableMag7FiveMinuteSignalHistoryRows}
-                getRowKey={buildPremarketChartSignalRowKey}
-                emptyMessage="No completed 5-minute MAG7 signal history for this date."
+                tableId="premarket-scanner-results"
+                columns={premarketScannerColumns}
+                columnGroups={PREMARKET_SCANNER_SIGNAL_GROUPS}
+                rows={premarketScannerRows}
+                emptyMessage={premarketScanner.message || "No premarket matches yet."}
               />
             </section>
-            <section
-              className="data-card scanner-table scanner-results-card premarket-chart-signal-card chart-signal-history-card"
-              data-testid="mag7-premarket-chart-signal-history"
-            >
+            <section className="data-card scanner-table scanner-history-card" data-testid="premarket-scanner-history">
               <div className="table-toolbar">
-                <span>HISTORY - 4H PREMARKET SIGNALS - MAG7</span>
-                <span>
-                  {mag7PremarketSignalHistoryRows.length} ticker{mag7PremarketSignalHistoryRows.length === 1 ? "" : "s"}
-                  {activeMag7PremarketSignalHistoryDate ? ` on ${activeMag7PremarketSignalHistoryDate}` : " · waiting for first completed day"}
-                </span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={mag7PremarketSignalHistorySearchDraft}
-                      onChange={(event) => setMag7PremarketSignalHistorySearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setMag7PremarketSignalHistorySearch(mag7PremarketSignalHistorySearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker"
-                    />
-                  </label>
+                <span>SCANNER HISTORY · LAST 30 DAYS</span>
+                <div className="scanner-history-controls">
+                  {scannerHistoryOpen ? (
+                    <div className="scanner-history-viewtabs" role="tablist" aria-label="History view">
+                      {[["table", "Table"], ["calendar", "Calendar"], ["list", "List"]].map(([key, label]) => (
+                        <button
+                          key={key}
+                          role="tab"
+                          aria-selected={scannerHistoryView === key}
+                          className={`scanner-history-viewtab${scannerHistoryView === key ? " is-active" : ""}`}
+                          onClick={() => setScannerHistoryView(key)}
+                          type="button"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setMag7PremarketSignalHistorySearch(mag7PremarketSignalHistorySearchDraft)}
+                    className="signal-explain-close"
+                    onClick={() => setScannerHistoryOpen((open) => !open)}
                     type="button"
                   >
-                    Search
+                    {scannerHistoryOpen ? "Hide" : `Show ${scannerHistory.days.length} day${scannerHistory.days.length === 1 ? "" : "s"}`}
                   </button>
-                  {mag7PremarketSignalHistorySearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setMag7PremarketSignalHistorySearch("");
-                        setMag7PremarketSignalHistorySearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
                 </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    min={mag7ChartSignalHistory.archiveCutoffDate || undefined}
-                    max={mag7ChartSignalHistory.archiveThroughDate || undefined}
-                    value={activeMag7PremarketSignalHistoryDate}
-                    onChange={(event) => setMag7PremarketSignalHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Retention: {mag7ChartSignalHistory.retentionDays || 30} days
-                </span>
-                <span className="journal-toolbar-pill">
-                  Daily rollover: {mag7ChartSignalHistory.rolloverTimeEt || "8:00 PM ET"}
-                </span>
               </div>
-              <DataTable
-                tableId="oi-scanner-mag7-premarket-chart-signal-history"
-                columns={mag7PremarketChartSignalColumns}
-                rows={stableMag7PremarketSignalHistoryRows}
-                getRowKey={buildPremarketChartSignalRowKey}
-                emptyMessage="No completed 4H premarket MAG7 signal history for this date."
-              />
-            </section>
-            <section className="data-card scanner-table scanner-results-card" hidden={!dashboard.oiScannerAuto?.watchlistEnabled}>
-              <div className="table-toolbar">
-                <span>SCANNER RESULT</span>
-                <span>
-                  {oiWatchlistUsingFallback
-                    ? `Showing last non-empty scan from ${formatTimeLabel(dashboard.oiWatchlistLastNonEmptyTimestamp)}`
-                    : dashboard.oiScannerAuto?.watchlistMode === "parallel_full_cycle"
-                      ? `Watchlist OI matches | ${dashboard.oiScannerAuto?.watchlistWorkerCount || 5} workers | ${dashboard.oiScannerAuto?.watchlistUniverseCount || 0} symbols | Cycles ${dashboard.oiScannerAuto?.watchlistCompletedCycles || 0}`
-                      : `Watchlist OI matches | Auto every ${dashboard.oiScannerAuto?.watchlistIntervalSeconds || dashboard.oiScannerAuto?.intervalSeconds || 60}s`}
-                </span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={oiResultSearchDraft}
-                      onChange={(event) => setOiResultSearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setOiResultSearch(oiResultSearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker or contract"
+              {scannerHistoryOpen ? (
+                !scannerHistory.days.length ? (
+                  <div className="scanner-history-empty">No archived days yet — history starts saving the first morning a row appears.</div>
+                ) : scannerHistoryView === "table" ? (
+                  <>
+                    {premarketHistoryDay ? (
+                      <div className="scanner-day-nav">
+                        <button
+                          className="scanner-day-navbtn"
+                          disabled={!premarketHistoryDay.prevDate}
+                          onClick={() => setScannerHistorySelectedDate(premarketHistoryDay.prevDate)}
+                          type="button"
+                          aria-label="Previous day"
+                        >‹</button>
+                        <span className="scanner-day-label">{premarketHistoryDay.label}</span>
+                        <button
+                          className="scanner-day-navbtn"
+                          disabled={!premarketHistoryDay.nextDate}
+                          onClick={() => setScannerHistorySelectedDate(premarketHistoryDay.nextDate)}
+                          type="button"
+                          aria-label="Next day"
+                        >›</button>
+                        <span className="scanner-day-count">{`${premarketHistoryDay.matches.length} match${premarketHistoryDay.matches.length === 1 ? "" : "es"} · ${premarketHistoryDay.tickerCount} ticker${premarketHistoryDay.tickerCount === 1 ? "" : "s"}`}</span>
+                      </div>
+                    ) : null}
+                    {premarketHistoryDay?.briefing ? (
+                      <section className="scanner-history-briefing" data-testid="scanner-history-briefing">
+                        <div className="scanner-history-briefing-head">
+                          <span>MORNING BRIEFING</span>
+                          <span>{premarketHistoryDay.briefing.generatedAt ? formatDateTime(premarketHistoryDay.briefing.generatedAt) : ""}</span>
+                        </div>
+                        <ul className="morning-brief-list">
+                          {premarketHistoryDay.briefing.lines.map((line, index) => (
+                            <li key={`hist-brief-${index}`}>{renderBriefingLine(line)}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    ) : null}
+                    <DataTable
+                      tableId="premarket-scanner-history"
+                      columns={premarketHistoryColumns}
+                      columnGroups={PREMARKET_SCANNER_SIGNAL_GROUPS}
+                      rows={premarketHistoryDayRows}
+                      emptyMessage="No archived rows for this day."
                     />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setOiResultSearch(oiResultSearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {oiResultSearch ? (
+                  </>
+                ) : scannerHistoryView === "calendar" ? (
+                  premarketHistoryDay ? (
+                    <div className="scanner-history-day-view">
+                      <div className="scanner-day-nav">
+                        <button
+                          className="scanner-day-navbtn"
+                          disabled={!premarketHistoryDay.prevDate}
+                          onClick={() => setScannerHistorySelectedDate(premarketHistoryDay.prevDate)}
+                          type="button"
+                          aria-label="Previous day"
+                        >‹</button>
+                        <span className="scanner-day-label">{premarketHistoryDay.label}</span>
+                        <button
+                          className="scanner-day-navbtn"
+                          disabled={!premarketHistoryDay.nextDate}
+                          onClick={() => setScannerHistorySelectedDate(premarketHistoryDay.nextDate)}
+                          type="button"
+                          aria-label="Next day"
+                        >›</button>
+                        <span className="scanner-day-count">{`${premarketHistoryDay.matches.length} match${premarketHistoryDay.matches.length === 1 ? "" : "es"} · ${premarketHistoryDay.tickerCount} ticker${premarketHistoryDay.tickerCount === 1 ? "" : "s"}`}</span>
+                      </div>
+                      <div className="scanner-day-cards">
+                        {premarketHistoryDay.matches.map((entry) => {
+                          const labels = [
+                            ...(entry.row?.signalsCyanHigher || []),
+                            ...(entry.row?.signals920 || []),
+                            ...(entry.row?.signals48 || []),
+                            ...((entry.row?.fires || []).map((fire) => `🔥${fire}`)),
+                          ];
+                          const strength = String(entry.row?.strength || "weak").toLowerCase();
+                          return (
+                            <button
+                              key={`${premarketHistoryDay.iso}-${entry.symbol}`}
+                              className={`scanner-day-card is-${strength}`}
+                              onClick={() => openChartSignalChart(entry.symbol, "5m", "scanner-history")}
+                              type="button"
+                            >
+                              <div className="scanner-day-card-top">
+                                <span className="scanner-day-card-symbol">{entry.symbol}</span>
+                                <span className={`premarket-strength-pill is-${strength}`}>{`${entry.row?.strength || "—"} (${entry.row?.score ?? 0})`}</span>
+                              </div>
+                              <div className="scanner-day-card-signals">
+                                {labels.length ? labels.map((label, index) => (
+                                  <span className="scanner-day-card-chip" key={`${entry.symbol}-${label}-${index}`}>{label}</span>
+                                )) : <span className="scanner-day-card-empty">no signals</span>}
+                              </div>
+                              <div className="scanner-day-card-time">{`first seen ${formatDateTime(entry.firstSeenAt)}`}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="scanner-history-empty">No archived days yet.</div>
+                  )
+                ) : (
+                  scannerHistory.days.map((day) => (
+                    <div className="scanner-history-day" key={`history-${day.date}`}>
+                      <div className="scanner-history-date">{day.date}</div>
+                      <ul className="scanner-history-rows">
+                        {day.rows.map((entry) => (
+                          <li key={`history-${day.date}-${entry.symbol}`}>
+                            <button
+                              className="symbol-pill"
+                              onClick={() => openChartSignalChart(entry.symbol, "5m", "scanner-history")}
+                              type="button"
+                            >
+                              {entry.symbol}
+                            </button>
+                            <span className="scanner-history-time">
+                              {`first seen ${formatDateTime(entry.firstSeenAt)}`}
+                            </span>
+                            <span className="scanner-history-signals">
+                              {[
+                                ...(entry.row?.signalsCyanHigher || []),
+                                ...(entry.row?.signals920 || []),
+                                ...(entry.row?.signals48 || []),
+                                ...((entry.row?.fires || []).map((fire) => `🔥${fire}`)),
+                              ].join(" · ") || "--"}
+                            </span>
+                            <span className={`premarket-strength is-${String(entry.row?.strength || "weak").toLowerCase()}`}>
+                              {`${entry.row?.strength || ""} (${entry.row?.score ?? 0})`}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))
+                )
+              ) : null}
+            </section>
+            {explainScannerTarget ? (
+              <div
+                className="signal-explain-overlay"
+                role="dialog"
+                aria-label={`Explanation for ${explainScannerTarget.symbol}`}
+                onClick={() => setExplainScannerTarget(null)}
+              >
+                <section className="data-card signal-explain-card" onClick={(event) => event.stopPropagation()}>
+                  <div className="table-toolbar">
+                    <span>{`WHY ${explainScannerTarget.symbol}?`}</span>
                     <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setOiResultSearch("");
-                        setOiResultSearchDraft("");
-                      }}
+                      className="signal-explain-close"
+                      onClick={() => setExplainScannerTarget(null)}
                       type="button"
                     >
-                      Clear
+                      Close
                     </button>
-                  ) : null}
-                </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    value={activeOiScannerHistoryDate}
-                    onChange={(event) => setOiScannerHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Last scan: {oiHistoryLastScan ? formatTimeLabel(oiHistoryLastScan) : "--"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Daily symbols: {selectedWatchlistDailyRows.length}
-                </span>
+                  </div>
+                  <ul className="signal-explain-lines">
+                    {explainScannerRow(explainScannerTarget).map((line, index) => (
+                      <li key={`explain-${index}`}>{line}</li>
+                    ))}
+                  </ul>
+                </section>
               </div>
-              <DataTable tableId="oi-scanner-watchlist-results" columns={oiScannerColumns} rows={stableSelectedWatchlistDailyRows} getRowKey={buildOiTableRowKey} emptyMessage="No OI scanner contracts yet." />
-            </section>
-            <section className="data-card scanner-table scanner-results-card" hidden={!dashboard.oiScannerAuto?.watchlistEnabled}>
-              <div className="table-toolbar">
-                <span>WATCHLIST REVIEW</span>
-                <span>Searchable lower-priority watchlist names</span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={oiResultSearchDraft}
-                      onChange={(event) => setOiResultSearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setOiResultSearch(oiResultSearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker or contract"
-                    />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setOiResultSearch(oiResultSearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {oiResultSearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setOiResultSearch("");
-                        setOiResultSearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    value={activeOiScannerHistoryDate}
-                    onChange={(event) => setOiScannerHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Last scan: {oiHistoryLastScan ? formatTimeLabel(oiHistoryLastScan) : "--"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Daily symbols: {selectedWatchlistReviewRows.length}
-                </span>
-              </div>
-              <DataTable tableId="oi-scanner-watchlist-review" columns={oiScannerColumns} rows={stableSelectedWatchlistReviewRows} getRowKey={buildOiTableRowKey} emptyMessage="No review rows." />
-            </section>
-            <section className="data-card scanner-table scanner-results-card" hidden>
-              <div className="table-toolbar">
-                <span>SCANNER HISTORY - MAG7</span>
-                <span>{oiMag7ScannerHistoryRows.length} entr{oiMag7ScannerHistoryRows.length === 1 ? "y" : "ies"} on {activeMag7OiScannerHistoryDate}</span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={mag7OiScannerHistorySearchDraft}
-                      onChange={(event) => setMag7OiScannerHistorySearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setMag7OiScannerHistorySearch(mag7OiScannerHistorySearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker"
-                    />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setMag7OiScannerHistorySearch(mag7OiScannerHistorySearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {mag7OiScannerHistorySearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setMag7OiScannerHistorySearch("");
-                        setMag7OiScannerHistorySearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    value={activeMag7OiScannerHistoryDate}
-                    onChange={(event) => setMag7OiScannerHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Last scan: {oiMag7HistoryLastScan ? formatTimeLabel(oiMag7HistoryLastScan) : "--"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Stored rows: {oiMag7StoredHistoryCount}
-                </span>
-              </div>
-              <DataTable
-                tableId="oi-scanner-mag7-history"
-                columns={oiScannerHistoryColumns}
-                rows={stableOiMag7ScannerHistoryRows}
-                getRowKey={buildOiTableRowKey}
-                emptyMessage={
-                  oiMag7StoredHistoryCount > 0
-                    ? "No MAG7 trade-grade OI rows for this date. Stored rows are in Watchlist Review History - MAG7 below."
-                    : "No MAG7 OI scanner history for this date yet."
-                }
-              />
-            </section>
-            <section className="data-card scanner-table scanner-results-card" hidden>
-              <div className="table-toolbar">
-                <span>WATCHLIST REVIEW HISTORY - MAG7</span>
-                <span>{oiMag7ReviewHistoryRows.length} entr{oiMag7ReviewHistoryRows.length === 1 ? "y" : "ies"} on {activeMag7OiScannerHistoryDate}</span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={mag7OiScannerHistorySearchDraft}
-                      onChange={(event) => setMag7OiScannerHistorySearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setMag7OiScannerHistorySearch(mag7OiScannerHistorySearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker"
-                    />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setMag7OiScannerHistorySearch(mag7OiScannerHistorySearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {mag7OiScannerHistorySearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setMag7OiScannerHistorySearch("");
-                        setMag7OiScannerHistorySearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    value={activeMag7OiScannerHistoryDate}
-                    onChange={(event) => setMag7OiScannerHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Last scan: {oiMag7HistoryLastScan ? formatTimeLabel(oiMag7HistoryLastScan) : "--"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Review rows: {oiMag7ReviewHistoryRows.length}
-                </span>
-              </div>
-              <DataTable tableId="oi-scanner-mag7-review-history" columns={oiScannerHistoryColumns} rows={stableOiMag7ReviewHistoryRows} getRowKey={buildOiTableRowKey} emptyMessage="No MAG7 review history for this date yet." />
-            </section>
-            <section className="data-card scanner-table scanner-results-card" hidden>
-              <div className="table-toolbar">
-                <span>SCANNER HISTORY</span>
-                <span>{oiScannerHistoryRows.length} entr{oiScannerHistoryRows.length === 1 ? "y" : "ies"} on {activeOiScannerHistoryDate}</span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={oiScannerHistorySearchDraft}
-                      onChange={(event) => setOiScannerHistorySearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setOiScannerHistorySearch(oiScannerHistorySearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker"
-                    />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setOiScannerHistorySearch(oiScannerHistorySearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {oiScannerHistorySearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setOiScannerHistorySearch("");
-                        setOiScannerHistorySearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    value={activeOiScannerHistoryDate}
-                    onChange={(event) => setOiScannerHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Last scan: {oiHistoryLastScan ? formatTimeLabel(oiHistoryLastScan) : "--"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Stored rows: {oiWatchlistStoredHistoryCount}
-                </span>
-              </div>
-              <DataTable
-                tableId="oi-scanner-watchlist-history"
-                columns={oiScannerHistoryColumns}
-                rows={stableOiScannerHistoryRows}
-                getRowKey={buildOiTableRowKey}
-                emptyMessage={
-                  oiWatchlistStoredHistoryCount > 0
-                    ? "No watchlist trade-grade OI rows for this date. Stored rows are in Watchlist Review History below."
-                    : "No OI scanner history for this date yet."
-                }
-              />
-            </section>
-            <section className="data-card scanner-table scanner-results-card" hidden>
-              <div className="table-toolbar">
-                <span>WATCHLIST REVIEW HISTORY</span>
-                <span>{oiScannerReviewHistoryRows.length} entr{oiScannerReviewHistoryRows.length === 1 ? "y" : "ies"} on {activeOiScannerHistoryDate}</span>
-              </div>
-              <div className="journal-review-controls">
-                <div className="scanner-history-search-group">
-                  <label className="journal-date-filter">
-                    Search
-                    <input
-                      value={oiScannerHistorySearchDraft}
-                      onChange={(event) => setOiScannerHistorySearchDraft(event.target.value.toUpperCase())}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          setOiScannerHistorySearch(oiScannerHistorySearchDraft);
-                        }
-                      }}
-                      placeholder="Ticker"
-                    />
-                  </label>
-                  <button
-                    className="journal-toolbar-pill"
-                    onClick={() => setOiScannerHistorySearch(oiScannerHistorySearchDraft)}
-                    type="button"
-                  >
-                    Search
-                  </button>
-                  {oiScannerHistorySearch ? (
-                    <button
-                      className="journal-toolbar-pill"
-                      onClick={() => {
-                        setOiScannerHistorySearch("");
-                        setOiScannerHistorySearchDraft("");
-                      }}
-                      type="button"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <label className="journal-date-filter">
-                  Date
-                  <input
-                    type="date"
-                    value={activeOiScannerHistoryDate}
-                    onChange={(event) => setOiScannerHistoryDate(event.target.value)}
-                  />
-                </label>
-                <span className="journal-toolbar-pill">
-                  Last scan: {oiHistoryLastScan ? formatTimeLabel(oiHistoryLastScan) : "--"}
-                </span>
-                <span className="journal-toolbar-pill">
-                  Review rows: {oiScannerReviewHistoryRows.length}
-                </span>
-              </div>
-              <DataTable tableId="oi-scanner-watchlist-review-history" columns={oiScannerHistoryColumns} rows={stableOiScannerReviewHistoryRows} getRowKey={buildOiTableRowKey} emptyMessage="No review history for this date yet." />
-            </section>
+            ) : null}
           </section>
         )}
 
-        {activeView === "OI Finder" && (
-          <section className="scanner-results-view" data-testid="oi-finder-view">
-            <OiFinderBoard
+        {activeView === "Quick Options" && (
+          <section className="scanner-results-view mobile-quick-options-view" data-testid="quick-options-view">
+            <MobileQuickOptionsBoard
               data={oiFinderFeed}
               loading={oiFinderLoading}
               newsRows={dashboard.catalysts}
               newsIndex={dashboard.catalystIndex}
               requestedSymbol={oiFinderSymbol}
-              tickerOptions={oiFinderSymbols}
               onLinkedSymbolChange={chooseOiFinderTicker}
+              onRequestResearch={loadMobileOptionsResearch}
               onRefreshNews={refreshOiFinderNews}
               newsLoading={oiFinderNewsRefreshingSymbol === String(oiFinderSymbol || "").trim().toUpperCase()}
+              onRefresh={() => refreshOiFinderFeed(oiFinderSymbol, true)}
+              quickTickers={quickTickerRail}
+            />
+          </section>
+        )}
+
+        {activeView === "Auto Alert" && (
+          <section className="scanner-results-view auto-alert-view" data-testid="auto-alert-view">
+            <OiAutoAlertDrawer
+              feed={oiAutoAlertFeed}
+              onClose={null}
+              // Same path the scanner rows use: it carries a navigation intent
+              // so the chart PANEL actually switches to that ticker (setting the
+              // page symbol alone left the panel on its own saved symbol).
+              onSelectSymbol={(symbol) => openChartSignalChart(symbol, "5m", "auto-alert")}
+              activeSymbol={oiFinderSymbol}
             />
           </section>
         )}
@@ -26901,12 +29724,9 @@ function TradingWorkspace({ authUser, onLogout }) {
               navigationIntent={chartsAndOiNavigationIntent}
               onNavigationIntentHandled={handleChartsAndOiNavigationIntent}
               onRefresh={() => refreshOiFinderFeed(oiFinderSymbol, true)}
+              mobileOptionsRequest={mobileOptionsRequest}
             />
           </section>
-        )}
-
-        {activeView === "Pre Market Mag7" && (
-          <PremarketMag7Plan plan={dashboard.mag7PremarketPlan} onRefresh={loadDashboard} />
         )}
 
         {activeView === "ROI Calc" && <RoiCalc data={oiFinderFeed} loading={oiFinderLoading} />}
@@ -26920,6 +29740,10 @@ function TradingWorkspace({ authUser, onLogout }) {
             onSymbolChange={chooseOiFinderTicker}
             onRefresh={() => refreshOiFinderFeed(oiFinderSymbol, true)}
           />
+        )}
+
+        {activeView === "Pre Market Mag7" && (
+          <PremarketMag7Plan plan={dashboard.mag7PremarketPlan} onRefresh={loadDashboard} />
         )}
 
         {activeView === "Paper Trading" && (
@@ -27699,547 +30523,25 @@ function TradingWorkspace({ authUser, onLogout }) {
           </section>
         )}
 
-        {activeView === "Journal" && (
-          <section className="journal-layout">
-            <section className="data-card journal-main-card">
-              <div className="table-toolbar">
-                <span>JOURNAL OVERVIEW</span>
-                <div className="table-toolbar-actions">
-                  <span>{dashboard.status.accountLabel}</span>
-                  <div className="journal-toggle">
-                    {["daily", "weekly", "monthly"].map((view) => (
-                      <button
-                        key={view}
-                        className={journalView === view ? "toggle-active" : ""}
-                        onClick={() => setJournalView(view)}
-                        type="button"
-                      >
-                        {view[0].toUpperCase() + view.slice(1)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="journal-tradeview-shell">
-                <div className="journal-tradeview-topbar">
-                  <div>
-                    <h2>Trade View</h2>
-                    <p>Review every bot entry with P/L, risk, execution timing, and setup context.</p>
-                  </div>
-                  <div className="journal-toolbar-pills">
-                    <label className="journal-account-filter">
-                      <span>Paper account</span>
-                      <select
-                        value={dashboard.status.activeAccountId || ""}
-                        onChange={(event) => runAction(
-                          "/api/account-select",
-                          {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ profileId: event.target.value }),
-                          },
-                          "account-select",
-                        )}
-                      >
-                        {(dashboard.accounts || []).map((account) => (
-                          <option key={account.id} value={account.id} disabled={account.stockTradingDisabled}>
-                            {account.stockTradingDisabled
-                              ? `${account.tradeLabel || account.label} (options only)`
-                              : (account.tradeLabel || account.label)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="journal-date-filter">
-                      <span>Date filter</span>
-                      <input
-                        type="date"
-                        value={journalDateFilter}
-                        onChange={(event) => setJournalDateFilter(event.target.value)}
-                      />
-                    </label>
-                    <label className="journal-account-filter">
-                      <span>Side</span>
-                      <select
-                        value={journalSideFilter}
-                        onChange={(event) => setJournalSideFilter(event.target.value)}
-                      >
-                        <option value="all">All sides</option>
-                        <option value="buy">Long / Buy</option>
-                        <option value="sell">Sell</option>
-                      </select>
-                    </label>
-                    <label className="journal-account-filter">
-                      <span>Setup</span>
-                      <select
-                        value={journalSetupFilter}
-                        onChange={(event) => setJournalSetupFilter(event.target.value)}
-                      >
-                        <option value="all">All setups</option>
-                        {journalSetupOptions.map((setup) => (
-                          <option key={setup} value={setup}>
-                            {setup}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="journal-account-filter">
-                      <span>Session</span>
-                      <select
-                        value={journalSessionFilter}
-                        onChange={(event) => setJournalSessionFilter(event.target.value)}
-                      >
-                        <option value="all">All sessions</option>
-                        {journalSessionOptions.map((session) => (
-                          <option key={session} value={session}>
-                            {session}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="journal-account-filter">
-                      <span>P/L</span>
-                      <select
-                        value={journalPnLFilter}
-                        onChange={(event) => setJournalPnLFilter(event.target.value)}
-                      >
-                        <option value="all">All P/L</option>
-                        <option value="green">Green only</option>
-                        <option value="red">Red only</option>
-                        <option value="flat">Flat / BE only</option>
-                      </select>
-                    </label>
-                    {hasJournalFilters ? (
-                      <button
-                        className="journal-clear-filter"
-                        onClick={() => {
-                          setJournalDateFilter("");
-                          setJournalSideFilter("all");
-                          setJournalSetupFilter("all");
-                          setJournalSessionFilter("all");
-                          setJournalPnLFilter("all");
-                          setJournalTradeFilter("all");
-                          setJournalSearch("");
-                        }}
-                        type="button"
-                      >
-                        Clear filters
-                      </button>
-                    ) : null}
-                    <span className="journal-toolbar-pill">Account: {dashboard.status.accountLabel}</span>
-                    <span className="journal-toolbar-pill">View: {journalView}</span>
-                    <span className="journal-toolbar-pill">Rows: {journalReviewRows.length}</span>
-                  </div>
-                </div>
-
-                <div className="journal-metric-strip">
-                  <div className="journal-ref-card">
-                    <span>Net cumulative P&amp;L</span>
-                    <strong className={pnlClass(journalPnL)}>{signedCurrency(journalPnL)}</strong>
-                    <small>{journalClosedTrades.length} journaled trades</small>
-                    <MiniLine color="#7c5cff" values={cumulativePnlSeries(journalDailyRows)} />
-                  </div>
-                  <div className="journal-ref-card">
-                    <span>Profit factor</span>
-                    <strong>{journalProfitFactor.toFixed(2)}</strong>
-                    <small>{formatCurrency(journalGrossProfit)} gross profit vs {formatCurrency(journalGrossLoss)} gross loss</small>
-                    <div className="journal-ring-row">
-                      <div className="journal-ring" />
-                    </div>
-                  </div>
-                  <div className="journal-ref-card">
-                    <span>Trade win %</span>
-                    <strong>{formatPercent(journalWinRate)}</strong>
-                    <small>{journalWins} green outcomes / {journalLosses} red outcomes</small>
-                    <div className="journal-count-row">
-                      <em>{journalWins}</em>
-                      <em>{Math.max(journalTrades - journalScoredTrades, 0)}</em>
-                      <em>{journalLosses}</em>
-                    </div>
-                  </div>
-                  <div className="journal-ref-card">
-                    <span>Avg win/loss trade</span>
-                    <strong>{journalAvgWinLoss.toFixed(2)}</strong>
-                    <small>{signedCurrency(journalAvgWin)} avg win and -{formatCurrency(journalAvgLoss)} avg loss</small>
-                    <div className="journal-progress-bar">
-                      <i style={{ width: `${Math.max(Math.min((journalAvgWinLoss / 4) * 100, 100), 12)}%` }} />
-                    </div>
-                  </div>
-                </div>
-                <JournalEquityChart
-                  dailyRows={journalDailyRows}
-                  accountEquity={dashboard.status.accountEquity}
-                  openPnl={(dashboard.openPositions || []).reduce((sum, row) => sum + Number(row.unrealized_pl || 0), 0)}
-                  dayPnl={dashboard.status.dailyChange}
-                  dayPnlPct={dashboard.status.dailyChangePct}
-                  accent="#7c5cff"
-                />
-              </div>
-
-              <div className="journal-hero-grid">
-                <div className="journal-calendar-shell">
-                  <div className="journal-calendar-topline">
-                    <div>
-                      <strong>{journalCalendar.monthLabel}</strong>
-                      <p>
-                        Daily P/L map for {dashboard.status.accountLabel}
-                        {journalDateFilter ? ` • filtered to ${formatDateLabel(journalDateFilter)}` : ""}
-                      </p>
-                    </div>
-                    <div className="journal-top-right">
-                      <div className="journal-calendar-nav">
-                        <button className="journal-nav-button" onClick={() => moveJournalCalendar(-1)} type="button">
-                          Prev
-                        </button>
-                        <button className="journal-nav-button journal-nav-button-muted" onClick={resetJournalCalendar} type="button">
-                          Today
-                        </button>
-                        <button className="journal-nav-button" onClick={() => moveJournalCalendar(1)} type="button">
-                          Next
-                        </button>
-                      </div>
-                      <div className="journal-top-badges">
-                        <span className="journal-badge">{journalGreenDays} green days</span>
-                        <span className="journal-badge danger">{journalRedDays} red days</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="journal-summary-grid journal-summary-grid-hero">
-                    <div className="journal-stat-card">
-                      <span>Net P/L</span>
-                      <b className={pnlClass(journalPnL)}>{signedCurrency(journalPnL)}</b>
-                      <small>{journalTrades} trades in selected view</small>
-                    </div>
-                    <div className="journal-stat-card">
-                      <span>Win Rate</span>
-                      <b>{formatPercent(journalWinRate)}</b>
-                      <small>{journalWins} green vs {journalLosses} red</small>
-                    </div>
-                    <div className="journal-stat-card">
-                      <span>Expectancy</span>
-                      <b className={pnlClass(journalExpectancy)}>{signedCurrency(journalExpectancy)}</b>
-                      <small>Average P/L per trade</small>
-                    </div>
-                    <div className="journal-stat-card">
-                      <span>Current Streak</span>
-                      <b>{journalStreak} days</b>
-                      <small>Consecutive green journal sessions</small>
-                    </div>
-                  </div>
-
-                  <div className="journal-weekdays">
-                    {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Total"].map((day) => (
-                      <span key={day}>{day}</span>
-                    ))}
-                  </div>
-
-                  <div className="journal-calendar-grid">
-                    {journalCalendar.weeks.flatMap((week) => ([
-                      ...week.cells.map((cell) => (
-                        cell.empty ? (
-                          <div className="journal-day-card journal-day-empty" key={cell.key} />
-                        ) : (
-                          <button
-                            className={`journal-day-card journal-day-button ${pnlClass(cell.pnl)} ${cell.isToday ? "journal-day-today" : ""} ${journalDateFilter === cell.key ? "journal-day-selected" : ""}`}
-                            key={cell.key}
-                            onClick={() => setJournalDateFilter((current) => current === cell.key ? "" : cell.key)}
-                            type="button"
-                          >
-                            <div className="journal-day-head">
-                              <small>{cell.day}</small>
-                              <span>{cell.row ? `${cell.trades}T` : "--"}</span>
-                            </div>
-                            <b>{cell.row ? signedCurrency(cell.pnl) : "$0.00"}</b>
-                            <span>{cell.row ? `${formatPercent(cell.winRate)} win` : "No trades"}</span>
-                          </button>
-                        )
-                      )),
-                      (
-                        <div className={`journal-day-card journal-week-total ${pnlClass(week.total.pnl)}`} key={`${week.key}-total`}>
-                          <small>Week</small>
-                          <b>{signedCurrency(week.total.pnl)}</b>
-                          <span>{week.total.trades ? `${week.total.trades} trades` : "No trades"}</span>
-                        </div>
-                      ),
-                    ]))}
-                  </div>
-                </div>
-
-                <aside className="journal-side-stack">
-                  <div className="journal-widget-card">
-                    <div className="journal-widget-title">
-                      <span>Account Balance & P/L</span>
-                      <small>Live paper account</small>
-                    </div>
-                    <strong>{formatCurrency(dashboard.status.accountEquity)}</strong>
-                    <b className={pnlClass(dashboard.status.dailyChange)}>{signedCurrency(dashboard.status.dailyChange)}</b>
-                    <p>{signedPercent(dashboard.status.dailyChangePct)} today</p>
-                  </div>
-
-                  <div className="journal-widget-card">
-                    <div className="journal-widget-title">
-                      <span>{journalDateFilter ? "Selected Day" : "Best Trading Day"}</span>
-                      <small>{journalDateFilter ? "Focused daily review" : "Highest realized daily P/L"}</small>
-                    </div>
-                    <strong className={pnlClass((selectedJournalDayRollup || journalBestDay)?.total_pnl)}>{signedCurrency((selectedJournalDayRollup || journalBestDay)?.total_pnl || 0)}</strong>
-                    <p>{selectedJournalDayRollup ? `${selectedJournalDayRollup.trades} trades • ${formatPercent(selectedJournalDayRollup.win_rate || 0)} win rate` : journalBestDay ? formatDateLabel(journalBestDay.period) : "No trade days yet"}</p>
-                  </div>
-
-                  <div className="journal-widget-card">
-                    <div className="journal-widget-title">
-                      <span>{journalDateFilter ? "Day Context" : "Worst Trading Day"}</span>
-                      <small>{journalDateFilter ? "Day selection status" : "Biggest realized drawdown day"}</small>
-                    </div>
-                    <strong className={pnlClass(journalWorstDay?.total_pnl)}>{journalDateFilter ? formatDateLabel(journalDateFilter) : signedCurrency(journalWorstDay?.total_pnl || 0)}</strong>
-                    <p>{journalDateFilter ? `${filteredJournalTrades.length} trades match the current day filter` : journalWorstDay ? formatDateLabel(journalWorstDay.period) : "No trade days yet"}</p>
-                  </div>
-
-                  <div className="journal-widget-card journal-week-card">
-                    <div className="journal-widget-title">
-                      <span>Weekly Snapshots</span>
-                      <small>Recent performance blocks</small>
-                    </div>
-                    <div className="journal-week-list">
-                      {journalWeeklySnapshots.length ? journalWeeklySnapshots.map((row) => (
-                        <div className="journal-week-item" key={row.period}>
-                          <div>
-                            <b>{row.label}</b>
-                            <span>{row.trades} trades</span>
-                          </div>
-                          <strong className={pnlClass(row.total_pnl)}>{signedCurrency(row.total_pnl)}</strong>
-                        </div>
-                      )) : (
-                        <div className="journal-week-empty">Weekly rollups will appear after more trades settle.</div>
-                      )}
-                    </div>
-                  </div>
-                </aside>
-              </div>
-            </section>
-            <section className="data-card scanner-table">
-              <div className="table-toolbar"><span>{journalView.toUpperCase()} P/L VIEW</span><span>{dashboard.status.accountLabel}</span></div>
-              <DataTable columns={[
-                { key: "period", label: "Period" },
-                { key: "trades", label: "Trades" },
-                { key: "wins", label: "Wins" },
-                { key: "losses", label: "Losses" },
-                { key: "win_rate", label: "Win Rate", render: formatPercent },
-                { key: "total_pnl", label: "P/L", render: (value) => <span className={pnlClass(value)}>{formatCurrency(value)}</span> },
-              ]} rows={journalRows} emptyMessage={`No ${journalView} journal rollups yet.`} />
-            </section>
-            <section className="data-card scanner-table journal-review-table">
-              <div className="table-toolbar"><span>TRADE REVIEW TABLE</span><span>{journalDateFilter ? `Filtered to ${formatDateLabel(journalDateFilter)}` : "Reference-style execution review"}</span></div>
-              <div className="journal-review-controls">
-                <input
-                  className="journal-review-search"
-                  placeholder="Search by symbol or setup..."
-                  value={journalSearch}
-                  onChange={(event) => setJournalSearch(event.target.value)}
-                />
-                <div className="journal-review-tabs">
-                  {[
-                    ["all", "All"],
-                    ["win", "Wins"],
-                    ["loss", "Losses"],
-                    ["open", "Open"],
-                  ].map(([value, label]) => (
-                    <button
-                      key={value}
-                      className={journalTradeFilter === value ? "review-tab-active" : ""}
-                      onClick={() => setJournalTradeFilter(value)}
-                      type="button"
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <DataTable columns={[
-                { key: "entry_time", label: "Date", render: formatDateLabel },
-                { key: "entry_time_only", label: "Time (ET)", sortable: false, render: (_, row) => formatTimeLabel(row.entry_time) },
-                {
-                  key: "symbol",
-                  label: "Symbol",
-                  render: (value, row) => (
-                    <div className="journal-symbol-cell">
-                      <span className="symbol-pill">{value}</span>
-                      <small>{row.setup_name || row.strategy_family || "Bot trade"}</small>
-                    </div>
-                  ),
-                },
-                {
-                  key: "side",
-                  label: "Side",
-                  render: (value) => <span className="journal-side-pill">{String(value || "buy").toUpperCase()}</span>,
-                },
-                { key: "account_label", label: "Account", render: (value) => value || "Watchlist stocks" },
-                { key: "learning_book", label: "Book", sortable: false, render: (_, row) => mag7OptionWatchlist.includes(String(row.symbol || "").toUpperCase()) ? "Mag7 Stock" : "Watchlist Stock" },
-                { key: "quantity", label: "Qty", render: formatCompactNumber },
-                { key: "entry_price", label: "Entry", render: formatCurrency },
-                { key: "partial_exit_taken", label: "Partial Exit", render: yesNoLabel },
-                { key: "partial_exit_price", label: "Partial Price", render: (value) => value == null ? "--" : formatCurrency(value) },
-                { key: "runner_stop_locked_pct", label: "Runner Lock %", render: (value) => value == null ? "--" : formatPercent(value) },
-                { key: "runner_exit_price", label: "Runner Exit", render: (value) => value == null ? "--" : formatCurrency(value) },
-                { key: "exit_price", label: "Exit", render: (_, row) => formatCurrency(row.exit_price || row.current_price || row.entry_price) },
-                {
-                  key: "pnl",
-                  label: "Realized PnL",
-                  render: (value) => <span className={pnlClass(value)}>{signedCurrency(value)}</span>,
-                },
-                {
-                  key: "profit_pct",
-                  label: "ROI %",
-                  render: (value) => <span className={pnlClass(value)}>{signedPercent(value)}</span>,
-                },
-                {
-                  key: "status_pill",
-                  label: "Status",
-                  sortable: false,
-                  render: (_, row) => {
-                    const status = tradeStatus(row);
-                    return <span className={`journal-status-pill ${status}`}>{statusLabel(status)}</span>;
-                  },
-                },
-              ]}
-              rows={journalReviewRows}
-              emptyMessage={journalDateFilter ? "No trade review rows for the selected day." : "No trade review rows yet."}
-              onRowClick={(row) => setSelectedJournalTradeId(String(row.client_order_id || row.id || row.symbol))}
-              getRowClassName={(row) => String(row.client_order_id || row.id || row.symbol) === selectedJournalTradeId ? "journal-row-selected" : "journal-row-clickable"}
-              />
-              {selectedJournalTrade ? (
-                <div className="journal-trade-detail">
-                  <div className="journal-trade-detail-head">
-                    <strong>{selectedJournalTrade.symbol} trade detail</strong>
-                    <span>{selectedJournalTrade.setup_name || selectedJournalTrade.strategy_family || "Momentum trade"}</span>
-                  </div>
-                  <div className="journal-trade-detail-grid">
-                    <div><small>Entry Reason</small><b>{selectedJournalTrade.entry_reason || selectedJournalTrade.trade_blueprint || "--"}</b></div>
-                    <div><small>Exit Reason</small><b>{selectedJournalTrade.exit_reason || "--"}</b></div>
-                    <div><small>Session</small><b>{selectedJournalTrade.session_name || "--"}</b></div>
-                    <div><small>Initial Risk</small><b>{formatCurrency(calculateInitialRisk(selectedJournalTrade))}</b></div>
-                    <div><small>Stop</small><b>{formatCurrency(selectedJournalTrade.stop_price)}</b></div>
-                    <div><small>Ref Target</small><b>{formatCurrency(selectedJournalTrade.target_price)}</b></div>
-                    <div><small>Partial Exit</small><b>{yesNoLabel(selectedJournalTrade.partial_exit_taken)}</b></div>
-                    <div><small>Partial Price</small><b>{selectedJournalTrade.partial_exit_price == null ? "--" : formatCurrency(selectedJournalTrade.partial_exit_price)}</b></div>
-                    <div><small>Runner Lock %</small><b>{selectedJournalTrade.runner_stop_locked_pct == null ? "--" : formatPercent(selectedJournalTrade.runner_stop_locked_pct)}</b></div>
-                    <div><small>Runner Exit</small><b>{selectedJournalTrade.runner_exit_price == null ? "--" : formatCurrency(selectedJournalTrade.runner_exit_price)}</b></div>
-                    <div><small>Runner Exit Reason</small><b>{selectedJournalTrade.runner_exit_reason || "--"}</b></div>
-                    <div><small>Win Prob</small><b>{selectedJournalTrade.model_win_probability == null ? "--" : `${(Number(selectedJournalTrade.model_win_probability) * 100).toFixed(1)}%`}</b></div>
-                    <div><small>Exp R</small><b>{selectedJournalTrade.model_expected_r == null ? "--" : Number(selectedJournalTrade.model_expected_r).toFixed(2)}</b></div>
-                    <div><small>AI Score</small><b>{selectedJournalTrade.ai_score ?? "--"}</b></div>
-                    <div><small>Trigger</small><b>{selectedJournalTrade.trigger_source || "--"}</b></div>
-                    <div><small>LLM Advice</small><b>{llmAdviceLabel(selectedJournalTrade)}</b></div>
-                    <div><small>LLM Rank</small><b>{selectedJournalTrade.llm_rank_score == null ? "--" : Number(selectedJournalTrade.llm_rank_score).toFixed(1)}</b></div>
-                    <div><small>LLM Mode</small><b>{selectedJournalTrade.llm_agent_mode || "--"}</b></div>
-                    <div><small>LLM Non-Blocking</small><b>{yesNoLabel(selectedJournalTrade.llm_agent_non_blocking !== false)}</b></div>
-                    <div className="journal-trade-detail-wide"><small>LLM Summary</small><b>{selectedJournalTrade.llm_summary || "--"}</b></div>
-                    <div className="journal-trade-detail-wide"><small>LLM Strengths</small><b>{formatListValue(selectedJournalTrade.llm_strengths)}</b></div>
-                    <div className="journal-trade-detail-wide"><small>LLM Cautions</small><b>{formatListValue(selectedJournalTrade.llm_cautions)}</b></div>
-                    <div className="journal-trade-detail-wide"><small>Notes</small><b>{selectedJournalTrade.notes || "--"}</b></div>
-                  </div>
-                </div>
-              ) : null}
-            </section>
+        {/* Momo Alert banner: mounted unconditionally so the DKNG-catcher
+            interrupts from ANY view, not only the scanner (trader,
+            2026-08-30). Renders null until an alert fires. */}
+        <MomoAlertWatcher />
+        {activeView === "MomX Scanner" && (
+          <section className="momx-scanner-view" data-testid="momx-scanner-view">
+            <MomxScannerPanel />
           </section>
         )}
 
-        {activeView === "Option Journal" && (
-          <OptionJournalWorkspace rows={optionTradeRows} accounts={dashboard.optionAccounts || []} positions={optionPositionRows} />
+        {activeView === "Learn + Setup" && (
+          <section className="learn-view" data-testid="learn-view">
+            <LearningCenter onNavigate={setActiveView} />
+          </section>
         )}
 
-        {false && activeView === "Option Journal" && (
-          <section className="journal-layout">
-            <section className="data-card journal-main-card">
-              <div className="table-toolbar">
-                <span>OPTION JOURNAL OVERVIEW</span>
-                <div className="table-toolbar-actions">
-                  <span>Mag7 + Watchlist Option Books</span>
-                  <span>Separate from stock journal</span>
-                </div>
-              </div>
-              <div className="journal-tradeview-shell">
-                <div className="journal-tradeview-topbar">
-                  <div>
-                    <h2>Option Journal</h2>
-                    <p>Separate option paper-trade records now land here without mixing into the stock journal.</p>
-                  </div>
-                </div>
-                <div className="journal-summary-grid journal-summary-grid-hero">
-                  <div className="journal-stat-card">
-                    <span>Option Trades</span>
-                    <b>{dashboard.optionTradeHistory?.length || 0}</b>
-                    <small>Broker-backed option-only history</small>
-                  </div>
-                  <div className="journal-stat-card">
-                    <span>Daily Rollups</span>
-                    <b>{dashboard.optionJournalRollups?.daily?.length || 0}</b>
-                    <small>Ready for option performance summaries</small>
-                  </div>
-                  <div className="journal-stat-card">
-                    <span>Status</span>
-                    <b>{dashboard.optionTradeHistory?.length ? "Live" : "Ready"}</b>
-                    <small>{dashboard.optionTradeHistory?.length ? "Alpaca-backed option records are being stored separately" : "No Alpaca option orders have been recorded yet"}</small>
-                  </div>
-                </div>
-              </div>
-            </section>
-            <section className="data-card scanner-table">
-              <div className="table-toolbar"><span>OPTION TRADE REVIEW TABLE</span><span>Option-only journal entries</span></div>
-              <DataTable
-                columns={[
-                  { key: "entry_time", label: "Entry Time (ET)", render: formatDateTime },
-                  { key: "account_label", label: "Account", render: (value, row) => value || (row.account_profile_id === "paper5" ? "Watchlist option" : "Mag7 OPTION") },
-                  { key: "account_profile_id", label: "Book", render: (value) => value === "paper5" ? "Watchlist 400 Option" : "Mag7 Option" },
-                  {
-                    key: "underlying",
-                    label: "Ticker",
-                    render: (value) => <span className="symbol-pill">{value}</span>,
-                  },
-                  { key: "contractExpiry", label: "Exp", render: formatEtDate },
-                  { key: "contractLabel", label: "Call" },
-                  { key: "totalCost", label: "Total Cost", render: formatCurrency },
-                  { key: "selected_option_delta", label: "Delta", render: (value) => value == null ? "--" : Number(value).toFixed(4) },
-                  { key: "selected_option_bid", label: "Bid", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "selected_option_ask", label: "Ask", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "selected_option_mid", label: "Mid", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "selected_option_expected_move", label: "Exp Move", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "selected_option_volume", label: "Opt Vol", render: formatCompactNumber },
-                  { key: "selected_option_open_interest", label: "OI", render: formatCompactNumber },
-                  { key: "underlying_target_1_strike", label: "Strike Target", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "underlying_target_liquidity_metric", label: "Target By", render: (value) => value ? String(value).replace("_", " ") : "--" },
-                  { key: "liquidity_breakout_required", label: "ATM Break", render: (value) => value == null ? "--" : (value ? "Required" : "No") },
-                  { key: "broker_submit_ms", label: "Submit ms", render: (value) => value == null ? "--" : `${Number(value).toFixed(0)} ms` },
-                  { key: "stopLossRule", label: "Stop Rule" },
-                  { key: "option_rule_trigger_match", label: "Trigger" },
-                  { key: "option_one_hour_price_change_pct", label: "1H Price %", render: (value, row) => value == null ? (row.option_one_hour_close_change_pct == null ? "--" : formatPercent(row.option_one_hour_close_change_pct)) : formatPercent(value) },
-                  { key: "option_four_hour_price_change_pct", label: "4H Price %", render: (value, row) => value == null ? (row.option_four_hour_close_change_pct == null ? "--" : formatPercent(row.option_four_hour_close_change_pct)) : formatPercent(value) },
-                  { key: "option_rule_passed", label: "Signal Logic", render: (value) => value == null ? "--" : (value ? "Passed" : "Blocked") },
-                  { key: "structure", label: "Structure" },
-                  { key: "quantity", label: "Qty" },
-                  { key: "remaining_quantity", label: "Remain" },
-                  { key: "entry_price", label: "Entry", render: formatCurrency },
-                  { key: "current_mid", label: "Mark", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "runner_stop", label: "Stop", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "take_profit_1", label: "Target 1", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "contracts_to_sell_at_target_1", label: "T1 Sell" },
-                  { key: "partial_exit_taken", label: "Partial", render: yesNoLabel },
-                  { key: "partial_exit_price", label: "Partial Price", render: (value) => value == null ? "--" : formatCurrency(value) },
-                  { key: "realized_pnl", label: "Realized", render: (value) => <span className={pnlClass(value)}>{signedCurrency(value)}</span> },
-                  { key: "unrealized_pnl", label: "Unrealized", render: (value) => <span className={pnlClass(value)}>{signedCurrency(value)}</span> },
-                  { key: "runner_stop_locked_pct", label: "Runner Lock", render: (value) => value == null ? "--" : formatPercent(value) },
-                  { key: "runner_exit_reason", label: "Runner Exit" },
-                  { key: "max_loss_amount", label: "Max Loss", render: formatCurrency },
-                  { key: "approval_mode", label: "Approval" },
-                  { key: "status", label: "Status" },
-                  { key: "exit_price", label: "Exit", render: formatCurrency },
-                  { key: "pnl", label: "P/L", render: (value) => <span className={pnlClass(value)}>{signedCurrency(value)}</span> },
-                ]}
-                rows={optionTradeRows}
-                emptyMessage="No option journal entries yet. Log an option preview ticket from Option Paper Trading."
-              />
-            </section>
+        {activeView === "Release Notes" && (
+          <section className="learn-view" data-testid="release-notes-view">
+            <ReleaseNotesPanel />
           </section>
         )}
 
@@ -28320,21 +30622,6 @@ function TradingWorkspace({ authUser, onLogout }) {
           </section>
         )}
 
-        {activeView === "Memory" && (
-          <section className="data-card scanner-table">
-            <div className="table-toolbar"><span>SYMBOL MEMORY</span><span>Learning layer from backtests</span></div>
-            <DataTable columns={[
-              { key: "symbol", label: "Symbol", render: (value) => <span className="symbol-pill">{value}</span> },
-              { key: "observations", label: "Trades" },
-              { key: "wins", label: "Wins" },
-              { key: "losses", label: "Losses" },
-              { key: "total_pnl", label: "Total P/L", render: formatCurrency },
-              { key: "total_r", label: "Total R" },
-              { key: "confidence", label: "Confidence", render: formatPercent },
-            ]} rows={dashboard.symbolMemory} emptyMessage="No symbol memory yet. Run a backtest first." />
-          </section>
-        )}
-
         {activeView === "Watchlist" && (
           <section className="watchlist-panel">
             <div className="watchlist-panel-head">
@@ -28342,7 +30629,7 @@ function TradingWorkspace({ authUser, onLogout }) {
                 <h2>My Watchlist</h2>
                 <p>{dashboard.watchlist?.length || 0} symbols scanned by Alpaca</p>
               </div>
-              <button className="watchlist-close" onClick={() => setActiveView("OI Scanner")} type="button">x</button>
+              <button className="watchlist-close" onClick={() => setActiveView("Charts & OI")} type="button">x</button>
             </div>
             <div className="watchlist-panel-body">
               <div className="watchlist-addbar">
@@ -28360,10 +30647,45 @@ function TradingWorkspace({ authUser, onLogout }) {
                   {submitting === "watchlist-add" ? "Adding..." : "+ Add ticker"}
                 </button>
               </div>
-              <p className="watchlist-helper">Every change is saved locally and used on the next scan.</p>
+              <div className="watchlist-addbar">
+                <input
+                  value={watchlistSearchDraft}
+                  onChange={(event) => setWatchlistSearchDraft(event.target.value.toUpperCase())}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      setWatchlistSearch(watchlistSearchDraft);
+                    }
+                  }}
+                  placeholder="Search ticker, e.g. AAPL"
+                />
+                <button
+                  className="watchlist-add-button"
+                  onClick={() => setWatchlistSearch(watchlistSearchDraft)}
+                  type="button"
+                >
+                  Search
+                </button>
+                {watchlistSearch ? (
+                  <button
+                    className="watchlist-edit-btn"
+                    onClick={() => {
+                      setWatchlistSearch("");
+                      setWatchlistSearchDraft("");
+                    }}
+                    type="button"
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+              <p className="watchlist-helper">
+                {watchlistSearchTerm
+                  ? `Showing ${visibleWatchlistSymbols.length} of ${(dashboard.watchlist || []).length} tickers matching ${watchlistSearchTerm}.`
+                  : "Every change is saved locally and used on the next scan."}
+              </p>
               <div className="watchlist-grid-scroll">
                 <div className="watchlist-grid-cards">
-                  {(dashboard.watchlist || []).map((symbol) => {
+                  {visibleWatchlistSymbols.map((symbol) => {
                     const isEditing = editingWatchlistSymbol === symbol;
                     return (
                       <div className="watchlist-row-card" key={symbol}>
@@ -28415,6 +30737,12 @@ function TradingWorkspace({ authUser, onLogout }) {
                       </div>
                     );
                   })}
+                  {/* Without this, a search that matches nothing renders an empty
+                      box that reads as "the watchlist is gone" rather than "no
+                      match" - the same empty-state trap the news panel had. */}
+                  {watchlistSearchTerm && !visibleWatchlistSymbols.length ? (
+                    <p className="watchlist-helper">No ticker in your watchlist matches {watchlistSearchTerm}.</p>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -28425,10 +30753,10 @@ function TradingWorkspace({ authUser, onLogout }) {
           <section className="watchlist-panel mag7-watchlist-panel">
             <div className="watchlist-panel-head">
               <div>
-                <h2>Mag7 Scanner</h2>
+                <h2>Mag7 Watchlist</h2>
                 <p>{mag7OptionWatchlistSource.length} signal tickers, {mag7OptionWatchlist.length} mapped underlyings scanned by the MAG7 scanner</p>
               </div>
-              <button className="watchlist-close" onClick={() => setActiveView("Scanner")} type="button">x</button>
+              <button className="watchlist-close" onClick={() => setActiveView("Charts & OI")} type="button">x</button>
             </div>
             <div className="watchlist-panel-body">
               <div className="watchlist-addbar">
@@ -28556,7 +30884,7 @@ function TradingWorkspace({ authUser, onLogout }) {
                 <h2>My Option Watchlist</h2>
                 <p>{dashboard.optionWatchlist?.length || 0} underlyings tracked separately for option planning</p>
               </div>
-              <button className="watchlist-close" onClick={() => setActiveView("OI Scanner")} type="button">x</button>
+              <button className="watchlist-close" onClick={() => setActiveView("Charts & OI")} type="button">x</button>
             </div>
             <div className="watchlist-panel-body">
               <div className="watchlist-addbar">
@@ -28684,6 +31012,10 @@ function TradingWorkspace({ authUser, onLogout }) {
                 </div>
                 <div className="account-settings-body">
                   {authUser.mustChangePassword ? <div className="account-security-notice">Change the temporary password before continuing.</div> : null}
+                  {authUser.hasPassword === false ? (
+                    <small>You sign in with a one-time code emailed by Cloudflare, so there is no password to change.</small>
+                  ) : (
+                    <>
                   <div className="account-password-grid">
                     <label>Current password<input autoComplete="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
                     <label>New password<input autoComplete="new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
@@ -28691,9 +31023,165 @@ function TradingWorkspace({ authUser, onLogout }) {
                     <button disabled={submitting === "change-password" || !currentPassword || !newPassword || !confirmPassword} onClick={changeMyPassword} type="button">{submitting === "change-password" ? "Changing..." : "Change password"}</button>
                   </div>
                   <small>Changing your password signs out all sessions. Sign in again with the new password.</small>
+                    </>
+                  )}
                   {accountMessage ? <div className="schwab-settings-message">{accountMessage}</div> : null}
                 </div>
               </section>
+              {/* App health checklist. Admin-only per the trader's request
+                  ("add in admin settings not for user") and gated on the SAME
+                  authUser.isAdmin flag the user-management and device-access
+                  cards below use - buildPreflightView returns visible:false
+                  for everyone else. Placed first because on a red morning it
+                  is the only thing on this page that matters. */}
+              {preflightView.visible ? (
+                <section className="data-card preflight-card">
+                  <div className="table-toolbar">
+                    <span>APP HEALTH CHECKLIST</span>
+                    <span>{preflightView.scheduleLabel || "Admin only"}</span>
+                  </div>
+                  <div className="preflight-body">
+                    <div className={`preflight-headline ${preflightView.summary.toneClass}`}>
+                      <div className="preflight-headline-text">
+                        <b>{preflightView.phase === "error" ? "Checklist unavailable" : preflightView.summary.headline}</b>
+                        <small>
+                          {preflightView.phase === "loading"
+                            ? "Reading the last result..."
+                            : preflightView.summary.total
+                              ? `${preflightView.summary.countsLabel} · ran ${preflightView.ageLabel}${preflightView.summary.ranAt ? ` · ${formatDateTime(preflightView.summary.ranAt)}` : ""}`
+                              : "Nothing has been measured yet."}
+                        </small>
+                        {preflightView.summary.total && preflightView.summary.detail ? (
+                          <small>Needs a look: {preflightView.summary.detail}</small>
+                        ) : null}
+                        {preflightView.summary.autoFixedLabel ? (
+                          <small className="preflight-autofix">{preflightView.summary.autoFixedLabel}</small>
+                        ) : null}
+                        {/* A fix that RAN and did not work is not a fix. It
+                            used to be counted in the line above, so a failing
+                            row could sit directly under "1 problem fixed
+                            automatically". */}
+                        {preflightView.summary.autoFixAttemptedLabel ? (
+                          <small className="preflight-autofix-failed">
+                            {preflightView.summary.autoFixAttemptedLabel}
+                          </small>
+                        ) : null}
+                      </div>
+                      <div className="preflight-headline-actions">
+                        <button
+                          className="preflight-run-button"
+                          disabled={preflightView.running}
+                          onClick={runPreflightNow}
+                          type="button"
+                        >
+                          {preflightView.running ? "Running checks..." : "Run check now"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {preflightView.error ? <div className="preflight-notice is-error">{preflightView.error}</div> : null}
+                    {/* Envelope-level observations: the checklist module would
+                        not load, the archive could not be read, or the daily
+                        08:45 job is not actually scheduled in this process.
+                        Each one silently invalidates part of what is drawn
+                        below, so none of them may be swallowed. */}
+                    {preflightView.notices.map((notice) => (
+                      <div className={`preflight-notice${notice.tone === "error" ? " is-error" : ""}`} key={notice.key}>
+                        {notice.text}
+                      </div>
+                    ))}
+                    {preflightView.phase === "loading" ? (
+                      <div className="preflight-notice">Reading the last checklist run...</div>
+                    ) : null}
+                    {preflightView.phase === "empty" ? (
+                      <div className="preflight-notice is-empty">
+                        No result yet today. That is not a pass - nothing has been measured. Press "Run check now".
+                      </div>
+                    ) : null}
+                    {preflightView.stale ? (
+                      <div className="preflight-notice is-stale">
+                        This result ran {preflightView.ageLabel}. Run it again before you trade on it.
+                      </div>
+                    ) : null}
+
+                    {preflightView.checks.length ? (
+                      <div className="preflight-checks">
+                        {preflightView.checks.map((check) => (
+                          <div className={`preflight-check ${check.toneClass}`} key={check.id}>
+                            <span className="preflight-check-badge">{check.label}</span>
+                            <div className="preflight-check-main">
+                              <b>
+                                {check.name}
+                                {/* preflight.py already marks which rows stop
+                                    him trading. At 09:29 "can I trade?" is the
+                                    only ranking question, so say it. */}
+                                {check.critical && check.tone !== "pass" ? (
+                                  <span className="preflight-critical">CRITICAL</span>
+                                ) : null}
+                              </b>
+                              {/* The measured number, always present. A tick with
+                                  no number is what failed him overnight. */}
+                              <span className={`preflight-measure${check.hasMeasure ? "" : " is-missing"}`}>
+                                {check.measure}
+                              </span>
+                              {check.detail ? <span className="preflight-check-detail">{check.detail}</span> : null}
+                              {check.autoFixed ? (
+                                <span className="preflight-autofix">
+                                  FIXED AUTOMATICALLY{check.autoFixNote ? ` · ${check.autoFixNote}` : ""}
+                                </span>
+                              ) : null}
+                              {/* A fix ran here and the re-check still came
+                                  back bad. Saying so on the row is the only
+                                  way to tell "nobody tried" from "we tried
+                                  and it did not help". */}
+                              {!check.autoFixed && check.autoFixAttempted ? (
+                                <span className="preflight-autofix-failed">
+                                  AUTOMATIC FIX DID NOT WORK{check.autoFixNote ? ` · ${check.autoFixNote}` : ""}
+                                </span>
+                              ) : null}
+                              {check.action ? <div className="preflight-action">{check.action}</div> : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <div className="preflight-strip-block">
+                      <div className="preflight-strip-head">
+                        <span>LAST {PREFLIGHT_STRIP_DAYS} DAYS</span>
+                        <small>{preflightView.stripSummary}</small>
+                      </div>
+                      {preflightView.strip.length ? (
+                        <>
+                          <div className="preflight-strip">
+                            {preflightView.strip.map((day) => (
+                              <button
+                                aria-label={day.title}
+                                className={`preflight-day ${day.toneClass}${day.missing ? " is-missing" : ""}${preflightSelectedDay === day.date ? " is-selected" : ""}`}
+                                key={day.date}
+                                onClick={() => setPreflightSelectedDay(preflightSelectedDay === day.date ? "" : day.date)}
+                                title={day.title}
+                                type="button"
+                              />
+                            ))}
+                          </div>
+                          {/* Hover titles are useless on a phone, so the same
+                              text is reachable by tap on both form factors. */}
+                          <div className="preflight-day-detail">
+                            {preflightSelectedDayDetail
+                              ? preflightSelectedDayDetail.title
+                              : "Tap a square to read that day's result. Newest is on the right; a dashed square means no check ran."}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="preflight-notice is-empty">
+                          No days archived yet. One square appears per day once the checklist has run.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              ) : null}
               {authUser.isAdmin ? (
                 <section className="data-card admin-users-card">
                   <div className="table-toolbar">
@@ -28704,17 +31192,64 @@ function TradingWorkspace({ authUser, onLogout }) {
                     <div className="admin-user-create-grid">
                       <label>Name<input value={newUserName} onChange={(event) => setNewUserName(event.target.value)} placeholder="User name" /></label>
                       <label>Email<input type="email" value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} placeholder="user@example.com" /></label>
-                      <label>Temporary password<input autoComplete="new-password" type="password" value={newUserPassword} onChange={(event) => setNewUserPassword(event.target.value)} placeholder="10+ characters" /></label>
                       <label>Role<select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value)}><option value="user">User</option><option value="admin">Admin</option></select></label>
-                      <button disabled={submitting === "create-user" || !newUserEmail || !newUserPassword} onClick={createWorkspaceUser} type="button"><UserPlus size={15} />{submitting === "create-user" ? "Creating..." : "Create user"}</button>
+                      <button disabled={submitting === "create-user" || !newUserEmail} onClick={createWorkspaceUser} type="button"><UserPlus size={15} />{submitting === "create-user" ? "Creating..." : "Create user"}</button>
                     </div>
                     {adminMessage ? <div className="schwab-settings-message">{adminMessage}</div> : null}
+                    {inviteMessage ? (
+                      <div className="admin-invite-block">
+                        <pre className="admin-invite-text">{inviteMessage}</pre>
+                        <button className="admin-invite-copy" onClick={copyInviteMessage} type="button">
+                          {inviteCopied ? "Copied" : "Copy invite"}
+                        </button>
+                      </div>
+                    ) : null}
                     <div className="admin-user-list">
                       {adminUsers.map((user) => (
                         <div key={user.id}>
-                          <span><b>{user.displayName}</b><small>{maskEmail(user.email)}</small></span>
+                          <span><b>{user.displayName}</b><small>{user.email}</small></span>
                           <em>{user.isAdmin ? "Admin" : "User"}</em>
-                          <small>{user.mustChangePassword ? "Temporary password" : user.lastLoginAt ? `Last login ${formatDateTime(user.lastLoginAt)}` : "Not signed in yet"}</small>
+                          <small>{!user.isActive ? "Disabled" : user.mustChangePassword ? "Temporary password" : user.lastLoginAt ? `Last login ${formatDateTime(user.lastLoginAt)}` : "Not signed in yet"}</small>
+                          <div className="admin-user-actions">
+                            {/* Disabling yourself, or the last admin, is refused by the
+                                server; hiding it here keeps a dead button off the row. */}
+                            {user.id === authUser.id ? null : (
+                              <>
+                                <button
+                                  disabled={submitting === `active-user-${user.id}`}
+                                  onClick={() => setWorkspaceUserActive(user, !user.isActive)}
+                                  type="button"
+                                >
+                                  {submitting === `active-user-${user.id}`
+                                    ? "Saving..."
+                                    : user.isActive ? "Disable" : "Enable"}
+                                </button>
+                                {deleteArmedUserId === user.id ? (
+                                  <span className="admin-user-delete-confirm" role="group" aria-label="Confirm delete">
+                                    <b>Delete for good?</b>
+                                    <button
+                                      className="is-danger"
+                                      disabled={submitting === `delete-user-${user.id}`}
+                                      onClick={() => deleteWorkspaceUser(user)}
+                                      type="button"
+                                    >
+                                      {submitting === `delete-user-${user.id}` ? "Deleting..." : "Yes, delete"}
+                                    </button>
+                                    <button type="button" onClick={() => setDeleteArmedUserId("")}>Cancel</button>
+                                  </span>
+                                ) : (
+                                  <button
+                                    className="is-danger"
+                                    onClick={() => setDeleteArmedUserId(user.id)}
+                                    title="Removes the account and frees the email address for re-use. Disable instead if you may want them back."
+                                    type="button"
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -28738,8 +31273,8 @@ function TradingWorkspace({ authUser, onLogout }) {
                         {adminDeviceAccess.pendingRequests.map((device) => (
                           <div className="admin-device-row" key={device.id}>
                             <span className="admin-device-user">
-                              <b>{device.userDisplayName || maskEmail(device.userEmail)}</b>
-                              <small>{maskEmail(device.userEmail)}</small>
+                              <b>{device.userDisplayName || device.userEmail}</b>
+                              <small>{device.userEmail}</small>
                             </span>
                             <span className="admin-device-details">
                               <b>{device.label}</b>
@@ -28776,8 +31311,8 @@ function TradingWorkspace({ authUser, onLogout }) {
                         {adminDeviceAccess.approvedDevices.map((device) => (
                           <div className="admin-device-row" key={device.id}>
                             <span className="admin-device-user">
-                              <b>{device.userDisplayName || maskEmail(device.userEmail)}</b>
-                              <small>{maskEmail(device.userEmail)}</small>
+                              <b>{device.userDisplayName || device.userEmail}</b>
+                              <small>{device.userEmail}</small>
                             </span>
                             <span className="admin-device-details">
                               <b>{device.label}</b>
@@ -28803,43 +31338,6 @@ function TradingWorkspace({ authUser, onLogout }) {
                   </div>
                 </section>
               ) : null}
-              <section className="data-card navigation-settings-card" aria-labelledby="navigation-panel-settings-title">
-                <div className="table-toolbar navigation-settings-heading">
-                  <span id="navigation-panel-settings-title">NAVIGATION PANELS</span>
-                  <span>Choose which optional panels appear in the sidebar</span>
-                </div>
-                <div className="navigation-settings-body">
-                  <p>These panels are hidden by default. Turn on only the panels you need; your choices are saved in this browser.</p>
-                  <div className="navigation-panel-grid">
-                    {MANAGEABLE_NAVIGATION_PANELS.map((label) => {
-                      const item = optionNavItems.find((candidate) => candidate.label === label);
-                      const PanelIcon = item?.icon || LayoutDashboard;
-                      const visible = !hiddenNavigationPanels.has(label);
-                      return (
-                        <label className={`navigation-panel-option ${visible ? "is-visible" : ""}`} key={label}>
-                          <span className="navigation-panel-option-copy">
-                            <PanelIcon size={16} strokeWidth={1.8} />
-                            <span>
-                              <b>{item?.displayLabel || label}</b>
-                              <small>{visible ? "Shown in sidebar" : "Hidden from sidebar"}</small>
-                            </span>
-                          </span>
-                          <input
-                            aria-label={`Show ${item?.displayLabel || label} panel`}
-                            checked={visible}
-                            onChange={(event) => setNavigationPanelVisible(label, event.target.checked)}
-                            type="checkbox"
-                          />
-                        </label>
-                      );
-                    })}
-                  </div>
-                  <div className="navigation-settings-actions">
-                    <button onClick={() => setAllManagedNavigationPanelsVisible(false)} type="button">Hide listed panels</button>
-                    <button onClick={() => setAllManagedNavigationPanelsVisible(true)} type="button">Show all listed panels</button>
-                  </div>
-                </div>
-              </section>
               <section className="data-card schwab-settings-card">
                 <div className="schwab-settings-heading">
                   <div>
@@ -29023,6 +31521,111 @@ function TradingWorkspace({ authUser, onLogout }) {
           </section>
         )}
       </main>
+      <nav className="mobile-chart-bottom-nav" aria-label="Mobile primary navigation">
+        <button
+          className={chartsAndOiPageActive && mobileChartSection === "chart" ? "is-active" : ""}
+          type="button"
+          onClick={openMobileChart}
+          aria-current={chartsAndOiPageActive && mobileChartSection === "chart" ? "page" : undefined}
+        >
+          <ChartCandlestick size={20} />
+          <span>Chart</span>
+        </button>
+        <button
+          className={quickOptionsPageActive ? "is-active" : ""}
+          data-testid="mobile-primary-options"
+          type="button"
+          onClick={openMobileOptions}
+          onPointerDown={() => warmMobileQuickOptions(oiFinderSymbol).catch(() => {})}
+          aria-current={quickOptionsPageActive ? "page" : undefined}
+        >
+          <Database size={20} />
+          <span>Options</span>
+        </button>
+        <button
+          className={activeView === "Auto Alert" ? "is-active" : ""}
+          data-testid="mobile-primary-auto-alert"
+          type="button"
+          onClick={() => navigateMobileTerminal("Auto Alert")}
+          aria-current={activeView === "Auto Alert" ? "page" : undefined}
+        >
+          <span className="mobile-nav-bell">
+            <Bell size={20} />
+            {oiAutoAlertFeed.unseen ? <i className="nav-auto-alert-badge">{oiAutoAlertFeed.unseen > 9 ? "9+" : oiAutoAlertFeed.unseen}</i> : null}
+          </span>
+          <span>Alerts</span>
+        </button>
+        <button
+          className={activeView === "Premarket Scanner" ? "is-active" : ""}
+          data-testid="mobile-primary-premarket-scanner"
+          type="button"
+          onClick={() => navigateMobileTerminal("Premarket Scanner")}
+          aria-current={activeView === "Premarket Scanner" ? "page" : undefined}
+        >
+          <Sunrise size={20} />
+          <span>Premarket</span>
+        </button>
+        <button
+          className={activeView === "MomX Scanner" ? "is-active" : ""}
+          data-testid="mobile-primary-momx-scanner"
+          type="button"
+          onClick={() => navigateMobileTerminal("MomX Scanner")}
+          aria-current={activeView === "MomX Scanner" ? "page" : undefined}
+        >
+          <Radar size={20} />
+          <span>MomX</span>
+        </button>
+        <button
+          className={mobileMoreOpen || isOverflowDestinationActive(activeView, mobileOverflowDestinations) ? "is-active" : ""}
+          data-testid="mobile-primary-more"
+          type="button"
+          onClick={() => setMobileMoreOpen((open) => !open)}
+          aria-expanded={mobileMoreOpen}
+          aria-haspopup="menu"
+        >
+          <LayoutPanelTop size={20} />
+          <span>More</span>
+        </button>
+      </nav>
+      {mobileMoreOpen ? (
+        <div
+          className="mobile-more-backdrop"
+          role="presentation"
+          onClick={() => setMobileMoreOpen(false)}
+        >
+          <div
+            className="mobile-more-sheet"
+            role="menu"
+            aria-label="More destinations"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <b>Go to</b>
+              <button type="button" onClick={() => setMobileMoreOpen(false)} aria-label="Close">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="mobile-more-grid">
+              {mobileOverflowDestinations.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.label}
+                    className={activeView === item.label ? "is-active" : ""}
+                    role="menuitem"
+                    type="button"
+                    onClick={() => openMobileOverflowDestination(item.label)}
+                    aria-current={activeView === item.label ? "page" : undefined}
+                  >
+                    {Icon ? <Icon size={19} /> : null}
+                    <span>{overflowDestinationLabel(item)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

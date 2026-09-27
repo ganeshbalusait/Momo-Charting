@@ -362,6 +362,15 @@ class TradingRepository:
             connection.execute("CREATE INDEX IF NOT EXISTS idx_learning_source ON learning_observations(source, product)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_learning_due ON learning_horizon_outcomes(due_at, resolved_at)")
             self._ensure_column(connection, "scan_runs", "top_symbol", "TEXT")
+            # Ticker-tagged news scraper (2026-09-26): which aggregator carried the
+            # story, its teaser, every ticker the publisher tagged, and the
+            # publisher's own article id. Older databases gain the columns in place.
+            self._ensure_column(connection, "catalyst_items", "via", "TEXT")
+            self._ensure_column(connection, "catalyst_items", "summary", "TEXT")
+            self._ensure_column(connection, "catalyst_items", "related_symbols", "TEXT")
+            self._ensure_column(connection, "catalyst_items", "article_id", "TEXT")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_catalyst_symbol_url ON catalyst_items(symbol, url)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_catalyst_published ON catalyst_items(published_at)")
             self._ensure_column(connection, "learning_observations", "cohort", "TEXT NOT NULL DEFAULT 'mag7'")
             self._ensure_column(connection, "learning_trade_outcomes", "cohort", "TEXT NOT NULL DEFAULT 'mag7'")
             self._ensure_column(connection, "scan_runs", "notes", "TEXT")
@@ -431,6 +440,21 @@ class TradingRepository:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_option_chain_daily_lookup ON option_chain_daily_snapshots(symbol, expiry, side, snapshot_date, strike)"
             )
+            # The canonical-expiry prune in upsert_option_chain_daily_snapshots
+            # deletes by (snapshot_date, symbol, side, strike) with expiry
+            # constrained only through substr(), so idx_..._lookup dies at its
+            # second column and each DELETE range-scanned the whole
+            # (date, symbol) slice. At 2.18M rows that made one NFLX chain
+            # persist cost 264s of DB time, growing daily with the table ("app
+            # slow for many days"). With this index: 100 deletes in 1ms,
+            # measured 2026-08-21. The ANALYZE is what makes the planner
+            # actually pick it over the unique autoindex.
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_option_chain_daily_prune ON option_chain_daily_snapshots(snapshot_date, symbol, side, strike)"
+            )
+            connection.execute(
+                "ANALYZE option_chain_daily_snapshots"
+            )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_option_wall_strength_lookup ON option_wall_strength_snapshots(symbol, bucket_time, side, strike)"
             )
@@ -496,7 +520,39 @@ class TradingRepository:
         return date_part if len(date_part) == 10 and date_part[4:5] == "-" and date_part[7:8] == "-" else text
 
     def _deduplicate_option_chain_snapshot_expiries(self, connection: sqlite3.Connection) -> None:
-        """Collapse legacy ISO-timestamp and date-only copies of the same option expiry."""
+        """Collapse legacy ISO-timestamp and date-only copies of the same option expiry.
+
+        Guarded, because this is a one-time migration that ran on EVERY boot.
+        Measured on the live database 2026-08-22: 2,349,128 rows, none of them
+        needing canonicalisation, bare-SELECTed into Python dicts inside
+        initialize() - 55s of GIL and 2,088MB transient RSS per boot, growing
+        ~4s/day. There were seven restarts on 2026-08-21, five during market
+        hours, so this was minutes of dead time in front of the trader.
+
+        Skipping is provably safe rather than merely likely. _canonical_option_expiry
+        returns something DIFFERENT from the stored text only when that text is
+        longer than 10 characters and carries dashes at positions 5 and 8 (it
+        takes text[:10] and keeps it only if it looks like a date; anything else
+        is returned unchanged). The table declares
+        UNIQUE(snapshot_date, symbol, expiry, side, strike), so when no such row
+        exists the grouping key below IS the unique key: every group has exactly
+        one member whose expiry already equals its canonical form, and the loop
+        `continue`s over all of them without writing.
+
+        The probe costs ~0.3s against the live table versus ~55s for the scan.
+        """
+        needs_canonicalisation = connection.execute(
+            """
+            SELECT 1
+            FROM option_chain_daily_snapshots
+            WHERE length(expiry) > 10
+              AND substr(expiry, 5, 1) = '-'
+              AND substr(expiry, 8, 1) = '-'
+            LIMIT 1
+            """
+        ).fetchone()
+        if needs_canonicalisation is None:
+            return
         rows = connection.execute(
             """
             SELECT id, snapshot_date, captured_at, symbol, expiry, side, strike, volume, open_interest, gamma, delta
@@ -1382,30 +1438,107 @@ class TradingRepository:
             f"SELECT * FROM backtest_runs ORDER BY created_at DESC LIMIT {int(limit)}"
         )
 
-    def log_catalysts(self, items: list[dict]) -> None:
+    def log_catalysts(self, items: list[dict]) -> int:
+        """Store scraped headlines; returns how many rows were new.
+
+        Sources report the same story with slightly different timestamps
+        (Finviz is minute-level Eastern time, Yahoo is epoch seconds), so the
+        UNIQUE(symbol, headline, published_at) constraint alone is not enough.
+        A story already stored for the symbol under the same canonical URL or
+        the same normalized headline is skipped.
+        """
         if not items:
-            return
+            return 0
+        inserted = 0
         with self._connect() as connection:
             for item in items:
-                connection.execute(
+                symbol = str(item.get("symbol", "") or "").strip().upper()
+                headline = str(item.get("headline", "") or "").strip()
+                url = str(item.get("url", "") or "").strip()
+                if not symbol or not headline:
+                    continue
+                duplicate = connection.execute(
+                    """
+                    SELECT 1 FROM catalyst_items
+                    WHERE symbol = ?
+                      AND (
+                        (? != '' AND url = ?)
+                        OR LOWER(TRIM(headline)) = LOWER(?)
+                      )
+                    LIMIT 1
+                    """,
+                    (symbol, url, url, headline),
+                ).fetchone()
+                if duplicate:
+                    continue
+                cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO catalyst_items (
                         created_at, symbol, headline, source, url, published_at,
-                        score, sentiment, tags
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        score, sentiment, tags, via, summary, related_symbols, article_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         datetime.utcnow().isoformat(),
-                        item.get("symbol", ""),
-                        item.get("headline", ""),
+                        symbol,
+                        headline,
                         item.get("source", ""),
-                        item.get("url", ""),
+                        url,
                         item.get("published_at", ""),
                         int(item.get("score") or 0),
                         item.get("sentiment", ""),
                         item.get("tags", ""),
+                        item.get("via", ""),
+                        item.get("summary", ""),
+                        item.get("related_symbols", ""),
+                        item.get("article_id", ""),
                     ),
                 )
+                inserted += int(cursor.rowcount or 0)
+        return inserted
+
+    def get_catalysts_for_symbols(
+        self,
+        symbols: list[str],
+        per_symbol: int = 5,
+        lookback_days: int = 7,
+    ) -> list[dict]:
+        """Newest ``per_symbol`` stored headlines for each symbol, newest first.
+
+        Read-only and DB-only: the MomX tab calls this on every board change to
+        paint its News column, so it must never touch the network.
+        """
+        wanted = list(dict.fromkeys(str(s or "").strip().upper() for s in symbols if str(s or "").strip()))
+        if not wanted:
+            return []
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))).isoformat()
+        out: list[dict] = []
+        # SQLite caps bound parameters; 200 symbols per query keeps well under it.
+        for start in range(0, len(wanted), 200):
+            chunk = wanted[start:start + 200]
+            placeholders = ",".join("?" for _ in chunk)
+            frame = self._query_frame(
+                f"""
+                SELECT id, created_at, symbol, headline, source, url, published_at,
+                       score, sentiment, tags, via, summary, related_symbols, article_id
+                FROM (
+                    SELECT catalyst_items.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY UPPER(symbol)
+                               ORDER BY published_at DESC, created_at DESC, id DESC
+                           ) AS symbol_rank
+                    FROM catalyst_items
+                    WHERE UPPER(symbol) IN ({placeholders})
+                      AND COALESCE(published_at, created_at) >= ?
+                )
+                WHERE symbol_rank <= ?
+                ORDER BY UPPER(symbol), published_at DESC, created_at DESC
+                """,
+                tuple(chunk) + (cutoff, max(int(per_symbol), 1)),
+            )
+            if not frame.empty:
+                out.extend(frame.to_dict("records"))
+        return out
 
     def get_recent_catalysts(self, limit: int = 50) -> pd.DataFrame:
         return self._query_frame(
@@ -1416,7 +1549,7 @@ class TradingRepository:
         return self._query_frame(
             """
             SELECT id, created_at, symbol, headline, source, url, published_at,
-                   score, sentiment, tags
+                   score, sentiment, tags, via, summary, related_symbols, article_id
             FROM (
                 SELECT catalyst_items.*,
                        ROW_NUMBER() OVER (

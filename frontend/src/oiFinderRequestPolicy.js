@@ -107,13 +107,14 @@ export function canCommitOiFinderRequest(state, request) {
 export function oiFinderInitialLoadPlan(activeView, popoutMode = "") {
   const view = String(activeView || "").trim();
   const mode = String(popoutMode || "").trim().toLowerCase();
-  const supportedView = ["OI Finder", "Charts & OI", "ROI Calc", "OI Level Script TOS"].includes(view);
+  const supportedView = ["OI Finder", "Quick Options", "Charts & OI", "ROI Calc", "OI Level Script TOS"].includes(view);
   const enabled = mode !== "mag7" && supportedView;
   return {
     enabled,
     loadChart: enabled && (mode === "chart" || (!mode && ["OI Finder", "Charts & OI"].includes(view))),
     loadCompactChain: enabled,
     enrichFinder: enabled && !mode && view === "OI Finder",
+    fastOptions: enabled && !mode && view === "Quick Options",
   };
 }
 
@@ -130,6 +131,17 @@ export function hasUsableOiFinderChain(feed) {
 // Use the same shape as the server's cold-cache response when a short browser
 // request deadline expires. The server refresh continues independently, so a
 // visible retry error only adds delay and clears a useful same-symbol chain.
+export function shouldEnrichOiFinderFeed(plan, compactPayload) {
+  // The enrich pass is the only request that carries the Finder-only
+  // analytics (dailyLiquidityHeatmap, volumeMomentum, unusualOtmActivity).
+  // Gate it on whether the chain is real, NOT on `refreshing`: that flag only
+  // says the server is revalidating its 15s cache in the background, which is
+  // true of most cached responses. Treating it as "not ready" skipped the
+  // enrich pass with nothing to retry it, leaving Heatmap and Flow empty.
+  if (!plan?.enrichFinder) return false;
+  return hasUsableOiFinderChain(compactPayload);
+}
+
 export function oiFinderWarmingFeed(symbol) {
   return {
     symbol: normalizeOiFinderRequestSymbol(symbol),
@@ -159,6 +171,12 @@ const OI_FINDER_COMPACT_ANALYTICS_KEYS = [
   "liveWallTrend",
 ];
 
+const OI_FINDER_MOBILE_FAST_PRESERVED_KEYS = [
+  "callRows",
+  "putRows",
+  "tosScriptLevels",
+];
+
 function isEmptyOiFinderAnalyticsValue(value) {
   if (value == null) return true;
   if (Array.isArray(value)) return value.length === 0;
@@ -166,7 +184,7 @@ function isEmptyOiFinderAnalyticsValue(value) {
   return false;
 }
 
-export function mergeOiFinderFeedResponse(current, incoming, { compact = false } = {}) {
+export function mergeOiFinderFeedResponse(current, incoming, { compact = false, mobileFast = false } = {}) {
   const next = incoming && typeof incoming === "object" ? incoming : {};
   const target = String(next.symbol || "").trim().toUpperCase();
   const currentTarget = String(current?.symbol || "").trim().toUpperCase();
@@ -199,9 +217,19 @@ export function mergeOiFinderFeedResponse(current, incoming, { compact = false }
   // analytics value means "not computed", never "cleared", so keep whatever
   // the enrich pass loaded. A FULL response (compact=false) remains
   // authoritative and may genuinely clear them.
+  // A FULL response is authoritative only while it is FRESH. The Finder view
+  // polls every 15s with compactOnly:false, and the server answers a lapsed
+  // cache with a stale copy it is still revalidating - which, when it came
+  // from the analytics-free disk chain, carries dailyLiquidityHeatmap {}.
+  // Treating that as authoritative blanked a loaded heatmap on a 15s cadence.
+  const incomingIsProvisional = compact || Boolean(next.stale) || Boolean(next.refreshing);
+  const preserveAnalytics = sameSymbol && incomingIsProvisional;
   let compactNext = next;
-  if (compact && sameSymbol) {
-    const preservedKeys = OI_FINDER_COMPACT_ANALYTICS_KEYS.filter((key) => (
+  if (preserveAnalytics) {
+    const preservableKeys = compact && mobileFast
+      ? [...OI_FINDER_COMPACT_ANALYTICS_KEYS, ...OI_FINDER_MOBILE_FAST_PRESERVED_KEYS]
+      : OI_FINDER_COMPACT_ANALYTICS_KEYS;
+    const preservedKeys = preservableKeys.filter((key) => (
       key in next
       && isEmptyOiFinderAnalyticsValue(next[key])
       && !isEmptyOiFinderAnalyticsValue(current?.[key])
@@ -211,7 +239,7 @@ export function mergeOiFinderFeedResponse(current, incoming, { compact = false }
       preservedKeys.forEach((key) => delete compactNext[key]);
     }
   }
-  const merged = compact && sameSymbol ? { ...current, ...compactNext } : next;
+  const merged = preserveAnalytics ? { ...current, ...compactNext } : next;
   // A closed session (or a server cache hit) returns a byte-identical ~1.5MB
   // chain on every 15s poll. Keep the current reference in that case so the
   // poll cannot re-render the whole workspace and recompute every OI wall

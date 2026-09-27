@@ -2,8 +2,58 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover is what makes env(safe-area-inset-*) return real
+         numbers. index.css relies on those insets in ~16 places to keep the
+         mobile nav off the home indicator; without this they are all 0, which
+         is invisible in Safari (its chrome covers the unsafe area) and breaks
+         only once the app runs from the Home Screen with no chrome at all. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Agentic AI Trading Stocks</title>
+
+    <!-- Home Screen / installed app. The manifest and icons have existed in
+         public/ since the desktop PWA work, but nothing ever linked them, so
+         iOS had no manifest to read: "Add to Home Screen" produced a bookmark
+         that reopened inside Safari, with a screenshot for an icon.
+
+         crossorigin="use-credentials" IS LOAD-BEARING, and its absence is why
+         Chrome stopped offering "Install AGX" (reported 2026-09-01, twice).
+         By spec a manifest is fetched with credentials OMITTED unless this
+         attribute says otherwise. app.agxtrade.com sits behind Cloudflare
+         Access, and an uncredentialed request to /manifest.webmanifest answers
+         302 -> agxtrade.cloudflareaccess.com (measured). That is a
+         CROSS-ORIGIN redirect, so Chrome never reads the manifest, and with no
+         manifest the app cannot be installable no matter how correct the
+         service worker is. The page itself loads fine because navigation
+         carries the Access cookie -- which is exactly why this failed
+         invisibly: everything a human touches works.
+
+         This also explains "it was there before": it broke when Access was put
+         in front of the app, not when the PWA code changed. -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" />
+    <meta name="theme-color" content="#0c0c0d" />
+
+    <!-- iOS reads these, not the manifest, to decide standalone. Status bar is
+         "black" rather than "black-translucent" deliberately: translucent draws
+         the page UNDER the clock and battery, and only one rule in index.css
+         reserves safe-area-inset-top. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="AGX" />
+
+    <!-- Scanner typography: Inter for labels, JetBrains Mono for figures.
+         Loaded async with a system fallback stack in CSS, so a blocked or
+         offline font host never delays or breaks the app. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap"
+    />
   </head>
   <body>
     <div id="root"></div>

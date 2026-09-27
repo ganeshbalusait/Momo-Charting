@@ -4,20 +4,31 @@ import test from "node:test";
 
 const appSource = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
 
-test("new and legacy chart profiles open with optional overlay groups disabled", () => {
-  assert.match(appSource, /FOCUSED_CHART_INDICATOR_SETTINGS_VERSION = "focused-chart-indicators-v17"/);
+test("new and legacy chart profiles open with focused overlays and both lower panes", () => {
+  assert.match(appSource, /FOCUSED_CHART_INDICATOR_SETTINGS_VERSION = "focused-chart-indicators-v18"/);
   [
     "mtfMacdClouds",
     "cloudBands5m",
     "cloudMaxMtf",
     "autoFibSingleTf",
     "squeezeMomentumLower",
-    "mtfSqueeze410Lower",
     "pivotPoints",
     "personsPivots",
-    "mtfMaLevels",
   ].forEach((key) => {
     assert.match(appSource, new RegExp(`${key}: false`));
+  });
+  // mtfMaLevels moved to the on-by-default set. A browser with no saved profile
+  // takes the early return in the indicatorSettings initialiser, which returns
+  // DEFAULT_OI_CHART_INDICATORS without running a single migration - so a false
+  // default there is unreachable by the one-shot visibility migration and left
+  // the study permanently dark on any origin the trader had not used before.
+  [
+    "mtfAdxCloudsLower",
+    "mtfCloudLabelLower",
+    "mtfSqueeze410Lower",
+    "mtfMaLevels",
+  ].forEach((key) => {
+    assert.match(appSource, new RegExp(`${key}: true`));
   });
   assert.match(
     appSource,

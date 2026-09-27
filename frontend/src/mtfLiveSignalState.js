@@ -132,7 +132,11 @@ export function reconcileLiveMtfSignals(currentSignals, liveContexts, update) {
       signalBasis: "ema_cross",
       label: `${prefix}${context.timeframe}`,
       compact: prefix === "C" || prefix === "P",
-      price,
+      // The pill must not ride the tape: freeze the anchor at the price
+      // where this candle's live cross FIRST appeared. The EMAs above keep
+      // updating from the live price - only the marker's anchor is pinned
+      // (2026-08-20 "signals are moving").
+      price: finiteNumber(existing?.price) ?? price,
       fastEma,
       slowEma,
       higherFastEma,

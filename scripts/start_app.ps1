@@ -50,12 +50,23 @@ else {
     Start-Process -WindowStyle Hidden -FilePath "powershell.exe" `
         -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $starter)
 
-    $deadline = (Get-Date).AddSeconds(60)
+    # 180s, not 60s: the analytics services initialise before the web port opens,
+    # so a cold start measured 135s on this machine. At 60s the script threw
+    # "did not come up" while the backend was still starting normally, and came
+    # up fine moments later - a false failure every time.
+    $timeoutSeconds = 180
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+    $waited = 0
     while (-not (Test-ApiUp)) {
-        if ((Get-Date) -gt $deadline) { throw "Backend did not come up on :3001 within 60s." }
+        if ((Get-Date) -gt $deadline) {
+            throw "Backend did not come up on :3001 within ${timeoutSeconds}s."
+        }
         Start-Sleep -Milliseconds 500
+        $waited += 0.5
+        # Progress, so a slow start does not look like a hang.
+        if ($waited % 15 -eq 0) { Write-Host "  still starting... ${waited}s" }
     }
-    Write-Host "Backend is up."
+    Write-Host "Backend is up after ${waited}s."
 }
 
 # 3. Frontend dev server. The watchdog task owns it long-term; kick the task

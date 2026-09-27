@@ -184,3 +184,24 @@ def test_chart_history_replaces_a_forming_minute_without_double_counting_volume(
         "close": 562.5,
         "volume": 18.0,
     }]
+
+
+def test_latest_equities_returns_newest_quote_per_symbol_without_blocking() -> None:
+    """The MomX fastlane polls this snapshot instead of tailing the deque."""
+    stream = SchwabMarketStream(client_factory=lambda: None)
+    stream._publish("equity", "NVDA", {"last": 180.0, "source": "schwab"})
+    stream._publish("equity", "NVDA", {"last": 181.5, "source": "schwab"})
+    stream._publish("equity", "AAPL", {"last": 205.0, "source": "schwab"})
+    stream._publish("option", "AAPL  260101C00200000", {"mark": 2.1})  # never leaks in
+
+    held = stream.latest_equities(["nvda", "AAPL", "MISSING"])
+    assert set(held) == {"NVDA", "AAPL"}          # unknown symbol simply absent
+    assert held["NVDA"]["last"] == 181.5           # newest quote wins
+    assert "receivedAt" in held["NVDA"]
+
+    # A copy, not a live reference: mutating the result cannot poison the cache.
+    held["NVDA"]["last"] = 0.0
+    assert stream.latest_equities(["NVDA"])["NVDA"]["last"] == 181.5
+
+    # None -> everything cached; option events never created an equity entry.
+    assert set(stream.latest_equities(None)) == {"NVDA", "AAPL"}

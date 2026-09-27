@@ -6,10 +6,13 @@ import {
   expandNativeSignalPriceRange,
   nativeFireGlyphPoints,
   nativeFireMotion,
+  nativeGeometry,
   nativeHighlightPulse,
   nativeLevelLabelGutter,
   nativeCloudBandShapes,
+  NATIVE_SIGNAL_GRADE_RADIUS,
   nativeSignalAutoscaleMargins,
+  nativeSignalBoxLeft,
   nativeSignalLabelTops,
   nativeSignalStackScope,
   TosNativeChartPrimitive,
@@ -352,4 +355,94 @@ test("converts the 5-minute TOS squeeze band into upper and lower price-time fil
     { kind: "fill", first: 106, second: 105, color: "#fff200" },
     { kind: "fill", first: 95, second: 94, color: "#fff200" },
   ]);
+});
+
+test("suspending the pane clamp keeps every bubble glued to its panned candle", () => {
+  const labels = [0, 1, 2].map((stackIndex) => ({
+    x: 120,
+    y: 30,
+    placement: "above",
+    stackIndex,
+    stackKey: "pan-stack",
+    family: "squeeze",
+    compact: true,
+  }));
+  const paneHeight = 220;
+
+  // At rest the clamp pins the edge stack inside the pane.
+  const atRest = nativeSignalLabelTops(labels, paneHeight);
+  assert.deepEqual(atRest, [44, 23, 2]);
+
+  // During a pan (clamp suspended) moving the anchor by dy moves every row by
+  // exactly dy - the glue invariant the iPhone vertical-pan report broke.
+  const before = nativeSignalLabelTops(labels, paneHeight, false);
+  const panned = nativeSignalLabelTops(
+    labels.map((label) => ({ ...label, y: label.y - 40 })),
+    paneHeight,
+    false,
+  );
+  assert.deepEqual(panned, before.map((top) => top - 40));
+
+  // Clamped layout cannot satisfy that invariant near the edge: the stack
+  // stays pinned at the pane padding while the candle moves, which is why the
+  // clamp must be suspended while a gesture is in flight.
+  const pannedClamped = nativeSignalLabelTops(
+    labels.map((label) => ({ ...label, y: label.y - 40 })),
+    paneHeight,
+  );
+  assert.deepEqual(pannedClamped, atRest);
+  assert.notDeepEqual(pannedClamped, atRest.map((top) => top - 40));
+});
+
+function gradeGeometry(signals, paneWidth = 400) {
+  const primitive = new TosNativeChartPrimitive();
+  primitive.setData({
+    bars: [
+      { time: 100, high: 11, low: 9 },
+      { time: 200, high: 12, low: 10 },
+    ],
+    signals,
+  });
+  const chart = {
+    paneSize: () => ({ width: paneWidth, height: 200 }),
+    timeScale: () => ({
+      timeToCoordinate: (time) => (Number(time) === 100 ? 100 : 200),
+      options: () => ({ barSpacing: 6 }),
+      getVisibleRange: () => null,
+    }),
+  };
+  const series = { priceToCoordinate: (price) => 200 - Number(price) * 10 };
+  return nativeGeometry(primitive.model, chart, series);
+}
+
+test("carries a scanner grade letter onto the chart label", () => {
+  const geometry = gradeGeometry([
+    { time: 200, position: "belowBar", text: "CALL1H", color: "#00ffff", grade: { letter: "A+" } },
+    { time: 100, position: "belowBar", text: "CALL15", color: "#00ffff" },
+  ]);
+  const graded = geometry.labels.find((label) => label.text === "CALL1H");
+  const plain = geometry.labels.find((label) => label.text === "CALL15");
+  assert.equal(graded.grade, "A+");
+  assert.equal(plain.grade, undefined);
+});
+
+test("ignores a grade without a letter string", () => {
+  const geometry = gradeGeometry([
+    { time: 200, position: "belowBar", text: "CALL1H", color: "#00ffff", grade: { letter: null } },
+  ]);
+  assert.equal(geometry.labels[0].grade, undefined);
+});
+
+test("keeps a graded label and its circle inside the pane at the right edge", () => {
+  const paneWidth = 300;
+  const boxWidth = 40;
+  const radius = NATIVE_SIGNAL_GRADE_RADIUS;
+  const left = nativeSignalBoxLeft(paneWidth - 4, boxWidth, paneWidth, "A+");
+  const circleRight = left + boxWidth + 3 + radius * 2;
+  assert.ok(circleRight <= paneWidth - 2, `circle right ${circleRight} past pane ${paneWidth}`);
+  assert.ok(left >= 2);
+  // Ungraded labels keep their original clamp.
+  assert.equal(nativeSignalBoxLeft(paneWidth - 4, boxWidth, paneWidth, undefined), paneWidth - boxWidth - 2);
+  // Away from the edge a grade does not move the box off its candle.
+  assert.equal(nativeSignalBoxLeft(100, boxWidth, paneWidth, "A"), 80);
 });

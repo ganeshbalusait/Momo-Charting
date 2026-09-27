@@ -22,6 +22,13 @@ from config import ARTIFACTS_DIR, DATABASE_PATH
 
 PASSWORD_ITERATIONS = 600_000
 SESSION_LIFETIME_DAYS = 30
+# The API gate resolves identity on EVERY /api request. Re-reading SQLite
+# there cost 13-36s per request under load (measured 2026-08-21 RTH), so the
+# resolved identity is memoized in-process for this long. Writes invalidate it
+# immediately, so the window only ever delays an out-of-band change to a row
+# nothing in this process touched.
+IDENTITY_CACHE_SECONDS = 15.0
+IDENTITY_CACHE_MAX_ENTRIES = 512
 SESSION_ACTIVITY_TOUCH_SECONDS = 60.0
 SESSION_ACTIVITY_BUSY_TIMEOUT_MS = 250
 LOCAL_ENCRYPTION_KEY_PATH = ARTIFACTS_DIR / "user_credentials.key"
@@ -41,6 +48,9 @@ class AuthService:
     def __init__(self, db_path=DATABASE_PATH, encryption_key: str | bytes | None = None) -> None:
         self.db_path = Path(db_path)
         self._connection_lock = threading.RLock()
+        self._identity_cache: dict[tuple, tuple[float, int, object]] = {}
+        self._identity_cache_lock = threading.Lock()
+        self._identity_generation = 0
         self._session_touch_lock = threading.Lock()
         self._session_touch_times: dict[str, float] = {}
         self._cipher = Fernet(self._resolve_encryption_key(encryption_key))
@@ -55,6 +65,14 @@ class AuthService:
             connection.execute("PRAGMA foreign_keys = ON")
             try:
                 yield connection
+                # Any INSERT/UPDATE/DELETE here can change who a token or an
+                # email resolves to. total_changes is per-connection and every
+                # block opens its own, so this reads exactly as "did this block
+                # write?" - which beats hunting each mutating call site and
+                # silently missing one. On an exception the connection closes
+                # without committing, so skipping invalidation is correct.
+                if connection.total_changes:
+                    self._invalidate_identity_cache()
                 connection.commit()
             finally:
                 connection.close()
@@ -158,9 +176,17 @@ class AuthService:
             )
 
     def bootstrap_required(self) -> bool:
+        # /api/auth/status calls this on every poll alongside _session_user,
+        # and py-spy caught three request threads queued on it at once.
+        cache_key = ("bootstrap_required",)
+        cached = self._identity_cached(cache_key)
+        if cached is not None:
+            return bool(cached)
         with self._connect() as connection:
             row = connection.execute("SELECT COUNT(*) AS count FROM app_users").fetchone()
-        return int(row["count"] or 0) == 0
+        required = int(row["count"] or 0) == 0
+        self._remember_identity(cache_key, required)
+        return required
 
     def is_bootstrap_required(self) -> bool:
         return self.bootstrap_required()
@@ -188,12 +214,16 @@ class AuthService:
         role: str = "user",
     ) -> dict:
         self.require_admin(actor)
+        # No password is the normal case now: adding someone is entering their
+        # email, and Cloudflare Access proves who they are. A password is only
+        # set when one is explicitly supplied (bootstrap, break-glass).
+        wants_password = bool(str(password or "").strip())
         return self._create_user_record(
             email,
             password,
             display_name=display_name,
             role=role,
-            must_change_password=True,
+            must_change_password=wants_password,
         )
 
     def _create_user_record(
@@ -211,9 +241,23 @@ class AuthService:
         normalized_role = str(role or "user").strip().lower()
         if normalized_role not in {"admin", "user"}:
             raise AuthenticationError("Role must be admin or user.")
-        self._validate_password(password)
+        # An empty password means "this account has no password" - not "the
+        # password is the empty string". require_empty marks the very first
+        # account, which must keep one: it is the break-glass path if
+        # Cloudflare is ever misconfigured or unreachable.
+        wants_password = bool(str(password or "").strip())
+        if require_empty and not wants_password:
+            raise AuthenticationError(
+                "The first account needs a password - it is the way back in "
+                "if Cloudflare sign-in ever fails."
+            )
+        if wants_password:
+            self._validate_password(password)
         salt = secrets.token_bytes(24)
-        password_hash = self._password_digest(password, salt)
+        # Stored empty, never as a digest of "": a digest of the empty string
+        # is a real digest, and anyone who knows the email could then sign in
+        # by submitting nothing. Empty means "no password can ever match".
+        password_hash = self._password_digest(password, salt) if wants_password else b""
         now = self._now()
         user_id = str(uuid4())
         try:
@@ -250,6 +294,171 @@ class AuthService:
             raise AuthenticationError("A user with this email already exists.") from exc
         return self.get_user(user_id)
 
+    def reset_password(self, user_id: str, new_password: str, *, actor: dict | None = None) -> dict:
+        """Give an account a new password without knowing the old one.
+
+        change_password deliberately requires the current password, which left
+        a forgotten temporary password unrecoverable - the app could create a
+        user it could then never help. Flagged must_change_password so the
+        administrator's chosen password is a handover, not a shared secret,
+        and every existing session is dropped: a reset is how you take an
+        account back, so leaving its logins running would defeat it.
+        """
+        self.require_admin(actor)
+        self._validate_password(new_password)
+        target_id = str(user_id or "")
+        salt = secrets.token_bytes(24)
+        password_hash = self._password_digest(new_password, salt)
+        now = self._now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM app_users WHERE id = ?", (target_id,)
+            ).fetchone()
+            if row is None:
+                raise AuthenticationError("User not found.")
+            connection.execute(
+                """
+                UPDATE app_users
+                SET password_salt = ?, password_hash = ?, must_change_password = 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (self._encode(salt), self._encode(password_hash), now, target_id),
+            )
+            connection.execute("DELETE FROM app_user_sessions WHERE user_id = ?", (target_id,))
+        return self.get_user(target_id)
+
+    def delete_user(self, user_id: str, *, actor: dict | None = None) -> None:
+        """Remove an account and everything hanging off it.
+
+        Distinct from set_user_active: disabling keeps the row so the person is
+        told their access was switched off, while deleting frees the email for
+        re-use - which is the usual reason to reach for it, an address entered
+        wrongly and needing to be re-added.
+
+        The child rows are deleted explicitly even though every foreign key
+        declares ON DELETE CASCADE. A declared cascade does nothing unless
+        PRAGMA foreign_keys is ON for that connection, so relying on it alone
+        would leave a delete that LOOKS handled and silently orphans sessions,
+        devices and encrypted broker credentials. Being explicit costs three
+        statements and cannot quietly stop working.
+        """
+        self.require_admin(actor)
+        target_id = str(user_id or "")
+        if target_id and target_id == str((actor or {}).get("id") or ""):
+            # Recoverable only by hand-editing the database.
+            raise AuthenticationError("You cannot delete your own account.")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, role FROM app_users WHERE id = ?", (target_id,)
+            ).fetchone()
+            if row is None:
+                raise AuthenticationError("User not found.")
+            if str(row["role"]) == "admin":
+                # Counts ACTIVE admins only: a disabled one cannot sign in, so
+                # it is not cover for removing the last one who can.
+                remaining = connection.execute(
+                    "SELECT COUNT(*) AS count FROM app_users "
+                    "WHERE role = 'admin' AND is_active = 1 AND id != ?",
+                    (target_id,),
+                ).fetchone()
+                if int(remaining["count"] or 0) == 0:
+                    raise AuthenticationError(
+                        "The last active administrator cannot be deleted."
+                    )
+            # approved_by is a SECOND reference to a user, on rows that belong
+            # to somebody else. It declares ON DELETE SET NULL, which fires only
+            # because _connect turns foreign keys on - the same dependency this
+            # method refuses to rely on for the children below, so it is cleared
+            # explicitly for the same reason.
+            connection.execute(
+                "UPDATE app_user_devices SET approved_by = NULL WHERE approved_by = ?",
+                (target_id,),
+            )
+            connection.execute("DELETE FROM app_user_sessions WHERE user_id = ?", (target_id,))
+            connection.execute("DELETE FROM app_user_devices WHERE user_id = ?", (target_id,))
+            connection.execute(
+                "DELETE FROM app_user_provider_credentials WHERE user_id = ?", (target_id,)
+            )
+            connection.execute("DELETE FROM app_users WHERE id = ?", (target_id,))
+        # The write above bumps the identity-cache generation via _connect's
+        # total_changes hook, so a deleted email stops resolving immediately -
+        # otherwise the Cloudflare path would keep signing in a ghost.
+
+    def remove_password(self, user_id: str, *, actor: dict | None = None) -> dict:
+        """Take an account's password away; it signs in through Cloudflare only.
+
+        Refuses on the last active administrator: with no password anywhere
+        and Cloudflare misconfigured, nobody could ever get back in.
+        """
+        self.require_admin(actor)
+        target_id = str(user_id or "")
+        now = self._now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, role FROM app_users WHERE id = ?", (target_id,)
+            ).fetchone()
+            if row is None:
+                raise AuthenticationError("User not found.")
+            if str(row["role"]) == "admin":
+                remaining = connection.execute(
+                    "SELECT COUNT(*) AS count FROM app_users "
+                    "WHERE role = 'admin' AND is_active = 1 AND id != ? "
+                    "AND password_hash IS NOT NULL AND TRIM(password_hash) != ''",
+                    (target_id,),
+                ).fetchone()
+                if int(remaining["count"] or 0) == 0:
+                    raise AuthenticationError(
+                        "The last administrator with a password cannot have it "
+                        "removed - it is the way back in if Cloudflare sign-in fails."
+                    )
+            connection.execute(
+                "UPDATE app_users SET password_hash = '', must_change_password = 0, "
+                "updated_at = ? WHERE id = ?",
+                (now, target_id),
+            )
+            connection.execute("DELETE FROM app_user_sessions WHERE user_id = ?", (target_id,))
+        return self.get_user(target_id)
+
+    def set_user_active(self, user_id: str, is_active: bool, *, actor: dict | None = None) -> dict:
+        """Switch an account off (or back on) without editing the database.
+
+        Disabling drops live sessions so it takes effect now rather than
+        whenever a 30-day session cookie happens to expire. Two things are
+        refused because they cannot be undone from inside the app: disabling
+        yourself, and disabling the last active administrator.
+        """
+        self.require_admin(actor)
+        target_id = str(user_id or "")
+        active = bool(is_active)
+        now = self._now()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, role FROM app_users WHERE id = ?", (target_id,)
+            ).fetchone()
+            if row is None:
+                raise AuthenticationError("User not found.")
+            if not active:
+                if target_id == str((actor or {}).get("id") or ""):
+                    raise AuthenticationError("You cannot disable your own account.")
+                if str(row["role"]) == "admin":
+                    remaining = connection.execute(
+                        "SELECT COUNT(*) AS count FROM app_users "
+                        "WHERE role = 'admin' AND is_active = 1 AND id != ?",
+                        (target_id,),
+                    ).fetchone()
+                    if int(remaining["count"] or 0) == 0:
+                        raise AuthenticationError(
+                            "The last active administrator cannot be disabled."
+                        )
+            connection.execute(
+                "UPDATE app_users SET is_active = ?, updated_at = ? WHERE id = ?",
+                (int(active), now, target_id),
+            )
+            if not active:
+                connection.execute("DELETE FROM app_user_sessions WHERE user_id = ?", (target_id,))
+        return self.get_user(target_id)
+
     def verify_credentials(self, email: str, password: str) -> dict:
         normalized_email = self._normalize_email(email)
         with self._connect() as connection:
@@ -259,6 +468,12 @@ class AuthService:
             ).fetchone()
             if row is None or not bool(row["is_active"]):
                 raise AuthenticationError("Invalid email or password.")
+            if not str(row["password_hash"] or "").strip():
+                # A passwordless account. Refuse before comparing anything -
+                # there is no secret here, so no submission may match.
+                raise AuthenticationError(
+                    "This account signs in through Cloudflare, not with a password."
+                )
             salt = self._decode(row["password_salt"])
             expected = self._decode(row["password_hash"])
             actual = self._password_digest(password, salt)
@@ -555,15 +770,48 @@ class AuthService:
             )
             connection.execute("DELETE FROM app_user_sessions WHERE user_id = ?", (user_id,))
 
+    def _invalidate_identity_cache(self) -> None:
+        with self._identity_cache_lock:
+            self._identity_generation += 1
+            self._identity_cache.clear()
+
+    def _identity_cached(self, key: tuple):
+        with self._identity_cache_lock:
+            entry = self._identity_cache.get(key)
+            if entry is None:
+                return None
+            cached_at, generation, value = entry
+            if generation != self._identity_generation:
+                return None
+            if time.monotonic() - cached_at >= IDENTITY_CACHE_SECONDS:
+                self._identity_cache.pop(key, None)
+                return None
+            return value
+
+    def _remember_identity(self, key: tuple, value) -> None:
+        with self._identity_cache_lock:
+            if len(self._identity_cache) >= IDENTITY_CACHE_MAX_ENTRIES:
+                self._identity_cache.clear()
+            self._identity_cache[key] = (time.monotonic(), self._identity_generation, value)
+
     def user_for_session(self, token: str | None, device_token: str | None = None) -> dict | None:
         if not token:
             return None
         now = self._now()
         token_hash = self._session_token_hash(token)
+        cache_key = ("session", token_hash, self._device_token_hash(device_token) if device_token else "")
+        cached = self._identity_cached(cache_key)
+        if cached is not None:
+            cached_user, cached_expires_at, cached_device_id = cached
+            # The memo must never outlive the session it describes, so expiry
+            # is re-checked here rather than left to the TTL.
+            if cached_expires_at > now:
+                self._schedule_session_activity_touch(token_hash, cached_device_id, now)
+                return dict(cached_user)
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT u.*, s.device_id AS session_device_id
+                SELECT u.*, s.device_id AS session_device_id, s.expires_at AS session_expires_at
                 FROM app_user_sessions s
                 JOIN app_users u ON u.id = s.user_id
                 WHERE s.token_hash = ? AND s.expires_at > ? AND u.is_active = 1
@@ -598,8 +846,13 @@ class AuthService:
         # updates must never make chart and option-chain reads wait behind
         # them. Touch at most once per minute on a short-timeout daemon while
         # the authenticated request continues immediately.
+        resolved = self._public_user(row)
+        self._remember_identity(
+            cache_key,
+            (resolved, str(row["session_expires_at"] or ""), session_device_id),
+        )
         self._schedule_session_activity_touch(token_hash, session_device_id, now)
-        return self._public_user(row)
+        return resolved
 
     def _schedule_session_activity_touch(
         self,
@@ -685,12 +938,61 @@ class AuthService:
         normalized = str(email or "").strip().lower()
         if not normalized:
             return None
+        cache_key = ("email", normalized)
+        cached = self._identity_cached(cache_key)
+        if cached is not None:
+            return dict(cached)
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM app_users WHERE email = ? COLLATE NOCASE AND is_active = 1",
                 (normalized,),
             ).fetchone()
-        return self._public_user(row) if row is not None else None
+        if row is None:
+            return None
+        resolved = self._public_user(row)
+        self._remember_identity(cache_key, resolved)
+        return dict(resolved)
+
+    def find_account_by_email(self, email: str) -> dict | None:
+        """Like get_user_by_email, but finds disabled accounts too.
+
+        Sign-in paths want get_user_by_email, which refuses a disabled account
+        by returning nothing. The Cloudflare path needs to tell the two cases
+        apart: "we have never heard of you, ask your administrator" and "your
+        access was switched off" are different messages, and telling a disabled
+        colleague the former sends them chasing the wrong problem.
+        """
+        normalized = str(email or "").strip().lower()
+        if not normalized:
+            return None
+        # Cached, and under its OWN key. The Cloudflare path calls this on
+        # every request carrying a verified address, and _connect opens a
+        # fresh sqlite connection while holding a process-wide lock - uncached,
+        # that serialised every request in the app behind one database read
+        # (observed 2026-08-26: 25 request threads parked here at once, the
+        # gateway backed up behind them, and :3001 stopped answering).
+        #
+        # The key differs from get_user_by_email's on purpose: that one filters
+        # to active accounts and this one deliberately finds disabled ones, so
+        # a shared entry would let one meaning answer the other. Writes bump
+        # the cache generation (see _connect), so disabling someone still takes
+        # effect immediately.
+        cache_key = ("account", normalized)
+        cached = self._identity_cached(cache_key)
+        if cached is not None:
+            return dict(cached)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM app_users WHERE email = ? COLLATE NOCASE",
+                (normalized,),
+            ).fetchone()
+        if row is None:
+            # Deliberately not cached: an admin creates an account and the
+            # person signs in seconds later.
+            return None
+        resolved = self._public_user(row)
+        self._remember_identity(cache_key, resolved)
+        return dict(resolved)
 
     def get_user(self, user_id: str) -> dict:
         with self._connect() as connection:
@@ -883,6 +1185,7 @@ class AuthService:
             "role": str(row["role"]),
             "isAdmin": str(row["role"]) == "admin",
             "isActive": bool(row["is_active"]),
+            "hasPassword": bool(str(row["password_hash"] or "").strip()) if "password_hash" in keys else False,
             "mustChangePassword": bool(row["must_change_password"]) if "must_change_password" in keys else False,
             "createdAt": row["created_at"] if "created_at" in keys else None,
             "updatedAt": row["updated_at"] if "updated_at" in keys else None,

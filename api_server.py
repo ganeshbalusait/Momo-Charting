@@ -3,10 +3,12 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import base64
 import gzip
+import hashlib
 from io import BytesIO
 import json
 import math
 import os
+from dataclasses import replace
 import re
 import sqlite3
 import subprocess
@@ -32,13 +34,35 @@ from dotenv import set_key
 from agents.option_llm_supervisor import OptionLLMSupervisor
 from alpaca_stream import AlpacaBarStream
 from auth_service import AuthenticationError, AuthorizationError, AuthService
+from cf_access_auth import ACCESS_EMAIL_HEADER, resolve_access_identity
+from user_alpaca import (
+    UserAlpacaClients,
+    last_prices as alpaca_last_prices,
+    previous_closes as alpaca_previous_closes,
+)
+from user_schwab import (
+    serves_own_providers,
+    unconfigured_status,
+    HOUSE,
+    UserSchwabClients,
+    credential_target,
+    vault_provider_for,
+)
+from credential_health import CredentialHealth, health_scope
+from house_credentials import resolve_tradier_token
+from provider_errors import safe_provider_message
+from request_trust import is_trusted_local
+from request_context import background_scope, in_background_request, is_background_request
 from schwab_stream import SchwabMarketStream, event_stream_cursor
 from backtester import Backtester
 from catalyst_engine import CatalystEngine
+from news_feed_store import MomxNewsStore, build_catalyst_engine, scrape_symbols
 from config import ARTIFACTS_DIR, DATABASE_PATH, EASTERN_TZ, WATCHLIST_PATH, settings
 from data.alpaca_client import AlpacaClient
 from data.market_data import create_market_data_client
 from data.schwab_client import SchwabClient
+from data.schwab_rate_limit import GATE as SCHWAB_GATE
+from data.alpaca_overnight import boats_bars_to_frame, fetch_boats_bars
 from data.schwab_otm_activity import (
     build_dashboard_response,
     classify_strikes,
@@ -48,18 +72,55 @@ from data.schwab_otm_activity import (
     score_signal,
 )
 from data.tradier_client import TradierClient
+import chart_aggregation
+import chart_backfill
 from database.repository import TradingRepository
+from email_service import send_user_invite
 from execution.alpaca_paper_trader import AlpacaPaperTrader
 from indicators import ema
 from learning_engine import TradingLearningAgent
-from oi_auto_alerts import (
-    apply_completed_five_minute_close,
-    build_oi_ladder,
-    decorate_alert_row,
-    normalize_symbol as normalize_oi_auto_alert_symbol,
-    normalize_symbols as normalize_oi_auto_alert_symbols,
+from premarket_scanner import (
+    PREMARKET_SCAN_SYMBOLS,
+    merge_live_tail as premarket_merge_live_tail,
+    premarket_scan_row,
+    window_call_signals as premarket_window_call_signals,
+    window_fires as premarket_window_fires,
 )
-from scanner import MomentumScanner, _tos_mtf_ema_signal_payload, _tos_watchlist_mtf_signal_payload, scan_live_4h_volume, scan_live_price_change
+from trade_review import build_trade_review
+from premarket_scanner_history import (
+    first_seen_map as premarket_history_first_seen,
+    load_history as premarket_history_load,
+    record_rows as premarket_history_record,
+    record_briefing as premarket_history_record_briefing,
+    load_briefing as premarket_history_load_briefing,
+)
+from catalyst_news import (
+    CatalystCache,
+    fetch_symbol_news,
+    news_credentials,
+)
+from morning_briefing import build_briefing as morning_build_briefing
+from morning_briefing import has_substance as morning_has_substance
+from morning_briefing import push_message as morning_push_message
+from morning_briefing import push_title as morning_push_title
+from oi_auto_alerts import (
+    retry_delay_for_attempt as oi_auto_alert_retry_delay,
+    MAX_MANUAL_SYMBOLS as OI_AUTO_ALERT_MAX_MANUAL_SYMBOLS,
+    apply_completed_five_minute_bar as oi_auto_alert_apply_completed_bar,
+    apply_intrabar_touch as oi_auto_alert_apply_intrabar_touch,
+    build_oi_ladder as oi_auto_alert_build_ladder,
+    decorate_alert_row as oi_auto_alert_decorate_row,
+    five_minute_bar_from_minute_bars as oi_auto_alert_five_minute_bar,
+    format_event_message as oi_auto_alert_format_message,
+    latest_completed_five_minute_bar_end as oi_auto_alert_latest_bar_end,
+    new_alert_row as oi_auto_alert_new_row,
+    next_refresh_at as oi_auto_alert_next_refresh_at,
+    normalize_symbol as oi_auto_alert_normalize_symbol,
+    normalize_symbols as oi_auto_alert_normalize_symbols,
+    rearm_row as oi_auto_alert_rearm_row,
+    reset_row_for_new_session as oi_auto_alert_reset_row,
+)
+from scanner import MomentumScanner, TOS_CHART_SESSION_DAYS, _tos_mtf_ema_signal_payload, _tos_watchlist_mtf_signal_payload, scan_live_4h_volume, scan_live_price_change
 from ganesh_higher_timeframe_signals import (
     SCHEMA_VERSION as GANESH_SCHEMA_VERSION,
     SIGNAL_MODE as GANESH_SIGNAL_MODE,
@@ -69,8 +130,64 @@ from ganesh_higher_timeframe_signals import (
 from schwab_oauth_callback import callback_listener_status, start_callback_listener
 
 
+# An expiry whose expected move is below this fraction of the NEXT expiry's
+# has been spent - its time value is gone and using it collapses the level
+# band. A live 1-day move sits near 0.7 of the next expiry; a dead one ~0.1.
+OI_AUTO_ALERT_SPENT_EXPIRY_RATIO = 0.35
+
 HOST = "127.0.0.1"
-PORT = int(os.getenv("API_PORT", "3001"))
+# AGX_PORT exists for the A1 process split (spec 2026-08-19): at cutover the
+# pipeline moves to :3002 and the gateway takes :3001. An env override means
+# the swap is a launch-parameter change, not a code edit. Inert until a
+# restart reads it; default keeps today's behavior exactly.
+PORT = int(__import__("os").getenv("AGX_PORT", "3001"))
+
+
+def _refuse_if_port_is_taken(port: int) -> None:
+    """Refuse to boot onto a port something else already serves.
+
+    Windows SO_REUSEADDR lets two sockets share one port and silently split
+    the traffic - observed live twice on 2026-08-20: a pipeline restarted
+    without AGX_PORT shared :3001 with the gateway, and at 12:50 a stray
+    `python api_server.py` (no AGX_PORT, unknown launcher) did it again,
+    coin-flipping the front door between a warm app and a cold one. The probe
+    runs under __main__ BEFORE the module-level STATE boots, so a refused
+    process exits in ~2s having started no schedulers and touched no state.
+    Same drilled pattern as the gateway's boot guard (TIME_WAIT-safe:
+    probe-then-bind, never an exclusive bind).
+    """
+    import urllib.error
+    import urllib.request
+    for path, occupant in (
+        ("/api/gateway-health", "the gateway"),
+        ("/api/health", "another api_server"),
+    ):
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}{path}", timeout=2
+            ) as response:
+                response.read(200)
+        except Exception:
+            continue  # nothing answered this shape; try the next probe
+        print(
+            f"REFUSING TO START: {occupant} is already serving :{port}. "
+            f"Two binders would split the port (SO_REUSEADDR). If a "
+            f"replacement is intended, stop the old process first; the "
+            f"watchdog restarts the sanctioned pair on its own.",
+            flush=True,
+        )
+        raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    _refuse_if_port_is_taken(PORT)
+# Only the process actually SERVING may persist alert state. Importing this
+# module boots a full DashboardState (STATE is module-level), so every pytest
+# run and tooling script becomes a ghost app whose worker loop writes its
+# stale boot-time snapshot of oi_auto_alert_* over the live server's - which
+# is how the manual list lost AMD (08-18), SPY (08-19) and SPY+MU (08-20).
+# main() flips this to True; ghosts never do.
+_IS_SERVING_PROCESS = False
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 DEFAULT_OPTION_DELTA_CAP = 0.20
 DEFAULT_OPTION_PREFERRED_DELTA = 0.10
@@ -120,6 +237,11 @@ OI_FINDER_CHART_DAILY_SEED_LOOKBACK_DAYS = 3650
 # intraday prices that the broker did not provide.
 OI_FINDER_CHART_INTRADAY_LOOKBACK_DAYS = 7300
 OI_FINDER_CHART_DISK_CACHE_MAX_AGE_SECONDS = 5 * 24 * 60 * 60
+# Bump when the payload gains a tape the client depends on. A disk payload
+# written before the bump is discarded and rebuilt rather than served, so a
+# searched ticker cannot come back missing a series the chart needs.
+# v2: adds fineStudyBars, the 60-day five-minute tape for 3m/5m/10m/15m.
+OI_FINDER_CHART_PAYLOAD_SCHEMA = 2
 # A persisted tape whose newest bar is older than this is paintable but NOT
 # authoritative: it must be promoted with a full rebuild rather than having
 # today's minutes spliced onto days-old history. 26h spans a weekend-free
@@ -129,7 +251,196 @@ OI_FINDER_CHART_STALE_TAPE_SECONDS = 26 * 60 * 60
 # another broker request merely because the dashboard's five-second status
 # poll ran; that caused constant history work and UI stalls.
 OI_FINDER_CHART_REFRESH_SECONDS = 30.0
-OI_FINDER_CHART_WARM_LIMIT = 24
+# A pane the trader is actively polling keeps priority in the build lane this
+# long after its last trader-facing chart request.
+OI_FINDER_CHART_INTERACTIVE_REQUEST_SECONDS = 120.0
+# A chart refresh with no progress for this long is presumed wedged: its
+# in-flight guard stops counting, so the serve path can start a fresh one.
+# NVDA sat un-refreshable for 25 minutes on 2026-08-20 because the guard had
+# no expiry and only a restart cleared it. Legitimate deep builds measured up
+# to ~15 min (PLTR 2026-08-13), and progress is re-stamped while queued for
+# and inside the build lane, so the deadline clocks stalled work, not lines.
+OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS = 1200.0
+# A recency (tail) refresh is a single REST call plus a splice - seconds of
+# work. It gets its own, far shorter deadline because it also gets its own
+# in-flight guard: sharing the deep rebuild's 20-minute guard is what froze
+# the SERVED tape of every searched ticker (GME 151.8 min behind its own
+# broker data, 2026-08-31 12:56 ET) for as long as a deep rebuild sat queued.
+# 180.0 until 2026-09-22: that was below the HONEST completion time, so the
+# deadline manufactured wedges. Measured that day, a recency build's p90 was
+# 271s (max 518s) because the tail pass also replays the nine-pass TOS MTF
+# engine; every 30s kick past 180s appended ANOTHER full build to the 2-worker
+# pool's unbounded queue (~1,200-1,400 duplicates, submissions outrunning
+# completions ~6:1) until /api/health answered in 3.9s. Superseded jobs are now
+# dropped at dequeue and the recency arm stamps progress, so this deadline only
+# has to cover a genuinely hung tail pass - 600s is still half the deep guard's
+# 1200s above.
+OI_FINDER_CHART_RECENCY_DEADLINE_SECONDS = 600.0
+# How many (symbol, tape fingerprint) MTF study results to remember. The
+# replay is nine passes of _tos_mtf_ema_signal_payload over the 60-day 5m
+# tape and measured ~47% of api_server CPU (py-spy, 2026-08-31); refreshes
+# arriving between two one-minute bars recompute all nine for an answer that
+# cannot differ. Bounded so a wide watchlist cannot grow it without limit.
+OI_FINDER_MTF_STUDY_MEMO_LIMIT = 48
+# A symbol no client is polling keeps its last MTF labels this long before a
+# background tail refresh replays the eight-timeframe engine for it again.
+OI_FINDER_MTF_UNWATCHED_REPLAY_SECONDS = 600.0
+
+
+class ChartBuildLane:
+    """One-at-a-time lane for full chart builds, with LIVE priority.
+
+    The old bare Lock was FIFO-blind: at the 2026-08-20 open, eight request-
+    triggered full builds queued and the pane the trader was watching (MSTR)
+    waited 371s behind tickers whose polls had long stopped - "QQQ just
+    happened to be earlier in line". Waiters here re-sort while they wait: a
+    symbol some client is still polling outranks an abandoned kick, and
+    arrival order breaks ties. Priority is re-read on every wake-up, so a
+    symbol that stops being watched decays to background mid-wait.
+    """
+
+    def __init__(self, interactive_fn) -> None:
+        self._interactive_fn = interactive_fn
+        self._cond = threading.Condition()
+        self._held_by = None
+        self._waiters: dict[int, str] = {}
+        self._seq = 0
+
+    @staticmethod
+    def _waiter_ahead(me_seq, me_interactive, waiters, interactive_of) -> bool:
+        """True when some OTHER waiter should get the lane first."""
+        for seq, symbol in waiters.items():
+            if seq == me_seq:
+                continue
+            other = bool(interactive_of(symbol))
+            if other and not me_interactive:
+                return True
+            if other == me_interactive and seq < me_seq:
+                return True
+        return False
+
+    def acquire(self, symbol: str, on_wait=None) -> None:
+        with self._cond:
+            self._seq += 1
+            me = self._seq
+            self._waiters[me] = symbol
+            try:
+                while True:
+                    if self._held_by is None and not self._waiter_ahead(
+                        me, bool(self._interactive_fn(symbol)),
+                        self._waiters, self._interactive_fn,
+                    ):
+                        self._held_by = symbol
+                        return
+                    # Timed wait: priority is time-based and decays with no
+                    # notify, so waiters re-check on a clock as well.
+                    self._cond.wait(timeout=2.0)
+                    if on_wait is not None:
+                        try:
+                            on_wait()
+                        except Exception:
+                            pass  # progress noting must never kill the lane
+            finally:
+                self._waiters.pop(me, None)
+
+    def release(self) -> None:
+        with self._cond:
+            self._held_by = None
+            self._cond.notify_all()
+# 40, not 24: the scanner's nine tickers + the fourteen quick-strip warms +
+# recents + whatever the trader has open exceed 24 distinct symbols, and at
+# 24 the cache evicted freshly-spliced tapes within minutes. Evicted symbols
+# then served their OLD disk file (recency splices used not to save to disk),
+# so tapes looked permanently frozen at the last full build's timestamp while
+# refreshes completed successfully into entries that were thrown away
+# (2026-08-21 open: AMZN pinned at 08:43 for 90 minutes this way).
+# Chart candles come from Schwab/TOS ONLY. Ganesh's instruction, 2026-08-27,
+# and the measurements back it: the Alpaca key on file is the free tier, which
+# sees IEX alone - roughly 2% of US volume - so most minutes have no trade to
+# draw and the tape is both sparse and late. Measured on MSTR at 11:30 ET, same
+# instant:
+#
+#     Schwab/TOS (trading profile)   2,382 bars, newest 11:29 ET
+#     Alpaca free (IEX)                144 bars, newest 06:30 ET, price 126.72
+#
+# MSTR was trading at 137.91. A chart drawn from that feed is not a degraded
+# chart, it is a WRONG one - eleven dollars and five hours out - and a wrong
+# candle on a trading surface is worse than a missing one, because a gap tells
+# the trader to go and look. Flip this to True only if a Schwab-free fallback
+# is ever wanted again; every call site routes through
+# _alpaca_fallback_chart_bars, so this one switch covers all of them.
+CHART_BARS_USE_ALPACA_FALLBACK = False
+
+# How many chart payloads stay resident. Must hold the whole working set at
+# once: BOARD_PREWARM_MAX_SYMBOLS (64) plus the 16 permanently-hot names. At
+# 40 those two sets evicted each other every sweep, and eviction is not free -
+# the next open re-hydrates from disk. Measured 2026-08-31: a payload is
+# ~15 MB resident (4 samples, 11.2-16.7 MB), so 80 entries is ~1.2 GB worst
+# case against 63.7 GB of RAM with 13.5 GB free and api_server at 1.07 GB.
+# Eviction is oldest-cached_at first and every splice re-stamps cached_at, so
+# a chart the trader is actually polling cannot be evicted by this widening.
+# How long a FAILED owner-Alpaca credential resolve stays cached before it is
+# retried. Was permanent: one transient failure (a locked DB during boot, a
+# vault hiccup) pinned the Alpaca premarket fallback OFF for the whole life of
+# the process, and the only symptom was "the Alpaca SIP backup returned
+# nothing" on a morning when the saved key was perfectly good.
+OWNER_ALPACA_CLIENT_RETRY_SECONDS = 300.0
+# How long an EMPTY premarket backfill result stays cached. A good frame is
+# kept for the day; an empty one must expire, or one failed 06:05 attempt
+# serves an empty 04:00-07:00 window until midnight even after the data
+# becomes available.
+PREMARKET_BACKFILL_EMPTY_RETRY_SECONDS = 120.0
+
+
+def premarket_backfill_state_of(entry) -> tuple:
+    """The (state, error) a cached fill was fetched under.
+
+    The verdict travels WITH the frame. Written separately, the two drift: on
+    2026-09-01 all nine scanner symbols had their 04:00-07:00 window filled by
+    the Alpaca fallback while the app still displayed "premarket unavailable -
+    check the Tradier access token", because the message was only ever
+    rewritten on the fetch path and a good frame cached for the day meant no
+    fetch re-ran. An entry stored before this existed carries no verdict, and
+    must degrade to "no complaint" rather than invent an outage.
+    """
+    if not entry:
+        return ("", "")
+    return (str(entry.get("state") or ""), str(entry.get("error") or ""))
+
+
+def premarket_backfill_cache_entry_is_usable(entry, now: float, hole_still_growing: bool) -> bool:
+    """Can this cached 04:00-07:00 fill be served, or must it be re-fetched?
+
+    Three rules, in order of how they were learned:
+      * no entry -> fetch (always was)
+      * the hole is still growing (before 07:10) -> only a very recent frame
+        will do, because the window itself is still filling (existing rule)
+      * the entry is EMPTY -> expire it quickly. This is the new one: an empty
+        frame is a RECORD OF FAILURE, and caching a failure for the rest of
+        the day is what turned one bad minute into a blank premarket morning.
+    """
+    if not entry:
+        return False
+    age = now - float(entry.get("at") or 0.0)
+    if hole_still_growing:
+        return age < 60.0
+    frame = entry.get("frame")
+    empty = frame is None or bool(getattr(frame, "empty", False))
+    if empty:
+        return age < PREMARKET_BACKFILL_EMPTY_RETRY_SECONDS
+    return True
+
+
+OI_FINDER_CHART_WARM_LIMIT = 80
+# Concurrent background option-chain refreshes. Four keeps the broker busy
+# without letting a burst of symbols starve the request threads.
+OI_FINDER_BACKGROUND_REFRESH_WORKERS = 4
+# The decision board's quick analytics pass gets its own workers. Sharing the
+# refresh pool meant a 5th open ticker's 2s pass queued behind a 4th ticker's
+# 85s history build - measured 2026-08-26: six cold tickers, three lit up in
+# 18s and the rest took 93s+. These passes are ~2s each, so a handful of
+# workers drains every open ticker before the first history build finishes.
+OI_FINDER_QUICK_ANALYTICS_WORKERS = 6
 OI_FINDER_CHAIN_DISK_CACHE_MAX_AGE_SECONDS = 5 * 24 * 60 * 60
 OI_FINDER_CHAIN_QUOTE_SCHEMA_VERSION = 1
 OI_FINDER_CHART_FULL_REFRESH_DEFER_SECONDS = 0.25
@@ -139,10 +450,37 @@ OI_FINDER_CHART_FULL_REFRESH_DEFER_SECONDS = 0.25
 # live control state, so rebuilding the heavyweight portion once per minute is
 # both responsive and dramatically cheaper than rebuilding it on every poll.
 DASHBOARD_FULL_CACHE_TTL_SECONDS = 60.0
+# App.jsx ran this on every load and every ticker switch, for data that is
+# never rendered: 6.0s local, 8.5s under concurrency, 16.9s through the
+# tunnel, and pure-Python CPU so it held the GIL while it ran.
+WHY_NOT_TRADED_CACHE_TTL_SECONDS = 30.0
+WHY_NOT_TRADED_CACHE_LIMIT = 32
 
 DEFAULT_OPTION_MIN_PRICE = 3.0
 DEFAULT_OPTION_SIGNAL_LOOKBACK_BARS = 2
 OI_SCANNER_MAX_DAYS_TO_EXPIRATION = 14
+#: Symbols the BROKER does not recognise -> when we learned that. Guards the
+#: chart builder against a saved layout holding a typo: on 2026-09-01 the
+#: ticker GOOGLE rebuilt 715 times (one build 46.96s), and because a build
+#: holds the GIL the whole app stalled 15-19s per request during market hours.
+#: Written only after the broker CONFIRMS the symbol is unknown against a
+#: control symbol in the same request -- never on a bare build failure, which
+#: during an outage would blacklist everything.
+_UNKNOWN_CHART_SYMBOLS: dict[str, float] = {}
+_UNKNOWN_SYMBOLS_LOCK = threading.Lock()
+
+#: Minute of the ET day at which the morning brief's SECOND phone push fires
+#: (09:00 = 540). The briefing loop already runs every 5 minutes until 09:35,
+#: so this needs no scheduler of its own -- the first build at or after this
+#: minute claims the "late" slot. He asked for 5:30 AND 9:00; before this the
+#: 05:30 build claimed the day's only push.
+MORNING_BRIEF_LATE_PUSH_MINUTE = 9 * 60
+
+#: The early push waits for the brief to have something in it, but not past
+#: this (07:30 ET). By then the premarket tape is real, so "quiet" is an
+#: observation rather than "the data has not arrived yet".
+MORNING_BRIEF_EARLY_DEADLINE_MINUTE = 7 * 60 + 30
+
 OI_FINDER_MAX_DAYS_TO_EXPIRATION = 31
 EARNINGS_CALENDAR_DEFAULT_DAYS = 45
 EARNINGS_CALENDAR_CACHE_SECONDS = 15 * 60
@@ -292,6 +630,26 @@ DASHBOARD_COMPACT_OMIT_KEYS = (
     "catalysts",
     "catalystIndex",
     "optionTradeHistory",
+    # 2026-08-28, market-open speed: the keys below fed the Scanner / OI
+    # Scanner / Dashboard pages deleted on 08-27 - zero readers in the
+    # surviving frontend (verified per key by grep). They were also the ONLY
+    # values that changed between idle polls, so every 5s poll produced a new
+    # top-level dashboard object, defeated mergeDashboardPayload's identity
+    # bail-out, and forced a full TradingWorkspace re-render 12x a minute -
+    # the exact render tax the chart pays for at the open. Omitted from the
+    # compact (poll) payload only; the heavy payload still carries them.
+    "scanResults",
+    "candidateResults",
+    "mag7ScanResults",
+    "mag7CandidateResults",
+    "oiScanResults",
+    "oiMag7ScanResults",
+    "oiWatchlistScanResults",
+    "oiMag7LastNonEmptyResults",
+    "oiWatchlistLastNonEmptyResults",
+    "oiScanTimestamp",
+    "oiMag7ScanTimestamp",
+    "oiWatchlistScanTimestamp",
 )
 
 
@@ -386,6 +744,23 @@ def _serialize_value(value):
         return [_serialize_value(item) for item in value]
     if isinstance(value, tuple):
         return [_serialize_value(item) for item in value]
+    # Fast path. These are the overwhelming majority of leaves in a chart
+    # payload (~359k scalars for one symbol) and none of them can be NA, so
+    # they must not pay for a pd.isna() dispatch - that call alone cost 1.45s
+    # of the 1.91s spent serializing the 6MB AAPL response.
+    #
+    # `type(x) is T` deliberately, NOT isinstance: np.float64 subclasses float,
+    # and np.generic is checked further down BEFORE pd.isna, so a numpy NaN
+    # currently survives as a float NaN. An isinstance check would capture it
+    # here and flip it to None, silently changing payload contents.
+    value_type = type(value)
+    if value is None or value_type is str or value_type is bool or value_type is int:
+        return value
+    if value_type is float:
+        # NaN is the only float pd.isna() treats as NA (inf is not), and
+        # `value != value` is an inline C comparison instead of a pandas
+        # dispatch.
+        return None if value != value else value
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, np.generic):
@@ -449,7 +824,267 @@ def _history_summary(frame: pd.DataFrame, today_key: str) -> dict:
         "winRate": round((wins / scored) * 100, 2) if scored else 0.0,
     }
 
+#: Last outcome of the overnight (20:00-04:00 ET) backfill, per symbol and
+#: interval, for the Schwab status payload. Bounded - a diagnostic, not a cache.
+_OVERNIGHT_BACKFILL_HEALTH: dict = {}
+_OVERNIGHT_HEALTH_MAX = 64
+
+
+def _record_overnight_backfill(target, interval, gaps, fill, error: str) -> None:
+    """Remember what the overnight patch actually DELIVERED, not that it ran.
+
+    Records rows PER WINDOW against what a full window would hold, because
+    "it returned" and "it returned enough" are different questions and only the
+    second one matters to a chart. Measured 2026-09-03: this path delivered 2-8
+    rows in hours that should hold 60, which any success flag - and any
+    newest-bar recency check - reports as perfectly healthy.
+
+    Module level rather than a method deliberately: tests lift
+    _backfill_overnight_session onto a bare stub object, so a self.* call would
+    make instrumentation break the code it instruments.
+    """
+    try:
+        per_window = []
+        if fill is not None and not getattr(fill, "empty", True):
+            for start, end in (gaps or []):
+                inside = chart_backfill.keep_inside_windows(fill, [(start, end)])
+                hours = max((end - start).total_seconds() / 3600.0, 0.0)
+                # 60 rows an hour at 1-minute, 12 at 5-minute.
+                expected = int(hours * (60 if str(interval) == "1min" else 12))
+                per_window.append({
+                    "from": start.isoformat(),
+                    "to": end.isoformat(),
+                    "rows": int(0 if inside is None else len(inside)),
+                    "expected": expected,
+                })
+        _OVERNIGHT_BACKFILL_HEALTH["%s/%s" % (str(target).upper(), interval)] = {
+            "at": datetime.now(ZoneInfo(EASTERN_TZ)).isoformat(),
+            "windowsRequested": len(gaps or []),
+            "rowsReturned": int(0 if fill is None or getattr(fill, "empty", True) else len(fill)),
+            "perWindow": per_window,
+            # Windows that came back with under half the rows they should hold.
+            # This is the number worth looking at.
+            "shortWindows": sum(
+                1 for w in per_window if w["expected"] and w["rows"] < w["expected"] * 0.5
+            ),
+            "error": str(error or "")[:300],
+        }
+        if len(_OVERNIGHT_BACKFILL_HEALTH) > _OVERNIGHT_HEALTH_MAX:
+            for stale in list(_OVERNIGHT_BACKFILL_HEALTH)[
+                : len(_OVERNIGHT_BACKFILL_HEALTH) - _OVERNIGHT_HEALTH_MAX
+            ]:
+                _OVERNIGHT_BACKFILL_HEALTH.pop(stale, None)
+    except Exception:
+        # A diagnostic must never be the reason a chart fails.
+        pass
+
+
 class DashboardState:
+    # The warmer used to yield to an active session for only 25s and then
+    # build regardless. One full build is CPU-heavy enough to starve request
+    # threads through the GIL, which showed up as 20-48s chart responses and
+    # Cloudflare 5xx on phones. Wait far longer now, but keep a floor so a
+    # continuously-used app cannot stop the warmer entirely (the unbounded
+    # wait this replaced managed only ~8 symbols/hour while the trader worked).
+    # 180s starved coverage: with a 392-ticker watchlist that is ~20h per
+    # sweep, so most tickets still held the previous day's tape. 45s still
+    # yields to the trader while keeping a full sweep to a few hours, and the
+    # per-request CPU cuts (serialize fast path, memoized windowing) made the
+    # contention this guards against much cheaper anyway.
+    WARMER_INTERACTIVE_WAIT_SECONDS: float = 45.0
+    WARMER_FORCE_PROGRESS_SECONDS: float = 900.0
+    # Gap between two CHEAP (recency-splice) warms. This is the whole pacing
+    # mechanism for the cheap path - it does not yield to the interactive
+    # window, because a splice costs ~4s rather than the ~150s a full rebuild
+    # costs. At 2s a 398-ticker sweep completes in ~15 minutes with at most a
+    # couple of refreshes ever in flight, against ~4 days under the old
+    # yield-everything behaviour.
+    WARMER_RECENCY_PACE_SECONDS: float = 2.0
+    # How far a cached tape may trail the market's newest print before the
+    # warmer refreshes it even though _warmer_cache_is_current says skip.
+    #
+    # _warmer_cache_is_current judges by the FILE's mtime, and
+    # _chart_tape_is_behind_market compares SESSION DATES - deliberately, so a
+    # holiday cannot flag every ticker at once. Neither notices a tape that
+    # stops mid-session. Measured 2026-08-22, after a full sweep: 99 caches
+    # were written during Friday's session and skipped as current, while their
+    # candles ended 1h45m-2h45m before Friday's close (ACB written 13:20 with
+    # a tape ending 14:17 ET; ACHR 12:27 / 13:17; AMGN 13:03 / 13:59).
+    #
+    # 15 minutes is wide enough that a thinly-traded symbol with a genuine gap
+    # in prints is not swept every pass, and a needless sweep now costs a
+    # recency splice with no disk write at all (05b5d6c), not a rebuild.
+    WARMER_TAPE_LAG_TOLERANCE_SECONDS: float = 900.0
+    # The warmer skipped any cache that matched the current SCHEMA, regardless
+    # of how old its candles were. That is why 392 disk caches still held
+    # Aug 12 bars during the Aug 13 session: schema-current, so never rebuilt,
+    # so every one of those tickers opened stale.
+    #
+    # Age-based staleness replaced that and was also wrong. A full pass over
+    # 392 tickers takes ~8h at one build per ~45s-plus-build, so a 4h window
+    # made the head of the list stale before the tail was reached: the warmer
+    # thrashed on the oldest entries and never completed a pass. Measured
+    # 2026-08-13, five hours in: 133 of 392 caches rebuilt, 259 still on the
+    # previous session.
+    #
+    # Anchor to the SESSION instead. "Has this been rebuilt since the current
+    # session began?" is the question that matters - the trader needs today's
+    # candles - and a ticker rebuilt today then stays current until tomorrow,
+    # so progress is monotonic and the warmer cannot thrash.
+    @staticmethod
+    def _most_recent_session_start(now: datetime) -> datetime:
+        """The most recent weekday 09:30 ET that has already passed."""
+        eastern = ZoneInfo(EASTERN_TZ)
+        probe = now.astimezone(eastern)
+        candidate = probe.replace(hour=9, minute=30, second=0, microsecond=0)
+        if probe < candidate:
+            candidate -= timedelta(days=1)
+        while candidate.weekday() >= 5:  # Sat/Sun -> walk back to Friday
+            candidate -= timedelta(days=1)
+        return candidate
+
+    @staticmethod
+    def _warmer_cache_is_current(
+        schema_stale: bool,
+        cache_epoch: float,
+        session_start_epoch: float,
+    ) -> bool:
+        """True when a warmed cache can be skipped rather than rebuilt."""
+        if schema_stale:
+            return False
+        return float(cache_epoch or 0.0) >= float(session_start_epoch or 0.0)
+
+    @staticmethod
+    def _et_session_date(epoch: float) -> str:
+        """The ET calendar date of a bar, as YYYY-MM-DD.
+
+        String dates, so there is no epoch or DST arithmetic to get wrong -
+        the same comparison scripts/chart_sweep.mjs makes.
+        """
+        stamp = float(epoch or 0.0)
+        if stamp <= 0:
+            return ""
+        return datetime.fromtimestamp(stamp, tz=ZoneInfo(EASTERN_TZ)).strftime("%Y-%m-%d")
+
+    @classmethod
+    def _chart_tape_is_behind_market(
+        cls,
+        tape_newest_epoch: float,
+        market_newest_epoch: float,
+    ) -> bool:
+        """True when this tape's last print predates the market's last print.
+
+        Judged against the newest bar seen for ANY symbol rather than against
+        a clock, which is what makes it holiday-proof: on a day nothing
+        traded, no symbol advances the reference, so no symbol is behind it.
+        A calendar-based rule would have flagged every ticker at once.
+
+        Both zero cases fall through to False on purpose. An empty tape
+        already has its own error message, and a server that has not built
+        anything yet has nothing to compare against - this must fail toward
+        silence rather than crying wolf.
+        """
+        tape_date = cls._et_session_date(tape_newest_epoch)
+        market_date = cls._et_session_date(market_newest_epoch)
+        if not tape_date or not market_date:
+            return False
+        return tape_date < market_date
+
+    def _note_chart_market_tape(self, bars: object) -> None:
+        """Advance the market-wide high-water mark from a freshly built tape."""
+        if not isinstance(bars, list) or not bars:
+            return
+        try:
+            newest = float((bars[-1] or {}).get("time") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            return
+        # A bar stamped in the future would mark every healthy symbol on the
+        # server stale, so it never becomes the reference.
+        if newest <= 0 or newest > time.time() + 86_400:
+            return
+        current = float(getattr(self, "_chart_market_newest_bar_epoch", 0.0) or 0.0)
+        if newest > current:
+            self._chart_market_newest_bar_epoch = newest
+
+    def _chart_tape_staleness_fields(self, symbol: str, bars: object) -> dict:
+        """The staleness verdict a chart payload must carry.
+
+        A tape is only ever judged here - never the fetch that produced it.
+        EA's refresh had two silent shapes (a 30-day request returning a tape
+        that ended nine days ago, and a 2-day recency request returning
+        nothing, which the caller dropped on the floor). Both leave the same
+        observable: a tape that has missed a full session. Checking the tape
+        catches both, and keeps catching whatever the next shape turns out to
+        be.
+        """
+        rows = bars if isinstance(bars, list) else []
+        newest = 0.0
+        if rows:
+            try:
+                newest = float((rows[-1] or {}).get("time") or 0.0)
+            except (AttributeError, TypeError, ValueError):
+                newest = 0.0
+        market_newest = float(getattr(self, "_chart_market_newest_bar_epoch", 0.0) or 0.0)
+        stale = self._chart_tape_is_behind_market(newest, market_newest)
+        fields = {
+            "tapeStale": stale,
+            "tapeNewestSession": self._et_session_date(newest),
+            "marketNewestSession": self._et_session_date(market_newest),
+        }
+        if stale:
+            fields["staleTapeMessage"] = (
+                f"{symbol or 'This ticker'} has not printed since "
+                f"{fields['tapeNewestSession']}, but the market traded through "
+                f"{fields['marketNewestSession']}. These candles are stale - the "
+                "symbol may be halted or no longer listed."
+            )
+        return fields
+
+    def _apply_chart_tape_staleness(self, payload: dict) -> dict:
+        """Stamp a payload with its staleness verdict, in place.
+
+        Setting `error` on a tape that HAS bars is safe under the browser
+        contract: the chart only raises on `error` for an HTTP failure or an
+        empty tape, so this warns the trader without blanking a chart they
+        are looking at.
+
+        A real transport failure still owns the field. The verdict is
+        re-evaluated on every serve rather than trusted from the cache,
+        because staleness is a function of time - and that is also what lets
+        the message clear itself if the symbol starts printing again.
+        """
+        if not isinstance(payload, dict):
+            return payload
+        previous_message = str(payload.get("staleTapeMessage") or "")
+        existing_error = str(payload.get("error") or "").strip()
+        fields = self._chart_tape_staleness_fields(payload.get("symbol"), payload.get("bars"))
+        payload.update(fields)
+        if not fields["tapeStale"]:
+            payload.pop("staleTapeMessage", None)
+            if existing_error and existing_error == previous_message:
+                payload["error"] = ""  # the tape started printing again
+            return payload
+        if not existing_error or existing_error == previous_message:
+            payload["error"] = fields["staleTapeMessage"]
+        return payload
+
+    def _warmer_should_wait(self, now: float, last_build_at: float) -> bool:
+        """True when the warmer should hold off on its next expensive build."""
+        # An ON-DEMAND full build - the ticker the trader just opened - always
+        # wins. Rebuilding the watchlist queued the pane on screen behind
+        # tickers nobody was looking at, so 4H/D/W/M rendered from a partial
+        # tape (~13 candles) until its turn came, and which ticker looked
+        # broken rotated as the queue moved. The caller still caps this wait at
+        # WARMER_INTERACTIVE_WAIT_SECONDS, so the warmer cannot be starved.
+        if int(getattr(self, "oi_finder_ondemand_builds", 0) or 0) > 0:
+            return True
+        interactive = now < float(getattr(self, "oi_finder_interactive_until", 0.0))
+        if not interactive:
+            return False
+        # Guarantee forward progress: however busy the app is, build something
+        # once every WARMER_FORCE_PROGRESS_SECONDS.
+        return (now - float(last_build_at)) < self.WARMER_FORCE_PROGRESS_SECONDS
+
     def _empty_premarket_plan(self) -> dict:
         return {
             "status": "WARMING",
@@ -517,8 +1152,11 @@ class DashboardState:
 
     def __init__(self) -> None:
         self.repository = TradingRepository()
-        self.catalysts = CatalystEngine()
+        self.catalysts = self._build_catalyst_engine()
         self.catalyst_refresh_lock = threading.Lock()
+        # MomX tab news (news_feed_store.py): stored headlines per ticker and
+        # one background scrape at a time; the tab polls /api/news-feed/latest.
+        self.momx_news_store: MomxNewsStore | None = None
         self.catalyst_refresh_thread: threading.Thread | None = None
         self.catalyst_refresh_cursor = 0
         self.catalyst_refresh_batch_size = 40
@@ -582,15 +1220,102 @@ class DashboardState:
         self.mag7_oi_wall_cache_timestamp: datetime | None = None
         self.oi_finder_lock = threading.RLock()
         self.oi_finder_cache: dict[str, tuple[datetime, dict]] = {}
+        # Mobile research tabs are intentionally computed independently from
+        # the full desktop Finder. A section payload must never replace the
+        # analytics-complete desktop cache, and a cold desktop computation
+        # must not block a trader who only requested one mobile section.
+        self.oi_finder_research_cache: dict[tuple[str, str], tuple[datetime, dict]] = {}
         # Compact chain payloads for the chart panel's fast path, kept apart
         # from the analytics-bearing Finder cache above.
         self.oi_finder_chain_cache: dict[str, tuple[datetime, dict]] = {}
         self.oi_finder_background_refreshes: set[str] = set()
+        # refresh_key -> monotonic deadline before the NEXT refresh may start.
+        # A build whose own duration exceeds the cache lifetime is stale the
+        # instant it lands, so the next poll re-fires it immediately and the
+        # symbol occupies a worker forever. Measured 2026-08-28: 45 of 52 slow
+        # builds were the same ticker (AAPL), worst 874s, 2,284s of build time
+        # in one session - one of only four workers, permanently. Every OTHER
+        # ticker the trader searched then queued behind it, which is the
+        # "search takes 30 seconds" report.
+        self.oi_finder_refresh_cooldown: dict[str, float] = {}
+        # Background chain refreshes run through a small bounded pool, NOT one
+        # raw thread per symbol. The per-symbol guard above only stops the SAME
+        # ticker refreshing twice; it puts no ceiling on how many different
+        # tickers refresh at once. Measured 2026-08-19: touching ~40 symbols
+        # piled 126 threads onto the process, each holding a Schwab round-trip,
+        # and every user request queued behind them - chains answered in
+        # 18-150s while their disk caches were one minute old. A queue keeps
+        # the broker at a steady few in flight and the request threads free.
+        self.oi_finder_refresh_pool = ThreadPoolExecutor(
+            max_workers=OI_FINDER_BACKGROUND_REFRESH_WORKERS,
+            thread_name_prefix="oi-finder-refresh",
+        )
+        # Kept separate from the pool above ON PURPOSE. The quick pass exists
+        # to unblock the decision board; queueing it behind history builds in
+        # the shared pool defeats the point.
+        self.oi_finder_quick_pool = ThreadPoolExecutor(
+            max_workers=OI_FINDER_QUICK_ANALYTICS_WORKERS,
+            thread_name_prefix="oi-finder-quick",
+        )
         self.oi_finder_chain_disk_cache_dir = ARTIFACTS_DIR / "oi_chain_cache"
         self.oi_finder_chart_lock = threading.RLock()
         self.oi_finder_chart_cache: dict[str, dict] = {}
-        self.oi_finder_chart_refreshes: set[str] = set()
-        self.oi_finder_chart_full_refresh_lock = threading.Lock()
+        # symbol -> [token, last_progress_monotonic]. Entries past
+        # OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS without progress read as
+        # absent (_chart_refresh_in_flight), so a wedged thread cannot freeze
+        # a symbol until restart.
+        self.oi_finder_chart_refreshes: dict[str, list] = {}
+        # The recency (tail) refresh guard, deliberately SEPARATE from the one
+        # above. A deep rebuild holds its guard from the moment it is queued
+        # until it finishes - up to OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS
+        # with a 2-worker pool - and while that was also the tail guard, every
+        # 30s tail refresh for the symbol was discarded. The served tape then
+        # sat frozen for the whole queue wait even though the broker had the
+        # bars (2026-08-31: GME 151.8 min, SOUN 43.7, NOW 16.7 behind, while a
+        # direct Schwab probe returned 0.7-minute-old bars for all of them).
+        self.oi_finder_chart_recency_refreshes: dict[str, list] = {}
+        self._chart_symbol_last_requested: dict[str, float] = {}
+        # symbol -> monotonic stamp of the last INLINE forced tail extend, so
+        # a client looping on refresh=true cannot pin a request thread.
+        self._chart_forced_extend_at: dict[str, float] = {}
+        self.oi_finder_chart_build_lane = ChartBuildLane(self._chart_symbol_is_interactive)
+        # Bounded lane for BACKGROUND chart refreshes. The recency/full refresh
+        # used to spawn a bare unbounded thread per symbol - the per-symbol
+        # dedupe stopped the SAME ticker building twice, but nothing capped how
+        # many DIFFERENT tickers built at once. 2026-08-28 in market hours that
+        # reached 68 concurrent builder threads; 68 threads fighting the GIL over
+        # pandas work made every request crawl (a slim chart fetch measured 94s,
+        # auth/status timed out, the app went blank). Two workers cap concurrent
+        # builds so interactive requests always get GIL time. Extra symbols queue
+        # here instead of piling onto the interpreter; the per-symbol dedupe keeps
+        # the queue from filling with duplicates.
+        self.oi_finder_chart_refresh_pool = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="oi-finder-chart",
+        )
+        # Dedicated pool for the FAST candles-first paint (bars only, no study
+        # replay - ~2s). Kept separate from the study pool above so a cold
+        # symbol's paint never queues behind another symbol's 9-101s full study
+        # build: measured 2026-08-28, cold opens sat on "Loading..." because the
+        # 2s paint waited its turn in the same 2-worker pool as the slow builds.
+        # The paint is what puts candles on screen; the deep studies fill in
+        # after, on the study pool.
+        self.oi_finder_chart_paint_pool = ThreadPoolExecutor(
+            max_workers=3,
+            thread_name_prefix="oi-finder-paint",
+        )
+        # Deep (full-history) builds get their own single worker. They used to
+        # share the 2-slot pool above, so one 39-79s deep build (measured
+        # 2026-09-22: NKE full 79.16s, HOOD 53.99s, SHOP 48.01s) held HALF the
+        # tail capacity for a minute-plus and pushed every tail refresh past its
+        # deadline - the first shove in that day's churn incident. One worker,
+        # because ChartBuildLane already serialises deep builds: this changes
+        # nothing about deep concurrency, it just stops them eating tail slots.
+        # Named so a py-spy dump says which kind of build a thread is running.
+        self.oi_finder_chart_full_pool = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="oi-finder-chart-full",
+        )
         self.oi_finder_chart_disk_cache_dir = ARTIFACTS_DIR / "oi_chart_cache"
         self.oi_finder_interactive_until = 0.0
         self._oi_finder_mtf_history_cache: dict[str, dict] = {}
@@ -638,60 +1363,13 @@ class DashboardState:
         self.oi_finder_mag7_live_next_run: datetime | None = None
         self.oi_finder_mag7_live_last_error = ""
         self.oi_finder_mag7_live_progress = {"completed": 0, "total": 0, "failed": 0}
-        oi_auto_alert_settings = self.repository.get_app_settings()
-        self.oi_auto_alert_lock = threading.RLock()
-        self.oi_auto_alert_wakeup = threading.Event()
-        self.oi_auto_alert_thread: threading.Thread | None = None
-        self.oi_auto_alert_enabled = str(
-            oi_auto_alert_settings.get("oi_auto_alert_enabled", "true") or "true"
-        ).strip().lower() in {"1", "true", "yes", "on"}
-        self.oi_auto_alert_include_mag7 = str(
-            oi_auto_alert_settings.get("oi_auto_alert_include_mag7", "true") or "true"
-        ).strip().lower() in {"1", "true", "yes", "on"}
-        try:
-            saved_manual_symbols = json.loads(
-                oi_auto_alert_settings.get("oi_auto_alert_manual_symbols", "[]") or "[]"
-            )
-        except (TypeError, ValueError, json.JSONDecodeError):
-            saved_manual_symbols = []
-        self.oi_auto_alert_manual_symbols = normalize_oi_auto_alert_symbols(
-            saved_manual_symbols if isinstance(saved_manual_symbols, list) else [],
-            limit=25,
-        )
-        try:
-            saved_auto_rows = json.loads(oi_auto_alert_settings.get("oi_auto_alert_rows", "{}") or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            saved_auto_rows = {}
-        self.oi_auto_alert_rows: dict[str, dict] = {
-            symbol: row
-            for raw_symbol, row in (saved_auto_rows.items() if isinstance(saved_auto_rows, dict) else [])
-            if (symbol := normalize_oi_auto_alert_symbol(raw_symbol)) and isinstance(row, dict)
-        }
-        try:
-            saved_auto_events = json.loads(oi_auto_alert_settings.get("oi_auto_alert_events", "[]") or "[]")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            saved_auto_events = []
-        self.oi_auto_alert_events: list[dict] = [
-            event for event in saved_auto_events if isinstance(event, dict)
-        ][-100:]
-        self.oi_auto_alert_last_refresh_date = str(
-            oi_auto_alert_settings.get("oi_auto_alert_last_refresh_date", "") or ""
-        )
-        self.oi_auto_alert_last_evaluated_bucket = ""
-        self.oi_auto_alert_last_run: datetime | None = None
-        self.oi_auto_alert_next_run: datetime | None = None
-        self.oi_auto_alert_last_error = ""
-        self.oi_auto_alert_status = "Armed" if self.oi_auto_alert_enabled else "Paused"
-        self.oi_auto_alert_message = (
-            "Waiting for the 9:15 AM ET OI-ladder refresh."
-            if self.oi_auto_alert_enabled
-            else "Automatic OI alerts are paused."
-        )
-        self.oi_auto_alert_refresh_requested = False
-        self.oi_auto_alert_force_refresh = False
-        self.oi_auto_alert_refresh_symbols: set[str] = set()
+        # Automatic OI-ladder alerts (MAG7 + manual tickers): morning ladder
+        # build, 5-minute-close confirmation, persisted in app_settings.
+        self._init_oi_auto_alert_state()
         self.dashboard_cache_lock = threading.Lock()
         self.dashboard_cache: dict | None = None
+        self.why_not_traded_cache: dict[str, tuple[float, dict]] = {}
+        self.why_not_traded_lock = threading.Lock()
         self.dashboard_cache_timestamp: datetime | None = None
         self.dashboard_refresh_thread: threading.Thread | None = None
         self.scan_job = {
@@ -1361,6 +2039,21 @@ class DashboardState:
         self.earnings_calendar_cache = None
         self.action_message = f"Watchlist updated with {len(normalized)} symbols."
         self.repository.log_bot_event("watchlist_update", self.action_message)
+        # The dashboard payload is cached for 60s and the stale-serve path only
+        # re-merges a fixed set of "dynamic" keys - watchlist is not one of them.
+        # Without this, a ticker the trader just added or deleted does not reach
+        # any surface for up to a minute, which reads as "add/remove is broken".
+        self._invalidate_dashboard_cache()
+        # ...and push the new list into the payload already being served, so the
+        # edit is visible on the very next poll instead of after the 60s TTL.
+        # The three narrow lists are re-filtered here too: removing a ticker from
+        # the master must remove it from them in the same breath.
+        self._patch_dashboard_cache(
+            watchlist=list(normalized),
+            optionWatchlist=self._within_watchlist(self.option_watchlist),
+            activeOptionWatchlist=self._within_watchlist(self._active_option_watchlist()),
+            mag7OptionWatchlist=self._within_watchlist(self._mag7_oi_underlyings()),
+        )
 
     def replace_watchlist(self, symbols: list[str]) -> dict:
         self._persist_watchlist(symbols)
@@ -1388,6 +2081,8 @@ class DashboardState:
         self.repository.set_app_setting("option_watchlist", ",".join(normalized))
         self.action_message = f"Option watchlist updated with {len(normalized)} symbols."
         self.repository.log_bot_event("option_watchlist_update", self.action_message)
+        self._invalidate_dashboard_cache()
+        self._patch_dashboard_cache(optionWatchlist=self._within_watchlist(normalized))
 
     def replace_option_watchlist(self, symbols: list[str]) -> dict:
         self._persist_option_watchlist(symbols)
@@ -1435,6 +2130,8 @@ class DashboardState:
         self.repository.set_app_setting("mag7_scanner_watchlist", ",".join(normalized))
         self.action_message = f"Mag7 scanner watchlist updated with {len(normalized)} symbols."
         self.repository.log_bot_event("mag7_scanner_watchlist_update", self.action_message)
+        self._invalidate_dashboard_cache()
+        self._patch_dashboard_cache(optionWatchlist=self._within_watchlist(normalized))
 
     def replace_mag7_scanner_watchlist(self, symbols: list[str]) -> dict:
         self._persist_mag7_scanner_watchlist(symbols)
@@ -1461,6 +2158,27 @@ class DashboardState:
     def _option_watchlist_source_label(self) -> str:
         return "MAG7-Watchlist Options" if self._option_watchlist_source() == "mag7" else "Option Watchlist"
 
+
+    def _within_watchlist(self, symbols: list[str]) -> list[str]:
+        """Drop anything the master watchlist no longer contains.
+
+        THE rule that makes one watchlist work: a narrow list may never outlive
+        a deletion from the master. Applied at READ time rather than by syncing
+        on write, because a sync can be missed and a filter cannot - that is the
+        whole reason EA survived deletion in the MomX board on 2026-08-27.
+
+        Today every narrow list is already a clean subset, so this is a no-op
+        that only ever starts mattering after the trader removes a ticker.
+        A narrow list is never emptied by this: an empty result means the caller
+        should fall back the way it always did.
+        """
+        try:
+            master = {str(s).strip().upper() for s in (settings.scanner.default_universe or [])}
+        except Exception:  # noqa: BLE001 - a broken settings object must not blank a list
+            return list(symbols or [])
+        if not master:
+            return list(symbols or [])
+        return [s for s in (symbols or []) if str(s).strip().upper() in master]
     def _active_option_watchlist(self) -> list[str]:
         if self._option_watchlist_source() == "mag7":
             return self._mag7_option_underlyings()
@@ -2709,29 +3427,29 @@ class DashboardState:
         for row in output:
             grouped_rows.setdefault((str(row["expiry"]), str(row["side"])), []).append(row)
         for rows in grouped_rows.values():
-            positive_oi = [row for row in rows if self._safe_float(row.get("open_interest"), 0.0) > 0]
             positive_volume = [row for row in rows if self._safe_float(row.get("volume"), 0.0) > 0]
             # Highlight the five largest OI levels for each exact expiry and
-            # side.  Limiting this to three hid meaningful clusters such as a
-            # low-delta contract that still carried one of the expiry's largest
-            # reported OI readings.
+            # side — daily-sheet convention (2026-08-20): a call contract's OI
+            # only counts as a wall ABOVE spot and a put contract's only at or
+            # below it. ITM contracts are positioning history, so the old
+            # deep-ITM booster is gone; the chain itself stays unfiltered.
+            side_name = str(rows[0].get("side") or "")
+            positive_oi = [
+                row for row in rows
+                if self._safe_float(row.get("open_interest"), 0.0) > 0
+                and (
+                    underlying_price <= 0
+                    or (
+                        self._safe_float(row.get("strike"), 0.0) > underlying_price
+                        if side_name == "CALL"
+                        else self._safe_float(row.get("strike"), 0.0) <= underlying_price
+                    )
+                )
+            ]
             top_oi = {
                 float(row["strike"])
                 for row in sorted(positive_oi, key=lambda item: self._safe_float(item.get("open_interest"), 0.0), reverse=True)[:5]
             }
-            # Do not let strong OTM levels hide a meaningful deep-ITM OI level.
-            # The chain remains fully unfiltered (all deltas), while these extra
-            # tags make the strongest ITM contracts visible like TOS shading.
-            side_name = str(rows[0].get("side") or "")
-            itm_oi = [
-                row for row in positive_oi
-                if (side_name == "CALL" and self._safe_float(row.get("strike"), 0.0) < underlying_price)
-                or (side_name == "PUT" and self._safe_float(row.get("strike"), 0.0) > underlying_price)
-            ]
-            top_oi.update(
-                float(row["strike"])
-                for row in sorted(itm_oi, key=lambda item: self._safe_float(item.get("open_interest"), 0.0), reverse=True)[:3]
-            )
             top_volume = {
                 float(row["strike"])
                 for row in sorted(positive_volume, key=lambda item: self._safe_float(item.get("volume"), 0.0), reverse=True)[:3]
@@ -3079,62 +3797,71 @@ class DashboardState:
             history = self.oi_finder_volume_history.setdefault(normalized_symbol, [])
             history.append(snapshot)
             history[:] = [item for item in history if isinstance(item.get("recordedAt"), datetime) and item["recordedAt"] >= retention]
+            # Snapshot the list and RELEASE the lock before computing. The
+            # momentum pass below is O(contracts x windows x history) of pure
+            # Python, and it used to run under this lock - so while any one
+            # symbol's refresh computed, EVERY chain request on EVERY symbol
+            # blocked at its first `with self.oi_finder_lock`. Measured
+            # 2026-08-19: a fresh in-memory cache hit for AAPL took 66.8s and
+            # MSFT's request parked for 60s+ while 30 refreshes were queued. The
+            # lock only has to guard the shared history list, not the math.
+            history = list(history)
 
-            current_contracts = snapshot.get("contracts") if isinstance(snapshot.get("contracts"), dict) else {}
-            momentum_contracts: dict[str, dict] = {}
-            prior_history = history[:-1]
-            for contract_key, current in current_contracts.items():
-                current_volume = self._safe_float(current.get("volume"), 0.0)
-                windows: dict[str, dict] = {}
-                for seconds in window_seconds:
-                    candidates = [
-                        item for item in prior_history
-                        if contract_key in (item.get("contracts") or {})
-                        and (recorded_at - item["recordedAt"]).total_seconds() >= seconds * 0.75
-                    ]
-                    if not candidates:
-                        continue
-                    prior = min(
-                        candidates,
-                        key=lambda item: abs((recorded_at - item["recordedAt"]).total_seconds() - seconds),
-                    )
-                    elapsed_seconds = max((recorded_at - prior["recordedAt"]).total_seconds(), 1.0)
-                    prior_volume = self._safe_float(prior["contracts"][contract_key].get("volume"), 0.0)
-                    volume_change = max(current_volume - prior_volume, 0.0)
-                    windows[str(seconds)] = {
-                        "volumeChange": round(volume_change),
-                        "ratePerMinute": round(volume_change / elapsed_seconds * 60.0, 2),
-                        "elapsedSeconds": round(elapsed_seconds),
-                    }
-                momentum_contracts[contract_key] = {
-                    **current,
-                    "windows": windows,
+        current_contracts = snapshot.get("contracts") if isinstance(snapshot.get("contracts"), dict) else {}
+        momentum_contracts: dict[str, dict] = {}
+        prior_history = history[:-1]
+        for contract_key, current in current_contracts.items():
+            current_volume = self._safe_float(current.get("volume"), 0.0)
+            windows: dict[str, dict] = {}
+            for seconds in window_seconds:
+                candidates = [
+                    item for item in prior_history
+                    if contract_key in (item.get("contracts") or {})
+                    and (recorded_at - item["recordedAt"]).total_seconds() >= seconds * 0.75
+                ]
+                if not candidates:
+                    continue
+                prior = min(
+                    candidates,
+                    key=lambda item: abs((recorded_at - item["recordedAt"]).total_seconds() - seconds),
+                )
+                elapsed_seconds = max((recorded_at - prior["recordedAt"]).total_seconds(), 1.0)
+                prior_volume = self._safe_float(prior["contracts"][contract_key].get("volume"), 0.0)
+                volume_change = max(current_volume - prior_volume, 0.0)
+                windows[str(seconds)] = {
+                    "volumeChange": round(volume_change),
+                    "ratePerMinute": round(volume_change / elapsed_seconds * 60.0, 2),
+                    "elapsedSeconds": round(elapsed_seconds),
                 }
-
-            started_at = history[0]["recordedAt"] if history else recorded_at
-            series: list[dict] = []
-            previous_snapshot: dict | None = None
-            for item in history:
-                aggregates = item.get("aggregates") if isinstance(item.get("aggregates"), dict) else {}
-                point = {"time": int(item["recordedAt"].timestamp())}
-                if previous_snapshot is not None:
-                    previous_aggregates = previous_snapshot.get("aggregates") if isinstance(previous_snapshot.get("aggregates"), dict) else {}
-                    elapsed_seconds = max((item["recordedAt"] - previous_snapshot["recordedAt"]).total_seconds(), 1.0)
-                    for aggregate_key in ("callAtm", "callOtm", "putAtm", "putOtm"):
-                        current_value = self._safe_float(aggregates.get(aggregate_key), 0.0)
-                        prior_value = self._safe_float(previous_aggregates.get(aggregate_key), 0.0)
-                        point[f"{aggregate_key}Rate"] = round(max(current_value - prior_value, 0.0) / elapsed_seconds * 60.0, 2)
-                series.append(point)
-                previous_snapshot = item
-            return {
-                "updatedAt": _serialize_value(recorded_at),
-                "startedAt": _serialize_value(started_at),
-                "refreshSeconds": 15,
-                "windows": list(window_seconds),
-                "contracts": momentum_contracts,
-                "series": series,
-                "intradayTimeline": self._oi_finder_intraday_volume_timeline(normalized_symbol, snapshot),
+            momentum_contracts[contract_key] = {
+                **current,
+                "windows": windows,
             }
+
+        started_at = history[0]["recordedAt"] if history else recorded_at
+        series: list[dict] = []
+        previous_snapshot: dict | None = None
+        for item in history:
+            aggregates = item.get("aggregates") if isinstance(item.get("aggregates"), dict) else {}
+            point = {"time": int(item["recordedAt"].timestamp())}
+            if previous_snapshot is not None:
+                previous_aggregates = previous_snapshot.get("aggregates") if isinstance(previous_snapshot.get("aggregates"), dict) else {}
+                elapsed_seconds = max((item["recordedAt"] - previous_snapshot["recordedAt"]).total_seconds(), 1.0)
+                for aggregate_key in ("callAtm", "callOtm", "putAtm", "putOtm"):
+                    current_value = self._safe_float(aggregates.get(aggregate_key), 0.0)
+                    prior_value = self._safe_float(previous_aggregates.get(aggregate_key), 0.0)
+                    point[f"{aggregate_key}Rate"] = round(max(current_value - prior_value, 0.0) / elapsed_seconds * 60.0, 2)
+            series.append(point)
+            previous_snapshot = item
+        return {
+            "updatedAt": _serialize_value(recorded_at),
+            "startedAt": _serialize_value(started_at),
+            "refreshSeconds": 15,
+            "windows": list(window_seconds),
+            "contracts": momentum_contracts,
+            "series": series,
+            "intradayTimeline": self._oi_finder_intraday_volume_timeline(normalized_symbol, snapshot),
+        }
 
     def _attach_oi_finder_volume_momentum(
         self,
@@ -3259,6 +3986,7 @@ class DashboardState:
         symbol: str,
         chain_payload: dict,
         current_atm: dict,
+        include_history: bool = True,
     ) -> dict:
         """Score OTM call/put activity from live Schwab fields and saved daily snapshots.
 
@@ -3279,7 +4007,11 @@ class DashboardState:
             }
         classified = classify_strikes(price, chain_payload, expiry)
         atm_strike = classified.get("atmStrike")
-        history = self.repository.option_chain_daily_snapshots(symbol, expiry=expiry, days=183)
+        history = (
+            self.repository.option_chain_daily_snapshots(symbol, expiry=expiry, days=183)
+            if include_history
+            else []
+        )
 
         def exact_history(contract: dict) -> list[dict]:
             side = str(contract.get("optionType") or "").upper()
@@ -3709,6 +4441,29 @@ class DashboardState:
             return None
         return Path(self.oi_finder_chain_disk_cache_dir) / f"{target}.json.gz"
 
+    @staticmethod
+    def _oi_finder_chain_disk_is_servable(
+        disk_payload, compact: bool, research_section: str = ""
+    ) -> bool:
+        """Can this cached chain answer the request without hitting Schwab?
+
+        Compact requests always can. A FULL request must not be answered with
+        a payload that was slimmed for a first paint, so it additionally
+        requires the expiry chain rows the options panel renders.
+
+        A RESEARCH request (section=heatmap/flow) never can. The disk copy is
+        written by the compact/chain path, so its dailyLiquidityHeatmap is
+        always {}. Serving it left Heatmap and Flow permanently empty on both
+        mobile and desktop - see the regression test for the measurements.
+        """
+        if not isinstance(disk_payload, dict) or not disk_payload:
+            return False
+        if str(research_section or "").strip().lower():
+            return False
+        if compact:
+            return True
+        return bool(disk_payload.get("selectedExpiryChainRows"))
+
     def _load_oi_finder_chain_disk_payload(self, symbol: str) -> dict | None:
         """Load the last usable compact chain so restarts never show a spinner."""
         path = self._oi_finder_chain_disk_path(symbol)
@@ -3792,39 +4547,254 @@ class DashboardState:
         }
         return slim
 
-    def _refresh_oi_finder_in_background(self, symbol: str, compact: bool = False) -> None:
+    @staticmethod
+    def _mobile_fast_oi_finder_chain_payload(payload: dict, max_strikes: int = 13) -> dict:
+        """Return only the nearest tradable strike window for a phone tap."""
+        slim = DashboardState._slim_initial_oi_finder_chain_payload(payload)
+        if not isinstance(slim, dict):
+            return slim
+        def number(value: object) -> float:
+            try:
+                numeric = float(value)
+                return numeric if math.isfinite(numeric) else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+        rows = [row for row in slim.get("selectedExpiryChainRows") or [] if isinstance(row, dict)]
+        strikes = sorted({number(row.get("strike")) for row in rows if number(row.get("strike")) > 0})
+        limit = max(1, int(max_strikes or 13))
+        current_atm = slim.get("currentAtm") if isinstance(slim.get("currentAtm"), dict) else {}
+        call_atm = current_atm.get("call") if isinstance(current_atm.get("call"), dict) else {}
+        put_atm = current_atm.get("put") if isinstance(current_atm.get("put"), dict) else {}
+        pivot = number(call_atm.get("strike")) or number(put_atm.get("strike")) or number(slim.get("underlyingPrice"))
+        if len(strikes) > limit:
+            nearest_index = min(range(len(strikes)), key=lambda index: abs(strikes[index] - pivot))
+            start = max(0, min(len(strikes) - limit, nearest_index - limit // 2))
+            strikes = strikes[start:start + limit]
+        visible_strikes = set(strikes)
+        analytics_keys = (
+            "volumeMomentum",
+            "dailyLiquidityHeatmap",
+            "unusualOtmActivity",
+            "unusualOtmDashboard",
+            "persistentActivity",
+            "liveWallTrend",
+        )
+        fast = {
+            **slim,
+            "selectedExpiryChainRows": [
+                row for row in rows if number(row.get("strike")) in visible_strikes
+            ],
+            "callRows": [],
+            "putRows": [],
+            "tosScriptLevels": [],
+            "mobileFast": True,
+        }
+        for key in analytics_keys:
+            fast[key] = {}
+        return fast
+
+    @staticmethod
+    def _present_oi_finder_chain_payload(
+        payload: dict,
+        *,
+        initial_paint: bool = False,
+        mobile_fast: bool = False,
+    ) -> dict:
+        if mobile_fast:
+            return DashboardState._mobile_fast_oi_finder_chain_payload(payload)
+        if initial_paint:
+            return DashboardState._slim_initial_oi_finder_chain_payload(payload)
+        return payload
+
+    @staticmethod
+    def _oi_finder_otm_pick_comparisons(activity: dict | None) -> int:
+        """How many of the four score comparisons the DISPLAYED picks have.
+
+        Deliberately not ``historyReady``: that is ``all(history_days >= 5)``
+        across EVERY scanned OTM contract, so a handful of thin far-OTM strikes
+        hold it false while the two picks on screen are fully backed. Measured
+        TSLA 2026-08-26: 80 signals, 71 with 10-11 days of history, both picks
+        at 4/4 comparisons - and historyReady still False. Using it to decide
+        whether a quick pass may overwrite a complete one let the board's read
+        oscillate between 4/4 and 1/4 every refresh cycle.
+        """
+        counts = []
+        for key in ("strongestBullish", "strongestBearish"):
+            pick = (activity or {}).get(key) or {}
+            value = pick.get("comparisonsAvailable")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            counts.append(int(value))
+        return max(counts) if counts else 0
+
+    @staticmethod
+    def _oi_finder_research_plan(section: str = "") -> dict[str, bool]:
+        normalized = str(section or "").strip().lower()
+        if normalized == "heatmap":
+            return {"volume": False, "heatmap": True, "unusual": False, "full": False}
+        if normalized == "flow":
+            return {"volume": True, "heatmap": True, "unusual": True, "full": False}
+        return {"volume": True, "heatmap": True, "unusual": True, "full": True}
+
+    #: Longest a slow symbol may be held off. Chosen so a pathological build
+    #: cannot re-fire more than ~12 times an hour, while a normal one is
+    #: effectively uncapped.
+    OI_FINDER_REFRESH_MAX_COOLDOWN_SECONDS = 300.0
+
+    @classmethod
+    def _oi_finder_refresh_backoff(cls, elapsed_seconds: float) -> float:
+        """How long to wait before this symbol may rebuild again.
+
+        Equal to the build's own duration, capped. A 2s build waits 2s - no
+        practical change. An 874s build waits 300s instead of restarting
+        instantly, which is what frees the worker for the ticker actually on
+        screen. Deliberately proportional rather than a flat delay: the symbols
+        that need holding off are exactly the ones that took too long, and a
+        flat delay would either throttle healthy symbols or fail to contain
+        pathological ones.
+        """
+        try:
+            elapsed = float(elapsed_seconds)
+        except (TypeError, ValueError):
+            return 0.0
+        if not elapsed > 0:
+            return 0.0
+        return min(elapsed, cls.OI_FINDER_REFRESH_MAX_COOLDOWN_SECONDS)
+
+    def _refresh_oi_finder_in_background(
+        self,
+        symbol: str,
+        compact: bool = False,
+        research_section: str = "",
+    ) -> None:
         """Refresh an older Finder cache without making the page wait on a broker call."""
         normalized_symbol = str(symbol or "").strip().upper()
         if not normalized_symbol:
             return
         # Compact and full refreshes populate different caches, so they must
         # not suppress each other through one shared in-flight set.
-        refresh_key = f"{normalized_symbol}|compact" if compact else normalized_symbol
+        normalized_research_section = str(research_section or "").strip().lower()
+        refresh_key = (
+            f"{normalized_symbol}|compact"
+            if compact
+            else f"{normalized_symbol}|research:{normalized_research_section}"
+            if normalized_research_section
+            else normalized_symbol
+        )
+        # Two-phase: publish the decision board's analytics (~2s) on their own
+        # pool, in parallel with the history extras (~85-143s) on the shared
+        # one. The board stops showing "WAIT FOR DATA" on the very next poll
+        # instead of waiting out the slow half - and a 5th open ticker's quick
+        # pass is never stuck behind a 4th ticker's history build.
+        #
+        # This runs BEFORE the history pass's in-flight guard below, and keys
+        # off its own "|quick" entry. Sharing that guard meant every poll during
+        # an 85s history build returned early, so the board's numbers went
+        # untouched for the whole build.
+        #
+        # Racing the two passes is safe by construction: whichever finishes
+        # second wins the cache, and the quick write refuses to blank the
+        # history extras or downgrade a history-rich unusualOtmActivity (see
+        # the preserve block in _oi_finder_payload_impl).
+        if not compact and not normalized_research_section:
+            quick_key = f"{normalized_symbol}|quick"
+            submit_quick = False
+            with self.oi_finder_lock:
+                quick_ready = time.monotonic() >= self.oi_finder_refresh_cooldown.get(quick_key, 0.0)
+                if quick_key not in self.oi_finder_background_refreshes and quick_ready:
+                    self.oi_finder_background_refreshes.add(quick_key)
+                    submit_quick = True
+
+            def quick_refresh() -> None:
+                started_at = time.monotonic()
+                try:
+                    self.oi_finder_payload(
+                        normalized_symbol,
+                        force=True,
+                        quick_analytics=True,
+                    )
+                finally:
+                    with self.oi_finder_lock:
+                        self.oi_finder_background_refreshes.discard(quick_key)
+                        self.oi_finder_refresh_cooldown[quick_key] = (
+                            time.monotonic() + self._oi_finder_refresh_backoff(time.monotonic() - started_at)
+                        )
+
+            if submit_quick:
+                self.oi_finder_quick_pool.submit(quick_refresh)
+
         with self.oi_finder_lock:
             if refresh_key in self.oi_finder_background_refreshes:
+                return
+            if time.monotonic() < self.oi_finder_refresh_cooldown.get(refresh_key, 0.0):
+                # Still cooling down from a build that ran long. Serving the
+                # existing cache for a few more seconds is strictly better than
+                # holding a worker that every other ticker is queued behind.
                 return
             self.oi_finder_background_refreshes.add(refresh_key)
 
         def refresh() -> None:
+            started_at = time.monotonic()
             try:
-                self.oi_finder_payload(normalized_symbol, force=True, compact=compact)
+                self.oi_finder_payload(
+                    normalized_symbol,
+                    force=True,
+                    compact=compact,
+                    research_section=normalized_research_section,
+                )
             finally:
                 with self.oi_finder_lock:
                     self.oi_finder_background_refreshes.discard(refresh_key)
+                    self.oi_finder_refresh_cooldown[refresh_key] = (
+                        time.monotonic() + self._oi_finder_refresh_backoff(time.monotonic() - started_at)
+                    )
 
-        threading.Thread(
-            target=refresh,
-            name=f"oi-finder-refresh-{normalized_symbol.lower()}",
-            daemon=True,
-        ).start()
+        self.oi_finder_refresh_pool.submit(refresh)
 
-    def oi_finder_payload(
+    def oi_finder_payload(self, symbol: str, force: bool = False, compact: bool = False,
+                          initial_paint: bool = False, mobile_fast: bool = False,
+                          background_snapshot: bool = False, research_section: str = "",
+                          quick_analytics: bool = False) -> dict:
+        """Timing wrapper: logs any chain request slower than 2s with the branch it
+        took. Added 2026-08-19 because the chain endpoint measured 18-150s on warm
+        symbols whose disk cache was 1 minute old and servable - the code read as
+        if it should answer instantly, so the stall had to be found by instrument,
+        not by reading. Remove once the chain path is consistently fast."""
+        started = time.perf_counter()
+        branch = "?"
+        try:
+            payload = self._oi_finder_payload_impl(
+                symbol, force=force, compact=compact, initial_paint=initial_paint,
+                mobile_fast=mobile_fast, background_snapshot=background_snapshot,
+                research_section=research_section, quick_analytics=quick_analytics,
+            )
+            branch = (
+                "fresh-cache" if payload.get("cached") and not payload.get("stale")
+                else "stale-cache" if payload.get("stale")
+                else "disk" if payload.get("diskCached")
+                else "built"
+            )
+            return payload
+        finally:
+            elapsed = time.perf_counter() - started
+            if elapsed > 2.0 and not background_snapshot:
+                print(
+                    f"[chain-timing] {str(symbol).upper():6s} {elapsed:7.2f}s "
+                    f"branch={branch} compact={compact} force={force} "
+                    f"initial={initial_paint}",
+                    flush=True,
+                )
+
+    def _oi_finder_payload_impl(
         self,
         symbol: str,
         force: bool = False,
         compact: bool = False,
         initial_paint: bool = False,
+        mobile_fast: bool = False,
         background_snapshot: bool = False,
+        research_section: str = "",
+        quick_analytics: bool = False,
     ) -> dict:
         """Return one ticker's 0-14 DTE call/put liquidity comparison.
 
@@ -3842,6 +4812,9 @@ class DashboardState:
         if not background_snapshot:
             self.touch_oi_finder_interactive_window()
         normalized_symbol = str(symbol or "").strip().upper()
+        normalized_research_section = str(research_section or "").strip().lower()
+        if compact or normalized_research_section not in {"heatmap", "flow"}:
+            normalized_research_section = ""
         if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", normalized_symbol):
             return {
                 "live": False,
@@ -3856,22 +4829,34 @@ class DashboardState:
         # Compact chain responses are cached separately: a compact payload must
         # never be served to the Finder (it has no analytics), and the Finder's
         # slower full payload must not delay the chart's chain panel.
-        payload_cache = self.oi_finder_chain_cache if compact else self.oi_finder_cache
+        payload_cache = (
+            self.oi_finder_chain_cache
+            if compact
+            else self.oi_finder_research_cache
+            if normalized_research_section
+            else self.oi_finder_cache
+        )
+        payload_cache_key = (
+            (normalized_symbol, normalized_research_section)
+            if normalized_research_section
+            else normalized_symbol
+        )
         with self.oi_finder_lock:
-            cached = payload_cache.get(normalized_symbol)
+            cached = payload_cache.get(payload_cache_key)
             if cached and not force:
                 cache_age = (now - cached[0]).total_seconds()
                 needs_full_analytics = (
                     not compact
+                    and not normalized_research_section
                     and not background_snapshot
                     and bool(cached[1].get("analyticsDeferred"))
                 )
                 if cache_age < 15 and not needs_full_analytics:
                     ready_payload = {**cached[1], "cached": True, "refreshing": False}
-                    return (
-                        self._slim_initial_oi_finder_chain_payload(ready_payload)
-                        if compact and initial_paint
-                        else ready_payload
+                    return self._present_oi_finder_chain_payload(
+                        ready_payload,
+                        initial_paint=compact and initial_paint,
+                        mobile_fast=compact and mobile_fast,
                     )
                 # The visible Finder should always keep showing its last complete
                 # chain while a slow broker request runs. A fresh response replaces
@@ -3883,33 +4868,116 @@ class DashboardState:
                     "refreshing": True,
                 }
         if stale_payload is not None:
-            self._refresh_oi_finder_in_background(normalized_symbol, compact=compact)
-            return (
-                self._slim_initial_oi_finder_chain_payload(stale_payload)
-                if compact and initial_paint
-                else stale_payload
+            self._refresh_oi_finder_in_background(
+                normalized_symbol,
+                compact=compact,
+                research_section=normalized_research_section,
+            )
+            return self._present_oi_finder_chain_payload(
+                stale_payload,
+                initial_paint=compact and initial_paint,
+                mobile_fast=compact and mobile_fast,
             )
 
         # The compact cache survives backend restarts. Serve it immediately
         # and revalidate off-thread instead of making the chart/options page
         # wait on Schwab before it can paint.
-        if compact and not force:
+        # Applies to FULL requests too, not just compact ones. The options
+        # panel asks for the full payload, so gating this on `compact` meant
+        # it skipped the cache entirely and blocked on Schwab: measured
+        # 19.97s cold for CRWD on 2026-08-18 - the 'Loading live option
+        # chain' spinner - against 0.40s for the compact chain endpoint
+        # beside it. The stale copy paints now; the refresh replaces it.
+        if not force:
             disk_payload = self._load_oi_finder_chain_disk_payload(normalized_symbol)
+            if not self._oi_finder_chain_disk_is_servable(
+                disk_payload, compact, normalized_research_section
+            ):
+                disk_payload = None
             if disk_payload is not None:
+                # The disk copy is written ONLY by the compact/chain path
+                # (`if compact: self._save_oi_finder_chain_disk_payload(...)`),
+                # so every Finder analytic in it is {} - and a compact build
+                # stamps analyticsDeferred=False, because it is not a background
+                # snapshot. Writing that into the FULL cache unchanged makes an
+                # analytics-free payload claim to be complete, so
+                # needs_full_analytics never fires and the decision board sits on
+                # WAIT FOR DATA until something else happens to rebuild the
+                # symbol. Measured 2026-08-26 13:45, minutes after a restart:
+                # NFLX served a 3h47m-old disk copy and AMD a 37h one, both
+                # analyticsDeferred=False with all six analytics empty. Stamp the
+                # truth instead - the real chain still paints immediately, and the
+                # next poll now takes the needs_full_analytics escape and resolves
+                # in ~2s through the quick pass. Same reasoning as the
+                # research-section guard in _oi_finder_chain_disk_is_servable,
+                # which was fixed for heatmap/flow and missed for the full
+                # Finder request.
+                if not compact and not normalized_research_section:
+                    disk_payload = {**disk_payload, "analyticsDeferred": True}
                 with self.oi_finder_lock:
-                    payload_cache[normalized_symbol] = (now - timedelta(seconds=16), disk_payload)
-                self._refresh_oi_finder_in_background(normalized_symbol, compact=True)
+                    # Key by payload_cache_key, not the bare symbol: research
+                    # payloads are keyed (symbol, section) and a bare-symbol
+                    # write is never read back.
+                    payload_cache[payload_cache_key] = (now - timedelta(seconds=16), disk_payload)
+                # Revalidate in the shape that was asked for, so a full
+                # request is not replaced by a compact rebuild - and so a
+                # research request rebuilds its own analytics rather than a
+                # section-less payload that lands in a different cache.
+                self._refresh_oi_finder_in_background(
+                    normalized_symbol,
+                    compact=compact,
+                    research_section=normalized_research_section,
+                )
                 disk_response = {
                     **disk_payload,
                     "cached": True,
                     "stale": True,
                     "refreshing": True,
                 }
-                return (
-                    self._slim_initial_oi_finder_chain_payload(disk_response)
-                    if initial_paint
-                    else disk_response
+                return self._present_oi_finder_chain_payload(
+                    disk_response,
+                    initial_paint=initial_paint,
+                    mobile_fast=mobile_fast,
                 )
+
+        # A COLD interactive request - no memory cache, no servable disk cache -
+        # must not ride the request thread to Schwab. That is the same defect
+        # the chart endpoint had (fixed in 0c273ea): the broker round-trip is
+        # 3-10s on a good day and 60-199s at the open, and under a burst of
+        # symbols every request thread ends up parked inside it - measured
+        # 2026-08-19: 30 cold chain requests fired together, a user's MSFT chain
+        # did not answer inside 60s and never reached the timing log at all.
+        # Answer with the warming shape the client already shows as its spinner
+        # and build through the bounded refresh pool; the client's poll picks
+        # the real chain up seconds later. Background callers (force=True) ARE
+        # the builders and still run synchronously below.
+        # Research sections (heatmap/flow) are exempt from the warming stub:
+        # those pages were built before stubs existed - they render the FIRST
+        # response as final ("No live 0-31 DTE contracts", observed on AMZN
+        # 2026-08-20 00:20 ET) and a user-initiated research click is rare, so
+        # the pre-stub synchronous build is the correct behavior for them.
+        if not force and not background_snapshot and not normalized_research_section:
+            self._refresh_oi_finder_in_background(
+                normalized_symbol,
+                compact=compact,
+                research_section=normalized_research_section,
+            )
+            return self._present_oi_finder_chain_payload(
+                {
+                    "symbol": normalized_symbol,
+                    "live": False,
+                    "warming": True,
+                    "refreshing": True,
+                    "source": "Schwab/TOS option chain",
+                    "callRows": [],
+                    "putRows": [],
+                    "selectedExpiryChainRows": [],
+                    "errors": [],
+                    "updatedAt": datetime.now().astimezone().isoformat(),
+                },
+                initial_paint=initial_paint,
+                mobile_fast=mobile_fast,
+            )
 
         chain_payload: dict = {}
         underlying_quote: dict = {}
@@ -3919,37 +4987,66 @@ class DashboardState:
             # OI Finder is intentionally a direct, single-symbol Schwab/TOS
             # request. It must not depend on the app-wide stock data provider
             # (which may remain Alpaca for charting/scanning).
-            market_client = SchwabClient()
-            if not market_client.configured:
+            # Walk every configured Schwab profile before conceding. `configured`
+            # only proves a credential is PRESENT, not that Schwab accepts it,
+            # so a market-data secret the broker rejects used to drop the whole
+            # Finder onto Tradier - and when Tradier's token is also dead the
+            # board simply says "Loading option chain..." forever. Measured
+            # 2026-08-27 12:55 ET on DOCU: market_data raised
+            # `invalid_client: Unauthorized`, trading returned 290 strikes,
+            # status SUCCESS. Same walk _live_quote_client does for quotes and
+            # the chart bars do for candles.
+            schwab_clients = _schwab_market_clients()
+            if not schwab_clients:
                 raise RuntimeError("Schwab/TOS option chain is not configured.")
-            chain_payload = market_client.get_option_chain(
-                normalized_symbol,
-                contract_type="ALL",
-                strike_count=40 if compact and initial_paint else 80,
-                # OI Finder only displays the next 0–31 DTE.  Requesting every
-                # listed expiry first can make a new ticker search needlessly
-                # slow, especially for liquid names with long-dated LEAPS.
-                from_date=now,
-                to_date=now + timedelta(
-                    days=7 if compact and initial_paint else OI_FINDER_MAX_DAYS_TO_EXPIRATION
-                ),
-            )
-            if not chain_payload and compact and initial_paint:
-                # Monthly-only names can have no expiry in the first week.
-                # Retry the same narrow strike window across 31 DTE before
-                # considering the provider unavailable.
-                chain_payload = market_client.get_option_chain(
-                    normalized_symbol,
-                    contract_type="ALL",
-                    strike_count=40,
-                    from_date=now,
-                    to_date=now + timedelta(days=OI_FINDER_MAX_DAYS_TO_EXPIRATION),
-                )
+            chain_error = None
+            for market_client in schwab_clients:
+                try:
+                    chain_payload = market_client.get_option_chain(
+                        normalized_symbol,
+                        contract_type="ALL",
+                        strike_count=(26 if mobile_fast else 40) if compact and initial_paint else 80,
+                        # OI Finder only displays the next 0–31 DTE.  Requesting
+                        # every listed expiry first can make a new ticker search
+                        # needlessly slow, especially for liquid names with
+                        # long-dated LEAPS.
+                        from_date=now,
+                        to_date=now + timedelta(
+                            days=7 if compact and initial_paint else OI_FINDER_MAX_DAYS_TO_EXPIRATION
+                        ),
+                    )
+                    if not chain_payload and compact and initial_paint:
+                        # Monthly-only names can have no expiry in the first
+                        # week. Retry the same narrow strike window across 31 DTE
+                        # before considering the provider unavailable.
+                        chain_payload = market_client.get_option_chain(
+                            normalized_symbol,
+                            contract_type="ALL",
+                            strike_count=40,
+                            from_date=now,
+                            to_date=now + timedelta(days=OI_FINDER_MAX_DAYS_TO_EXPIRATION),
+                        )
+                    if not chain_payload:
+                        raise RuntimeError("Schwab/TOS returned an empty option chain.")
+                    # The chain already carries the live underlying price.
+                    # Mobile's first usable frame does not need a second broker
+                    # round-trip for day-change metadata; the normal/full refresh
+                    # fills that in.
+                    if not mobile_fast:
+                        underlying_quote = market_client.get_quotes(
+                            [normalized_symbol]
+                        ).get(normalized_symbol, {})
+                    chain_error = None
+                    break
+                except Exception as exc:
+                    chain_error = exc
+                    chain_payload = {}
+            if chain_error is not None:
+                raise chain_error
             if not chain_payload:
                 raise RuntimeError("Schwab/TOS returned an empty option chain.")
-            underlying_quote = market_client.get_quotes([normalized_symbol]).get(normalized_symbol, {})
-        except Exception:
-            tradier_client = TradierClient()
+        except Exception as schwab_exc:
+            tradier_client = _house_tradier_client()
             source = "Tradier option chain (Schwab/TOS fallback)"
             fallback_note = (
                 "Schwab/TOS chain was unavailable, so the finder used the live Tradier chain. "
@@ -3959,18 +5056,31 @@ class DashboardState:
                 chain_payload = tradier_client.get_option_chain_range(
                     normalized_symbol,
                     contract_type="ALL",
-                    strike_count=40 if compact and initial_paint else 80,
+                    strike_count=(26 if mobile_fast else 40) if compact and initial_paint else 80,
                     max_days_to_expiration=(
                         7 if compact and initial_paint else OI_FINDER_MAX_DAYS_TO_EXPIRATION
                     ),
                 )
             except Exception as exc:
+                # Report BOTH failures. Schwab is the primary and Tradier only
+                # the fallback, so a card that says only "Tradier's access token
+                # is not approved" sends the trader to renew a key that was
+                # never the trigger - the 2026-08-28 00:53 AAPL ladder failure
+                # read exactly that way while Schwab was the thing that blinked.
+                # Whatever broke FIRST is the thing worth naming first.
+                primary = str(schwab_exc or "").strip().splitlines()[0][:160]
+                fallback = str(exc or "").strip().splitlines()[0][:160]
+                combined = (
+                    f"Schwab/TOS failed ({primary}); the Tradier fallback also "
+                    f"failed ({fallback})."
+                    if primary else fallback
+                )
                 return {
                     "live": False,
                     "symbol": normalized_symbol,
                     "source": source,
                     "scannedAt": _serialize_value(now),
-                    "errors": [{"error": str(exc)}],
+                    "errors": [{"error": combined, "primary": primary, "fallback": fallback}],
                     "callRows": [],
                     "putRows": [],
                 }
@@ -3997,6 +5107,21 @@ class DashboardState:
         # snapshot database. The chart's chain panel never displays it, so the
         # compact path skips it entirely rather than paying thousands of
         # sqlite queries per request.
+        research_plan = self._oi_finder_research_plan(normalized_research_section)
+        if quick_analytics and not compact and not normalized_research_section:
+            # First pass of the two-phase interactive build. The decision board
+            # (OiFinderDecisionBoard) renders from unusualOtmActivity's
+            # strongestBullish/strongestBearish ONLY, and those cost ~2.2s off
+            # the live chain. The rest of the full plan is history work against
+            # the snapshot DB - the 183-day unusual-OTM dashboard, persistent
+            # activity, the recorded daily-chain heatmap and the live-wall
+            # trend - measured 85-143s end-to-end on NFLX 2026-08-26 while the
+            # background chart builders held the GIL. Running them first left
+            # the cache stamped analyticsDeferred for minutes, so every poll
+            # returned the stub and the board read it as "WAIT FOR DATA".
+            # Publish the cheap half first; the caller's second pass fills the
+            # history extras and overwrites this payload with the complete one.
+            research_plan = {"volume": True, "heatmap": False, "unusual": True, "full": False}
         if compact:
             volume_momentum = {}
             daily_liquidity_heatmap = {}
@@ -4005,34 +5130,55 @@ class DashboardState:
             persistent_activity = {}
             live_wall_trend = {}
         else:
-            volume_snapshot = self._oi_finder_volume_snapshot(current_atm, call_rows, put_rows, now, chain_payload)
-            volume_momentum = self._oi_finder_volume_momentum(normalized_symbol, volume_snapshot)
-            self._attach_oi_finder_volume_momentum(current_atm, call_rows, put_rows, volume_momentum)
-            daily_liquidity_heatmap = self._record_oi_finder_daily_chain_snapshot(
-                normalized_symbol,
-                chain_payload,
-                current_atm,
-                now,
-                include_history=not background_snapshot,
-            )
-            live_wall_trend = self._record_oi_finder_live_wall_snapshot(
-                normalized_symbol,
-                chain_payload,
-                now,
-                include_history=not background_snapshot,
-            )
+            volume_momentum = {}
+            daily_liquidity_heatmap = {}
+            unusual_otm_activity = {}
+            unusual_otm_dashboard = {}
+            persistent_activity = {}
+            live_wall_trend = {}
+            if research_plan["volume"]:
+                volume_snapshot = self._oi_finder_volume_snapshot(current_atm, call_rows, put_rows, now, chain_payload)
+                volume_momentum = self._oi_finder_volume_momentum(normalized_symbol, volume_snapshot)
+                self._attach_oi_finder_volume_momentum(current_atm, call_rows, put_rows, volume_momentum)
+            if research_plan["heatmap"]:
+                # The mobile heatmap is a current-chain decision surface. It
+                # does not need to read and serialize 183 days of snapshots
+                # before the trader can use it; the desktop Finder keeps that
+                # historical mode on its full analytics path.
+                daily_liquidity_heatmap = (
+                    self._oi_finder_live_chain_heatmap(
+                        normalized_symbol,
+                        chain_payload,
+                        now.astimezone(ZoneInfo(EASTERN_TZ)),
+                    )
+                    if normalized_research_section
+                    else self._record_oi_finder_daily_chain_snapshot(
+                        normalized_symbol,
+                        chain_payload,
+                        current_atm,
+                        now,
+                        include_history=not background_snapshot,
+                    )
+                )
+            if research_plan["full"]:
+                live_wall_trend = self._record_oi_finder_live_wall_snapshot(
+                    normalized_symbol,
+                    chain_payload,
+                    now,
+                    include_history=not background_snapshot,
+                )
             if background_snapshot:
                 # These fields are needed only by the visible Finder. Avoid its
                 # thousands of historical DB reads in the continuous collector.
-                unusual_otm_activity = {}
-                unusual_otm_dashboard = {}
-                persistent_activity = {}
-            else:
+                pass
+            elif research_plan["unusual"]:
                 unusual_otm_activity = self._oi_finder_unusual_otm_activity(
                     normalized_symbol,
                     chain_payload,
                     current_atm,
+                    include_history=research_plan["full"],
                 )
+            if not background_snapshot and research_plan["full"]:
                 unusual_otm_dashboard = build_dashboard_response(
                     normalized_symbol,
                     self._option_underlying_price_from_chain(chain_payload),
@@ -4063,6 +5209,7 @@ class DashboardState:
             "optionQuoteSchemaVersion": OI_FINDER_CHAIN_QUOTE_SCHEMA_VERSION,
             "cached": False,
             "analyticsDeferred": bool(background_snapshot),
+            "researchSection": normalized_research_section,
             "symbol": normalized_symbol,
             "source": source,
             "sourceNote": fallback_note,
@@ -4106,11 +5253,89 @@ class DashboardState:
         if compact and initial_paint:
             payload = self._slim_initial_oi_finder_chain_payload(payload)
         with self.oi_finder_lock:
+            # A full background_snapshot build intentionally leaves the display
+            # analytics empty (the `if background_snapshot: pass` gate above),
+            # so it is stamped analyticsDeferred=True with unusualOtmActivity={}.
+            # Writing that stub straight into the interactive Finder cache would
+            # CLOBBER the analytics a prior interactive build already resolved,
+            # flashing "WAIT FOR DATA" on the decision board every time the
+            # paced MAG7/daily collectors cycle (they re-run every ~2 min and
+            # only pause while the trader is actively interacting). Carry the
+            # resolved analytics forward so the collector refreshes the base
+            # chain WITHOUT downgrading what the Finder is showing. Scoped to
+            # full (compact=False), non-research writes -- the only path that
+            # feeds the desktop Finder cache; the compact chain fast path, the
+            # disk pre-warm, the alert-ladder builder (compact=True) and the
+            # research cache are untouched. volumeMomentum is deliberately NOT
+            # preserved: the background build recomputes it fresh (and better),
+            # and it feeds the separate volume-rate panel.
+            if background_snapshot and not compact and not normalized_research_section:
+                prior = payload_cache.get(payload_cache_key)
+                if (
+                    prior is not None
+                    and not prior[1].get("analyticsDeferred", False)
+                    and (prior[1].get("expiries") or [None])[0] == (expiries or [None])[0]
+                ):
+                    for key in ("unusualOtmActivity", "unusualOtmDashboard", "persistentActivity"):
+                        preserved = prior[1].get(key)
+                        if preserved:
+                            payload[key] = preserved
+                    for key in ("dailyLiquidityHeatmap", "liveWallTrend"):
+                        preserved = prior[1].get(key)
+                        if preserved and not payload.get(key):
+                            payload[key] = preserved
+                    payload["analyticsDeferred"] = False
+            # The quick first pass resolves unusualOtmActivity fresh but skips
+            # the history-backed extras, so its write would blank whatever a
+            # prior complete build had already resolved. Same shape as the
+            # background-snapshot preserve above, minus unusualOtmActivity:
+            # the quick pass owns that field and its value is newer.
+            if quick_analytics and not compact and not normalized_research_section:
+                prior = payload_cache.get(payload_cache_key)
+                if (
+                    prior is not None
+                    and (prior[1].get("expiries") or [None])[0] == (expiries or [None])[0]
+                ):
+                    for key in (
+                        "unusualOtmDashboard",
+                        "persistentActivity",
+                        "dailyLiquidityHeatmap",
+                        "liveWallTrend",
+                    ):
+                        preserved = prior[1].get(key)
+                        if preserved and not payload.get(key):
+                            payload[key] = preserved
+                    # The quick pass reads no history, so its picks carry only
+                    # the one live-only comparison (otm_volume_gt_atm) and score
+                    # 0-1 out of 4. Overwriting a fully backed read with that
+                    # made the board's score oscillate - 4/4 from the history
+                    # pass, then 1/4 from the next quick pass, every cycle.
+                    # Compare actual evidence depth and keep the richer read;
+                    # the full pass behind us refreshes it with fresh volume.
+                    prior_activity = prior[1].get("unusualOtmActivity") or {}
+                    if (
+                        self._oi_finder_otm_pick_comparisons(prior_activity)
+                        > self._oi_finder_otm_pick_comparisons(payload.get("unusualOtmActivity"))
+                    ):
+                        payload["unusualOtmActivity"] = prior_activity
             # Timestamp at completion, not request start.  A slow broker fetch
             # must not consume the cache's usable lifetime before the user even
             # sees the completed chain.
-            payload_cache[normalized_symbol] = (datetime.now().astimezone(), payload)
-        if compact:
+            payload_cache[payload_cache_key] = (datetime.now().astimezone(), payload)
+        # A BACKGROUND SNAPSHOT MUST NOT OWN THE SHARED BROWSER BLOB.
+        # _oi_auto_alert_refresh_levels(reason="morning") runs at 09:15 ET with
+        # compact=True to compute the day's OI alert levels. That build is
+        # legitimately PRE-OPEN - Schwab reports totalVolume 0 for every
+        # contract before the bell - and it was persisting itself into the
+        # blob the gateway serves to the browser. The gateway had no age rule,
+        # so that volume-0 chain was served all session and the trader's Vol
+        # column was blank on every strike (2026-08-31). The gateway TTL fixed
+        # the serving half; this fixes the writing half, so an alert-levels
+        # chore can no longer publish a chain nobody asked to look at.
+        # Browser requests still arrive with compact=True and background_snapshot
+        # False, so the blob is still populated by real reads and still
+        # survives restarts.
+        if compact and not background_snapshot:
             self._save_oi_finder_chain_disk_payload(normalized_symbol, payload)
             if initial_paint:
                 # Let the small response leave the socket before expanding to
@@ -4122,7 +5347,7 @@ class DashboardState:
                 )
                 timer.daemon = True
                 timer.start()
-        return payload
+        return self._mobile_fast_oi_finder_chain_payload(payload) if compact and mobile_fast else payload
 
     def mag7_oi_wall_payload(self, force: bool = False) -> dict:
         """Return an ungated nearest-expiry OI wall snapshot, including 0DTE, for the standard Mag7."""
@@ -4136,28 +5361,48 @@ class DashboardState:
             if not force and self.mag7_oi_wall_cache is not None and cache_age is not None and cache_age < 15:
                 return {**self.mag7_oi_wall_cache, "cached": True}
 
-            tradier_client = TradierClient()
-            if not tradier_client.configured:
-                return {
-                    "source": "Tradier option chain",
-                    "live": False,
-                    "scannedAt": _serialize_value(now),
-                    "refreshSeconds": 15,
-                    "symbols": list(MAGNIFICENT_SEVEN),
-                    "rows": [],
-                    "errors": [{"symbol": "ALL", "error": "TRADIER_ACCESS_TOKEN is not configured."}],
-                }
+            # Schwab/TOS first, Tradier only as a fallback (2026-09-25: his
+            # Tradier account went inactive at a $0 balance and every Tradier
+            # call answers 401, so this board read nothing). Same profile walk
+            # as the OI Finder: a present-but-refused credential must not
+            # empty the board while another profile works.
+            schwab_clients = _schwab_market_clients()
+            sources: dict[str, str] = {}
+
+            def fetch_chain(symbol: str) -> dict:
+                failures = []
+                for market_client in schwab_clients:
+                    try:
+                        payload = market_client.get_option_chain(
+                            symbol,
+                            contract_type="ALL",
+                            strike_count=80,
+                            # Only the NEAREST expiry is used; 10 days covers
+                            # 0DTE and the next weekly without pulling LEAPS.
+                            from_date=now,
+                            to_date=now + timedelta(days=10),
+                        )
+                    except Exception as exc:  # noqa: BLE001 - try the next profile
+                        failures.append(str(exc))
+                        continue
+                    if payload:
+                        sources[symbol] = "Schwab/TOS option chain"
+                        return payload
+                tradier_client = _house_tradier_client()
+                if tradier_client.configured:
+                    payload = tradier_client.get_option_chain(symbol, contract_type="ALL", strike_count=80)
+                    if payload:
+                        sources[symbol] = "Tradier option chain (Schwab/TOS fallback)"
+                        return payload
+                if failures:
+                    raise RuntimeError("Schwab/TOS option chain failed: " + failures[-1])
+                return {}
 
             chain_payloads: dict[str, dict] = {}
             errors: list[dict] = []
-            with ThreadPoolExecutor(max_workers=6) as executor:
+            with ThreadPoolExecutor(max_workers=4) as executor:
                 future_map = {
-                    executor.submit(
-                        tradier_client.get_option_chain,
-                        symbol,
-                        contract_type="ALL",
-                        strike_count=80,
-                    ): symbol
+                    executor.submit(fetch_chain, symbol): symbol
                     for symbol in MAGNIFICENT_SEVEN
                 }
                 for future in as_completed(future_map):
@@ -4233,8 +5478,9 @@ class DashboardState:
                     }
                 )
 
+            used = sorted(set(sources.values()))
             payload = {
-                "source": "Tradier option chain",
+                "source": " + ".join(used) if used else "Schwab/TOS option chain",
                 "live": bool(rows),
                 "cached": False,
                 "scannedAt": _serialize_value(now),
@@ -6947,6 +8193,32 @@ class DashboardState:
                 )
             except Exception:
                 pass
+    def _patch_dashboard_cache(self, **updates) -> None:
+        """Push an already-known, cheap value straight into the served payload.
+
+        _invalidate_dashboard_cache only ages the cache by 10s against a 60s
+        TTL, and deliberately so: clearing it would make the next request do
+        slow broker reads synchronously. That is right for expensive keys and
+        wrong for the ticker lists, which are in-memory and were just edited by
+        the trader. Without this an add or a delete is invisible on every
+        surface for up to a minute, which is what "it did not work everywhere"
+        actually meant on 2026-08-27.
+
+        A NEW dict is swapped in rather than mutating in place, because
+        dashboard_payload hands the cached object out to concurrent readers.
+        """
+        def _apply() -> None:
+            cached = getattr(self, "dashboard_cache", None)
+            if isinstance(cached, dict):
+                self.dashboard_cache = {**cached, **updates}
+
+        cache_lock = getattr(self, "dashboard_cache_lock", None)
+        if cache_lock is None:
+            _apply()
+            return
+        with cache_lock:
+            _apply()
+
     def _invalidate_dashboard_cache(self) -> None:
         cache_lock = getattr(self, "dashboard_cache_lock", None)
         if cache_lock is None:
@@ -8591,18 +9863,42 @@ class DashboardState:
             end = end.replace(tzinfo=self.backtester._tz)
         return start, end
 
+    @staticmethod
+    def _build_catalyst_engine() -> CatalystEngine:
+        """The ticker-tagged scraper, wired with the app's own Alpaca profiles and
+        news keys. Lives in news_feed_store.py so scripts can build the same engine
+        without constructing the dashboard."""
+        return build_catalyst_engine(settings)
+
     def _refresh_catalyst_information(self, symbols: list[str] | None = None) -> dict:
-        scoped_symbols = symbols or settings.scanner.default_universe[:40]
-        items = self.catalysts.load_watchlist_news(scoped_symbols)
-        self.repository.log_catalysts(items)
-        message = f"Catalyst scan completed for {len(scoped_symbols)} symbols; {len(items)} headlines refreshed."
-        self.repository.log_bot_event("catalyst_scan", message)
-        return {
-            "message": message,
-            "symbolsScanned": len(scoped_symbols),
-            "headlinesRefreshed": len(items),
-            "refreshedAt": datetime.now().astimezone().isoformat(),
-        }
+        scoped_symbols = list(symbols or settings.scanner.default_universe[:40])
+        return scrape_symbols(self.catalysts, self.repository, scoped_symbols, settings.news)
+
+    # ---- MomX tab news: stored headlines per ticker + one background scrape ----
+    def _momx_news(self) -> MomxNewsStore:
+        """The store, built on first use so a DashboardState created without
+        __init__ (tests) still has one. The scrape is routed through this
+        object's own _refresh_catalyst_information, so swapping ``self.catalysts``
+        swaps what the store scrapes with."""
+        store = getattr(self, "momx_news_store", None)
+        if store is None:
+            store = MomxNewsStore(
+                self.repository,
+                self.catalysts,
+                settings.news,
+                scrape=lambda symbols: self._refresh_catalyst_information(symbols),
+            )
+            self.momx_news_store = store
+        return store
+
+    def momx_news_latest(self, symbols: list[str]) -> dict:
+        """Stored ticker-tagged headlines for the MomX board. DB only, never scrapes."""
+        return self._momx_news().latest(symbols)
+
+    def momx_news_refresh(self, symbols: list[str]) -> dict:
+        """Start ONE background scrape for the board's tickers (capped), or report
+        the one already running. Returns at once; the tab polls momx_news_latest."""
+        return self._momx_news().refresh(symbols)
 
     def _recent_catalysts_or_empty(self, limit: int = 200) -> pd.DataFrame:
         try:
@@ -8633,6 +9929,17 @@ class DashboardState:
             self.catalyst_refresh_lock = refresh_lock
         if not refresh_lock.acquire(blocking=False):
             return False
+        # Floor between automatic (scheduler) scrapes. The old engine cost two
+        # requests per symbol; the ticker-tagged one costs seven, and the
+        # scheduler fires this after EVERY cycle. Manual and MomX refreshes do
+        # not pass through here and are unaffected.
+        spacing = float(getattr(settings.news, "auto_refresh_seconds", 900) or 0)
+        last_auto = getattr(self, "catalyst_auto_refresh_at", None)
+        if symbols is None and spacing > 0 and last_auto is not None and (time.monotonic() - last_auto) < spacing:
+            refresh_lock.release()
+            return False
+        if symbols is None:
+            self.catalyst_auto_refresh_at = time.monotonic()
         batch = self._next_catalyst_information_batch(symbols)
         if not batch:
             refresh_lock.release()
@@ -9170,13 +10477,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         self.action_message = refresh["message"]
         return {
             "actionMessage": self.action_message,
-            "catalysts": _frame_records(self._recent_catalysts_or_empty(limit=200)),
+            "catalysts": _frame_records(self._recent_catalysts_or_empty(limit=settings.news.feed_rows)),
             "catalystIndex": _frame_records(self._latest_catalysts_or_empty()),
-            "newsFeedMeta": {
-                "symbolsScanned": refresh["symbolsScanned"],
-                "headlinesRefreshed": refresh["headlinesRefreshed"],
-                "refreshedAt": refresh["refreshedAt"],
-            },
+            "newsFeedMeta": {key: value for key, value in refresh.items() if key != "message"},
         }
 
     def chart_payload(self, symbol: str, timeframe: str = "5Min") -> dict:
@@ -9185,6 +10488,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         if hasattr(self.market_data_client, "ensure_streaming"):
             self.market_data_client.ensure_streaming([target, "SPY"])
         signal_frame = self.market_data_client.get_chart_bars(target, timeframe=timeframe, days_back=20)
+        # Same current-day premarket patch as the OI-finder path: a peer
+        # session measured this endpoint returning an 11-hour hole (19:55 ->
+        # 07:00) on 2026-08-21 because Schwab's current day starts at 07:00.
+        signal_frame = self._backfill_today_premarket(signal_frame, target, interval="5min")
+        signal_frame = self._backfill_overnight_session(signal_frame, target, interval="5min")
         frame = signal_frame
         mtf_payload = _tos_mtf_ema_signal_payload(signal_frame)
         bars = []
@@ -9206,10 +10514,47 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             for signal in mtf_payload["signals"]
             if int(signal.get("time") or 0) >= first_chart_time
         ]
+        # WHICH FEED THIS CAME FROM, degraded honestly.
+        #
+        # This was a ternary on settings.market_data_provider - a value read
+        # from the environment at import, decided before any fetch happens. It
+        # cannot express "Schwab was asked and refused". On 2026-09-04 that is
+        # exactly what it failed to express: Schwab returned 403 to every
+        # request for 70 minutes while this endpoint kept serving fresh bars
+        # (measured: newest bar 17 minutes old) labelled "Schwab/TOS API". The
+        # bars were real - the overnight backfill supplied them - but the label
+        # was not, and a stale or partial tape wearing a live provider's name
+        # is how a broken chart passes for a working one.
+        #
+        # DELIBERATELY NARROW: this does not attempt per-segment provenance
+        # (which window came from Schwab vs Tradier vs Alpaca BOATS). It says
+        # only the one thing it can prove from an observation - that Schwab is
+        # currently refusing this address, so whatever is on screen did not
+        # come from there.
+        configured_source = (
+            "Schwab/TOS API" if settings.market_data_provider == "schwab"
+            else "Alpaca Market Data"
+        )
+        transport = SCHWAB_GATE.state()
+        schwab_refusing = bool(transport.get("coolingDown")) and transport.get(
+            "cooldownKind"
+        ) in ("blocked", "rate_limit")
         return {
             "symbol": target,
             "timeframe": timeframe,
-            "source": "Schwab/TOS API" if settings.market_data_provider == "schwab" else "Alpaca Market Data",
+            "source": (
+                "Backup feed - Schwab unavailable"
+                if schwab_refusing and settings.market_data_provider == "schwab"
+                else configured_source
+            ),
+            # When the newest bar actually is, so a frozen tape cannot present
+            # as a live one. The chart looked perfectly healthy all through the
+            # outage because nothing on it said how old it was.
+            "barsAsOf": (
+                datetime.fromtimestamp(int(bars[-1]["time"]), tz=ZoneInfo(EASTERN_TZ)).isoformat()
+                if bars else ""
+            ),
+            "schwabReachable": not schwab_refusing,
             "bars": bars,
             "error": "" if bars else f"No 5-minute candles were returned for {target}. Schwab market data may need to reconnect.",
             "mtfSignals": visible_signals,
@@ -9227,8 +10572,23 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         unavailable, client object = ready.
         """
         cached = getattr(self, "_owner_alpaca_client_cache", None)
-        if cached is not None:
-            return cached or None
+        if cached:
+            return cached
+        if cached is False:
+            # A FAILURE, not an answer. Retry it after a window instead of
+            # never: this cache being permanent is what kept the Alpaca
+            # premarket fallback switched off with a working key in Settings.
+            stamp = float(getattr(self, "_owner_alpaca_client_cache_at", 0.0) or 0.0)
+            if (time.monotonic() - stamp) < OWNER_ALPACA_CLIENT_RETRY_SECONDS:
+                return None
+        client = self._resolve_owner_alpaca_client()
+        self._owner_alpaca_client_cache = client if client is not None else False
+        self._owner_alpaca_client_cache_at = time.monotonic()
+        return client
+
+    def _resolve_owner_alpaca_client(self):
+        """Build the client from the owner's saved key. Separated from the
+        cache so the retry policy above is testable without a database."""
         client = None
         try:
             connection = sqlite3.connect(str(DATABASE_PATH), timeout=10.0)
@@ -9250,11 +10610,1817 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     client = StockHistoricalDataClient(api_key=key, secret_key=secret)
         except Exception:
             client = None
-        self._owner_alpaca_client_cache = client if client is not None else False
         return client
 
+    # Cache for the 60-day five-minute tape that 3m/5m/10m/15m are built from.
+    # Verified against the broker: Schwab returns 11,569 rows / 58 days for
+    # 5Min over 60 days, so the depth is available - earlier attempts to reuse
+    # an in-flight frame simply never reached the serialisation point.
+    OI_FINDER_FINE_STUDY_TTL_SECONDS = 30 * 60
+    OI_FINDER_FINE_STUDY_LOOKBACK_DAYS = 60
+
+    def _touch_chart_tail(self, symbol: str, allow_refresh: bool = True) -> dict | None:
+        """Serve the cached tape and keep its TAIL fresh -- NEVER queue a
+        full rebuild.
+
+        `allow_refresh=False` serves the tape without kicking anything. It
+        exists because a *caller* can be out of season while the tape itself
+        is fine: the premarket scanner has no reason to keep nine symbols
+        hot at 3am on a Sunday. See the call site in
+        _premarket_scanner_payload_locked.
+
+        Why this exists (2026-08-21, market open): the scanner poll and the
+        hot-set loop called the normal chart accessor, which queues a
+        full-history rebuild whenever a boot-fresh cache is judged stale.
+        That queued 19-minute builds (NFLX 1169s, PLTR 1046s, WRBY 1176s
+        measured under open load) for every tracked symbol at once -- and a
+        symbol's in-flight guard is held while it waits in the single build
+        lane, so its 30s tail refreshes were blocked and its tape froze
+        (AMZN stuck at 08:43 for an hour). Background pollers must only ever
+        run the ~3-15s recency pass; full rebuilds belong to real user chart
+        opens, which get lane priority.
+        """
+        target = str(symbol or "").strip().upper()
+        if not target:
+            return None
+        with self.oi_finder_chart_lock:
+            cached = self.oi_finder_chart_cache.get(target)
+            payload = dict(cached["payload"]) if cached and cached.get("payload") else None
+            age = (time.monotonic() - float(cached.get("cached_at", 0.0))) if cached else None
+        if cached is None:
+            # HYDRATE FROM DISK BEFORE KICKING. Kicking a refresh on an empty
+            # cache stores a bare 2-day fast tape with history_ready=False;
+            # the next request then reads that as broken content and queues
+            # the 15-19 minute FULL rebuild whose held guard freezes the
+            # symbol (2026-08-21: AMZN/META/NVDA pinned ~2h this way while
+            # TSLA -- hydrated first by a full-accessor request -- healed in
+            # seconds). Seeding the content-ready disk payload first means
+            # the kicked refresh lands as a splice on a ready entry.
+            disk = None
+            try:
+                disk = self._load_oi_finder_chart_disk_payload(target)
+            except Exception:
+                disk = None
+            if isinstance(disk, dict) and disk.get("bars"):
+                content_ready = (
+                    not bool(disk.get("historyLoading"))
+                    and not bool(disk.get("payloadSchemaStale"))
+                    and self._chart_payload_has_twenty_year_four_hour_archive(disk)
+                    and self._chart_payload_has_multi_timeframe_depth(disk)
+                    and self._chart_payload_has_ready_ganesh_signals(disk)
+                )
+                with self.oi_finder_chart_lock:
+                    if target not in self.oi_finder_chart_cache:
+                        self.oi_finder_chart_cache[target] = {
+                            # Epoch 0 so the age check below still kicks the
+                            # tail refresh that brings this tape to now.
+                            "cached_at": 0.0,
+                            "payload": disk,
+                            "history_ready": content_ready,
+                        }
+                payload = disk
+                age = None
+        if allow_refresh and (age is None or age >= OI_FINDER_CHART_REFRESH_SECONDS):
+            try:
+                self._start_oi_finder_chart_refresh(target, full_history=False)
+            except Exception:
+                pass
+        if not (payload and payload.get("bars")):
+            try:
+                payload = self._load_oi_finder_chart_disk_payload(target)
+            except Exception:
+                payload = None
+        return payload
+
+    def _backfill_today_premarket(self, frame, target: str, interval: str = "1min"):
+        """Patch the current day's 04:00-07:00 hole from Tradier timesales.
+
+        Schwab's history and chart stream both start the CURRENT day at
+        07:00 ET (verified live 2026-08-21), so without this every chart
+        shows "yesterday 19:55 then today 07:00" and the scanner's
+        06:00-07:00 hour scans data that does not exist. Cached per
+        (symbol, day, interval): 60s TTL while the hole is still growing
+        (before 07:10), then held for the rest of the day.
+        """
+        try:
+            now_et = datetime.now(ZoneInfo(EASTERN_TZ))
+            hole = chart_backfill.today_premarket_hole(frame, now_et)
+            if hole is None:
+                return frame
+            cache = getattr(self, "_premarket_backfill_cache", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._premarket_backfill_cache = cache
+            key = (str(target).upper(), now_et.date().isoformat(), interval)
+            entry = cache.get(key)
+            hole_still_growing = (now_et.hour * 60 + now_et.minute) < 7 * 60 + 10
+            if premarket_backfill_cache_entry_is_usable(
+                entry, now=time.monotonic(), hole_still_growing=hole_still_growing
+            ):
+                fill = entry["frame"]
+                # Serve the frame AND the verdict it was fetched under, so a
+                # healed window can never keep showing yesterday's complaint.
+                self._premarket_backfill_state, self._premarket_backfill_error = (
+                    premarket_backfill_state_of(entry)
+                )
+            else:
+                # Remember WHY this produced nothing. A premarket hole with no
+                # explanation is the single most expensive silence in this app:
+                # 04:00-07:00 is unavailable from every source we have except
+                # Tradier (verified 2026-08-27 by direct probe - Schwab returns
+                # its first current-day bar at 07:00 on BOTH profiles, and the
+                # Alpaca BOATS feed returns zero bars at or after 04:00), so
+                # when the Tradier token is refused the chart just draws empty
+                # space and reads as "the chart is broken" rather than "a key
+                # expired". Ganesh spent a day on that reading.
+                try:
+                    fill = chart_backfill.timesales_to_frame(
+                        _house_tradier_client().get_timesales(target, hole[0], hole[1], interval=interval)
+                    )
+                    self._premarket_backfill_error = ""
+                    self._premarket_backfill_state = ""
+                except Exception as exc:
+                    detail = str(exc)
+                    # Tradier is down (dead token, outage). The original claim
+                    # that "this window has no other source" tested Alpaca
+                    # feed=iex and feed=boats, both genuinely empty here - but
+                    # feed=sip carries the full 04:00-07:00 on the same free
+                    # owner key (verified 2026-08-28: 161 one-minute AAPL bars,
+                    # all nine scanner symbols covered). Same ~15-minute
+                    # recency wall as BOATS, which clamp_end clears. So the
+                    # dead-Tradier morning degrades to "15 minutes behind"
+                    # instead of "three hours of empty space".
+                    fill = chart_backfill.timesales_to_frame(None)
+                    try:
+                        sip_key, sip_secret = self._owner_alpaca_credentials()
+                        sip_bars = fetch_boats_bars(
+                            sip_key, sip_secret, [str(target).upper()],
+                            hole[0], hole[1], interval, feed="sip",
+                        )
+                        fill = boats_bars_to_frame(
+                            (sip_bars or {}).get(str(target).upper())
+                        )
+                    except Exception:
+                        fill = chart_backfill.timesales_to_frame(None)
+                    if fill is not None and not fill.empty:
+                        # Candles ARE present in the window, just late.
+                        # The badge says BACKUP, not DOWN: labelling a
+                        # working fallback as an outage is how a warning
+                        # stops being read.
+                        self._premarket_backfill_state = "backup"
+                        self._premarket_backfill_error = (
+                            "Premarket 04:00-07:00 is running on the Alpaca SIP "
+                            "backup (about 15 minutes behind). Tradier, the "
+                            "primary, refused the request"
+                            + (" - renew its access token in Settings."
+                               if "401" in detail or "not approved" in detail.lower()
+                               else ".")
+                        )
+                    else:
+                        self._premarket_backfill_state = "missing"
+                        self._premarket_backfill_error = (
+                            "Premarket 04:00-07:00 is unavailable: the Tradier feed refused the "
+                            "request and the Alpaca SIP backup returned nothing. "
+                            + ("Check the Tradier access token in Settings."
+                               if "401" in detail or "not approved" in detail.lower()
+                               else detail[:160])
+                        )
+                cache[key] = {
+                    "frame": fill,
+                    "at": time.monotonic(),
+                    # Bound to the frame; see premarket_backfill_state_of.
+                    "state": getattr(self, "_premarket_backfill_state", "") or "",
+                    "error": getattr(self, "_premarket_backfill_error", "") or "",
+                }
+                if len(cache) > 80:
+                    for stale in sorted(cache, key=lambda k: cache[k]["at"])[:-80]:
+                        cache.pop(stale, None)
+            return chart_backfill.merge_backfill(frame, fill)
+        except Exception:
+            # The backfill is an enhancement; a Tradier hiccup must never
+            # take down the chart it is patching.
+            return frame
+
+    # Overnight (20:00-04:00 ET) patch: cache per (symbol, interval); one
+    # Alpaca BOATS request per symbol per TTL, so a 400-ticker sweep stays far
+    # under the 200 req/min limit.
+    OI_OVERNIGHT_NIGHTS = 6
+    OI_OVERNIGHT_TTL_SECONDS = 10 * 60
+
+    def _owner_alpaca_credentials(self) -> tuple[str, str]:
+        client = self._owner_alpaca_chart_client()
+        key = str(getattr(client, "_api_key", "") or "") if client is not None else ""
+        secret = str(getattr(client, "_secret_key", "") or "") if client is not None else ""
+        return key, secret
+
+    def _backfill_overnight_session(self, frame, target: str, interval: str = "1min"):
+        """Patch the overnight session (Blue Ocean, 20:00-04:00 ET) from Alpaca BOATS.
+
+        thinkorswim draws these candles (EXTO) and its 2H/4H EMA labels are
+        computed from them; no broker feed the app had carried them (verified
+        2026-08-24: Schwab history refuses the current night, the Schwab
+        streamer is silent after 20:00, Tradier and Alpaca IEX/SIP have
+        nothing). Alpaca's ``feed=boats`` returns them on the owner's free key,
+        ~15 minutes delayed. Only nights the tape lacks are fetched; on a
+        collision the broker row wins (merge_backfill).
+        """
+        try:
+            now_et = datetime.now(ZoneInfo(EASTERN_TZ))
+            gaps = chart_backfill.overnight_gaps(frame, now_et, nights=self.OI_OVERNIGHT_NIGHTS)
+            if not gaps:
+                return frame
+            cache = getattr(self, "_overnight_backfill_cache", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._overnight_backfill_cache = cache
+            key = (str(target).upper(), str(interval))
+            entry = cache.get(key) or {}
+            # Nights BOATS never ran (the session before a full NYSE holiday,
+            # or an illiquid name's dark night) can never gain rows: remember
+            # them per (symbol, interval) so they are not re-requested every
+            # TTL for the next six nights. Only fully elapsed windows qualify.
+            dark = set(entry.get("dark_windows") or ())
+            gaps = [gap for gap in gaps if gap not in dark]
+            if not gaps:
+                return frame
+            span_start = min(start for start, _ in gaps)
+            span_end = max(end for _, end in gaps)
+            fill = None
+            # Reuse the fill for the whole TTL even while tonight's window
+            # keeps growing: the tape then lags BOATS by at most TTL + the
+            # feed's own ~15-minute delay, instead of a request per build.
+            if (
+                entry.get("fill") is not None
+                and (time.monotonic() - float(entry.get("fetched_at") or 0.0)) < self.OI_OVERNIGHT_TTL_SECONDS
+                and entry.get("span_start") <= span_start
+            ):
+                fill = entry.get("fill")
+            if fill is None:
+                fetcher = getattr(self, "_overnight_fetcher", None) or fetch_boats_bars
+                api_key, api_secret = self._owner_alpaca_credentials()
+                bars = fetcher(api_key, api_secret, [str(target).upper()], span_start, span_end, interval)
+                fill = boats_bars_to_frame((bars or {}).get(str(target).upper()))
+                elapsed_cutoff = datetime.now(timezone.utc) - timedelta(minutes=20)
+                for start, end in gaps:
+                    if end <= elapsed_cutoff and chart_backfill.keep_inside_windows(fill, [(start, end)]).empty:
+                        dark.add((start, end))
+                cache[key] = {
+                    "fetched_at": time.monotonic(),
+                    "fill": fill,
+                    "span_start": span_start,
+                    "span_end": span_end,
+                    "dark_windows": dark,
+                }
+                if len(cache) > 512:
+                    for stale in sorted(cache, key=lambda item: cache[item].get("fetched_at", 0.0))[:-512]:
+                        cache.pop(stale, None)
+            fill = chart_backfill.keep_inside_windows(fill, gaps)
+            # HOW MANY ROWS CAME BACK, per window, not merely whether the call
+            # returned. This backfill's characteristic failure is PARTIAL: on
+            # 2026-09-03 it delivered 2-8 rows in an hour that should hold 60,
+            # which a success flag reports as perfectly healthy. A recency
+            # check has the same blind spot - a tape can be missing every
+            # regular-hours minute and still have a very recent newest bar.
+            # Counting is the only thing that catches it.
+            _record_overnight_backfill(target, interval, gaps, fill, "")
+            if fill is None or fill.empty:
+                return frame
+            return chart_backfill.merge_backfill(frame, fill)
+        except Exception as exc:
+            # An enhancement: a BOATS hiccup must never blank a chart. But it
+            # must not be silent either - this bare except is the same shape as
+            # the get_quotes swallow that hid a 70-minute Schwab outage on
+            # 2026-09-04, and this is the ONLY source of 20:00-04:00 candles,
+            # so when it fails the trader loses the overnight session with no
+            # indication why. Record it, then still return the frame.
+            _record_overnight_backfill(
+                target, interval, [], None, "%s: %s" % (type(exc).__name__, exc)
+            )
+            return frame
+
+    def start_watchlist_chart_warmer(self) -> None:
+        """Warm the watchlist's deep chart history to disk, gently.
+
+        The user searches only from their watchlist, so pre-building those
+        payloads makes every search a warm disk-cache hit with full depth (4H
+        back months, 5m back ~60 days) instead of a fast-paint shell that
+        upgrades over the next 30-60s.
+
+        This honours the boot-competition warning in main(): it starts late,
+        builds ONE symbol at a time with a real gap between, skips symbols that
+        already have a current-schema cache, and yields the whole time a trader
+        is actively using charts. It never competes with a live request.
+        """
+        if getattr(self, "_watchlist_warmer_started", False):
+            return
+        self._watchlist_warmer_started = True
+        threading.Thread(
+            target=self._watchlist_chart_warmer_loop,
+            name="watchlist-chart-warmer",
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._hot_chart_refresher_loop,
+            name="hot-chart-refresher",
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._catalyst_refresher_loop,
+            name="catalyst-refresher",
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._morning_briefing_loop,
+            name="morning-briefing",
+            daemon=True,
+        ).start()
+        # Fifth thread: prewarm the charts for the tickers ON THE MOMX
+        # SCANNER BOARD, so clicking a row opens warm. Deliberately last so
+        # boot ordering for the four existing loops is unchanged, and it
+        # waits BOARD_PREWARM_BOOT_DELAY_SECONDS on top of that.
+        threading.Thread(
+            target=self._momx_board_chart_prewarm_loop,
+            name="momx-board-prewarm",
+            daemon=True,
+        ).start()
+
+    def _morning_briefing_loop(self) -> None:
+        """Rebuild the morning briefing every 5 minutes, 05:30-09:35 ET.
+
+        The briefing is BUILT here and only ever READ by the endpoint, for
+        the same reason as the catalyst cache: the watchlist quote sweep is
+        ~4 Schwab calls and a phone tap must never wait on them.
+        """
+        while True:
+            now_et = datetime.now(ZoneInfo(EASTERN_TZ))
+            minute_of_day = now_et.hour * 60 + now_et.minute
+            in_window = now_et.weekday() < 5 and (5 * 60 + 30) <= minute_of_day < (9 * 60 + 35)
+            if not in_window:
+                time.sleep(120.0)
+                continue
+            try:
+                self._build_morning_briefing(now_et)
+            except Exception:
+                pass  # a failed build keeps the previous briefing on screen
+            time.sleep(300.0)
+
+    def _build_morning_briefing(self, now_et: datetime) -> None:
+        scanner = self.premarket_scanner_payload()
+        watchlist = [str(s).upper() for s in (settings.scanner.default_universe or [])]
+        quotes: dict = {}
+        for profile in ("trading", ""):
+            try:
+                quotes = _live_quote_client(profile).get_quotes(["SPY", "QQQ", *watchlist]) or {}
+            except Exception:
+                _drop_live_quote_client(profile)
+                quotes = {}
+            if quotes:
+                break
+            # get_quotes answers {} WITHOUT raising when the client is unusable
+            # (e.g. built while the token file was being rewritten, so it has
+            # no refresh token and is "not configured" for life). The brief
+            # then lost its SPY/QQQ and movers lines every morning (2026-09-24
+            # and 09-25) while a fresh client answered fine. Rebuild it.
+            _drop_live_quote_client(profile)
+        # Catalysts for the biggest movers, so the gainers line can say WHY.
+        movers = sorted(
+            (
+                symbol for symbol, quote in quotes.items()
+                if symbol not in ("SPY", "QQQ")
+                and abs(float((quote or {}).get("change_pct") or 0.0)) >= 2.0
+            ),
+            key=lambda s: -abs(float((quotes.get(s) or {}).get("change_pct") or 0.0)),
+        )[:6]
+        credentials = news_credentials()
+        if credentials and movers:
+            key_id, secret = credentials
+            self._catalyst_cache.refresh(
+                movers, lambda symbol: fetch_symbol_news(symbol, key_id, secret)
+            )
+        catalysts = {symbol: self._catalyst_cache.get(symbol) for symbol in movers}
+        payload = morning_build_briefing(scanner, quotes, now_et, catalysts)
+        payload["status"] = "READY"
+        self._morning_briefing_payload = payload
+        self._record_morning_movers(movers, quotes, catalysts, now_et)
+        try:
+            premarket_history_record_briefing(payload.get("lines"), now_et)
+        except Exception:
+            # The briefing must never fail because its archive write did.
+            pass
+        # Phone push, once per day, when the brief first reaches READY
+        # (trader, 2026-08-30: ntfy for the morning brief). The first two
+        # lines are the tape line and the strongest setup - the headline;
+        # the app holds the rest.
+        try:
+            day_key = now_et.date().isoformat()
+            # Two slots a day, not one. Keying this by DAY alone meant the
+            # 05:30 build claimed the day's only push and the 09:00 brief --
+            # built on three more hours of premarket tape, half an hour before
+            # the open -- was silently dropped. He asked for both.
+            minute_of_day = now_et.hour * 60 + now_et.minute
+            # The slot decides WHETHER to push; the title is the same shape
+            # for both and carries a countdown to 09:30, which is what keeps
+            # the two distinguishable on the lock screen (2026-09-02: he
+            # asked for the format of a hand-composed push that titled itself
+            # "AGX Morning Brief - 13 min to the open").
+            slot = "late" if minute_of_day >= MORNING_BRIEF_LATE_PUSH_MINUTE else "early"
+            pushed = getattr(self, "_brief_pushed_slots", None)
+            if not isinstance(pushed, set):
+                pushed = set()
+                self._brief_pushed_slots = pushed
+            if (day_key, slot) not in pushed:
+                # The early slot WAITS for the brief to have something to
+                # say. It used to fire on the first build of the window,
+                # 05:30 ET, which is the emptiest brief of the day - no
+                # premarket quotes, and no Schwab bars before 07:00 - so his
+                # phone got "No signals yet / Quiet tape so far" and the
+                # morning's early push was spent on it (2026-09-02). Past the
+                # deadline it goes out regardless: a quiet tape at 07:30 is a
+                # real observation. The 09:00 slot is never held - it is the
+                # half-hour-to-the-open brief he asked for.
+                ready = (
+                    slot == "late"
+                    or minute_of_day >= MORNING_BRIEF_EARLY_DEADLINE_MINUTE
+                    or morning_has_substance(payload)
+                )
+                body = morning_push_message(payload, now_et=now_et) if ready else None
+                # The slot is claimed only when a push ACTUALLY goes out, so
+                # a held or empty build leaves the slot open for the next one.
+                if body:
+                    pushed.add((day_key, slot))
+                    # Keep the old single-slot attribute in step: other code
+                    # and the tests read it as "did today's brief push at all".
+                    self._brief_pushed_day = day_key
+                    # No "open AGX for the full brief" tail any more: the
+                    # full brief IS the notification now.
+                    _push_phone_notification(
+                        morning_push_title(now_et),
+                        body,
+                        tags="newspaper",
+                    )
+        except Exception:
+            pass
+
+    def _record_morning_movers(
+        self, movers: list, quotes: dict, catalysts: dict, now_et: datetime
+    ) -> None:
+        """Fold the briefing's watchlist movers into the scanner history.
+
+        The trader asked for these on 2026-08-27 ("it's not saved in history").
+        They are NOT scan matches -- mover_lines() explicitly EXCLUDES anything
+        the scanner already found -- so their signal columns are empty by
+        construction, which is truthful: they moved, they did not signal.
+
+        He chose to have them share the scanner's columns rather than sit in a
+        tagged or separate table. The consequence, stated so it is not a
+        surprise later: a day's ticker count now mixes scan matches with movers,
+        so counts before and after this change are not comparable. ``source`` is
+        stored but not displayed, so the two can be separated again without
+        re-deriving anything.
+        """
+        rows = []
+        for symbol in movers or []:
+            quote = (quotes or {}).get(symbol) or {}
+            try:
+                change = float(quote.get("change_pct") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            rows.append({
+                "symbol": str(symbol).upper(),
+                "changePct": change,
+                "lastPrice": quote.get("last_price"),
+                "catalyst": (catalysts or {}).get(symbol),
+                "strength": "",
+                "score": 0,
+                "signals48": [],
+                "signals920": [],
+                "signalsCyanHigher": [],
+                "fires": [],
+                "source": "mover",
+            })
+        if not rows:
+            return
+        try:
+            premarket_history_record(rows, now_et)
+        except Exception:
+            # The briefing must never fail because its archive write did.
+            pass
+
+    def apply_scanner_ganesh_parity(self, symbol: str, payload: object) -> object:
+        """Serve the scanner's FRESH D-M replay on the chart for the scanner 9.
+
+        The trader's governing rule is bidirectional: a CALLD on the scanner
+        must be on the chart too. The chart payload's own ganesh contract only
+        refreshes on FULL builds (none run overnight/premarket), while the
+        scanner replays the contract off the advancing merged tape every <=5
+        minutes (2026-08-23 adversarial review, finding 7 - the 'chart-bubble
+        side' left open). Override on the SERVED COPY only: the cached payload,
+        its persistence, and the no-shrink guard are untouched.
+
+        Guard: the replay must be historyReady and recent (its floor key
+        encodes the tape epoch; stale entries after the scanner window closes
+        must not outrank a newer full-build contract).
+        """
+        target = str(symbol or "").upper()
+        if target not in PREMARKET_SCAN_SYMBOLS or not isinstance(payload, dict):
+            return payload
+        cache = getattr(self, "_premarket_ganesh_cache", None)
+        entry = cache.get(target) if isinstance(cache, dict) else None
+        if not entry:
+            return payload
+        try:
+            floor_key, replayed = entry
+            replay_epoch = float(floor_key[1]) * 300.0
+        except (TypeError, ValueError, IndexError):
+            return payload
+        if not isinstance(replayed, dict) or replayed.get("historyReady") is not True:
+            return payload
+        if (time.time() - replay_epoch) > 1800.0:
+            return payload
+        return {**payload, "ganeshHigherTimeframeSignals": replayed}
+
+    def trade_review_payload(self) -> dict:
+        """Today's journal trades judged against the day's chart signals.
+
+        On-demand with a 5-minute cache: the inputs are one DB read plus
+        already-cached chart tapes (_touch_chart_tail with allow_refresh
+        False never starts a broker fetch), so building is cheap - but the
+        Journal view polls, and there is no reason to re-judge the same
+        trades every few seconds.
+        """
+        cached = getattr(self, "_trade_review_response", None)
+        if cached and (time.monotonic() - cached[0]) < 300.0:
+            return cached[1]
+        eastern = ZoneInfo(EASTERN_TZ)
+        now_et = datetime.now(eastern)
+        trades = self._journal_trades_today(now_et)
+        day_start = int(now_et.replace(hour=4, minute=0, second=0, microsecond=0).timestamp())
+        day_end = int(now_et.replace(hour=20, minute=0, second=0, microsecond=0).timestamp())
+        signals_by_symbol: dict[str, dict] = {}
+        for symbol in sorted({trade["symbol"] for trade in trades if trade.get("symbol")}):
+            chart = self._touch_chart_tail(symbol, allow_refresh=False) or {}
+            try:
+                calls = premarket_window_call_signals(chart.get("mtfSignals"), day_start, day_end)
+            except Exception:
+                calls = []
+            try:
+                fires = premarket_window_fires(
+                    chart.get("studyBars") or chart.get("bars") or [], day_start, day_end
+                )
+            except Exception:
+                fires = []
+            signals_by_symbol[symbol] = {"calls": calls, "fires": fires}
+        payload = build_trade_review(trades, signals_by_symbol, now_et)
+        payload["status"] = "READY"
+        self._trade_review_response = (time.monotonic(), payload)
+        return payload
+
+    def _journal_trades_today(self, now_et: datetime) -> list[dict]:
+        """Today's option + equity journal rows, normalised for judging."""
+        eastern = ZoneInfo(EASTERN_TZ)
+        today = now_et.date()
+        rows: list[dict] = []
+
+        def collect(frame, symbol_key: str) -> None:
+            if frame is None or getattr(frame, "empty", True):
+                return
+            for record in frame.to_dict("records"):
+                stamp = str(record.get("opened_at") or "")
+                try:
+                    opened = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if opened.tzinfo is None:
+                    opened = opened.replace(tzinfo=timezone.utc)
+                if opened.astimezone(eastern).date() != today:
+                    continue
+                pnl = record.get("pnl")
+                if isinstance(pnl, float) and pnl != pnl:  # pandas NaN
+                    pnl = None
+                closed = record.get("closed_at")
+                if isinstance(closed, float) and closed != closed:
+                    closed = None
+                rows.append({
+                    "symbol": str(record.get(symbol_key) or "").upper(),
+                    "opened_at": stamp,
+                    "closed_at": closed,
+                    "pnl": pnl,
+                })
+
+        try:
+            collect(self.repository.get_option_trade_history(limit=200), "underlying_symbol")
+        except Exception:
+            pass
+        try:
+            collect(self.repository.get_trade_history(limit=200), "symbol")
+        except Exception:
+            pass
+        return rows
+
+    def morning_briefing_payload(self) -> dict:
+        """The last built briefing, today's archived copy, or a WAITING stub.
+
+        The in-memory payload is built 05:30-09:35 ET and does not survive a
+        restart. Restarts are routine here (watchdog, concurrent sessions), so
+        the briefing - the one thing the trader said he reads every single
+        morning - silently vanished for the rest of the day whenever the backend
+        cycled. Observed 2026-08-27 16:30: WAITING, with a perfectly good 08:12
+        briefing already archived on disk.
+
+        So fall back to the archive before admitting defeat. The archived copy is
+        flagged ``archived: True`` and keeps its original ``generatedAt``, so the
+        card can say it is this morning's rather than pretending it is live.
+        """
+        payload = getattr(self, "_morning_briefing_payload", None)
+        if payload:
+            return payload
+        try:
+            archived = premarket_history_load_briefing(datetime.now(ZoneInfo(EASTERN_TZ)))
+        except Exception:
+            archived = None
+        if archived and archived.get("lines"):
+            return {
+                "status": "READY",
+                "archived": True,
+                "lines": list(archived.get("lines") or []),
+                "generatedAt": archived.get("generatedAt"),
+            }
+        return {
+            "status": "WAITING",
+            "lines": [],
+            "message": "The briefing builds weekday mornings 5:30-9:35 AM ET.",
+        }
+
+    @property
+    def _catalyst_cache(self) -> CatalystCache:
+        cache = getattr(self, "_catalyst_cache_instance", None)
+        if cache is None:
+            cache = CatalystCache()
+            self._catalyst_cache_instance = cache
+        return cache
+
+    def _catalyst_refresher_loop(self) -> None:
+        """Keep a catalyst headline cached for every symbol on the scanner.
+
+        The scanner payload only ever READS the cache (CatalystCache.get);
+        this thread is the only place the news feed is called, so a slow or
+        dead feed can never add a millisecond to /api/premarket-scanner.
+        It watches the last served scanner response rather than recomputing
+        rows: no rows -> nothing to explain -> nothing to fetch.
+        """
+        credentials = news_credentials()
+        if credentials is None:
+            return  # no Alpaca keys configured; the column just stays empty
+        key_id, secret = credentials
+        cache = self._catalyst_cache
+
+        def fetcher(symbol: str) -> list[dict]:
+            return fetch_symbol_news(symbol, key_id, secret)
+
+        while True:
+            try:
+                response = getattr(self, "_premarket_scanner_response", None)
+                rows = (response[1].get("rows") or []) if response else []
+                symbols = [str(row.get("symbol") or "") for row in rows if isinstance(row, dict)]
+                if symbols:
+                    cache.refresh(symbols, fetcher)
+            except Exception:
+                pass  # never let a bad payload shape kill the loop
+            time.sleep(60.0)
+
+    @staticmethod
+    def _fixed_hot_chart_symbols() -> frozenset:
+        """The symbols that are permanently hot whatever the trader opens."""
+        return frozenset(
+            str(symbol or "").strip().upper()
+            for symbol in (*PREMARKET_SCAN_SYMBOLS, *QUICK_STRIP_WARM_SYMBOLS)
+        )
+
+    def _hot_chart_symbols(self) -> list[str]:
+        """The trader's working set: scanner tickers, the quick strip, the last
+        ten charts opened this session, and anything a client is polling RIGHT
+        NOW.
+
+        That last group is the point. Membership used to be the ONLY thing that
+        kept an unwatched tape moving, and it was rationed to ten recents slots
+        that the permanently-hot symbols could themselves consume - so a ticker
+        searched twenty minutes ago was evicted and its tape stopped dead. The
+        request-driven group is bounded by the interactive window
+        (_chart_symbol_is_interactive, 120s), not by a cap, so it cannot grow
+        without bound: a symbol falls out ~2 minutes after its last request.
+        """
+        hot: list[str] = []
+        recents = getattr(self, "oi_finder_recent_chart_symbols", None) or {}
+        requested = [
+            symbol
+            for symbol in list(getattr(self, "_chart_symbol_last_requested", None) or {})
+            if self._chart_symbol_is_interactive(symbol)
+        ]
+        for symbol in (
+            *PREMARKET_SCAN_SYMBOLS,
+            *QUICK_STRIP_WARM_SYMBOLS,
+            *reversed(list(recents)),
+            *requested,
+        ):
+            target = str(symbol or "").strip().upper()
+            if target and target not in hot:
+                hot.append(target)
+        return hot
+
+    def _hot_chart_refresher_loop(self) -> None:
+        """Keep the working set's tapes CURRENT, not merely cached.
+
+        The 398-symbol warmer gets back to any one ticker every few hours, so
+        by premarket its tape ends at the prior evening's close and the first
+        chart open silently shows yesterday for 20-40s (reported 2026-08-21:
+        "I don't see premarket chart"). This loop revisits ~30 symbols on a
+        ~100s cycle during 04:00-20:00 ET weekdays. Each visit is the normal
+        chart accessor: warm-cache serve costs ~20-50ms, and the 30s age gate
+        plus per-symbol in-flight dedupe already bound the broker load to at
+        most one small tail fetch per symbol per cycle. It deliberately does
+        NOT pause for the interactive window -- staying fresh while the
+        trader is watching is the entire point -- which is safe because the
+        tail refresh runs on a background thread and never builds studies.
+        """
+        time.sleep(90)  # let boot warm the first tapes before adding load
+        eastern = ZoneInfo(EASTERN_TZ)
+        while True:
+            try:
+                now = datetime.now(eastern)
+                minute_of_day = now.hour * 60 + now.minute
+                if now.weekday() >= 5 or not (4 * 60 <= minute_of_day < 20 * 60):
+                    time.sleep(120)
+                    continue
+                for symbol in self._hot_chart_symbols():
+                    try:
+                        # Tail-only: a background loop must never queue the
+                        # 19-minute full rebuild (see _touch_chart_tail).
+                        self._touch_chart_tail(symbol)
+                    except Exception:
+                        pass
+                    time.sleep(2.0)
+                time.sleep(45)
+            except Exception:
+                time.sleep(120)
+
+    def _warmer_is_paused(self) -> bool:
+        """True when a pause marker asks the in-process chart warmer to idle.
+
+        Mirrors the external keeper's switch (artifacts/keeper_paused): this
+        warmer's full rebuilds hold the GIL 8-25s each and were stalling
+        /api/auth/status to 16s during market hours even with the keeper
+        already paused, because nothing in-process honored that marker.
+        Measured 2026-08-28: with the keeper paused, background CART/ACB/AMGN
+        builds still spiked auth from 0.4s to 16s (4 of 10 samples). Drop
+        artifacts/warmer_paused (or keeper_paused) to quiet it; delete to
+        resume. Checked at the top of each sweep and per symbol, so a pause
+        takes effect mid-sweep and a resume is picked up within ~30s.
+        """
+        for name in ("warmer_paused", "keeper_paused"):
+            try:
+                if (ARTIFACTS_DIR / name).exists():
+                    return True
+            except OSError:
+                pass
+        return False
+
+    # ------------------------------------------------------------------
+    # MomX board chart prewarm
+    #
+    # The trader's request, verbatim: "when the tickers you see in the
+    # 'momscanner' backend chart make it load latest, instead of type and
+    # load taking more time." The MomX scanner runs in a SEPARATE process
+    # (momx_worker.py, port 3010) and writes each board to
+    # artifacts/momx_board_cache/<List>.json every 15-120s, rows already in
+    # rank order. That file is the only artifact on this box that knows what
+    # is on his screen BEFORE he clicks a row. Nothing read it until now.
+    #
+    # Measured 2026-08-31, market open, this build:
+    #   * 60/60 board rows already have a .json.gz on disk, so a genuinely
+    #     COLD board symbol is rare - it happens on a new board entrant.
+    #   * 44 of the 50 Watchlist rows hold candles that end 2026-08-28. A
+    #     stale-but-intact tape is a ~4s recency splice, not a rebuild.
+    #   * A truly cold build measured 112s wall clock (MMM), of which ~65s
+    #     was queue wait behind the 2-worker study pool.
+    # So the cheap budget carries most of the value and the expensive one is
+    # kept to at most one build per cycle.
+    # Cover the WHOLE board, not a window into it. 12 was chosen when the
+    # cost of a symbol was unknown; it is now measured, and the number that
+    # actually bounds the load is BOARD_PREWARM_MAX_TAILS_PER_CYCLE, not this
+    # one - the cap is applied AFTER classification, so widening coverage
+    # spreads the same 2 splices/minute over more symbols instead of adding
+    # work. Measured 2026-08-31 17:47 ET, with TOP_N=12: 25 of the 57 board
+    # tickers held today's candles and 32 still ended on Friday - including
+    # DG, PANW, SNOW, MDB and MU, all visible on his board at the time. He
+    # reads 50 rows; warming 12 of them is the wrong shape of answer.
+    # Trade-off, stated: 57 symbols at 2/minute is a ~28 minute sweep, so a
+    # symbol is at worst ~28 min stale rather than ~11. Against 80 hours,
+    # that is the right side of the trade.
+    BOARD_PREWARM_TOP_N: int = 50
+    # HARD cap on how many symbols this loop will ever consider in a cycle,
+    # whatever the board files say. Two boards at 50 rows dedupe to 57 today;
+    # 64 leaves room for the board to grow without a future third list or a
+    # corrupted rows array widening the working set without bound. Paired
+    # with OI_FINDER_CHART_WARM_LIMIT below - 64 board + 16 permanently-hot
+    # must fit inside that LRU or the two sets evict each other, which is
+    # what pinned AMZN frozen for 90 minutes on 2026-08-21.
+    BOARD_PREWARM_MAX_SYMBOLS: int = 64
+    BOARD_PREWARM_CYCLE_SECONDS: float = 60.0
+    # Last in line at boot: after the watchlist warmer (45s) and the hot
+    # refresher (90s), so restart ordering is unchanged.
+    BOARD_PREWARM_BOOT_DELAY_SECONDS: float = 150.0
+    # 03:30 ET, half an hour EARLIER than _hot_chart_refresher_loop's 04:00.
+    # A cold build takes 45-199s and the whole point is that the chart is
+    # ready when he opens it; on a Monday the board's top rows end on Friday.
+    # Thirty minutes of cycles clears them before the premarket session.
+    BOARD_PREWARM_START_MINUTE: int = 3 * 60 + 30
+    # 20:00 ET matches _hot_chart_refresher_loop, so the two loops agree on
+    # when the tape stops moving.
+    BOARD_PREWARM_END_MINUTE: int = 20 * 60
+    # A board file older than this means momx_worker is dead or wedged. We
+    # then have no idea what is on his screen, so the candidate list must go
+    # EMPTY rather than stay frozen on rows he stopped looking at.
+    BOARD_PREWARM_BOARD_MAX_AGE_SECONDS: float = 1800.0
+    BOARD_PREWARM_MAX_TAILS_PER_CYCLE: int = 2
+    BOARD_PREWARM_MAX_COLD_BUILDS_PER_CYCLE: int = 1
+    BOARD_PREWARM_TAIL_PACE_SECONDS: float = 2.0
+    # CEILING ON "WARM". Deliberately the same 900s as
+    # WARMER_TAPE_LAG_TOLERANCE_SECONDS, and for the same measured reason.
+    #
+    # The first version of this classifier asked only "was this file written
+    # since the current session began?", copying _warmer_cache_is_current.
+    # That question is wrong here in BOTH directions, and review caught both:
+    #
+    #   1. PREMARKET. _most_recent_session_start returns "the most recent
+    #      weekday 09:30 ET that has ALREADY PASSED", so from 03:30 to 09:30
+    #      it still points at YESTERDAY's open. Any file written during
+    #      yesterday's session therefore answered "warm" - which is every
+    #      board symbol this loop touched the day before. The entire
+    #      premarket window that BOARD_PREWARM_START_MINUTE exists to serve
+    #      was the window in which the loop did the least.
+    #   2. MID-SESSION. Once a symbol was spliced once after 09:30 its mtime
+    #      stayed >= session_start for the rest of the day, so it answered
+    #      "warm" forever after and the loop became a once-per-symbol-per-day
+    #      event rather than a keep-warm. Measured on the live board at 15:26
+    #      ET 2026-08-31: CRCL (file 14:22, 1.07h stale) and RBLX (file
+    #      13:40, 1.76h stale) both classified "warm" and were planned for no
+    #      work - and neither is in _hot_chart_symbols(), so nothing else was
+    #      going to touch them either.
+    #
+    # Both are the "complete for the narrower thing" shape: 'warm' was
+    # stamped truthfully by a narrow writer ("a file was written this
+    # session") and read by a wider reader ("this chart opens on current
+    # candles"). An age ceiling makes the flag mean what the reader needs.
+    #
+    # LOAD: 22 candidates each re-touched at most once per 900s is 1.5
+    # splices/min, under the existing BOARD_PREWARM_MAX_TAILS_PER_CYCLE of 2
+    # per 60s cycle, so the budget already sized for this covers it.
+    BOARD_PREWARM_MAX_CACHE_AGE_SECONDS: float = 900.0
+    # Per-symbol memory of OUR OWN attempt, not of the file's mtime. 05b5d6c
+    # makes a recency splice skip the disk write when the re-encoded bytes
+    # are unchanged ("97.3% of these saves change nothing but updatedAt"), so
+    # on a thin symbol with no new prints the mtime never advances and a
+    # mtime-only rule would re-touch it every single cycle forever. This is
+    # the "flag stamped truthfully by a narrow writer, believed by a wider
+    # reader" shape; the loop remembers what it did instead of inferring it.
+    BOARD_PREWARM_TOUCH_COOLDOWN_SECONDS: float = 900.0
+    # A prewarm without a negative cache is a GOOGLE factory. Measured
+    # 2026-08-31: the symbol GOOGLE (not GOOGL) was full-rebuilt 16 times in
+    # 21 minutes, every paint bars=0, and _save_oi_finder_chart_disk_payload
+    # returns early on an empty tape so the file is NEVER created - which
+    # means "file missing => cold" stays true forever and the symbol is
+    # rebuilt every cycle for as long as the process lives.
+    BOARD_PREWARM_FAILURE_STRIKES: int = 3
+    BOARD_PREWARM_FAILURE_COOLDOWN_SECONDS: float = 6 * 3600.0
+    # Every dict this loop introduces is bounded. 128 >> the 24-symbol cap,
+    # so it only ever trims churn from a board that has moved on.
+    BOARD_PREWARM_LEDGER_LIMIT: int = 128
+
+    def _board_prewarm_is_paused(self) -> bool:
+        """True when the no-code kill switch is on.
+
+        PLAIN LANGUAGE, FOR GANESH: to stop this, open the artifacts folder
+        inside the app directory, right-click -> New -> Text Document, and
+        name it `prewarm_paused`. Within one minute the prewarm stops.
+        Delete the file and it resumes within one minute. No restart, no
+        code, nobody else needed. If Windows leaves `.txt` on the end that
+        still works - a switch that silently misses is not a switch.
+
+        WHICH MARKERS GATE THIS LOOP, AND WHY.
+          gated by     : artifacts/prewarm_paused, artifacts/prewarm_paused.txt
+          NOT gated by : artifacts/warmer_paused, artifacts/keeper_paused
+
+        artifacts/keeper_paused exists on this box right now. It was created
+        2026-08-28 against _watchlist_chart_warmer_loop, whose EXPENSIVE
+        branch calls _build_oi_finder_chart_payload INLINE on the warmer
+        thread - bypassing the paint pool, the study pool and ChartBuildLane
+        entirely - up to 380 times a sweep, holding the GIL 8-25s per build
+        and spiking /api/auth/status from 0.4s to 16s. Honouring it here
+        would ship a feature that reports itself enabled and does nothing
+        until somebody remembers to delete a file, which is exactly the
+        "truthy-but-meaningless status flag" failure this codebase keeps
+        paying for. _hot_chart_refresher_loop sets the precedent: it runs ~15
+        tail touches a minute all session and has never looked at these
+        markers, on the stated grounds that staying fresh while the trader is
+        watching is the entire point.
+
+        This loop is a different animal from the one keeper_paused stopped:
+        at most 2 tail splices and at most 1 full build per 60s cycle, every
+        one dispatched through the SAME bounded pools and the SAME
+        ChartBuildLane the browser uses, over <=24 symbols read from disk
+        rather than 380 read from watchlist.txt - and its steady state is
+        zero submissions. The cost of the choice, stated honestly: if
+        keeper_paused is ever dropped meaning "stop ALL background chart
+        work", this loop keeps going and needs its own marker.
+        """
+        for name in ("prewarm_paused", "prewarm_paused.txt"):
+            try:
+                if (ARTIFACTS_DIR / name).exists():
+                    return True
+            except OSError:
+                pass
+        return False
+
+    def _board_prewarm_cache_dir(self) -> Path:
+        """Where momx_worker writes its boards. Overridable for tests."""
+        override = getattr(self, "momx_board_cache_dir", None)
+        return Path(override) if override else (ARTIFACTS_DIR / "momx_board_cache")
+
+    def _board_prewarm_read_file(self, path, now_epoch: float | None = None) -> list:
+        """The top rows of ONE board file, in board order. Never raises.
+
+        READ DISCIPLINE. momx/service.py writes with os.replace, which on
+        Windows raises PermissionError against an open reader because
+        CPython's open() omits FILE_SHARE_DELETE. read_bytes() holds the
+        handle for order 1ms and the parse happens after it closes;
+        json.load(open(path)) would hold it for the whole parse. A collision
+        costs momx one skipped disk-cache write (swallowed inside its own
+        except, in-memory board unaffected) and nothing else. There is
+        deliberately NO retry - a retry storm is the only way a 1-in-60000
+        event becomes real.
+
+        Missing, torn, truncated, or garbage all return [] rather than throw,
+        so a bad board can never kill the loop thread.
+        """
+        try:
+            board = json.loads(Path(path).read_bytes().decode("utf-8"))
+        except Exception:
+            return []
+        if not isinstance(board, dict):
+            return []
+        # Judge the board by an OBSERVATION - how old is it - never by "the
+        # file exists". A dead momx_worker must make this list go EMPTY.
+        stamp = 0.0
+        try:
+            generated = str(board.get("generatedAt") or "")
+            if generated:
+                stamp = datetime.fromisoformat(generated).timestamp()
+        except Exception:
+            stamp = 0.0
+        if stamp <= 0:
+            try:
+                stamp = Path(path).stat().st_mtime
+            except OSError:
+                return []
+        clock = time.time() if now_epoch is None else float(now_epoch)
+        max_age = float(getattr(self, "BOARD_PREWARM_BOARD_MAX_AGE_SECONDS", 1800.0))
+        if (clock - stamp) > max_age:
+            return []
+        rows = board.get("rows")
+        if not isinstance(rows, list):
+            return []
+        top_n = max(0, int(getattr(self, "BOARD_PREWARM_TOP_N", 12)))
+        picked = []
+        for row in rows[:top_n]:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            # Same ticker grammar _oi_finder_chart_disk_path enforces, applied
+            # BEFORE a slot is spent: the board's universe file is hand-edited.
+            if symbol and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", symbol):
+                picked.append(symbol)
+        return picked
+
+    def _board_prewarm_symbols(self, now_epoch: float | None = None) -> list:
+        """Every board's top rows, de-duped, board order preserved, capped."""
+        try:
+            paths = sorted(self._board_prewarm_cache_dir().glob("*.json"))
+        except OSError:
+            return []
+        cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_SYMBOLS", 24)))
+        ordered, seen = [], set()
+        for path in paths:
+            for symbol in self._board_prewarm_read_file(path, now_epoch):
+                if symbol in seen:
+                    continue
+                seen.add(symbol)
+                ordered.append(symbol)
+                if len(ordered) >= cap:
+                    return ordered
+        return ordered
+
+    def _board_prewarm_classify(
+        self,
+        symbol: str,
+        session_start_epoch: float,
+        now_epoch: float | None = None,
+    ) -> str:
+        """'warm' | 'behind' | 'cold' | 'skip' - from stat() only.
+
+        Deliberately NOT _load_oi_finder_chart_disk_payload: that gunzips up
+        to 4MB and re-folds the study tape. Doing that for 24 symbols a
+        minute would itself be the GIL problem this loop exists to avoid.
+        (The ACTION path does gunzip - _touch_chart_tail hydrates a symbol
+        that is not resident - but that is at most
+        BOARD_PREWARM_MAX_TAILS_PER_CYCLE symbols a cycle, measured
+        0.054-0.118s each, not all 24.)
+
+        'warm' is the success case and it is what makes steady state free: a
+        symbol whose cache is younger than BOARD_PREWARM_MAX_CACHE_AGE_
+        SECONDS costs one stat() and nothing else.
+
+        THREE QUESTIONS, IN THIS ORDER - the order is the fix for three
+        separate review findings:
+
+        1. Is it resident and genuinely current? Free, no syscall.
+        2. Is the file past OI_FINDER_CHART_DISK_CACHE_MAX_AGE_SECONDS? Then
+           it is COLD, not behind. _load_oi_finder_chart_disk_payload returns
+           None for an over-age file, so _touch_chart_tail cannot hydrate it,
+           the splice lands on an empty cache as a bare fast tape,
+           historyLoading stays set, _save_oi_finder_chart_disk_payload
+           returns early, the mtime NEVER advances - and the symbol is
+           re-kicked forever while never once appearing in the cold counter or
+           the strike ledger that exist to catch exactly that. Routing it to
+           'cold' puts it back under the budget, the yield gates and the
+           failure ledger.
+        3. Otherwise: warm only if the file is BOTH from this session AND
+           younger than the age ceiling. See
+           BOARD_PREWARM_MAX_CACHE_AGE_SECONDS for why one test without the
+           other silently disabled the premarket window and turned the loop
+           into a once-a-day event.
+        """
+        target = str(symbol or "").strip().upper()
+        path = self._oi_finder_chart_disk_path(target) if target else None
+        if path is None:
+            return "skip"
+        clock = time.time() if now_epoch is None else float(now_epoch)
+        cache = getattr(self, "oi_finder_chart_cache", None) or {}
+        entry = cache.get(target)
+        resident_current = bool(
+            entry
+            and entry.get("history_ready")
+            and self._chart_entry_tape_is_current(entry, clock)
+        )
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            # No file at all. If the symbol is resident AND current the tape
+            # is genuinely fine and a rebuild would be pure waste. Otherwise
+            # this is the GOOGLE shape - a symbol that builds to bars=0, so
+            # _save_oi_finder_chart_disk_payload never creates the file and
+            # "missing => cold" would otherwise stay true for the life of the
+            # process. Cold routes it to the strike ledger, which is what
+            # stops the 16-builds-in-21-minutes loop.
+            return "warm" if resident_current else "cold"
+        if (clock - mtime) > OI_FINDER_CHART_DISK_CACHE_MAX_AGE_SECONDS:
+            return "cold"
+        # Residency is deliberately NOT a shortcut past the age test.
+        # _chart_entry_tape_is_current exempts any entry FULL-built since the
+        # open, which stays true all afternoon for a tape that stopped at
+        # 09:35 - that exemption is right for "may I paint this?" and wrong
+        # for "does this need extending?". Every completed splice rewrites the
+        # disk file, so the file's mtime is the honest record of when this
+        # tape was last carried forward.
+        max_age = float(getattr(self, "BOARD_PREWARM_MAX_CACHE_AGE_SECONDS", 900.0))
+        if mtime >= float(session_start_epoch or 0.0) and (clock - mtime) <= max_age:
+            return "warm"
+        return "behind"
+
+    def _board_prewarm_trim(self, ledger: dict, stamp) -> None:
+        """Keep an introduced dict bounded. Oldest stamp evicted first."""
+        limit = max(1, int(getattr(self, "BOARD_PREWARM_LEDGER_LIMIT", 128)))
+        excess = len(ledger) - limit
+        if excess <= 0:
+            return
+        try:
+            victims = sorted(ledger, key=lambda key: stamp(ledger[key]))[:excess]
+        except Exception:
+            victims = list(ledger)[:excess]
+        for key in victims:
+            ledger.pop(key, None)
+
+    def _board_prewarm_note_touch(self, symbol: str) -> None:
+        # setdefault on __dict__ so a state built without __init__ (the house
+        # test-stub rule in this file) works.
+        ledger = self.__dict__.setdefault("_board_prewarm_touched_at", {})
+        ledger[str(symbol or "").strip().upper()] = time.monotonic()
+        self._board_prewarm_trim(ledger, float)
+
+    def _board_prewarm_note_cold_attempt(self, symbol: str) -> None:
+        ledger = self.__dict__.setdefault("_board_prewarm_strikes", {})
+        target = str(symbol or "").strip().upper()
+        entry = ledger.get(target) or [0, 0.0]
+        strikes = max(1, int(getattr(self, "BOARD_PREWARM_FAILURE_STRIKES", 3)))
+        ledger[target] = [min(int(entry[0]) + 1, strikes), time.monotonic()]
+        self._board_prewarm_trim(ledger, lambda value: float(value[1]))
+
+    def _board_prewarm_plan(
+        self,
+        symbols,
+        session_start_epoch: float,
+        now_mono: float | None = None,
+        now_epoch: float | None = None,
+    ) -> dict:
+        """What this cycle would do, decided from board + stat() + ledgers.
+
+        Separated from the loop so the budgets are testable without threads,
+        clocks, or a broker.
+
+        COUNTS vs BUDGET are tracked separately and this is not cosmetic.
+        plan['tails'] and plan['cold'] are what will be DISPATCHED - after the
+        per-cycle caps and the per-symbol cooldown - while plan['counts'] is
+        what was OBSERVED, before any cap. Reporting the dispatch lists as
+        health is how "behind: 0" comes to mean both "nothing is stale" and
+        "eight symbols are stale but paced", which is the whole failure this
+        payload exists to make visible. counts always sums to candidates.
+        """
+        clock = time.monotonic() if now_mono is None else float(now_mono)
+        touched = self.__dict__.setdefault("_board_prewarm_touched_at", {})
+        strikes_ledger = self.__dict__.setdefault("_board_prewarm_strikes", {})
+        tail_cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_TAILS_PER_CYCLE", 2)))
+        build_cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_COLD_BUILDS_PER_CYCLE", 1)))
+        cooldown = float(getattr(self, "BOARD_PREWARM_TOUCH_COOLDOWN_SECONDS", 900.0))
+        strikes = max(1, int(getattr(self, "BOARD_PREWARM_FAILURE_STRIKES", 3)))
+        fail_cooldown = float(getattr(self, "BOARD_PREWARM_FAILURE_COOLDOWN_SECONDS", 21600.0))
+        plan = {
+            "warm": [],
+            "tails": [],
+            "cold": [],
+            "blocked": [],
+            "candidates": 0,
+            # Observed verdicts, before any cap or cooldown. Sums to
+            # candidates by construction.
+            "counts": {"warm": 0, "behind": 0, "cold": 0, "skip": 0},
+        }
+        for symbol in symbols or []:
+            plan["candidates"] += 1
+            verdict = self._board_prewarm_classify(symbol, session_start_epoch, now_epoch)
+            plan["counts"][verdict] = plan["counts"].get(verdict, 0) + 1
+            if verdict == "skip":
+                continue
+            if verdict != "cold":
+                # The file exists again, so whatever failed before succeeded.
+                strikes_ledger.pop(symbol, None)
+            if verdict == "warm":
+                plan["warm"].append(symbol)
+                continue
+            if verdict == "behind":
+                if len(plan["tails"]) >= tail_cap:
+                    continue
+                if (clock - float(touched.get(symbol) or 0.0)) < cooldown:
+                    continue
+                plan["tails"].append(symbol)
+                continue
+            # cold
+            entry = strikes_ledger.get(symbol)
+            if entry and int(entry[0]) >= strikes and (clock - float(entry[1])) < fail_cooldown:
+                plan["blocked"].append(symbol)
+                continue
+            if len(plan["cold"]) < build_cap:
+                plan["cold"].append(symbol)
+        return plan
+
+    def _board_prewarm_cold_build_allowed(self, symbol: str) -> bool:
+        """The yield. Reuses the EXISTING interactive signals, no new ones.
+
+        1. _chart_symbol_is_interactive - he is polling this chart right now,
+           so his own request path already owns it and the in-flight guard
+           would dedupe us anyway.
+        2. No FULL refresh in flight for ANY symbol. The prewarm can never be
+           the second concurrent deep build on the box, so it can never be
+           the thing his open is queued behind. (ChartBuildLane would demote
+           us within 2s anyway - _waiter_ahead re-reads
+           _chart_symbol_is_interactive on every wake - but not queueing at
+           all is cheaper than being demoted.)
+        3. _warmer_should_wait, which reads oi_finder_ondemand_builds and
+           oi_finder_interactive_until: an on-demand build he triggered, or a
+           chart he touched in the last 45s, defers us. Non-blocking - we
+           skip the cycle instead of sleeping inside it - and that helper's
+           own WARMER_FORCE_PROGRESS_SECONDS floor guarantees one build every
+           15 minutes however busy the app is, so a permanently open tab
+           cannot starve this into the silent no-op it would otherwise be.
+
+        4. _warmer_is_paused - artifacts/keeper_paused or artifacts/
+           warmer_paused. This gate applies to the EXPENSIVE path ONLY; the
+           tail splices above it run regardless. Review's operational point,
+           which is correct and does not cost the feature anything: a human
+           dropped keeper_paused on this box on 2026-08-28 during a live
+           incident to stop background chart BUILDING. Shipping a second
+           background full-build path that the existing marker does not cover
+           means the next time he reaches for that lever it will not work and
+           he has no way to know why. Honouring it here for cold builds only
+           keeps the expensive thing the marker was created to stop stopped,
+           while the ~4s splices - which carry essentially all of this
+           feature's measured value, 8 behind and 0 cold on the live board -
+           keep running. prewarm_paused remains the switch for the whole loop.
+        """
+        target = str(symbol or "").strip().upper()
+        if not target:
+            return False
+        try:
+            if self._warmer_is_paused():
+                return False
+            if self._chart_symbol_is_interactive(target):
+                return False
+            # Under the lock: every writer of oi_finder_chart_refreshes holds
+            # it, and list() on a dict being mutated raises RuntimeError. That
+            # exception would be swallowed by the except below and degrade to
+            # "never cold-build" - fail-safe, but silently, with no counter
+            # that would ever show it happened.
+            lock = getattr(self, "oi_finder_chart_lock", None)
+            refreshes = getattr(self, "oi_finder_chart_refreshes", None) or {}
+            if lock is not None:
+                with lock:
+                    pending = list(refreshes)
+            else:
+                pending = list(refreshes)
+            for other in pending:
+                if self._chart_refresh_in_flight(other, kind="full"):
+                    return False
+            last_build = float(getattr(self, "_board_prewarm_last_build_at", 0.0) or 0.0)
+            if self._warmer_should_wait(time.monotonic(), last_build):
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _momx_board_chart_prewarm_cycle(self, now_et=None) -> float:
+        """One cycle. Returns how long to sleep before the next one.
+
+        Returning the sleep rather than taking it makes the clock gate, the
+        kill switch and the budgets testable without a thread.
+        """
+        status = self.__dict__.setdefault("_board_prewarm_status", {})
+        status["lastCycleAt"] = datetime.now(timezone.utc).isoformat()
+        if now_et is None:
+            now_et = datetime.now(ZoneInfo(EASTERN_TZ))
+        # ONE clock for the whole cycle. The window gate used the injected
+        # now_et while session_start came from datetime.now() - so every
+        # clock-injected test was structurally unable to exercise the
+        # classification it claimed to, and the premarket test passed while
+        # the premarket behaviour did not exist.
+        now_epoch = now_et.timestamp()
+        minute_of_day = now_et.hour * 60 + now_et.minute
+        # A cycle that does no work must not leave the PREVIOUS cycle's
+        # numbers visible in /api/health as if they were current.
+        idle = {
+            "candidates": 0,
+            "warm": 0,
+            "behind": 0,
+            "cold": 0,
+            "skipped": 0,
+            "blocked": [],
+            "tails": 0,
+            "builds": 0,
+            "tailsPlanned": 0,
+            "buildsPlanned": 0,
+        }
+        start = int(getattr(self, "BOARD_PREWARM_START_MINUTE", 3 * 60 + 30))
+        end = int(getattr(self, "BOARD_PREWARM_END_MINUTE", 20 * 60))
+        if now_et.weekday() >= 5 or not (start <= minute_of_day < end):
+            # Weekends and overnight: no new bars exist, so every build would
+            # rebuild the same tape.
+            status.update(dict(idle, state="closed"))
+            return 120.0
+        if self._board_prewarm_is_paused():
+            status.update(dict(idle, state="paused"))
+            return 30.0
+        symbols = self._board_prewarm_symbols(now_epoch)
+        # Losing the input entirely is the one condition that used to print
+        # nothing: a renamed directory, suffix, `rows` array or `symbol` key
+        # makes _board_prewarm_read_file return [] through its bare except,
+        # health then reads state 'running' with candidates 0 while
+        # boardAgeSeconds stays small - two observations that disagree, with
+        # no reconciliation and no log line. Edge-triggered so a legitimately
+        # empty board does not spam.
+        if not symbols:
+            try:
+                seen = any(self._board_prewarm_cache_dir().glob("*.json"))
+            except OSError:
+                seen = False
+            if seen and not status.get("_emptyAnnounced"):
+                status["_emptyAnnounced"] = True
+                print(
+                    "[board-prewarm] board files exist but yielded no symbols - "
+                    "momx schema drift or every board stale; prewarm is idle",
+                    flush=True,
+                )
+        else:
+            status.pop("_emptyAnnounced", None)
+        session_start = self._most_recent_session_start(
+            now_et.astimezone(timezone.utc)
+        ).timestamp()
+        plan = self._board_prewarm_plan(symbols, session_start, now_epoch=now_epoch)
+        pace = float(getattr(self, "BOARD_PREWARM_TAIL_PACE_SECONDS", 2.0))
+        tails = 0
+        for symbol in plan["tails"]:
+            try:
+                # Tail-only, exactly like _hot_chart_refresher_loop: a
+                # background loop must never queue the full rebuild itself
+                # (see _touch_chart_tail). This is the ~4s splice that turns
+                # a Friday tape into today's.
+                #
+                # Record the ATTEMPT before making it. With the note after the
+                # call, a _touch_chart_tail that reliably raises never records
+                # a cooldown and the symbol is retried every 60s forever - two
+                # pool submissions a minute against a max_workers=2 pool, with
+                # no strike ledger on this path to stop it. The cheap path's
+                # negative cache has to survive the cheap path failing.
+                self._board_prewarm_note_touch(symbol)
+                self._touch_chart_tail(symbol)
+                tails += 1
+            except Exception:
+                pass
+            time.sleep(pace)
+        builds = 0
+        for symbol in plan["cold"]:
+            if not self._board_prewarm_cold_build_allowed(symbol):
+                continue
+            try:
+                # The door everyone else uses: split in-flight guard, paint
+                # pool then bounded study pool, ChartBuildLane arbitration,
+                # progress stamping, and the no-shrink disk save. The
+                # watchlist warmer's inline _build_oi_finder_chart_payload
+                # call has none of that, and that is what keeper_paused was
+                # created to stop.
+                self._start_oi_finder_chart_refresh(symbol, full_history=True)
+                self._board_prewarm_note_cold_attempt(symbol)
+                self._board_prewarm_last_build_at = time.monotonic()
+                builds += 1
+                print(f"[board-prewarm] {symbol} cold build queued", flush=True)
+            except Exception:
+                pass
+        # One line per newly blocked symbol, so the NEXT GOOGLE is found in
+        # minutes instead of by timestamping wc -l output for twenty.
+        announced = status.setdefault("_announced", {})
+        for symbol in plan["blocked"]:
+            if symbol in announced:
+                continue
+            announced[symbol] = time.monotonic()
+            self._board_prewarm_trim(announced, float)
+            hours = int(
+                float(getattr(self, "BOARD_PREWARM_FAILURE_COOLDOWN_SECONDS", 21600.0)) / 3600
+            )
+            print(
+                f"[board-prewarm] {symbol} produced no cached tape after "
+                f"{int(getattr(self, 'BOARD_PREWARM_FAILURE_STRIKES', 3))} attempts; "
+                f"skipping it for {hours}h",
+                flush=True,
+            )
+        # OBSERVED vs DISPATCHED, reported separately. warm/behind/cold are
+        # the classification of every candidate before any cap, so
+        # warm+behind+cold+skipped == candidates and a backlog can never hide
+        # behind a budget. tailsPlanned/buildsPlanned are what the caps
+        # allowed; tails/builds are what actually went out.
+        counts = plan.get("counts") or {}
+        status.update(
+            {
+                "state": "running",
+                "candidates": plan["candidates"],
+                "warm": int(counts.get("warm", 0)),
+                "behind": int(counts.get("behind", 0)),
+                "cold": int(counts.get("cold", 0)),
+                "skipped": int(counts.get("skip", 0)),
+                "blocked": list(plan["blocked"]),
+                "tailsPlanned": len(plan["tails"]),
+                "buildsPlanned": len(plan["cold"]),
+                "tails": tails,
+                "builds": builds,
+            }
+        )
+        return float(getattr(self, "BOARD_PREWARM_CYCLE_SECONDS", 60.0))
+
+    def _momx_board_chart_prewarm_loop(self) -> None:
+        """Pre-build charts for the tickers ON THE MOMX SCANNER BOARD.
+
+        WHY: clicking a board row used to pay whatever that symbol's cache
+        owed - up to a 112s cold build measured 2026-08-31 - because nothing
+        on the server knew which rows he was looking at. The board file
+        knows. This walks it and pays that cost in the background, in
+        advance, in bounded pieces.
+
+        STEADY STATE IS NOTHING. Once each board symbol's cache has been
+        written this session, every cycle is <=24 stat() calls and two small
+        file reads, then sleep. No broker calls, no pool submissions, no
+        builds.
+
+        BOUNDS, all enforced: at most BOARD_PREWARM_MAX_SYMBOLS (24) symbols
+        considered, at most BOARD_PREWARM_MAX_TAILS_PER_CYCLE (2) tail
+        splices, at most BOARD_PREWARM_MAX_COLD_BUILDS_PER_CYCLE (1) full
+        build, per 60s cycle. Both ledgers are capped at
+        BOARD_PREWARM_LEDGER_LIMIT (128) entries with oldest-first eviction.
+
+        HOW IT YIELDS: see _board_prewarm_cold_build_allowed. It reuses
+        _chart_symbol_is_interactive, _chart_refresh_in_flight,
+        _warmer_should_wait (which reads oi_finder_interactive_until and
+        oi_finder_ondemand_builds) and _warmer_is_paused rather than
+        inventing a new signal.
+
+        WHAT background_scope(True) DOES AND DOES NOT DO. It marks THIS
+        thread as background, which keeps the cycle itself out of any
+        request-scoped accounting. It does NOT follow the work: every unit
+        this loop dispatches runs on a pool thread (oi_finder_chart_paint_pool
+        / oi_finder_chart_refresh_pool) and background_scope is a
+        threading.local, so in_background_request() is False inside those
+        workers. An earlier version of this docstring claimed the scope was
+        what stopped the prewarm granting itself interactive priority in
+        ChartBuildLane. That was wrong and would have misled the next reader:
+        ChartBuildLane decides priority per SYMBOL via
+        _chart_symbol_is_interactive, and the prewarm never writes
+        _chart_symbol_last_requested, which is the actual reason it cannot
+        promote itself. Do not add an in_background_request() check inside the
+        refresh path expecting it to see this scope.
+
+        KILL SWITCH, in plain language: create an empty file called
+        `prewarm_paused` in the artifacts folder and this stops within a
+        minute; delete it and it resumes within a minute. No restart. See
+        _board_prewarm_is_paused for exactly which markers gate this loop and
+        why artifacts/keeper_paused deliberately is not one of them.
+        """
+        if str(os.environ.get("AGX_CHART_PREWARM", "1")).strip().lower() in {
+            "0", "false", "off", "no",
+        }:
+            return
+        # Seed the forced-progress clock at START, not at 0.0. _warmer_should_wait
+        # compares (time.monotonic() - last_build) against
+        # WARMER_FORCE_PROGRESS_SECONDS, and time.monotonic() on this box is
+        # machine uptime (measured 614671.06). Left at 0.0 that difference is
+        # always > 900, so the very first cycle would pass the anti-starvation
+        # floor unconditionally and queue a 45-199s ChartBuildLane-holding
+        # build 150 seconds after a restart - while the trader is mid-session
+        # and the lane does NOT preempt its holder (_waiter_ahead only
+        # re-sorts waiters). Seeding it means the first cold build waits out a
+        # real quiet window, or 15 real minutes, like every later one.
+        self._board_prewarm_last_build_at = time.monotonic()
+        print(
+            "[board-prewarm] started; kill switch: create "
+            f"{ARTIFACTS_DIR / 'prewarm_paused'} (cold builds additionally "
+            "respect keeper_paused/warmer_paused)",
+            flush=True,
+        )
+        time.sleep(float(getattr(self, "BOARD_PREWARM_BOOT_DELAY_SECONDS", 150.0)))
+        while True:
+            delay = float(getattr(self, "BOARD_PREWARM_CYCLE_SECONDS", 60.0))
+            try:
+                with background_scope(True):
+                    delay = self._momx_board_chart_prewarm_cycle()
+            except Exception:
+                # A bad cycle must never kill the thread; back off instead.
+                delay = 120.0
+            time.sleep(max(5.0, delay))
+
+    def _board_prewarm_status_payload(self) -> dict:
+        """What /api/health reports.
+
+        A SKIP is the success case, so it is counted explicitly. Without that
+        counter a prewarm doing nothing useful looks identical to one that is
+        working - and the last two measurement attempts on this box were both
+        blocked by "no counter exists" plus a stdout log the watchdog
+        truncates on every restart.
+        """
+        status = dict(getattr(self, "_board_prewarm_status", None) or {})
+        status.pop("_announced", None)
+        status.pop("_emptyAnnounced", None)
+        board_age = None
+        try:
+            newest = max(
+                (path.stat().st_mtime for path in self._board_prewarm_cache_dir().glob("*.json")),
+                default=0.0,
+            )
+            if newest > 0:
+                board_age = round(max(0.0, time.time() - newest), 1)
+        except OSError:
+            board_age = None
+        # Snapshot with a C-level dict copy BEFORE iterating. This runs on an
+        # HTTP handler thread while the prewarm thread inserts into and trims
+        # that same ledger; a comprehension over the live dict raises
+        # RuntimeError("dictionary changed size during iteration"), which
+        # _dispatch_get's blanket except turns into a 500 on /api/health -
+        # exactly when the strikes ledger is churning, i.e. exactly when you
+        # are curling it to find out why. dict() is atomic under the GIL.
+        try:
+            strikes = {
+                key: int(value[0])
+                for key, value in dict(
+                    getattr(self, "_board_prewarm_strikes", None) or {}
+                ).items()
+            }
+        except Exception:
+            strikes = {}
+        status.update(
+            {
+                "enabled": str(os.environ.get("AGX_CHART_PREWARM", "1")).strip().lower()
+                not in {"0", "false", "off", "no"},
+                "paused": self._board_prewarm_is_paused(),
+                # Cold builds obey the human's marker too; tails do not.
+                "coldBuildsPaused": self._warmer_is_paused(),
+                "boardAgeSeconds": board_age,
+                # Makes the LRU-pressure hypothesis falsifiable from one curl.
+                # 16 hot + up to 24 board against OI_FINDER_CHART_WARM_LIMIT
+                # (40) was reasoned, never observed, and the last time that cap
+                # was wrong it pinned AMZN frozen for 90 minutes. A warm count
+                # that oscillates with a static board is the symptom.
+                "chartCacheSize": len(getattr(self, "oi_finder_chart_cache", None) or {}),
+                "chartCacheLimit": OI_FINDER_CHART_WARM_LIMIT,
+                "strikes": strikes,
+            }
+        )
+        return status
+
+    def _watchlist_chart_warmer_loop(self) -> None:
+        time.sleep(45)  # let boot settle; the quick strip is what traders hit first
+        while True:
+            try:
+                # Idle entirely while a pause marker is present - no fetch,
+                # no build, no GIL load - and re-check every 30s so a resume
+                # is picked up quickly once the marker is removed.
+                while self._warmer_is_paused():
+                    time.sleep(30)
+                # PRIORITY ORDER: the quick-strip symbols (the top bar the trader
+                # actually searches) first, then the rest of the watchlist. So a
+                # search of a common ticker is warm within the first few minutes
+                # even though the full watchlist takes longer.
+                watchlist = []
+                try:
+                    raw = Path(WATCHLIST_PATH).read_text(encoding="utf-8")
+                    watchlist = [
+                        token.strip().upper()
+                        for token in re.split(r"[,\s]+", raw)
+                        if re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", token.strip().upper())
+                    ]
+                except OSError:
+                    watchlist = []
+                ordered, seen = [], set()
+                for symbol in list(QUICK_STRIP_WARM_SYMBOLS) + watchlist:
+                    su = str(symbol or "").strip().upper()
+                    if su and su not in seen:
+                        seen.add(su)
+                        ordered.append(su)
+
+                last_build_at = time.monotonic()
+                # The quick-strip tickers are the ones the trader actually
+                # opens, and a COLD one costs them 60-110s at the bell -
+                # measured 2026-08-19 at the open: NFLX chart 109.4s, finder
+                # 61.9s, chain 65.1s, against 2-3s once warm. Yielding on those
+                # trades one ~150s background build for a two-minute stall in
+                # front of the trader, which is the wrong way round. They are
+                # only 14 symbols, so they are warmed without waiting; the ~380
+                # watchlist tickers behind them still yield as before.
+                priority_warm = {
+                    str(item or "").strip().upper() for item in QUICK_STRIP_WARM_SYMBOLS
+                }
+                for symbol in ordered:
+                    # A pause dropped mid-sweep stops the remaining builds
+                    # now, not at the next 15-minute re-sweep.
+                    if self._warmer_is_paused():
+                        break
+                    # Yield to the trader, but keep a floor so continuous chart
+                    # use cannot starve the warmer entirely (the old unbounded
+                    # wait meant only ~8 symbols/hour built while the trader was
+                    # active). The previous 25s cap was too short: one full
+                    # build every ~35s during a live session starved request
+                    # threads through the GIL, which the trader saw as 20-48s
+                    # chart responses and Cloudflare 5xx on the phone.
+                    # One progress guarantee, not two competing ones. The 45s
+                    # cap overrode _warmer_should_wait's own 15-minute rule:
+                    # pause 45s, then run a ~150s GIL-saturating build - a 77%
+                    # duty cycle that spiked /api/auth/status (400 bytes, no
+                    # work) to 8.0s while the trader was on the app.
+                    # Decide WHAT this symbol needs before deciding whether to
+                    # yield, because the two answers are no longer the same.
+                    #
+                    # Skip a symbol whose cache is current in BOTH senses:
+                    # right schema AND recent candles. Schema alone left 392
+                    # watchlist caches holding the previous session's bars,
+                    # because a schema-current file was skipped forever and
+                    # only ever refreshed when the trader opened that ticker.
+                    disk = self._load_oi_finder_chart_disk_payload(symbol)
+                    if disk is not None:
+                        disk_path = self._oi_finder_chart_disk_path(symbol)
+                        try:
+                            cache_epoch = disk_path.stat().st_mtime
+                        except (OSError, AttributeError):
+                            # Unknown mtime must not look "rebuilt this
+                            # session" - fall through and rebuild it.
+                            cache_epoch = 0.0
+                        session_start = self._most_recent_session_start(
+                            datetime.now(timezone.utc)
+                        ).timestamp()
+                        # mtime says "written this session", but a file written
+                        # at 13:20 holds candles that stop at 13:20. Check
+                        # where the tape actually ENDS before skipping it -
+                        # see WARMER_TAPE_LAG_TOLERANCE_SECONDS.
+                        disk_bars = disk.get("bars") or []
+                        try:
+                            tape_newest = float((disk_bars[-1] or {}).get("time") or 0.0) if disk_bars else 0.0
+                        except (AttributeError, IndexError, TypeError, ValueError):
+                            tape_newest = 0.0
+                        market_newest = float(
+                            getattr(self, "_chart_market_newest_bar_epoch", 0.0) or 0.0
+                        )
+                        # Both-zero falls through to "not lagging" on purpose,
+                        # mirroring _chart_tape_is_behind_market: a server that
+                        # has built nothing has no reference to judge against.
+                        tape_lagging = (
+                            tape_newest > 0.0
+                            and market_newest > 0.0
+                            and (market_newest - tape_newest) > self.WARMER_TAPE_LAG_TOLERANCE_SECONDS
+                        )
+                        if not tape_lagging and self._warmer_cache_is_current(
+                            bool(disk.get("payloadSchemaStale")),
+                            cache_epoch,
+                            session_start,
+                        ):
+                            continue
+
+                    # CHEAP PATH: the tape exists and merely fell behind.
+                    #
+                    # The interactive yield below exists to keep a ~150s
+                    # GIL-saturating FULL rebuild off the box while the trader
+                    # is working. It was applied to every symbol, so with a tab
+                    # open (which refreshes the interactive window every 5s)
+                    # the warmer only moved once per WARMER_FORCE_PROGRESS_
+                    # SECONDS - one symbol per ~15 minutes, ~4 days for a
+                    # 398-ticker sweep. Measured 2026-08-22: 272 of 398 caches
+                    # over 24h stale, the oldest 206h. That staleness is the
+                    # whole reason an unfamiliar ticker opens slowly.
+                    #
+                    # Catching a behind-but-intact tape up no longer needs a
+                    # full rebuild: 93d5939 lets a recency splice bridge an
+                    # arbitrary gap, measured at ~4s for a 112h-old tape
+                    # against ~15s for a from-scratch build. That is far below
+                    # what the yield was protecting against, so this path does
+                    # not yield at all - it paces symbol-to-symbol instead,
+                    # which bounds the load without stalling the sweep.
+                    if disk is not None and not bool(disk.get("payloadSchemaStale")):
+                        try:
+                            self._touch_chart_tail(symbol)
+                        except Exception:
+                            pass
+                        last_build_at = time.monotonic()
+                        time.sleep(self.WARMER_RECENCY_PACE_SECONDS)
+                        continue
+
+                    # EXPENSIVE PATH: no usable tape at all, or the schema
+                    # moved. This is the full rebuild the yield was written
+                    # for, so it still yields.
+                    waited = 0.0
+                    while (
+                        symbol not in priority_warm
+                        and self._warmer_should_wait(time.monotonic(), last_build_at)
+                        and waited < self.WARMER_FORCE_PROGRESS_SECONDS
+                    ):
+                        time.sleep(5)
+                        waited += 5.0
+                    try:
+                        payload = self._build_oi_finder_chart_payload(symbol, fast_start=False)
+                        if isinstance(payload, dict) and payload.get("bars") and not payload.get("historyLoading"):
+                            self._save_oi_finder_chart_disk_payload(symbol, payload)
+                        last_build_at = time.monotonic()
+                    except Exception:
+                        # Count a failed attempt as progress too, otherwise a
+                        # symbol that reliably throws would spin this loop.
+                        last_build_at = time.monotonic()
+                    # Faster cadence when idle, gentler while the trader is active.
+                    interactive = time.monotonic() < float(getattr(self, "oi_finder_interactive_until", 0.0))
+                    time.sleep(10.0 if interactive else 3.0)
+            except Exception:
+                pass
+            time.sleep(15 * 60)  # re-sweep to refresh + pick up new symbols
+
+    @staticmethod
+    def _tos_chart_mtf_source_frame(
+        fine_frame: object, minute_frame: object, fallback: object
+    ) -> pd.DataFrame:
+        """Five-minute close tape for the TOS MTF label engine.
+
+        Fine (5m history) rows first, then the one-minute tape floored to
+        five-minute buckets on top: for a bucket both know, the minute tape
+        wins because it carries the live forming candle. Falls back to the
+        caller's study tape when neither is available.
+        """
+        def as_close_tape(candidate: object) -> pd.DataFrame | None:
+            if not isinstance(candidate, pd.DataFrame) or candidate.empty:
+                return None
+            if "timestamp" not in candidate.columns or "close" not in candidate.columns:
+                return None
+            tape = candidate[["timestamp", "close"]].copy()
+            stamps = pd.to_datetime(tape["timestamp"], errors="coerce")
+            if getattr(stamps.dt, "tz", None) is None:
+                stamps = stamps.dt.tz_localize(EASTERN_TZ, nonexistent="shift_forward", ambiguous="NaT")
+            tape["timestamp"] = stamps.dt.tz_convert("UTC")
+            tape["close"] = pd.to_numeric(tape["close"], errors="coerce")
+            tape = tape.dropna(subset=["timestamp", "close"])
+            return tape if not tape.empty else None
+
+        parts: list[pd.DataFrame] = []
+        fine = as_close_tape(fine_frame)
+        if fine is not None:
+            parts.append(fine)
+        minute = as_close_tape(minute_frame)
+        if minute is not None:
+            minute = minute.sort_values("timestamp", kind="mergesort")
+            minute["timestamp"] = minute["timestamp"].dt.floor("5min")
+            parts.append(minute.groupby("timestamp", as_index=False).agg(close=("close", "last")))
+        if not parts:
+            return fallback if isinstance(fallback, pd.DataFrame) else pd.DataFrame()
+        combined = pd.concat(parts, ignore_index=True)
+        combined = combined.sort_values("timestamp", kind="mergesort")
+        return combined.drop_duplicates("timestamp", keep="last").reset_index(drop=True)
+
+    def _fine_study_cached_frame(self, symbol: str) -> pd.DataFrame:
+        """Return a cached five-minute tape WITHOUT fetching. Used on the
+        fast_start paint, which must never make a broker call."""
+        target = str(symbol or "").strip().upper()
+        cache = getattr(self, "_oi_finder_fine_study_cache", None) or {}
+        entry = cache.get(target) or {}
+        frame = entry.get("frame")
+        return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+
+    def _fine_study_chart_frame(self, symbol: str) -> pd.DataFrame:
+        """60-day five-minute tape, cached per symbol.
+
+        Fetched here rather than reused from the build path: the cold-fetch
+        block that already requests this frame does not always run, and its
+        result is not reachable where the payload is assembled. One broker
+        call per symbol per TTL is a small, bounded cost for history the chart
+        cannot otherwise show.
+        """
+        target = str(symbol or "").strip().upper()
+        if not target:
+            return pd.DataFrame()
+        cache = getattr(self, "_oi_finder_fine_study_cache", None)
+        if cache is None:
+            cache = {}
+            self._oi_finder_fine_study_cache = cache
+        entry = cache.get(target) or {}
+        frame = entry.get("frame")
+        fetched_at = float(entry.get("fetched_at") or 0.0)
+        if (
+            isinstance(frame, pd.DataFrame)
+            and not frame.empty
+            and (time.monotonic() - fetched_at) < self.OI_FINDER_FINE_STUDY_TTL_SECONDS
+        ):
+            return frame
+        fetched = pd.DataFrame()
+        # Try every configured Schwab profile before conceding to Alpaca: a
+        # market-data credential that Schwab REJECTS still reports configured,
+        # and silently taking the sparse free feed instead is what left charts
+        # stopping at 04:00 (see _schwab_market_clients).
+        for client in _schwab_market_clients():
+            try:
+                fetched = client.get_chart_bars(
+                    target,
+                    timeframe="5Min",
+                    days_back=self.OI_FINDER_FINE_STUDY_LOOKBACK_DAYS,
+                )
+            except Exception:
+                fetched = pd.DataFrame()
+            if isinstance(fetched, pd.DataFrame) and not fetched.empty:
+                break
+        if not isinstance(fetched, pd.DataFrame) or fetched.empty:
+            try:
+                fetched = self._alpaca_fallback_chart_bars(
+                    target, "5Min", self.OI_FINDER_FINE_STUDY_LOOKBACK_DAYS,
+                )
+            except Exception:
+                fetched = pd.DataFrame()
+        if isinstance(fetched, pd.DataFrame) and not fetched.empty:
+            # The 5m study tape drives the MTF EMA engines; without the
+            # premarket patch a 4H candle spanning 05:00-09:00 is built from
+            # its final two hours only and the CALL4H math drifts from TOS.
+            fetched = self._backfill_today_premarket(fetched, target, interval="5min")
+            fetched = self._backfill_overnight_session(fetched, target, interval="5min")
+            cache[target] = {"frame": fetched, "fetched_at": time.monotonic()}
+            # Bounded like the other per-symbol caches so a 400-ticker sweep
+            # cannot grow it without limit.
+            if len(cache) > 64:
+                for key in sorted(cache, key=lambda k: cache[k].get("fetched_at", 0.0))[:-64]:
+                    cache.pop(key, None)
+            return fetched
+        # Serve a stale entry rather than nothing when the refetch failed.
+        return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+
     def _alpaca_fallback_chart_bars(self, symbol: str, timeframe: str, days_back: int) -> pd.DataFrame:
-        """Chart candles from the owner's Alpaca key when Schwab has none."""
+        """Chart candles from the owner's Alpaca key when Schwab has none.
+
+        DISABLED by default - see CHART_BARS_USE_ALPACA_FALLBACK. Returning an
+        empty frame here rather than deleting the call sites keeps the Schwab
+        paths and their error reporting exactly as they were, and makes the
+        decision one line to revisit.
+        """
+        if not CHART_BARS_USE_ALPACA_FALLBACK:
+            return pd.DataFrame()
         client = self._owner_alpaca_chart_client()
         if client is None:
             return pd.DataFrame()
@@ -9266,7 +12432,40 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             if timeframe_key.startswith("1day") or timeframe_key in {"1d", "d", "day"}:
                 bar_timeframe = TimeFrame(1, TimeFrameUnit.Day)
             else:
-                bar_timeframe = TimeFrame(5 if timeframe_key.startswith("5") else 1, TimeFrameUnit.Minute)
+                # Honour the REQUESTED cadence. This used to read
+                #   TimeFrame(5 if timeframe_key.startswith("5") else 1, Minute)
+                # which recognised only "5Min" and silently answered every
+                # other minute string with ONE-minute bars. The deep study tape
+                # asks for "30Min" over OI_FINDER_CHART_INTRADAY_LOOKBACK_DAYS
+                # (7300 days), so it was served TWENTY YEARS OF 1-MINUTE BARS -
+                # measured 2026-08-27: AAPL studyBars 594,766 rows spanning
+                # 2020-07-27 to today at 1-minute spacing, a 44x bloat over the
+                # ~13k rows the 30-minute contract intends, and 97.9% of a
+                # 60 MB chart payload (12.6 MB gzipped, 13s). 130 of 399 cached
+                # symbols, 629 MB, were poisoned this way.
+                #
+                # Schwab was never implicated: data/schwab_client.py maps
+                # "30Min" correctly, so this only bites when Schwab is empty
+                # and the Alpaca fallback answers - which is every symbol right
+                # now, because the Schwab market-data credentials are dead.
+                minutes = 1
+                digits = ""
+                for char in timeframe_key:
+                    if char.isdigit():
+                        digits += char
+                    else:
+                        break
+                if digits:
+                    minutes = max(1, int(digits))
+                if timeframe_key.endswith(("h", "hour", "hours")) or timeframe_key.startswith("1h"):
+                    bar_timeframe = TimeFrame(max(1, minutes), TimeFrameUnit.Hour)
+                elif minutes >= 60:
+                    # Alpaca rejects a minute amount of 60 or more; express it
+                    # in hours rather than silently falling back to 1 minute,
+                    # which is the exact failure this comment exists about.
+                    bar_timeframe = TimeFrame(max(1, minutes // 60), TimeFrameUnit.Hour)
+                else:
+                    bar_timeframe = TimeFrame(minutes, TimeFrameUnit.Minute)
             try:
                 feed = DataFeed(settings.alpaca_data_feed)
             except ValueError:
@@ -9352,7 +12551,147 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "requestedYears": 20,
         }
 
-    def _build_oi_finder_chart_payload(self, symbol: str, fast_start: bool = False) -> dict:
+    # A fast/recency pass fetches this many days unless the cached tape is
+    # further behind than that. 30 matches the deep tape's own window, so
+    # widening can never ask for more history than a full build would.
+    OI_FINDER_CHART_RECENCY_MIN_DAYS = 2
+    OI_FINDER_CHART_RECENCY_MAX_DAYS = 30
+
+    def _chart_recency_lookback_days(self, target: str) -> int:
+        """Days of 1-minute bars a recency pass must fetch to close the gap.
+
+        Reads the CACHED tape's newest bar, not the file's mtime: since the
+        unchanged-save skip landed, mtime is bumped by os.utime on writes that
+        changed nothing, so it no longer implies fresh content.
+
+        With no cached bars at all this stays at the 2-day minimum - that is a
+        genuinely new symbol's first paint, where speed is the whole point and
+        there is no gap to bridge. Stale symbols reach here with a tape already
+        hydrated from disk by _touch_chart_tail.
+        """
+        newest = 0.0
+        try:
+            with self.oi_finder_chart_lock:
+                cached = self.oi_finder_chart_cache.get(target)
+            bars = ((cached or {}).get("payload") or {}).get("bars") or []
+            if bars:
+                newest = float((bars[-1] or {}).get("time") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            newest = 0.0
+        if newest <= 0:
+            return self.OI_FINDER_CHART_RECENCY_MIN_DAYS
+        gap_days = (time.time() - newest) / 86400.0
+        # +1 day of overlap so the splice always shares bars with the cached
+        # tape rather than meeting it exactly at the boundary.
+        needed = int(math.ceil(gap_days)) + 1
+        return max(
+            self.OI_FINDER_CHART_RECENCY_MIN_DAYS,
+            min(needed, self.OI_FINDER_CHART_RECENCY_MAX_DAYS),
+        )
+
+    #: How long a symbol the broker does not recognise stays remembered. Long
+    #: enough that a saved layout cannot burn the CPU all session, short enough
+    #: that a genuinely new listing starts working the same day.
+    UNKNOWN_SYMBOL_TTL_SECONDS = 6 * 60 * 60
+
+    #: Asked about in the SAME quote request as the suspect symbol. If this
+    #: comes back the broker is answering properly, so an absent suspect means
+    #: the suspect does not exist. If this is missing too, the broker is
+    #: unhealthy and nothing may be concluded about the suspect.
+    UNKNOWN_SYMBOL_CONTROL = "SPY"
+
+    def _symbol_unknown_to_broker(self, symbol: str):
+        """True/False if it can be determined, None if the broker cannot say.
+
+        None is a first-class answer and the whole safety story: it is what
+        keeps a broker outage from blacklisting the entire universe.
+        """
+        try:
+            clients = _schwab_market_clients()
+            client = clients[0] if clients else None
+            if client is None or not client.configured:
+                return None
+            quotes = client.get_quotes([symbol, self.UNKNOWN_SYMBOL_CONTROL])
+        except Exception:
+            return None  # broker unreachable: judge nothing
+        if not isinstance(quotes, dict):
+            return None
+        if self.UNKNOWN_SYMBOL_CONTROL not in quotes:
+            # The control failed too, so this tells us nothing about `symbol`.
+            return None
+        return symbol not in quotes
+
+    def _unknown_symbol_payload(self, target: str) -> dict:
+        """The same shape a malformed ticker returns, with an honest reason."""
+        return {
+            "symbol": target,
+            "timeframe": "1Min",
+            "source": "Schwab/TOS API",
+            "live": False,
+            "bars": [],
+            "dailyBars": [],
+            "ganeshHigherTimeframeSignals": {
+                "schemaVersion": GANESH_SCHEMA_VERSION,
+                "mode": GANESH_SIGNAL_MODE,
+                "sourceAggregationMinutes": GANESH_SOURCE_AGGREGATION_MINUTES,
+                "historyReady": False,
+                "signals": [],
+            },
+            "error": (
+                f"{target} is not a ticker the broker recognises. "
+                "Fix it in the saved layout that uses it."
+            ),
+            "updatedAt": datetime.now().astimezone().isoformat(),
+        }
+
+    def _build_oi_finder_chart_payload(self, symbol: str, fast_start: bool = False,
+                                       skip_studies: bool = False) -> dict:
+        """Guard the expensive build with a negative cache. See the note on
+        UNKNOWN_SYMBOL_CONTROL for why a failed build alone is not enough to
+        blacklist a symbol.
+
+        The cache is consulted BEFORE any work and written only AFTER a build
+        came back empty AND the broker confirmed the symbol does not exist, so
+        the normal path pays nothing: no extra request for a healthy ticker.
+        """
+        target = (symbol or "").strip().upper()
+        now = time.time()
+        with _UNKNOWN_SYMBOLS_LOCK:
+            seen_at = _UNKNOWN_CHART_SYMBOLS.get(target)
+            if seen_at is not None and (now - seen_at) < self.UNKNOWN_SYMBOL_TTL_SECONDS:
+                return self._unknown_symbol_payload(target)
+            if seen_at is not None:
+                _UNKNOWN_CHART_SYMBOLS.pop(target, None)  # expired: try again
+
+        payload = self._build_oi_finder_chart_payload_impl(
+            symbol, fast_start=fast_start, skip_studies=skip_studies
+        )
+
+        try:
+            produced = payload.get("bars") or payload.get("dailyBars")
+            if not produced and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", target):
+                verdict = self._symbol_unknown_to_broker(target)
+                if verdict is True:
+                    with _UNKNOWN_SYMBOLS_LOCK:
+                        _UNKNOWN_CHART_SYMBOLS[target] = now
+                    print(
+                        f"[chart] {target} is unknown to the broker; "
+                        f"skipping rebuilds for "
+                        f"{self.UNKNOWN_SYMBOL_TTL_SECONDS // 3600}h",
+                        flush=True,
+                    )
+                    return self._unknown_symbol_payload(target)
+            elif produced:
+                # A symbol that works again (new listing, broker glitch) must
+                # not stay remembered as broken.
+                with _UNKNOWN_SYMBOLS_LOCK:
+                    _UNKNOWN_CHART_SYMBOLS.pop(target, None)
+        except Exception:
+            pass  # bookkeeping must never break a chart that built fine
+        return payload
+
+    def _build_oi_finder_chart_payload_impl(self, symbol: str, fast_start: bool = False,
+                                       skip_studies: bool = False) -> dict:
         """Build recent candles first; long study history is optional."""
         target = (symbol or "").strip().upper()
         if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", target):
@@ -9375,7 +12714,12 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             }
 
         try:
-            schwab_client = SchwabClient()
+            # Preference-ordered: market_data, then trading. The old code used
+            # the market-data profile alone, so a rejected credential there sent
+            # every chart to the Alpaca free feed with no signal that anything
+            # was wrong.
+            schwab_bar_clients = _schwab_market_clients()
+            schwab_client = schwab_bar_clients[0] if schwab_bar_clients else SchwabClient()
             chart_source = "Schwab/TOS API"
             schwab_chart_error = ""
             frame = pd.DataFrame()
@@ -9389,15 +12733,61 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     # paint still comes from the 2-day fast_start build; this
                     # deep tape lands via the background refresh and recency
                     # refreshes splice onto it instead of replacing it.
+                    # A recency pass used to fetch a FIXED 2 days, which
+                    # cannot bridge a gap wider than that: the splice leaves a
+                    # hole, the tape reads as behind the market, and the symbol
+                    # escalates to the ~150s FULL rebuild instead.
+                    #
+                    # Measured 2026-08-22 on the live box: KR, disk cache 112h
+                    # old, first paint 0.05s but STILL historyLoading after
+                    # 152s. 272 of 398 cached tickers were over 24h stale, the
+                    # oldest 206h - so this is the normal case for anything
+                    # outside the hot set, not an edge case. It is what the
+                    # trader sees as "new tickers take more than 30 seconds".
+                    #
+                    # Fetch the gap we actually have to close instead, clamped
+                    # to the same 30-day window the deep tape already uses, so
+                    # even a 200-hour-old cache costs one bounded request.
                     frame = schwab_client.get_chart_bars(
                         target,
                         timeframe="1Min",
-                        days_back=2 if fast_start else 30,
+                        days_back=self._chart_recency_lookback_days(target) if fast_start else 30,
                     )
                 except Exception as exc:
                     schwab_chart_error = str(exc)
             else:
                 schwab_chart_error = "Schwab/TOS is not connected."
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                # Before conceding to Alpaca, try the OTHER configured Schwab
+                # profile. `configured` only proves a credential is present,
+                # not that Schwab accepts it, so a corrupted market-data secret
+                # lands here with an empty frame while the trading profile is
+                # perfectly able to serve the same bars (measured 2026-08-27:
+                # market_data 0 NVDA 1-min bars over 8h, trading 196). Taking
+                # the sparse Alpaca free feed instead is what left every chart
+                # stopping at 04:00 with a live price line hours to its right.
+                for spare in schwab_bar_clients[1:]:
+                    try:
+                        retry = spare.get_chart_bars(
+                            target,
+                            timeframe="1Min",
+                            days_back=self._chart_recency_lookback_days(target) if fast_start else 30,
+                        )
+                    except Exception as exc:
+                        schwab_chart_error = str(exc)
+                        continue
+                    if isinstance(retry, pd.DataFrame) and not retry.empty:
+                        frame = retry
+                        schwab_chart_error = ""
+                        # Say WHICH feed answered. Ganesh diagnosed the dead
+                        # market-data credential himself by reading this label
+                        # ("it should be TOS api key?"), so a label that still
+                        # claimed Alpaca while the trading profile was actually
+                        # serving would have cost him that. Same lesson as every
+                        # other status field this week: report what happened,
+                        # not what the code set out to do.
+                        chart_source = "Schwab/TOS API (spare profile)"
+                        break
             if not isinstance(frame, pd.DataFrame) or frame.empty:
                 # Expired/missing Schwab tokens must not blank the charts:
                 # fall back to the owner's Alpaca key, mirroring the option
@@ -9406,6 +12796,21 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 if isinstance(fallback, pd.DataFrame) and not fallback.empty:
                     frame = fallback
                     chart_source = "Alpaca candles (Schwab/TOS fallback)"
+            # Schwab's current day starts at 07:00 ET; Tradier patches the
+            # 04:00-07:00 premarket hole so the chart and the scanner both
+            # see the candles the trader sees on TOS.
+            #
+            # The candles-first PAINT (skip_studies) skips both backfills. They
+            # are two Alpaca network calls (premarket SIP + overnight BOATS) that
+            # measured ~19s of a cold ticker's ~20s paint on 2026-08-28 while the
+            # raw 2-day fetch was only 0.4s - so they were the whole reason a
+            # cold chart sat on a blank "warming" screen for the full build
+            # instead of showing candles in ~2s. The paint now returns regular-
+            # hours candles immediately; the full build below (skip_studies=
+            # False) fills the premarket/overnight session in a moment later.
+            if not skip_studies:
+                frame = self._backfill_today_premarket(frame, target, interval="1min")
+                frame = self._backfill_overnight_session(frame, target, interval="1min")
             # The 4-hour 9×20 EMA needs materially more than the seven days
             # of one-minute candles used by the visible chart.  Keep a longer
             # 5-minute history exclusively for the supplied MTF studies, and
@@ -9532,6 +12937,19 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                             if isinstance(deep_study, pd.DataFrame) and not deep_study.empty
                             else long_history
                         )
+                        # The MTF signal engine reads THIS tape, not the 1-min
+                        # frame, so without its own patch the 06:00-07:00
+                        # scanner hour computes CALL2H/CALL4H on a day that
+                        # starts at 07:00 (Schwab's current-day floor). Tradier
+                        # has no 30min interval; 15min rows merge fine -- the
+                        # engine resamples by bucket, so mixed cadence
+                        # aggregates correctly.
+                        study_frame = self._backfill_today_premarket(
+                            study_frame, target, interval="15min",
+                        )
+                        study_frame = self._backfill_overnight_session(
+                            study_frame, target, interval="15min",
+                        )
                         history_cache[target] = {
                             "cached_at": now_et,
                             "frame": long_history,
@@ -9544,6 +12962,17 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                                 deep_study
                                 if isinstance(deep_study, pd.DataFrame) and not deep_study.empty
                                 else (cached_history.get("deep_study_frame"))
+                            ),
+                            # Same preservation for the 60-day FIVE-minute
+                            # tape that 3m/5m/10m/15m are built from. "frame"
+                            # already holds it, but that key is overwritten by
+                            # whatever this pass fetched, so keep the deepest
+                            # one seen under its own name - exactly as
+                            # deep_study_frame does for the 30-minute tape.
+                            "fine_study_frame": (
+                                long_history
+                                if isinstance(long_history, pd.DataFrame) and not long_history.empty
+                                else (cached_history.get("fine_study_frame"))
                             ),
                         }
                         # Retain only the currently used small history cache.
@@ -9588,11 +13017,196 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     )
             if not isinstance(study_frame, pd.DataFrame) or study_frame.empty:
                 study_frame = signal_frame if isinstance(signal_frame, pd.DataFrame) and not signal_frame.empty else frame
-            mtf_payload = _tos_mtf_ema_signal_payload(study_frame)
-            watchlist_mtf_payload = _tos_watchlist_mtf_signal_payload(study_frame)
+            if skip_studies:
+                # First-paint contract: candles only. The MTF replay is the
+                # single most expensive piece of a build (pandas resample over
+                # the whole study frame), and the cold first paint exists to
+                # put bars on screen in seconds - the full build that always
+                # follows recomputes every study and replaces this payload.
+                mtf_payload = {"signals": [], "states": [], "mode": "tos_secondary_bucket_projection", "pending": True}
+                mtf_signals_by_timeframe = None
+                watchlist_mtf_payload = {"states": []}
+                # The full build computes this from the MTF source tape; the
+                # paint has no study tape, so declare zero sessions. Without it,
+                # payload assembly's int(mtf_sessions) below raised
+                # UnboundLocalError and the ENTIRE paint returned an empty error
+                # payload (bars=0) - the real reason the candles-first paint
+                # never put candles on screen and cold charts stayed blank until
+                # the full build finished (root-caused 2026-08-28).
+                mtf_sessions = 0
+            else:
+                # The label engine reads what the trader's TOS 5m chart reads:
+                # the five-minute tape (prior nights' overnight bars included)
+                # with the one-minute live tail on top, so a 2H/4H cross fires
+                # on the 5m candle where TOS prints it. The 30-minute study
+                # tape (2026-08-24: labels only on :00/:30, a CALL2H TOS showed
+                # at 09:10 missing) is only the fallback when no 5m tape exists.
+                # Fast-start builds carry a one-day minute tape; the 30-day
+                # one-minute history the last full build cached (signal_frame)
+                # gives the engine its five sessions on those builds too, with
+                # the fresh tape appended last so its live candles win.
+                minute_source = frame
+                if (
+                    isinstance(signal_frame, pd.DataFrame) and not signal_frame.empty
+                    and isinstance(frame, pd.DataFrame) and not frame.empty
+                    and {"timestamp", "close"} <= set(signal_frame.columns)
+                    and {"timestamp", "close"} <= set(frame.columns)
+                    and len(signal_frame) > len(frame)
+                ):
+                    minute_source = pd.concat(
+                        [signal_frame[["timestamp", "close"]], frame[["timestamp", "close"]]],
+                        ignore_index=True,
+                    )
+                # The 60-day 5m tape is the engine's base (prior days'
+                # 04:00-07:00 premarket and 20:00-04:00 nights live only
+                # there). A fast-start build may not call the broker on a
+                # COLD ticker's first paint, but once the symbol has a
+                # cached chart the one 30-minute-TTL fetch is worth it:
+                # without it every recency build after a restart ran the
+                # studies on a premarket-less short tape and printed a
+                # different label set than the deep build (META 2026-08-24
+                # 22:20 ET: no 2H bubbles at all).
+                fine_source = self._fine_study_cached_frame(target)
+                if (fine_source is None or fine_source.empty) and (
+                    not fast_start or bool(self.oi_finder_chart_cache.get(target))
+                ):
+                    fine_source = self._fine_study_chart_frame(target)
+                mtf_source = self._tos_chart_mtf_source_frame(
+                    fine_source,
+                    minute_source,
+                    study_frame,
+                )
+                # Diagnostic: drop `artifacts/mtf_debug_dump.flag` in place to
+                # capture the exact tape the label engine saw for a symbol.
+                try:
+                    _debug_dir = Path(__file__).resolve().parent / "artifacts"
+                    if (_debug_dir / "mtf_debug_dump.flag").exists():
+                        mtf_source.to_csv(_debug_dir / f"mtf_debug_{target}.csv", index=False)
+                        for _name, _frame in (("fine", self._fine_study_cached_frame(target)), ("minute", frame)):
+                            if isinstance(_frame, pd.DataFrame) and not _frame.empty:
+                                _frame.to_csv(_debug_dir / f"mtf_debug_{target}_{_name}.csv", index=False)
+                except Exception:
+                    pass
+                # The TOS chart seeds its EMAs five sessions back. A fast-start
+                # build (one-day minute tape, 5m cache still cold after a
+                # restart) would seed every EMA THIS morning and print a flip
+                # on nearly every candle (META 2026-08-24 19:37 ET: 93 labels,
+                # 1H/2H/4H all turning together every five minutes). Emit no
+                # labels from such a tape; the client keeps the last good set
+                # and the full build that follows replaces it.
+                mtf_sessions = 0
+                if isinstance(mtf_source, pd.DataFrame) and not mtf_source.empty and "timestamp" in mtf_source.columns:
+                    mtf_sessions = int(
+                        pd.to_datetime(mtf_source["timestamp"], utc=True, errors="coerce")
+                        .dt.tz_convert(EASTERN_TZ).dt.date.nunique()
+                    )
+                last_good_mtf = getattr(self, "_oi_finder_last_good_mtf", None)
+                if not isinstance(last_good_mtf, dict):
+                    last_good_mtf = {}
+                    self._oi_finder_last_good_mtf = last_good_mtf
+                # Same tapes in, same labels out. The replay below is nine
+                # passes of _tos_mtf_ema_signal_payload over the 60-day 5m
+                # tape plus the watchlist pass, and py-spy put ~47% of
+                # api_server CPU in it on 2026-08-31. A refresh that arrives
+                # between two one-minute bars - the 30s poll, the ~100s hot
+                # sweep, a forced refresh - recomputes all of it for an answer
+                # that cannot differ. The key covers every tape the engines
+                # read, so a hit returns exactly what a recompute would.
+                memo_key = (
+                    self._mtf_study_memo_key(
+                        target, mtf_source, frame, daily_frame, study_frame,
+                    )
+                    if mtf_sessions >= TOS_CHART_SESSION_DAYS
+                    else None
+                )
+                memo_hit = self._mtf_study_memo_get(memo_key)
+                # The key fingerprints the newest close, so every new minute
+                # misses by construction and the hot-set refresher replays the
+                # whole engine for ~10 symbols nobody is looking at, once a
+                # minute each. Measured 2026-09-04 08:32 ET: api_server at 94%
+                # of a core, ~28% of samples in this replay, SPY's tape 7 min
+                # behind and 39 recency refreshes "presumed wedged" in 30 min.
+                # A symbol NO client is polling (the 120s interactive window)
+                # keeps its last labels for up to ten minutes instead; a chart
+                # that is actually open still replays exactly as before.
+                reused_unwatched = False
+                if memo_hit is None and memo_key is not None:
+                    remembered = last_good_mtf.get(target)
+                    if (
+                        remembered
+                        and "watchlist" in remembered
+                        and time.time() - float(remembered.get("at") or 0.0)
+                        < OI_FINDER_MTF_UNWATCHED_REPLAY_SECONDS
+                        and not self._chart_symbol_is_interactive(target)
+                    ):
+                        memo_hit = (
+                            remembered["payload"],
+                            remembered["by_timeframe"],
+                            remembered["watchlist"],
+                        )
+                        reused_unwatched = True
+                if memo_hit is not None:
+                    mtf_payload, mtf_signals_by_timeframe, watchlist_mtf_payload = memo_hit
+                    if not reused_unwatched:
+                        last_good_mtf[target] = {
+                            "payload": mtf_payload,
+                            "by_timeframe": mtf_signals_by_timeframe,
+                            "watchlist": watchlist_mtf_payload,
+                            "at": time.time(),
+                        }
+                elif mtf_sessions < TOS_CHART_SESSION_DAYS:
+                    # Too short a tape for the TOS studies: serve the last
+                    # good label set for this symbol (a quick rebuild must
+                    # never blank or degrade the chart), else mark pending.
+                    remembered = last_good_mtf.get(target)
+                    if remembered:
+                        mtf_payload = remembered["payload"]
+                        mtf_signals_by_timeframe = remembered["by_timeframe"]
+                    else:
+                        mtf_payload = {"signals": [], "states": [], "mode": "tos_final_secondary_5m", "pending": True}
+                        mtf_signals_by_timeframe = None
+                    watchlist_mtf_payload = _tos_watchlist_mtf_signal_payload(study_frame)
+                else:
+                    mtf_payload = _tos_mtf_ema_signal_payload(mtf_source, daily_frame=daily_frame)
+                    # TOS evaluates the study once per CHART bar, so a 15m or
+                    # 1H chart shows fewer flips than the 5m chart and never a
+                    # pair shorter than its own bars. One label set per chart
+                    # timeframe the workstation offers; 3m comes off the
+                    # one-minute tape.
+                    mtf_signals_by_timeframe = {}
+                    for chart_minutes in self.OI_CHART_MTF_SIGNAL_TIMEFRAMES:
+                        if chart_minutes == 5:
+                            per_chart = mtf_payload
+                        else:
+                            per_chart = _tos_mtf_ema_signal_payload(
+                                frame if chart_minutes < 5 else mtf_source,
+                                bar_minutes=chart_minutes,
+                                daily_frame=daily_frame,
+                            )
+                        mtf_signals_by_timeframe[str(chart_minutes)] = per_chart["signals"]
+                    watchlist_mtf_payload = _tos_watchlist_mtf_signal_payload(study_frame)
+                    last_good_mtf[target] = {
+                        "payload": mtf_payload,
+                        "by_timeframe": mtf_signals_by_timeframe,
+                        "watchlist": watchlist_mtf_payload,
+                        "at": time.time(),
+                    }
+                    if len(last_good_mtf) > 64:
+                        for stale_key in list(last_good_mtf)[:-64]:
+                            last_good_mtf.pop(stale_key, None)
+                    self._mtf_study_memo_put(
+                        memo_key, mtf_payload, mtf_signals_by_timeframe, watchlist_mtf_payload,
+                    )
             # Column-wise zip serialization: iterrows() on a 13k-row frame
             # burned seconds of CPU per build; zip keeps it in milliseconds.
-            bars_tail = frame.tail(28000) if frame is not None and not frame.empty else None
+            # The client caps the one-minute live tape at 12,000 bars
+            # (OI_CHART_LIVE_TAPE_MAX_BARS) and discards the rest, so sending
+            # ~28,000 shipped ~1.6MB of one-minute bars that were parsed and
+            # immediately thrown away on every chart load. Match the client cap
+            # with a small margin. 3m still builds from this tape (fineStudyBars
+            # is 5-minute, too coarse for 3m), and 12,500 one-minute bars is
+            # ~4,100 three-minute candles - ample.
+            bars_tail = frame.tail(12500) if frame is not None and not frame.empty else None
             bars = [
                 {
                     "time": int(ts.timestamp()),
@@ -9652,12 +13266,88 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     study_tail["low"], study_tail["close"], study_tail["volume"],
                 )
             ] if not study_tail.empty else []
+            # studyBars is contractually a 30-MINUTE tape. Enforce that here
+            # rather than trusting the provider to have honoured the cadence in
+            # the request: _alpaca_fallback_chart_bars answered a "30Min" ask
+            # with ONE-minute bars, and the deep pull pairs that cadence with a
+            # 7300-day lookback, so the tape arrived as twenty years of minute
+            # data (AAPL 594,766 rows vs an intended ~13,000 - 97.9% of a 60 MB
+            # payload). The fetch bug is fixed, but a tape that is too fine is
+            # cheap to fold and catastrophic to store, so fold it. Already-30m
+            # tapes return unchanged.
+            study_bars = chart_aggregation.normalize_study_tape(study_bars)
+            # FIVE-MINUTE study tape for 3m/5m/10m/15m.
+            #
+            # studyBars above is a 30-minute tape chosen for 4H depth, and 30m
+            # cannot reconstruct a 5m candle - so those timeframes were built
+            # from the 1-minute live tape, which the client caps for render
+            # cost. The result was a 5m chart that could not be panned back
+            # past ~1-2 weeks.
+            #
+            # This costs NO extra broker call: the 60-day 5-minute frame is
+            # already fetched above (long_history) and cached, for the MTF
+            # signal frame and as the studyBars fallback. Serialising it is
+            # the whole change.
+            # signal_frame is only assigned the 5-minute frame on the cold
+            # fetch path; on a warm cache it can be unset, which shipped an
+            # empty tape. Take the first usable source explicitly: the cache
+            # entry IS the 60-day 5-minute frame (history_cache[...]["frame"]
+            # = long_history), so it is authoritative and always present once
+            # a symbol has been built.
+            # Read the 60-day five-minute frame straight from the symbol's
+            # history cache. The local variables here (signal_frame,
+            # long_history, the cached_history snapshot) are only populated on
+            # the cold-fetch branch, so on a warm build they were all unset and
+            # the tape shipped empty - measured, not assumed.
+            # FIVE-minute tape for 3m/5m/10m/15m. studyBars is 30-minute
+            # (chosen for 4H depth) and cannot reconstruct a 5m candle, so
+            # these timeframes previously had only the render-capped
+            # one-minute tape - about two weeks - to draw from.
+            #
+            # Fetched through its own cached helper rather than reused from the
+            # build path: three attempts to reuse an in-flight frame all
+            # measured empty, because the cold-fetch block does not always run
+            # and its result is not reachable here.
+            #
+            # NEVER on the fast_start paint. That path exists to put the first
+            # candles on screen in a fraction of a second; a 60-day broker call
+            # here made a cold ticker's FIRST response take ~3s. On fast_start
+            # reuse the cached tape if one exists but do not fetch - the full
+            # build that follows fills it in.
+            fine_study_frame = (
+                self._fine_study_cached_frame(target)
+                if fast_start
+                else self._fine_study_chart_frame(target)
+            )
+            fine_study_bars = [
+                {
+                    "time": int(ts.timestamp()),
+                    "open": round(float(open_), 4),
+                    "high": round(float(high), 4),
+                    "low": round(float(low), 4),
+                    "close": round(float(close), 4),
+                    "volume": int(volume),
+                }
+                for ts, open_, high, low, close, volume in zip(
+                    fine_study_frame["timestamp"], fine_study_frame["open"],
+                    fine_study_frame["high"], fine_study_frame["low"],
+                    fine_study_frame["close"], fine_study_frame["volume"],
+                )
+            ] if (
+                isinstance(fine_study_frame, pd.DataFrame)
+                and not fine_study_frame.empty
+                and {"timestamp", "open", "high", "low", "close", "volume"} <= set(fine_study_frame.columns)
+            ) else []
             first_chart_time = bars[0]["time"] if bars else 0
             visible_signals = [
                 signal
                 for signal in mtf_payload["signals"]
                 if int(signal.get("time") or 0) >= first_chart_time
             ]
+            visible_signals_by_timeframe = {
+                key: [signal for signal in signals if int(signal.get("time") or 0) >= first_chart_time]
+                for key, signals in (mtf_signals_by_timeframe or {}).items()
+            }
             # A full history build is complete only when the minute tape spans
             # multiple sessions. A transient provider hiccup that returns a
             # single day must keep historyLoading=True so the refresh loop
@@ -9674,16 +13364,35 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     "studyBars": study_bars,
                 })
             )
-            return {
+            # Every successfully built tape votes on where the market got to.
+            # Doing this before the staleness verdict means a healthy symbol
+            # raises the bar that a stopped one is then measured against.
+            self._note_chart_market_tape(bars)
+            if mtf_signals_by_timeframe is None:
+                visible_signals_by_timeframe = None
+            payload = {
                 "symbol": target,
                 "timeframe": "1Min",
                 "source": chart_source,
                 "live": bool(bars),
                 "bars": bars,
                 "studyBars": study_bars,
+                # 60-day 5-minute tape; the source for 3m/5m/10m/15m history.
+                "fineStudyBars": fine_study_bars,
                 "dailyBars": daily_bars,
                 "fourHourCoverage": four_hour_coverage,
                 "mtfSignals": visible_signals,
+                "mtfSignalsByTimeframe": visible_signals_by_timeframe,
+                # True when this build had too short a tape to run the TOS
+                # studies; the client keeps its last good labels.
+                "mtfSignalsPending": bool(mtf_payload.get("pending")),
+                # How many sessions the labels were computed from. A quick
+                # (fast-start) build can hand the engine a one-day tape and
+                # still stamp the current mode; when the payload also carries
+                # a deep fineStudyBars tape the serve path recomputes the
+                # labels from it (MSFT 2026-08-25: a 1-day source dropped the
+                # cyan CALL4H the deep tape produces).
+                "mtfSourceSessions": int(mtf_sessions),
                 "mtfSignalStates": mtf_payload["states"],
                 "mtfSignalMode": mtf_payload["mode"],
                 "watchlistMtfStates": watchlist_mtf_payload["states"],
@@ -9692,7 +13401,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 # rendered nothing however they were toggled. Shares the same
                 # study-tape-keyed memo as the MAG7 scanner tables, so having
                 # both on costs one replay per tape, not two.
-                "ganeshHigherTimeframeSignals": self._ganesh_signal_payload_for_chart(
+                "ganeshHigherTimeframeSignals": {
+                    "schemaVersion": GANESH_SCHEMA_VERSION,
+                    "mode": GANESH_SIGNAL_MODE,
+                    "sourceAggregationMinutes": GANESH_SOURCE_AGGREGATION_MINUTES,
+                    "historyReady": False,
+                    "signals": [],
+                } if skip_studies else self._ganesh_signal_payload_for_chart(
                     study_bars, bars, daily_bars, target,
                     # Window to the visible tape exactly like mtfSignals above.
                     # Unwindowed this shipped the entire multi-year replay —
@@ -9701,6 +13416,16 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     # what made the app crawl once the studies were re-wired.
                     first_chart_time=first_chart_time,
                 ),
+                # True only on the candles-first paint: tells the client that
+                # indicators are still being computed server-side, distinct
+                # from historyLoading (which is about tape depth).
+                "studiesPending": bool(skip_studies),
+                # Why the 04:00-07:00 band is empty, when it is. Empty and
+                # unexplained is how a dead Tradier token reads as a broken
+                # chart; saying it turns a day of debugging into a Settings
+                # visit. Blank when the window filled normally.
+                "premarketGapNote": str(getattr(self, '_premarket_backfill_error', '') or ''),
+                "premarketGapState": str(getattr(self, '_premarket_backfill_state', '') or ''),
                 "historyLoading": not history_complete,
                 "error": "" if bars else (
                     f"No one-minute candles were returned for {target}. "
@@ -9709,6 +13434,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 ),
                 "updatedAt": datetime.now().astimezone().isoformat(),
             }
+            return self._apply_chart_tape_staleness(payload)
         except Exception as exc:
             return {
                 "symbol": target,
@@ -9746,8 +13472,48 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 payload = json.load(handle)
             if not isinstance(payload, dict) or not payload.get("bars"):
                 return None
+            # A payload from before the current schema is missing a tape the
+            # chart needs (fineStudyBars). Do NOT discard it: dropping it made
+            # every ticker search fall back to a cold build, and during that
+            # 30-60s rebuild the higher timeframes have almost no data - a 4H
+            # chart with a handful of candles. Stale but COMPLETE beats fresh
+            # but empty.
+            #
+            # Serve it, and flag it so the caller starts a full rebuild in the
+            # background; the chart upgrades itself without ever going blank.
+            # REPAIR ON LOAD. 130 of 399 cached symbols (629 MB of a 762 MB
+            # cache) hold a studyBars tape that was written at ONE-minute
+            # cadence by the fetch bug fixed in _alpaca_fallback_chart_bars -
+            # up to 601k rows where the 30-minute contract wants ~13k. Fixing
+            # the fetch stops NEW corruption but does nothing for what is
+            # already on disk, and the disk copy is re-hydrated on every boot
+            # and cache miss, so without this the bloat simply survives.
+            #
+            # Folding here (rather than in a separate offline script) means
+            # each file heals the first time it is read and the next ordinary
+            # save writes the small version - no stopped-server sweep, and no
+            # race with a running process holding the big tape in memory, which
+            # is what silently undid the 2026-08-24 TSLA repair.
+            #
+            # A healthy tape costs only a spacing probe over 240 rows; a
+            # corrupt one pays a one-off fold (~3s for 594k rows, measured) and
+            # is then small forever.
+            study_bars = payload.get("studyBars")
+            if study_bars:
+                folded = chart_aggregation.normalize_study_tape(study_bars)
+                if len(folded) < len(study_bars):
+                    print(
+                        f"[study-fold] {str(symbol).upper():<6} disk "
+                        f"{len(study_bars)} -> {len(folded)} rows "
+                        f"(1-minute tape from the pre-fix fetch)",
+                        flush=True,
+                    )
+                    payload = {**payload, "studyBars": folded}
             return {
                 **payload,
+                "payloadSchemaStale": (
+                    int(payload.get("payloadSchema") or 0) < OI_FINDER_CHART_PAYLOAD_SCHEMA
+                ),
                 "diskCached": True,
                 "diskCacheAgeSeconds": round(age_seconds, 2),
             }
@@ -9764,12 +13530,92 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         path = self._oi_finder_chart_disk_path(symbol)
         if path is None:
             return
+        # A build that came back WITHOUT the 20-year archive must never land
+        # on a file that has one. Measured 2026-08-18: MSFT went from
+        # 784,645 B / 13,397 studyBars to 58,704 B / 1,874 in a single write,
+        # which dropped the 4H pane to 11 candles and D to 3 until a full
+        # rebuild finished minutes later. Keeping the old file costs only the
+        # newest minutes: the loader returns the whole payload even when it
+        # judges it not ready, so the deep tapes keep feeding 4H/D meanwhile.
+        if not self._chart_payload_has_twenty_year_four_hour_archive(payload):
+            existing = self._load_oi_finder_chart_disk_payload(symbol)
+            if existing is not None and self._chart_payload_has_twenty_year_four_hour_archive(existing):
+                print(
+                    f"[chart-cache] kept {symbol} 20-year archive; "
+                    f"incoming build had {len(payload.get('studyBars') or [])} study bars "
+                    f"vs {len(existing.get('studyBars') or [])} on disk",
+                    flush=True,
+                )
+                return
         temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with gzip.open(temporary, "wt", encoding="utf-8", compresslevel=5) as handle:
-                json.dump(payload, handle, separators=(",", ":"), default=str)
+            stamped = {**payload, "payloadSchema": OI_FINDER_CHART_PAYLOAD_SCHEMA}
+            # Encode to bytes, THEN compress. The obvious streaming form
+            # (gzip.open("wt") + json.dump) is 2.5-3x slower for identical
+            # output: writing to a text-mode file makes json.dump fall back to
+            # the pure-Python iterencode, which holds the GIL for the whole
+            # 4.5MB payload. json.dumps uses the C encoder, and zlib releases
+            # the GIL inside gzip.compress. Measured 2026-08-22 on a real
+            # 4.2MB payload: 0.869s streaming vs 0.275-0.305s buffered, with
+            # this writer accounting for ~24% of the server's GIL-held CPU
+            # (json.iterencode alone was 24.4%).
+            # 97.3% of these saves change nothing but updatedAt (7,769 of
+            # 7,984 recency splices logged "+0" over 12.5h). Rather than
+            # re-gzip 4MB to rewrite a 32-character timestamp, fingerprint the
+            # content and skip the write when it matches the last one.
+            #
+            # The fingerprint is a hash of the EXACT bytes we would write,
+            # minus updatedAt - not a cheap structural summary. A bar-count or
+            # newest-bar-time fingerprint is unsafe during RTH: the last bar's
+            # close ticks in place while the count and the timestamp both stay
+            # put, and the signal blocks can change with no bar change at all.
+            # A summary that missed either would freeze this symbol's final
+            # candle and its signals for the rest of the session - the exact
+            # failure the comments at the top of this method exist to prevent.
+            # Hashing the real bytes cannot produce a false skip by
+            # construction; it only costs one extra encode of a payload we
+            # were going to encode anyway.
+            #
+            # Measured on a real 8.75MB payload: encode 210ms, gzip 180ms,
+            # hash 18ms. So an unchanged save pays 228ms instead of 390ms and
+            # does no disk I/O at all.
+            fingerprints = getattr(self, "_oi_finder_chart_disk_fingerprints", None)
+            if not isinstance(fingerprints, dict):
+                fingerprints = {}
+                self._oi_finder_chart_disk_fingerprints = fingerprints
+            cache_key = str(path)
+            body = dict(stamped)
+            body.pop("updatedAt", None)
+            encoded_body = json.dumps(body, separators=(",", ":"), default=str).encode("utf-8")
+            fingerprint = hashlib.blake2b(encoded_body, digest_size=16).digest()
+            if (
+                fingerprints.get(cache_key) == fingerprint
+                and path.exists()
+                # Only a CURRENT tape may claim freshness. The warmer
+                # (_warmer_cache_is_current) and the 5-day disk expiry both
+                # judge a cache by its file mtime, and the skip below bumps
+                # that mtime with os.utime. For a tape that has fallen behind
+                # the market, content staying identical is exactly the symptom
+                # of a symbol that is NOT being caught up - bumping its mtime
+                # would tell the warmer "rebuilt this session" and it would be
+                # skipped forever. So a stale tape falls through and rewrites,
+                # which keeps its timestamp honest and lets the warmer see it.
+                and not bool(payload.get("tapeStale"))
+            ):
+                # Fresh content, unchanged: skip the 180ms gzip and the disk
+                # write, but still bump mtime so the warmer does not read this
+                # symbol as stale and escalate it to a FULL rebuild - trading a
+                # 390ms write for a multi-minute one.
+                try:
+                    os.utime(path, None)
+                    return
+                except OSError:
+                    pass  # could not touch it; fall through and rewrite
+            encoded = json.dumps(stamped, separators=(",", ":"), default=str).encode("utf-8")
+            temporary.write_bytes(gzip.compress(encoded, compresslevel=5))
             os.replace(temporary, path)
+            fingerprints[cache_key] = fingerprint
         except OSError:
             try:
                 temporary.unlink(missing_ok=True)
@@ -9814,6 +13660,110 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             and isinstance(contract.get("signals"), list)
         )
 
+    # The TOS MTF label engine's current contract. A cached payload built by
+    # an older engine (2026-08-24 had four in one night) is complete chart
+    # history but its labels are not the ones the trader compares with TOS.
+    OI_CHART_MTF_ENGINE_MODE = "tos_final_secondary_5m"
+
+    @staticmethod
+    def _fine_tape_session_span(payload: dict | None) -> int:
+        fine = (payload or {}).get("fineStudyBars") or []
+        if not isinstance(fine, list) or not fine:
+            return 0
+        try:
+            days = {
+                datetime.fromtimestamp(int(bar.get("time") or 0) + 4 * 3600, tz=ZoneInfo(EASTERN_TZ)).date()
+                for bar in fine if int(bar.get("time") or 0) > 0
+            }
+        except (TypeError, ValueError, OverflowError, OSError):
+            return 0
+        return len(days)
+
+    @classmethod
+    def _chart_payload_has_current_mtf_labels(cls, payload: dict | None) -> bool:
+        source = payload or {}
+        if not (
+            str(source.get("mtfSignalMode") or "") == cls.OI_CHART_MTF_ENGINE_MODE
+            and not source.get("mtfSignalsPending")
+            and isinstance(source.get("mtfSignalsByTimeframe"), dict)
+        ):
+            return False
+        # Labels computed from fewer sessions than the deep tape the payload
+        # carries are not the deep-tape labels: force a recompute. A payload
+        # with no mtfSourceSessions stamp predates this fix - treat it as 0 so
+        # any old cache with a deep fine tape is recomputed once on load.
+        try:
+            source_sessions = int(source.get("mtfSourceSessions") or 0)
+        except (TypeError, ValueError):
+            source_sessions = 0
+        if source_sessions >= TOS_CHART_SESSION_DAYS:
+            return True
+        # Short-source labels are acceptable only when the payload has no
+        # deeper tape to recompute from; otherwise force the recompute.
+        return cls._fine_tape_session_span(source) < TOS_CHART_SESSION_DAYS
+
+    def _refresh_mtf_block_from_payload_tapes(self, target: str, payload: dict) -> bool:
+        """Recompute the TOS MTF labels from the tapes a cached payload already
+        holds (60-day 5m + 1-min), in-process, in well under a second.
+
+        Used when a disk/memory payload predates the current engine: the
+        trader sees the current engine's labels immediately instead of the
+        old set until the queued full rebuild (which also adds the overnight
+        session) replaces them. Returns False when the tapes are too short.
+        """
+        try:
+            def to_frame(rows: object) -> pd.DataFrame:
+                frame = pd.DataFrame(rows if isinstance(rows, list) else [])
+                if frame.empty or "time" not in frame.columns:
+                    return pd.DataFrame()
+                frame["timestamp"] = pd.to_datetime(frame["time"], unit="s", utc=True).dt.tz_convert(EASTERN_TZ)
+                return frame
+
+            fine = to_frame(payload.get("fineStudyBars"))
+            minute = to_frame(payload.get("bars"))
+            daily = to_frame(payload.get("dailyBars"))
+            if fine.empty and minute.empty:
+                return False
+            source = self._tos_chart_mtf_source_frame(fine, minute, pd.DataFrame())
+            if source is None or source.empty:
+                return False
+            sessions = int(
+                pd.to_datetime(source["timestamp"], utc=True, errors="coerce")
+                .dt.tz_convert(EASTERN_TZ).dt.date.nunique()
+            )
+            if sessions < TOS_CHART_SESSION_DAYS:
+                return False
+            mtf_payload = _tos_mtf_ema_signal_payload(source, daily_frame=daily)
+            by_timeframe = {}
+            for chart_minutes in self.OI_CHART_MTF_SIGNAL_TIMEFRAMES:
+                if chart_minutes == 5:
+                    per_chart = mtf_payload
+                else:
+                    per_chart = _tos_mtf_ema_signal_payload(
+                        minute if (chart_minutes < 5 and not minute.empty) else source,
+                        bar_minutes=chart_minutes,
+                        daily_frame=daily,
+                    )
+                by_timeframe[str(chart_minutes)] = per_chart["signals"]
+            bars = payload.get("bars") or []
+            first_chart_time = int(bars[0].get("time") or 0) if bars else 0
+            payload["mtfSignals"] = [
+                signal for signal in mtf_payload["signals"] if int(signal.get("time") or 0) >= first_chart_time
+            ]
+            payload["mtfSignalsByTimeframe"] = {
+                key: [signal for signal in signals if int(signal.get("time") or 0) >= first_chart_time]
+                for key, signals in by_timeframe.items()
+            }
+            payload["mtfSignalStates"] = mtf_payload["states"]
+            payload["mtfSignalMode"] = mtf_payload["mode"]
+            payload["mtfSignalsPending"] = False
+            last_good = getattr(self, "_oi_finder_last_good_mtf", None)
+            if isinstance(last_good, dict):
+                last_good[str(target).upper()] = {"payload": mtf_payload, "by_timeframe": by_timeframe}
+            return True
+        except Exception:
+            return False
+
     def _upgrade_cached_ganesh_signal_tape(self, target: str) -> dict | None:
         """Rebuild a missing/stale D..M tape from already-persisted bars.
 
@@ -9851,25 +13801,95 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         payload["historyLoading"] = False
         return payload
 
-    def _refresh_oi_finder_chart_payload(self, target: str, full_history: bool) -> None:
+    def _refresh_oi_finder_chart_payload(
+        self,
+        target: str,
+        full_history: bool,
+        release: bool = True,
+        skip_studies: bool = False,
+        release_token=None,
+    ) -> None:
+        # release=False keeps the in-flight guard held across a two-phase
+        # refresh (recency pass then deep rebuild); dropping it between the
+        # phases would let a second refresh start for the same ticker.
         try:
-            full_refresh_lock = getattr(self, "oi_finder_chart_full_refresh_lock", None)
-            if full_history and full_refresh_lock is not None:
+            build_lane = getattr(self, "oi_finder_chart_build_lane", None)
+            if full_history and build_lane is not None:
                 # Indicator replay is CPU-heavy Python work. One lane prevents
                 # several chart panels from freezing the browser/backend at
                 # once while still allowing lightweight recency refreshes.
-                with full_refresh_lock:
+                # The lane is priority-aware (ChartBuildLane): watched panes
+                # jump abandoned kicks. on_wait keeps the in-flight guard's
+                # progress fresh while queued, so a long line is never
+                # mistaken for a wedge.
+                build_lane.acquire(
+                    target,
+                    on_wait=(
+                        (lambda: self._note_chart_refresh_progress(target, release_token))
+                        if release_token is not None
+                        else None
+                    ),
+                )
+                try:
+                    if release_token is not None:
+                        self._note_chart_refresh_progress(target, release_token)
                     payload = self._upgrade_cached_ganesh_signal_tape(target)
                     if payload is None:
                         payload = self._build_oi_finder_chart_payload(target, fast_start=False)
+                finally:
+                    build_lane.release()
             else:
+                # Stamp progress on BOTH sides of the tail build, the way the
+                # deep arm above does. Before 2026-09-22 the recency arm never
+                # stamped, so the guard still carried the SUBMISSION time while
+                # the job sat in the pool queue: a perfectly healthy tail pass
+                # that waited 181s was declared wedged and replaced, and the
+                # replacement joined the same queue behind it. The wedge ages
+                # clustered at 204-210s - queue wait, not a stalled thread.
+                if release_token is not None:
+                    self._note_chart_refresh_progress(target, release_token)
+                _recency_started = time.perf_counter()
                 payload = self._build_oi_finder_chart_payload(
                     target,
                     fast_start=not full_history,
+                    skip_studies=skip_studies,
                 )
+                if release_token is not None:
+                    self._note_chart_refresh_progress(target, release_token)
+                if not skip_studies:
+                    # The tail build's own duration was measured NOWHERE before
+                    # this incident ([build-timing] covered paint and full
+                    # only), so the p99 the whole deadline turns on could only
+                    # be inferred from request latency. One line per tail build.
+                    print(
+                        f"[build-timing] {target:6s} recency {time.perf_counter() - _recency_started:6.2f}s "
+                        f"bars={len((payload or {}).get('bars') or [])}",
+                        flush=True,
+                    )
+                if payload.get("mtfSignalsPending") and not skip_studies:
+                    # A recency build could not run the TOS studies (the 5m
+                    # and 30-day caches are cold after a restart, and the disk
+                    # cache is "ready" so nothing else asks for a deep build).
+                    # Queue one deep build so the labels come back on their
+                    # own instead of staying pending until a browser deep pull.
+                    threading.Timer(
+                        3.0,
+                        lambda: self._start_oi_finder_chart_refresh(target, full_history=True),
+                    ).start()
             if payload.get("bars"):
+                # Read the cached entry under the lock, then RELEASE it for the
+                # splice. The merge below walks 12,500 live bars and rebuilds a
+                # 5,027-row daily dict, then re-judges staleness - pure Python,
+                # and it used to run under oi_finder_chart_lock on every
+                # background refresh. With six refreshes in flight every chart
+                # request on every symbol parked at the lock: measured
+                # 2026-08-19, a 19KB initial-paint payload took 8.3s while the
+                # raw work for a chart hit is ~1.1s. The lock guards the cache
+                # dict, not the arithmetic; last writer wins on the store, and
+                # every refresh carries the newest bars, so that is correct.
                 with self.oi_finder_chart_lock:
                     cached = self.oi_finder_chart_cache.get(target)
+                if True:  # splice + staleness run OUTSIDE the lock
                     if not full_history and cached and cached.get("history_ready"):
                         # A recency refresh fetches only ~2 days of bars. Splice
                         # them onto the cached deep tape instead of replacing it,
@@ -9883,11 +13903,42 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                             payload["bars"] = [
                                 bar for bar in old_bars if bar["time"] < first_new_time
                             ] + new_bars
-                        old_study = previous.get("studyBars") or []
+                        # Fold the HELD tape before comparing lengths. This
+                        # comparison is a ratchet: it keeps whichever tape has
+                        # more rows, and a 1-minute tape written by the old
+                        # fetch bug has ~27x more rows than the correct
+                        # 30-minute one, so a corrupt in-memory copy would win
+                        # every splice forever and re-poison each fresh build.
+                        # Normalising first makes the comparison mean what it
+                        # was written to mean - more HISTORY, not finer grain.
+                        old_study = chart_aggregation.normalize_study_tape(
+                            previous.get("studyBars") or []
+                        )
                         if len(old_study) > len(payload.get("studyBars") or []):
-                            # The deep 30-min tape only ships with full builds;
-                            # never let a recency refresh erase it.
-                            payload["studyBars"] = old_study
+                            # The deep 30-min tape only ships with full builds,
+                            # so never let a recency refresh ERASE it - but do
+                            # not let it FREEZE either. Handing the old tape
+                            # back verbatim is what left every symbol's MTF
+                            # state hours behind its candles once the
+                            # full-rebuild storm stopped supplying accidental
+                            # refreshes (2026-08-21: IONQ 4H reading yesterday's
+                            # PUT while TOS showed CALL4H). payload["bars"] was
+                            # spliced just above, so it carries the merged
+                            # 1-minute tail this extends from.
+                            extended_study = chart_aggregation.extend_study_tape(
+                                old_study,
+                                payload.get("bars") or [],
+                            )
+                            # Two blind boots were spent on this fix landing in
+                            # a block that never ran, so the call site reports
+                            # itself. One line per symbol per refresh.
+                            print(
+                                f"[study-extend] {target:6s} in={len(old_study)} "
+                                f"out={len(extended_study)} "
+                                f"+{len(extended_study) - len(old_study)} branch=recency",
+                                flush=True,
+                            )
+                            payload["studyBars"] = extended_study
                         old_daily = previous.get("dailyBars") or []
                         if len(old_daily) > len(payload.get("dailyBars") or []):
                             merged_daily = {bar["time"]: bar for bar in old_daily}
@@ -9895,10 +13946,140 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                                 merged_daily[bar["time"]] = bar
                             payload["dailyBars"] = [merged_daily[key] for key in sorted(merged_daily)]
                         payload["historyLoading"] = False
+                        # A candles-first payload must never erase the signals a
+                        # full build already computed for this symbol - carry
+                        # them forward and clear the pending flag, because from
+                        # the client's point of view the studies ARE there.
+                        if payload.get("studiesPending") and (previous.get("mtfSignals") or []):
+                            for key in ("mtfSignals", "mtfSignalStates", "mtfSignalMode",
+                                        "watchlistMtfStates", "ganeshHigherTimeframeSignals"):
+                                if previous.get(key) is not None:
+                                    payload[key] = previous[key]
+                            payload["studiesPending"] = False
+                    # A studies-less payload with a cache in ANY state still
+                    # inherits the last known signals. The guard above only
+                    # covered history_ready caches, so a restarted symbol
+                    # played: 58 signals -> ZERO for the ~2 minutes of the full
+                    # rebuild -> 393 (observed on MRNA 2026-08-19 22:04, the
+                    # trader saw it as "signals are moving"). Old signals stay
+                    # visibly better than none; studiesPending stays True so
+                    # the badge is honest and the full build still replaces
+                    # them the moment it lands.
+                    if payload.get("studiesPending"):
+                        previous_any = (cached or {}).get("payload") or {}
+                        if previous_any.get("mtfSignals") or []:
+                            for key in ("mtfSignals", "mtfSignalStates", "mtfSignalMode",
+                                        "watchlistMtfStates", "ganeshHigherTimeframeSignals"):
+                                if previous_any.get(key) is not None:
+                                    payload[key] = previous_any[key]
+                    # The splice replaced the tape this payload was judged on,
+                    # so the verdict is re-taken against the merged bars.
+                    self._note_chart_market_tape(payload.get("bars"))
+                    self._apply_chart_tape_staleness(payload)
+                # No-shrink guard, the in-memory sibling of the disk one: a
+                # paint or recency payload must never bury deeper history the
+                # entry already owns. Without it, boot-order races stored
+                # 2-day tapes over 20-year archives and the 4H/D/W/M panes
+                # degraded until a full rebuild survived the lane queue
+                # (measured 2026-08-21 09:5x: TSLA memory daily=3, disk
+                # daily=4061). A COMPLETED full build replaces everything.
+                previous_depth = (cached or {}).get("payload") or {}
+                completed_full = bool(full_history) and not payload.get("historyLoading")
+                if previous_depth and not completed_full:
+                    old_bars = previous_depth.get("bars") or []
+                    new_bars = payload.get("bars") or []
+                    if old_bars and new_bars and len(old_bars) > len(new_bars):
+                        first_new_time = new_bars[0]["time"]
+                        payload["bars"] = [
+                            bar for bar in old_bars if bar["time"] < first_new_time
+                        ] + new_bars
+                    for depth_key in ("studyBars", "fineStudyBars"):
+                        old_depth = previous_depth.get(depth_key) or []
+                        if len(old_depth) > len(payload.get(depth_key) or []):
+                            # Preserve the archive, but do not FREEZE it. The
+                            # deep tape only ships with full builds, so this
+                            # branch used to hand back yesterday's tape
+                            # verbatim on every recency refresh. That was
+                            # invisible while the full-rebuild storm was
+                            # firing fulls constantly - the storm was this
+                            # tape's accidental intraday refresher, and
+                            # killing it (a858c57/8399d5f/91febbb/9323779)
+                            # removed the refresh with it.
+                            #
+                            # Measured 2026-08-21 12:27 ET: AAPL study tape at
+                            # 10:00, TSLA 09:00, MSTR 08:30, IONQ 08/20 14:30,
+                            # every 1-minute tape current to the minute. The
+                            # MTF engines aggregate 1H/2H/4H from here, so
+                            # IONQ's 4H read yesterday's PUT while TOS showed
+                            # CALL4H. Extend with the completed buckets the
+                            # merged 1-minute tape already holds.
+                            payload[depth_key] = chart_aggregation.extend_study_tape(
+                                old_depth,
+                                payload.get("bars") or [],
+                            )
+                    old_daily = previous_depth.get("dailyBars") or []
+                    if len(old_daily) > len(payload.get("dailyBars") or []):
+                        merged_daily = {bar["time"]: bar for bar in old_daily}
+                        for bar in payload.get("dailyBars") or []:
+                            merged_daily[bar["time"]] = bar
+                        payload["dailyBars"] = [merged_daily[key] for key in sorted(merged_daily)]
+                    old_ganesh = previous_depth.get("ganeshHigherTimeframeSignals") or {}
+                    new_ganesh = payload.get("ganeshHigherTimeframeSignals") or {}
+                    old_signals = old_ganesh.get("signals") if isinstance(old_ganesh.get("signals"), list) else []
+                    new_signals = new_ganesh.get("signals") if isinstance(new_ganesh.get("signals"), list) else []
+                    # A strictly worse contract must never overwrite a better
+                    # one. The ready-flag-only guard let a rebuild fed a
+                    # truncated daily tape replace DJT's 40-signal not-ready
+                    # contract with an EMPTY not-ready one (2026-08-21, peer
+                    # session's find; the old signals were unrecoverable).
+                    # Keep the old contract when the new one loses readiness
+                    # OR loses every signal it had. A terminal thin-history
+                    # verdict (historyTerminal) legitimately carries few or
+                    # zero signals and is allowed through.
+                    if (
+                        old_ganesh.get("historyReady") and not new_ganesh.get("historyReady")
+                    ) or (
+                        old_signals
+                        and not new_signals
+                        and not new_ganesh.get("historyTerminal")
+                    ):
+                        payload["ganeshHigherTimeframeSignals"] = old_ganesh
+                with self.oi_finder_chart_lock:
+                    # No-REGRESS tail guard, judged against the entry as it is
+                    # RIGHT NOW rather than the copy read before the splice.
+                    # A tail pass may now land while a deep rebuild is still
+                    # running (that is the frozen-tape fix), so the rebuild can
+                    # finish holding bars it fetched minutes earlier; storing
+                    # them verbatim would roll the served tape BACKWARDS, the
+                    # exact symptom this change exists to remove. A completed
+                    # full build skips the depth guard above, so it needs this.
+                    held_bars = (
+                        (self.oi_finder_chart_cache.get(target) or {}).get("payload") or {}
+                    ).get("bars") or []
+                    fresh_bars = payload.get("bars") or []
+                    if held_bars and fresh_bars:
+                        try:
+                            held_newest = int((held_bars[-1] or {}).get("time") or 0)
+                            fresh_newest = int((fresh_bars[-1] or {}).get("time") or 0)
+                        except (AttributeError, TypeError, ValueError):
+                            held_newest = fresh_newest = 0
+                        if fresh_newest and held_newest > fresh_newest:
+                            payload["bars"] = fresh_bars + [
+                                bar for bar in held_bars
+                                if int((bar or {}).get("time") or 0) > fresh_newest
+                            ]
                     self.oi_finder_chart_cache[target] = {
                         "cached_at": time.monotonic(),
                         "payload": payload,
                         "history_ready": not bool(payload.get("historyLoading")),
+                        # Wall-clock of the last completed FULL build; recency
+                        # stores carry it forward. _chart_entry_tape_is_current
+                        # uses it to stop holiday/halt rebuild loops.
+                        "built_at_epoch": (
+                            time.time()
+                            if full_history and not payload.get("historyLoading")
+                            else float((cached or {}).get("built_at_epoch") or 0.0)
+                        ),
                     }
                     if len(self.oi_finder_chart_cache) > OI_FINDER_CHART_WARM_LIMIT:
                         oldest = sorted(
@@ -9907,25 +14088,191 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         )[:-OI_FINDER_CHART_WARM_LIMIT]
                         for key in oldest:
                             self.oi_finder_chart_cache.pop(key, None)
-                if full_history and not payload.get("historyLoading"):
+                if not payload.get("historyLoading"):
+                    # Full builds AND recency splices both persist. When only
+                    # full builds saved, an evicted symbol's next serve loaded
+                    # a disk file frozen at the last full build -- fresh
+                    # splices completed into memory entries the 40-cap evicted
+                    # minutes later, so the trader saw tapes pinned an hour
+                    # behind while refreshes "succeeded" (2026-08-21 open).
+                    # _save_oi_finder_chart_disk_payload already refuses
+                    # partial payloads, so a 2-day fast tape cannot clobber a
+                    # deep archive: history_ready splices carry the full tape.
                     self._save_oi_finder_chart_disk_payload(target, payload)
         finally:
+            if release:
+                with self.oi_finder_chart_lock:
+                    # Both guards are swept: a refresh does not know which one
+                    # its caller took (the deep guard for a full rebuild, the
+                    # recency guard for a tail pass), and the token check makes
+                    # sweeping both exactly as safe as sweeping one.
+                    for refreshes in self._chart_refresh_guards():
+                        if isinstance(refreshes, (set, frozenset)):
+                            refreshes.discard(target)
+                            continue
+                        entry = refreshes.get(target)
+                        if entry is None:
+                            continue
+                        if release_token is None or entry[0] == release_token:
+                            # Token-checked: a thread declared wedged and
+                            # replaced must not clear its replacement's guard
+                            # when it finally dies.
+                            refreshes.pop(target, None)
+
+    def _run_oi_finder_chart_refresh(self, target: str, full_history: bool, token=None,
+                                     skip_paint: bool = False, queued_at: float | None = None) -> None:
+        """Refresh a ticker's chart cache, newest candles first.
+
+        A full rebuild replays every study and takes MINUTES (PLTR measured
+        ~15min on 2026-08-13). The request path answers from the cached payload
+        the whole time, so a ticker last built yesterday served yesterday's
+        candles for that entire window while the live quote stream drew a
+        single synthetic bar at "now" - the gap the trader sees on any
+        watchlist ticker they have not opened today. Run the cheap recency
+        pass first so today's candles land in seconds, then do the deep
+        rebuild. The recency pass leaves historyLoading set, so the client
+        keeps polling and still picks up the full tape when it arrives.
+        """
+        # Mark an on-demand full build so the watchlist warmer stands aside
+        # (see _warmer_should_wait). The decrement is in a finally: a leaked
+        # counter would make the warmer defer forever.
+        #
+        # NOT ONLY request-triggered refreshes any more. _watchlist_chart_
+        # warmer_loop still builds on its own inline path and cannot block
+        # itself, but _momx_board_chart_prewarm_cycle dispatches its cold
+        # builds through this door, so a background chore now raises the flag
+        # that means "the trader just opened a chart". Two consequences worth
+        # knowing: the prewarm defers ITSELF while its own build runs (which
+        # is wanted - it serialises), and it defers the watchlist warmer via
+        # the one arm of _warmer_should_wait that has no forced-progress
+        # floor. Bounded in practice because the prewarm runs at most one
+        # cold build per cycle and only when nothing else is building.
+        #
+        # Drop a job whose guard was replaced while it waited in the queue.
+        # The replacement is already doing this symbol's work, and the release
+        # path below would throw this job's result away anyway (its token no
+        # longer owns the guard) - so building it is pure waste, and on
+        # 2026-09-22 that waste was the whole outage: every 30s kick past the
+        # deadline appended another duplicate to an unbounded queue that then
+        # took hours of CPU to drain. Checked BEFORE the on-demand counter so a
+        # dropped job cannot make the watchlist warmer stand aside for nothing.
+        if self._chart_refresh_is_superseded(target, full_history, token):
+            self._note_chart_refresh_drop(
+                target,
+                "full" if full_history else "recency",
+                max(0.0, time.monotonic() - float(queued_at)) if queued_at is not None else 0.0,
+            )
+            return
+        counted = bool(full_history)
+        if counted:
             with self.oi_finder_chart_lock:
-                self.oi_finder_chart_refreshes.discard(target)
+                self.oi_finder_ondemand_builds = int(
+                    getattr(self, "oi_finder_ondemand_builds", 0) or 0
+                ) + 1
+        try:
+            if full_history and not skip_paint:
+                # Candles-first paint: bars only, no study replay. Measured
+                # 2026-08-19: the study replay is what kept the "cheap" pass
+                # from being cheap, so a cold ticker sat on the warming stub
+                # until the FULL build finished. With studies skipped the paint
+                # is fetch + serialize, and the full build below fills them in.
+                # skip_paint is set when the paint already ran on the paint pool.
+                _paint_started = time.perf_counter()
+                self._refresh_oi_finder_chart_payload(target, False, release=False, skip_studies=True)
+                print(f"[build-timing] {target:6s} paint {time.perf_counter() - _paint_started:6.2f}s", flush=True)
+                time.sleep(OI_FINDER_CHART_FULL_REFRESH_DEFER_SECONDS)
+            _full_started = time.perf_counter()
+            if token is None:
+                # Legacy/stub callers still invoke the two-arg form.
+                self._refresh_oi_finder_chart_payload(target, full_history)
+            else:
+                self._refresh_oi_finder_chart_payload(target, full_history, release_token=token)
+            if full_history:
+                print(f"[build-timing] {target:6s} full  {time.perf_counter() - _full_started:6.2f}s", flush=True)
+        finally:
+            if counted:
+                with self.oi_finder_chart_lock:
+                    self.oi_finder_ondemand_builds = max(0, int(
+                        getattr(self, "oi_finder_ondemand_builds", 0) or 0
+                    ) - 1)
 
     def _start_oi_finder_chart_refresh(self, target: str, full_history: bool) -> None:
+        now = time.monotonic()
+        kind = "full" if full_history else "recency"
+        deadline = (
+            OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS if full_history
+            else OI_FINDER_CHART_RECENCY_DEADLINE_SECONDS
+        )
         with self.oi_finder_chart_lock:
-            if target in self.oi_finder_chart_refreshes:
-                return
-            self.oi_finder_chart_refreshes.add(target)
-        def refresh() -> None:
-            # Yield long enough for the initial JSON response to leave the
-            # request thread before provider parsing/study replay begins.
-            if full_history:
-                time.sleep(OI_FINDER_CHART_FULL_REFRESH_DEFER_SECONDS)
-            self._refresh_oi_finder_chart_payload(target, full_history)
-
-        threading.Thread(target=refresh, name=f"oi-finder-chart-{target}", daemon=True).start()
+            # Deep rebuilds and tail passes dedupe against THEMSELVES, not
+            # against each other. A queued deep rebuild must never suppress
+            # the cheap splice that keeps the served tape current.
+            guard = (
+                self.oi_finder_chart_refreshes if full_history
+                else self._chart_recency_refreshes()
+            )
+            entry = guard.get(target)
+            if entry is not None:
+                age = now - float(entry[1])
+                if age < deadline:
+                    return
+                # No progress past the deadline: presumed wedged. Only a
+                # restart used to clear this state - NVDA sat un-refreshable
+                # for 25 minutes on 2026-08-20 with a stuck flag. Replace the
+                # guard; the old thread's release is token-checked, so if it
+                # ever wakes it cannot clear this new entry.
+                # queued= is the pool's backlog at the moment of the takeover.
+                # A single wedged symbol prints queued=0..2; a self-feeding
+                # queue (2026-09-22) prints hundreds, and that one number is
+                # the difference between "one bad ticker" and "the server is
+                # eating itself".
+                print(
+                    f"[chart-refresh] {target} {kind} presumed wedged after "
+                    f"{age:.0f}s without progress; starting replacement "
+                    f"queued={self._chart_refresh_queue_depth(full_history)}",
+                    flush=True,
+                )
+            # Unique, not the clock: a deep rebuild and a tail pass can start
+            # for the same symbol in the same monotonic tick, and a shared
+            # token would let either one's release clear the other's guard.
+            sequence = int(getattr(self, "_chart_refresh_token_seq", 0)) + 1
+            self._chart_refresh_token_seq = sequence
+            token = (kind, sequence)
+            guard[target] = [token, now]
+        # Split dispatch so the fast paint is never stuck behind a slow study
+        # build. A full-history refresh runs its ~2s candles-first paint on the
+        # priority paint pool, then hands the 9-101s study build to the bounded
+        # study pool. A recency-only refresh (no paint) goes straight to the
+        # study pool. Both pools are bounded, so a burst still queues rather than
+        # saturating the GIL.
+        if full_history:
+            def _paint_then_queue_full() -> None:
+                _paint_t0 = time.perf_counter()
+                _paint_bars = 0
+                try:
+                    self._refresh_oi_finder_chart_payload(
+                        target, False, release=False, skip_studies=True,
+                    )
+                    with self.oi_finder_chart_lock:
+                        _entry = self.oi_finder_chart_cache.get(target) or {}
+                    _paint_bars = len(((_entry.get("payload") or {}).get("bars")) or [])
+                except Exception:  # noqa: BLE001 - a failed paint must still queue the full build
+                    pass
+                # Observability: the split dropped the old paint timing line, so
+                # a slow/empty paint was invisible. One line per cold open.
+                print(f"[build-timing] {target:6s} paint  {time.perf_counter() - _paint_t0:6.2f}s bars={_paint_bars}", flush=True)
+                # Deep builds queue on their OWN single-worker pool so a 39-79s
+                # full build cannot occupy half the tail pool (2026-09-22).
+                self._chart_refresh_executor(True).submit(
+                    self._run_oi_finder_chart_refresh, target, True, token, True,
+                    time.monotonic(),
+                )
+            self.oi_finder_chart_paint_pool.submit(_paint_then_queue_full)
+        else:
+            self.oi_finder_chart_refresh_pool.submit(
+                self._run_oi_finder_chart_refresh, target, False, token,
+                False, time.monotonic(),
+            )
 
     # Browser transport contract (restored 2026-08-10 after the rebuild; the
     # 28k-line frontend already speaks it):
@@ -9941,42 +14288,416 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     # ample 4H context while remaining a small first-paint response.
     OI_CHART_INITIAL_STUDY_BAR_COUNT = 1_600
     OI_CHART_DELTA_OVERLAP_SECONDS = 180.0
+    # Chart timeframes (minutes) that get their own TOS MTF label set.
+    # Daily and above never carry intraday secondary-aggregation bubbles.
+    OI_CHART_MTF_SIGNAL_TIMEFRAMES = (3, 5, 10, 15, 30, 60, 120, 240)
+
     OI_CHART_INITIAL_SLIM_KEYS = (
         "studyBars",
+        # The 60-day 5-minute tape must not ride the slim first paint; it is
+        # history for panning, not for the first candle on screen.
+        "fineStudyBars",
         "ganeshHigherTimeframeSignals",
-        "mtfSignals",
-        "mtfSignalStates",
+        # The TOS MTF labels stay in the slim paint: they are a few KB, and a
+        # phone never auto-loads the deep payload nor issues delta pulls while
+        # it holds a slim one (chartDeltaRequestTime -> 0 while historyLoading),
+        # so stripping them left every phone chart without bubbles
+        # (2026-08-24 21:30 ET, META on app.agxtrade.com).
         "mtfLiveSignalContexts",
         "watchlistMtfStates",
     )
 
     def touch_oi_finder_interactive_window(self) -> None:
         """Any trader-facing payload request pauses background scanning 45s."""
+        if in_background_request():
+            # The keeper touches up to 120 symbols a cycle through this very
+            # path. A chore allowed to hold the pause open means the pause is
+            # never NOT held, and the background warmer never runs at all.
+            return
         self.oi_finder_interactive_until = max(
             float(getattr(self, "oi_finder_interactive_until", 0.0)),
             time.monotonic() + 45.0,
         )
+
+    def _chart_symbol_is_interactive(self, symbol: str, now: float | None = None) -> bool:
+        """Is some client still polling this symbol's chart right now?"""
+        stamps = getattr(self, "_chart_symbol_last_requested", None) or {}
+        stamp = stamps.get(str(symbol or "").strip().upper())
+        if stamp is None:
+            return False
+        clock = time.monotonic() if now is None else now
+        return (clock - stamp) < OI_FINDER_CHART_INTERACTIVE_REQUEST_SECONDS
+
+    def _note_chart_symbol_requested(self, symbol: str) -> None:
+        if in_background_request():
+            # Interactive priority in ChartBuildLane means someone is LOOKING
+            # at this symbol. A keeper touch is not someone looking, and it
+            # must not outrank the chart actually on screen.
+            return
+        target = str(symbol or "").strip().upper()
+        if target:
+            # setdefault so states built without __init__ (test stubs) work.
+            stamps = self.__dict__.setdefault("_chart_symbol_last_requested", {})
+            stamps[target] = time.monotonic()
+            # _hot_chart_symbols now walks this map every ~100s, so keep it to
+            # the recent past rather than every symbol ever requested.
+            if len(stamps) > 256:
+                for stale in sorted(stamps, key=stamps.get)[:-256]:
+                    stamps.pop(stale, None)
+
+    @staticmethod
+    def _mtf_tape_fingerprint(frame) -> tuple:
+        """(rows, newest timestamp, newest close) for one study input tape.
+
+        Those three are what a label run can see change for a symbol whose
+        bars are append-only: a new bar changes the count and the newest
+        timestamp, and a tick inside the current bar changes its close. Two
+        tapes that agree on all three produce the same labels, which is what
+        makes the memo below a pure win rather than a cache.
+        """
+        try:
+            if frame is None or frame.empty:
+                return (0, 0, 0.0)
+            rows = int(len(frame))
+            columns = list(getattr(frame, "columns", []))
+        except Exception:  # noqa: BLE001 - a fingerprint must never break a build
+            return (-1, 0, 0.0)
+        newest = 0
+        for name in ("timestamp", "time", "date"):
+            if name in columns:
+                try:
+                    newest = int(pd.Timestamp(frame[name].iloc[-1]).value)
+                except Exception:  # noqa: BLE001
+                    newest = 0
+                break
+        close = 0.0
+        if "close" in columns:
+            try:
+                close = float(frame["close"].iloc[-1])
+            except Exception:  # noqa: BLE001
+                close = 0.0
+        return (rows, newest, close)
+
+    def _mtf_study_memo_key(self, target: str, *frames) -> tuple:
+        """Key on the symbol and on EVERY tape the label engines read."""
+        return (
+            str(target or "").strip().upper(),
+            tuple(self._mtf_tape_fingerprint(frame) for frame in frames),
+        )
+
+    def _mtf_study_memo_get(self, key):
+        if key is None:
+            return None
+        memo = getattr(self, "_oi_finder_mtf_study_memo", None)
+        if not isinstance(memo, OrderedDict):
+            return None
+        hit = memo.get(key)
+        if hit is None:
+            return None
+        memo.move_to_end(key)
+        return hit
+
+    def _mtf_study_memo_put(self, key, mtf_payload, by_timeframe, watchlist_payload) -> None:
+        if key is None:
+            return
+        memo = getattr(self, "_oi_finder_mtf_study_memo", None)
+        if not isinstance(memo, OrderedDict):
+            memo = OrderedDict()
+            self._oi_finder_mtf_study_memo = memo
+        memo[key] = (mtf_payload, by_timeframe, watchlist_payload)
+        memo.move_to_end(key)
+        while len(memo) > OI_FINDER_MTF_STUDY_MEMO_LIMIT:
+            memo.popitem(last=False)
+
+    def _chart_entry_tail_is_behind(self, entry, now_epoch: float | None = None) -> bool:
+        """Does the SERVED tape end more than one refresh interval ago?
+
+        Judged on the DATA, never on cache bookkeeping. A frozen entry is
+        re-stored constantly (every splice stamps cached_at), so "how long ago
+        was this cached" says nothing about how far behind its newest candle
+        is - which is the whole bug. An empty or unreadable tape counts as
+        behind so a forced refresh can rescue it.
+        """
+        bars = ((entry or {}).get("payload") or {}).get("bars") or []
+        if not bars:
+            return True
+        try:
+            newest = int((bars[-1] or {}).get("time") or 0)
+        except (AttributeError, TypeError, ValueError):
+            return True
+        if not newest:
+            return True
+        clock = time.time() if now_epoch is None else now_epoch
+        return (clock - newest) > OI_FINDER_CHART_REFRESH_SECONDS
+
+    def _forced_tail_extend_allowed(self, target: str, now: float | None = None) -> bool:
+        """One inline forced extend per symbol per refresh interval.
+
+        The inline path is the only place a broker call runs on a request
+        thread, so it is rate limited per symbol: outside market hours a tape
+        can never catch up to the wall clock, and without this a client looping
+        on refresh=true would fetch on every poll. Bounded map - a wide
+        watchlist must not grow it forever.
+        """
+        clock = time.monotonic() if now is None else now
+        stamps = self.__dict__.setdefault("_chart_forced_extend_at", {})
+        previous = stamps.get(target)
+        if previous is not None and (clock - float(previous)) < OI_FINDER_CHART_REFRESH_SECONDS:
+            return False
+        stamps[target] = clock
+        if len(stamps) > 256:
+            for stale in sorted(stamps, key=stamps.get)[:-256]:
+                stamps.pop(stale, None)
+        return True
+
+    def _force_chart_tail_extend(self, target: str) -> bool:
+        """Fetch the broker's recent bars and splice them into the SERVED tape,
+        on THIS thread, candles only.
+
+        release=False and no token on purpose: this borrows neither in-flight
+        guard, so it can neither be blocked by a queued rebuild nor clear that
+        rebuild's guard when it finishes.
+        """
+        try:
+            self._refresh_oi_finder_chart_payload(
+                target, False, release=False, skip_studies=True,
+            )
+            return True
+        except Exception as error:  # noqa: BLE001 - a failed force must still serve
+            print(f"[chart-force] {target} inline tail extend failed: {error}", flush=True)
+            return False
+
+    def _chart_recency_refreshes(self) -> dict:
+        """The tail-refresh in-flight guard, created on demand.
+
+        Kept apart from oi_finder_chart_refreshes so a deep rebuild that is
+        merely QUEUED cannot suppress the tail splice that puts today's
+        candles on the tape the request path actually serves. Built lazily
+        because states constructed with __new__ (tests, stubs) never ran
+        __init__ - the house rule that every helper tolerates missing state.
+        """
+        guard = getattr(self, "oi_finder_chart_recency_refreshes", None)
+        if not isinstance(guard, dict):
+            guard = {}
+            self.oi_finder_chart_recency_refreshes = guard
+        return guard
+
+    def _chart_refresh_guards(self) -> list:
+        """Both in-flight guards, deep first. Used by the release/progress
+        paths, which are handed a TOKEN and not the guard that issued it."""
+        guards = []
+        deep = getattr(self, "oi_finder_chart_refreshes", None)
+        if deep is not None:
+            guards.append(deep)
+        guards.append(self._chart_recency_refreshes())
+        return guards
+
+    def _chart_refresh_in_flight(self, target: str, now: float | None = None,
+                                 kind: str | None = None) -> bool:
+        """In-flight, with expiry: a refresh with no progress past the
+        deadline reads as ABSENT so the serve paths self-heal a wedged
+        thread by starting a replacement. Reads never mutate the entry; the
+        replacement overwrites it, and the old thread's release is
+        token-checked so it cannot clear its replacement's guard.
+
+        kind=None answers "is ANY refresh running" - that is what the client
+        sees as payload.refreshing. kind="full"/"recency" answers per guard,
+        which is how a tail pass gets to run alongside a deep rebuild.
+        """
+        clock = time.monotonic() if now is None else now
+        if kind in (None, "full"):
+            refreshes = getattr(self, "oi_finder_chart_refreshes", None)
+            if refreshes:
+                if isinstance(refreshes, (set, frozenset)):
+                    # Legacy shape (pre-deadline test stubs): membership only.
+                    if target in refreshes:
+                        return True
+                else:
+                    entry = refreshes.get(target)
+                    if entry and (clock - float(entry[1])) < OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS:
+                        return True
+        if kind in (None, "recency"):
+            entry = self._chart_recency_refreshes().get(target)
+            if entry and (clock - float(entry[1])) < OI_FINDER_CHART_RECENCY_DEADLINE_SECONDS:
+                return True
+        return False
+
+    def _note_chart_refresh_progress(self, target: str, token) -> None:
+        with self.oi_finder_chart_lock:
+            for refreshes in self._chart_refresh_guards():
+                if not isinstance(refreshes, dict):
+                    continue
+                entry = refreshes.get(target)
+                if entry and entry[0] == token:
+                    entry[1] = time.monotonic()
+
+    def _chart_refresh_executor(self, full_history: bool):
+        """Which pool a queued build runs on.
+
+        Deep builds have their own single-worker pool (see __init__); tails
+        keep the 2-worker pool. getattr, not attribute access, because states
+        built with __new__ (tests, stubs) never ran __init__ - the house rule
+        that every helper tolerates missing state.
+        """
+        if full_history:
+            pool = getattr(self, "oi_finder_chart_full_pool", None)
+            if pool is not None:
+                return pool
+        return self.oi_finder_chart_refresh_pool
+
+    def _chart_refresh_queue_depth(self, full_history: bool) -> int:
+        """How many jobs are waiting in that pool, or -1 if it cannot be read.
+
+        ThreadPoolExecutor exposes no public depth, so this reads the private
+        work queue behind a try/except: an observability line must never be
+        able to break a refresh.
+        """
+        try:
+            pool = self._chart_refresh_executor(bool(full_history))
+            return int(pool._work_queue.qsize())  # noqa: SLF001 - no public API
+        except Exception:  # noqa: BLE001 - logging must never raise
+            return -1
+
+    def _chart_refresh_is_superseded(self, target: str, full_history: bool, token) -> bool:
+        """True when the guard entry this job was submitted under is gone or
+        has been replaced - i.e. the job was declared wedged while it sat in
+        the pool queue and a replacement was started for the same symbol.
+
+        This is the same invariant the RELEASE path already asserts
+        (`release_token is None or entry[0] == release_token`): a superseded
+        job's guard is not its own, so its work is thrown away anyway. Before
+        2026-09-22 nothing stopped it PAYING for that work first, and because
+        every 30s kick past the deadline appended one more duplicate, the
+        2-worker pool's unbounded queue reached ~1,200-1,400 jobs and starved
+        the whole process. token=None keeps the legacy two-arg behaviour
+        (stubs and the old call shape never had a token to compare).
+        """
+        if token is None:
+            return False
+        lock = getattr(self, "oi_finder_chart_lock", None)
+        if lock is None:
+            return False
+        with lock:
+            if full_history:
+                guard = getattr(self, "oi_finder_chart_refreshes", None)
+            else:
+                guard = self._chart_recency_refreshes()
+            if not isinstance(guard, dict):
+                # Legacy set-shaped stub guard: no tokens, nothing to compare.
+                return False
+            entry = guard.get(target)
+        if entry is None:
+            return True
+        return entry[0] != token
+
+    # At most one per-drop line for the first few drops in a minute, then one
+    # summary line per minute. A healthy server prints ZERO of either.
+    CHART_REFRESH_DROP_LOG_LIMIT = 5
+
+    def _note_chart_refresh_drop(self, target: str, kind: str, queued_seconds: float) -> bool:
+        """Count a dropped superseded job; return True if it should be logged.
+
+        Drops are supposed to be rare. If they are not, printing one line each
+        would itself be a load problem (the incident this fixes wrote 1,493
+        wedge lines in 2,000 log lines), so after a handful in the same minute
+        the individual lines stop and a single summary closes the window.
+        """
+        now = time.monotonic()
+        summary = None
+        lock = getattr(self, "oi_finder_chart_lock", None)
+        if lock is None:
+            return True
+        with lock:
+            window_at = float(getattr(self, "_chart_refresh_drop_window_at", 0.0) or 0.0)
+            count = int(getattr(self, "_chart_refresh_drop_count", 0) or 0)
+            quiet = int(getattr(self, "_chart_refresh_drop_quiet", 0) or 0)
+            if not window_at or (now - window_at) >= 60.0:
+                if quiet:
+                    summary = (count, quiet)
+                self._chart_refresh_drop_window_at = now
+                self._chart_refresh_drop_count = 1
+                self._chart_refresh_drop_quiet = 0
+                verbose = True
+            else:
+                count += 1
+                self._chart_refresh_drop_count = count
+                verbose = count <= self.CHART_REFRESH_DROP_LOG_LIMIT
+                if not verbose:
+                    self._chart_refresh_drop_quiet = quiet + 1
+        if summary is not None:
+            print(
+                f"[chart-refresh] dropped {summary[0]} superseded chart jobs in the "
+                f"last 60s ({summary[1]} not logged individually)",
+                flush=True,
+            )
+        if verbose:
+            print(
+                f"[chart-refresh] {target} {kind} superseded; dropped before build "
+                f"(queued {queued_seconds:.0f}s)",
+                flush=True,
+            )
+        return verbose
+
+    def _chart_entry_tape_is_current(self, entry, now_epoch: float | None = None) -> bool:
+        """Session-aware readiness for IN-MEMORY cache entries - the rule the
+        disk loader learned on 2026-08-19 (SPY served 19:59-yesterday bars all
+        morning as "ready"). A premarket-built entry flips to not-ready the
+        moment a new session starts, which is what schedules its rebuild at
+        the open instead of after the trader notices.
+
+        built_at exemption: a FULL build that finished after the session
+        started and still does not reach it means the market simply has not
+        printed (holiday, halt) - that is honest ready, not a rebuild loop.
+        """
+        entry = entry or {}
+        payload = entry.get("payload") or {}
+        clock = time.time() if now_epoch is None else now_epoch
+        session_start = self._most_recent_session_start(
+            datetime.fromtimestamp(clock, tz=timezone.utc)
+        ).timestamp()
+        if float(entry.get("built_at_epoch") or 0.0) >= session_start:
+            return True
+        bars = payload.get("bars") or []
+        try:
+            newest = int(bars[-1].get("time") or 0) if bars else 0
+        except (AttributeError, TypeError, ValueError):
+            newest = 0
+        if not newest:
+            return False
+        if (clock - newest) > OI_FINDER_CHART_STALE_TAPE_SECONDS:
+            return False
+        return newest >= session_start
 
     def oi_finder_chart_history_status(self, symbol: str) -> dict:
         """Tiny readiness response so ticker-switch polls do not re-ship tapes."""
         target = (symbol or "").strip().upper()
         if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", target):
             return {"symbol": target, "historyReady": False, "refreshing": False}
+        self._note_chart_symbol_requested(target)
         with self.oi_finder_chart_lock:
             cached = self.oi_finder_chart_cache.get(target)
-            refreshing = target in self.oi_finder_chart_refreshes
+            refreshing = self._chart_refresh_in_flight(target)
         cached_payload = cached.get("payload") if cached else None
-        history_ready = bool(
+        content_ready = bool(
             cached
             and cached.get("history_ready")
             and self._chart_payload_has_multi_timeframe_depth(cached_payload)
             and self._chart_payload_has_ready_ganesh_signals(cached_payload)
         )
+        history_ready = bool(
+            content_ready
+            # Session-aware: a premarket-built entry whose tape ends at the
+            # prior close must report not-ready once today's session starts.
+            and self._chart_entry_tape_is_current(cached)
+        )
         has_bars = bool(cached and cached.get("payload", {}).get("bars"))
         # Self-healing: polling must restart a stalled build rather than
-        # report a cold cache forever.
+        # report a cold cache forever. A content-ready entry whose tape is
+        # merely short of the session gets the recency splice, not a full.
         if not refreshing and (not cached or not history_ready):
-            self._start_oi_finder_chart_refresh(target, full_history=bool(cached))
+            self._start_oi_finder_chart_refresh(
+                target, full_history=bool(cached) and not content_ready,
+            )
             refreshing = True
         return {
             "symbol": target,
@@ -10005,6 +14726,34 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 fine_start = index + 2
                 break
         return rows[fine_start:][-cls.OI_CHART_INITIAL_STUDY_BAR_COUNT:]
+
+    # The deferred deep-history pull. The first paint (initial=true) is already
+    # non-blocking, but the client then re-fetched the WHOLE payload - measured
+    # twice on a cold load, ~8.6MB. This variant returns ONLY the tapes, once,
+    # from the already-cached payload (zero broker calls), with
+    # historyLoading=False so the client's periodic reconcile drops to cheap
+    # ~30KB deltas instead of re-downloading 4MB.
+    OI_CHART_DEEP_TAPE_KEYS = (
+        "symbol", "source", "updatedAt",
+        "bars", "studyBars", "fineStudyBars", "dailyBars",
+        "fourHourCoverage", "ganeshHigherTimeframeSignals",
+        "mtfSignals", "mtfSignalsByTimeframe", "mtfSignalsPending", "mtfSignalStates", "mtfSignalMode",
+        "mtfLiveSignalContexts", "watchlistMtfStates", "signalTapeUpdatedAt",
+        # The staleness verdict rides every serve variant. This one is a
+        # whitelist, so leaving it out would let the deep pull be the one
+        # response that still claimed a stopped tape was healthy.
+        "tapeStale", "tapeNewestSession", "marketNewestSession",
+        "staleTapeMessage", "error",
+    )
+
+    def _deep_tapes_chart_payload(self, payload: dict) -> dict:
+        deep = {key: payload.get(key) for key in self.OI_CHART_DEEP_TAPE_KEYS if key in payload}
+        deep["deep"] = True
+        # Must stay False: it is what re-enables the client's cheap delta path
+        # (chartDeltaRequestTime), so the 4MB tapes are transferred once, not
+        # on every 30s poll.
+        deep["historyLoading"] = False
+        return deep
 
     def _slim_initial_chart_payload(
         self,
@@ -10043,16 +14792,85 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         delta = {
             key: value
             for key, value in payload.items()
-            if key not in {"bars", "studyBars", "dailyBars"}
+            # fineStudyBars belongs here too: it is a 60-day five-minute tape,
+            # so passing it through whole would ship megabytes on every 30s
+            # reconcile - the exact cost the delta path exists to avoid.
+            if key not in {"bars", "studyBars", "fineStudyBars", "dailyBars"}
         }
         delta["delta"] = True
         delta["deltaSince"] = cutoff
         delta["bars"] = tail(payload.get("bars"))
         delta["studyBars"] = tail(payload.get("studyBars"))
+        delta["fineStudyBars"] = tail(payload.get("fineStudyBars"))
         delta["dailyBars"] = (payload.get("dailyBars") or [])[-3:]
         return delta
 
-    def oi_finder_chart_payload(
+    def oi_finder_chart_payload(self, symbol: str, initial_paint: bool = False,
+                                since_epoch: float = 0.0, prefetch: bool = False,
+                                refresh: bool = False, include_study_seed: bool = False,
+                                deep_tapes: bool = False) -> dict:
+        """Timing wrapper over the chart path, mirroring the chain one. Logs any
+        chart request slower than 2s with the branch that served it and how long
+        the lock wait took, because the chart path measured 3-60s on warm symbols
+        while its raw work is ~1.1s and reading the code did not find the wait."""
+        started = time.perf_counter()
+        branch = "?"
+        if not prefetch:
+            # A live client poll: a fresh open (initial=true) OR the delta
+            # poll of a chart already on screen (since=). Remember it so the
+            # hot-set refresher keeps this ticker's tape current for the rest
+            # of the session -- the trader reopens the same handful (MSTR,
+            # COIN, WRBY) all morning, and leaves others open for hours.
+            #
+            # Folding on the delta poll too -- not just initial=true -- is what
+            # lets a chart left OPEN across a backend restart re-register
+            # itself. The watchdog restart wipes this in-memory recents map,
+            # and an already-open client keeps polling since=/delta WITHOUT
+            # ever re-sending initial=true, so before this an off-hot-set tape
+            # (SMCI, 2026-08-25: restart 08:16 ET, tape frozen at its 03:24
+            # pre-restart disk snapshot) stayed orphaned from
+            # _hot_chart_refresher_loop and never advanced all session. A
+            # prefetch stays speculative and must NOT claim a hot-set slot.
+            recents = getattr(self, "oi_finder_recent_chart_symbols", None)
+            if not isinstance(recents, OrderedDict):
+                recents = OrderedDict()
+                self.oi_finder_recent_chart_symbols = recents
+            target = str(symbol or "").strip().upper()
+            # A symbol already in the permanent hot list gains nothing from a
+            # recents slot, and spending one evicts a ticker the trader
+            # actually searched: opening SPY or AAPL used to push the last
+            # searched name out of the ten and freeze its tape.
+            if target and target not in self._fixed_hot_chart_symbols():
+                recents[target] = time.time()
+                recents.move_to_end(target)
+                while len(recents) > 10:
+                    recents.popitem(last=False)
+        try:
+            payload = self._oi_finder_chart_payload_impl(
+                symbol, initial_paint=initial_paint, since_epoch=since_epoch,
+                prefetch=prefetch, refresh=refresh,
+                include_study_seed=include_study_seed, deep_tapes=deep_tapes,
+            )
+            branch = (
+                "warming" if payload.get("warming")
+                else "delta" if since_epoch > 0
+                else "deep" if payload.get("deep")
+                else "slim" if payload.get("initialSlim")
+                else "disk" if payload.get("diskCached")
+                else "cache"
+            )
+            return payload
+        finally:
+            elapsed = time.perf_counter() - started
+            if elapsed > 2.0:
+                print(
+                    f"[chart-timing] {str(symbol).upper():6s} {elapsed:7.2f}s "
+                    f"branch={branch} lockwait={getattr(self, '_last_chart_lock_wait', 0.0):.2f}s "
+                    f"initial={initial_paint} since={int(since_epoch)} refresh={refresh}",
+                    flush=True,
+                )
+
+    def _oi_finder_chart_payload_impl(
         self,
         symbol: str,
         initial_paint: bool = False,
@@ -10060,16 +14878,27 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         prefetch: bool = False,
         refresh: bool = False,
         include_study_seed: bool = False,
+        deep_tapes: bool = False,
     ) -> dict:
         """Return chart cache immediately while Schwab refreshes off-thread."""
         target = (symbol or "").strip().upper()
         self.touch_oi_finder_interactive_window()
+        # Measure the FIRST lock acquisition - if the stall is here, it is
+        # contention; if it is not, the stall is in the work after it.
+        _t_lock = time.perf_counter()
+        with self.oi_finder_chart_lock:
+            pass
+        self._last_chart_lock_wait = time.perf_counter() - _t_lock
         if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", target):
             return self._build_oi_finder_chart_payload(target, fast_start=True)
+        if not prefetch:
+            # Live-priority signal for the build lane: a client is actively
+            # asking for this symbol. Prefetches stay speculative.
+            self._note_chart_symbol_requested(target)
 
         with self.oi_finder_chart_lock:
             cached = self.oi_finder_chart_cache.get(target)
-            refreshing = target in self.oi_finder_chart_refreshes
+            refreshing = self._chart_refresh_in_flight(target)
         if not cached:
             disk_payload = self._load_oi_finder_chart_disk_payload(target)
             if disk_payload is not None:
@@ -10083,56 +14912,218 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 disk_bars = disk_payload.get("bars") or []
                 newest_bar_time = int(disk_bars[-1].get("time") or 0) if disk_bars else 0
                 tape_age_seconds = max(0.0, time.time() - newest_bar_time) if newest_bar_time else float("inf")
-                tape_current = tape_age_seconds <= OI_FINDER_CHART_STALE_TAPE_SECONDS
-                history_ready = (
+                # The 26h window alone is not enough once a session is under way.
+                # Measured 2026-08-19 at 10:53 ET: SPY's tape ended 19:59 the
+                # previous evening - 14.9h old, comfortably inside the window -
+                # so it was served as READY and never rebuilt, leaving the pane
+                # on yesterday's candles all morning while MSFT/NFLX/AAPL were
+                # one minute fresh. A tape that does not reach the CURRENT
+                # session is stale however new the window says it looks; the
+                # window still governs overnight and weekend gaps.
+                session_start_epoch = self._most_recent_session_start(
+                    datetime.now(timezone.utc)
+                ).timestamp()
+                tape_current = (
+                    tape_age_seconds <= OI_FINDER_CHART_STALE_TAPE_SECONDS
+                    and newest_bar_time >= session_start_epoch
+                )
+                content_ready = (
                     not bool(disk_payload.get("historyLoading"))
+                    # An old-schema payload is complete enough to show, but it
+                    # lacks fineStudyBars, so it must not count as ready - that
+                    # is what schedules the full rebuild below.
+                    and not bool(disk_payload.get("payloadSchemaStale"))
                     and self._chart_payload_has_twenty_year_four_hour_archive(disk_payload)
                     and self._chart_payload_has_multi_timeframe_depth(disk_payload)
                     and self._chart_payload_has_ready_ganesh_signals(disk_payload)
-                    and tape_current
+                    # Labels from an older MTF engine: show recomputed ones now
+                    # and let the full rebuild (overnight session included)
+                    # replace the tape.
+                    and self._chart_payload_has_current_mtf_labels(disk_payload)
                 )
+                if not self._chart_payload_has_current_mtf_labels(disk_payload):
+                    self._refresh_mtf_block_from_payload_tapes(target, disk_payload)
                 disk_payload["studySchemaStale"] = not self._chart_payload_has_ready_ganesh_signals(
                     disk_payload,
                 )
+                # Store CONTENT readiness, not content AND tape-currency. This
+                # is the boot path -- every symbol's first morning request
+                # lands here with last night's tape, so folding tape_current
+                # into the flag queued a FULL rebuild per symbol at the open
+                # (measured 17-19 min each in the lane) while the held
+                # in-flight guard froze the tape it was meant to heal (AMZN
+                # stuck at 08:43 on 2026-08-21). A content-ready entry keeps
+                # its flag so the recency pass SPLICES today's bars on in
+                # seconds; the full rebuild stays reserved for broken content.
+                # Mirrors the cache-hit path below (bell-demotion fix).
                 cached = {
                     "cached_at": time.monotonic(),
                     "payload": disk_payload,
-                    "history_ready": history_ready,
+                    "history_ready": content_ready,
                 }
                 with self.oi_finder_chart_lock:
                     self.oi_finder_chart_cache[target] = cached
                 if not prefetch:
-                    self._start_oi_finder_chart_refresh(target, full_history=not history_ready)
+                    self._start_oi_finder_chart_refresh(target, full_history=not content_ready)
                     refreshing = True
         if cached:
+            # Deep-tape rescue: a shallow first store (the cold historyStatus
+            # recency race at boot) sits in memory and BLOCKS the disk load,
+            # which only ran when no entry existed. The panes then run on a
+            # 2-day tape for the whole full-build queue. Adopt the deeper
+            # disk copy once, splicing memory's fresher candles on top; the
+            # store-side no-shrink guard keeps it from being buried again.
+            rescue_payload = cached.get("payload") or {}
+            if (
+                not prefetch
+                and not cached.get("disk_rescue_checked")
+                and not self._chart_payload_has_twenty_year_four_hour_archive(rescue_payload)
+                # Stub-built states (tests) have no disk cache dir - house rule:
+                # every helper tolerates missing state.
+                and getattr(self, "oi_finder_chart_disk_cache_dir", None)
+            ):
+                cached["disk_rescue_checked"] = True
+                disk_payload = self._load_oi_finder_chart_disk_payload(target)
+                if disk_payload is not None and len(disk_payload.get("studyBars") or []) > len(
+                    rescue_payload.get("studyBars") or []
+                ):
+                    memory_bars = rescue_payload.get("bars") or []
+                    disk_bars = disk_payload.get("bars") or []
+                    if memory_bars and disk_bars:
+                        first_memory_time = memory_bars[0]["time"]
+                        disk_payload["bars"] = [
+                            bar for bar in disk_bars if bar["time"] < first_memory_time
+                        ] + memory_bars
+                    fresh_daily = rescue_payload.get("dailyBars") or []
+                    deep_daily = disk_payload.get("dailyBars") or []
+                    if fresh_daily and deep_daily:
+                        merged_daily = {bar["time"]: bar for bar in deep_daily}
+                        for bar in fresh_daily:
+                            merged_daily[bar["time"]] = bar
+                        disk_payload["dailyBars"] = [merged_daily[key] for key in sorted(merged_daily)]
+                    disk_payload["historyLoading"] = False
+                    with self.oi_finder_chart_lock:
+                        entry = self.oi_finder_chart_cache.get(target)
+                        if entry is cached:
+                            entry["payload"] = disk_payload
+                            entry["history_ready"] = True
+                            entry["cached_at"] = time.monotonic()
+                            entry.pop("windowed_payload", None)
+                    print(
+                        f"[chart-cache] {target} rescued the deep archive from disk "
+                        f"over a shallow memory tape",
+                        flush=True,
+                    )
+            # refresh=true is the "this tape is wrong, go get the bars" lever -
+            # the frontend sends it when it spots a hole, and every diagnostic
+            # probe uses it. It was swallowed twice over: the in-flight guard
+            # below discarded it whenever ANY refresh was queued, and even when
+            # honoured it only SUBMITTED a job and then returned the same stale
+            # payload, so the response could never show a newer bar (measured
+            # 2026-08-31: TEAM 10.7 -> 10.8, NOW 16.7 -> 16.8, GME 151.8 ->
+            # 151.9 min behind, i.e. exactly the elapsed probe time).
+            #
+            # Fold the broker's tail in on THIS thread. Candles only - the
+            # study replay is what makes a refresh expensive and the async
+            # refresh below still recomputes it - and only from an entry that
+            # already exists, so this is never the cold 40-199s build the
+            # "NEVER build on the request thread" rule below is about.
+            if (
+                refresh
+                and not prefetch
+                and not in_background_request()
+                and self._chart_entry_tail_is_behind(cached)
+                and self._forced_tail_extend_allowed(target)
+            ):
+                self._force_chart_tail_extend(target)
+                with self.oi_finder_chart_lock:
+                    cached = self.oi_finder_chart_cache.get(target) or cached
+                    refreshing = self._chart_refresh_in_flight(target)
             age_seconds = max(0.0, time.monotonic() - float(cached.get("cached_at", 0)))
-            history_ready = bool(cached.get("history_ready")) and self._chart_payload_has_ready_ganesh_signals(
+            content_ready = bool(cached.get("history_ready")) and self._chart_payload_has_ready_ganesh_signals(
                 cached.get("payload"),
-            ) and self._chart_payload_has_multi_timeframe_depth(cached.get("payload"))
-            if not history_ready:
+            ) and self._chart_payload_has_multi_timeframe_depth(
+                cached.get("payload")
+            )
+            history_ready = content_ready and self._chart_entry_tape_is_current(cached)
+            # Clear the stored flag only when the CONTENT is broken. A
+            # bell-demoted entry (intact deep tape + signals, tape merely
+            # short of the new session) must stay splice-eligible - clearing
+            # its flag made the recency pass replace years of history with a
+            # two-day fast tape, so the open forced FULL rebuilds instead.
+            # Measured 2026-08-21 09:30-09:45: the full-rebuild wave queued
+            # 17-minute lane tails and starved request threads; the splice
+            # heals the same tape in seconds.
+            if not content_ready:
                 cached["history_ready"] = False
             should_refresh = (
                 refresh
                 or (not history_ready and not prefetch)
                 or (age_seconds >= OI_FINDER_CHART_REFRESH_SECONDS and not prefetch)
             )
-            if should_refresh and not refreshing:
+            if should_refresh:
                 # A ready cache already owns the 20-year 4H archive and its
                 # expensive indicator replay. Refresh only the recent REST
                 # tail so normal chart polling cannot continuously queue a
-                # full-history rebuild every five seconds.
-                self._start_oi_finder_chart_refresh(target, full_history=not history_ready)
-                refreshing = True
-            payload = dict(cached["payload"])
-            payload["cacheAgeSeconds"] = round(age_seconds, 2)
-            payload["historyLoading"] = not history_ready
-            payload["studySchemaStale"] = not self._chart_payload_has_ready_ganesh_signals(payload)
-            payload["refreshing"] = refreshing
+                # full-history rebuild every five seconds. Full rebuilds are
+                # reserved for broken content, never for a short tape.
+                #
+                # THE FROZEN-TAPE FIX (2026-08-31). This used to be a single
+                # `and not refreshing` gate, so ANY refresh in flight - almost
+                # always a deep rebuild queued behind the 2-worker pool, which
+                # holds its guard for up to 20 minutes - discarded the request
+                # to extend the tape. A searched ticker therefore served the
+                # same frozen candles for the whole queue wait while Schwab had
+                # 0.7-minute-old bars for it (GME 151.8 min behind at 12:56
+                # ET). The two kinds of work now dedupe separately: a deep
+                # rebuild still runs one at a time, and the cheap tail splice
+                # runs ALONGSIDE it, which is what makes a chart REQUEST - not
+                # hot-set membership - enough to keep a tape moving.
+                if not content_ready and not self._chart_refresh_in_flight(target, kind="full"):
+                    self._start_oi_finder_chart_refresh(target, full_history=True)
+                    refreshing = True
+                elif not self._chart_refresh_in_flight(target, kind="recency"):
+                    self._start_oi_finder_chart_refresh(target, full_history=False)
+                    refreshing = True
             # Window at SERVE time, not just at build time: payloads persisted
             # to disk before the windowing fix still carry the whole
             # multi-year replay (6,000+ signals), and they are served verbatim
             # until something rebuilds them. Trimming here bounds every path.
-            payload = self._windowed_ganesh_chart_payload(payload)
+            #
+            # Window the CACHE ENTRY (memoized) rather than the per-request
+            # copy: the result depends only on the cached payload, so doing it
+            # per request re-walked the full signal array on every poll. The
+            # per-request fields are layered on afterwards so their values are
+            # unchanged.
+            # Labels computed from a short tape during a flaky rebuild but
+            # stamped current: recompute once from THIS payload's own deep
+            # fineStudyBars (MSFT 2026-08-25 lost the cyan CALL4H because a
+            # 1-day source built its labels while the payload held 60 days).
+            rescue = cached.get("payload") or {}
+            if (
+                not cached.get("mtf_recompute_checked")
+                and not self._chart_payload_has_current_mtf_labels(rescue)
+                and self._fine_tape_session_span(rescue) >= TOS_CHART_SESSION_DAYS
+            ):
+                cached["mtf_recompute_checked"] = True
+                if self._refresh_mtf_block_from_payload_tapes(target, rescue):
+                    rescue["mtfSourceSessions"] = self._fine_tape_session_span(rescue)
+                    cached.pop("windowed_payload", None)
+            windowed = self._windowed_payload_for_cache_entry(cached)
+            payload = dict(windowed)
+            payload["cacheAgeSeconds"] = round(age_seconds, 2)
+            payload["historyLoading"] = not history_ready
+            payload["studySchemaStale"] = not self._chart_payload_has_ready_ganesh_signals(payload)
+            payload["refreshing"] = refreshing
+            # Judged per request, not memoized with the windowed copy: a tape
+            # that was current when it was built goes stale purely by the
+            # clock moving, and a cache entry can outlive several sessions.
+            self._apply_chart_tape_staleness(payload)
+            # Deferred deep pull: return the tapes once, from cache, only when
+            # history is complete. Before that it falls through to the normal
+            # full/slim return, so it is self-healing if fired early.
+            if deep_tapes and history_ready:
+                return self._deep_tapes_chart_payload(payload)
             if since_epoch > 0 and history_ready:
                 return self._delta_chart_payload(payload, since_epoch)
             if initial_paint:
@@ -10142,7 +15133,33 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 )
             return payload
 
-        # Only the small recent price-history request blocks a cold ticker.
+        # NEVER build on the request thread. The line below used to call
+        # _build_oi_finder_chart_payload synchronously on the assumption that a
+        # fast_start build was "small"; measured 2026-08-19 during the session
+        # it is not - a cold ticker took 199.0s (COIN, disk cache present) and
+        # 40.9s (AAPL), because fast_start still reaches Schwab. That wait IS
+        # the pane sitting on "Loading live one-minute candles" for minutes,
+        # and at any client timeout it aborts and retries forever.
+        #
+        # Answer immediately with the warming shape the client already handles
+        # (App.jsx keeps the workspace alive on payload.warming/refreshing) and
+        # let the build run off-thread. The pane's empty-tape retry picks the
+        # real tape up seconds later, and every subsequent request is served
+        # from the warm cache above. Prefetches stay speculative: they never
+        # start background work, exactly as before.
+        if not prefetch:
+            self._start_oi_finder_chart_refresh(target, full_history=True)
+        return {
+            "symbol": target,
+            "bars": [],
+            "warming": True,
+            "refreshing": True,
+            "historyLoading": True,
+            "updatedAt": datetime.now().astimezone().isoformat(),
+        }
+
+    def _legacy_blocking_cold_chart_build(self, target, prefetch, initial_paint, include_study_seed):
+        """Retained for reference only - the old synchronous cold path."""
         payload = self._build_oi_finder_chart_payload(target, fast_start=True)
         if payload.get("bars"):
             history_ready = not bool(payload.get("historyLoading"))
@@ -10165,6 +15182,30 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         return payload
 
     def why_not_traded(self, symbol: str) -> dict:
+        """Serve the diagnostics, reusing a recent build when there is one."""
+        target = str(symbol or "").strip().upper()
+        if not target:
+            return self._build_why_not_traded(target)
+        now = time.monotonic()
+        with self.why_not_traded_lock:
+            cached = self.why_not_traded_cache.get(target)
+            if cached is not None and now - cached[0] <= WHY_NOT_TRADED_CACHE_TTL_SECONDS:
+                return cached[1]
+        # Built OUTSIDE the lock: holding it across a multi-second scanner
+        # run would make every other symbol queue behind this one.
+        payload = self._build_why_not_traded(target)
+        with self.why_not_traded_lock:
+            self.why_not_traded_cache[target] = (time.monotonic(), payload)
+            if len(self.why_not_traded_cache) > WHY_NOT_TRADED_CACHE_LIMIT:
+                oldest = sorted(
+                    self.why_not_traded_cache,
+                    key=lambda key: self.why_not_traded_cache[key][0],
+                )[:-WHY_NOT_TRADED_CACHE_LIMIT]
+                for key in oldest:
+                    self.why_not_traded_cache.pop(key, None)
+        return payload
+
+    def _build_why_not_traded(self, symbol: str) -> dict:
         target = str(symbol or "").strip().upper()
         diagnostics = self.scanner.diagnose_symbol(target)
         trade_history = self._enrich_trade_history(self.repository.get_trade_history(limit=200))
@@ -10937,12 +15978,17 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
 
     @staticmethod
     def _is_oi_finder_mag7_live_session(now: datetime) -> bool:
-        """Poll the paced Mag7 chain during premarket and the regular session."""
+        """Poll the paced Mag7 chain during premarket and the regular session.
+
+        Starts at 06:00 (was 08:00) so the premarket scanner's tapes are warm
+        when its 06:00-09:30 ET window opens; at 08:00 every row was cold for
+        the first two hours of the window.
+        """
         current = now.astimezone(ZoneInfo(EASTERN_TZ))
         if current.weekday() >= 5:
             return False
         minute_of_day = current.hour * 60 + current.minute
-        return 8 * 60 <= minute_of_day < 16 * 60 + 15
+        return 6 * 60 <= minute_of_day < 16 * 60 + 15
 
     # ------------------------------------------------------------------
     # MAG7 chart signal scanner (rebuilt 2026-08-10 after the backend loss).
@@ -11115,6 +16161,20 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 memo.pop(stale, None)
         return row
 
+    def _windowed_payload_for_cache_entry(self, entry: dict) -> dict:
+        """Window a cache entry's signals once, not on every request.
+
+        The windowed result depends only on the cached payload, so recomputing
+        it per request walked the full signal array for every chart poll -
+        including polls whose response is the 133KB slim variant.
+        """
+        memo = entry.get("windowed_payload")
+        if memo is not None:
+            return memo
+        windowed = self._windowed_ganesh_chart_payload(entry.get("payload") or {})
+        entry["windowed_payload"] = windowed
+        return windowed
+
     @staticmethod
     def _windowed_ganesh_chart_payload(payload: dict) -> dict:
         """Trim a payload's ganesh signals to its own visible bar window."""
@@ -11239,6 +16299,323 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "refreshedAt": None,
             "generatedAt": now_et.isoformat(),
             "message": "Warming MAG7 chart tapes; signals appear as each chart caches.",
+        }
+
+    def premarket_scanner_payload(self) -> dict:
+        """06:00-09:30 ET scanner rows for the nine tracked tickers.
+
+        Reads ONLY the already-warm chart cache plus the live streamed tape --
+        it never starts a broker fetch or a chart build. Deliberately NOT part
+        of dashboard_payload(), which is cached 60s: that would make the table
+        staler than the 30s lag merge_live_tail() exists to remove.
+
+        SINGLE-FLIGHT with a 4s response cache. Every open browser polls this
+        every 5s; when one pass got slow (py-spy, 2026-08-21: the uncached
+        per-candle zoneinfo math), overlapping polls piled up faster than they
+        finished and the pile-up's GIL churn made every pass slower still --
+        a feedback loop that pinned the endpoint at 30s+ timeouts. One build
+        at a time; concurrent polls get the last completed response.
+        """
+        cached_response = getattr(self, "_premarket_scanner_response", None)
+        if cached_response and (time.monotonic() - cached_response[0]) < 4.0:
+            return cached_response[1]
+        gate = getattr(self, "_premarket_scanner_build_gate", None)
+        if gate is None:
+            gate = threading.Lock()
+            self._premarket_scanner_build_gate = gate
+        if not gate.acquire(blocking=False):
+            if cached_response:
+                return cached_response[1]
+            gate.acquire()  # first-ever build: wait for it rather than 500
+        try:
+            # Re-check inside the lock: the build we waited behind may have
+            # just stored a fresh response. (The check lives INSIDE try so
+            # the single release in finally is the only release -- an early
+            # release-then-return here double-released and raised.)
+            fresh = getattr(self, "_premarket_scanner_response", None)
+            if fresh and (time.monotonic() - fresh[0]) < 4.0:
+                return fresh[1]
+            payload = self._premarket_scanner_payload_locked()
+            self._premarket_scanner_response = (time.monotonic(), payload)
+            return payload
+        finally:
+            gate.release()
+
+    def _premarket_scanner_payload_locked(self) -> dict:
+        now_et = datetime.now(ZoneInfo(EASTERN_TZ))
+        symbols = list(PREMARKET_SCAN_SYMBOLS)
+        rows: list[dict] = []
+        ready: list[str] = []
+        pending: list[str] = []
+        stale: list[str] = []
+        # Separate from `stale` ON PURPOSE. `stale` means "no data at all yet
+        # today" and its branch DROPS the symbol; lagging means "scannable, but
+        # its tape does not reach the window you are reading", which must still
+        # be shown.
+        lagging: list[str] = []
+        tape_notes: dict[str, dict] = {}
+
+        memo = getattr(self, "_premarket_scan_memo", None)
+        if not isinstance(memo, dict):
+            memo = {}
+            self._premarket_scan_memo = memo
+
+        # Only keep the nine tapes hot while this scanner has a reason to be
+        # scanning. Outside its window we still SERVE the cached tape (the
+        # table stays populated) but we stop kicking tail refreshes.
+        #
+        # A browser poll must not be able to drive the backend's whole CPU
+        # budget. Measured Saturday 2026-08-22, market shut since Friday and
+        # _hot_chart_refresher_loop asleep in its weekend branch: an open tab
+        # polling this endpoint every 5s held ~113% of one core (median),
+        # 70.9% of all sampled thread-time sitting in oi-finder-chart-<SYM>
+        # threads across exactly these nine symbols, ~24% of it inside
+        # gzip+json re-encoding tapes whose newest bar was 5.5 hours old.
+        # /api/auth/status -- 408 bytes, no work -- degraded to a 315ms median
+        # and a 73s worst case. The browser half is fixed in App.jsx, but a
+        # stale tab, a second client, or a popout can still call this, so the
+        # guard belongs here too.
+        #
+        # Window is deliberately wider than the scanner's own 06:00-09:30:
+        # 04:00 matches _hot_chart_refresher_loop's start so the two agree
+        # about when the day begins, and 10:00 lets the table settle after
+        # the open rather than freezing mid-move.
+        # Starts at MIDNIGHT, not 04:00, since the cyan D-M scan (2026-08-23):
+        # a CALLD that prints at 01:00 ET must reach the scanner while it is
+        # live. Overnight tail refreshes are the same paced 3-15s splices,
+        # and outside a browser poll nothing runs at all.
+        minute_of_day = now_et.hour * 60 + now_et.minute
+        refresh_tails = now_et.weekday() < 5 and minute_of_day < 10 * 60
+
+        for symbol in symbols:
+            # Go through the normal chart path rather than reading a cache
+            # directly. Reading the raw caches silently scanned YESTERDAY:
+            # the in-memory cache only fills when a chart is requested, and
+            # the disk tapes the warmer writes were frozen at the prior
+            # evening's close, so six of nine tickers reported "no setups"
+            # on a morning when their premarket data existed and was fetchable.
+            #
+            # _touch_chart_tail, NOT the full chart accessor. The accessor
+            # queues a FULL rebuild when a boot-fresh cache is judged stale,
+            # which at the 2026-08-21 open queued ~19-minute builds for all
+            # nine symbols at once and froze their tapes behind the build
+            # lane (AMZN stuck at 08:43 for an hour). Tail refreshes keep
+            # the tape moving in ~3-15s and dedupe in-flight per symbol.
+            payload = self._touch_chart_tail(symbol, allow_refresh=refresh_tails)
+            bars = payload.get("bars") if payload else None
+            if not bars:
+                pending.append(symbol)
+                continue
+            # Live tail BEFORE the staleness judgement (reordered 2026-08-23,
+            # adversarial review): overnight bars often arrive only via the
+            # stream, so judging "has the tape reached today" on the cached
+            # bars alone skipped every symbol between midnight and the 04:10
+            # Tradier backfill - exactly the hours the D-M midnight window
+            # exists for. Never let a streamer hiccup take the scanner down.
+            try:
+                live_bars = MARKET_STREAM.chart_history(symbol)
+            except Exception:
+                live_bars = []
+            scan_tape = premarket_merge_live_tail(payload.get("studyBars") or bars, live_bars)
+            merged_bars = premarket_merge_live_tail(bars, live_bars)
+            # A tape that has not reached today is not "ready" -- scanning it
+            # yields a confident, wrong "no setups". Say STALE instead.
+            newest_epoch = 0
+            for source in (merged_bars, scan_tape):
+                if source:
+                    try:
+                        newest_epoch = max(newest_epoch, int(source[-1].get("time") or 0))
+                    except (TypeError, ValueError):
+                        pass
+            try:
+                newest = datetime.fromtimestamp(newest_epoch, tz=ZoneInfo(EASTERN_TZ)) if newest_epoch else None
+            except (TypeError, ValueError, OSError, OverflowError):
+                newest = None
+            if newest is None or newest.date() < now_et.date():
+                stale.append(symbol)
+                continue
+            ready.append(symbol)
+            # Recorded for EVERY symbol, never only the unhealthy ones. A field
+            # that appears only when something is wrong is a field nobody
+            # builds the habit of reading, and it makes "absent" ambiguous
+            # between healthy and not-yet-implemented.
+            #
+            # A lagging tape is ANNOTATED here, never routed to `stale` - that
+            # branch is a `continue` above, which skips row construction
+            # entirely, so marking a symbol stale DELETES its row instead of
+            # labelling it. That trade is strictly bad: a wrong row is
+            # recoverable by looking at it, a missing row is not, and it would
+            # erase genuine overnight signals to buy an honesty message.
+            covers = premarket_tape_reaches_window(newest, now_et)
+            tape_notes[symbol] = {
+                "tapeNewestAt": newest.isoformat(),
+                "tapeAgeSeconds": round(max(0.0, (now_et - newest).total_seconds()), 1),
+                "tapeCoversWindow": bool(covers),
+            }
+            if not covers:
+                lagging.append(symbol)
+            # The D-M replay is recomputed here off the ADVANCING merged tape
+            # (MAG7-table pattern). The cached chart payload's own ganesh
+            # contract only refreshes on FULL builds, and overnight there are
+            # none - a CALLD printing at 01:00 would otherwise stay invisible
+            # until someone opened the chart (adversarial review 2026-08-23).
+            # Floored to 5-minute identity so the ~2s replay runs at most
+            # every 5 min per symbol, not on every streamed minute bar.
+            #
+            # STAGGERED per symbol (2026-08-24 open): with a shared floor,
+            # all nine floors flipped at the SAME wall-clock 5-min boundary,
+            # so one scanner poll ran nine consecutive ~2s replays - an ~18s
+            # GIL hold that stalled every endpoint (auth hit 15.7s at 09:44).
+            # A per-symbol offset spreads the flips across the window: one
+            # short replay every ~30s instead of a burst.
+            #
+            # And no replay at all after 10:00 ET: the scan window ends at
+            # 09:30, the contract is frozen for the day, and his tab keeps
+            # polling until the market closes.
+            ganesh_payload = payload.get("ganeshHigherTimeframeSignals")
+            try:
+                # sum(ord) not hash(): stable across processes, no seed games.
+                symbol_offset = (sum(ord(ch) for ch in symbol) % 9) * 33
+                floor_key = (symbol, (newest_epoch + symbol_offset) // 300)
+                replay_allowed = minute_of_day < 10 * 60
+                ganesh_cache = getattr(self, "_premarket_ganesh_cache", None)
+                if not isinstance(ganesh_cache, dict):
+                    ganesh_cache = {}
+                    self._premarket_ganesh_cache = ganesh_cache
+                hit = ganesh_cache.get(symbol)
+                if hit and (hit[0] == floor_key or not replay_allowed):
+                    ganesh_payload = hit[1]
+                elif replay_allowed:
+                    replayed = self._ganesh_signal_payload_for_chart(
+                        scan_tape,
+                        merged_bars,
+                        payload.get("dailyBars") or [],
+                        symbol=symbol,
+                    )
+                    if replayed.get("historyReady") is True:
+                        ganesh_payload = replayed
+                        ganesh_cache[symbol] = (floor_key, replayed)
+            except Exception:
+                pass  # fall back to the payload's own (possibly older) contract
+            payload = {**payload, "studyBars": scan_tape, "bars": merged_bars,
+                       "ganeshHigherTimeframeSignals": ganesh_payload}
+            latest_time = int(scan_tape[-1].get("time") or 0) if scan_tape else 0
+            # Tape depth is part of the key: right after a restart a symbol's
+            # study tape can still be cold while its live tail is already
+            # current, and the tail's last bar alone does not change when the
+            # deep tape lands - the shallow row would then be served all night
+            # (GOOGL: blank %Chg and short-tape crosses, 2026-08-24).
+            first_time = int(scan_tape[0].get("time") or 0) if scan_tape else 0
+            key = (symbol, latest_time, first_time, len(scan_tape), now_et.date().isoformat())
+            if key in memo:
+                row = memo[key]
+            else:
+                try:
+                    row = premarket_scan_row(symbol, payload, now_et)
+                except Exception:
+                    row = None
+                memo[key] = row
+                if len(memo) > 120:
+                    # NOT named "stale": this loop used to rebind the
+                    # function's stale-symbols list, and the join over it
+                    # then 500'd every poll once the memo passed 120 keys
+                    # (adversarial review 2026-08-23).
+                    for evicted in list(memo)[: len(memo) - 120]:
+                        memo.pop(evicted, None)
+            if row:
+                # Tape age is attached OUTSIDE the memo: the memo key is the
+                # tape's own timestamps, so a memo hit would otherwise serve an
+                # age computed at an earlier poll.
+                row = {**row, **tape_notes.get(symbol, {})}
+                # Catalyst attaches OUTSIDE the memo (the memo key is tape
+                # time, and a headline can land between two identical tapes)
+                # and reads only the cache the catalyst-refresher thread
+                # fills - a news outage can never slow this endpoint.
+                rows.append({**row, "catalyst": self._catalyst_cache.get(symbol)})
+
+        # TOS order: %Change descending (then strength, then ticker).
+        rows.sort(key=lambda item: (
+            -float(item.get("changePct") if item.get("changePct") is not None else -1e9),
+            -int(item["score"]),
+            item["symbol"],
+        ))
+        # 30-day archive with first-seen stamps ("so I know when it came").
+        # Never let the archive break the live table. new_out gives the
+        # symbols first seen by THIS write - the once-per-day edge for the
+        # phone push below.
+        fresh_signals: list = []
+        try:
+            premarket_history_record(rows, now_et, new_out=fresh_signals)
+            # Hand the ARRIVAL time back to the table. The archive is written
+            # first, so this reads the stamp this very call may have created -
+            # a row is never served without the time it appeared.
+            seen = premarket_history_first_seen(now_et)
+            for row in rows:
+                stamp = seen.get(str(row.get("symbol") or "").upper())
+                if stamp:
+                    row["firstSeenAt"] = stamp
+        except Exception:
+            pass
+        # Phone push for new scanner signals, only at/after 9:00 ET - the
+        # trader wants the pre-open window, not 6 AM warm-up buzzes
+        # (2026-08-30: "mag7 scanner I need alert after 9:00am est").
+        # firstSeenAt is stamped once per symbol per day, so each name can
+        # buzz at most once, and only if its first appearance is >= 9:00.
+        try:
+            if fresh_signals and now_et.hour >= 9:
+                named = []
+                for row in rows:
+                    if row.get("symbol") in fresh_signals:
+                        change = row.get("changePct")
+                        pct = f" {float(change):+.1f}%" if change is not None else ""
+                        named.append(f"{row['symbol']}{pct}")
+                if named:
+                    _push_phone_notification(
+                        # Titled for the tab he actually sees. The view was
+                        # renamed Scanner -> Premarket on 2026-08-31; a push
+                        # naming a tab that no longer exists is a small lie
+                        # arriving on his lock screen.
+                        "Premarket: new signal",
+                        ", ".join(named[:6]) + f"  (first seen {now_et.strftime('%H:%M')} ET)",
+                        tags="zap",
+                    )
+        except Exception:
+            pass
+        return {
+            "status": "READY" if ready else "WARMING",
+            "date": now_et.date().isoformat(),
+            "timezone": EASTERN_TZ,
+            "windowLabel": "12:00 AM - 9:30 AM ET",
+            "symbols": symbols,
+            "rows": rows,
+            "matchCount": len(rows),
+            "readySymbols": ready,
+            "pendingSymbols": pending,
+            "staleSymbols": stale,
+            "laggingSymbols": lagging,
+            # The chart path already surfaces this at api_server.py:11827; the
+            # scanner reads the SAME 04:00-07:00 band and said nothing, so the
+            # one screen he opens first was the one screen that did not mention
+            # the hole it was scanning over.
+            "premarketGapNote": str(getattr(self, "_premarket_backfill_error", "") or ""),
+            "premarketGapState": str(getattr(self, "_premarket_backfill_state", "") or ""),
+            "generatedAt": now_et.isoformat(),
+            "message": (
+                (
+                    f"{len(rows)} of {len(ready)} live tickers match in this premarket window."
+                    + (f" No data yet today for {', '.join(stale)}." if stale else "")
+                    + (
+                        f" Tape behind for {', '.join(lagging)} - scanned over a gap."
+                        if lagging else ""
+                    )
+                )
+                if ready
+                else (
+                    f"No premarket data yet today for {', '.join(stale)}."
+                    if stale
+                    else "Warming chart tapes; rows appear as each chart caches."
+                )
+            ),
         }
 
     def mag7_chart_signals_payload(self, session: str) -> dict:
@@ -11545,445 +16922,102 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 self.oi_finder_mag7_live_last_error = ""
             time.sleep(wait_seconds)
 
-    def _oi_auto_alert_symbols(self) -> list[str]:
-        with self.oi_auto_alert_lock:
-            include_mag7 = bool(self.oi_auto_alert_include_mag7)
-            manual_symbols = list(self.oi_auto_alert_manual_symbols)
-        source = list(MAGNIFICENT_SEVEN) if include_mag7 else []
-        return normalize_oi_auto_alert_symbols([*source, *manual_symbols], limit=32)
+    # ------------------------------------------------------------------ #
+    # Automatic OI-ladder alerts (MAG7 + manual tickers)
+    #
+    # Every trading morning (9:15 ET) the worker builds the same directional
+    # High-OI strike ladder the Charts & OI indicator draws, then during the
+    # regular session confirms a level ONLY from a completed 5-minute candle
+    # close through it (a wick is reported as a touch and never advances the
+    # ladder). Ladders, progress and events persist in app_settings so the
+    # browser can be closed and the server restarted without losing state.
+    # The pure rules live in oi_auto_alerts.py; this section owns schedule,
+    # data fetches and persistence.
+    # ------------------------------------------------------------------ #
+    # Alerts are history the moment they fire: kept by date for 30 days so the
+    # trader can look back over the month, with each morning's 9:15 build
+    # starting a fresh session. The count is only a runaway ceiling - the date
+    # cut is what actually decides what is kept (one-shot alerting makes ~48
+    # events a day across a 12-ticker list, so 30 days sits well inside this).
+    OI_AUTO_ALERT_HISTORY_DAYS = 30
+    OI_AUTO_ALERT_EVENT_LIMIT = 4000
+    OI_AUTO_ALERT_EVENT_PAYLOAD_LIMIT = 240
+    OI_AUTO_ALERT_SUMMARY_DAYS = OI_AUTO_ALERT_HISTORY_DAYS
+    # A morning build later than 09:15 + this is "late" and anchors its ladder to
+    # the 09:15 premarket print instead of whatever price it woke up to.
+    OI_AUTO_ALERT_LATE_BUILD_GRACE_SECONDS = 300
+    OI_AUTO_ALERT_TOUCH_INTERVAL_SECONDS = 60.0
+    OI_AUTO_ALERT_SYMBOL_PAUSE_SECONDS = 0.35
 
-    def _oi_auto_alert_symbol_source(self, symbol: str) -> str:
-        normalized = normalize_oi_auto_alert_symbol(symbol)
-        mag7 = normalized in set(MAGNIFICENT_SEVEN)
-        with self.oi_auto_alert_lock:
-            manual = normalized in set(self.oi_auto_alert_manual_symbols)
-        if mag7 and manual:
-            return "MAG7 + manual"
-        if mag7:
-            return "MAG7"
-        return "Manual"
+    def _init_oi_auto_alert_state(self) -> None:
+        self.oi_auto_alert_lock = threading.RLock()
+        self.oi_auto_alert_wakeup = threading.Event()
+        self.oi_auto_alert_thread: threading.Thread | None = None
+        try:
+            saved = self.repository.get_app_settings()
+        except Exception:
+            saved = {}
 
-    def _persist_oi_auto_alert_state(self) -> None:
-        with self.oi_auto_alert_lock:
-            enabled = "true" if self.oi_auto_alert_enabled else "false"
-            include_mag7 = "true" if self.oi_auto_alert_include_mag7 else "false"
-            manual_symbols = json.dumps(self.oi_auto_alert_manual_symbols, separators=(",", ":"))
-            rows = json.dumps(self.oi_auto_alert_rows, separators=(",", ":"))
-            events = json.dumps(self.oi_auto_alert_events[-100:], separators=(",", ":"))
-            last_refresh_date = str(self.oi_auto_alert_last_refresh_date or "")
-        self.repository.set_app_setting("oi_auto_alert_enabled", enabled)
-        self.repository.set_app_setting("oi_auto_alert_include_mag7", include_mag7)
-        self.repository.set_app_setting("oi_auto_alert_manual_symbols", manual_symbols)
-        self.repository.set_app_setting("oi_auto_alert_rows", rows)
-        self.repository.set_app_setting("oi_auto_alert_events", events)
-        self.repository.set_app_setting("oi_auto_alert_last_refresh_date", last_refresh_date)
+        def flag(key: str, default: bool) -> bool:
+            raw = str(saved.get(key, "") or "").strip().lower()
+            if not raw:
+                return default
+            return raw in {"1", "true", "yes", "on"}
 
-    @staticmethod
-    def _oi_auto_alert_session_label(now_et: datetime) -> str:
-        if now_et.weekday() >= 5:
-            return "Closed"
-        current = now_et.time().replace(tzinfo=None)
-        if clock_time(4, 0) <= current < clock_time(9, 30):
-            return "Premarket"
-        if clock_time(9, 30) <= current < clock_time(16, 0):
-            return "Regular session"
-        if clock_time(16, 0) <= current < clock_time(20, 0):
-            return "After hours"
-        return "Closed"
-
-    @staticmethod
-    def _next_oi_auto_alert_refresh_time(now_et: datetime) -> datetime:
-        candidate = now_et.replace(hour=9, minute=15, second=0, microsecond=0)
-        if candidate <= now_et:
-            candidate += timedelta(days=1)
-        while candidate.weekday() >= 5:
-            candidate += timedelta(days=1)
-        return candidate
-
-    def oi_auto_alert_payload(self) -> dict:
-        eastern = ZoneInfo(EASTERN_TZ)
-        now = datetime.now(eastern)
-        symbols = self._oi_auto_alert_symbols()
-        mag7_symbols = set(MAGNIFICENT_SEVEN)
-        with self.oi_auto_alert_lock:
-            rows_by_symbol = dict(self.oi_auto_alert_rows)
-            rows = []
-            for symbol in symbols:
-                saved = rows_by_symbol.get(symbol)
-                if isinstance(saved, dict):
-                    row = decorate_alert_row(saved)
-                    row["sourceGroup"] = self._oi_auto_alert_symbol_source(symbol)
-                else:
-                    row = {
-                        "symbol": symbol,
-                        "sourceGroup": "MAG7" if symbol in mag7_symbols else "Manual",
-                        "status": "Queued",
-                        "message": "Waiting for the premarket OI-ladder refresh.",
-                        "callLevels": [],
-                        "putLevels": [],
-                        "activeCall": None,
-                        "nextCall": None,
-                        "activePut": None,
-                        "nextPut": None,
-                    }
-                rows.append(row)
-            events = list(reversed(self.oi_auto_alert_events[-50:]))
-            payload = {
-                "enabled": bool(self.oi_auto_alert_enabled),
-                "includeMag7": bool(self.oi_auto_alert_include_mag7),
-                "manualSymbols": list(self.oi_auto_alert_manual_symbols),
-                "monitoredSymbols": symbols,
-                "maxManualSymbols": 25,
-                "confirmationMinutes": 5,
-                "confirmationRule": "Completed regular-session 5-minute candle close strictly above/below the OI level",
-                "rthOnly": True,
-                "premarketRefreshTime": "09:15",
-                "timezone": "America/New_York",
-                "session": self._oi_auto_alert_session_label(now),
-                "status": self.oi_auto_alert_status,
-                "message": self.oi_auto_alert_message,
-                "refreshing": self.oi_auto_alert_status == "Refreshing OI ladders",
-                "lastRun": _serialize_value(self.oi_auto_alert_last_run),
-                "nextRun": _serialize_value(
-                    self.oi_auto_alert_next_run or self._next_oi_auto_alert_refresh_time(now)
-                ),
-                "lastError": self.oi_auto_alert_last_error,
-                "lastRefreshDate": self.oi_auto_alert_last_refresh_date or None,
-                "workerAlive": bool(self.oi_auto_alert_thread and self.oi_auto_alert_thread.is_alive()),
-                "rows": rows,
-                "events": events,
-            }
-        return payload
-
-    def configure_oi_auto_alerts(
-        self,
-        *,
-        enabled: object | None = None,
-        include_mag7: object | None = None,
-    ) -> dict:
-        should_refresh = False
-
-        def checked(value: object) -> bool:
-            if isinstance(value, str):
-                return value.strip().lower() in {"1", "true", "yes", "on"}
-            return bool(value)
-
-        with self.oi_auto_alert_lock:
-            if enabled is not None:
-                next_enabled = checked(enabled)
-                should_refresh = should_refresh or (next_enabled and not self.oi_auto_alert_enabled)
-                self.oi_auto_alert_enabled = next_enabled
-            if include_mag7 is not None:
-                next_include_mag7 = checked(include_mag7)
-                should_refresh = should_refresh or (next_include_mag7 and not self.oi_auto_alert_include_mag7)
-                self.oi_auto_alert_include_mag7 = next_include_mag7
-                if not next_include_mag7:
-                    manual = set(self.oi_auto_alert_manual_symbols)
-                    self.oi_auto_alert_rows = {
-                        symbol: row for symbol, row in self.oi_auto_alert_rows.items() if symbol in manual
-                    }
-            self.oi_auto_alert_status = "Armed" if self.oi_auto_alert_enabled else "Paused"
-            self.oi_auto_alert_message = (
-                "Automatic OI ladders are armed for completed 5-minute RTH candles."
-                if self.oi_auto_alert_enabled
-                else "Automatic OI alerts are paused."
-            )
-        self._persist_oi_auto_alert_state()
-        if should_refresh:
-            self.request_oi_auto_alert_refresh(force=False)
-        else:
-            self.oi_auto_alert_wakeup.set()
-        return self.oi_auto_alert_payload()
-
-    def add_oi_auto_alert_symbol(self, symbol: object) -> dict:
-        target = normalize_oi_auto_alert_symbol(symbol)
-        if not target:
-            raise ValueError("Enter a valid ticker symbol.")
-        with self.oi_auto_alert_lock:
-            if target not in self.oi_auto_alert_manual_symbols:
-                if len(self.oi_auto_alert_manual_symbols) >= 25:
-                    raise ValueError("Auto OI alerts support up to 25 manually added tickers.")
-                self.oi_auto_alert_manual_symbols.append(target)
-        self._persist_oi_auto_alert_state()
-        return self.request_oi_auto_alert_refresh(symbols=[target], force=True)
-
-    def remove_oi_auto_alert_symbol(self, symbol: object) -> dict:
-        target = normalize_oi_auto_alert_symbol(symbol)
-        if not target:
-            raise ValueError("Enter a valid ticker symbol.")
-        with self.oi_auto_alert_lock:
-            self.oi_auto_alert_manual_symbols = [
-                item for item in self.oi_auto_alert_manual_symbols if item != target
-            ]
-            if target not in set(MAGNIFICENT_SEVEN) or not self.oi_auto_alert_include_mag7:
-                self.oi_auto_alert_rows.pop(target, None)
-        self._persist_oi_auto_alert_state()
-        return self.oi_auto_alert_payload()
-
-    def request_oi_auto_alert_refresh(
-        self,
-        *,
-        symbols: list[str] | None = None,
-        force: bool = False,
-    ) -> dict:
-        targets = normalize_oi_auto_alert_symbols(symbols or [], limit=32)
-        with self.oi_auto_alert_lock:
-            self.oi_auto_alert_refresh_requested = True
-            self.oi_auto_alert_force_refresh = self.oi_auto_alert_force_refresh or bool(force)
-            self.oi_auto_alert_refresh_symbols.update(targets)
-            self.oi_auto_alert_status = "Refreshing OI ladders"
-            self.oi_auto_alert_message = (
-                f"Refreshing OI ladders for {', '.join(targets)}."
-                if targets
-                else "Refreshing OI ladders for every monitored ticker."
-            )
-        self.oi_auto_alert_wakeup.set()
-        return self.oi_auto_alert_payload()
-
-    def _refresh_oi_auto_alert_ladders(
-        self,
-        *,
-        symbols: list[str] | None = None,
-        force: bool = False,
-    ) -> None:
-        eastern = ZoneInfo(EASTERN_TZ)
-        now = datetime.now(eastern)
-        targets = normalize_oi_auto_alert_symbols(symbols or self._oi_auto_alert_symbols(), limit=32)
-        if not targets:
-            with self.oi_auto_alert_lock:
-                self.oi_auto_alert_status = "Waiting for tickers"
-                self.oi_auto_alert_message = "Enable MAG7 or add a ticker to start automatic OI alerts."
-            return
-
-        failures: list[str] = []
-        for symbol in targets:
+        def loads(key: str, fallback):
             try:
-                payload = self.oi_finder_payload(
-                    symbol,
-                    force=force,
-                    compact=True,
-                    background_snapshot=True,
-                )
-                chain_rows = payload.get("selectedExpiryChainRows") or []
-                spot = self._safe_float(payload.get("underlyingPrice"), 0.0)
-                if not chain_rows or spot <= 0:
-                    raise RuntimeError(
-                        str((payload.get("errors") or [{}])[0].get("error") or "No usable option chain returned.")
-                    )
-                # MomoX splits calls from puts at BMO (the pre-open price), not
-                # at the live tick, so an intraday swing cannot flip a wall from
-                # one side to the other and re-arm the ladder mid-session.
-                bmo = spot - self._safe_float(payload.get("todayChange"), 0.0)
-                ladder = build_oi_ladder(
-                    chain_rows,
-                    spot,
-                    as_of=now,
-                    anchor_price=bmo if bmo > 0 else spot,
-                )
-                if not ladder.get("callLevels") and not ladder.get("putLevels"):
-                    raise RuntimeError("No qualifying call or put OI levels were returned.")
-                if symbol not in set(self._oi_auto_alert_symbols()):
-                    # The ticker can be removed while its provider request is
-                    # in flight. Do not resurrect that stale row afterward.
-                    continue
+                value = json.loads(saved.get(key, "") or "null")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return fallback
+            return fallback if value is None else value
 
-                with self.oi_auto_alert_lock:
-                    previous = self.oi_auto_alert_rows.get(symbol, {})
-                    same_session = str(previous.get("sessionDate") or "") == now.date().isoformat()
-                    same_levels = (
-                        [level.get("strike") for level in previous.get("callLevels", [])]
-                        == [level.get("strike") for level in ladder.get("callLevels", [])]
-                        and [level.get("strike") for level in previous.get("putLevels", [])]
-                        == [level.get("strike") for level in ladder.get("putLevels", [])]
-                    )
-                    preserve_progress = same_session and same_levels
-                    self.oi_auto_alert_rows[symbol] = {
-                        "symbol": symbol,
-                        "sourceGroup": self._oi_auto_alert_symbol_source(symbol),
-                        "status": "Monitoring" if self.oi_auto_alert_enabled else "Paused",
-                        "message": "Waiting for a completed 5-minute RTH candle close.",
-                        "spot": round(spot, 4),
-                        "anchor": ladder.get("anchor"),
-                        "source": payload.get("source") or "Option chain",
-                        "sessionDate": now.date().isoformat(),
-                        "monthlyExpiry": ladder.get("monthlyExpiry"),
-                        "levelsUpdatedAt": payload.get("scannedAt") or now.isoformat(),
-                        "callLevels": ladder.get("callLevels") or [],
-                        "putLevels": ladder.get("putLevels") or [],
-                        "confirmedCallStrikes": previous.get("confirmedCallStrikes", []) if preserve_progress else [],
-                        "confirmedPutStrikes": previous.get("confirmedPutStrikes", []) if preserve_progress else [],
-                        "lastProcessedBar": previous.get("lastProcessedBar") if preserve_progress else None,
-                        "lastClose": previous.get("lastClose") if preserve_progress else None,
-                        "lastBar": previous.get("lastBar") if preserve_progress else None,
-                    }
-            except Exception as exc:
-                failures.append(f"{symbol}: {exc}")
-                with self.oi_auto_alert_lock:
-                    previous = self.oi_auto_alert_rows.get(symbol, {})
-                    self.oi_auto_alert_rows[symbol] = {
-                        **previous,
-                        "symbol": symbol,
-                        "sourceGroup": self._oi_auto_alert_symbol_source(symbol),
-                        "status": "Unavailable",
-                        "message": str(exc),
-                    }
-            if len(targets) > 1:
-                time.sleep(0.35)
-
-        finished = datetime.now(eastern)
-        with self.oi_auto_alert_lock:
-            self.oi_auto_alert_last_run = finished
-            self.oi_auto_alert_last_refresh_date = finished.date().isoformat()
-            self.oi_auto_alert_last_error = " | ".join(failures)
-            self.oi_auto_alert_status = "Partial" if failures else ("Armed" if self.oi_auto_alert_enabled else "Paused")
-            self.oi_auto_alert_message = (
-                f"Built {len(targets) - len(failures)}/{len(targets)} OI ladders; unavailable tickers can be refreshed again."
-                if failures
-                else f"{len(targets)} OI ladders ready. Confirmation requires a completed 5-minute RTH close."
-            )
-            self.oi_auto_alert_next_run = self._next_oi_auto_alert_refresh_time(finished)
-        self._persist_oi_auto_alert_state()
-
-    def _latest_completed_oi_auto_alert_bar(
-        self,
-        symbol: str,
-        completed_end: datetime,
-    ) -> dict | None:
-        target = normalize_oi_auto_alert_symbol(symbol)
-        if not target:
-            return None
-        if hasattr(self.market_data_client, "ensure_streaming"):
-            self.market_data_client.ensure_streaming([target])
-        frame = self.market_data_client.get_chart_bars(target, timeframe="1Min", days_back=2)
-        if not isinstance(frame, pd.DataFrame) or frame.empty or "timestamp" not in frame.columns:
-            return None
-        bars = frame.copy()
-        timestamps = pd.to_datetime(bars["timestamp"], errors="coerce")
-        if getattr(timestamps.dt, "tz", None) is None:
-            timestamps = timestamps.dt.tz_localize(EASTERN_TZ, nonexistent="shift_forward", ambiguous="NaT")
-        else:
-            timestamps = timestamps.dt.tz_convert(EASTERN_TZ)
-        bars["timestamp"] = timestamps
-        bars = bars.dropna(subset=["timestamp"]).sort_values("timestamp")
-        if bars.empty:
-            return None
-
-        end_stamp = pd.Timestamp(completed_end).tz_convert(EASTERN_TZ)
-        start_stamp = end_stamp - pd.Timedelta(minutes=5)
-        session_open = end_stamp.normalize() + pd.Timedelta(hours=9, minutes=30)
-        session_close = end_stamp.normalize() + pd.Timedelta(hours=16)
-        if start_stamp < session_open or end_stamp > session_close:
-            return None
-        window = bars.loc[
-            (bars["timestamp"] >= start_stamp)
-            & (bars["timestamp"] < end_stamp)
-            & (bars["timestamp"].dt.date == end_stamp.date())
-        ]
-        if window.empty:
-            return None
-        final_minute = end_stamp - pd.Timedelta(minutes=1)
-        if window["timestamp"].max() < final_minute:
-            # The broker snapshot has not published the candle's final minute
-            # yet. The worker will retry instead of confirming a partial bar.
-            return None
-        last = window.iloc[-1]
-        return {
-            "startedAt": start_stamp.isoformat(),
-            "endedAt": end_stamp.isoformat(),
-            "open": round(float(window.iloc[0]["open"]), 4),
-            "high": round(float(window["high"].max()), 4),
-            "low": round(float(window["low"].min()), 4),
-            "close": round(float(last["close"]), 4),
-            "volume": int(window["volume"].fillna(0).sum()) if "volume" in window.columns else 0,
-        }
-
-    def _evaluate_oi_auto_alerts(self, completed_end: datetime) -> None:
-        with self.oi_auto_alert_lock:
-            rows = [dict(row) for row in self.oi_auto_alert_rows.values()]
-            known_event_ids = {
-                str(event.get("id") or "")
-                for event in self.oi_auto_alert_events
-                if isinstance(event, dict)
-            }
-        if not rows:
-            return
-        changed = False
-        for row in rows:
-            symbol = normalize_oi_auto_alert_symbol(row.get("symbol"))
-            if not symbol or row.get("status") == "Unavailable":
-                continue
+        self.oi_auto_alert_enabled = flag("oi_auto_alert_enabled", True)
+        self.oi_auto_alert_include_mag7 = flag("oi_auto_alert_include_mag7", True)
+        manual = loads("oi_auto_alert_manual_symbols", [])
+        self.oi_auto_alert_manual_symbols = oi_auto_alert_normalize_symbols(
+            manual if isinstance(manual, list) else [],
+            limit=OI_AUTO_ALERT_MAX_MANUAL_SYMBOLS,
+        )
+        rows = loads("oi_auto_alert_rows", {})
+        self.oi_auto_alert_rows: dict[str, dict] = {}
+        if isinstance(rows, dict):
+            for raw_symbol, row in rows.items():
+                symbol = oi_auto_alert_normalize_symbol(raw_symbol)
+                if symbol and isinstance(row, dict):
+                    self.oi_auto_alert_rows[symbol] = row
+        events = loads("oi_auto_alert_events", [])
+        # Prune on load as well as on write, so a restart cannot resurrect
+        # alerts that have aged out of the 30-day history.
+        self.oi_auto_alert_events: list[dict] = self._oi_auto_alert_prune_events([
+            event for event in (events if isinstance(events, list) else []) if isinstance(event, dict)
+        ])
+        self.oi_auto_alert_last_refresh_date = str(saved.get("oi_auto_alert_last_refresh_date", "") or "")
+        self.oi_auto_alert_last_refresh_at: datetime | None = None
+        raw_refresh_at = str(saved.get("oi_auto_alert_last_refresh_at", "") or "")
+        if raw_refresh_at:
             try:
-                bar = self._latest_completed_oi_auto_alert_bar(symbol, completed_end)
-            except Exception as exc:
-                with self.oi_auto_alert_lock:
-                    current = self.oi_auto_alert_rows.get(symbol, row)
-                    current["message"] = f"5-minute candle unavailable: {exc}"
-                    self.oi_auto_alert_rows[symbol] = current
-                continue
-            if not bar:
-                continue
-            updated, event_specs = apply_completed_five_minute_close(
-                row,
-                close=bar["close"],
-                bar_ended_at=bar["endedAt"],
-            )
-            updated["lastBar"] = bar
-            updated["status"] = "Monitoring"
-            updated["message"] = "Last completed 5-minute candle evaluated."
-            with self.oi_auto_alert_lock:
-                self.oi_auto_alert_rows[symbol] = updated
-            changed = changed or updated != row
-            for spec in event_specs:
-                confirmed_level = spec.get("confirmedLevel") or {}
-                next_target = spec.get("nextTarget")
-                event_id = (
-                    f"{symbol}-{spec.get('side')}-{bar['endedAt']}-"
-                    f"{self._safe_float(confirmed_level.get('strike'), 0.0):g}"
-                )
-                if event_id in known_event_ids:
-                    continue
-                known_event_ids.add(event_id)
-                next_text = (
-                    f"Next OI target {self._safe_float(next_target.get('strike'), 0.0):g}"
-                    f" (Imp {int(self._safe_float(next_target.get('imp'), 0.0)) or '-'})."
-                    if isinstance(next_target, dict)
-                    else "No further ranked OI target remains."
-                )
-                side = str(spec.get("side") or "")
-                direction = "above" if side == "CALL" else "below"
-                strike = self._safe_float(confirmed_level.get("strike"), 0.0)
-                imp = int(self._safe_float(confirmed_level.get("imp"), 0.0))
-                event = {
-                    "id": event_id,
-                    "symbol": symbol,
-                    "side": side,
-                    "direction": direction,
-                    "confirmedLevel": confirmed_level,
-                    "crossedLevels": spec.get("crossedLevels") or [],
-                    "nextTarget": next_target,
-                    "followingTarget": spec.get("followingTarget"),
-                    "close": spec.get("close"),
-                    "barEndedAt": spec.get("barEndedAt"),
-                    "createdAt": datetime.now(ZoneInfo(EASTERN_TZ)).isoformat(),
-                    "imp": imp,
-                    "message": (
-                        f"{symbol} 5m closed {direction} {side} OI {strike:g}"
-                        f"{f' (Imp {imp})' if imp else ''}. {next_text}"
-                    ),
-                }
-                with self.oi_auto_alert_lock:
-                    self.oi_auto_alert_events.append(event)
-                    self.oi_auto_alert_events = self.oi_auto_alert_events[-100:]
-                self.repository.log_bot_event("oi_auto_alert", event["message"])
-                changed = True
-        with self.oi_auto_alert_lock:
-            self.oi_auto_alert_last_run = datetime.now(ZoneInfo(EASTERN_TZ))
-            self.oi_auto_alert_last_evaluated_bucket = completed_end.isoformat()
-            if self.oi_auto_alert_enabled:
-                self.oi_auto_alert_status = "Monitoring"
-                self.oi_auto_alert_message = "Watching completed five-minute RTH candles for OI confirmations."
-        if changed:
-            self._persist_oi_auto_alert_state()
+                self.oi_auto_alert_last_refresh_at = datetime.fromisoformat(raw_refresh_at)
+            except ValueError:
+                self.oi_auto_alert_last_refresh_at = None
+        self.oi_auto_alert_next_refresh_at: datetime | None = None
+        self.oi_auto_alert_last_evaluated_at: datetime | None = None
+        self.oi_auto_alert_last_touch_check_at: datetime | None = None
+        self.oi_auto_alert_last_error = ""
+        self.oi_auto_alert_refreshing = False
+        self.oi_auto_alert_refresh_requests: list[tuple[list[str] | None, str]] = []
+        self.oi_auto_alert_retry_symbols: list[str] = []
+        self.oi_auto_alert_retry_at: datetime | None = None
+        self.oi_auto_alert_retry_attempts = 0
+        self.oi_auto_alert_bar_source = ""
+        self.oi_auto_alert_bar_retry_at: datetime | None = None
+        self.oi_auto_alert_last_bar_end_key = ""
+        self.oi_auto_alert_trading_day_cache: tuple[str, bool] | None = None
+        self.oi_auto_alert_status = "Armed" if self.oi_auto_alert_enabled else "Paused"
+        self.oi_auto_alert_message = (
+            "Waiting for the 9:15 AM ET OI-ladder build."
+            if self.oi_auto_alert_enabled
+            else "Automatic OI alerts are paused."
+        )
 
     def _start_oi_auto_alert_worker(self) -> None:
         if self.oi_auto_alert_thread is None or not self.oi_auto_alert_thread.is_alive():
@@ -11994,66 +17028,1021 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             )
             self.oi_auto_alert_thread.start()
 
+    def _oi_auto_alert_symbols(self) -> list[str]:
+        with self.oi_auto_alert_lock:
+            include_mag7 = bool(self.oi_auto_alert_include_mag7)
+            manual = list(self.oi_auto_alert_manual_symbols)
+        symbols = list(MAGNIFICENT_SEVEN) if include_mag7 else []
+        for symbol in manual:
+            if symbol not in symbols:
+                symbols.append(symbol)
+        return symbols
+
+    def _oi_auto_alert_symbol_source(self, symbol: str) -> str:
+        return "mag7" if symbol in MAGNIFICENT_SEVEN and self.oi_auto_alert_include_mag7 else "manual"
+
+    def _persist_oi_auto_alert_state(self) -> None:
+        if not _IS_SERVING_PROCESS:
+            # A ghost instance (test import, tool, profiler) must never write
+            # alert state - see _IS_SERVING_PROCESS. Reading is fine.
+            return
+        with self.oi_auto_alert_lock:
+            payload = {
+                "oi_auto_alert_enabled": "true" if self.oi_auto_alert_enabled else "false",
+                "oi_auto_alert_include_mag7": "true" if self.oi_auto_alert_include_mag7 else "false",
+                "oi_auto_alert_manual_symbols": json.dumps(list(self.oi_auto_alert_manual_symbols)),
+                "oi_auto_alert_rows": json.dumps(self.oi_auto_alert_rows, default=str),
+                "oi_auto_alert_events": json.dumps(self.oi_auto_alert_events[-self.OI_AUTO_ALERT_EVENT_LIMIT:], default=str),
+                "oi_auto_alert_last_refresh_date": self.oi_auto_alert_last_refresh_date,
+                "oi_auto_alert_last_refresh_at": (
+                    self.oi_auto_alert_last_refresh_at.isoformat() if self.oi_auto_alert_last_refresh_at else ""
+                ),
+            }
+        try:
+            for key, value in payload.items():
+                self.repository.set_app_setting(key, value)
+        except Exception as exc:
+            with self.oi_auto_alert_lock:
+                self.oi_auto_alert_last_error = f"Could not persist auto-alert state: {exc}"
+
+    def _oi_auto_alert_is_trading_day(self, now_et: datetime) -> bool:
+        """Weekday plus the Alpaca market clock (the holiday authority)."""
+        if now_et.weekday() >= 5:
+            return False
+        today = now_et.date().isoformat()
+        cached = self.oi_auto_alert_trading_day_cache
+        if cached and cached[0] == today:
+            return cached[1]
+        result = True
+        try:
+            clock = self.client.get_clock()
+            if bool(getattr(clock, "is_open", False)):
+                result = True
+            else:
+                next_open = getattr(clock, "next_open", None)
+                if next_open is not None:
+                    stamp = pd.Timestamp(next_open)
+                    stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
+                    next_open_date = stamp.tz_convert(EASTERN_TZ).date()
+                    # Before the open on a trading day next_open is today; after
+                    # the close it is the next session, which the schedule
+                    # helpers already treat as "nothing left to do today".
+                    result = next_open_date == now_et.date() or now_et.time() >= clock_time(16, 0)
+        except Exception:
+            result = True
+        self.oi_auto_alert_trading_day_cache = (today, result)
+        return result
+
+    def request_oi_auto_alert_refresh(self, symbols: list[str] | None = None, reason: str = "manual") -> None:
+        with self.oi_auto_alert_lock:
+            self.oi_auto_alert_refresh_requests.append((list(symbols) if symbols else None, reason))
+        self.oi_auto_alert_wakeup.set()
+
+    def _oi_auto_alert_refresh_levels(
+        self,
+        symbols: list[str] | None = None,
+        reason: str = "scheduled",
+        now: datetime | None = None,
+    ) -> None:
+        """Build (or rebuild) the OI ladders for ``symbols`` (default: all).
+
+        ``now`` overrides the build clock. It matters because the build time
+        decides the plan price: on time the walls split around the live spot,
+        late they split around the 09:15 print (see _oi_auto_alert_plan_price).
+        A wall counts as resistance or support by which side of that price it
+        lands on, so the SAME chain yields a different call/put ladder
+        depending on when the build runs - chain_rows()'s 340 PUT becomes a
+        CALL level once a late build anchors the plan below it. Tests must pin
+        this or they assert one ladder in the morning and another at night.
+        """
+        eastern = ZoneInfo(EASTERN_TZ)
+        started = now.astimezone(eastern) if now is not None else datetime.now(eastern)
+        targets = [symbol for symbol in (symbols or self._oi_auto_alert_symbols()) if symbol]
+        # Symbols removed from the lists are dropped from the ladder map.
+        allowed = set(self._oi_auto_alert_symbols())
+        with self.oi_auto_alert_lock:
+            for stale in [symbol for symbol in self.oi_auto_alert_rows if symbol not in allowed]:
+                self.oi_auto_alert_rows.pop(stale, None)
+            self.oi_auto_alert_refreshing = True
+            self.oi_auto_alert_status = "Building ladders"
+            self.oi_auto_alert_message = f"Building OI ladders for {len(targets)} tickers ({reason})."
+        failures: list[str] = []
+        session_date = started.date().isoformat()
+        for index, symbol in enumerate(targets, start=1):
+            if symbol not in set(self._oi_auto_alert_symbols()):
+                continue
+            try:
+                payload = self.oi_finder_payload(symbol, force=True, compact=True, background_snapshot=True)
+                if not bool(payload.get("live")):
+                    error = (payload.get("errors") or [{}])[0].get("error") or "No live option chain returned."
+                    raise RuntimeError(str(error))
+                rows = payload.get("selectedExpiryChainRows") or []
+                if not rows:
+                    rows = [
+                        *[{**row, "side": row.get("side") or "CALL"} for row in (payload.get("callRows") or [])],
+                        *[{**row, "side": row.get("side") or "PUT"} for row in (payload.get("putRows") or [])],
+                    ]
+                spot = self._safe_float(payload.get("underlyingPrice"), 0.0)
+                if spot <= 0:
+                    raise RuntimeError("Option chain returned no underlying price.")
+                # Only the AUTOMATIC morning build is anchored to 09:15. A manual
+                # rebuild means "use what the market is doing now", so it keeps
+                # the live spot.
+                plan_source = "live"
+                if reason in {"morning", "startup"} and self._oi_auto_alert_is_trading_day(started):
+                    spot, plan_source = self._oi_auto_alert_plan_price(symbol, started, spot)
+                # The ATM straddle expected move sizes the ±(6×EM) band, and the
+                # expiry it is read from decides whether the ladder matches the
+                # Trading Alphas / MomoX sheet or collapses.
+                #
+                # Skip a SPENT expiry, judged by shape rather than by date. A
+                # 0-DTE straddle still has a full session of value at the 9:15
+                # build - measured premarket: SPY 2.87 against 4.19 for the next
+                # expiry, a ratio of 0.68, which is the sqrt(2) time-scaling you
+                # expect and exactly the move the trader wants for today. After
+                # the close the same contract is worthless: TSLA read 0.915
+                # against 7.525 on 2026-08-17, a ratio of 0.12, and the band
+                # shrank to 338.9-340.7 with one wall left standing out of
+                # sixteen. Dating the rule on "is it today" would have thrown
+                # away SPY's legitimate 2.87 every morning.
+                expected_moves = payload.get("expiryExpectedMoves") or {}
+                dated = sorted(
+                    str(key) for key in expected_moves
+                    if self._safe_float(expected_moves.get(key), 0.0) > 0
+                )
+                nearest_move = 0.0
+                for index, expiry in enumerate(dated):
+                    move = self._safe_float(expected_moves.get(expiry), 0.0)
+                    following = (
+                        self._safe_float(expected_moves.get(dated[index + 1]), 0.0)
+                        if index + 1 < len(dated) else 0.0
+                    )
+                    if following > 0 and move < following * OI_AUTO_ALERT_SPENT_EXPIRY_RATIO:
+                        continue
+                    nearest_move = move
+                    break
+                if nearest_move <= 0 and dated:
+                    nearest_move = self._safe_float(expected_moves.get(dated[0]), 0.0)
+                if nearest_move <= 0:
+                    nearest_move = self._safe_float((payload.get("currentAtm") or {}).get("expected_move"), 0.0)
+                if nearest_move <= 0:
+                    # Overnight Schwab returns no straddle mark, so estimate the
+                    # 1-day expected move from ATM IV (spot x IV x sqrt(1/252))
+                    # — MomoX shows an ExMo overnight the same way.
+                    iv_percent = self._safe_float(payload.get("impliedVolatility"), 0.0)
+                    if iv_percent > 0 and spot > 0:
+                        nearest_move = spot * (iv_percent / 100.0) / math.sqrt(252.0)
+                ladder = oi_auto_alert_build_ladder(rows, spot, as_of=started, expected_move=nearest_move)
+                if not ladder["callLevels"] and not ladder["putLevels"]:
+                    raise RuntimeError("No open-interest levels found around the current price.")
+                fresh = oi_auto_alert_new_row(
+                    symbol,
+                    ladder,
+                    source=str(payload.get("source") or "Option chain"),
+                    source_group=self._oi_auto_alert_symbol_source(symbol),
+                    session_date=session_date,
+                    levels_updated_at=str(payload.get("scannedAt") or started.isoformat()),
+                )
+                # Say which price the plan was split around. A build that had to
+                # reach back to the 09:15 print should be visible on the card,
+                # not something the trader has to infer from levels that look off.
+                fresh["planPriceSource"] = plan_source
+                with self.oi_auto_alert_lock:
+                    previous = self.oi_auto_alert_rows.get(symbol) or {}
+                    # A mid-session rebuild keeps today's progress; the morning
+                    # build (new session date) starts every ladder fresh.
+                    if previous.get("sessionDate") == session_date and reason != "morning":
+                        for key in (
+                            "confirmedCallStrikes",
+                            "confirmedPutStrikes",
+                            "touchedCallStrikes",
+                            "touchedPutStrikes",
+                            "lastCallEvent",
+                            "lastPutEvent",
+                            "lastProcessedBar",
+                            "lastClose",
+                            "lastBar",
+                            "lastTouchCheckAt",
+                        ):
+                            if previous.get(key) not in (None, []):
+                                fresh[key] = previous.get(key)
+                    fresh["status"] = "armed" if self.oi_auto_alert_enabled else "paused"
+                    fresh["message"] = "Waiting for a completed 5-minute regular-hours candle."
+                    self.oi_auto_alert_rows[symbol] = fresh
+            except Exception as exc:
+                failures.append(f"{symbol}: {exc}")
+                with self.oi_auto_alert_lock:
+                    previous = self.oi_auto_alert_rows.get(symbol) or {}
+                    self.oi_auto_alert_rows[symbol] = {
+                        **previous,
+                        "symbol": symbol,
+                        "sourceGroup": self._oi_auto_alert_symbol_source(symbol),
+                        "status": "unavailable",
+                        "message": _oi_auto_alert_plain_error(
+                            exc,
+                            kept=bool(previous.get("callLevels")
+                                      or previous.get("putLevels")),
+                        ),
+                        "callLevels": previous.get("callLevels") or [],
+                        "putLevels": previous.get("putLevels") or [],
+                    }
+            if index < len(targets):
+                time.sleep(self.OI_AUTO_ALERT_SYMBOL_PAUSE_SECONDS)
+
+        finished = datetime.now(eastern)
+        with self.oi_auto_alert_lock:
+            self.oi_auto_alert_refreshing = False
+            self.oi_auto_alert_last_refresh_at = finished
+            if reason == "morning":
+                # Only the 9:15 build (or its catch-up) counts as today's
+                # refresh; boot/manual builds must not suppress it.
+                self.oi_auto_alert_last_refresh_date = session_date
+                self.oi_auto_alert_retry_attempts = 0
+            failed_symbols = [item.split(":", 1)[0] for item in failures]
+            retry_delay = (
+                oi_auto_alert_retry_delay(self.oi_auto_alert_retry_attempts)
+                if failed_symbols and reason in {"morning", "retry", "startup", "added"}
+                else None
+            )
+            if retry_delay is not None:
+                # Six fast attempts for a broker hiccup, then a slow heartbeat
+                # for the rest of the session. The old schedule stopped after
+                # twelve minutes: on 2026-08-27 the 09:15 build failed while
+                # both chain providers were refused, the retries ran out, the
+                # providers recovered later that day, and nothing noticed - so
+                # every Mag7 ladder sat on the PREVIOUS day's open interest
+                # until the owner rebuilt them by hand and asked why it was
+                # still broken.
+                self.oi_auto_alert_retry_attempts += 1
+                self.oi_auto_alert_retry_symbols = failed_symbols
+                self.oi_auto_alert_retry_at = finished + retry_delay
+            elif not failed_symbols:
+                self.oi_auto_alert_retry_symbols = []
+                self.oi_auto_alert_retry_at = None
+            self.oi_auto_alert_last_error = " | ".join(failures)
+            built = len(targets) - len(failures)
+            if not self.oi_auto_alert_enabled:
+                self.oi_auto_alert_status = "Paused"
+                self.oi_auto_alert_message = f"{built} OI ladders ready; automatic OI alerts are paused."
+            elif failures:
+                self.oi_auto_alert_status = "Partial"
+                self.oi_auto_alert_message = (
+                    f"Built {built}/{len(targets)} OI ladders; unavailable tickers can be refreshed again."
+                )
+            else:
+                self.oi_auto_alert_status = "Armed"
+                self.oi_auto_alert_message = (
+                    f"{built} OI ladders ready. A level confirms only on a completed 5-minute close through it."
+                )
+        self._persist_oi_auto_alert_state()
+
+    def _oi_auto_alert_plan_price(self, symbol: str, started: datetime, live_spot: float) -> tuple[float, str]:
+        """The price the 9:15 ET premarket plan should be split around.
+
+        The ladder splits walls into calls above and puts below ONE price. When
+        the build runs on time that price is the 09:15 premarket print, which is
+        the plan the trader marks up before the open.
+
+        A late build has no such anchor. On 2026-08-17 the process started at
+        10:11, the ladder was built at 10:31 off a price 45 minutes into the
+        session, and the levels on the chart no longer matched anything the
+        trader had planned. So when the build is late, look up the last print at
+        or before 09:15 and split around THAT.
+
+        Returns (price, source). Falls back to the live spot - a plan built off
+        the wrong price still beats no plan at all - and says which was used.
+        """
+        plan_deadline = started.replace(hour=9, minute=15, second=0, microsecond=0)
+        if started <= plan_deadline + timedelta(seconds=self.OI_AUTO_ALERT_LATE_BUILD_GRACE_SECONDS):
+            return live_spot, "live"
+        try:
+            bars = self._oi_auto_alert_minute_bars(
+                symbol,
+                started.date(),
+                start_time=clock_time(4, 0),
+                end_time=clock_time(9, 16),
+            )
+        except Exception:
+            return live_spot, "live (premarket bars unavailable)"
+        for bar in reversed(bars):
+            stamp = bar.get("timestamp")
+            close = self._safe_float(bar.get("close"), 0.0)
+            if close > 0 and isinstance(stamp, datetime) and stamp <= plan_deadline:
+                return close, f"09:15 premarket print ({stamp.strftime('%H:%M')} ET)"
+        return live_spot, "live (no premarket print)"
+
+    def _oi_auto_alert_minute_bars(
+        self,
+        symbol: str,
+        session_date: date,
+        *,
+        start_time=None,
+        end_time=None,
+    ) -> list[dict]:
+        """Today's regular-session 1-minute bars as dicts (timestamp = bar start, ET).
+
+        The window defaults to the regular session (09:30-16:00), which is what
+        the 5-minute confirmations run on. The premarket plan-price lookup passes
+        an earlier window instead - see _oi_auto_alert_plan_price.
+
+        Schwab (the app's market-data provider) is primary; when it errors or
+        returns nothing the Alpaca client supplies the bars so a Schwab token
+        hiccup cannot silently stop the 5-minute confirmations.
+        """
+        frame = None
+        errors: list[str] = []
+        source = ""
+        # Try each provider in turn and keep the first NON-EMPTY frame. The
+        # configured market-data client returned an empty frame on 2026-08-17
+        # (the 09:30 session never evaluated and no alert could fire), while a
+        # direct Schwab call returned 161 bars — so an empty frame must fall
+        # through to the next provider instead of silently skipping the ticker.
+        providers: list[tuple[str, object]] = [("primary", self.market_data_client)]
+        try:
+            schwab_bars_client = SchwabClient()
+            if schwab_bars_client.configured and schwab_bars_client is not self.market_data_client:
+                providers.append(("schwab", schwab_bars_client))
+        except Exception as exc:
+            errors.append(f"schwab client: {exc}")
+        broker_client = getattr(self, "client", None)
+        if broker_client is not None and broker_client is not self.market_data_client and hasattr(broker_client, "get_chart_bars"):
+            providers.append(("alpaca", broker_client))
+        for name, provider in providers:
+            if provider is None or not hasattr(provider, "get_chart_bars"):
+                continue
+            try:
+                candidate = provider.get_chart_bars(symbol, timeframe="1Min", days_back=1)
+            except Exception as exc:
+                errors.append(f"{name} bars: {exc}")
+                continue
+            if isinstance(candidate, pd.DataFrame) and not candidate.empty and "timestamp" in candidate.columns:
+                frame = candidate
+                source = name
+                break
+            errors.append(f"{name} bars: empty")
+        if not isinstance(frame, pd.DataFrame) or frame.empty or "timestamp" not in frame.columns:
+            if errors:
+                raise RuntimeError("1-minute bars unavailable (" + "; ".join(errors) + ")")
+            return []
+        with self.oi_auto_alert_lock:
+            self.oi_auto_alert_bar_source = source
+        bars = frame.copy()
+        timestamps = pd.to_datetime(bars["timestamp"], errors="coerce")
+        if getattr(timestamps.dt, "tz", None) is None:
+            timestamps = timestamps.dt.tz_localize(EASTERN_TZ, nonexistent="shift_forward", ambiguous="NaT")
+        else:
+            timestamps = timestamps.dt.tz_convert(EASTERN_TZ)
+        bars["timestamp"] = timestamps
+        bars = bars.dropna(subset=["timestamp"]).sort_values("timestamp")
+        session_open = pd.Timestamp(
+            datetime.combine(session_date, start_time or clock_time(9, 30)), tz=EASTERN_TZ
+        )
+        session_close = pd.Timestamp(
+            datetime.combine(session_date, end_time or clock_time(16, 0)), tz=EASTERN_TZ
+        )
+        bars = bars.loc[(bars["timestamp"] >= session_open) & (bars["timestamp"] < session_close)]
+        output: list[dict] = []
+        for record in bars.to_dict("records"):
+            output.append(
+                {
+                    "timestamp": record["timestamp"].to_pydatetime(),
+                    "open": self._safe_float(record.get("open"), 0.0),
+                    "high": self._safe_float(record.get("high"), 0.0),
+                    "low": self._safe_float(record.get("low"), 0.0),
+                    "close": self._safe_float(record.get("close"), 0.0),
+                    "volume": self._safe_float(record.get("volume"), 0.0),
+                }
+            )
+        return output
+
+    def _oi_auto_alert_record_events(self, events: list[dict]) -> None:
+        if not events:
+            return
+        with self.oi_auto_alert_lock:
+            known = {str(event.get("id")) for event in self.oi_auto_alert_events}
+            for event in events:
+                if str(event.get("id")) in known:
+                    continue
+                event["message"] = oi_auto_alert_format_message(event)
+                event["recordedAt"] = datetime.now(ZoneInfo(EASTERN_TZ)).isoformat()
+                # Stamp the session it belongs to, so history groups by trading
+                # day rather than by whenever the row happened to be written.
+                event.setdefault("sessionDate", str(event.get("at") or "")[:10])
+                self.oi_auto_alert_events.append(event)
+                known.add(str(event.get("id")))
+            self.oi_auto_alert_events = self._oi_auto_alert_prune_events(self.oi_auto_alert_events)
+        for event in events:
+            try:
+                self.repository.log_bot_event(
+                    "oi_auto_alert",
+                    str(event.get("message") or ""),
+                    json.dumps(event, default=str),
+                )
+            except Exception:
+                pass
+
+    def _oi_auto_alert_evaluate(self, now_et: datetime) -> None:
+        """One regular-session pass: per symbol, touch check on new 1-minute
+        bars and, when a new 5-minute candle has completed, the confirmation."""
+        with self.oi_auto_alert_lock:
+            symbols = [symbol for symbol in self._oi_auto_alert_symbols() if symbol in self.oi_auto_alert_rows]
+        if not symbols:
+            return
+        completed_end = oi_auto_alert_latest_bar_end(now_et)
+        completed_end_key = completed_end.isoformat() if completed_end else ""
+        session_date = now_et.date()
+        failures: list[str] = []
+        new_events: list[dict] = []
+        changed = False
+        for index, symbol in enumerate(symbols, start=1):
+            with self.oi_auto_alert_lock:
+                row = dict(self.oi_auto_alert_rows.get(symbol) or {})
+            if not _oi_auto_alert_should_evaluate(row, session_date.isoformat()):
+                continue
+            needs_confirmation = bool(completed_end_key) and str(row.get("lastProcessedBar") or "") != completed_end_key
+            try:
+                minute_bars = self._oi_auto_alert_minute_bars(symbol, session_date)
+            except Exception as exc:
+                failures.append(f"{symbol}: {exc}")
+                continue
+            if not minute_bars:
+                continue
+            events: list[dict] = []
+            # Confirmation first, from the aggregated completed 5-minute
+            # candles. Every candle since the last processed one is replayed
+            # (not only the newest) so a restart or a slow pass cannot skip
+            # a close that went through a level.
+            if needs_confirmation and completed_end is not None:
+                session_open = completed_end.replace(hour=9, minute=30, second=0, microsecond=0)
+                cursor = session_open + timedelta(minutes=5)
+                last_processed = str(row.get("lastProcessedBar") or "")
+                if last_processed:
+                    try:
+                        previous_end = datetime.fromisoformat(last_processed).astimezone(ZoneInfo(EASTERN_TZ))
+                        if previous_end.date() == completed_end.date():
+                            cursor = max(cursor, previous_end + timedelta(minutes=5))
+                    except ValueError:
+                        pass
+                guard = 0
+                while cursor <= completed_end and guard < 90:
+                    guard += 1
+                    bar = oi_auto_alert_five_minute_bar(minute_bars, end=cursor)
+                    if bar is not None and cursor == completed_end:
+                        # The newest candle: only trust it once its final
+                        # minute bar has arrived from the feed, unless the
+                        # feed is clearly late (then use what we have).
+                        newest_minute = max(
+                            (item["timestamp"] for item in minute_bars if cursor - timedelta(minutes=5) <= item["timestamp"] < cursor),
+                            default=None,
+                        )
+                        feed_settled = newest_minute is not None and newest_minute >= cursor - timedelta(minutes=1)
+                        if not feed_settled and (now_et - cursor) < timedelta(seconds=45):
+                            with self.oi_auto_alert_lock:
+                                self.oi_auto_alert_bar_retry_at = now_et + timedelta(seconds=10)
+                            break
+                    if bar is not None:
+                        row, bar_events = oi_auto_alert_apply_completed_bar(row, bar=bar)
+                        events.extend(bar_events)
+                    cursor += timedelta(minutes=5)
+            # Then the early-warning touch check on completed 1-minute bars
+            # newer than the last check (the forming minute is excluded).
+            last_check = str(row.get("lastTouchCheckAt") or "")
+            cutoff = now_et.replace(second=0, microsecond=0)
+            fresh_bars = [
+                bar for bar in minute_bars
+                if bar["timestamp"] < cutoff and (not last_check or bar["timestamp"].isoformat() > last_check)
+            ]
+            if fresh_bars:
+                high = max(bar["high"] for bar in fresh_bars)
+                positive_lows = [bar["low"] for bar in fresh_bars if bar["low"] > 0]
+                low = min(positive_lows) if positive_lows else high
+                latest = fresh_bars[-1]["timestamp"]
+                row, touch_events = oi_auto_alert_apply_intrabar_touch(row, high=high, low=low, at=latest.isoformat())
+                events.extend(touch_events)
+                row["lastTouchCheckAt"] = latest.isoformat()
+                changed = True
+            if events:
+                changed = True
+                row["status"] = "monitoring"
+                row["message"] = oi_auto_alert_format_message(events[-1])
+                new_events.extend(events)
+            elif needs_confirmation and str(row.get("lastProcessedBar") or "") == completed_end_key:
+                changed = True
+                row["status"] = "monitoring"
+                row["message"] = f"5m close {self._safe_float(row.get('lastClose'), 0.0):.2f} did not confirm a level."
+            with self.oi_auto_alert_lock:
+                current = self.oi_auto_alert_rows.get(symbol)
+                if current is not None:
+                    self.oi_auto_alert_rows[symbol] = row
+            if index < len(symbols):
+                time.sleep(self.OI_AUTO_ALERT_SYMBOL_PAUSE_SECONDS)
+        with self.oi_auto_alert_lock:
+            self.oi_auto_alert_last_evaluated_at = now_et
+            self.oi_auto_alert_last_touch_check_at = now_et
+            self.oi_auto_alert_last_error = " | ".join(failures)
+            if self.oi_auto_alert_enabled and not self.oi_auto_alert_refreshing:
+                self.oi_auto_alert_status = "Monitoring"
+                self.oi_auto_alert_message = (
+                    f"Watching {len(symbols)} tickers · last 5m close checked "
+                    f"{completed_end.strftime('%H:%M') if completed_end else '--'} ET."
+                )
+        if new_events:
+            self._oi_auto_alert_record_events(new_events)
+        if changed or new_events:
+            self._persist_oi_auto_alert_state()
+
+    def _oi_auto_alert_roll_session(self, today: str) -> None:
+        """Clear every row's progress once the ET date moves on.
+
+        Runs from the worker rather than on a timer, so it is correct whether
+        the server was up at midnight or started later that morning: any row
+        still carrying an older sessionDate is stale by definition.
+        """
+        rolled = False
+        with self.oi_auto_alert_lock:
+            for symbol, row in list(self.oi_auto_alert_rows.items()):
+                if str(row.get("sessionDate") or "") == today:
+                    continue
+                self.oi_auto_alert_rows[symbol] = oi_auto_alert_reset_row(row, today)
+                rolled = True
+            if rolled:
+                self.oi_auto_alert_status = "Armed"
+                self.oi_auto_alert_message = (
+                    "New session. Yesterday's alerts moved to history; levels rebuild at 9:15 AM ET."
+                )
+        if rolled:
+            self._persist_oi_auto_alert_state()
+
     def _oi_auto_alert_worker_loop(self) -> None:
         eastern = ZoneInfo(EASTERN_TZ)
+        # Give the broker clients a moment after boot before the first chain pull.
+        self.oi_auto_alert_wakeup.wait(20.0)
+        self.oi_auto_alert_wakeup.clear()
+        last_touch_pass = 0.0
         while True:
-            now = datetime.now(eastern)
-            with self.oi_auto_alert_lock:
-                enabled = bool(self.oi_auto_alert_enabled)
-                refresh_requested = bool(self.oi_auto_alert_refresh_requested)
-                refresh_force = bool(self.oi_auto_alert_force_refresh)
-                refresh_symbols = list(self.oi_auto_alert_refresh_symbols)
-                if refresh_requested:
-                    self.oi_auto_alert_refresh_requested = False
-                    self.oi_auto_alert_force_refresh = False
-                    self.oi_auto_alert_refresh_symbols.clear()
-            if refresh_requested:
-                try:
-                    self._refresh_oi_auto_alert_ladders(
-                        symbols=refresh_symbols or None,
-                        force=refresh_force,
-                    )
-                except Exception as exc:
-                    with self.oi_auto_alert_lock:
-                        self.oi_auto_alert_status = "Error"
-                        self.oi_auto_alert_last_error = str(exc)
-                        self.oi_auto_alert_message = f"OI-ladder refresh failed: {exc}"
-            elif enabled and now.weekday() < 5:
-                current = now.time().replace(tzinfo=None)
-                scheduled_refresh_due = (
-                    current >= clock_time(9, 15)
-                    and current < clock_time(16, 0)
-                    and self.oi_auto_alert_last_refresh_date != now.date().isoformat()
-                )
-                if scheduled_refresh_due:
-                    try:
-                        self._refresh_oi_auto_alert_ladders(force=False)
-                    except Exception as exc:
-                        with self.oi_auto_alert_lock:
-                            self.oi_auto_alert_status = "Error"
-                            self.oi_auto_alert_last_error = str(exc)
-                            self.oi_auto_alert_message = f"Scheduled OI-ladder refresh failed: {exc}"
-                elif clock_time(9, 30) <= current < clock_time(16, 0):
-                    completed_minute = (now.minute // 5) * 5
-                    completed_end = now.replace(minute=completed_minute, second=0, microsecond=0)
-                    session_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-                    if (
-                        completed_end > session_open
-                        and now >= completed_end + timedelta(seconds=20)
-                        and completed_end.isoformat() != self.oi_auto_alert_last_evaluated_bucket
-                    ):
-                        self._evaluate_oi_auto_alerts(completed_end)
-                else:
-                    with self.oi_auto_alert_lock:
-                        self.oi_auto_alert_status = "Armed"
-                        self.oi_auto_alert_message = "Waiting for the 9:15 AM ET OI-ladder refresh."
-                        self.oi_auto_alert_next_run = self._next_oi_auto_alert_refresh_time(now)
-            elif not enabled:
+            try:
+                now = datetime.now(eastern)
+                today = now.date().isoformat()
+                # Midnight ET starts a new trading day, so yesterday's progress
+                # goes now rather than lingering until the 9:15 build - a card
+                # must not still read "CALL CONFIRMED 2:40 PM" at 8 a.m. The
+                # levels stay until 9:15 replaces them; only progress is wiped.
+                self._oi_auto_alert_roll_session(today)
                 with self.oi_auto_alert_lock:
-                    self.oi_auto_alert_status = "Paused"
-                    self.oi_auto_alert_message = "Automatic OI alerts are paused."
-            self.oi_auto_alert_wakeup.wait(timeout=2.0)
+                    enabled = bool(self.oi_auto_alert_enabled)
+                    requests = list(self.oi_auto_alert_refresh_requests)
+                    self.oi_auto_alert_refresh_requests = []
+                    have_rows = bool(self.oi_auto_alert_rows)
+                    last_refresh_date = self.oi_auto_alert_last_refresh_date
+                    if self.oi_auto_alert_next_refresh_at is None:
+                        self.oi_auto_alert_next_refresh_at = oi_auto_alert_next_refresh_at(now)
+                    next_refresh = self.oi_auto_alert_next_refresh_at
+                    retry_due = (
+                        self.oi_auto_alert_retry_at is not None
+                        and now >= self.oi_auto_alert_retry_at
+                        and bool(self.oi_auto_alert_retry_symbols)
+                    )
+                    retry_symbols = list(self.oi_auto_alert_retry_symbols) if retry_due else []
+                    if retry_due:
+                        self.oi_auto_alert_retry_at = None
+
+                # 1) Explicit refresh requests (add ticker, panel button).
+                for symbols, reason in requests:
+                    self._oi_auto_alert_refresh_levels(symbols, reason=reason)
+
+                # 2) Ladder builds. Morning = 9:15 ET on trading days (resets
+                #    progress); catch-up = the server missed 9:15; startup =
+                #    nothing loaded yet, so the panel is never empty.
+                if now >= next_refresh:
+                    with self.oi_auto_alert_lock:
+                        self.oi_auto_alert_next_refresh_at = oi_auto_alert_next_refresh_at(now)
+                    if last_refresh_date != today and self._oi_auto_alert_is_trading_day(now):
+                        self._oi_auto_alert_refresh_levels(None, reason="morning")
+                elif (
+                    last_refresh_date != today
+                    and clock_time(9, 15) <= now.time() < clock_time(16, 0)
+                    and self._oi_auto_alert_is_trading_day(now)
+                ):
+                    self._oi_auto_alert_refresh_levels(None, reason="morning")
+                elif not have_rows and not requests and self._oi_auto_alert_symbols():
+                    self._oi_auto_alert_refresh_levels(None, reason="startup")
+                elif retry_symbols:
+                    self._oi_auto_alert_refresh_levels(retry_symbols, reason="retry")
+
+                # 3) Regular-session evaluation: once a minute for touches,
+                #    immediately (after a short feed grace) when a 5-minute
+                #    candle completes, and again ~10s later when the newest
+                #    candle's final minute bar had not arrived yet.
+                if (
+                    enabled
+                    and now.weekday() < 5
+                    and clock_time(9, 31) <= now.time() <= clock_time(16, 1)
+                    and self._oi_auto_alert_is_trading_day(now)
+                ):
+                    latest_bar_end = oi_auto_alert_latest_bar_end(now)
+                    latest_bar_key = latest_bar_end.isoformat() if latest_bar_end else ""
+                    with self.oi_auto_alert_lock:
+                        new_boundary = bool(latest_bar_key) and latest_bar_key != self.oi_auto_alert_last_bar_end_key
+                        bar_retry_due = (
+                            self.oi_auto_alert_bar_retry_at is not None and now >= self.oi_auto_alert_bar_retry_at
+                        )
+                    if (
+                        time.monotonic() - last_touch_pass >= self.OI_AUTO_ALERT_TOUCH_INTERVAL_SECONDS
+                        or new_boundary
+                        or bar_retry_due
+                    ):
+                        last_touch_pass = time.monotonic()
+                        with self.oi_auto_alert_lock:
+                            self.oi_auto_alert_last_bar_end_key = latest_bar_key
+                            self.oi_auto_alert_bar_retry_at = None
+                        self._oi_auto_alert_evaluate(now)
+                elif not enabled:
+                    with self.oi_auto_alert_lock:
+                        self.oi_auto_alert_status = "Paused"
+                        self.oi_auto_alert_message = "Automatic OI alerts are paused."
+            except Exception as exc:
+                with self.oi_auto_alert_lock:
+                    self.oi_auto_alert_last_error = f"auto-alert worker: {exc}"
+            self.oi_auto_alert_wakeup.wait(1.0)
             self.oi_auto_alert_wakeup.clear()
+
+    def _oi_auto_alert_public_row(self, decorated: dict, session_day: str) -> dict:
+        """What the card should say, derived from the SAME predicate the engine uses.
+
+        The stored ``status``/``message`` are a NARROW record - "this one
+        rebuild call failed" - and three separate readers were each inventing
+        their own meaning for them: the evaluation loop, this card, and the
+        chart wall mirroring. That is how the same defect appeared twice in one
+        day pointing in opposite directions: at 09:15 the alerts were OFF and
+        looked ON, and by 20:00 they were ON and looked OFF, still showing a
+        broker error that had been resolved an hour earlier.
+
+        So the card no longer reads the stored flag. It reports what
+        _oi_auto_alert_should_evaluate decides, which means it can say "armed"
+        only in exactly the cases the engine actually evaluates.
+
+        Three states, deliberately not two. A row with NO levels keeps the
+        stored message untouched, because that text is the actionable one
+        ("Schwab rejected the app key or secret") and replacing it with a
+        sentence about the age of levels that do not exist would hide the only
+        thing the trader could act on.
+        """
+        state = _oi_auto_alert_levels_state(decorated, session_day)
+        stored_status = str(decorated.get("status") or "")
+        stored_message = str(decorated.get("message") or "")
+        row = dict(decorated)
+        row["armedToday"] = state == "ok"
+        if state == "ok":
+            row["status"] = "armed" if self.oi_auto_alert_enabled else "paused"
+            row["message"] = "Waiting for a completed 5-minute regular-hours candle."
+        elif state == "stale":
+            # Deliberately still "unavailable": that is the value both existing
+            # readers already treat as NOT ARMED, so a stale ladder stays
+            # visibly off in the card and stays out of the chart walls. A new
+            # status string would have been silently rendered as healthy.
+            built = _oi_auto_alert_built_on(decorated)
+            row["status"] = "unavailable"
+            row["message"] = (
+                "Levels are from %s - not armed until the 9:15 AM ET rebuild."
+                % (built or "an earlier session")
+            )
+        else:
+            row["status"] = "unavailable"
+        # The provider's own words survive as a secondary note - useful, but no
+        # longer the headline standing in for the ladder's health.
+        if state != "none" and stored_status == "unavailable" and stored_message:
+            row["providerNote"] = stored_message
+        return row
+
+    def oi_auto_alert_payload(self) -> dict:
+        eastern = ZoneInfo(EASTERN_TZ)
+        now = datetime.now(eastern)
+        with self.oi_auto_alert_lock:
+            ordered_symbols = self._oi_auto_alert_symbols()
+            today_iso = now.date().isoformat()
+            rows = [
+                self._oi_auto_alert_public_row(
+                    oi_auto_alert_decorate_row(self.oi_auto_alert_rows[symbol]),
+                    today_iso,
+                )
+                for symbol in ordered_symbols
+                if symbol in self.oi_auto_alert_rows
+            ]
+            pending = [symbol for symbol in ordered_symbols if symbol not in self.oi_auto_alert_rows]
+            # "Latest alerts" is TODAY's feed. Yesterday's belong in the dated
+            # history below it, not at the top of the panel - a 3:55 PM entry
+            # from the previous session still sitting there at 9:16 the next
+            # morning reads as if it just fired. The full log is untouched;
+            # this only decides what the live feed shows.
+            session_day = now.date().isoformat()
+            todays_events = [
+                event for event in self.oi_auto_alert_events
+                if (str(event.get("sessionDate") or "")[:10] or str(event.get("at") or "")[:10]) == session_day
+            ]
+            # Confirmations are the record of which OI levels actually went, so
+            # they must never be pushed out of the payload by touch warnings -
+            # a blind tail slice drops the 9:40 confirms first on a noisy day.
+            # Keep every confirm, then spend what is left on the newest touches.
+            confirms = [item for item in todays_events if str(item.get("kind")) == "confirm"]
+            touches = [item for item in todays_events if str(item.get("kind")) != "confirm"]
+            budget = max(0, self.OI_AUTO_ALERT_EVENT_PAYLOAD_LIMIT - len(confirms))
+            keep = {str(item.get("id")) for item in confirms}
+            keep.update(str(item.get("id")) for item in touches[-budget:] if budget)
+            events = [
+                self._oi_auto_alert_public_event(item)
+                for item in reversed([item for item in todays_events if str(item.get("id")) in keep])
+            ]
+            payload = {
+                "enabled": bool(self.oi_auto_alert_enabled),
+                "includeMag7": bool(self.oi_auto_alert_include_mag7),
+                "mag7Symbols": list(MAGNIFICENT_SEVEN),
+                "manualSymbols": list(self.oi_auto_alert_manual_symbols),
+                "maxManualSymbols": OI_AUTO_ALERT_MAX_MANUAL_SYMBOLS,
+                "status": _oi_auto_alert_panel_status(
+                    self.oi_auto_alert_status, rows, bool(self.oi_auto_alert_refreshing)),
+                "message": self.oi_auto_alert_message,
+                "refreshing": bool(self.oi_auto_alert_refreshing),
+                "lastError": self.oi_auto_alert_last_error,
+                "lastRefreshAt": self.oi_auto_alert_last_refresh_at,
+                "lastRefreshDate": self.oi_auto_alert_last_refresh_date,
+                "nextRefreshAt": self.oi_auto_alert_next_refresh_at,
+                "lastEvaluatedAt": self.oi_auto_alert_last_evaluated_at,
+                "barSource": self.oi_auto_alert_bar_source,
+                "pendingSymbols": pending,
+                "rows": rows,
+                "events": events,
+                "sessionAlerts": self._oi_auto_alert_session_summary(),
+                "serverTime": now,
+                "session": {
+                    "isTradingDay": now.weekday() < 5,
+                    "regularHours": now.weekday() < 5 and clock_time(9, 30) <= now.time() < clock_time(16, 0),
+                    "latestCompletedBarEnd": oi_auto_alert_latest_bar_end(now),
+                },
+                "rules": {
+                    "refreshTimeEt": "09:15",
+                    "confirmation": "Completed 5-minute regular-hours candle close through the level",
+                    "touch": "Wick through the level (early warning only - never spends the alert)",
+                    "oneShot": (
+                        "One CALL alert and one PUT alert per ticker per session. A confirmed close "
+                        "spends that side; it stays quiet until you re-arm it or the next 9:15 build."
+                    ),
+                    "levels": (
+                        "Chart parity: the High OI list walls (expiries through the next monthly OPEX, "
+                        "delta band 0.14-0.50 or >=30% of the side leader, unknown deltas kept, one row per "
+                        "strike at its dominant expiry, top 15 per side by OI), split around price at the "
+                        "9:15 premarket build and FROZEN for the session"
+                    ),
+                    "deltaBand": [0.14, 0.50],
+                    "highOiExceptionRatio": 0.30,
+                    "levelsPerSide": 15,
+                },
+            }
+        return payload
+
+    def update_oi_auto_alert_settings(self, body: dict) -> dict:
+        body = body if isinstance(body, dict) else {}
+        refresh_symbols: list[str] = []
+        with self.oi_auto_alert_lock:
+            if "enabled" in body:
+                self.oi_auto_alert_enabled = bool(body.get("enabled"))
+                self.oi_auto_alert_status = "Armed" if self.oi_auto_alert_enabled else "Paused"
+                self.oi_auto_alert_message = (
+                    "Automatic OI alerts resumed." if self.oi_auto_alert_enabled else "Automatic OI alerts are paused."
+                )
+            if "includeMag7" in body:
+                include = bool(body.get("includeMag7"))
+                if include and not self.oi_auto_alert_include_mag7:
+                    refresh_symbols.extend(symbol for symbol in MAGNIFICENT_SEVEN if symbol not in self.oi_auto_alert_rows)
+                self.oi_auto_alert_include_mag7 = include
+                if not include:
+                    for symbol in MAGNIFICENT_SEVEN:
+                        if symbol not in self.oi_auto_alert_manual_symbols:
+                            self.oi_auto_alert_rows.pop(symbol, None)
+            if "manualSymbols" in body:
+                requested = body.get("manualSymbols")
+                normalized = oi_auto_alert_normalize_symbols(
+                    requested if isinstance(requested, list) else [],
+                    limit=OI_AUTO_ALERT_MAX_MANUAL_SYMBOLS,
+                )
+                added = [symbol for symbol in normalized if symbol not in self.oi_auto_alert_manual_symbols]
+                self.oi_auto_alert_manual_symbols = normalized
+                refresh_symbols.extend(symbol for symbol in added if symbol not in self.oi_auto_alert_rows)
+                allowed = set(self._oi_auto_alert_symbols())
+                for stale in [symbol for symbol in self.oi_auto_alert_rows if symbol not in allowed]:
+                    self.oi_auto_alert_rows.pop(stale, None)
+        self._persist_oi_auto_alert_state()
+        # Verify the write landed. SQLite failures here were swallowed by the
+        # persist's own try/except, so a locked database lost the mutation
+        # silently and the next boot resurrected the old list. One loud retry.
+        try:
+            stored = json.loads(self.repository.get_app_settings().get(
+                "oi_auto_alert_manual_symbols") or "[]")
+        except Exception:
+            stored = None
+        with self.oi_auto_alert_lock:
+            expected = list(self.oi_auto_alert_manual_symbols)
+        if stored != expected and _IS_SERVING_PROCESS:
+            print(f"[alert-persist] manual symbols readback mismatch "
+                  f"stored={stored} expected={expected}; retrying", flush=True)
+            self._persist_oi_auto_alert_state()
+        if refresh_symbols:
+            self.request_oi_auto_alert_refresh(sorted(set(refresh_symbols)), reason="added")
+        return self.oi_auto_alert_payload()
+
+    def update_oi_auto_alert_symbols(self, body: dict) -> tuple[HTTPStatus, dict]:
+        body = body if isinstance(body, dict) else {}
+        add = oi_auto_alert_normalize_symbol(body.get("add"))
+        remove = oi_auto_alert_normalize_symbol(body.get("remove"))
+        if body.get("add") and not add:
+            return HTTPStatus.BAD_REQUEST, {"error": "Enter a valid ticker symbol (letters, digits, . or -)."}
+        if not add and not remove:
+            return HTTPStatus.BAD_REQUEST, {"error": "Provide a symbol to add or remove."}
+        with self.oi_auto_alert_lock:
+            manual = list(self.oi_auto_alert_manual_symbols)
+            if remove:
+                manual = [symbol for symbol in manual if symbol != remove]
+            if add and add not in manual:
+                if add in MAGNIFICENT_SEVEN and self.oi_auto_alert_include_mag7:
+                    return HTTPStatus.OK, self.oi_auto_alert_payload()
+                if len(manual) >= OI_AUTO_ALERT_MAX_MANUAL_SYMBOLS:
+                    return HTTPStatus.BAD_REQUEST, {
+                        "error": f"Manual list is full ({OI_AUTO_ALERT_MAX_MANUAL_SYMBOLS} tickers). Remove one first."
+                    }
+                manual.append(add)
+            # Write while STILL holding the lock. This used to read the list
+            # here, release it, and only then hand the copy to
+            # update_oi_auto_alert_settings, which re-acquires and overwrites -
+            # a lost update. Anything that changed the list in that window (a
+            # second add/remove, the worker pruning rows) was silently undone,
+            # which is how one remove could take other tickers with it. The
+            # lock is an RLock, so the nested acquires below are fine.
+            return HTTPStatus.OK, self.update_oi_auto_alert_settings({"manualSymbols": manual})
+
+    def rearm_oi_auto_alert(self, body: dict) -> tuple[HTTPStatus, dict]:
+        """Give one ticker (or every ticker) its call and put alert back.
+
+        Each side fires once per session and then goes quiet; this is how the
+        trader asks for another one without waiting for tomorrow's 9:15 build.
+        The confirmed/touched history is kept, so a re-armed side watches the
+        NEXT wall rather than re-alerting on one price has already closed through.
+        """
+        body = body if isinstance(body, dict) else {}
+        symbol = oi_auto_alert_normalize_symbol(body.get("symbol"))
+        rearm_all = bool(body.get("all"))
+        if not symbol and not rearm_all:
+            return HTTPStatus.BAD_REQUEST, {"error": "Provide a symbol to re-arm, or all: true."}
+        at = datetime.now(ZoneInfo(EASTERN_TZ)).isoformat()
+        with self.oi_auto_alert_lock:
+            targets = list(self.oi_auto_alert_rows) if rearm_all else [symbol]
+            missing = [name for name in targets if name not in self.oi_auto_alert_rows]
+            if missing and not rearm_all:
+                return HTTPStatus.NOT_FOUND, {"error": f"{symbol} is not being watched."}
+            for name in targets:
+                row = self.oi_auto_alert_rows.get(name)
+                if row is not None:
+                    self.oi_auto_alert_rows[name] = oi_auto_alert_rearm_row(row, at=at)
+            self._persist_oi_auto_alert_state()
+        return HTTPStatus.OK, self.oi_auto_alert_payload()
+
+    def _oi_auto_alert_prune_events(self, events: list[dict]) -> list[dict]:
+        """Keep the last OI_AUTO_ALERT_HISTORY_DAYS trading days of alerts.
+
+        A count-only cap silently shortened history whenever a busy day fired a
+        lot: the trader asked for 30 days, not "however many fit". Drop by date
+        first, then apply the count as a runaway ceiling. Events with no usable
+        date are kept rather than guessed at.
+        """
+        cutoff = (
+            datetime.now(ZoneInfo(EASTERN_TZ)).date()
+            - timedelta(days=max(1, self.OI_AUTO_ALERT_HISTORY_DAYS))
+        ).isoformat()
+        kept = []
+        for event in events:
+            day = str(event.get("sessionDate") or "")[:10] or str(event.get("at") or "")[:10]
+            if day and day < cutoff:
+                continue
+            kept.append(event)
+        return kept[-self.OI_AUTO_ALERT_EVENT_LIMIT:]
+
+    @staticmethod
+    def _oi_auto_alert_event_day(event: dict) -> str:
+        """The trading session an event belongs to, as YYYY-MM-DD."""
+        return str(event.get("sessionDate") or "")[:10] or str(event.get("at") or "")[:10]
+
+    def _oi_auto_alert_public_event(self, event: dict) -> dict:
+        """Serve an event with its message re-rendered from the stored fields.
+
+        ``message`` is frozen onto the record when the alert fires (see
+        _oi_auto_alert_record_events), so a wording change would otherwise reach
+        only NEW alerts while history kept the old text forever - which is how
+        yesterday's puts still read BROKEN. Every field format_event_message
+        reads is retained on the record, so re-rendering is exact. The stored
+        string stays as the fallback for any partial or legacy record.
+        """
+        payload = dict(event)
+        try:
+            rendered = oi_auto_alert_format_message(payload)
+        except Exception:
+            rendered = ""
+        if rendered:
+            payload["message"] = rendered
+        return payload
+
+    def oi_auto_alert_history(self, date_key: str = "") -> dict:
+        """One trading session's confirmations, plus every date that has any.
+
+        Reads the same persisted event log the live feed uses (pruned to
+        OI_AUTO_ALERT_HISTORY_DAYS), so "which tickers alerted yesterday"
+        survives restarts without a second store. Touch warnings are left out:
+        this panel is the record of levels that actually went.
+
+        An explicitly requested date is honoured even when it is empty - the
+        trader asked for that day and deserves to see it was quiet. With no
+        date asked for, today wins, falling back to the most recent session
+        that has alerts so the premarket read lands on yesterday's list.
+        """
+        with self.oi_auto_alert_lock:
+            stored = list(self.oi_auto_alert_events)
+        by_day: dict[str, list[dict]] = {}
+        for event in stored:
+            if str(event.get("kind")) != "confirm":
+                continue
+            day = self._oi_auto_alert_event_day(event)
+            if day:
+                by_day.setdefault(day, []).append(event)
+        available = sorted(by_day, reverse=True)
+        today = datetime.now(ZoneInfo(EASTERN_TZ)).date().isoformat()
+        requested = str(date_key or "").strip()[:10]
+        try:
+            datetime.strptime(requested, "%Y-%m-%d")
+        except ValueError:
+            requested = ""
+        if requested:
+            selected = requested
+        elif today in by_day or not available:
+            selected = today
+        else:
+            selected = available[0]
+        day_events = by_day.get(selected, [])
+        symbols = sorted({
+            str(event.get("symbol") or "").upper()
+            for event in day_events if event.get("symbol")
+        })
+        return {
+            "date": selected,
+            "availableDates": available,
+            "symbols": symbols,
+            "symbolCount": len(symbols),
+            "alertCount": len(day_events),
+            "historyDays": self.OI_AUTO_ALERT_HISTORY_DAYS,
+            "events": [
+                self._oi_auto_alert_public_event(event)
+                for event in reversed(day_events)
+            ],
+        }
+
+    def _oi_auto_alert_session_summary(self) -> dict:
+        """Which tickers actually fired, grouped by trading session.
+
+        This is the morning read: before the open the trader wants yesterday's
+        list, and during the day today's. Built from the persisted event log, so
+        it survives restarts.
+        """
+        sessions: dict[str, dict[str, dict]] = {}
+        for event in self.oi_auto_alert_events:
+            if str(event.get("kind")) != "confirm":
+                continue
+            day = self._oi_auto_alert_event_day(event)
+            if not day:
+                continue
+            symbol = str(event.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            entry = sessions.setdefault(day, {}).setdefault(
+                symbol, {"symbol": symbol, "sides": [], "alerts": []}
+            )
+            side = str(event.get("side") or "").upper()
+            if side and side not in entry["sides"]:
+                entry["sides"].append(side)
+            entry["alerts"].append({
+                "side": side,
+                "strike": (event.get("level") or {}).get("strike"),
+                "price": event.get("price"),
+                "at": event.get("at"),
+                "barEndedAt": event.get("barEndedAt"),
+            })
+        ordered_days = sorted(sessions, reverse=True)
+        return {
+            "days": [
+                {
+                    "date": day,
+                    "symbols": sorted(sessions[day].values(), key=lambda item: item["symbol"]),
+                    "symbolCount": len(sessions[day]),
+                    "alertCount": sum(len(item["alerts"]) for item in sessions[day].values()),
+                }
+                for day in ordered_days[:self.OI_AUTO_ALERT_SUMMARY_DAYS]
+            ],
+        }
 
     def _start_oi_finder_snapshot_schedule(self) -> None:
         """Start the slow, after-close OI Finder archive worker once per boot."""
@@ -12567,6 +18556,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     "automationMode": "Loading",
                     "executionNote": "",
                 },
+                "credentialHealth": {"anyUnauthorized": False, "accounts": []},
                 "clockTime": None,
                 "nextOpen": None,
                 "nextClose": None,
@@ -12714,9 +18704,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "watchlistExcludingMag7Count": 0,
             },
             "watchlist": settings.scanner.default_universe,
-            "optionWatchlist": self.option_watchlist,
-            "activeOptionWatchlist": self._active_option_watchlist(),
-            "mag7OptionWatchlist": self._mag7_oi_underlyings(),
+            "optionWatchlist": self._within_watchlist(self.option_watchlist),
+            "activeOptionWatchlist": self._within_watchlist(self._active_option_watchlist()),
+            "mag7OptionWatchlist": self._within_watchlist(self._mag7_oi_underlyings()),
             "mag7OptionWatchlistSource": self.mag7_scanner_watchlist,
             "oiScanResults": _frame_records(self.oi_scan_results),
             "oiScanTimestamp": _serialize_value(self.oi_scan_timestamp),
@@ -12847,6 +18837,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "status": {
                 "marketStatus": session_status["currentSession"],
                 "sessionStatus": session_status,
+                "credentialHealth": self._credential_health_payload(),
                 "clockTime": _serialize_value(clock.timestamp),
                 "nextOpen": _serialize_value(clock.next_open),
                 "nextClose": _serialize_value(clock.next_close),
@@ -13016,9 +19007,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "maxCandidates": settings.ai.llm_agent_max_candidates,
             },
             "watchlist": settings.scanner.default_universe,
-            "optionWatchlist": self.option_watchlist,
-            "activeOptionWatchlist": self._active_option_watchlist(),
-            "mag7OptionWatchlist": self._mag7_option_underlyings(),
+            "optionWatchlist": self._within_watchlist(self.option_watchlist),
+            "activeOptionWatchlist": self._within_watchlist(self._active_option_watchlist()),
+            "mag7OptionWatchlist": self._within_watchlist(self._mag7_option_underlyings()),
             "mag7OptionWatchlistSource": self.mag7_scanner_watchlist,
             "scanResults": _frame_records(self.scan_results),
             "candidateResults": _frame_records(self.candidate_results),
@@ -13117,6 +19108,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 self.dashboard_refresh_thread = None
 
     def dashboard_payload(self) -> dict:
+        # The browser polls this every five seconds for as long as the app is
+        # open, so it is the most reliable signal that a human is watching.
+        # Only chart/chain reads paused the background warmer before, which
+        # meant ordinary use bought no quiet at all. Every caller of this
+        # method is request-driven, so no background worker can grant itself
+        # priority the way the OI finder guards with background_snapshot.
+        self.touch_oi_finder_interactive_window()
         now = datetime.now().astimezone()
         stale_cached = None
         with self.dashboard_cache_lock:
@@ -13509,6 +19507,37 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "nextActions": next_actions,
         }
 
+    def _credential_health_payload(self) -> dict:
+        """Authorization health for each Alpaca account key powering the dashboard.
+
+        Surfaces a dead/unauthorized key explicitly so it no longer hides behind a
+        silent $0 equity and a falsely-"closed" market banner.
+        """
+        accounts: list[dict] = []
+        seen: set[str] = set()
+
+        def _add(client) -> None:
+            if client is None:
+                return
+            try:
+                health = client.credential_health(probe=True)
+            except Exception:  # noqa: BLE001 - never let a health probe break the payload
+                return
+            pid = str(health.get("profileId") or "").lower()
+            if pid in seen:
+                return
+            seen.add(pid)
+            accounts.append(health)
+
+        _add(getattr(self, "client", None))
+        for context in getattr(self, "option_contexts", {}).values():
+            _add(context.get("client"))
+
+        return {
+            "anyUnauthorized": any(bool(a.get("unauthorized")) for a in accounts),
+            "accounts": accounts,
+        }
+
     def _session_status(self, clock) -> dict:
         now = clock.timestamp.astimezone(self.backtester._tz) if clock.timestamp else datetime.now(tz=self.backtester._tz)
         current_time = now.time().replace(tzinfo=None)
@@ -13758,13 +19787,148 @@ def _schwab_trading_settings():
     )
 
 
+def _house_tradier_client() -> TradierClient:
+    """A Tradier client using the token the owner actually pasted.
+
+    Every call site used to build a bare TradierClient(), which reads
+    TRADIER_ACCESS_TOKEN from .env - so a token pasted into Settings was
+    encrypted, reported "configured", and read by nothing. The owner is about
+    to fetch a replacement for a refused token; pasting it into a void would
+    make the NEW token look bad too.
+
+    Tradier is a house credential, not a per-user one: it backs the 04:00-07:00
+    premarket backfill and the Mag7 wall board, both of which run on a clock
+    with no user in scope.
+    """
+    client = TradierClient()
+    saved = ""
+    try:
+        auth = auth_service_instance()
+        owner = auth.get_user_by_email(str(os.getenv("LOCAL_AUTO_LOGIN_EMAIL", "") or "").strip())
+        if owner:
+            saved = (auth.get_provider_credentials(str(owner.get("id") or ""), "tradier") or {}).get(
+                "access_token", ""
+            )
+    except Exception:
+        # A vault read failing must fall back to .env, never take Tradier down.
+        saved = ""
+    token = resolve_tradier_token(saved=saved, env=client.config.access_token)
+    if token and token != client.config.access_token:
+        # A per-call copy: never mutate the shared settings object, which is
+        # how the .env route broke every user at once on 2026-08-26.
+        client.config = replace(client.config, access_token=token)
+    return client
+
+
 def _schwab_client_for_profile(profile: str) -> SchwabClient:
     if str(profile or "").strip().lower() == "trading":
         return SchwabClient(config=_schwab_trading_settings())
     return SchwabClient()
 
 
-def _schwab_status_payload(**extra) -> dict:
+def _build_user_schwab_client(config) -> SchwabClient:
+    """A SchwabClient for one user, with its token directory ready."""
+    Path(config.token_path).parent.mkdir(parents=True, exist_ok=True)
+    return SchwabClient(config=config)
+
+
+# Per-user Schwab clients, built from each user's encrypted vault row. The
+# house credential above stays exactly as it was: the clock-driven jobs
+# (warmers, scanners, the alert engine) have no user in scope and must keep
+# running on it.
+USER_SCHWAB_CLIENTS = UserSchwabClients(
+    artifacts_dir=ARTIFACTS_DIR,
+    base_settings=settings.schwab,
+    credentials_reader=lambda user_id, provider: auth_service_instance().get_provider_credentials(
+        user_id, provider
+    ),
+    client_factory=_build_user_schwab_client,
+)
+
+
+def _build_user_alpaca_client(key: str, secret: str):
+    """Alpaca data client for one user. Imported lazily, as elsewhere here."""
+    from alpaca.data.historical import StockHistoricalDataClient
+
+    return StockHistoricalDataClient(api_key=key, secret_key=secret)
+
+
+# Per-user Alpaca data clients, from the same encrypted vault the settings
+# card already writes. Until this existed the card saved a key and nothing read
+# it: both lookups elsewhere in this file select "first active admin".
+USER_ALPACA_CLIENTS = UserAlpacaClients(
+    credentials_reader=lambda user_id, provider: auth_service_instance().get_provider_credentials(
+        user_id, provider
+    ),
+    client_factory=_build_user_alpaca_client,
+)
+
+
+# Whether each credential actually WORKS, recorded from real call outcomes.
+# Every other health field reports presence: `configured` is three strings being
+# non-empty, `refreshTokenValid` is arithmetic on a date we wrote ourselves.
+# Neither asks Schwab anything, which is why a rejected key showed a green lamp
+# for a full day on 2026-08-27.
+CREDENTIAL_HEALTH = CredentialHealth(path=ARTIFACTS_DIR / "credential_health.json")
+
+
+def _health_scope(user) -> str:
+    """Delegates to credential_health.health_scope - see it for why a missing
+    user must resolve to the house rather than to an empty bucket."""
+    return health_scope(user)
+
+
+def _probe_credential_in_background(client, scope: str, profile: str) -> None:
+    """Ask the provider whether it accepts this credential, without blocking.
+
+    Off the request thread because it is a real network call and the status
+    endpoint is polled by every open page. claim_probe makes it at most one
+    probe per profile per cooldown however many pollers arrive at once.
+    """
+    if not CREDENTIAL_HEALTH.claim_probe(scope, profile):
+        return
+
+    def run():
+        try:
+            client.test_connection()
+        except Exception as exc:
+            CREDENTIAL_HEALTH.record_failure(scope, profile, exc)
+        else:
+            CREDENTIAL_HEALTH.record_success(scope, profile)
+
+    threading.Thread(target=run, name=f"credential-probe-{profile}", daemon=True).start()
+
+
+def _schwab_oauth_client(user, profile: str = "market_data"):
+    """The client an OAuth flow may write a token INTO. Never falls back.
+
+    Reads may fall back to the house client so a user without their own app
+    still sees charts. An OAuth completion must not: falling back would write
+    the user's freshly-minted token over the HOUSE token file, handing the
+    whole server their identity and logging the owner out of Schwab. So a user
+    with no saved keys gets None here and is told to save keys first.
+    """
+    if credential_target(user) == HOUSE:
+        return _schwab_client_for_profile(profile)
+    return USER_SCHWAB_CLIENTS.for_user(user, profile)
+
+
+def _schwab_client_for(user, profile: str = "market_data") -> SchwabClient:
+    """This user's own Schwab client if they have keys, else the house one.
+
+    The fallback is deliberate and must stay: a user who has not connected
+    their own app still needs charts to draw. What must never happen is the
+    reverse - a user WITH their own keys being served on the house client,
+    which would spend the owner's quota while their badge showed their own
+    expiry date.
+    """
+    personal = USER_SCHWAB_CLIENTS.for_user(user, profile)
+    if personal is not None:
+        return personal
+    return _schwab_client_for_profile(profile)
+
+
+def _schwab_status_payload(user=None, **extra) -> dict:
     """Dual-profile status shape the frontend expects.
 
     The settings card reads schwabStatus.marketData.* / schwabStatus.trading.*;
@@ -13774,9 +19938,71 @@ def _schwab_status_payload(**extra) -> dict:
     disabled). The Alpaca watchlist bar stream is reported honestly as not
     running - it was part of the lost backend build and is not rebuilt yet.
     """
-    flat = SchwabClient().connection_status()
+    # Reported for the SIGNED-IN user, and ONLY for them. Deliberately uses the
+    # non-falling-back resolver: reads may borrow the house client so a user
+    # without their own app still gets charts, but STATUS may not. Showing the
+    # house's expiry under a card headed "My Schwab APIs" tells a user who has
+    # connected nothing that they are connected - which is exactly how this was
+    # found, signed in as a user with no keys and shown someone else's
+    # countdown beside three green lamps.
+    def _status_of(profile):
+        client = _schwab_oauth_client(user, profile)
+        if client is None:
+            return unconfigured_status()
+        status = client.connection_status()
+        # Presence is not health. connection_status says the credential is
+        # there and locally unexpired; this says whether the provider actually
+        # took it last time we called.
+        scope = _health_scope(user)
+        observed = CREDENTIAL_HEALTH.status(scope, profile)
+        status["accepted"] = observed["accepted"]
+        status["acceptedError"] = observed["lastError"]
+        # WHEN that verdict was reached. It has always been recorded
+        # (credential_health.py stamps checkedAt on every write) and was always
+        # dropped here, so nothing downstream could tell a success from a
+        # minute ago from one from last Tuesday. The verdict is latched and
+        # never expires, which is half of why the lamp stayed green for the
+        # whole of the 2026-09-04 outage.
+        status["acceptedAt"] = observed.get("checkedAt")
+        # The other half: the credential really WAS accepted, and the calls
+        # really WERE failing. Between 01:05 and 02:15 ET Schwab's edge (Akamai)
+        # refused every request from this IP - including the OAuth endpoint -
+        # while the token sat valid with 7 days left. No call raised as far as
+        # this verdict was concerned (get_quotes swallows per batch), so nothing
+        # ever recorded a failure, and "accepted is True" stayed true and stayed
+        # green above a board where every price had gone null.
+        #
+        # So health needs BOTH: a credential the provider accepts, AND a wire
+        # that is currently carrying calls. GATE observes the second directly.
+        transport = SCHWAB_GATE.state()
+        # Only an IP-LEVEL refusal is allowed to darken a per-profile lamp. The
+        # gate is process-wide and sees every client's traffic, so letting any
+        # failure downgrade health would let one user's bad token mark the house
+        # profile unhealthy. A block or a rate-limit genuinely does affect
+        # everyone on this address - those two, and nothing else.
+        blocked = bool(transport.get("coolingDown")) and transport.get(
+            "cooldownKind"
+        ) in ("blocked", "rate_limit")
+        status["transportBlocked"] = blocked
+        status["transportDetail"] = transport.get("cooldownDetail") or ""
+        status["healthy"] = observed["accepted"] is True and not blocked
+        if observed["accepted"] is False:
+            # A refused credential is not valid, whatever the local dates say.
+            status["configured"] = False
+            status["refreshTokenValid"] = False
+            status["accessTokenValid"] = False
+        elif observed["accepted"] is None and status.get("credentialsConfigured"):
+            # Nothing has exercised this profile. The quote path walks
+            # ("trading", "") and stops on the first success, so a working
+            # trading profile means market_data is never called - which is
+            # exactly the profile that was being refused. Go and ask, once,
+            # off the request thread.
+            _probe_credential_in_background(client, scope, profile)
+        return status
+
+    flat = _status_of("market_data")
     try:
-        trading_status = _schwab_client_for_profile("trading").connection_status()
+        trading_status = _status_of("trading")
     except Exception:
         trading_status = {"credentialsConfigured": False, "configured": False}
     payload = {
@@ -13787,6 +20013,16 @@ def _schwab_status_payload(**extra) -> dict:
         "schwabStream": MARKET_STREAM.status(),
         "marketDataProvider": settings.market_data_provider,
         "callbackListening": callback_listener_status(),
+        # What the WIRE to Schwab is actually doing, as opposed to what our
+        # credentials entitle us to. Process-wide rather than per profile,
+        # because Akamai bans the address, not the app key - both Schwab apps
+        # and every per-user client share one IP, so this is the right scope.
+        # Read by the header lamp and by scripts/check_health.ps1.
+        "transport": SCHWAB_GATE.state(),
+        # What the overnight (20:00-04:00 ET) patch last delivered, per symbol,
+        # counted per window. The only source of those candles, and previously
+        # silent on failure - see _record_overnight_backfill.
+        "overnightBackfill": dict(_OVERNIGHT_BACKFILL_HEALTH),
     }
     payload.update(extra)
     return payload
@@ -13863,6 +20099,890 @@ def _schwab_market_data_healthy() -> bool:
     return _SCHWAB_MD_HEALTH_CACHE["healthy"]
 
 
+#: MomX fastlane leases: which equity symbols the scanner board currently
+#: holds live-quote subscriptions for on the SHARED Schwab streamer. One
+#: connection per account is a hard Schwab limit and the charts own it, so the
+#: fastlane leases symbols on that stream (acquire/release, never a second
+#: socket). Keyed set + stamp so an idle board (tab closed) is released by the
+#: next request rather than lingering forever.
+_MOMX_FASTLANE = {"symbols": frozenset(), "at": 0.0}
+_MOMX_FASTLANE_LOCK = threading.Lock()
+_MOMX_FASTLANE_MAX = 60
+
+
+CHART_GRIDS_VERSION = 2
+
+
+def _chart_grids_path():
+    return ARTIFACTS_DIR / "chart_grids.json"
+
+
+def _chart_grids_user_key(user) -> str:
+    """The account a grid belongs to. Anonymous/local callers share one bucket.
+
+    Keyed by email (lowercased) like the momo-alert per-user config, so the two
+    per-account stores agree on identity.
+    """
+    email = ""
+    if isinstance(user, dict):
+        email = str(user.get("email") or "").strip().lower()
+    return email or "_default"
+
+
+def _load_chart_grids_document() -> dict:
+    """The whole store, migrated to v2 in memory. Never raises.
+
+    A legacy flat {name: grid} file predates per-account storage and cannot be
+    attributed - the owner was never recorded. Those grids are handed to the
+    ADMIN bucket rather than deleted or shown to everyone: the workspace owner
+    keeps what exists (and can remove any he does not want with the X button),
+    while every other account starts clean and private.
+    """
+    path = _chart_grids_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"version": CHART_GRIDS_VERSION, "users": {}}
+    if not isinstance(raw, dict):
+        return {"version": CHART_GRIDS_VERSION, "users": {}}
+    users = raw.get("users")
+    if raw.get("version") == CHART_GRIDS_VERSION and isinstance(users, dict):
+        document = {"version": CHART_GRIDS_VERSION, "users": users}
+        # A v2 file can still hold un-migrated legacy grids (a non-admin saved
+        # before the owner did). Carrying them on the READ too is what makes
+        # them survive until the owner's own save adopts them.
+        stored_legacy = raw.get("_legacy")
+        if isinstance(stored_legacy, dict) and stored_legacy:
+            document["_legacy"] = stored_legacy
+        return document
+    legacy = {
+        name: grid
+        for name, grid in raw.items()
+        if name not in {"version", "users"} and isinstance(grid, (dict, list))
+    }
+    return {"version": CHART_GRIDS_VERSION, "users": {}, "_legacy": legacy}
+
+
+def _chart_grids_for_user(user) -> dict:
+    document = _load_chart_grids_document()
+    key = _chart_grids_user_key(user)
+    grids = document["users"].get(key)
+    grids = dict(grids) if isinstance(grids, dict) else {}
+    legacy = document.get("_legacy")
+    if legacy and bool((user or {}).get("isAdmin")):
+        # Unattributed legacy grids surface for the owner until he next saves,
+        # which is what migrates them permanently into his bucket.
+        merged = dict(legacy)
+        merged.update(grids)
+        return merged
+    return grids
+
+
+def _save_chart_grids_for_user(user, grids: dict) -> int:
+    document = _load_chart_grids_document()
+    users = document["users"]
+    key = _chart_grids_user_key(user)
+    users[key] = {
+        str(name): value
+        for name, value in grids.items()
+        if isinstance(name, str) and isinstance(value, (dict, list))
+    }
+    # The admin is the only account shown the unattributed legacy grids, so
+    # HIS save is the migration: the POST already carries them, and dropping
+    # the legacy block here stops them reappearing beside his own copies. A
+    # non-admin save leaves legacy untouched - it was never theirs to move.
+    if bool((user or {}).get("isAdmin")):
+        document.pop("_legacy", None)
+    written = {"version": CHART_GRIDS_VERSION, "users": users}
+    # Carry the un-migrated legacy block forward. Dropping it here meant a
+    # NON-ADMIN save deleted the owner's unattributed grids - the same
+    # cross-user destruction this whole change exists to end (caught by the
+    # isolation test before deploy, 2026-08-31).
+    legacy = document.get("_legacy")
+    if legacy:
+        written["_legacy"] = legacy
+    path = _chart_grids_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(written), encoding="utf-8")
+    except OSError:
+        pass
+    return len(users.get(key) or {})
+
+
+def _momx_fastlane_lease(wanted: frozenset) -> None:
+    """Diff the fastlane's leased symbols against ``wanted`` on MARKET_STREAM.
+
+    Idempotent per request: acquires only genuinely new symbols, releases only
+    dropped ones, so a 2s poll with a stable match set is two set compares and
+    no streamer traffic at all.
+    """
+    with _MOMX_FASTLANE_LOCK:
+        held = _MOMX_FASTLANE["symbols"]
+        fresh = wanted - held
+        gone = held - wanted
+        _MOMX_FASTLANE["symbols"] = wanted
+        _MOMX_FASTLANE["at"] = time.monotonic()
+    if fresh:
+        MARKET_STREAM.acquire_equities(sorted(fresh))
+    if gone:
+        MARKET_STREAM.release_equities(sorted(gone))
+
+
+# ---------------------------------------------------------------------------
+# LIVE ⚡ (momx/live_bolt.py, 2026-09-25 "i want every second live not 4 mins")
+# ---------------------------------------------------------------------------
+# The per-second layer of the ScannerX3-style bolt. The worker's deep study
+# hands over a seed per symbol (indicator state at the last completed 5m bar);
+# this loop reads the Schwab stream's latest quote every second, builds the
+# forming bar and advances the state - small arithmetic per symbol, no bar
+# fetches. It runs only while a scanner screen is polling (idle 120s -> the
+# stream leases are released and the loop just sleeps).
+_LIVE_BOLT_MAX = 400
+_LIVE_BOLT_IDLE_SECONDS = 120.0
+_LIVE_BOLT_SEED_REFRESH = 30.0
+_LIVE_BOLT_LOCK = threading.Lock()
+_LIVE_BOLT = {"book": None, "thread": None, "seeds": {}, "seedsAt": 0.0,
+              "leased": frozenset(), "lastRequest": 0.0, "stepMs": None, "steppedAt": None}
+
+
+def _live_bolt_fetch_seeds() -> dict:
+    import urllib.request as _req
+    try:
+        with _req.urlopen("http://127.0.0.1:3010/api/momx-scanner/live-seeds", timeout=5) as resp:
+            doc = json.loads(resp.read().decode("utf-8"))
+        seeds = doc.get("seeds") if isinstance(doc, dict) else None
+        return seeds if isinstance(seeds, dict) else {}
+    except Exception:  # noqa: BLE001 - keep the last seeds
+        return {}
+
+
+def _live_bolt_loop() -> None:
+    from momx import live_bolt as _lb
+    while True:
+        time.sleep(1.0)
+        try:
+            now_mono = time.monotonic()
+            with _LIVE_BOLT_LOCK:
+                idle = now_mono - _LIVE_BOLT["lastRequest"] > _LIVE_BOLT_IDLE_SECONDS
+                leased = _LIVE_BOLT["leased"]
+            if idle:
+                if leased:
+                    MARKET_STREAM.release_equities(sorted(leased))
+                    with _LIVE_BOLT_LOCK:
+                        _LIVE_BOLT["leased"] = frozenset()
+                continue
+            if now_mono - _LIVE_BOLT["seedsAt"] > _LIVE_BOLT_SEED_REFRESH:
+                fetched = _live_bolt_fetch_seeds()
+                with _LIVE_BOLT_LOCK:
+                    _LIVE_BOLT["seedsAt"] = now_mono
+                    if fetched:
+                        _LIVE_BOLT["seeds"] = fetched
+            seeds = _LIVE_BOLT["seeds"]
+            wanted = frozenset(sorted(seeds)[:_LIVE_BOLT_MAX])
+            fresh, gone = wanted - leased, leased - wanted
+            if fresh:
+                MARKET_STREAM.acquire_equities(sorted(fresh))
+            if gone:
+                MARKET_STREAM.release_equities(sorted(gone))
+            with _LIVE_BOLT_LOCK:
+                _LIVE_BOLT["leased"] = wanted
+            started = time.perf_counter()
+            quotes = MARKET_STREAM.latest_equities(sorted(wanted)) if wanted else {}
+            book = _LIVE_BOLT["book"]
+            book.step({k: seeds[k] for k in wanted}, quotes, datetime.now(ZoneInfo(EASTERN_TZ)))
+            with _LIVE_BOLT_LOCK:
+                _LIVE_BOLT["stepMs"] = round((time.perf_counter() - started) * 1000, 1)
+                _LIVE_BOLT["steppedAt"] = datetime.now(ZoneInfo(EASTERN_TZ)).isoformat(timespec="seconds")
+        except Exception:  # noqa: BLE001 - the live layer never takes the server down
+            continue
+
+
+def _live_bolt_touch() -> None:
+    """A screen asked: keep the loop awake, start it on first use."""
+    from momx import live_bolt as _lb
+    with _LIVE_BOLT_LOCK:
+        _LIVE_BOLT["lastRequest"] = time.monotonic()
+        if _LIVE_BOLT["book"] is None:
+            _LIVE_BOLT["book"] = _lb.LiveBoltBook(ARTIFACTS_DIR)
+        if _LIVE_BOLT["thread"] is None or not _LIVE_BOLT["thread"].is_alive():
+            thread = threading.Thread(target=_live_bolt_loop, name="momx-live-bolt", daemon=True)
+            _LIVE_BOLT["thread"] = thread
+            thread.start()
+
+
+def _live_bolt_payload(full: bool) -> dict:
+    book = _LIVE_BOLT["book"]
+    state = book.snapshot() if book is not None else {}
+    bolts = {}
+    for symbol, st in state.items():
+        fired = bool(st.get("firedAt"))
+        if not full and not fired:
+            continue
+        item = {"hlMomentum": st.get("hlMomentum"), "hlPos": st.get("hlPos")}
+        if fired:
+            item.update({"on": st.get("on"), "now": st.get("now"), "firedAt": st.get("firedAt"),
+                         "firstAt": st.get("firstAt"), "families": st.get("families"),
+                         "opacity": st.get("opacity")})
+        bolts[symbol] = item
+    with _LIVE_BOLT_LOCK:
+        meta = {"leased": len(_LIVE_BOLT["leased"]), "seeds": len(_LIVE_BOLT["seeds"]),
+                "stepMs": _LIVE_BOLT["stepMs"], "steppedAt": _LIVE_BOLT["steppedAt"]}
+    return {"asOf": datetime.now(ZoneInfo(EASTERN_TZ)).isoformat(timespec="seconds"),
+            "serving": _schwab_market_data_healthy(), "full": full, "bolts": bolts, **meta}
+
+
+def _push_phone_notification(
+    title: str,
+    body: str,
+    tags: str = "bell",
+    only_emails: "set | None" = None,
+) -> None:
+    """Push to every account's ntfy topic. Best-effort, never raises.
+
+    The topics are the same per-account channels the MomX Momo Alert uses
+    (momx.momo_alert - a pure module, safe to import here; the ban is on
+    momx.service, whose import would boot a warmer inside this process).
+    Failure is swallowed per topic: a dead phone channel must never break the
+    briefing or the scanner that triggered the push.
+
+    ``only_emails`` restricts the fanout to named accounts. It exists because
+    this helper is also used for ADMIN-ONLY diagnostics (the preflight verdict
+    carries broker-credential states, internal port names and saved-layout
+    ticker typos), and the default fanout would have delivered those to every
+    non-admin phone - breaking the same "admin settings, not for user" rule the
+    endpoints and the UI both honour. An EMPTY set sends to nobody, which is
+    the safe direction to be wrong in for a diagnostic.
+    """
+    try:
+        from momx import momo_alert as _ma
+
+        configs = _ma.all_user_configs()
+        if only_emails is not None:
+            wanted = {
+                str(email).strip().lower()
+                for email in only_emails
+                if str(email or "").strip()
+            }
+            configs = {
+                key: cfg
+                for key, cfg in configs.items()
+                if str(key).strip().lower() in wanted
+            }
+        topics = sorted({
+            (cfg.get("ntfyTopic") or "").strip()
+            for cfg in configs.values()
+        } - {""})
+    except Exception:
+        return
+    import urllib.request as _push_req
+
+    for topic in topics:
+        try:
+            request = _push_req.Request(
+                f"https://ntfy.sh/{topic}",
+                data=body.encode("utf-8")[:3800],
+                headers={"Title": title, "Priority": "high", "Tags": tags},
+                method="POST",
+            )
+            _push_req.urlopen(request, timeout=6).close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Preflight: the daily end-to-end health checklist
+# ---------------------------------------------------------------------------
+# Built after a night where every real fault was INVISIBLE from the app's own
+# badges: a premarket banner asking for a Tradier token while all nine scanner
+# symbols already had their bars (AAPL 148, TSLA 167, NVDA 166), a chart
+# serving candles 151 minutes old while the broker had 40-second bars, a saved
+# grid burning a rebuild every 30s on a typo'd ticker. Nothing was red.
+#
+# The rule that falls out, and the whole reason these endpoints exist: a check
+# MEASURES AN OUTCOME and reports a NUMBER. A check that can only say "OK" is a
+# flag, and flags are exactly what failed. A check that could not run says so -
+# it never reports green for "I did not look".
+#
+# The checks themselves live in preflight.py, which is owned elsewhere. This
+# file only SERVES them, SCHEDULES them, and pushes the verdict to the phone.
+PREFLIGHT_SCHEDULE_HOUR_ET = 8
+PREFLIGHT_SCHEDULE_MINUTE_ET = 45
+# How late after 08:45 the day's run may still fire. A backend restarted at
+# 08:52 must still produce the morning's checklist; one restarted at 11:00 must
+# not, because that answer would be about a market that is already open and it
+# would land on the phone looking like the morning verdict.
+#
+# 30, not 45. At 45 the last eligible minute was 09:29, which put a full run -
+# ~12 chart fetches, several Schwab round-trips and, before preflight's heal
+# gate was widened, a MomX board rebuild taking 8 of 12 cores - sixty seconds
+# before the open, on the machine whose CPU saturation is the documented cause
+# of slow charts. The window now ends at 09:14.
+PREFLIGHT_SCHEDULE_WINDOW_MINUTES = 30
+PREFLIGHT_HISTORY_DAYS = 30
+PREFLIGHT_RUN_LOCK = threading.Lock()
+# The last result THIS process produced. Kept so a GET can still answer with a
+# real measured payload when the on-disk archive is unreadable - the endpoint
+# must never invent a green day out of a failed file read.
+_PREFLIGHT_LAST_RESULT: dict = {"result": None, "at": 0.0}
+_PREFLIGHT_DAILY: dict = {
+    "ranDay": None,
+    "pushedDay": None,
+    "started": False,
+    # Set when the once-a-day claim came from the ARCHIVE rather than from this
+    # process having done the run - i.e. this process was restarted after the
+    # morning run had already happened.
+    "seededFromArchive": False,
+    # How many phones the last verdict actually went to. A number, because
+    # "pushed" with an empty recipient list is a flag that means nothing.
+    "lastPushRecipients": None,
+}
+# The scheduler thread itself, so "is the 08:45 job running?" can be ANSWERED
+# by asking the thread instead of trusting a boolean somebody set once. A
+# thread killed by a BaseException left that boolean saying True forever.
+_PREFLIGHT_THREAD: "threading.Thread | None" = None
+
+
+def _preflight_module():
+    """Import preflight lazily. Returns (module, "") or (None, reason).
+
+    Deliberately NOT a module-level import. preflight.py is owned by another
+    agent and may be missing, half-written or broken at any moment; api_server
+    refusing to boot because the health checklist failed to import would be a
+    far worse outage than a checklist that honestly reports itself unavailable.
+    """
+    try:
+        import preflight  # noqa: PLC0415  (lazy on purpose - see docstring)
+    except Exception as exc:  # ImportError, SyntaxError, anything at import
+        return None, f"{type(exc).__name__}: {exc}"
+    # A module that imports but has no run_preflight yet is "not available",
+    # not "available and broken". Named explicitly so the admin page says
+    # WHICH function is missing instead of reporting a mystery AttributeError
+    # from inside the run.
+    missing = [
+        name
+        for name in ("run_preflight", "load_preflight_history")
+        if not callable(getattr(preflight, name, None))
+    ]
+    if missing:
+        return None, "preflight.py defines no " + " or ".join(missing)
+    return preflight, ""
+
+
+def _preflight_unavailable(reason: str) -> dict:
+    """The honest payload for "the checklist could not run at all".
+
+    Not a pass and not a fail: UNKNOWN, with the reason attached. Reporting OK
+    here would be precisely the kind of flag this feature exists to replace.
+    """
+    return {
+        "at": datetime.now(ZoneInfo(EASTERN_TZ)).isoformat(),
+        "available": False,
+        "unavailableReason": reason,
+        "passed": 0,
+        "warned": 0,
+        "failed": 0,
+        "unknown": 1,
+        "checks": [
+            {
+                "id": "preflight-module",
+                "label": "Preflight checklist",
+                "status": "unknown",
+                "measured": "did not run",
+                "detail": reason,
+            }
+        ],
+        "healed": [],
+    }
+
+
+def _preflight_day_of(result: object) -> str:
+    """The ET day a result belongs to, read from its own `at` stamp.
+
+    Read from the result rather than from the clock so an archived day is
+    always attributed to the day it was MEASURED, never to the day it is read.
+    """
+    if not isinstance(result, dict):
+        return ""
+    stamp = str(result.get("at") or "")
+    return stamp[:10] if len(stamp) >= 10 else ""
+
+
+def _preflight_run_now(heal: bool = True, now_et: datetime | None = None) -> dict:
+    """Run the checklist once and return its measured result. Never raises.
+
+    Serialized on PREFLIGHT_RUN_LOCK: two concurrent runs would double every
+    broker probe and could apply the same heal twice. A checklist that can
+    500 the request, or take the process down, is a checklist nobody opens.
+    """
+    module, reason = _preflight_module()
+    if module is None:
+        return _preflight_unavailable(reason or "preflight.py is not importable")
+    started = time.monotonic()
+    with PREFLIGHT_RUN_LOCK:
+        try:
+            if now_et is None:
+                result = module.run_preflight(heal=heal)
+            else:
+                result = module.run_preflight(heal=heal, now_et=now_et)
+        except Exception as exc:
+            return _preflight_unavailable(
+                f"run_preflight raised {type(exc).__name__}: {exc}"
+            )
+    if not isinstance(result, dict):
+        return _preflight_unavailable(
+            f"run_preflight returned {type(result).__name__}, not a result dict"
+        )
+    result = dict(result)
+    result.setdefault("at", datetime.now(ZoneInfo(EASTERN_TZ)).isoformat())
+    result["available"] = True
+    # Measured, not claimed: how long the checklist itself took. A run that
+    # creeps from 4s to 40s is its own finding.
+    result["elapsedMs"] = int((time.monotonic() - started) * 1000)
+    result["healEnabled"] = bool(heal)
+    _PREFLIGHT_LAST_RESULT["result"] = result
+    _PREFLIGHT_LAST_RESULT["at"] = time.monotonic()
+    return result
+
+
+def _preflight_history(days: int = PREFLIGHT_HISTORY_DAYS) -> tuple:
+    """(entries newest-first, error). An unreadable archive returns the reason.
+
+    Returning [] with an empty error would tell the UI "thirty clean days" when
+    the truth is "the file would not open".
+    """
+    module, reason = _preflight_module()
+    if module is None:
+        return [], reason or "preflight.py is not importable"
+    try:
+        history = module.load_preflight_history(days=days)
+    except Exception as exc:
+        return [], f"load_preflight_history raised {type(exc).__name__}: {exc}"
+    if not isinstance(history, list):
+        return [], (
+            f"load_preflight_history returned {type(history).__name__}, not a list"
+        )
+    return [entry for entry in history if isinstance(entry, dict)], ""
+
+
+def _preflight_payload(days: int = PREFLIGHT_HISTORY_DAYS) -> dict:
+    """Today's latest result plus the last N days, for the admin UI strip.
+
+    READ-ONLY on purpose. Opening the admin page must not fire broker probes,
+    and a strip that silently re-ran on every poll would make "did it pass at
+    08:45 this morning?" unanswerable - the screen would always show a result
+    from a second ago instead of the one the day was judged on.
+    """
+    module, reason = _preflight_module()
+    history, history_error = _preflight_history(days)
+    today = datetime.now(ZoneInfo(EASTERN_TZ)).date().isoformat()
+    latest = None
+    for entry in history:  # newest first, per the load_preflight_history contract
+        if _preflight_day_of(entry) == today:
+            latest = entry
+            break
+    memory = _PREFLIGHT_LAST_RESULT.get("result")
+    # A run whose archive write lost the race must still be visible; ISO stamps
+    # compare correctly as strings, so the newer of the two wins.
+    if isinstance(memory, dict) and _preflight_day_of(memory) == today:
+        if latest is None or str(memory.get("at") or "") > str(latest.get("at") or ""):
+            latest = memory
+        elif str(memory.get("at") or "") == str(latest.get("at") or ""):
+            # SAME run, two copies. preflight.record_run archives BEFORE
+            # elapsedMs / healEnabled are stamped, so choosing either copy loses
+            # something real: the archive owns the day's memory (worst/worstAt/
+            # checkWorst/healedIds/runs), the in-process copy owns how long the
+            # run took. Merge rather than choose - "the run took 14210 ms" never
+            # reached the screen otherwise, and a run creeping 4s -> 40s is its
+            # own finding.
+            merged = dict(latest)
+            merged.update(memory)
+            for key in ("worst", "worstAt", "checkWorst", "healedIds", "runs", "date"):
+                if key in latest:
+                    merged[key] = latest[key]
+            latest = merged
+    return {
+        "available": module is not None,
+        "unavailableReason": reason,
+        "date": today,
+        "result": latest,
+        # Explicit, because "no result" and "a result with zero failures" look
+        # identical to a UI that only counts failures.
+        "ranToday": latest is not None,
+        "history": history,
+        "historyDays": len(history),
+        "historyError": history_error,
+        "schedule": {
+            "at": f"{PREFLIGHT_SCHEDULE_HOUR_ET:02d}:{PREFLIGHT_SCHEDULE_MINUTE_ET:02d} ET",
+            "weekdaysOnly": True,
+            "windowMinutes": PREFLIGHT_SCHEDULE_WINDOW_MINUTES,
+            "lastScheduledDay": _PREFLIGHT_DAILY.get("ranDay"),
+            "lastPushedDay": _PREFLIGHT_DAILY.get("pushedDay"),
+            "lastPushRecipients": _PREFLIGHT_DAILY.get("lastPushRecipients"),
+            "dayClaimedFromArchive": bool(_PREFLIGHT_DAILY.get("seededFromArchive")),
+            # Whether the scheduler thread is actually running in THIS process.
+            # Asked of the THREAD, not of a boolean somebody set once: a thread
+            # killed by a BaseException would leave that boolean saying True
+            # forever, which is the truthy-but-meaningless flag shape this whole
+            # feature exists to replace.
+            "threadStarted": bool(
+                _PREFLIGHT_THREAD is not None and _PREFLIGHT_THREAD.is_alive()
+            ),
+        },
+    }
+
+
+# Statuses that mean "this check did not pass". "unknown" is in here on
+# purpose: a check that could not look is not a pass.
+PREFLIGHT_NOT_PASSING = {"fail", "failed", "error", "unknown"}
+# ...and "warn" is one too, EXCEPT for the handful of degradations that are
+# known, accepted and permanent. This is an explicit allowlist of ids, not the
+# whole warn tier: Tradier's account is unfunded and its API access revoked, and
+# the Alpaca SIP fallback covers that window, so it is genuinely expected.
+# Everything else that warns - a chart drifting 9 minutes behind the broker, a
+# MomX board 12 minutes stale, a pre-warmer whose counters do not reconcile -
+# is something the trader wants at 08:45, and used to arrive on his phone as
+# "AGX ready - All 14 checks passed (2 expected degradations)".
+PREFLIGHT_EXPECTED_WARN_IDS = {"tradier"}
+
+
+def _preflight_heal_sentence(entry: object) -> str:
+    """One readable line per auto-repair.
+
+    preflight.run_preflight reports `healed` as a list of DICTS, not sentences.
+    str() on them printed a raw Python repr into the push body and the admin
+    panel - on exactly the days something was silently fixed, i.e. the days the
+    line matters most.
+    """
+    if isinstance(entry, dict):
+        label = str(entry.get("label") or entry.get("id") or "check")
+        action = str(entry.get("action") or "a fix was applied")
+        before = str(entry.get("statusBefore") or "?")
+        after = str(entry.get("statusAfter") or "?")
+        try:
+            days = int(entry.get("daysRunning") or 0)
+        except (TypeError, ValueError):
+            days = 0
+        line = f"{label}: {action} ({before} -> {after}"
+        if days > 1:
+            line += f", {days} days running"
+        return line + ")"
+    return str(entry)
+
+
+#: The same ranking preflight.worst_status uses, so "did the fix help?" is
+#: decided by one rule on both sides of the wire.
+PREFLIGHT_STATUS_RANK = {"pass": 0, "unknown": 1, "warn": 2, "fail": 3}
+
+
+def _preflight_heal_worked(entry: object) -> bool:
+    """Did the repair actually IMPROVE the outcome?
+
+    preflight.py appends to `healed` whenever a fix RAN, whatever came of it -
+    heal_momx_scanner can structurally never report a post-heal pass, because it
+    queues an async rebuild and the re-check reads the board milliseconds later.
+    Printing those under "Auto-fixed" tells the trader a problem was solved on
+    exactly the mornings it was not.
+    """
+    if not isinstance(entry, dict):
+        return True  # a plain sentence: reported as done, nothing to contradict
+    before = str(entry.get("statusBefore") or "").strip().lower()
+    after = str(entry.get("statusAfter") or "").strip().lower()
+    if after == "unknown":
+        return False  # a re-check that could not run is not a repair
+    if before not in PREFLIGHT_STATUS_RANK or after not in PREFLIGHT_STATUS_RANK:
+        return False
+    return PREFLIGHT_STATUS_RANK[after] < PREFLIGHT_STATUS_RANK[before]
+
+
+def _preflight_admin_emails() -> set:
+    """Every ACTIVE admin's email address, lowercased.
+
+    The checklist is admin-only by explicit instruction ("add in admin settings
+    not for user") and its rows carry broker-credential states, which internal
+    ports are down, and the trader's saved-layout names. The push has to honour
+    the same boundary the endpoints do. Returns an empty set on any failure,
+    which sends to NOBODY - for an admin-only diagnostic that is the safe way
+    to be wrong, and _preflight_daily_loop records the recipient count so the
+    admin page can say the push reached zero phones.
+    """
+    try:
+        # An explicit admin actor: this is a server-side fanout decision, not a
+        # request being authorised, and list_users' own guard needs an actor.
+        users = auth_service_instance().list_users(actor={"role": "admin"})
+    except Exception:
+        return set()
+    emails = set()
+    for user in users if isinstance(users, list) else []:
+        if not isinstance(user, dict):
+            continue
+        if str(user.get("role") or "") != "admin":
+            continue
+        if not user.get("isActive", True):
+            continue
+        email = str(user.get("email") or "").strip().lower()
+        if email:
+            emails.add(email)
+    return emails
+
+
+def _preflight_push_summary(result: dict) -> tuple:
+    """(title, body) for the phone push. Numbers, never adjectives.
+
+    "AGX ready - 14/14" when everything passed, otherwise the failing checks
+    WITH THE NUMBER EACH ONE MEASURED - the whole point being that the trader
+    can tell from the lock screen whether something needs fixing before 09:30.
+    """
+    if not isinstance(result, dict):
+        return "AGX preflight could not run", "no result was produced."
+    checks = [c for c in (result.get("checks") or []) if isinstance(c, dict)]
+    total = len(checks)
+    passed = int(result.get("passed") or 0)
+    warned = int(result.get("warned") or 0)
+    healed_all = [h for h in (result.get("healed") or []) if h]
+    healed = [_preflight_heal_sentence(h) for h in healed_all if _preflight_heal_worked(h)]
+    heal_failed = [
+        _preflight_heal_sentence(h) for h in healed_all if not _preflight_heal_worked(h)
+    ]
+    if not result.get("available", True):
+        return (
+            "AGX preflight could not run",
+            str(result.get("unavailableReason") or "the checklist did not run")
+            + " - nothing was measured, so nothing is known.",
+        )
+    def _status_of(check: dict) -> str:
+        return str(check.get("status") or "").strip().lower()
+
+    def _is_expected_warn(check: dict) -> bool:
+        return (
+            _status_of(check) == "warn"
+            and str(check.get("id") or "").strip().lower() in PREFLIGHT_EXPECTED_WARN_IDS
+        )
+
+    not_passing = [
+        c for c in checks
+        if _status_of(c) in PREFLIGHT_NOT_PASSING
+        or (_status_of(c) == "warn" and not _is_expected_warn(c))
+    ]
+    expected = [c for c in checks if _is_expected_warn(c)]
+    if not not_passing:
+        title = f"AGX ready - {passed}/{total}"
+        # NOT "All N checks passed" - that sentence was printed on runs where
+        # 12 of 14 passed. Say the number that was measured.
+        body = f"{passed} of {total} checks passed"
+        if expected:
+            names = ", ".join(str(c.get("label") or c.get("id") or "check") for c in expected)
+            body += (
+                f", {len(expected)} known degradation"
+                f"{'s' if len(expected) != 1 else ''} ({names})"
+            )
+        elif warned:
+            body += f", {warned} warned"
+        body += f" in {int(result.get('elapsedMs') or 0)}ms."
+        if healed:
+            body += " Auto-fixed: " + ", ".join(healed[:4]) + "."
+        if heal_failed:
+            body += " Tried and did NOT fix: " + ", ".join(heal_failed[:4]) + "."
+        return title, body
+    title = f"AGX preflight: {len(not_passing)} of {total} not passing"
+    lines = []
+    for check in not_passing[:8]:
+        label = str(check.get("label") or check.get("id") or "check")
+        measured = str(check.get("measured") or check.get("detail") or "no measurement")
+        lines.append(f"{str(check.get('status') or '?').upper()} {label}: {measured}")
+    if len(not_passing) > 8:
+        lines.append(f"...and {len(not_passing) - 8} more")
+    if healed:
+        lines.append("Auto-fixed: " + ", ".join(healed[:4]))
+    if heal_failed:
+        # Never folded into "Auto-fixed": a fix that ran and changed nothing is
+        # not a fix, and calling it one is the lie this feature exists to end.
+        lines.append("Tried and did NOT fix: " + ", ".join(heal_failed[:4]))
+    return title, "\n".join(lines)
+
+
+def _preflight_already_ran_today(day_key: str) -> bool:
+    """Did a run for this ET day already land in the ARCHIVE?
+
+    The in-process day keys reset on every restart, and this machine restarts
+    api_server from a keeper task. A restart inside the morning window used to
+    see ranDay=None, fire a second full heal-enabled run, and buzz the phone
+    again - N restarts, N runs, N pushes. The archive is the only memory that
+    survives a restart, and preflight.record_run already writes a `runs`
+    counter into it.
+    """
+    module, _reason = _preflight_module()
+    if module is None:
+        return False
+    try:
+        history = module.load_preflight_history(days=1)
+    except Exception:
+        return False
+    for entry in history if isinstance(history, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        same_day = (
+            _preflight_day_of(entry) == day_key
+            or str(entry.get("date") or "") == day_key
+        )
+        if same_day and int(entry.get("runs") or 0) >= 1:
+            return True
+    return False
+
+
+def _preflight_seed_day_claim() -> None:
+    """Claim today from the archive ONCE, at thread start.
+
+    Done here rather than inside the loop so the disk is read once per process,
+    not once a minute, and so a manual run has to have been archived BEFORE
+    this process started to suppress the scheduled one.
+    """
+    try:
+        day_key = datetime.now(ZoneInfo(EASTERN_TZ)).date().isoformat()
+        if _PREFLIGHT_DAILY.get("ranDay") is None and _preflight_already_ran_today(day_key):
+            _PREFLIGHT_DAILY["ranDay"] = day_key
+            _PREFLIGHT_DAILY["pushedDay"] = day_key
+            _PREFLIGHT_DAILY["seededFromArchive"] = True
+    except Exception:
+        pass
+
+
+def _preflight_daily_loop() -> None:
+    """Run the checklist at 08:45 ET on weekdays; push the verdict ONCE.
+
+    08:45 is deliberate: late enough that the premarket feeds have real bars to
+    measure, 45 minutes before the open so a failure can still be fixed before
+    the trader needs the app ("when market open I don't want to fix").
+
+    Two separate day keys, on purpose. `ranDay` is claimed BEFORE the run so a
+    slow run, a second pass of this loop, or a restart inside the window cannot
+    stack runs and double every broker probe. `pushedDay` is what makes the
+    phone buzz exactly once a day even if the run is later repeated by hand.
+
+    Wrapped so it can never kill the process: a scheduler that takes the
+    backend down at 08:45 is worse than a missed checklist.
+    """
+    _preflight_seed_day_claim()
+    while True:
+        try:
+            now_et = datetime.now(ZoneInfo(EASTERN_TZ))
+            day_key = now_et.date().isoformat()
+            minute_of_day = now_et.hour * 60 + now_et.minute
+            target = PREFLIGHT_SCHEDULE_HOUR_ET * 60 + PREFLIGHT_SCHEDULE_MINUTE_ET
+            due = (
+                now_et.weekday() < 5
+                and target <= minute_of_day < target + PREFLIGHT_SCHEDULE_WINDOW_MINUTES
+                and _PREFLIGHT_DAILY.get("ranDay") != day_key
+            )
+            if due:
+                _PREFLIGHT_DAILY["ranDay"] = day_key
+                result = _preflight_run_now(heal=True, now_et=now_et)
+                if _PREFLIGHT_DAILY.get("pushedDay") != day_key:
+                    _PREFLIGHT_DAILY["pushedDay"] = day_key
+                    title, body = _preflight_push_summary(result)
+                    # ADMIN ONLY. This body names credential states, dead ports
+                    # and saved-layout ticker typos; the default fanout would
+                    # deliver it to every non-admin account's phone.
+                    recipients = _preflight_admin_emails()
+                    _PREFLIGHT_DAILY["lastPushRecipients"] = len(recipients)
+                    _push_phone_notification(
+                        title, body, tags="clipboard", only_emails=recipients
+                    )
+        except Exception:
+            pass
+        time.sleep(60.0)
+
+
+def _start_preflight_scheduler() -> None:
+    """Start the daily checklist thread once, from the SERVING process only.
+
+    Called from main(), never at import: importing api_server boots a full
+    DashboardState, and a pytest run or tooling script must not schedule
+    healing actions or push to the trader's phone.
+    """
+    global _PREFLIGHT_THREAD
+    if _PREFLIGHT_THREAD is not None and _PREFLIGHT_THREAD.is_alive():
+        return
+    _PREFLIGHT_DAILY["started"] = True
+    _PREFLIGHT_THREAD = threading.Thread(
+        target=_preflight_daily_loop,
+        name="preflight-daily",
+        daemon=True,
+    )
+    _PREFLIGHT_THREAD.start()
+
+
+# ---------------------------------------------------------------------------
+# Schwab login expiry -> phone. A day before, and once when it has happened.
+# ---------------------------------------------------------------------------
+# The decision is in schwab_expiry_alert.due (pure, tested). This owns the
+# clock, the ledger file and the push. Admin phones only: the Schwab logins
+# are the house keys, and only an admin can renew them.
+SCHWAB_EXPIRY_CHECK_SECONDS = 600
+SCHWAB_EXPIRY_LEDGER_PATH = Path("artifacts/schwab_expiry_pushes.json")
+_SCHWAB_EXPIRY_THREAD = None
+
+
+def _schwab_expiry_ledger_load() -> dict:
+    try:
+        data = json.loads(SCHWAB_EXPIRY_LEDGER_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _schwab_expiry_ledger_save(ledger: dict) -> None:
+    try:
+        SCHWAB_EXPIRY_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SCHWAB_EXPIRY_LEDGER_PATH.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _schwab_expiry_check_once(now=None) -> list:
+    """One pass: read both token files, push what is due, record what was sent."""
+    import schwab_expiry_alert as _sea
+
+    statuses = {}
+    for profile in ("market_data", "trading"):
+        try:
+            client = SchwabClient(profile) if profile != "market_data" else SchwabClient()
+            if client.configured:
+                statuses[profile] = client.connection_status()
+        except Exception:
+            continue
+    ledger = _schwab_expiry_ledger_load()
+    alerts = _sea.due(statuses, ledger, now)
+    if not alerts:
+        return []
+    recipients = _preflight_admin_emails()
+    for alert in alerts:
+        _push_phone_notification(alert["title"], alert["body"], tags="key", only_emails=recipients)
+        ledger[alert["key"]] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _schwab_expiry_ledger_save(ledger)
+    return alerts
+
+
+def _schwab_expiry_loop() -> None:
+    while True:
+        try:
+            _schwab_expiry_check_once()
+        except Exception:
+            pass
+        time.sleep(SCHWAB_EXPIRY_CHECK_SECONDS)
+
+
+def _start_schwab_expiry_watch() -> None:
+    """From main() only, like the preflight scheduler: an import must never push."""
+    global _SCHWAB_EXPIRY_THREAD
+    if _SCHWAB_EXPIRY_THREAD is not None and _SCHWAB_EXPIRY_THREAD.is_alive():
+        return
+    _SCHWAB_EXPIRY_THREAD = threading.Thread(
+        target=_schwab_expiry_loop, name="schwab-expiry-watch", daemon=True
+    )
+    _SCHWAB_EXPIRY_THREAD.start()
+
+
 ALPACA_STREAM = AlpacaBarStream(
     credentials_provider=_owner_alpaca_stream_credentials,
     publish=MARKET_STREAM._publish,
@@ -13890,6 +21010,416 @@ def _sse_track_symbols(symbols, delta: int) -> None:
     ALPACA_STREAM.set_symbols(active)
 
 
+# /api/live-chart-quotes is polled continuously for as long as any chart is on
+# screen, and it used to build a brand-new SchwabClient per request.
+# SchwabClient.__init__ sets self._client = None and _library_client() has no
+# memo, so every poll constructed a fresh authlib/requests session, a fresh
+# connection pool, and a fresh ssl.create_default_context() - which re-reads
+# the OS CA store. Measured 2026-08-22: 419ms for the first construction then
+# 119-124ms each, with create_default_context alone at 64.6ms mean; py-spy put
+# SSL work at ~5% of all sampled server CPU. The 2026-08-22 load test made it
+# the slowest constantly-running endpoint at a 345ms median.
+#
+# One client per profile, reused. Recreated on failure so a token rotation (the
+# trading profile's refresh token expires roughly weekly) cannot pin a dead
+# session forever - that is the one hazard of holding a broker client open.
+_LIVE_QUOTE_CLIENTS: dict[str, object] = {}
+_LIVE_QUOTE_CLIENT_LOCK = threading.Lock()
+# Collapses a 7-panel grid's polls to one upstream call. The socket is the real
+# price path; this is only the safety net behind it, so sub-second staleness is
+# not observable.
+_LIVE_QUOTE_TTL_SECONDS = 0.75
+_LIVE_QUOTE_CACHE: dict[tuple, tuple] = {}
+
+
+# A prior session close does not change during the day, so it is cached far
+# longer than a quote. Keyed by (scope, symbol) so a user on their own key is
+# never served a close fetched with somebody else's, exactly like the quote
+# cache above.
+_PREV_CLOSE_CACHE: dict = {}
+_PREV_CLOSE_TTL_SECONDS = 900.0
+
+
+def _alpaca_previous_closes_cached(client, scope: str, symbols: list) -> dict:
+    """Prior closes for symbols whose quote did not carry one.
+
+    Only the MISSING symbols are fetched, and only once every 15 minutes, so
+    adding a percentage to the ticker rails costs one extra provider call per
+    quarter hour rather than one per poll.
+    """
+    now = time.monotonic()
+    known = {}
+    missing = []
+    for symbol in symbols:
+        hit = _PREV_CLOSE_CACHE.get((scope, symbol))
+        if hit and (now - hit[0]) < _PREV_CLOSE_TTL_SECONDS:
+            known[symbol] = hit[1]
+        else:
+            missing.append(symbol)
+    if missing:
+        for symbol, close in (alpaca_previous_closes(client, missing) or {}).items():
+            _PREV_CLOSE_CACHE[(scope, symbol)] = (now, close)
+            known[symbol] = close
+        if len(_PREV_CLOSE_CACHE) > 256:
+            for stale in sorted(
+                _PREV_CLOSE_CACHE, key=lambda k: _PREV_CLOSE_CACHE[k][0]
+            )[:-256]:
+                _PREV_CLOSE_CACHE.pop(stale, None)
+    return known
+
+
+def premarket_tape_reaches_window(newest, now_et, lag_minutes: float = 15.0) -> bool:
+    """Does this tape actually reach the window the premarket scanner reads?
+
+    NOT a wall-clock age test. At 21:44 a two-hour-old tape is perfectly normal;
+    at 06:00 it means the scanner is about to answer a confident "no setups"
+    over a hole. So the judgement only applies INSIDE the premarket window the
+    caller cares about (04:00-09:30 ET) - the same session-relative reasoning
+    that made the keeper's 04:00 reset correct rather than 09:30.
+
+    Measured 2026-08-27 by direct probe of the running server, AAPL 5-minute
+    tape: 8,987 bars, newest 21:44 EDT, first bar of today 00:00 - and exactly
+    ZERO bars in the 04:00-07:00 band. The Alpaca BOATS overnight feed runs
+    20:00-04:00 and stops AT the band, not through it, and Tradier (the only
+    source that carries 04:00-07:00) is refused. The existing date-only test
+    sees today-dated bars from the 00:00-04:00 stretch and answers READY over
+    that hole. It is not wrong about the date; it is answering a narrower
+    question than its caller asks.
+    """
+    if newest is None:
+        return False
+    minute_of_day = now_et.hour * 60 + now_et.minute
+    if not (4 * 60 <= minute_of_day < 9 * 60 + 30):
+        return True
+    return (now_et - newest).total_seconds() <= lag_minutes * 60.0
+
+
+def _oi_auto_alert_panel_status(stored: str, rows: list, refreshing: bool) -> str:
+    """The panel badge must not say ARMED while every card says it is not.
+
+    _oi_auto_alert_roll_session sets the status to "Armed" at the ET midnight
+    roll (api_server.py:15437) because a new session HAS begun - narrow and
+    true. But the ladders are not rebuilt until 09:15, so from 00:00 the badge
+    read ARMED above nine cards that were each, correctly, not armed. That is
+    the window the trader looks at first: he checks the premarket at 06:00 and
+    the one green word at the top says he is covered.
+
+    Only the specifically false case is overridden. Building / Monitoring /
+    Partial / Paused all still speak for themselves.
+    """
+    if str(stored) != "Armed" or refreshing:
+        return stored
+    if not rows:
+        return stored
+    if any(row.get("armedToday") for row in rows):
+        return stored
+    return "Levels pending"
+
+
+def _oi_auto_alert_levels_state(row: dict, session_date_iso: str) -> str:
+    """Were THIS row's levels actually built for the session being evaluated?
+
+    Returns "ok", "stale" or "none". Judged on ``levelsUpdatedAt`` - an
+    OBSERVATION of when the ladder was built - and never on ``sessionDate``,
+    which is a stamp meaning something narrower.
+
+    _oi_auto_alert_roll_session rewrites sessionDate to today at the ET midnight
+    roll while KEEPING the previous levels, and leaves an unavailable row's
+    status alone (oi_auto_alerts.py:459-474). So after any failed morning build
+    a row reads sessionDate=today over yesterday's walls. Measured 2026-08-27
+    20:15 ET: eight tickers held levelsUpdatedAt=2026-08-26T08:15 with
+    sessionDate=2026-08-27, and the first version of this guard - which trusted
+    sessionDate - armed every one of them on the previous day's ladder.
+
+    Missing or unparseable timestamps fail CLOSED. A wrong "not armed" line
+    costs a rebuild; a wrong "armed" fires a trade signal off stale walls.
+    """
+    if not row:
+        return "none"
+    if not (row.get("callLevels") or row.get("putLevels")):
+        return "none"
+    raw = str(row.get("levelsUpdatedAt") or "").strip()
+    if not raw:
+        return "stale"
+    try:
+        stamp = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return "stale"
+    eastern = ZoneInfo(EASTERN_TZ)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=eastern)
+    built = stamp.astimezone(eastern).date().isoformat()
+    return "ok" if built == session_date_iso else "stale"
+
+
+def _oi_auto_alert_built_on(row: dict) -> str:
+    """The ET date a row's ladder was built, for saying so on the card."""
+    raw = str(row.get("levelsUpdatedAt") or "").strip()
+    if not raw:
+        return ""
+    try:
+        stamp = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return ""
+    eastern = ZoneInfo(EASTERN_TZ)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=eastern)
+    return stamp.astimezone(eastern).strftime("%a %b %d").replace(" 0", " ")
+
+
+def _oi_auto_alert_should_evaluate(row: dict, session_date_iso: str) -> bool:
+    """Should this ladder be checked against the completed candle?
+
+    A failed REFRESH must not disarm levels that were built successfully
+    earlier the same day. The failure path in _oi_auto_alert_refresh_levels
+    deliberately KEEPS the previous callLevels/putLevels, so skipping on the
+    status stamp alone switched the ticker off for the rest of the session
+    while its card still showed all sixteen walls.
+
+    Measured 2026-08-27: the Mag7 ladders built at 09:15, a later refresh hit
+    Tradier's expired token, and every Mag7 alert stopped evaluating for the
+    day - visible only as an error string on a card that otherwise looked
+    complete. This is the recurring shape where a flag stamped by a narrow
+    writer ("this refresh failed") is read by a wider one ("this ticker is
+    dead").
+
+    An unavailable row IS still skipped when its levels are not from today -
+    that is the case the status was really standing in for, and the date says
+    it directly rather than by proxy.
+    """
+    if not row:
+        return False
+    if not (row.get("callLevels") or row.get("putLevels")):
+        return False
+    return _oi_auto_alert_levels_state(row, session_date_iso) == "ok"
+
+
+def _oi_auto_alert_plain_error(exc: object, *, kept: bool = False) -> str:
+    """A provider failure said in English, for a card a trader reads.
+
+    The raw text is a broker's JSON fault - a Mag7 card read
+    `Tradier request failed (HTTP 401): {"fault":{"faultstring":"Access Token
+    not approved","detail":{"errorcode":"keymanagement.service.access_token_
+    not_approved"}}}` across four wrapped lines, which tells the trader
+    nothing he can act on and hides the one thing that matters: whether his
+    levels are still armed.
+    """
+    detail = str(exc or "").strip()
+    low = detail.lower()
+    # Schwab is the primary chain source and Tradier only its fallback, so a
+    # message naming Tradier alone sends the trader to renew a key that was not
+    # the trigger. When both are present, say so in that order.
+    if "schwab/tos failed" in low and "tradier fallback also failed" in low:
+        return (
+            "Schwab/TOS did not answer, and the Tradier backup is unusable "
+            "(its access token is not approved - renew it in Settings)."
+            + (" Today's levels are still armed." if kept else "")
+        )
+    if "access_token_not_approved" in low or "access token not approved" in low:
+        plain = ("Tradier's access token is not approved - renew it in "
+                 "Settings.")
+    elif "invalid_client" in low:
+        plain = ("Schwab rejected the app key or secret - re-paste it in "
+                 "Settings.")
+    elif "401" in low or "unauthorized" in low:
+        plain = "The market-data provider refused our credentials."
+    elif "empty option chain" in low or "no live option chain" in low:
+        plain = "The provider returned no option chain for this ticker."
+    elif "no underlying price" in low:
+        plain = "The option chain came back without an underlying price."
+    elif not detail:
+        plain = "The OI ladder could not be rebuilt."
+    else:
+        # Unrecognised: keep the provider's words but keep them to one line,
+        # so an unfamiliar failure is still readable on a phone.
+        plain = detail.splitlines()[0][:160]
+    if kept:
+        plain += " Today's levels are still armed."
+    return plain
+
+
+def _schwab_market_clients():
+    """Every configured Schwab client, in preference order: market_data, then trading.
+
+    SchwabClient().configured only checks that a client_id, secret and refresh
+    token are PRESENT - not that Schwab accepts them. So a market-data profile
+    whose secret has been corrupted still reports configured, returns zero bars,
+    and every chart silently drops to the sparse Alpaca free feed. Measured
+    2026-08-27 10:15 ET, NVDA 1-minute bars over 8 hours:
+
+        market_data profile   0 bars      (client_secret was overwritten)
+        trading profile     196 bars
+        Alpaca free feed     76 bars, newest 05:15 ET - five hours stale
+
+    The user sees a chart whose candles stop at 04:00 with a live price line
+    hours to the right of them, and nothing anywhere says a credential is
+    rejected. _live_quote_client already walks ("trading", "") for quotes; this
+    is the same rule for bars, so a dead profile costs a stale chart instead of
+    an empty one. Returns clients in preference order; the caller tries each
+    until one returns rows.
+    """
+    clients = []
+    for profile in ("", "trading"):
+        try:
+            client = SchwabClient(profile) if profile else SchwabClient()
+        except Exception:
+            continue
+        if getattr(client, "configured", False):
+            clients.append(client)
+    return clients
+
+
+def _live_quote_client(profile: str):
+    """The shared SchwabClient for a profile, built once."""
+    with _LIVE_QUOTE_CLIENT_LOCK:
+        client = _LIVE_QUOTE_CLIENTS.get(profile)
+        if client is None:
+            client = SchwabClient(profile) if profile else SchwabClient()
+            _LIVE_QUOTE_CLIENTS[profile] = client
+        return client
+
+
+def _drop_live_quote_client(profile: str) -> None:
+    """Forget a client so the next call rebuilds it (token rotation, dead session)."""
+    with _LIVE_QUOTE_CLIENT_LOCK:
+        _LIVE_QUOTE_CLIENTS.pop(profile, None)
+
+
+def _live_chart_quote_rows(symbols: list, user=None) -> list:
+    """Last prices for the charts on screen, on the caller's own Schwab key.
+
+    A user who has connected their own Schwab app is served from it, and the
+    cache is scoped to them so their quotes are never answered by a fetch made
+    on somebody else's key. Everyone else shares the house scope exactly as
+    before.
+
+    Deliberately NO fallback for a user with their own key: if their app fails,
+    their price line stops and their connection badge says why. Quietly
+    reissuing the request on the house key would spend the owner's quota while
+    the user believed they were on their own - which is the whole failure this
+    change exists to prevent, and it would be invisible.
+    """
+    # The administrator is the house: their alpaca_market_data vault row IS the
+    # house Alpaca key that _owner_alpaca_chart_client reads, so treating it as
+    # a personal key double counts it and diverts the owner off the house
+    # Schwab quote path onto a thinner Alpaca tape. serves_own_providers is the
+    # same rule that decides where their credentials are written.
+    own_providers = serves_own_providers(user)
+    personal = USER_SCHWAB_CLIENTS.for_user(user, "market_data") if own_providers else None
+    personal_alpaca = USER_ALPACA_CLIENTS.for_user(user) if own_providers else None
+    has_own_key = personal is not None or personal_alpaca is not None
+    scope = str((user or {}).get("id") or "") if has_own_key else "house"
+    key = (scope, tuple(symbols))
+    now = time.monotonic()
+    hit = _LIVE_QUOTE_CACHE.get(key)
+    if hit and (now - hit[0]) < _LIVE_QUOTE_TTL_SECONDS:
+        return hit[1]
+    quotes = {}
+    if has_own_key:
+        # Their own providers, in order, and nothing else. Falling through to
+        # the house client would spend the owner's quota while the user
+        # believed they were on their own key - invisible from outside, and the
+        # exact failure per-user keys exist to prevent.
+        if personal is not None:
+            try:
+                quotes = personal.get_quotes(symbols) or {}
+                if quotes:
+                    CREDENTIAL_HEALTH.record_success(scope, "market_data")
+            except Exception as exc:
+                # Their Schwab app is failing. Record it - this poll runs about
+                # once a second, so it is where a refused credential is noticed
+                # first, long before anyone opens Settings and presses Test.
+                CREDENTIAL_HEALTH.record_failure(scope, "market_data", exc)
+                # Drop the cached client so the next poll rebuilds it, then try
+                # their Alpaca key if they have one - still theirs, still honest.
+                USER_SCHWAB_CLIENTS.invalidate(scope, "market_data")
+                quotes = {}
+        if not quotes and personal_alpaca is not None:
+            quotes = alpaca_last_prices(personal_alpaca, symbols)
+            if not quotes:
+                USER_ALPACA_CLIENTS.invalidate(scope)
+            else:
+                # alpaca_last_prices returns a last price and nothing else, so
+                # a user on their own Alpaca key had no day move at all - the
+                # ticker rails showed a price with no percentage beside it.
+                # Fill in the prior close from the same key, cached for the
+                # session, and let _quote_row do the arithmetic.
+                needs_close = [
+                    symbol for symbol in symbols
+                    if (quotes.get(symbol) or {}).get("close_price") is None
+                ]
+                for symbol, close in _alpaca_previous_closes_cached(
+                    personal_alpaca, scope, needs_close
+                ).items():
+                    if symbol in quotes:
+                        quotes[symbol]["close_price"] = close
+    else:
+        for profile in ("trading", ""):
+            health_profile = profile or "market_data"
+            try:
+                quotes = _live_quote_client(profile).get_quotes(symbols) or {}
+                if quotes:
+                    CREDENTIAL_HEALTH.record_success("house", health_profile)
+            except Exception as exc:
+                CREDENTIAL_HEALTH.record_failure("house", health_profile, exc)
+                # A reused client that has gone bad must not poison every later
+                # poll; drop it so the next attempt constructs a fresh one.
+                _drop_live_quote_client(profile)
+                quotes = {}
+            if quotes:
+                break
+            # An EMPTY answer is a failure too: get_quotes returns {} without
+            # raising when the client is unusable, and a kept client stays
+            # unusable (see _build_morning_briefing).
+            _drop_live_quote_client(profile)
+    def _quote_row(symbol: str) -> dict:
+        """One ticker's live price AND its day move.
+
+        get_quotes already normalises change / change_pct / close_price; this
+        endpoint used to drop all three and keep only last_price, which is why
+        the quick-ticker rails could show a price but never a percentage.
+
+        change_pct is preferred when the provider reports it, because that is
+        the number the broker itself shows. When it is missing the move is
+        recomputed from close_price, so a provider that returns only a last
+        price and a previous close still produces a percentage instead of a
+        blank. Neither available -> None, never 0: a real 0.00% move and "no
+        data" must not render the same way.
+        """
+        quote = quotes.get(symbol) or {}
+        last = quote.get("last_price")
+        previous_close = quote.get("close_price")
+        change = quote.get("change")
+        change_percent = quote.get("change_pct")
+        if change is None and last is not None and previous_close:
+            change = last - previous_close
+        if change_percent is None and previous_close:
+            # Guard the divisor explicitly: a 0 previous close is bad data, not
+            # an infinite move.
+            try:
+                if float(previous_close) > 0 and change is not None:
+                    change_percent = change / float(previous_close) * 100.0
+            except (TypeError, ValueError):
+                change_percent = None
+        return {
+            "symbol": symbol,
+            "lastPrice": last,
+            "change": round(change, 4) if isinstance(change, (int, float)) else None,
+            "changePercent": (
+                round(change_percent, 4) if isinstance(change_percent, (int, float)) else None
+            ),
+            "previousClose": previous_close,
+        }
+
+    rows = [_quote_row(symbol) for symbol in symbols]
+    if quotes:
+        _LIVE_QUOTE_CACHE[key] = (now, rows)
+        if len(_LIVE_QUOTE_CACHE) > 32:
+            for stale in sorted(_LIVE_QUOTE_CACHE, key=lambda k: _LIVE_QUOTE_CACHE[k][0])[:-32]:
+                _LIVE_QUOTE_CACHE.pop(stale, None)
+    return rows
+
+
 class ApiHandler(BaseHTTPRequestHandler):
     def _request_cookies(self) -> dict:
         header = str(self.headers.get("Cookie", "") or "")
@@ -13900,6 +21430,81 @@ class ApiHandler(BaseHTTPRequestHandler):
                 cookies[name.strip()] = value.strip()
         return cookies
 
+    def _save_user_schwab_credentials(self, actor: dict, body: dict) -> dict:
+        """Store a non-admin's own Schwab app keys in their encrypted vault.
+
+        Deliberately cannot reach .env, os.environ or the shared settings
+        object: this path exists so that a user filling the settings form in
+        honestly changes nothing for anybody else. Blank fields leave the
+        stored value alone, matching the house form's behaviour.
+        """
+        auth = auth_service_instance()
+        saved = []
+        pairs = (
+            ("market_data", body.get("clientId"), body.get("clientSecret")),
+            ("trading", body.get("tradingClientId"), body.get("tradingClientSecret")),
+        )
+        for profile, raw_id, raw_secret in pairs:
+            client_id = str(raw_id or "").strip()
+            client_secret = str(raw_secret or "").strip()
+            if not client_id and not client_secret:
+                continue
+            auth.save_provider_credentials(
+                actor,
+                vault_provider_for(profile),
+                {"client_id": client_id, "client_secret": client_secret},
+            )
+            saved.append(profile)
+        # Drop any cached client built from the old keys, or the user updates
+        # their credentials and keeps calling Schwab on the previous ones.
+        USER_SCHWAB_CLIENTS.invalidate(str(actor.get("id") or ""))
+        CREDENTIAL_HEALTH.forget(_health_scope(actor))
+        return {"saved": saved, "scope": "user", "providers": auth.provider_summary(actor)}
+
+    def _access_identity(self) -> tuple:
+        """Who Cloudflare Access says this is, and whether they may sign in.
+
+        The address arrives already verified: the gateway checked Cloudflare's
+        signature, and this header cannot be set by a client (it is not in the
+        gateway's forward allowlist). Being on Cloudflare's list is still not
+        the same as having an account here - see resolve_access_identity.
+        """
+        return resolve_access_identity(
+            self.headers.get(ACCESS_EMAIL_HEADER, ""),
+            auth_service_instance().find_account_by_email,
+        )
+
+    def _require_admin_user(self) -> dict | None:
+        """Return the signed-in administrator, or send 401/403 and return None.
+
+        For endpoints that mutate server-wide state rather than the caller's
+        own — anything every user's data then depends on.
+        """
+        user = self._require_session_user()
+        if user is None:
+            return None
+        try:
+            auth_service_instance().require_admin(user)
+        except AuthorizationError as exc:
+            self._send_json(HTTPStatus.FORBIDDEN, {"error": str(exc)})
+            return None
+        return user
+
+    def _is_local_request(self) -> bool:
+        """Did this request really come from this machine, not via the tunnel?
+
+        Nothing this process can see answers that on its own. Requests arrive
+        from gateway.py on :3001, which forwards an allowlist that drops Host
+        and every relay header - so a public visitor and the trader's own
+        browser are byte-identical here, both on 127.0.0.1. The gateway stamps
+        its verdict instead; see request_trust. Every password-free grant below
+        must go through this.
+        """
+        return is_trusted_local(
+            str(self.client_address[0] if self.client_address else ""),
+            self.headers,
+        )
+
     def _session_user(self) -> dict | None:
         cookies = self._request_cookies()
         user = auth_service_instance().user_for_session(
@@ -13908,19 +21513,24 @@ class ApiHandler(BaseHTTPRequestHandler):
         )
         if user is not None:
             return user
+        # Cloudflare Access already checked this person's email with a
+        # one-time code, and the gateway verified Cloudflare's signature. That
+        # is a stronger proof of identity than a password, so it stands in for
+        # one - but only for an account that exists here and is switched on.
+        access_user, _ = self._access_identity()
+        if access_user is not None:
+            return access_user
         # Restored from the pre-incident build: LOCAL_AUTO_LOGIN_EMAIL signs
         # every LOOPBACK request in as that user, so a backend restart never
         # dumps the trader (or local tooling) onto the login page mid-session.
-        # Opt-in via .env only, never for remote clients; anyone on this
-        # machine's loopback already controls the database file — the same
-        # reasoning as the sole-admin device bypass in _finish_login. main()
-        # prints a boot warning whenever this is active.
+        # Opt-in via .env only, never for relayed clients; anyone genuinely on
+        # this machine already controls the database file — the same reasoning
+        # as the sole-admin device bypass in _finish_login. main() prints a
+        # boot warning whenever this is active.
         auto_login_email = str(os.getenv("LOCAL_AUTO_LOGIN_EMAIL", "") or "").strip()
         if not auto_login_email:
             return None
-        client_ip = str(self.client_address[0] if self.client_address else "")
-        is_loopback = client_ip in {"127.0.0.1", "::1"} or client_ip.startswith("127.")
-        if not is_loopback:
+        if not self._is_local_request():
             return None
         try:
             return auth_service_instance().get_user_by_email(auto_login_email)
@@ -13947,10 +21557,34 @@ class ApiHandler(BaseHTTPRequestHandler):
             return True
         return self._require_session_user() is not None
 
+    # Chart JSON is almost entirely numeric OHLCV, which deflates to about a
+    # fifth of its size: a real payload measured 4,586,316 bytes raw and
+    # 1,009,520 gzipped at level 1, for 75 ms of CPU. Level 6 saves a further
+    # 230 KB but costs 217 ms, which is the wrong trade on a server whose chart
+    # endpoints already compete for the GIL. Bodies below the threshold are
+    # sent as-is - the header and the CPU cost more than the saving.
+    GZIP_MIN_BYTES = 4096
+    GZIP_LEVEL = 1
+
+    def _json_response_body(self, payload: dict) -> tuple[bytes, str]:
+        body = json.dumps(_serialize_value(payload)).encode("utf-8")
+        if len(body) < self.GZIP_MIN_BYTES:
+            return body, ""
+        accepted = str(self.headers.get("Accept-Encoding", "") or "").lower()
+        # "gzip;q=0" is an explicit refusal, not an offer.
+        if not any(
+            part.strip().startswith("gzip") and not part.strip().endswith("q=0")
+            for part in accepted.split(",")
+        ):
+            return body, ""
+        return gzip.compress(body, self.GZIP_LEVEL), "gzip"
+
     def _send_json_with_cookies(self, status: HTTPStatus, payload: dict, cookie_headers: list) -> None:
-        response = json.dumps(_serialize_value(payload)).encode("utf-8")
+        response, encoding = self._json_response_body(payload)
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json")
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
         self.send_header("Content-Length", str(len(response)))
         self.send_header("Cache-Control", "no-store")
         for header_value in cookie_headers:
@@ -13968,13 +21602,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             ip_address=str(self.client_address[0] if self.client_address else ""),
         )
         if not decision["approved"]:
-            client_ip = str(self.client_address[0] if self.client_address else "")
-            is_loopback = client_ip in {"127.0.0.1", "::1"} or client_ip.startswith("127.")
-            if user.get("isAdmin") and is_loopback:
+            if user.get("isAdmin") and self._is_local_request():
                 # A locked-out sole administrator cannot approve their own
-                # device. Anyone signing in as the admin from this machine's
-                # loopback already controls the database file, so the device
-                # gate adds nothing here; remote/mobile devices stay gated.
+                # device. Anyone signing in as the admin from this machine
+                # already controls the database file, so the device gate adds
+                # nothing here; tunnelled and mobile devices stay gated.
                 auth.decide_device_request(user, decision["device"]["id"], "approve")
             else:
                 self._send_json_with_cookies(
@@ -13997,20 +21629,57 @@ class ApiHandler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:
+        # A background chore (scripts/agx_keeper.py) reaches the same chart
+        # endpoint the browser does. It is marked here, at the only place that
+        # can see request headers: the priority code lives several frames
+        # deeper inside DashboardState, which never receives them.
+        with background_scope(is_background_request(self.headers)):
+            self._dispatch_get()
+
+    def _dispatch_get(self) -> None:
         try:
             parsed = urlparse(self.path)
             if parsed.path == "/api/auth/status":
+                # Short per-cookie cache. This read is fast ~95% of the time but
+                # intermittently stalls 20-50s under heavy background DB load
+                # (measured 2026-08-28), which hung page boot on "Loading secure
+                # workspace". Once ANY call for a cookie succeeds, the frontend
+                # retries and the app's own re-checks are served from here for a
+                # few seconds instead of re-opening SQLite. Keyed on the raw
+                # session cookie + Access email so it can never leak identity
+                # across users; 8s TTL is far shorter than a session.
+                _auth_cookie = self._request_cookies().get(AUTH_SESSION_COOKIE, "")
+                _auth_email = str(self.headers.get(ACCESS_EMAIL_HEADER, "") or "")
+                _auth_ck = (_auth_cookie, _auth_email)
+                _auth_cache = getattr(STATE, "_auth_status_cache", None)
+                if _auth_cache is None:
+                    _auth_cache = {}
+                    STATE._auth_status_cache = _auth_cache
+                _auth_hit = _auth_cache.get(_auth_ck)
+                if _auth_hit and (time.monotonic() - _auth_hit[0]) < 8.0:
+                    self._send_json(HTTPStatus.OK, _auth_hit[1])
+                    return
                 auth = auth_service_instance()
                 bootstrap_required = auth.bootstrap_required()
                 user = None if bootstrap_required else self._session_user()
-                self._send_json(
-                    HTTPStatus.OK,
-                    {
-                        "bootstrapRequired": bootstrap_required,
-                        "bootstrapRequiresToken": bool(os.getenv("ADMIN_BOOTSTRAP_TOKEN", "").strip()),
-                        "user": user,
-                    },
-                )
+                # When Cloudflare vouched for someone the app has no account
+                # for, the login screen must name the address instead of
+                # showing a password box they can never get past.
+                _, access_status = self._access_identity()
+                _auth_payload = {
+                    "bootstrapRequired": bootstrap_required,
+                    "bootstrapRequiresToken": bool(os.getenv("ADMIN_BOOTSTRAP_TOKEN", "").strip()),
+                    "user": user,
+                    "accessStatus": access_status,
+                    "accessEmail": str(self.headers.get(ACCESS_EMAIL_HEADER, "") or ""),
+                }
+                # Cache only a resolved answer; never cache a transient "no user"
+                # so a momentary miss cannot lock someone out for 8s. Bound size.
+                if user is not None or bootstrap_required:
+                    if len(_auth_cache) > 256:
+                        _auth_cache.clear()
+                    _auth_cache[_auth_ck] = (time.monotonic(), _auth_payload)
+                self._send_json(HTTPStatus.OK, _auth_payload)
                 return
             if not self._api_gate_passed(parsed.path):
                 return
@@ -14052,8 +21721,48 @@ class ApiHandler(BaseHTTPRequestHandler):
                         # credentials, account data, or order information.
                         "marketStream": MARKET_STREAM.status(),
                         "alpacaStream": ALPACA_STREAM.status(),
+                        # Thread census by name prefix. Added 2026-08-19 after the
+                        # process sat at 137 threads fifteen minutes after all
+                        # external load had stopped - Windows cannot name Python
+                        # threads, so the process has to report on itself. Names
+                        # only; nothing sensitive.
+                        "threads": _thread_census(),
+                        # Is the board prewarm actually doing anything? One
+                        # curl, no log archaeology - scanner_watchdog.ps1
+                        # truncates api_server.out.log on every restart, so a
+                        # counter that survives the observer is the only way
+                        # to answer that question after the fact.
+                        "chartPrewarm": (
+                            STATE._board_prewarm_status_payload()
+                            if hasattr(STATE, "_board_prewarm_status_payload")
+                            else {}
+                        ),
                     },
                 )
+                return
+            if parsed.path == "/api/preflight":
+                # ADMIN ONLY. The trader was explicit: "if you are adding in UI
+                # then add in admin settings not for user". The checklist names
+                # brokers, tokens, internal ports and symbol counts, and its
+                # sibling POST heals server-wide state - none of that belongs
+                # on a non-admin's screen.
+                #
+                # NOTE for anyone verifying this gate from this machine: a
+                # local curl authenticates as LOCAL_AUTO_LOGIN_EMAIL (admin)
+                # and therefore proves NOTHING. Send X-AGX-Access-Email for a
+                # real non-admin account instead; _session_user resolves the
+                # Access identity before the loopback grant.
+                if self._require_admin_user() is None:
+                    return
+                _pf_query = parse_qs(parsed.query or "")
+                try:
+                    _pf_days = int(
+                        str((_pf_query.get("days") or [""])[0]) or PREFLIGHT_HISTORY_DAYS
+                    )
+                except (TypeError, ValueError):
+                    _pf_days = PREFLIGHT_HISTORY_DAYS
+                _pf_days = max(1, min(_pf_days, PREFLIGHT_HISTORY_DAYS))
+                self._send_json(HTTPStatus.OK, _preflight_payload(_pf_days))
                 return
             if parsed.path in {"/api/dashboard", "/api/status"}:
                 # Poll runs every 5s; skip re-shipping ~1MB of scanner history
@@ -14079,7 +21788,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 symbol = query.get("symbol", ["AAPL"])[0]
                 force = str(query.get("force", [""])[0]).strip().lower() in {"1", "true", "yes"}
-                self._send_json(HTTPStatus.OK, STATE.oi_finder_payload(symbol, force=force))
+                research_section = str(query.get("section", [""])[0]).strip().lower()
+                self._send_json(
+                    HTTPStatus.OK,
+                    STATE.oi_finder_payload(
+                        symbol,
+                        force=force,
+                        research_section=research_section,
+                    ),
+                )
                 return
             if parsed.path == "/api/oi-finder-chain":
                 # Compact chain feed: the frontend expects the same shape as
@@ -14088,18 +21805,295 @@ class ApiHandler(BaseHTTPRequestHandler):
                 symbol = query.get("symbol", ["AAPL"])[0]
                 force = str(query.get("force", [""])[0]).strip().lower() in {"1", "true", "yes"}
                 initial_paint = str(query.get("initial", [""])[0]).strip().lower() in {"1", "true", "yes"}
+                mobile_fast = str(query.get("fast", [""])[0]).strip().lower() in {"1", "true", "yes"}
                 self._send_json(
                     HTTPStatus.OK,
                     STATE.oi_finder_payload(
                         symbol,
                         force=force,
                         compact=True,
-                        initial_paint=initial_paint,
+                        initial_paint=initial_paint or mobile_fast,
+                        mobile_fast=mobile_fast,
                     ),
                 )
                 return
+            if parsed.path == "/api/premarket-scanner":
+                # Deliberately NOT behind dashboard_payload()'s 60s cache, and
+                # deliberately NOT calling touch_oi_finder_interactive_window():
+                # a five-second poll would hold the background warmer's 45s
+                # "a human is watching" pause open permanently.
+                self._send_json(HTTPStatus.OK, STATE.premarket_scanner_payload())
+                return
+            if parsed.path == "/api/momx-live-quotes":
+                # MomX FASTLANE: real-time quotes for the board's MATCHED
+                # tickers, from the Schwab consolidated stream the charts
+                # already run (trader, 2026-08-30: "Use tos api key"). The
+                # broad 357-symbol scan stays on Alpaca bars (Schwab has no
+                # bulk history, no overnight session, tight rate limits); this
+                # endpoint is only the live layer on the handful of names the
+                # scan surfaced. Symbols are LEASED on the shared stream -
+                # never a second connection (one-per-account Schwab limit).
+                query = parse_qs(parsed.query or "")
+                raw = str((query.get("symbols") or [""])[0])
+                wanted = frozenset(
+                    token.strip().upper()
+                    for token in raw.split(",")
+                    if token.strip()
+                )
+                if len(wanted) > _MOMX_FASTLANE_MAX:
+                    wanted = frozenset(sorted(wanted)[:_MOMX_FASTLANE_MAX])
+                _momx_fastlane_lease(wanted)
+                quotes = MARKET_STREAM.latest_equities(sorted(wanted)) if wanted else {}
+                self._send_json(HTTPStatus.OK, {
+                    "quotes": quotes,
+                    # serving=False tells the panel to keep showing build
+                    # prices quietly instead of expecting ticks (weekends,
+                    # Schwab socket down). Honest signal, not an intention.
+                    "serving": _schwab_market_data_healthy(),
+                    "leased": len(wanted),
+                })
+                return
+            if parsed.path == "/api/momx-live-bolts":
+                # The LIVE ⚡ state, advanced every second (see _live_bolt_loop).
+                # ?full=1 adds the H/L momentum of every symbol (the sort);
+                # the default carries only names that fired today (small).
+                _live_bolt_touch()
+                full = str((parse_qs(parsed.query or "").get("full") or ["0"])[0]) in {"1", "true", "yes"}
+                self._send_json(HTTPStatus.OK, _live_bolt_payload(full))
+                return
+            if parsed.path.startswith("/api/momx-scanner"):
+                # PROXY to momx_worker.py on :3010. api_server does NOT build
+                # boards: measured 2026-08-28, the same 30m fetch took 10s in a
+                # standalone process and was still running after 5h19m in here,
+                # because this process is CPU-saturated by the chart engine
+                # (19,480 CPU-seconds in 5h19m). Building here starves the
+                # charts AND never finishes. Never call momx.service from this
+                # process - importing it lazily is fine, calling snapshot()
+                # would start a warmer thread right back inside api_server.
+                import urllib.error as _mx_err
+                import urllib.request as _mx_req
+                _mx_url = "http://127.0.0.1:3010" + parsed.path
+                if parsed.query:
+                    _mx_url += "?" + parsed.query
+                # Forward WHO is asking: the worker keys Momo Alert configs
+                # per account (2026-08-30, "my user change alert for their
+                # account only"). Only api_server can reach :3010, so this
+                # header is trustworthy by construction - unlike the relayed
+                # headers the gateway strips.
+                _mx_user = self._session_user()
+                _mx_headers = (
+                    {"X-AGX-User": str(_mx_user.get("email") or "")}
+                    if _mx_user and _mx_user.get("email")
+                    else {}
+                )
+                # Pass the client's gzip offer UPSTREAM. Without this the
+                # worker sees no Accept-Encoding and never compresses, so its
+                # gzip support was dead weight: measured 2026-09-01, the
+                # Watchlist history reached the phone as 4,512,562 bytes when
+                # 419,389 would have done. That 10.8x is what "Loading the
+                # Watchlist history..." was waiting on over mobile.
+                #
+                # urllib does NOT transparently decompress, so asking for gzip
+                # means receiving compressed bytes -- which is why the response
+                # half below MUST relay Content-Encoding. Handing a browser
+                # gzip labelled as application/json breaks the page outright,
+                # so these two changes are a pair and neither is safe alone.
+                _mx_accept = self.headers.get("Accept-Encoding") or ""
+                if "gzip" in _mx_accept.lower():
+                    _mx_headers["Accept-Encoding"] = "gzip"
+                try:
+                    _mx_get = _mx_req.Request(_mx_url, headers=_mx_headers)
+                    with _mx_req.urlopen(_mx_get, timeout=20) as _mx_res:
+                        _mx_body = _mx_res.read()
+                        # Whatever the worker actually did -- it only gzips
+                        # bodies over its own size floor, so a small response
+                        # comes back plain even when gzip was offered. Read the
+                        # ANSWER rather than assuming it matched the request.
+                        _mx_encoding = _mx_res.headers.get("Content-Encoding")
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "application/json")
+                    if _mx_encoding:
+                        self.send_header("Content-Encoding", _mx_encoding)
+                        # Caches keyed without this would serve gzip to a
+                        # client that never asked for it.
+                        self.send_header("Vary", "Accept-Encoding")
+                    self.send_header("Content-Length", str(len(_mx_body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(_mx_body)
+                except _mx_err.HTTPError as exc:
+                    # exc.code is a plain int, but _send_json sends
+                    # status.value -- passing the int crashed this handler
+                    # into 500 "'int' object has no attribute 'value'" for
+                    # EVERY non-200 the worker returned (found 2026-08-31
+                    # via the history route's interim 404). Coerce; a
+                    # non-standard code degrades to 502.
+                    try:
+                        _mx_status = HTTPStatus(exc.code)
+                    except ValueError:
+                        _mx_status = HTTPStatus.BAD_GATEWAY
+                    self._send_json(_mx_status, {"error": exc.reason})
+                except Exception as exc:  # noqa: BLE001
+                    # Worker down: a warming-shaped body, not an error, so the
+                    # panel shows "building" rather than a red banner.
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {
+                            "warming": True,
+                            "rows": [],
+                            "events": [],
+                            "lists": [],
+                            "message": f"MomX worker unavailable: {exc}",
+                        },
+                    )
+                return
+                try:
+                    current = _momx_service.snapshot()
+                    ledgers = getattr(STATE, "_momx_momentum", None)
+                    if ledgers is None:
+                        ledgers = {}
+                        STATE._momx_momentum = ledgers
+                    list_name = str(current.get("list") or "")
+                    held = ledgers.get(list_name) or {"stamp": None, "prev": None, "events": []}
+                    stamp = current.get("generatedAt")
+                    if stamp and stamp != held["stamp"] and not current.get("warming"):
+                        fresh = _momx_fastlane.diff_matches(held["prev"], current)
+                        fresh += _momx_fastlane.rvol_spikes(current, previous=held["prev"])
+                        held["events"] = _momx_fastlane.merge_events(held["events"], fresh, cap=50)
+                        held["prev"] = current
+                        held["stamp"] = stamp
+                        ledgers[list_name] = held
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {"events": held["events"], "list": list_name, "generatedAt": stamp},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # A broken diff must never break the 15s poll loop.
+                    self._send_json(HTTPStatus.OK, {"events": [], "error": str(exc)})
+                return
+            # ---------------------------------------------------------------
+            # AI features (/api/ai/*).
+            #
+            # Every one of these can end in a model call, so NONE of them runs
+            # on this thread. agents.ai_endpoints builds on a daemon thread,
+            # caches the answer for five minutes, and hands this thread either
+            # the cached copy or an honest "writing it now" -- a 20s OpenAI
+            # timeout can never hold an HTTP worker here, and holding a worker
+            # on this server is not a local problem: the chart engine shares
+            # the same GIL. Nothing polls these; a build happens only because
+            # somebody asked and the cached copy had expired.
+            #
+            # The import is lazy and guarded for the same reason the momx
+            # routes above are: a broken agents/ import must never stop the
+            # server booting, and today neither AI SDK is installed.
+            # ---------------------------------------------------------------
+            if parsed.path.startswith("/api/ai/"):
+                try:
+                    from agents import ai_endpoints as _ai
+                except Exception as exc:  # noqa: BLE001
+                    # 200, not 503: "AI is off" is a normal state the panel
+                    # renders as text, not an error the browser should retry.
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {
+                            "available": False,
+                            "reason": f"The AI layer could not be loaded: {exc}",
+                            "provider": None,
+                        },
+                    )
+                    return
+                _ai_query = parse_qs(parsed.query)
+                if parsed.path == "/api/ai/status":
+                    self._send_json(HTTPStatus.OK, _ai.status())
+                    return
+                if parsed.path == "/api/ai/triage":
+                    try:
+                        _ai_limit = int(str(_ai_query.get("limit", ["5"])[0]).strip() or 5)
+                    except (TypeError, ValueError):
+                        _ai_limit = 5
+                    _ai_list = str(_ai_query.get("list", [""])[0]).strip()
+                    self._send_json(
+                        HTTPStatus.OK,
+                        _ai.triage(list_name=_ai_list or None, limit=_ai_limit),
+                    )
+                    return
+                if parsed.path == "/api/ai/brief":
+                    def _ai_scanner_snapshot() -> dict:
+                        # The LAST SERVED scanner response, never a fresh
+                        # build: the AI paragraph summarises what he is already
+                        # looking at, and must not be able to start a scan.
+                        served = getattr(STATE, "_premarket_scanner_response", None)
+                        return served[1] if served else {}
+
+                    self._send_json(
+                        HTTPStatus.OK,
+                        _ai.brief(STATE.morning_briefing_payload, _ai_scanner_snapshot),
+                    )
+                    return
+                if parsed.path == "/api/ai/journal-lessons":
+                    self._send_json(HTTPStatus.OK, _ai.journal_lessons())
+                    return
+                if parsed.path == "/api/ai/catalyst":
+                    _ai_symbol = str(_ai_query.get("symbol", [""])[0]).strip().upper()
+                    try:
+                        _ai_change = float(str(_ai_query.get("change", [""])[0]).strip())
+                    except (TypeError, ValueError):
+                        # Not given: take the move off the scanner row we last
+                        # served, so the model is told the same number the
+                        # trader is looking at.
+                        _ai_change = None
+                        _ai_served = getattr(STATE, "_premarket_scanner_response", None)
+                        for _ai_row in ((_ai_served[1].get("rows") or []) if _ai_served else []):
+                            if not isinstance(_ai_row, dict):
+                                continue
+                            if str(_ai_row.get("symbol") or "").strip().upper() != _ai_symbol:
+                                continue
+                            try:
+                                _ai_change = float(_ai_row.get("changePct"))
+                            except (TypeError, ValueError):
+                                _ai_change = None
+                            break
+                    self._send_json(
+                        HTTPStatus.OK,
+                        _ai.catalyst(
+                            _ai_symbol,
+                            change_pct=_ai_change,
+                            # A pure read of the cache the catalyst refresher
+                            # thread fills; the news feed can never slow this.
+                            headlines_loader=_ai.default_headlines_loader(STATE._catalyst_cache),
+                        ),
+                    )
+                    return
+                self._send_json(
+                    HTTPStatus.NOT_FOUND, {"error": f"no AI route {parsed.path}"}
+                )
+                return
+            if parsed.path == "/api/morning-briefing":
+                self._send_json(HTTPStatus.OK, STATE.morning_briefing_payload())
+                return
+            if parsed.path == "/api/trade-review":
+                self._send_json(HTTPStatus.OK, STATE.trade_review_payload())
+                return
+            if parsed.path == "/api/premarket-scanner/history":
+                cached = getattr(STATE, "_premarket_history_response", None)
+                if cached and (time.monotonic() - cached[0]) < 60.0:
+                    self._send_json(HTTPStatus.OK, cached[1])
+                    return
+                payload = {"days": premarket_history_load(), "retentionDays": 30}
+                STATE._premarket_history_response = (time.monotonic(), payload)
+                self._send_json(HTTPStatus.OK, payload)
+                return
             if parsed.path == "/api/oi-auto-alerts":
+                # Automatic OI-ladder alerts: MAG7 + manual tickers, morning
+                # ladders, 5-minute-close confirmations and the event feed.
                 self._send_json(HTTPStatus.OK, STATE.oi_auto_alert_payload())
+                return
+            if parsed.path == "/api/oi-auto-alerts/history":
+                # One past session's confirmations for the dated history panel.
+                # Kept off the main payload so the frequent poll stays lean.
+                query = parse_qs(parsed.query)
+                day = str(query.get("date", [""])[0]).strip()
+                self._send_json(HTTPStatus.OK, STATE.oi_auto_alert_history(day))
                 return
             if parsed.path == "/api/ticker-strip":
                 query = parse_qs(parsed.query)
@@ -14175,38 +22169,33 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # same trading-profile quote source as the Schwab Level-1
                 # socket; the general watchlist endpoint remains separately
                 # cached for large symbol tables.
+                # Was [:8], sized for the charts on screen. The quick
+                # chart+chain rail asks for all of its tickers at once (13
+                # today), so the tail was silently truncated and those tickers
+                # could never show a day move - a cap that drops data rather
+                # than erroring is exactly the kind of thing that reads as "the
+                # feature is broken". Raised to cover the rail with headroom;
+                # still bounded so a crafted query cannot ask for hundreds.
                 symbols = list(dict.fromkeys(
                     item.strip().upper()
                     for item in raw_symbols.split(",")
                     if item.strip()
-                ))[:8]
-                rows = []
-                if symbols:
-                    try:
-                        quotes = SchwabClient("trading").get_quotes(symbols)
-                        if not quotes:
-                            quotes = SchwabClient().get_quotes(symbols)
-                    except Exception:
-                        quotes = {}
-                    for symbol in symbols:
-                        quote = quotes.get(symbol) or {}
-                        rows.append({
-                            "symbol": symbol,
-                            "lastPrice": quote.get("last_price"),
-                        })
+                ))[:24]
+                rows = _live_chart_quote_rows(symbols, self._session_user()) if symbols else []
                 self._send_json(HTTPStatus.OK, {"rows": rows})
                 return
             if parsed.path == "/api/chart-grids":
-                grids_path = ARTIFACTS_DIR / "chart_grids.json"
-                grids = {}
-                try:
-                    if grids_path.exists():
-                        parsed_grids = json.loads(grids_path.read_text(encoding="utf-8"))
-                        if isinstance(parsed_grids, dict):
-                            grids = parsed_grids
-                except Exception:
-                    grids = {}
-                self._send_json(HTTPStatus.OK, {"grids": grids})
+                # PER ACCOUNT. This file used to be one flat {name: grid} map
+                # shared by everyone: the admin saw a grid another user had
+                # created ("Mags", reported 2026-08-31), and because the POST
+                # below rewrites the whole file, one user's save silently
+                # DELETED every other user's grids. Now the file is
+                # {"version": 2, "users": {email: {name: grid}}} and each
+                # account only ever sees, saves, or destroys its own.
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"grids": _chart_grids_for_user(self._session_user())},
+                )
                 return
             if parsed.path == "/api/live-option-stream":
                 # Tick-by-tick option chain: subscribe the VISIBLE contracts of
@@ -14297,18 +22286,22 @@ class ApiHandler(BaseHTTPRequestHandler):
                 }
                 prefetch = str(query.get("prefetch", [""])[0]).lower() in {"1", "true", "yes"}
                 refresh = str(query.get("refresh", [""])[0]).lower() in {"1", "true", "yes"}
+                deep_tapes = str(query.get("deep", [""])[0]).lower() in {"1", "true", "yes"}
                 try:
                     since_epoch = float(query.get("since", ["0"])[0])
                 except (TypeError, ValueError):
                     since_epoch = 0.0
-                self._send_json(HTTPStatus.OK, STATE.oi_finder_chart_payload(
+                chart_payload = STATE.oi_finder_chart_payload(
                     symbol,
                     initial_paint=initial_paint,
                     since_epoch=since_epoch,
                     prefetch=prefetch,
                     refresh=refresh,
                     include_study_seed=include_study_seed,
-                ))
+                    deep_tapes=deep_tapes,
+                )
+                chart_payload = STATE.apply_scanner_ganesh_parity(symbol, chart_payload)
+                self._send_json(HTTPStatus.OK, chart_payload)
                 return
             if parsed.path == "/api/learning-status":
                 self._send_json(HTTPStatus.OK, STATE._learning_status_payload())
@@ -14340,6 +22333,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 payload = STATE.start_backtest_job(symbols) if symbols else STATE.dashboard_payload()
                 self._send_json(HTTPStatus.OK, payload)
                 return
+            if parsed.path == "/api/news-feed/latest":
+                # MomX tab: stored headlines for the board's tickers. DB only.
+                query = parse_qs(parsed.query)
+                raw_symbols = query.get("symbols", [""])[0]
+                symbols = [item.strip().upper() for item in raw_symbols.split(",") if item.strip()]
+                self._send_json(HTTPStatus.OK, STATE.momx_news_latest(symbols))
+                return
             if parsed.path == "/api/news-feed":
                 self._send_json(HTTPStatus.OK, STATE.load_news())
                 return
@@ -14360,20 +22360,24 @@ class ApiHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/accounts":
                 self._send_json(HTTPStatus.OK, {"accounts": STATE.available_accounts()})
                 return
-            if parsed.path == "/api/schwab/auth-url":
-                client = SchwabClient()
-                self._send_json(
-                    HTTPStatus.OK,
-                    {
-                        "configured": bool(settings.schwab.client_id),
-                        "authorizationUrl": client.authorization_url() if settings.schwab.client_id else "",
-                        "redirectUri": settings.schwab.redirect_uri,
-                        "marketDataProvider": settings.market_data_provider,
-                    },
-                )
-                return
+            # REMOVED 2026-09-04: GET /api/schwab/auth-url.
+            #
+            # It called client.authorization_url(), which was an alias for
+            # begin_authorization() - so a plain GET, from anything, silently
+            # replaced the pending OAuth handshake and broke a login the
+            # trader was half way through. Nothing called it (the UI uses
+            # POST /api/schwab/oauth/start), it was unauthenticated, and it
+            # served the HOUSE client regardless of who asked. A read-shaped
+            # URL with a write-shaped side effect is a trap; deleted rather
+            # than made safe, because a second way to start a handshake has
+            # no user.
             if parsed.path == "/api/schwab/status":
-                self._send_json(HTTPStatus.OK, _schwab_status_payload())
+                # The signed-in user's OWN connection and expiry date. Anyone
+                # who has not connected their own Schwab app still sees the
+                # house status, so the owner's view is unchanged.
+                self._send_json(
+                    HTTPStatus.OK, _schwab_status_payload(user=self._session_user())
+                )
                 return
             if parsed.path == "/api/watchlist":
                 self._send_json(HTTPStatus.OK, {"tickers": settings.scanner.default_universe})
@@ -14430,6 +22434,78 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if not self._api_gate_passed(parsed.path):
                 return
+            if parsed.path == "/api/preflight/run":
+                # ADMIN ONLY, and it HEALS: this is the button that re-primes
+                # credentials and restarts warmers. Same reasoning as the GET,
+                # with a stronger consequence. The local-curl trap applies here
+                # too - prove the denial with X-AGX-Access-Email, not 127.0.0.1.
+                if self._require_admin_user() is None:
+                    return
+                _pf_heal = body.get("heal", True)
+                _pf_result = _preflight_run_now(heal=bool(_pf_heal))
+                # Return the SAME envelope the GET serves, with the fresh run
+                # included, so the admin page replaces its whole state from one
+                # response instead of merging two differently-shaped payloads.
+                _pf_payload = _preflight_payload()
+                _pf_payload["ran"] = _pf_result
+                self._send_json(HTTPStatus.OK, _pf_payload)
+                return
+            if parsed.path.startswith("/api/momx-scanner"):
+                # PROXY every momx POST (/universe, /rebuild, whatever comes
+                # next) to the worker on :3010, mirroring the GET proxy above.
+                # This block used to call momx.service.set_universe IN-PROCESS
+                # - directly violating the "never call momx.service from this
+                # process" rule the GET proxy documents. It only appeared to
+                # work because set_universe persists to the universes file the
+                # worker re-reads each build; the response reflected
+                # api_server's own dormant momx state, and it silently started
+                # momx machinery inside the CPU-saturated chart process. It is
+                # also why POST /rebuild 404'd through the browser while
+                # working against :3010 directly (verify agent, 2026-08-30).
+                import urllib.error as _mx_err
+                import urllib.request as _mx_req
+                # Same account forwarding as the GET proxy: the worker keys
+                # Momo Alert configs by this header.
+                _mx_user = self._session_user()
+                _mx_post_headers = {"Content-Type": "application/json"}
+                if _mx_user and _mx_user.get("email"):
+                    _mx_post_headers["X-AGX-User"] = str(_mx_user.get("email"))
+                _mx_req_obj = _mx_req.Request(
+                    "http://127.0.0.1:3010" + parsed.path,
+                    data=json.dumps(body).encode("utf-8"),
+                    headers=_mx_post_headers,
+                    method="POST",
+                )
+                try:
+                    with _mx_req.urlopen(_mx_req_obj, timeout=20) as _mx_res:
+                        _mx_body = _mx_res.read()
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(_mx_body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(_mx_body)
+                except _mx_err.HTTPError as exc:
+                    # Forward the worker's own error body (its 400s carry the
+                    # useful "Unknown list ..." message), not just the reason.
+                    try:
+                        _mx_detail = json.loads(exc.read().decode("utf-8"))
+                    except Exception:  # noqa: BLE001
+                        _mx_detail = {"error": exc.reason}
+                    # _send_json wants an HTTPStatus (it calls .value); the
+                    # urllib code is a bare int, and passing it raised inside
+                    # this except and fell through to the 503 branch.
+                    try:
+                        _mx_status = HTTPStatus(exc.code)
+                    except ValueError:
+                        _mx_status = HTTPStatus.BAD_GATEWAY
+                    self._send_json(_mx_status, _mx_detail)
+                except Exception as exc:  # noqa: BLE001
+                    self._send_json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": f"MomX worker unavailable: {exc}"},
+                    )
+                return
             if parsed.path == "/api/auth/change-password":
                 user = self._require_session_user()
                 if user is None:
@@ -14463,20 +22539,131 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # A newly saved Alpaca key must feed the chart fallback
                 # immediately, without waiting for a server restart.
                 STATE._owner_alpaca_client_cache = None
+                # And the saver's own cached clients, or they update a key and
+                # keep fetching on the previous one.
+                USER_ALPACA_CLIENTS.invalidate(str(user.get("id") or ""))
+                USER_SCHWAB_CLIENTS.invalidate(str(user.get("id") or ""))
+                # And any stored REFUSAL. A persisted verdict plus claim_probe
+                # declining to re-probe a known-refused credential means a red
+                # lamp could never go green again, however good the new key is.
+                CREDENTIAL_HEALTH.forget(_health_scope(user))
                 self._send_json(HTTPStatus.OK, auth.provider_summary(user))
                 return
             if parsed.path == "/api/admin/users":
                 user = self._require_session_user()
                 if user is None:
                     return
+                temporary_password = str(body.get("temporaryPassword", "") or "")
                 created = auth_service_instance().create_user(
                     str(body.get("email", "") or ""),
-                    str(body.get("temporaryPassword", "") or ""),
+                    temporary_password,
                     actor=user,
                     display_name=str(body.get("displayName", "") or ""),
                     role=str(body.get("role", "user") or "user"),
                 )
-                self._send_json(HTTPStatus.OK, {"user": created})
+                # The account is already committed by this point, so a failed
+                # invite is reported to the admin rather than raised — losing a
+                # good account because email bounced is the worse outcome.
+                # Accounts have no password now, so there is no secret to
+                # deliver and the invite mail is only directions. Attempted
+                # only when a password was explicitly supplied (break-glass).
+                if temporary_password:
+                    invite = send_user_invite(
+                        str(created.get("email", "") or ""),
+                        temporary_password,
+                        display_name=str(created.get("displayName", "") or ""),
+                    )
+                    if not invite["sent"]:
+                        print(
+                            f"Invite email not sent for {created.get('email', '')}: "
+                            f"{invite['reason']}"
+                        )
+                else:
+                    invite = {"sent": False, "reason": "Passwordless account - no secret to send."}
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "user": created,
+                        "emailed": invite["sent"],
+                        "emailReason": invite["reason"],
+                    },
+                )
+                return
+            if parsed.path == "/api/admin/users/reset-password":
+                actor = self._require_admin_user()
+                if actor is None:
+                    return
+                temporary_password = str(body.get("temporaryPassword", "") or "")
+                updated = auth_service_instance().reset_password(
+                    str(body.get("userId", "") or ""),
+                    temporary_password,
+                    actor=actor,
+                )
+                # Same handover mail as account creation: the administrator
+                # should not have to relay a password by hand when delivery is
+                # configured, and must be told plainly when it is not.
+                invite = send_user_invite(
+                    str(updated.get("email", "") or ""),
+                    temporary_password,
+                    display_name=str(updated.get("displayName", "") or ""),
+                )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "user": updated,
+                        "emailed": invite["sent"],
+                        "emailReason": invite["reason"],
+                    },
+                )
+                return
+            if parsed.path == "/api/admin/users/delete":
+                # Irreversible, and deliberately separate from set-active:
+                # disabling keeps the account, this frees the email for re-use.
+                # The self-delete and last-active-admin guards live in
+                # auth_service.delete_user and are evaluated against the caller.
+                actor = self._require_admin_user()
+                if actor is None:
+                    return
+                auth_service_instance().delete_user(
+                    str(body.get("userId", "") or ""),
+                    actor=actor,
+                )
+                # Which account owns the broker credentials is decided by
+                # "first ACTIVE admin by created_at", and the Alpaca client
+                # built from it is memoized with no TTL. Removing an account
+                # can change that answer, so the memo has to go or the backend
+                # keeps calling Alpaca with a deleted person's key until the
+                # process restarts.
+                STATE._owner_alpaca_client_cache = None
+                self._send_json(HTTPStatus.OK, {"deleted": True})
+                return
+            if parsed.path == "/api/admin/users/remove-password":
+                # Makes an older account match the new model: Cloudflare-only,
+                # no second secret. Refused on the last administrator that
+                # still has one - see auth_service.remove_password.
+                actor = self._require_admin_user()
+                if actor is None:
+                    return
+                updated = auth_service_instance().remove_password(
+                    str(body.get("userId", "") or ""),
+                    actor=actor,
+                )
+                self._send_json(HTTPStatus.OK, {"user": updated})
+                return
+            if parsed.path == "/api/admin/users/set-active":
+                actor = self._require_admin_user()
+                if actor is None:
+                    return
+                updated = auth_service_instance().set_user_active(
+                    str(body.get("userId", "") or ""),
+                    bool(body.get("isActive", False)),
+                    actor=actor,
+                )
+                # Same reason as the delete route: the credential owner is the
+                # first ACTIVE admin, so switching one off can hand ownership
+                # to a different account. Drop the memoized Alpaca client.
+                STATE._owner_alpaca_client_cache = None
+                self._send_json(HTTPStatus.OK, {"user": updated})
                 return
             if parsed.path == "/api/admin/device-requests":
                 user = self._require_session_user()
@@ -14501,43 +22688,45 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 self._send_json(HTTPStatus.OK, result)
                 return
+            if parsed.path == "/api/momo-alert/test-push":
+                # The Send-test button: one push to THIS account's own topic,
+                # with an honest verdict. Handled here rather than proxied to
+                # the worker because api_server already reads the same config
+                # store for _push_phone_notification, and the session user is
+                # resolved here. momx.momo_alert is a pure module - the import
+                # ban is on momx.service, which boots a warmer.
+                from momx import momo_alert as _ma_test
+
+                _tp_user = self._session_user()
+                _tp_email = str((_tp_user or {}).get("email") or "")
+                self._send_json(HTTPStatus.OK, _ma_test.test_push(_tp_email))
+                return
             if parsed.path == "/api/chart-grids":
                 grids = body.get("grids")
                 if not isinstance(grids, dict):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "grids object is required."})
                     return
-                grids_path = ARTIFACTS_DIR / "chart_grids.json"
-                grids_path.parent.mkdir(parents=True, exist_ok=True)
-                grids_path.write_text(json.dumps(grids), encoding="utf-8")
-                self._send_json(HTTPStatus.OK, {"ok": True, "count": len(grids)})
+                # Writes THIS account's slice only; every other account's grids
+                # are preserved byte for byte (the old code replaced the whole
+                # shared file, so a save was a cross-user delete).
+                count = _save_chart_grids_for_user(self._session_user(), grids)
+                self._send_json(HTTPStatus.OK, {"ok": True, "count": count})
                 return
-            if parsed.path == "/api/oi-auto-alerts":
-                action = str(body.get("action", "configure") or "configure").strip().lower()
-                try:
-                    if action == "configure":
-                        payload = STATE.configure_oi_auto_alerts(
-                            enabled=body.get("enabled") if "enabled" in body else None,
-                            include_mag7=body.get("includeMag7") if "includeMag7" in body else None,
-                        )
-                    elif action == "add":
-                        payload = STATE.add_oi_auto_alert_symbol(body.get("symbol"))
-                    elif action == "remove":
-                        payload = STATE.remove_oi_auto_alert_symbol(body.get("symbol"))
-                    elif action == "refresh":
-                        raw_symbols = body.get("symbols") or []
-                        if isinstance(raw_symbols, str):
-                            raw_symbols = [item.strip() for item in raw_symbols.split(",") if item.strip()]
-                        payload = STATE.request_oi_auto_alert_refresh(
-                            symbols=raw_symbols if isinstance(raw_symbols, list) else None,
-                            force=bool(body.get("force", True)),
-                        )
-                    else:
-                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"Unknown auto-alert action: {action}"})
-                        return
-                except ValueError as exc:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-                    return
-                self._send_json(HTTPStatus.OK, payload)
+            if parsed.path == "/api/oi-auto-alerts/settings":
+                self._send_json(HTTPStatus.OK, STATE.update_oi_auto_alert_settings(body))
+                return
+            if parsed.path == "/api/oi-auto-alerts/rearm":
+                status, payload = STATE.rearm_oi_auto_alert(body)
+                self._send_json(status, payload)
+                return
+            if parsed.path == "/api/oi-auto-alerts/symbols":
+                status, payload = STATE.update_oi_auto_alert_symbols(body)
+                self._send_json(status, payload)
+                return
+            if parsed.path == "/api/oi-auto-alerts/refresh":
+                symbol = oi_auto_alert_normalize_symbol(body.get("symbol"))
+                STATE.request_oi_auto_alert_refresh([symbol] if symbol else None, reason="manual")
+                self._send_json(HTTPStatus.OK, {**STATE.oi_auto_alert_payload(), "refreshRequested": True})
                 return
             if parsed.path == "/api/option-roi-estimate":
                 # The calculator computes a local gamma estimate whenever the
@@ -14680,12 +22869,27 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             if parsed.path == "/api/execute-best-trade":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 self._send_json(HTTPStatus.OK, STATE.execute_best_trade())
                 return
             if parsed.path == "/api/execute-all-trades":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 self._send_json(HTTPStatus.OK, STATE.execute_all_trades())
                 return
             if parsed.path == "/api/close-position":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 symbol = str(body.get("symbol", "")).strip().upper()
                 if not symbol:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Symbol is required."})
@@ -14693,9 +22897,19 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, STATE.close_position(symbol))
                 return
             if parsed.path == "/api/close-all-positions":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 self._send_json(HTTPStatus.OK, STATE.close_all_positions())
                 return
             if parsed.path == "/api/close-option-position":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 option_symbol = str(body.get("optionSymbol") or body.get("symbol") or "").strip().upper()
                 if not option_symbol:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "optionSymbol is required."})
@@ -14703,6 +22917,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, STATE.close_option_position(option_symbol))
                 return
             if parsed.path == "/api/close-all-option-positions":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 self._send_json(HTTPStatus.OK, STATE.close_all_option_positions())
                 return
             if parsed.path == "/api/manage-option-positions":
@@ -14712,6 +22931,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, STATE.cancel_stale_option_buy_orders())
                 return
             if parsed.path == "/api/account-select":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 profile_id = str(body.get("profileId", "")).strip()
                 if not profile_id:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "profileId is required."})
@@ -14723,6 +22947,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, payload)
                 return
             if parsed.path == "/api/risk-settings":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 self._send_json(
                     HTTPStatus.OK,
                     STATE.update_risk_settings(
@@ -14743,6 +22972,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             if parsed.path == "/api/option-risk-settings":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 self._send_json(
                     HTTPStatus.OK,
                     STATE.update_option_risk_settings(
@@ -14759,6 +22993,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             if parsed.path == "/api/option-bot-settings":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 self._send_json(
                     HTTPStatus.OK,
                     STATE.update_option_bot_config(
@@ -14772,6 +23011,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             if parsed.path == "/api/bot-control":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 requested_state = str(body.get("state", "Stopped")).strip().title()
                 if requested_state not in {"Running", "Paused", "Stopped"}:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "State must be Running, Paused, or Stopped."})
@@ -14779,6 +23023,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, STATE.set_bot_state(requested_state))
                 return
             if parsed.path == "/api/option-bot-control":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 requested_state = str(body.get("state", "Stopped")).strip().title()
                 if requested_state not in {"Running", "Paused", "Stopped"}:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "State must be Running, Paused, or Stopped."})
@@ -14786,6 +23035,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, STATE.set_option_bot_state(requested_state))
                 return
             if parsed.path == "/api/option-paper-trades":
+                # Owner-only: this changes the account owner's positions,
+                # automation or risk sizing. Non-admin users sign in through
+                # Cloudflare and must not be able to reach it.
+                if self._require_admin_user() is None:
+                    return
                 self._send_json(
                     HTTPStatus.CREATED,
                     STATE.log_option_paper_trade(
@@ -14814,6 +23068,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
+            if parsed.path == "/api/news-feed/refresh":
+                # MomX tab: scrape the board's tickers in the background and return at once.
+                symbols = [str(item).strip().upper() for item in body.get("symbols", []) if str(item).strip()]
+                self._send_json(HTTPStatus.OK, STATE.momx_news_refresh(symbols))
+                return
             if parsed.path == "/api/news-feed":
                 symbols = [item.strip().upper() for item in body.get("symbols", []) if str(item).strip()]
                 self._send_json(HTTPStatus.OK, STATE.load_news(symbols or None))
@@ -14824,6 +23083,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, STATE.set_scheduler(enabled, interval))
                 return
             if parsed.path == "/api/schwab/token":
+                # Completing OAuth writes a token file. Which one depends on
+                # WHO is asking: an administrator writes the house token the
+                # clock-driven jobs run on; everyone else writes their own.
+                # _schwab_oauth_client never falls back, so a user without saved
+                # keys cannot land their token on the house file.
+                actor = self._require_session_user()
+                if actor is None:
+                    return
                 received_url = str(body.get("authorizationResponseUrl", "")).strip()
                 if not received_url:
                     self._send_json(
@@ -14831,12 +23098,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                         {"error": "Use the Re-authenticate button so the local callback can securely complete Schwab OAuth."},
                     )
                     return
-                token = _schwab_client_for_profile(
-                    str(body.get("profile", "market_data") or "market_data"),
-                ).exchange_authorization_response(received_url)
+                oauth_client = _schwab_oauth_client(
+                    actor, str(body.get("profile", "market_data") or "market_data")
+                )
+                if oauth_client is None:
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "Save your Schwab app key and secret first."},
+                    )
+                    return
+                token = oauth_client.exchange_authorization_response(received_url)
                 self._send_json(
                     HTTPStatus.OK,
                     _schwab_status_payload(
+                        user=actor,
                         status="connected",
                         hasAccessToken=bool(token.get("access_token")),
                         hasRefreshToken=bool(token.get("refresh_token")),
@@ -14844,6 +23119,21 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             if parsed.path == "/api/schwab/settings":
+                # Two destinations, and which one is used depends on WHO is
+                # asking - never on what they send. An administrator writes the
+                # house credential in .env, which the clock-driven jobs
+                # (warmers, scanners, alert engine) run on. Everyone else writes
+                # their own encrypted vault row and cannot touch .env at all.
+                # credential_target fails closed; see user_schwab.
+                actor = self._require_session_user()
+                if actor is None:
+                    return
+                if credential_target(actor) != HOUSE:
+                    self._send_json(
+                        HTTPStatus.OK,
+                        self._save_user_schwab_credentials(actor, body),
+                    )
+                    return
                 client_id = str(body.get("clientId", "")).strip() or settings.schwab.client_id
                 client_secret = str(body.get("clientSecret", "")).strip() or settings.schwab.client_secret
                 if not client_id or not client_secret:
@@ -14855,6 +23145,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 os.environ["SCHWAB_CLIENT_SECRET"] = client_secret
                 settings.schwab.client_id = client_id
                 settings.schwab.client_secret = client_secret
+                # New keys, so any recorded refusal is about the old ones.
+                CREDENTIAL_HEALTH.forget(_health_scope(actor))
                 # The optional Accounts & Trading app keeps its own key pair;
                 # blank fields leave the stored pair unchanged.
                 trading_client_id = str(body.get("tradingClientId", "")).strip()
@@ -14865,12 +23157,22 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if trading_client_secret:
                     set_key(str(ENV_PATH), "SCHWAB_TRADING_CLIENT_SECRET", trading_client_secret, quote_mode="never")
                     os.environ["SCHWAB_TRADING_CLIENT_SECRET"] = trading_client_secret
-                self._send_json(HTTPStatus.OK, _schwab_status_payload(saved=True))
+                self._send_json(
+                    HTTPStatus.OK,
+                    _schwab_status_payload(user=self._session_user(), saved=True),
+                )
                 return
             if parsed.path == "/api/schwab/oauth/start":
+                actor = self._require_session_user()
+                if actor is None:
+                    return
                 query = parse_qs(parsed.query)
-                client = _schwab_client_for_profile(str(query.get("profile", ["market_data"])[0]))
-                if not client.config.client_id or not client.config.client_secret:
+                # The caller's OWN app. _schwab_oauth_client never falls back to
+                # the house client, so a user with no saved keys is told to save
+                # them rather than starting a flow that would end by overwriting
+                # the owner's token.
+                client = _schwab_oauth_client(actor, str(query.get("profile", ["market_data"])[0]))
+                if client is None or not client.config.client_id or not client.config.client_secret:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Save the Schwab app key and secret first."})
                     return
                 authorization_url = client.begin_authorization()
@@ -14893,11 +23195,22 @@ class ApiHandler(BaseHTTPRequestHandler):
                 try:
                     verification = client.test_connection()
                 except Exception as exc:
-                    failure = _schwab_status_payload(error=str(exc), code="schwab_connection_failed")
+                    CREDENTIAL_HEALTH.record_failure(
+                        _health_scope(self._session_user()), profile, exc
+                    )
+                    # Reduced before it reaches the Settings card: an
+                    # Akamai 403 is an HTML page, and str(exc) would put
+                    # the markup on screen. See provider_errors.
+                    failure = _schwab_status_payload(
+                        user=self._session_user(),
+                        error=safe_provider_message(exc),
+                        code="schwab_connection_failed",
+                    )
                     failure[section]["connected"] = False
                     self._send_json(HTTPStatus.BAD_GATEWAY, failure)
                     return
-                success = _schwab_status_payload(**verification)
+                CREDENTIAL_HEALTH.record_success(_health_scope(self._session_user()), profile)
+                success = _schwab_status_payload(user=self._session_user(), **verification)
                 # The connected/verifiedAt badge lives on the tested profile.
                 success[section].update(verification)
                 self._send_json(HTTPStatus.OK, success)
@@ -15090,9 +23403,11 @@ class ApiHandler(BaseHTTPRequestHandler):
         return json.loads(raw)
 
     def _send_json(self, status: HTTPStatus, payload: dict) -> None:
-        response = json.dumps(_serialize_value(payload)).encode("utf-8")
+        response, encoding = self._json_response_body(payload)
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json")
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
         self.send_header("Content-Length", str(len(response)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -15102,16 +23417,75 @@ class ApiHandler(BaseHTTPRequestHandler):
 QUICK_STRIP_WARM_SYMBOLS = (
     "SPY", "QQQ", "SLV", "AAPL", "AMZN", "GOOGL", "META",
     "MSFT", "NFLX", "NVDA", "TSLA", "AVGO", "USO", "PLTR",
+    # COIN/MARA: the trader opens these near-daily (2026-08-21 chart
+    # sessions), added as the 2026-08-22 weekend A/B test of whether warm-list
+    # membership produces residency now that 8f2744f (cap 24->40, splice
+    # persistence) and 3333332 (auth gate) removed the effects a prior audit
+    # measured. Controls: DJT/WRBY left out; MSTR deliberately NOT added --
+    # it is the preserved reproducible specimen for the off-hot-set refresh
+    # investigation.
+    "COIN", "MARA",
 )
 
 
+def _thread_census() -> dict:
+    """Count live threads grouped by a name prefix, so a pileup names itself."""
+    import re as _re
+    counts: dict[str, int] = {}
+    for t in threading.enumerate():
+        name = t.name or "?"
+        # Collapse numeric suffixes: "Thread-412 (process_request_thread)" ->
+        # "Thread-N (process_request_thread)", "oi-finder-chart-AAPL" -> "oi-finder-chart-*"
+        key = _re.sub(r"\d+", "N", name)
+        key = _re.sub(r"-[A-Z][A-Z0-9.\-]{0,9}$", "-*", key)
+        counts[key] = counts.get(key, 0) + 1
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:12]
+    return {"total": threading.active_count(), "byName": dict(top)}
+
+
+class ApiServer(ThreadingHTTPServer):
+    """Threaded API server sized for the browser's refresh burst.
+
+    One page refresh opens ~35 concurrent /api connections. socketserver's
+    default listen backlog is 5, so the rest were REFUSED by the OS before any
+    handler thread ran, and cloudflared turned each refused connection into a
+    502 HTML page - which is what surfaced in the app as "API is unavailable
+    right now (server error)" on app.agxtrade.com.
+
+    Measured against this server with 45 concurrent /api/health requests:
+    19 ok / 26 ECONNREFUSED before, 45 ok / 0 refused after.
+
+    allow_reuse_address keeps a restart from failing on a lingering TIME_WAIT
+    socket; ThreadingHTTPServer already sets daemon_threads.
+    """
+
+    request_queue_size = 256
+    allow_reuse_address = True
+
+
 def main() -> None:
+    global _IS_SERVING_PROCESS
+    _IS_SERVING_PROCESS = True
     # Chart history is demand-driven. Eagerly rebuilding every quick-strip
     # ticker used to keep one CPU core and the broker busy for minutes after a
     # restart, exactly when traders need the first chart/option panel fastest.
     # Persistent caches make selected symbols instant without that competition.
-    server = ThreadingHTTPServer((HOST, PORT), ApiHandler)
+    server = ApiServer((HOST, PORT), ApiHandler)
     print(f"API server listening on http://{HOST}:{PORT}")
+    # Warm the watchlist's deep chart history in the background so a search is
+    # an instant disk-cache hit. Deliberately gentle - see the method.
+    try:
+        STATE.start_watchlist_chart_warmer()
+    except Exception:
+        pass
+    # Daily 08:45 ET health checklist + one phone push with the verdict.
+    # Started here, not at import, so only the serving process schedules
+    # healing actions (see _start_preflight_scheduler).
+    try:
+        _start_preflight_scheduler()
+        _start_schwab_expiry_watch()
+    except Exception:
+        pass
     auto_login_email = str(os.getenv("LOCAL_AUTO_LOGIN_EMAIL", "") or "").strip()
     if auto_login_email:
         print(

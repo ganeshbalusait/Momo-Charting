@@ -9,8 +9,8 @@ load_dotenv()
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE_PATH = Path(os.getenv("DATABASE_PATH", str(BASE_DIR / "database" / "trades.db"))).expanduser()
-ARTIFACTS_DIR = Path(os.getenv("ARTIFACTS_DIR", str(BASE_DIR / "artifacts"))).expanduser()
+DATABASE_PATH = BASE_DIR / "database" / "trades.db"
+ARTIFACTS_DIR = BASE_DIR / "artifacts"
 TRAINING_DIR = BASE_DIR / "training"
 WATCHLIST_PATH = Path(os.getenv("WATCHLIST_FILE", BASE_DIR / "watchlist.txt"))
 EASTERN_TZ = "America/New_York"
@@ -215,6 +215,38 @@ class TradierSettings:
 
 
 @dataclass(slots=True)
+class NewsSettings:
+    """Information-only News Feed scraping. Never feeds scoring or execution."""
+
+    # Comma list of: yahoo_search, yahoo_rss, alpaca, benzinga, finviz, nasdaq, sec_edgar,
+    # finnhub, polygon, alphavantage, tiingo, google_news.
+    # finnhub/polygon/alphavantage/tiingo need a key (below) and switch on automatically
+    # when it is set.  Google News is a headline keyword match, so it is opt-in.
+    sources: str = os.getenv("NEWS_SOURCES", "yahoo_search,yahoo_rss,alpaca,benzinga,finviz,nasdaq,sec_edgar")
+    # Free API tiers.  Leave empty to skip the source (it is listed as "not set", never as failed).
+    finnhub_api_key: str = os.getenv("FINNHUB_API_KEY", "")
+    polygon_api_key: str = os.getenv("POLYGON_API_KEY", "")
+    alpha_vantage_api_key: str = os.getenv("ALPHA_VANTAGE_API_KEY", "")
+    tiingo_api_key: str = os.getenv("TIINGO_API_KEY", "")
+    # SEC EDGAR requires a descriptive User-Agent with a contact address.
+    contact_email: str = os.getenv("NEWS_CONTACT_EMAIL", "noreply@example.com")
+    per_symbol_limit: int = int(os.getenv("NEWS_PER_SYMBOL_LIMIT", "25"))
+    lookback_days: int = int(os.getenv("NEWS_LOOKBACK_DAYS", "7"))
+    timeout_seconds: int = int(os.getenv("NEWS_TIMEOUT_SECONDS", "8"))
+    max_workers: int = int(os.getenv("NEWS_MAX_WORKERS", "6"))
+    cache_ttl_seconds: int = int(os.getenv("NEWS_CACHE_TTL_SECONDS", "300"))
+    feed_rows: int = int(os.getenv("NEWS_FEED_ROWS", "600"))
+    # The MomX tab refreshes news for the tickers on its board. Every symbol costs one
+    # request per source, so a 358-name watchlist is capped to its first N rows (the
+    # board order the tab sends, ranked) rather than scraping the whole universe.
+    momx_refresh_max_symbols: int = int(os.getenv("NEWS_MOMX_REFRESH_MAX_SYMBOLS", "60"))
+    # Headlines per symbol the MomX NEWS list shows.
+    momx_feed_per_symbol: int = int(os.getenv("NEWS_MOMX_FEED_PER_SYMBOL", "5"))
+    # Floor between the trading scheduler's automatic 40-symbol news batches.
+    auto_refresh_seconds: int = int(os.getenv("NEWS_AUTO_REFRESH_SECONDS", "900"))
+
+
+@dataclass(slots=True)
 class AppConfig:
     execution_mode: str = os.getenv("EXECUTION_MODE", "paper").lower()
     allow_live_trading: bool = os.getenv("ALLOW_LIVE_TRADING", "false").lower() == "true"
@@ -233,6 +265,7 @@ class AppConfig:
     trading: TradingSettings = field(default_factory=TradingSettings)
     backtest: BacktestSettings = field(default_factory=BacktestSettings)
     ai: AISettings = field(default_factory=AISettings)
+    news: NewsSettings = field(default_factory=NewsSettings)
     default_account_profile: str = os.getenv("ACTIVE_ALPACA_PROFILE", "paper4").lower()
     mag7_option_account_profile: str = (
         os.getenv("OPTION_ACCOUNT_PROFILE")
@@ -316,6 +349,53 @@ class AppConfig:
                 paper=selected_mode != "live",
             )
         return self._default_credentials(selected_mode)
+
+    def clock_credential_candidates(self, mode: str | None = None) -> list[BrokerCredentials]:
+        """Every configured Alpaca credential usable to read the market clock.
+
+        The market clock is an account-agnostic, global fact, so *any* authorized
+        key returns the same answer.  Unlike :meth:`available_profiles` this
+        deliberately ignores the ``ALPACA_ACCOUNT_PROFILES`` allow-list: if the
+        active trading key is dead, the clock lookup should transparently fall
+        back to any other configured key instead of blanking the session banner.
+
+        The active/default profile is returned first, then the base credentials,
+        then every ``ALPACA_PROFILE_*`` token, deduplicated by key.
+        """
+        selected_mode = (mode or self.execution_mode).lower()
+        want_paper = selected_mode != "live"
+        candidates: list[BrokerCredentials] = []
+        seen: set[tuple[str, str]] = set()
+
+        def _add(cred: BrokerCredentials | None) -> None:
+            if cred is None or not cred.key or not cred.secret:
+                return
+            if cred.paper != want_paper:
+                return
+            dedup = (cred.key, cred.secret)
+            if dedup in seen:
+                return
+            seen.add(dedup)
+            candidates.append(cred)
+
+        _add(self.credentials_for_profile(self.default_account_profile, selected_mode))
+        _add(self._default_credentials(selected_mode))
+        for token in _auto_profile_tokens():
+            key = os.getenv(f"ALPACA_PROFILE_{token}_KEY_ID", "")
+            secret = os.getenv(f"ALPACA_PROFILE_{token}_SECRET_KEY", "")
+            if not key or not secret:
+                continue
+            paper = os.getenv(f"ALPACA_PROFILE_{token}_PAPER", "true").lower() != "false"
+            _add(
+                BrokerCredentials(
+                    profile_id=token.lower(),
+                    label=os.getenv(f"ALPACA_PROFILE_{token}_LABEL", token.replace("_", " ").title()),
+                    key=key,
+                    secret=secret,
+                    paper=paper,
+                )
+            )
+        return candidates
 
     def trade_label_for_profile(self, profile_id: str | None) -> str:
         requested = str(profile_id or "").strip().lower()

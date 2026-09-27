@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildStrikePriceAlertDraft,
   findPriceAlertLevel,
   priceAlertChipText,
   priceAlertLevelTitle,
@@ -17,6 +18,17 @@ const DEFINITIONS = [
   { key: "live-price", title: "LIVE NVDA 222.30", price: 222.3 },
   { key: "price-alert-abc", title: "ALERT >= 222.24", price: 222.24 },
 ];
+
+test("option-chain strike taps open a prefilled alert in the crossing direction", () => {
+  assert.deepEqual(buildStrikePriceAlertDraft(" nflx ", 78, 76.73), {
+    symbol: "NFLX",
+    price: 78,
+    condition: "above",
+    levelLabel: "Strike",
+  });
+  assert.equal(buildStrikePriceAlertDraft("NFLX", 75, 76.73).condition, "below");
+  assert.equal(buildStrikePriceAlertDraft("NFLX", 0, 76.73), null);
+});
 
 test("snaps to a named level and inherits its exact price", () => {
   const level = findPriceAlertLevel(DEFINITIONS, priceToCoordinate(222.27) + 3, priceToCoordinate);

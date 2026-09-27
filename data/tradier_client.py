@@ -110,6 +110,40 @@ class TradierClient:
             combined["putExpDateMap"].update(normalized.get("putExpDateMap") or {})
         return combined
 
+    def get_timesales(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        interval: str = "1min",
+    ) -> list[dict]:
+        """Minute bars including early premarket (session_filter=all).
+
+        This is the ONLY source in the stack for the current day's
+        04:00-07:00 ET candles: Schwab's history and chart stream both start
+        the current day at 07:00 (verified 2026-08-21). Rows come back in
+        Eastern wall-clock time with no offset.
+        """
+        if not self.configured:
+            return []
+        target = str(symbol or "").strip().upper()
+        if not target:
+            return []
+        payload = self._get_json(
+            "/markets/timesales",
+            {
+                "symbol": target,
+                "interval": interval,
+                "start": start.astimezone(self._tz).strftime("%Y-%m-%d %H:%M"),
+                "end": end.astimezone(self._tz).strftime("%Y-%m-%d %H:%M"),
+                "session_filter": "all",
+            },
+        )
+        series = (payload.get("series") or {}).get("data") if isinstance(payload, dict) else None
+        if isinstance(series, dict):
+            series = [series]
+        return series if isinstance(series, list) else []
+
     def _get_json(self, path: str, params: dict[str, str]) -> dict:
         url = f"{self.config.base_url}{path}?{urlencode(params)}"
         request = Request(

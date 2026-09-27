@@ -317,3 +317,60 @@ test("watchdog stops when the last subscriber leaves", () => {
   for (const [handle, task] of [...tasks]) { if (task.at <= clock) { tasks.delete(handle); task.callback(); } }
   assert.equal(opened.length, 1, "no reconnect once nobody is subscribed");
 });
+
+test("a stream silent through two windows tells its listeners it is down; reconnect() rebuilds on demand", () => {
+  // The STREAMING badge is set once per packet and never cleared by the
+  // watchdog, so a phone that woke to a dead socket kept reading STREAMING
+  // through every silent rebuild. One silent window is ambiguous (the
+  // server keepalive is an SSE comment the browser never surfaces); two in a
+  // row is a dead feed and the chart must know so it falls back to REST.
+  let clock = 0;
+  const tasks = new Map();
+  let nextHandle = 1;
+  const opened = [];
+  const errors = [];
+  const hub = createLiveMarketStreamHub({
+    createEventSource: (url) => {
+      const source = { url, listeners: new Map(), close: () => {} };
+      source.addEventListener = (type, handler) => source.listeners.set(type, handler);
+      opened.push(source);
+      return source;
+    },
+    schedule: (callback, delay) => {
+      const handle = nextHandle++;
+      tasks.set(handle, { callback, at: clock + delay });
+      return handle;
+    },
+    cancel: (handle) => tasks.delete(handle),
+    silenceTimeoutMs: 30_000,
+    now: () => clock,
+  });
+  const runDue = () => {
+    for (const [handle, task] of [...tasks]) {
+      if (task.at <= clock) { tasks.delete(handle); task.callback(); }
+    }
+  };
+  hub.subscribe("QQQ", { equity: () => {}, error: () => errors.push(clock) });
+  clock += 200; runDue();
+  assert.equal(opened.length, 1);
+
+  clock += 31_000; runDue();
+  assert.equal(opened.length, 2, "first silent window rebuilds");
+  assert.equal(errors.length, 0, "one silent window is not yet a verdict");
+
+  clock += 31_000; runDue();
+  assert.equal(opened.length, 3, "second silent window rebuilds again");
+  assert.equal(errors.length, 1, "two silent windows in a row mark the feed down");
+
+  // A packet resets the streak.
+  opened[2].listeners.get("equity")({ data: JSON.stringify({ symbol: "QQQ", data: { last: 1 } }) });
+  clock += 31_000; runDue();
+  assert.equal(errors.length, 1, "traffic resets the silent streak");
+
+  // Explicit reconnect (tab wake) rebuilds immediately and flags the feed down
+  // until the new socket speaks.
+  const before = opened.length;
+  hub.reconnect();
+  assert.equal(opened.length, before + 1, "reconnect() opens a fresh socket");
+  assert.equal(errors.length, 2, "reconnect() tells listeners the old feed is gone");
+});

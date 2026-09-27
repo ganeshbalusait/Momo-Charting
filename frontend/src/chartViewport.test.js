@@ -7,6 +7,10 @@ import {
   chartBodyDragLogicalRange,
   chartBodyDragPriceRange,
   chartCandleLogicalWindow,
+  chartHostContentBoxSize,
+  chartHostMinimumWidth,
+  chartLowerStudyHeaderOffsets,
+  chartPaneOverlayTop,
   chartTimeViewportRange,
   clearChartTimeViewport,
   chartDefaultHistorySlots,
@@ -25,6 +29,8 @@ import {
   chartTrailingSessionHistorySlots,
   chartZoomOutMaximumHalfRange,
   chartZoomLogicalRange,
+  chartPanStepLogicalRange,
+  CHART_PAN_STEP_FRACTION,
   CHART_LAYOUT_VIEWPORT_VERSION,
   clampExpandedPriceRangeToCandles,
   defaultChartPaneFactors,
@@ -38,6 +44,80 @@ import {
   storeChartPaneFactors,
   workspaceCompanionWidthAtPointer,
 } from "./chartViewport.js";
+
+test("a measurable host never forces the chart wider than its own content box", () => {
+  // "6 across" desktop column: 308px box with 10px padding each side. The old
+  // 320px floor produced a 320px canvas whose right price scale (OI strike
+  // labels) was clipped off the panel.
+  const dense = chartHostMinimumWidth({ clientWidth: 308, paddingLeft: "10px", paddingRight: "10px" });
+  assert.equal(dense, 288);
+  assert.equal(chartHostContentBoxSize({
+    clientWidth: 308,
+    clientHeight: 600,
+    paddingLeft: "10px",
+    paddingRight: "10px",
+    minimumWidth: dense,
+  }).width, 288);
+  // A wide host keeps the historical floor as a no-op minimum.
+  assert.equal(chartHostMinimumWidth({ clientWidth: 1400, paddingLeft: 10, paddingRight: 10 }), 320);
+  // Hidden tab / first mount (no measurable width) keeps the safety floor.
+  assert.equal(chartHostMinimumWidth({ clientWidth: 0 }), 320);
+  assert.equal(chartHostMinimumWidth({ clientWidth: "auto" }), 320);
+  // Phone panel: 320px viewport minus shell gutters -> the plot box, not 320.
+  assert.equal(chartHostMinimumWidth({ clientWidth: 292, paddingLeft: 10, paddingRight: 10 }), 272);
+});
+
+test("sizes the native chart from the padded host content box without resize feedback", () => {
+  assert.deepEqual(chartHostContentBoxSize({
+    clientWidth: 390,
+    clientHeight: 520,
+    paddingLeft: "10px",
+    paddingRight: "10px",
+    paddingTop: "8px",
+    paddingBottom: "10px",
+  }), { width: 370, height: 502 });
+
+  // A second pass receives the same host size. It must not add the padding
+  // back and grow to 410px, which was the phone chart's runaway loop.
+  assert.equal(chartHostContentBoxSize({
+    clientWidth: 390,
+    clientHeight: 520,
+    paddingLeft: 10,
+    paddingRight: 10,
+  }).width, 370);
+  assert.equal(chartHostContentBoxSize({
+    clientWidth: 272,
+    clientHeight: 260,
+    minimumWidth: 272,
+  }).width, 272);
+  assert.deepEqual(chartHostContentBoxSize({ clientWidth: 0, clientHeight: 0 }), {
+    width: 320,
+    height: 240,
+  });
+});
+
+test("anchors lower-study captions to native pane tops across chart resizes", () => {
+  assert.equal(chartPaneOverlayTop({ chartTop: 256, paneTop: 425, fallbackTop: 999, inset: 1 }), 170);
+  assert.equal(chartPaneOverlayTop({ chartTop: 120, paneTop: 458, fallbackTop: 999, inset: 8 }), 346);
+  assert.equal(chartPaneOverlayTop({ chartTop: undefined, paneTop: undefined, fallbackTop: 210 }), 210);
+  assert.equal(chartPaneOverlayTop({ chartTop: undefined, paneTop: undefined }), null);
+});
+
+test("fits all lower-study headers inside a compact phone pane", () => {
+  assert.deepEqual(chartLowerStudyHeaderOffsets({
+    isPhone: true,
+    hasAdx: true,
+    hasCloudLabels: true,
+  }), { cloudTop: 9, squeezeTop: 21 });
+  assert.deepEqual(chartLowerStudyHeaderOffsets({
+    hasAdx: true,
+    hasCloudLabels: true,
+  }), { cloudTop: 18, squeezeTop: 40 });
+  assert.deepEqual(chartLowerStudyHeaderOffsets({
+    isPhone: true,
+    hasCloudLabels: true,
+  }), { cloudTop: 0, squeezeTop: 12 });
+});
 
 test("keeps the default projection compact on every chart mode", () => {
   // Every projection slot is empty space - a candle not shown. The
@@ -60,23 +140,21 @@ test("keeps the default projection compact on every chart mode", () => {
   assert.ok(chartDefaultFutureSlots({ historySlots: 1 }) >= 5);
 });
 
-test("every timeframe opens at the same candle count", () => {
-  // SETTLED against the user's TradingView reference, which draws ONE candle
-  // width on every timeframe. A 20-candle branch for >=240min was added,
-  // removed and re-added across three sessions today and disclaimed by all of
-  // them; it left 4H/D/W on 20 candles while 5m/1h opened on 166 in the same
-  // pane. The complaint it appeared to address had a different cause: the
-  // study seed only covered 4H, so higher timeframes had 17-20 candles IN
-  // EXISTENCE. Capping the viewport matched that symptom without fixing it.
-  for (const width of [662, 960, 1_280, 1_920]) {
-    const counts = [5, 60, 120, 240, 1_440, 10_080]
-      .map((minutes) => chartDefaultHistorySlots({ timeframeMinutes: minutes, chartWidth: width }));
-    assert.equal(new Set(counts).size, 1, `${width}px varied by timeframe: ${counts.join("/")}`);
-    assert.ok(counts[0] >= 100, `${width}px opened on only ${counts[0]} candles`);
+test("intraday fills the pane; higher timeframes open on ~40 fat candles", () => {
+  // Grounded in TWO of the user's TradingView charts:
+  //   AMZN 5m ~1460px -> ~105 candles filling the pane
+  //   AMZN 4h ~1460px -> ~38 fat candles in the left ~45%, big forward space
+  // So the opening view is NOT uniform: higher timeframes open fewer + fatter.
+  for (const minutes of [3, 5, 15, 60]) {
+    const h = chartDefaultHistorySlots({ timeframeMinutes: minutes, chartWidth: 1_460 });
+    assert.ok(h >= 90 && h <= 140, `${minutes}m opened on ${h} candles`);
   }
-  // And the width-less fallback is uniform too.
-  const fallbacks = [5, 240, 1_440].map((m) => chartDefaultHistorySlots({ timeframeMinutes: m }));
-  assert.equal(new Set(fallbacks).size, 1, `fallback varied: ${fallbacks.join("/")}`);
+  for (const minutes of [240, 1_440, 10_080]) {
+    const h = chartDefaultHistorySlots({ timeframeMinutes: minutes, chartWidth: 1_460 });
+    assert.equal(h, 40, `${minutes}m must open on the ~40-candle higher-timeframe view`);
+    const f = chartDefaultFutureSlots({ historySlots: h, timeframeMinutes: minutes });
+    assert.ok(f >= 12, `${minutes}m must keep generous forward space, got ${f}`);
+  }
 });
 
 test("selects exactly the latest five chart sessions for the 4H opening view", () => {
@@ -198,7 +276,7 @@ test("a live quote stage restart never resets the current zoom", () => {
     followsLatest: true,
     studyStage: 8,
     previousStudyStage: 7,
-  }), true, "a genuinely new opening indicator stage still reframes the shared scale");
+  }), false, "a genuinely new indicator stage must not repaint the opening time window");
   assert.equal(chartShouldFrameAutomaticViewport({
     initialView: true,
     manualNavigation: true,
@@ -501,7 +579,7 @@ test("resizes the big-screen option chain while preserving usable chart space", 
     containerLeft: 100,
     containerWidth: 1600,
     pointerX: 1600,
-  }), 340);
+  }), 240);
   assert.equal(workspaceCompanionWidthAtPointer({
     containerLeft: 100,
     containerWidth: 1600,
@@ -607,7 +685,16 @@ test("intraday opening view keeps candles narrow and adds history as the pane gr
         Math.min(TRADINGVIEW_MAX_BAR_SPACING_PX, width / (history + future)),
       );
       assert.ok(pitch <= TRADINGVIEW_MAX_BAR_SPACING_PX, `${width}px gave ${pitch.toFixed(1)}px candles`);
-      assert.ok(history >= 100, `${minutes}m at ${width}px opened on only ${history} candles`);
+      // Candles must also stay THICK enough to read. The count floor used to be
+      // a constant 70 calibrated on 700-1520px panes, so a ~370px phone crammed
+      // the desktop count into a third of the width and opened at ~4.9px per
+      // candle - a grey smear. TradingView mobile keeps ~8-10px candles and
+      // shows fewer bars instead, so the floor now tapers with the pane.
+      assert.ok(pitch >= 6, `${minutes}m at ${width}px gave ${pitch.toFixed(1)}px candles - too thin to read`);
+      // Desktop panes keep the original generous history; phones trade count
+      // for legibility rather than showing an unreadable 60+.
+      const expectedFloor = Math.min(60, Math.max(24, Math.round(width / 9)));
+      assert.ok(history >= expectedFloor, `${minutes}m at ${width}px opened on only ${history} candles`);
       assert.ok(future >= 5 && future <= 10, `${minutes}m at ${width}px reserved ${future} bars`);
     }
   }
@@ -699,4 +786,104 @@ test("rejects v1 index-based entries and unusable spans", () => {
   assert.equal(storeChartTimeViewport(storage, key, { spanSeconds: 30 }), false, "sub-minute span");
   assert.equal(chartTimeViewportRange(1_800_000_000, { spanSeconds: 10 }), null);
   assert.equal(chartTimeViewportRange(0, { spanSeconds: 100_000 }), null);
+});
+
+// ---- toolbar pan arrows -----------------------------------------------------
+
+test("one pan click travels a third of the visible span without resizing it", () => {
+  assert.equal(CHART_PAN_STEP_FRACTION, 1 / 3);
+  const back = chartPanStepLogicalRange({
+    logicalRange: { from: 300, to: 390 },
+    direction: "back",
+    firstIndex: 0,
+    lastIndex: 1_000,
+  });
+  assert.deepEqual(back, { from: 270, to: 360 });
+  const forward = chartPanStepLogicalRange({
+    logicalRange: { from: 300, to: 390 },
+    direction: "forward",
+    firstIndex: 0,
+    lastIndex: 1_000,
+  });
+  assert.deepEqual(forward, { from: 330, to: 420 });
+  assert.equal(forward.to - forward.from, 90, "a pan must never zoom");
+});
+
+test("panning back stops on the oldest loaded candle and then reports no room", () => {
+  const partial = chartPanStepLogicalRange({
+    logicalRange: { from: 20, to: 110 },
+    direction: "back",
+    firstIndex: 0,
+    lastIndex: 1_000,
+  });
+  assert.deepEqual(partial, { from: 0, to: 90 }, "the last step shortens instead of overshooting");
+  assert.equal(
+    chartPanStepLogicalRange({
+      logicalRange: partial,
+      direction: "back",
+      firstIndex: 0,
+      lastIndex: 1_000,
+    }),
+    null,
+    "null is what disables the button at the edge",
+  );
+});
+
+test("panning forward stops at the configured right offset", () => {
+  const partial = chartPanStepLogicalRange({
+    logicalRange: { from: 950, to: 1_010 },
+    direction: "forward",
+    firstIndex: 0,
+    // 1_000 loaded candles plus 27 slots of future projection.
+    lastIndex: 1_026,
+  });
+  assert.deepEqual(partial, { from: 966, to: 1_026 });
+  assert.equal(
+    chartPanStepLogicalRange({ logicalRange: partial, direction: "forward", firstIndex: 0, lastIndex: 1_026 }),
+    null,
+  );
+});
+
+test("a view already parked past an edge is never yanked back the other way", () => {
+  // A drag can leave the window left of the first candle. Pressing pan-left
+  // there must do nothing, not jump the chart to the right.
+  assert.equal(
+    chartPanStepLogicalRange({
+      logicalRange: { from: -40, to: 50 },
+      direction: "back",
+      firstIndex: 0,
+      lastIndex: 1_000,
+    }),
+    null,
+  );
+  assert.equal(
+    chartPanStepLogicalRange({
+      logicalRange: { from: 1_100, to: 1_190 },
+      direction: "forward",
+      firstIndex: 0,
+      lastIndex: 1_026,
+    }),
+    null,
+  );
+  // The opposite arrow still works from out there.
+  assert.deepEqual(
+    chartPanStepLogicalRange({
+      logicalRange: { from: -40, to: 50 },
+      direction: "forward",
+      firstIndex: 0,
+      lastIndex: 1_000,
+    }),
+    { from: -10, to: 80 },
+  );
+});
+
+test("pans unbounded while the candle indices are unknown, and refuses junk", () => {
+  assert.deepEqual(
+    chartPanStepLogicalRange({ logicalRange: { from: 0, to: 30 }, direction: "back" }),
+    { from: -10, to: 20 },
+  );
+  assert.equal(chartPanStepLogicalRange({ logicalRange: { from: 10, to: 10 }, direction: "back" }), null);
+  assert.equal(chartPanStepLogicalRange({ logicalRange: { from: 10, to: 5 }, direction: "back" }), null);
+  assert.equal(chartPanStepLogicalRange({ logicalRange: { from: 0, to: 30 }, direction: "sideways" }), null);
+  assert.equal(chartPanStepLogicalRange(), null);
 });

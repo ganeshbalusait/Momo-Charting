@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from collections import defaultdict
@@ -39,6 +40,8 @@ from alpaca.trading.stream import TradingStream
 from zoneinfo import ZoneInfo
 
 from config import EASTERN_TZ, settings
+
+LOGGER = logging.getLogger(__name__)
 
 
 TIMEFRAME_MAP = {
@@ -86,6 +89,19 @@ class AlpacaClient:
             secret_key=self.credentials.secret,
             paper=self.credentials.paper,
         )
+        # Market-clock resilience: if this client's own key is unauthorized the
+        # clock lookup falls back to any other configured key and caches it here.
+        self._clock_client: TradingClient | None = None
+        self._clock_source: str = self.profile_id
+        self._clock_fallback_warned = False
+        self._clock_all_failed_warned = False
+        # Credential health: reflects the last authenticated call against this
+        # account's OWN key (None = not yet observed).  Surfaced to the dashboard
+        # so a dead/unauthorized key shows up explicitly instead of as a silent $0.
+        self._auth_ok: bool | None = None
+        self._auth_unauthorized = False
+        self._auth_error = ""
+        self._auth_checked_at: datetime | None = None
         self._stream_lock = threading.Lock()
         self._stream_started_at: datetime | None = None
         self._stream_last_bar_at: datetime | None = None
@@ -169,25 +185,143 @@ class AlpacaClient:
                 return pd.DataFrame()
             return frame.copy()
 
-    def get_clock(self) -> MarketClock:
+    @staticmethod
+    def _read_clock(client: TradingClient) -> MarketClock | None:
+        """Return the market clock from ``client``, or ``None`` if the call fails."""
         try:
-            clock = self._trading_client.get_clock()
-            return MarketClock(
-                is_open=clock.is_open,
-                timestamp=clock.timestamp,
-                next_open=clock.next_open,
-                next_close=clock.next_close,
+            clock = client.get_clock()
+        except Exception:  # noqa: BLE001 - broker/network/auth failure
+            return None
+        return MarketClock(
+            is_open=clock.is_open,
+            timestamp=clock.timestamp,
+            next_open=clock.next_open,
+            next_close=clock.next_close,
+        )
+
+    def get_clock(self) -> MarketClock:
+        """Fetch the (account-agnostic) US market clock, resilient to a dead key.
+
+        The regular-session banner and ``canAutoTrade`` gating derive from this,
+        so a single unauthorized key must not silently report the market as
+        closed.  Order: this client's own key, then a previously-discovered
+        fallback, then any other configured Alpaca key.  Only when *every* key
+        fails do we report closed - and we log it loudly instead of hiding it.
+        """
+        errors: list[str] = []
+
+        # 1) This client's own (active-profile) credentials — the normal path.
+        primary = self._read_clock(self._trading_client)
+        if primary is not None:
+            if self._clock_client is not None:
+                LOGGER.info(
+                    "Alpaca clock for profile '%s' recovered; dropping fallback key.",
+                    self.profile_id,
+                )
+                self._clock_client = None
+                self._clock_source = self.profile_id
+                self._clock_fallback_warned = False
+                self._clock_all_failed_warned = False
+            return primary
+        errors.append(f"{self.profile_id}: primary key unavailable")
+
+        # 2) A previously-discovered working fallback key, if any.
+        if self._clock_client is not None:
+            cached = self._read_clock(self._clock_client)
+            if cached is not None:
+                return cached
+            self._clock_client = None  # cached fallback went stale; rediscover
+
+        # 3) Any other configured Alpaca key (allow-list independent).
+        for cred in settings.clock_credential_candidates(self.mode):
+            if cred.key == self.credentials.key and cred.secret == self.credentials.secret:
+                continue  # already tried as the primary above
+            try:
+                client = TradingClient(api_key=cred.key, secret_key=cred.secret, paper=cred.paper)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{cred.profile_id}: {type(exc).__name__}")
+                continue
+            clock = self._read_clock(client)
+            if clock is None:
+                errors.append(f"{cred.profile_id}: clock unavailable")
+                continue
+            self._clock_client = client
+            self._clock_source = cred.profile_id
+            if not self._clock_fallback_warned:
+                LOGGER.warning(
+                    "Alpaca clock for active profile '%s' is unauthorized/unreachable; "
+                    "serving market clock from fallback key '%s'. Refresh the '%s' key.",
+                    self.profile_id,
+                    cred.profile_id,
+                    self.profile_id,
+                )
+                self._clock_fallback_warned = True
+            return clock
+
+        if not self._clock_all_failed_warned:
+            LOGGER.error(
+                "Alpaca market clock unavailable from every configured key (%s); "
+                "reporting market closed. Refresh Alpaca API credentials.",
+                "; ".join(errors) or "none configured",
             )
-        except Exception:
-            return MarketClock(
-                is_open=False,
-                timestamp=None,
-                next_open=None,
-                next_close=None,
-            )
+            self._clock_all_failed_warned = True
+        return MarketClock(
+            is_open=False,
+            timestamp=None,
+            next_open=None,
+            next_close=None,
+        )
+
+    @staticmethod
+    def _is_unauthorized(exc: Exception) -> bool:
+        """True if an Alpaca error looks like an auth failure (dead/revoked key)."""
+        status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+        if status in (401, 403):
+            return True
+        text = str(exc).lower()
+        return "401" in text or "403" in text or "unauthorized" in text or "forbidden" in text
+
+    def _record_auth(self, ok: bool, exc: Exception | None) -> None:
+        self._auth_ok = ok
+        self._auth_checked_at = datetime.now(tz=self._tz)
+        if ok:
+            self._auth_unauthorized = False
+            self._auth_error = ""
+        else:
+            self._auth_unauthorized = bool(exc is not None and self._is_unauthorized(exc))
+            self._auth_error = f"{type(exc).__name__}" if exc is not None else "unknown error"
+
+    def credential_health(self, probe: bool = False) -> dict:
+        """Report this account key's authorization health for the dashboard.
+
+        Reads the cached result of the last authenticated call (``get_account``
+        runs every dashboard refresh).  ``authorized`` is ``None`` until the key
+        has actually been exercised; pass ``probe=True`` to force one check.
+        """
+        if probe and self._auth_ok is None:
+            try:
+                self.get_account()
+            except Exception:  # noqa: BLE001 - state captured in _record_auth
+                pass
+        return {
+            "profileId": self.profile_id,
+            "label": self.credentials.label,
+            "paper": self.credentials.paper,
+            "configured": self.configured,
+            "authorized": self._auth_ok,
+            "unauthorized": self._auth_unauthorized,
+            "error": self._auth_error,
+            "checkedAt": self._auth_checked_at.isoformat() if self._auth_checked_at else None,
+        }
 
     def get_account(self):
-        return self._trading_client.get_account()
+        try:
+            account = self._trading_client.get_account()
+        except Exception as exc:  # noqa: BLE001 - record auth health, then re-raise
+            self._record_auth(False, exc)
+            raise
+        self._record_auth(True, None)
+        return account
 
     def get_positions(self):
         return self._trading_client.get_all_positions()

@@ -4,7 +4,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlencode
@@ -14,6 +14,19 @@ import pandas as pd
 from schwab import auth as schwab_auth
 
 from config import ARTIFACTS_DIR, EASTERN_TZ, settings
+from data.schwab_rate_limit import GATE, SchwabUnavailable, looks_like_edge_block
+
+
+def _retry_after_seconds(response) -> float:
+    """Schwab's own back-off instruction, when it sends one.
+
+    Their documentation says to wait 60 seconds after a 429; the header is
+    honoured when present so a longer instruction is never shortened.
+    """
+    try:
+        return max(float(response.headers.get("retry-after") or 0.0), 0.0)
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
 
 
 def schwab_profile_settings(profile: str):
@@ -58,7 +71,22 @@ class SchwabClient:
     """
 
     _auth_lock = threading.RLock()
-    _pending_auth_context = None
+    #: Pending OAuth handshakes, keyed by the TOKEN FILE the flow will write.
+    #:
+    #: This was a single shared slot until 2026-09-04, which meant one
+    #: authorization at a time for the whole process: starting the Accounts &
+    #: Trading login silently destroyed a Market Data login the trader was
+    #: half way through (and vice versa), and the paste-back then failed with
+    #: schwab-py's raw "Expecting value: line 1 column 1 (char 0)" because the
+    #: PKCE verifier no longer matched the code. Two users authenticating at
+    #: once collided the same way.
+    #:
+    #: token_path is the right key because it is exactly what the flow is
+    #: allowed to write: it already differs per profile (schwab_token.json vs
+    #: schwab_trading_token.json) and per user (user_token_path), so two flows
+    #: share a slot only when they would write the same file, which is the one
+    #: case where clobbering is correct.
+    _pending_auth_contexts: dict[str, object] = {}
 
     def __init__(self, config=None) -> None:
         self._tz = ZoneInfo(EASTERN_TZ)
@@ -76,6 +104,7 @@ class SchwabClient:
         self._refresh_token_expires_at: datetime | None = None
         self._token_saved_at: datetime | None = None
         self._token_load_error = ""
+        self._token_file_mtime_ns: int | None = None
         self._load_cached_token()
 
     @property
@@ -84,6 +113,7 @@ class SchwabClient:
 
     def library_client(self):
         """schwab-py client for this profile (required by StreamClient)."""
+        self._refuse_if_refresh_token_dead()
         if self._client is None:
             self._client = schwab_auth.client_from_token_file(
                 str(self._token_path),
@@ -93,7 +123,10 @@ class SchwabClient:
         return self._client
 
     def connection_status(self) -> dict:
-        now = datetime.now()
+        # AWARE, because the token stamps below are aware. Both sides of the
+        # subtraction have to agree or Python raises; and an aware stamp is
+        # what makes the ISO string self-describing on the wire (see below).
+        now = datetime.now(timezone.utc)
         access_remaining = (
             max(int((self._token_expires_at - now).total_seconds()), 0)
             if self._token_expires_at
@@ -145,18 +178,21 @@ class SchwabClient:
             "verifiedAt": datetime.now().isoformat(),
         }
 
-    def authorization_url(self) -> str:
-        return self.begin_authorization()
+    @property
+    def _auth_key(self) -> str:
+        """Which pending handshake is mine - see _pending_auth_contexts."""
+        return str(Path(self.config.token_path).resolve())
 
     def begin_authorization(self) -> str:
         if not self.config.client_id or not self.config.client_secret:
             raise RuntimeError("Schwab app key and secret are required before authentication.")
         with self._auth_lock:
-            type(self)._pending_auth_context = schwab_auth.get_auth_context(
+            context = schwab_auth.get_auth_context(
                 self.config.client_id,
                 self.config.redirect_uri,
             )
-            return type(self)._pending_auth_context.authorization_url
+            type(self)._pending_auth_contexts[self._auth_key] = context
+            return context.authorization_url
 
     def exchange_authorization_response(self, received_url: str) -> dict:
         """Exchange a loopback OAuth callback through schwab-py.
@@ -165,7 +201,7 @@ class SchwabClient:
         refreshes. This app never processes a raw authorization code itself.
         """
         with self._auth_lock:
-            context = type(self)._pending_auth_context
+            context = type(self)._pending_auth_contexts.get(self._auth_key)
             if context is None:
                 raise RuntimeError("No Schwab authorization is waiting. Start a fresh authentication first.")
             client = schwab_auth.client_from_received_url(
@@ -176,7 +212,9 @@ class SchwabClient:
                 self._write_library_token,
                 enforce_enums=False,
             )
-            type(self)._pending_auth_context = None
+            # Consumed: an authorization code is single-use, so leaving the
+            # context behind would only let a stale retry fail confusingly.
+            type(self)._pending_auth_contexts.pop(self._auth_key, None)
 
         self._client = client
         self._load_cached_token()
@@ -221,7 +259,20 @@ class SchwabClient:
             params = urlencode({"symbols": ",".join(batch), "fields": "quote,reference,regular"})
             try:
                 payload = self._get_json(f"{SCHWAB_MARKET_DATA_BASE}/quotes?{params}")
+            except SchwabUnavailable:
+                # Schwab is refusing us outright - an edge block, a 429 cooldown,
+                # or our own ceiling. Later batches cannot do better, and sending
+                # them anyway is precisely what turns a rate limit into an IP
+                # ban, so stop rather than walking the rest of the list.
+                #
+                # Still returns {} rather than raising: six call sites above rely
+                # on that contract, and the outcome is already recorded at the
+                # gate, so returning quietly loses no information.
+                break
             except Exception:
+                # Anything else is a per-batch problem (one bad symbol, a blip);
+                # the remaining batches are still worth trying. The gate has
+                # recorded it either way.
                 continue
             if not isinstance(payload, dict):
                 continue
@@ -393,14 +444,89 @@ class SchwabClient:
             return pd.DataFrame()
         return self._normalize_candles(candles)
 
+    def _refuse_if_refresh_token_dead(self) -> None:
+        """Raise BEFORE any network call once the refresh token has expired.
+
+        schwab-py/authlib refresh on every request; with a dead refresh token
+        each call becomes a rejected POST to Schwab's token endpoint. On
+        2026-09-03 that ran all night from the MomX worker (357 symbols x 2
+        timeframes, 12 threads, every build - measured 39 connections per
+        20 s) and by morning Akamai answered every request from this address
+        with Access Denied, including the OAuth exchange needed to recover.
+        A known-dead token must cost nothing on the wire.
+
+        The token FILE is re-read when it changes, so a client held in memory
+        (the worker caches one per process) heals the moment the trader
+        re-authenticates instead of needing a restart.
+        """
+        try:
+            mtime_ns = self._token_path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        if mtime_ns != self._token_file_mtime_ns:
+            self._load_cached_token()
+            self._client = None
+        expires_at = self._refresh_token_expires_at
+        if expires_at is not None and datetime.now(timezone.utc) >= expires_at:
+            raise RuntimeError(
+                "Schwab refresh token expired at %s; no request was sent. "
+                "Re-authenticate in Settings." % expires_at.isoformat(timespec="seconds")
+            )
+
     def _get_json(self, url: str) -> dict:
+        """The single choke point for every Schwab market-data REST call.
+
+        Quotes, chains and price history all pass through here, which is why
+        the rate gate and the outcome recording live at this one spot rather
+        than being repeated (and forgotten) at each call site.
+
+        The recording is deliberately done HERE and not in the callers: every
+        caller above this swallows failures to keep its own contract - notably
+        get_quotes' `except Exception: continue` - so a signal raised upward
+        gets eaten. On 2026-09-04 that is exactly what happened: Schwab
+        refused every request for 70 minutes and not one line reached any log.
+        Recorded at the gate, the outcome survives whatever the caller does
+        with the exception.
+        """
+        self._refuse_if_refresh_token_dead()
         client = self._library_client()
-        response = client.session.get(
-            url,
-            headers={"Accept": "application/json"},
-            timeout=self.config.timeout_seconds,
-        )
+        # Raises SchwabUnavailable rather than sending, when we are inside a
+        # cooldown or over the rate ceiling. Nothing goes on the wire.
+        GATE.acquire()
+        try:
+            response = client.session.get(
+                url,
+                headers={"Accept": "application/json"},
+                timeout=self.config.timeout_seconds,
+            )
+        except Exception as exc:
+            GATE.note_failure("network", "%s: %s" % (type(exc).__name__, exc))
+            raise
+        status = int(getattr(response, "status_code", 0) or 0)
+        # Only look at the body for the statuses that can carry a refusal page;
+        # reading .text on a good payload would cost a copy of every chain.
+        if status in (401, 403, 429):
+            body = str(getattr(response, "text", "") or "")
+            if looks_like_edge_block(status, body):
+                GATE.note_edge_block()
+                raise SchwabUnavailable(
+                    "Schwab's edge refused this address (HTTP %d Access Denied). "
+                    "This is not a login problem - an unauthenticated request gets "
+                    "the same page, and the OAuth endpoint is behind the same block."
+                    % status,
+                    kind="blocked",
+                )
+            if status == 429:
+                GATE.note_rate_limited(_retry_after_seconds(response))
+                raise SchwabUnavailable(
+                    "Schwab returned 429 Too Many Requests; backing off before the "
+                    "next call.",
+                    kind="rate_limit",
+                    retry_after=_retry_after_seconds(response),
+                )
+            GATE.note_failure("http_%d" % status, body[:300])
         response.raise_for_status()
+        GATE.note_success()
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 
@@ -446,6 +572,13 @@ class SchwabClient:
     def _load_cached_token(self) -> None:
         self._token = {}
         self._token_load_error = ""
+        self._token_expires_at = None
+        self._refresh_token_expires_at = None
+        self._token_saved_at = None
+        try:
+            self._token_file_mtime_ns = self._token_path.stat().st_mtime_ns
+        except OSError:
+            self._token_file_mtime_ns = None
         if not self._token_path.exists():
             return
         try:
@@ -460,7 +593,13 @@ class SchwabClient:
         self._token = token
         try:
             created_at = float(payload.get("creation_timestamp"))
-            self._token_saved_at = datetime.fromtimestamp(created_at)
+            # tz=utc, NOT naive local. These datetimes are serialised straight
+            # to the settings page as .isoformat(); naive they carried no
+            # offset, so the browser read a machine-local (CT) wall time as
+            # UTC and drew every Schwab deadline FIVE HOURS EARLY. The trader
+            # was told to re-authenticate by 2:51 PM when the refresh token
+            # actually died at 7:51 PM (2026-09-03).
+            self._token_saved_at = datetime.fromtimestamp(created_at, tz=timezone.utc)
             self._refresh_token_expires_at = self._token_saved_at + timedelta(days=SCHWAB_REFRESH_TOKEN_LIFETIME_DAYS)
         except (TypeError, ValueError, OSError):
             self._token_saved_at = None
@@ -468,7 +607,7 @@ class SchwabClient:
         expires_at = token.get("expires_at")
         if expires_at not in (None, ""):
             try:
-                self._token_expires_at = datetime.fromtimestamp(float(expires_at))
+                self._token_expires_at = datetime.fromtimestamp(float(expires_at), tz=timezone.utc)
             except (TypeError, ValueError, OSError):
                 self._token_expires_at = None
 
@@ -482,7 +621,25 @@ class SchwabClient:
             frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(0.0)
         frame["trade_count"] = 0.0
         frame["session_vwap"] = 0.0
-        return frame[["timestamp", "open", "high", "low", "close", "volume", "trade_count", "session_vwap"]].sort_values("timestamp").reset_index(drop=True)
+        frame = frame[
+            ["timestamp", "open", "high", "low", "close", "volume", "trade_count", "session_vwap"]
+        ].sort_values("timestamp")
+        # SCHWAB SENDS EVERY CANDLE TWICE. Measured 2026-09-04 on the raw
+        # response, before any parsing of ours: AAPL 5Min over four hours came
+        # back with 310 candles carrying 155 distinct datetimes, each bar
+        # repeated with identical OHLC and volume. Nothing here ever removed
+        # them, so the duplicates reached every consumer of a Schwab frame.
+        #
+        # Harmless in the one place it would have been most damaging - the MomX
+        # volume map keys a dict by epoch (momx/feed.py:770), so a repeat
+        # overwrites rather than accumulates and RVOL is unaffected - but a
+        # chart series fed two bars with the same timestamp is exactly the
+        # input that makes Lightweight Charts throw, and any consumer that
+        # sums or counts rows was silently working on double.
+        #
+        # keep="first" is safe precisely because the pairs are identical; this
+        # cannot change a value, only remove a repeat.
+        return frame.drop_duplicates(subset=["timestamp"], keep="first").reset_index(drop=True)
 
     def _epoch_ms(self, value: datetime) -> int:
         timestamp = value if value.tzinfo is not None else value.replace(tzinfo=self._tz)

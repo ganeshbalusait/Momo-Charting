@@ -72,7 +72,6 @@ export function layoutChartAxisLabels(labels, {
   // hide colliding names; sliding a name into a free row creates a misleading
   // visual gap between the indicator and its label.
   const positioned = [...fixed];
-  const occupiedTops = fixed.map(({ top }) => top);
   candidates
     .filter((label) => !label.preservePricePosition)
     .sort((left, right) => (
@@ -80,9 +79,32 @@ export function layoutChartAxisLabels(labels, {
       || left._axisOrder - right._axisOrder
     ))
     .forEach((label) => {
-      if (occupiedTops.some((top) => Math.abs(top - label.top) < gap)) return;
-      occupiedTops.push(label.top);
-      positioned.push(label);
+      const blockerIndex = positioned.findIndex((existing) => (
+        Math.abs(existing.top - label.top) < gap
+      ));
+      if (blockerIndex < 0) {
+        positioned.push(label);
+        return;
+      }
+      // Hiding a blocked name is right for the crowded studies (a pane full of
+      // pivots would otherwise concatenate into one unreadable chip), but a
+      // level whose whole purpose is to be read at a price should not vanish
+      // just because a wall sits a pixel away - an MTF MA level at 510.08
+      // against a 4K wall at 510.00 is 1.5px apart and always lost. Labels that
+      // opt in join the chip that displaced them instead, the same way a pivot
+      // sharing an exact price merges with its wall.
+      if (!label.mergeWhenBlocked) return;
+      const blocker = positioned[blockerIndex];
+      const blockerParts = axisLabelParts(blocker);
+      const extraParts = axisLabelParts(label)
+        .filter((part) => !blockerParts.some(({ key }) => key === part.key));
+      if (!extraParts.length) return;
+      const parts = [...blockerParts, ...extraParts];
+      positioned[blockerIndex] = {
+        ...blocker,
+        parts,
+        title: parts.map(({ title }) => title).filter(Boolean).join(" · "),
+      };
     });
 
   return positioned

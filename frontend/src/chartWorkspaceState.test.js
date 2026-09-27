@@ -9,7 +9,15 @@ import {
   loadChartGrid,
   loadChartWorkspace,
   normalizeChartWorkspace,
+  readLegacyGeometryNumber,
   saveChartGridAs,
+  mergeChartGridStores,
+  pendingDefaultChartGrid,
+  markChartGridApplied,
+  readChartGridMeta,
+  readChartGridStoreFrom,
+  chartGridStamp,
+  OI_CHART_GRIDS_STORAGE_KEY,
   saveChartWorkspace,
   updateSharedWorkspaceSymbol,
   updateWorkspacePanelTimeframe,
@@ -60,7 +68,7 @@ test("normalizes malformed workspaces and clamps panel fields", () => {
     geometry: [],
   }, options);
 
-  assert.equal(malformed.version, 1);
+  assert.equal(malformed.version, 2);
   assert.equal(malformed.layoutId, "single");
   assert.equal(malformed.isMaximized, false);
   assert.equal(malformed.companionVisible, true);
@@ -82,7 +90,7 @@ test("normalizes malformed workspaces and clamps panel fields", () => {
 test("falls back safely for malformed or unavailable storage", () => {
   for (const raw of ["{", "[]", "null", "42", "\"bad\""]) {
     const loaded = loadChartWorkspace(memoryStorage(raw), options);
-    assert.equal(loaded.version, 1);
+    assert.equal(loaded.version, 2);
     assert.equal(loaded.layoutId, "single");
     assert.equal(loaded.panels.length, 6);
   }
@@ -217,6 +225,89 @@ test("round-trips the complete normalized workspace", () => {
   assert.deepEqual(loadChartWorkspace(storage, options), workspace);
 });
 
+test("legacy geometry numbers fall back instead of clamping a missing key to the minimum", () => {
+  const storage = memoryStorage();
+
+  // Number(null) === 0 is finite, so a naive isFinite() check silently clamps an
+  // absent key up to the minimum. That seeded twoPanelSplit=25 on first visit and
+  // rendered the two-chart layout 25/75 instead of 50/50.
+  assert.equal(readLegacyGeometryNumber(storage, "oiFinderTwoPanelSplit", 25, 75, 50), 50);
+  assert.equal(readLegacyGeometryNumber(storage, "oiFinderWidePanel", 0, 9, null), null);
+  assert.equal(readLegacyGeometryNumber(storage, "oiFinderWorkspaceChartHeight", 240, 1200, null), null);
+  assert.equal(readLegacyGeometryNumber(storage, "oiFinderBigScreenCompanionWidth", 340, 1200, null), null);
+
+  storage.setItem("blank", "   ");
+  storage.setItem("junk", "not-a-number");
+  assert.equal(readLegacyGeometryNumber(storage, "blank", 25, 75, 50), 50);
+  assert.equal(readLegacyGeometryNumber(storage, "junk", 25, 75, 50), 50);
+
+  // Real stored values still clamp into range.
+  storage.setItem("oiFinderTwoPanelSplit", "62");
+  storage.setItem("low", "5");
+  storage.setItem("high", "900");
+  storage.setItem("edge", "0");
+  assert.equal(readLegacyGeometryNumber(storage, "oiFinderTwoPanelSplit", 25, 75, 50), 62);
+  assert.equal(readLegacyGeometryNumber(storage, "low", 25, 75, 50), 25);
+  assert.equal(readLegacyGeometryNumber(storage, "high", 25, 75, 50), 75);
+  assert.equal(readLegacyGeometryNumber(storage, "edge", 0, 9, null), 0);
+  assert.equal(readLegacyGeometryNumber(null, "oiFinderTwoPanelSplit", 25, 75, 50), 50);
+});
+
+test("heals v1 workspaces seeded with the clamp-minimum geometry", () => {
+  const poisoned = loadChartWorkspace(memoryStorage(JSON.stringify({
+    version: 1,
+    layoutId: "two-columns",
+    widePanel: 0,
+    geometry: {
+      twoPanelSplit: 25,
+      chartHeight: 240,
+      companionWidth: 340,
+      columnWidthProfiles: {},
+    },
+  })), options);
+
+  assert.equal(poisoned.geometry.twoPanelSplit, 50);
+  assert.equal(poisoned.geometry.chartHeight, undefined);
+  assert.equal(poisoned.geometry.companionWidth, undefined);
+  assert.equal(poisoned.widePanel, null);
+  // twoPanelSplit must be an explicit 50, never null: Number(null) is 0, which
+  // App.jsx's isFinite() restore would accept as a real split.
+  assert.equal(Object.hasOwn(poisoned.geometry, "twoPanelSplit"), true);
+});
+
+test("keeps deliberately customized v1 geometry and never re-migrates", () => {
+  const customized = loadChartWorkspace(memoryStorage(JSON.stringify({
+    version: 1,
+    layoutId: "two-columns",
+    widePanel: 1,
+    geometry: {
+      twoPanelSplit: 62,
+      chartHeight: 720,
+      companionWidth: 480,
+      columnWidthProfiles: { "four-columns": [20, 30, 25, 25] },
+    },
+  })), options);
+
+  assert.equal(customized.geometry.twoPanelSplit, 62);
+  assert.equal(customized.geometry.chartHeight, 720);
+  assert.equal(customized.geometry.companionWidth, 480);
+  assert.equal(customized.widePanel, 1);
+  assert.deepEqual(customized.geometry.columnWidthProfiles, { "four-columns": [20, 30, 25, 25] });
+
+  // Already-migrated workspaces keep a legitimate 25 split and a wide panel 0.
+  const alreadyMigrated = loadChartWorkspace(memoryStorage(JSON.stringify({
+    version: 2,
+    layoutId: "two-columns",
+    widePanel: 0,
+    geometry: { twoPanelSplit: 25, chartHeight: 240, companionWidth: 340 },
+  })), options);
+
+  assert.equal(alreadyMigrated.geometry.twoPanelSplit, 25);
+  assert.equal(alreadyMigrated.geometry.chartHeight, 240);
+  assert.equal(alreadyMigrated.geometry.companionWidth, 340);
+  assert.equal(alreadyMigrated.widePanel, 0);
+});
+
 test("keeps detached workspaces in a separate storage slot", () => {
   const values = new Map();
   const storage = {
@@ -246,7 +337,7 @@ test("saves, lists, loads, and deletes named grids", () => {
   }, options);
   const indicators = { ema9: true, clouds: false };
 
-  assert.equal(saveChartGridAs(storage, "  mag7  ", { workspace, indicators }), true);
+  assert.ok(saveChartGridAs(storage, "  mag7  ", { workspace, indicators }));
   assert.deepEqual(listChartGrids(storage).map((grid) => grid.name), ["mag7"]);
 
   const loaded = loadChartGrid(storage, "mag7", options);
@@ -254,7 +345,7 @@ test("saves, lists, loads, and deletes named grids", () => {
   assert.equal(loaded.workspace.panels[0].symbol, "NVDA");
   assert.deepEqual(loaded.indicators, indicators);
 
-  assert.equal(saveChartGridAs(storage, "main", { workspace, indicators: null }), true);
+  assert.ok(saveChartGridAs(storage, "main", { workspace, indicators: null }));
   assert.deepEqual(listChartGrids(storage).map((grid) => grid.name), ["mag7", "main"]);
 
   assert.equal(deleteChartGrid(storage, "mag7"), true);
@@ -267,8 +358,8 @@ test("same-name grid saves overwrite instead of duplicating", () => {
   const first = normalizeChartWorkspace({ layoutId: "single" }, options);
   const second = normalizeChartWorkspace({ layoutId: "quad" }, options);
 
-  assert.equal(saveChartGridAs(storage, "main", { workspace: first, indicators: null }), true);
-  assert.equal(saveChartGridAs(storage, "main", { workspace: second, indicators: null }), true);
+  assert.ok(saveChartGridAs(storage, "main", { workspace: first, indicators: null }));
+  assert.ok(saveChartGridAs(storage, "main", { workspace: second, indicators: null }));
   assert.equal(listChartGrids(storage).length, 1);
   assert.equal(loadChartGrid(storage, "main", options).workspace.layoutId, "quad");
 });
@@ -285,7 +376,7 @@ test("rejects unusable grid saves and loads", () => {
   storage.setItem("oiFinderChartGrids", "not json {");
   assert.equal(loadChartGrid(storage, "any", options), null);
   assert.deepEqual(listChartGrids(storage), []);
-  assert.equal(saveChartGridAs(storage, "fresh", { workspace, indicators: null }), true);
+  assert.ok(saveChartGridAs(storage, "fresh", { workspace, indicators: null }));
   assert.equal(loadChartGrid(storage, "fresh", options).workspace.layoutId, "single");
 });
 
@@ -300,4 +391,97 @@ test("normalizeChartWorkspace carries per-panel priceLock with a false default",
   assert.equal(normalized.panels[0].priceLock, true);
   assert.equal(normalized.panels[1].priceLock, false);
   assert.equal(normalized.panels[2].priceLock, false);
+});
+
+test("a saved grid becomes the default and stamps itself so the saving device does not re-apply it", () => {
+  const storage = memoryStorage();
+  const workspace = normalizeChartWorkspace({ layoutId: "quad", panels: [{ symbol: "NVDA" }] }, options);
+  const stamp = saveChartGridAs(storage, "mag6", { workspace, indicators: null }, new Date("2026-08-24T15:00:00Z"));
+  assert.equal(stamp, chartGridStamp("mag6", "2026-08-24T15:00:00.000Z"));
+  const meta = readChartGridMeta(readChartGridStoreFrom(storage));
+  assert.deepEqual(meta.defaultGrid, { name: "mag6", savedAt: "2026-08-24T15:00:00.000Z" });
+  // The "$meta" entry never shows up as a grid.
+  assert.deepEqual(listChartGrids(storage).map((grid) => grid.name), ["mag6"]);
+  assert.equal(loadChartGrid(storage, "$meta", options), null);
+
+  // Another browser (no applied stamp) gets it; the saving browser does not.
+  assert.equal(pendingDefaultChartGrid(storage, options)?.name, "mag6");
+  markChartGridApplied(storage, stamp);
+  assert.equal(pendingDefaultChartGrid(storage, options), null);
+
+  // A newer save on any device makes it pending again.
+  const later = saveChartGridAs(storage, "mag6", { workspace, indicators: null }, new Date("2026-08-24T16:00:00Z"));
+  assert.notEqual(later, stamp);
+  assert.equal(pendingDefaultChartGrid(storage, options)?.stamp, later);
+});
+
+test("merging the server copy never wipes a grid saved on this device", () => {
+  const workspace = normalizeChartWorkspace({ layoutId: "quad", panels: [{ symbol: "AAPL" }] }, options);
+  const local = memoryStorage();
+  saveChartGridAs(local, "mac-grid", { workspace, indicators: null }, new Date("2026-08-24T15:00:00Z"));
+  const remoteStore = {
+    "pc-grid": { savedAt: "2026-08-24T14:00:00.000Z", workspace, indicators: null },
+  };
+  const merged = mergeChartGridStores(readChartGridStoreFrom(local), remoteStore);
+  assert.deepEqual(Object.keys(merged.store).filter((name) => name !== "$meta").sort(), ["mac-grid", "pc-grid"]);
+  assert.equal(readChartGridMeta(merged.store).defaultGrid.name, "mac-grid");
+  assert.equal(merged.changedFromLocal, true);
+  assert.equal(merged.changedFromRemote, true);
+
+  // Same content both sides: nothing to write, nothing to push.
+  const settled = mergeChartGridStores(merged.store, JSON.parse(JSON.stringify(merged.store)));
+  assert.equal(settled.changedFromLocal, false);
+  assert.equal(settled.changedFromRemote, false);
+
+  // Same name on both sides: the newer save wins.
+  const newer = { ...workspace, layoutId: "two-columns" };
+  const conflict = mergeChartGridStores(
+    { main: { savedAt: "2026-08-24T10:00:00.000Z", workspace, indicators: null } },
+    { main: { savedAt: "2026-08-24T11:00:00.000Z", workspace: newer, indicators: null } },
+  );
+  assert.equal(conflict.store.main.workspace.layoutId, "two-columns");
+  // Garbage on the server is ignored rather than merged in.
+  assert.equal(Object.keys(mergeChartGridStores({}, { junk: "x", $meta: 5 }).store).length, 0);
+});
+
+test("a delete carries a tombstone so another device cannot resurrect the grid", () => {
+  const workspace = normalizeChartWorkspace({ layoutId: "quad", panels: [{ symbol: "AAPL" }] }, options);
+  const device = memoryStorage();
+  saveChartGridAs(device, "old", { workspace, indicators: null }, new Date("2026-08-24T10:00:00Z"));
+  const otherDeviceCopy = JSON.parse(device.getItem(OI_CHART_GRIDS_STORAGE_KEY));
+  assert.equal(deleteChartGrid(device, "old", new Date("2026-08-24T12:00:00Z")), true);
+  assert.equal(readChartGridMeta(readChartGridStoreFrom(device)).defaultGrid, null);
+
+  const merged = mergeChartGridStores(otherDeviceCopy, readChartGridStoreFrom(device));
+  assert.equal("old" in merged.store, false);
+  assert.equal(readChartGridMeta(merged.store).deleted.old, "2026-08-24T12:00:00.000Z");
+  assert.equal(pendingDefaultChartGrid(memoryStorage(), options), null);
+
+  // Re-saving the same name after the delete clears the tombstone.
+  const revived = memoryStorage();
+  revived.setItem(OI_CHART_GRIDS_STORAGE_KEY, JSON.stringify(merged.store));
+  saveChartGridAs(revived, "old", { workspace, indicators: null }, new Date("2026-08-24T13:00:00Z"));
+  const again = mergeChartGridStores(readChartGridStoreFrom(revived), merged.store);
+  assert.equal("old" in again.store, true);
+  assert.equal(readChartGridMeta(again.store).deleted.old, undefined);
+});
+
+test("loading an older grid acknowledges the current default instead of bouncing back to it", () => {
+  const storage = memoryStorage();
+  const workspace = normalizeChartWorkspace({ layoutId: "quad", panels: [{ symbol: "AAPL" }] }, options);
+  saveChartGridAs(storage, "swing", { workspace, indicators: null }, new Date("2026-08-24T14:00:00Z"));
+  const scalpStamp = saveChartGridAs(storage, "scalp", { workspace, indicators: null }, new Date("2026-08-24T15:00:00Z"));
+  markChartGridApplied(storage, scalpStamp);
+  assert.equal(pendingDefaultChartGrid(storage, options), null);
+
+  // The trader loads "swing" from the menu. What the app must stamp is the
+  // DEFAULT's stamp (scalp), not swing's - then the reload sees nothing pending.
+  const swing = loadChartGrid(storage, "swing", options);
+  assert.equal(swing.name, "swing");
+  const { defaultGrid } = readChartGridMeta(readChartGridStoreFrom(storage));
+  markChartGridApplied(storage, chartGridStamp(defaultGrid.name, defaultGrid.savedAt));
+  assert.equal(pendingDefaultChartGrid(storage, options), null);
+  // Stamping the loaded grid instead (the old behavior) would have re-applied scalp.
+  markChartGridApplied(storage, swing.stamp);
+  assert.equal(pendingDefaultChartGrid(storage, options)?.name, "scalp");
 });

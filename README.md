@@ -129,7 +129,7 @@ Compatibility note:
 Schwab/TOS data setup:
 - Keep `EXECUTION_MODE=paper`; Alpaca remains the paper broker.
 - Set `MARKET_DATA_PROVIDER=schwab` only when Schwab credentials are ready.
-- Use `GET /api/schwab/auth-url` to generate the Schwab authorization link.
+- Use `POST /api/schwab/oauth/start?profile=market_data` to generate the Schwab authorization link (it also arms the paste-back for that profile).
 - After Schwab redirects back with a `code`, send it to `POST /api/schwab/token` as `{"code":"..."}` to cache the access and refresh token.
 - Once connected, scanner, chart candles, and backtesting use Schwab price-history bars. Alpaca still handles account, orders, fills, positions, and paper journal execution.
 

@@ -1,0 +1,24 @@
+{
+  "checkedAt": "2026-09-17T08:40:40.2301368-05:00",
+  "scannerGeneratedAt": "2026-09-17T08:38:47.682935-05:00",
+  "scannerTapeAsOf": "2026-09-17T08:35:00-05:00",
+  "matchCount": 106,
+  "chartEndpoint": "http://127.0.0.1:3002/api/chart?symbol=SYMBOL&timeframe=5Min",
+  "chartEndpointNote": "Always returns 5Min regardless of requested timeframe; use oi-finder-chart for deep history, currently warming for CRDO.",
+  "evaluated": [
+    "INTC",
+    "CIEN",
+    "HPE",
+    "QQQ"
+  ],
+  "decision": "Recurring previously notified data issue: all four fresh chart requests reverted to Backup feed - Schwab unavailable and bars ending07:00ET. Latest scanner snapshot unchanged09:38:47ET. No verification possible this check; no repeat blocker notification or trade alert.",
+  "preparationAlertSent": false,
+  "alerts": [],
+  "dataBlocker": {
+    "id": "schwab-backup-stale-20260917",
+    "notifiedAt": "2026-09-17T08:37:03.938806-05:00",
+    "lastBarET": "07:00",
+    "observedAtET": "09:40:30",
+    "status": "active"
+  }
+}

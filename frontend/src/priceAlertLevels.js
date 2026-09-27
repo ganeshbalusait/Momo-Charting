@@ -7,6 +7,25 @@
 
 export const PRICE_ALERT_SNAP_PIXELS = 8;
 
+/**
+ * Build the alert draft opened by an option-chain strike tap. A strike above
+ * spot defaults to an upward crossing; a strike below spot defaults to a
+ * downward crossing. The trader can still change the direction in the alert
+ * form before arming it.
+ */
+export function buildStrikePriceAlertDraft(symbol, strike, spotPrice) {
+  const normalizedSymbol = String(symbol || "").trim().toUpperCase();
+  const price = Number(strike);
+  const spot = Number(spotPrice);
+  if (!normalizedSymbol || !Number.isFinite(price) || price <= 0) return null;
+  return {
+    symbol: normalizedSymbol,
+    price,
+    condition: Number.isFinite(spot) && spot > 0 && price < spot ? "below" : "above",
+    levelLabel: "Strike",
+  };
+}
+
 // The alert chips and the live-price chip are deliberately not snap targets.
 // Snapping a new alert onto an existing alert's label would stack two alerts on
 // one price, and snapping to the live price would arm an alert that fires the

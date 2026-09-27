@@ -1,3 +1,4 @@
+import { highOiImportance } from "./highOiContractList.js";
 // MomoX chart palette: call/resistance walls red, put/support walls green,
 // with dimmer variants for weak walls.
 const DEFAULT_CALL_COLOR = "#f23645";
@@ -23,11 +24,16 @@ const OPTION_SURFACE_COLORS = Object.freeze({
 // exported TOS script keeps its own 15-plot bound.
 const MAX_TOS_LEVELS_PER_SIDE = 30;
 const TOS_LEVELS_PER_TIER = 3;
+// Line weight now tracks HOW BIG the wall is, not where it happens to sit in
+// the sorted list. Tiers used to come from the rank index (top 3 = tier 5, next
+// 3 = tier 4 ...), so the third-largest wall drew as boldly as the largest even
+// when it held a fraction of the OI, and a wall worth 45% of the leader drew
+// thin purely for being eighth. Tier is the OI ratio to that ticker's biggest
+// wall (see highOiImportance), so a heavy wall is always a bold line and a
+// light one is always a thin line.
 const TOS_LINE_WIDTH_BY_TIER = Object.freeze({
-  // MomoX draws walls bold: leading tiers get thick dash blocks so a 21k
-  // 9/18-style wall reads instantly, secondary tiers stay clearly visible.
-  1: 2,
-  2: 2,
+  1: 1,
+  2: 1,
   3: 2,
   4: 3,
   5: 4,
@@ -122,7 +128,7 @@ function normalizeSideLevels(levelSet, side, options) {
     const strengthOnly = options.presentation === "strength";
     // The source ThinkScript declares five groups with three plots each.
     // Dynamic chains are ranked by OI into those same 3-level buckets.
-    const tier = Math.max(1, 5 - Math.floor(index / TOS_LEVELS_PER_TIER));
+    const tier = highOiImportance(level.openInterest, leadingOpenInterest);
     const weakStrength = strength === "weak";
     const secondary = tier <= 2 || weakStrength;
     const color = strengthOnly
@@ -141,7 +147,7 @@ function normalizeSideLevels(levelSet, side, options) {
       color,
       lineWidth: strengthOnly
         ? (strength === "strong" ? 2 : 1)
-        : weakStrength ? Math.max(2, TOS_LINE_WIDTH_BY_TIER[tier]) : TOS_LINE_WIDTH_BY_TIER[tier],
+        : TOS_LINE_WIDTH_BY_TIER[tier],
       tosLineWeight: strengthOnly ? null : tier === 5 ? 5 : tier === 4 ? 4 : tier === 3 ? 2 : 3,
       // Weak walls always use a visible short dash. Remaining source tiers
       // preserve the ThinkScript short-dash/long-dash split.

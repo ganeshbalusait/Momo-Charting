@@ -97,6 +97,7 @@ export function createLiveMarketStreamHub({
   let reconnectHandle = null;
   let lastPacketAt = 0;
   let watchdogHandle = null;
+  let silentWindows = 0;
 
   const activeSymbols = () => [...subscribers.entries()]
     .filter(([, listeners]) => listeners.size)
@@ -125,12 +126,25 @@ export function createLiveMarketStreamHub({
     watchdogHandle = null;
   };
 
+  // Every subscriber of the current sources hears that the feed is gone, so
+  // the chart header stops saying STREAMING and REST fallback takes over.
+  const notifyFeedDown = () => {
+    const listeners = new Set(sources.flatMap(({ symbols }) => symbols.flatMap((symbol) => [...(subscribers.get(symbol) || [])])));
+    listeners.forEach((handlers) => handlers?.error?.());
+  };
+
   const runWatchdog = () => {
     watchdogHandle = null;
     if (!activeSymbols().length) return;
     if (Number(now()) - lastPacketAt > silenceTimeoutMs) {
       // Silently dead socket: rebuild it. connect() early-returns when the
       // signature is unchanged, so the sources must be dropped first.
+      // One silent window is ambiguous (the server keepalive is an SSE
+      // comment the browser never surfaces); two in a row is a dead feed and
+      // the subscribers must learn it - the flag they hold is set once per
+      // packet and nothing else ever cleared it.
+      silentWindows += 1;
+      if (silentWindows >= 2) notifyFeedDown();
       closeSources();
       connect();
     }
@@ -172,6 +186,7 @@ export function createLiveMarketStreamHub({
           if (!packet) return;
           // Any traffic proves the socket is alive, including status frames.
           lastPacketAt = Number(now());
+          silentWindows = 0;
           listenerSetForPacket(eventType, packet, sourceSymbols).forEach((handlers) => {
             handlers?.[eventType]?.(packet);
           });
@@ -208,6 +223,16 @@ export function createLiveMarketStreamHub({
     };
   };
 
+  // Tab wake: the socket that was open when the phone slept is gone whether or
+  // not the browser fired `error`. Drop it, tell the subscribers, open a new one.
+  const reconnect = () => {
+    if (!activeSymbols().length) return;
+    notifyFeedDown();
+    silentWindows = 0;
+    closeSources();
+    connect();
+  };
+
   const close = () => {
     if (reconnectHandle != null) cancelTask(reconnectHandle);
     reconnectHandle = null;
@@ -216,7 +241,7 @@ export function createLiveMarketStreamHub({
     closeSources();
   };
 
-  return { activeSymbols, close, subscribe };
+  return { activeSymbols, close, reconnect, subscribe };
 }
 
 /**
@@ -267,6 +292,12 @@ export function createLiveChartQuotePoller({
         const symbol = normalizeSymbol(row?.symbol);
         const price = liveNumber(row?.lastPrice);
         if (!symbol || !Number.isFinite(price) || price <= 0) return;
+        // Day move rides along with the price so a subscriber that only wants
+        // a percentage (the quick-ticker rails) needs no second poll. Kept as
+        // null rather than 0 when the provider does not report it: a real
+        // 0.00% move and "no data yet" must not render identically.
+        const changePercent = liveNumber(row?.changePercent);
+        const change = liveNumber(row?.change);
         const packet = {
           symbol,
           receivedAt,
@@ -274,6 +305,8 @@ export function createLiveChartQuotePoller({
             source: "schwab-rest-1s",
             last: price,
             mark: price,
+            change: Number.isFinite(change) ? change : null,
+            changePercent: Number.isFinite(changePercent) ? changePercent : null,
             quoteTime: receivedMillis,
             tradeTime: receivedMillis,
           },

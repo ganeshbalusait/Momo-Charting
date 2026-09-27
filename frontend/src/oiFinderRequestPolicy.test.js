@@ -8,6 +8,7 @@ import {
   currentOiFinderRequestOwner,
   hasUsableOiFinderChain,
   mergeOiFinderFeedResponse,
+  shouldEnrichOiFinderFeed,
   nextOiChainPollDelay,
   oiChartClientCacheDecision,
   oiFinderFailureFeed,
@@ -125,12 +126,21 @@ test("OI Finder paints chart and compact chain together before background analyt
     loadChart: true,
     loadCompactChain: true,
     enrichFinder: true,
+    fastOptions: false,
   });
   assert.deepEqual(oiFinderInitialLoadPlan("Charts & OI"), {
     enabled: true,
     loadChart: true,
     loadCompactChain: true,
     enrichFinder: false,
+    fastOptions: false,
+  });
+  assert.deepEqual(oiFinderInitialLoadPlan("Quick Options"), {
+    enabled: true,
+    loadChart: false,
+    loadCompactChain: true,
+    enrichFinder: false,
+    fastOptions: true,
   });
   assert.equal(oiFinderInitialLoadPlan("OI Finder", "chart").enrichFinder, false);
   assert.equal(oiFinderInitialLoadPlan("OI Finder", "mag7").enabled, false);
@@ -203,6 +213,34 @@ test("a compact poll never blanks analytics the enrich pass loaded", () => {
   // A FULL response stays authoritative: empty means genuinely cleared.
   const fullClear = { ...compactPoll };
   assert.deepEqual(mergeOiFinderFeedResponse(enriched, fullClear).volumeMomentum, {});
+});
+
+test("a mobile-fast poll never blanks Calls/Puts research rows", () => {
+  const levelsFeed = {
+    symbol: "AAPL",
+    currentAtm: { expiry: "2026-08-14" },
+    selectedExpiryChainRows: [{ strike: 305 }],
+    callRows: [{ strike: 307.5 }],
+    putRows: [{ strike: 302.5 }],
+    tosScriptLevels: [{ expiry: "2026-08-14" }],
+  };
+  const fastPoll = {
+    symbol: "AAPL",
+    currentAtm: { expiry: "2026-08-14" },
+    selectedExpiryChainRows: [{ strike: 305, mark: 1.25 }],
+    callRows: [],
+    putRows: [],
+    tosScriptLevels: [],
+  };
+
+  const merged = mergeOiFinderFeedResponse(levelsFeed, fastPoll, {
+    compact: true,
+    mobileFast: true,
+  });
+  assert.equal(merged.callRows[0].strike, 307.5);
+  assert.equal(merged.putRows[0].strike, 302.5);
+  assert.equal(merged.tosScriptLevels[0].expiry, "2026-08-14");
+  assert.equal(merged.selectedExpiryChainRows[0].mark, 1.25);
 });
 
 test("an identical chain poll keeps the current feed reference", () => {
@@ -358,4 +396,82 @@ test("nextOiChainPollDelay enforces a 45s floor when rate limited", () => {
 
 test("nextOiChainPollDelay ignores stale failure counts once a poll succeeds", () => {
   assert.equal(nextOiChainPollDelay({ ready: true, failed: false, failureCount: 0 }), 15_000);
+});
+
+// The enrich pass is the ONLY request that fetches dailyLiquidityHeatmap. It
+// used to be gated on `!payload.refreshing`, but `refreshing` is the server's
+// "revalidating in the background" flag, set on any cached response whose 15s
+// window has lapsed - not a statement that the chain is unusable. Landing on
+// the page during that window skipped the enrich pass with no retry, so
+// Heatmap and Flow showed "No live 0-31 DTE contracts are available for this
+// ticker" until the user happened to refresh at exactly the right instant.
+// Verified 2026-08-19 against the live backend: AMD returned refreshing=true
+// then refreshing=false 3s apart on consecutive compact polls.
+const ENRICH_PLAN = { enrichFinder: true };
+const ENRICH_USABLE = { symbol: "AMD", callRows: [{ strike: 210 }] };
+
+test("enrich runs on a usable chain even while the server revalidates", () => {
+  assert.equal(
+    shouldEnrichOiFinderFeed(ENRICH_PLAN, { ...ENRICH_USABLE, refreshing: true, stale: true }),
+    true,
+  );
+});
+
+test("enrich runs on a usable chain that is not refreshing", () => {
+  assert.equal(
+    shouldEnrichOiFinderFeed(ENRICH_PLAN, { ...ENRICH_USABLE, refreshing: false }),
+    true,
+  );
+});
+
+test("enrich waits while the chain still has no contracts", () => {
+  assert.equal(shouldEnrichOiFinderFeed(ENRICH_PLAN, { symbol: "AMD", callRows: [], putRows: [] }), false);
+  assert.equal(shouldEnrichOiFinderFeed(ENRICH_PLAN, null), false);
+});
+
+test("enrich is skipped for views that do not show Finder analytics", () => {
+  assert.equal(shouldEnrichOiFinderFeed({ enrichFinder: false }, ENRICH_USABLE), false);
+});
+
+// A FULL response is authoritative only when it is FRESH. The Finder view
+// polls every 15s with compactOnly:false, and the server answers a lapsed
+// cache with a stale copy it is still revalidating - which, when it came from
+// the analytics-free disk chain, carries dailyLiquidityHeatmap {}. Spreading
+// that over a loaded heatmap blanked the panel back to "No live 0-31 DTE
+// contracts are available for this ticker" on a 15s cadence. Verified
+// 2026-08-19: MRNA /api/oi-finder returned stale+refreshing with 0 heatmap
+// days twice, then 13 days / 3442 rows on the third poll.
+test("a stale full response cannot blank analytics the view already loaded", () => {
+  const current = {
+    symbol: "MRNA",
+    callRows: [{ strike: 165 }],
+    dailyLiquidityHeatmap: { days: ["2026-08-19"], call: [{ strike: 165 }] },
+    volumeMomentum: { rows: [1] },
+  };
+  const staleFull = {
+    symbol: "MRNA",
+    callRows: [{ strike: 165 }],
+    stale: true,
+    refreshing: true,
+    dailyLiquidityHeatmap: {},
+    volumeMomentum: {},
+  };
+  const merged = mergeOiFinderFeedResponse(current, staleFull, { compact: false });
+  assert.deepEqual(merged.dailyLiquidityHeatmap, current.dailyLiquidityHeatmap);
+  assert.deepEqual(merged.volumeMomentum, current.volumeMomentum);
+});
+
+test("a fresh full response is authoritative and may clear analytics", () => {
+  const current = {
+    symbol: "MRNA",
+    callRows: [{ strike: 165 }],
+    dailyLiquidityHeatmap: { days: ["2026-08-19"], call: [{ strike: 165 }] },
+  };
+  const freshFull = {
+    symbol: "MRNA",
+    callRows: [{ strike: 165 }],
+    dailyLiquidityHeatmap: {},
+  };
+  const merged = mergeOiFinderFeedResponse(current, freshFull, { compact: false });
+  assert.deepEqual(merged.dailyLiquidityHeatmap, {});
 });
