@@ -22347,6 +22347,9 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+/* The News cell opens the popover on click (same as the newspaper icon). */
+.momx-scanner-panel .momx-newscol.is-openable { cursor: pointer; }
+.momx-scanner-panel .momx-newscol.is-openable:hover { text-decoration: underline dotted; }
 @media (prefers-reduced-motion: reduce) {
   .momx-scanner-panel .momx-newscol.is-tone-up,
   .momx-scanner-panel .momx-newscol.is-tone-down { animation: none; }

@@ -440,9 +440,13 @@ const AUTO_CARDS_SEEN_KEY = "momx-auto-cards-seen-v1";
 let EARNINGS_BY_SYMBOL = new Map();
 
 // The News / Event cells, shared by the live board and the History table.
-function newsEventCell(column, row, earnings, className, nowMs) {
+// onOpen (live board only): clicking the News cell opens the same popover as
+// the newspaper icon - asked for 2026-09-27, the cell is the bigger target on
+// the phone. The History table passes nothing and stays a plain cell.
+function newsEventCell(column, row, earnings, className, nowMs, onOpen) {
   if (column.kind === "news") {
     const cell = newsColumnCell(row, nowMs);
+    const openable = Boolean(cell && onOpen);
     return (
       <td
         key={column.key}
@@ -453,8 +457,14 @@ function newsEventCell(column, row, earnings, className, nowMs) {
           // only the two colours. The hover leads with the word
           // (cell.title), so desktop reads it; the phone gets the same word
           // in the tap popover.
-          + (cell && (cell.tone === "up" || cell.tone === "down") ? " is-tone-" + cell.tone : "")}
+          + (cell && (cell.tone === "up" || cell.tone === "down") ? " is-tone-" + cell.tone : "")
+          + (openable ? " is-openable" : "")}
         title={cell ? cell.title : undefined}
+        role={openable ? "button" : undefined}
+        tabIndex={openable ? 0 : undefined}
+        aria-label={openable ? "Open news for " + row.symbol : undefined}
+        onClick={openable ? (event) => { event.stopPropagation(); onOpen(); } : undefined}
+        onKeyDown={openable ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); onOpen(); } } : undefined}
       >
         {cell ? cell.text : ""}
         {/* MomoX3-style sparkle on every row with a headline; colour = the AI
@@ -2521,7 +2531,8 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
           return gradeCell(column, row, onOpenGrade);
         }
         if (column.kind === "news" || column.kind === "event") {
-          return newsEventCell(column, row, earnings, "momx-cell");
+          return newsEventCell(column, row, earnings, "momx-cell", undefined,
+            column.kind === "news" && onNewsToggle ? () => onNewsToggle(row.symbol) : null);
         }
         if (column.kind === "matchedSince") {
           // NEWS pressed: this column carries WHEN THE HEADLINE CAME - most

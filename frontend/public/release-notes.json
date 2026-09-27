@@ -6,7 +6,8 @@
       "heading": "News flash toned down: green or red only, no fill",
       "items": [
         "The News column no longer fills the cell. Positive news pulses green and negative pulses red - the age and its star only. Neutral and unjudged stories look exactly as before.",
-        "Hover (desktop) or tap the newspaper icon (phone) to read the word: 'Positive news', 'Negative news' or 'Neutral news'. When the AI reader judged the story it also names the category, e.g. '(AI read: UPGRADE)'; otherwise '(keyword read)'."
+        "Hover (desktop) or tap the newspaper icon (phone) to read the word: 'Positive news', 'Negative news' or 'Neutral news'. When the AI reader judged the story it also names the category, e.g. '(AI read: UPGRADE)'; otherwise '(keyword read)'.",
+        "Clicking or tapping the News cell itself now opens the story popover too, same as the newspaper icon."
       ]
     },
     {
