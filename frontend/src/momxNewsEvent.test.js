@@ -81,3 +81,29 @@ test("news cell: stored headline past 24h shows as stored, sparkle tone from sen
   assert.equal(judged.aiJudged, true);
   assert.match(judged.title, /Fresh|Stored/);
 });
+
+// 2026-09-27: the trader asked for the News cell itself to go green or red
+// with the story, and for the hover to SAY positive or negative instead of
+// leaving him to decode a sparkle colour. toneWord is that plain word, from
+// the AI verdict when judged, else the scraper's keyword sentiment; it leads
+// the tooltip so the first line answers the question.
+test("news cell: toneWord says Positive/Negative/Neutral and leads the tooltip", () => {
+  const at = new Date(NOW - 3600000).toISOString();
+  const judgedUp = newsColumnCell({ news: { headline: "x", publishedAt: at }, catalyst: { category: "CONTRACT", direction: "bullish" } }, NOW);
+  assert.equal(judgedUp.toneWord, "Positive");
+  assert.match(judgedUp.title, /^Positive news \(AI read\)\n/);
+  const judgedDown = newsColumnCell({ news: { headline: "x", publishedAt: at }, catalyst: { category: "OFFERING", direction: "bearish" } }, NOW);
+  assert.equal(judgedDown.toneWord, "Negative");
+  assert.match(judgedDown.title, /^Negative news \(AI read\)\n/);
+  const judgedFlat = newsColumnCell({ news: { headline: "x", publishedAt: at }, catalyst: { category: "OTHER", direction: "neutral" } }, NOW);
+  assert.equal(judgedFlat.toneWord, "Neutral");
+  // keyword sentiment only (no AI read yet): still a plain word, labelled as the weaker read
+  const keyword = newsColumnCell({ news: { headline: "x", publishedAt: at, stored: true, sentiment: "negative" } }, NOW);
+  assert.equal(keyword.toneWord, "Negative");
+  assert.match(keyword.title, /^Negative news \(keyword read\)\n/);
+  assert.equal(newsColumnCell({ news: { headline: "x", publishedAt: at, stored: true, sentiment: "Strong" } }, NOW).toneWord, "Positive");
+  // nothing judged it -> no word, and the tooltip starts with the headline as before
+  const plain = newsColumnCell({ news: { headline: "Plain headline", publishedAt: at } }, NOW);
+  assert.equal(plain.toneWord, "");
+  assert.match(plain.title, /^Plain headline/);
+});

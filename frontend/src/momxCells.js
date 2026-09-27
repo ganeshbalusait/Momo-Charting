@@ -1377,6 +1377,12 @@ export function newsColumnCell(row, nowMs = Date.now()) {
   const aiWord = ai === "up" ? "AI read: good news" : ai === "down" ? "AI read: bad news" : ai ? "AI read: neutral" : "";
   const sentiment = sentimentTone(news.sentiment);
   const tone = ai || sentiment || "none";
+  // The plain word the trader asked for (2026-09-27): the cell goes green or
+  // red with the story, and the hover SAYS positive or negative instead of
+  // leaving him to decode a sparkle colour. The AI verdict wins; the scraper's
+  // keyword sentiment is the weaker read and is labelled as such.
+  const toneWord = tone === "up" ? "Positive" : tone === "down" ? "Negative" : tone === "flat" ? "Neutral" : "";
+  const toneLine = toneWord ? toneWord + " news (" + (ai ? "AI read" : "keyword read") + ")\n" : "";
   const whence = [news.source, news.via && news.via !== news.source ? "via " + news.via : "", news.age]
     .filter(Boolean)
     .join(", ");
@@ -1386,10 +1392,11 @@ export function newsColumnCell(row, nowMs = Date.now()) {
     ai,
     // Sparkle colour: the AI verdict, else the keyword sentiment, else none.
     tone,
+    toneWord,
     aiJudged: ai !== null,
     stored: news.stored === true,
     atMs: news.atMs,
-    title: news.headline + (whence ? " (" + whence + ")" : "")
+    title: toneLine + news.headline + (whence ? " (" + whence + ")" : "")
       + (news.stored ? (news.fresh ? "\nFresh" : "\nStored") + (news.sentiment ? " · " + news.sentiment : "") : "")
       + (aiWord ? "\n" + aiWord + (c.summary ? ": " + c.summary : "") : ""),
   };

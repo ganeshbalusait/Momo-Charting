@@ -447,7 +447,12 @@ function newsEventCell(column, row, earnings, className, nowMs) {
       <td
         key={column.key}
         data-col={column.key}
-        className={className + " momx-newscol" + (cell && cell.fresh ? " is-fresh" : "") + (cell && cell.stored ? " is-stored" : "")}
+        className={className + " momx-newscol" + (cell && cell.fresh ? " is-fresh" : "") + (cell && cell.stored ? " is-stored" : "")
+          // The whole cell takes the story's colour (green good / red bad),
+          // not just the sparkle - asked for 2026-09-27. The hover leads with
+          // the word (cell.title), so desktop reads it; the phone gets the
+          // same word in the tap popover.
+          + (cell && cell.toneWord ? " is-tone-" + cell.tone : "")}
         title={cell ? cell.title : undefined}
       >
         {cell ? cell.text : ""}
@@ -2225,7 +2230,7 @@ function MomxNewsFeedBox({ payload, busy, symbols, onRefresh }) {
 // Fixed centered-bottom everywhere: thumb-reachable on the phone, deliberately
 // not anchored to the row (anchoring across sticky scrollers is the
 // over-engineering the design note forbids).
-function MomxNewsPopover({ symbol, news, onClose }) {
+function MomxNewsPopover({ symbol, news, verdict, onClose }) {
   // "Why is it moving?" - ON DEMAND, never per row. This costs a model call and
   // a 358-row board must never fire 358 of them, so it is a button the trader
   // presses on a headline he already opened.
@@ -2286,6 +2291,14 @@ function MomxNewsPopover({ symbol, news, onClose }) {
           <span className="momx-news-pop-symbol">{symbol}</span>
           <button type="button" onClick={onClose} aria-label="Close">x</button>
         </div>
+        {/* The plain word first (2026-09-27): on the phone there is no hover,
+            so this is where "Positive" / "Negative" has to be said. */}
+        {verdict && verdict.toneWord ? (
+          <p className={"momx-news-pop-verdict is-" + verdict.tone}>
+            {verdict.toneWord + " news"}
+            <small>{verdict.aiJudged ? " (AI read)" : " (keyword read)"}</small>
+          </p>
+        ) : null}
         <p className="momx-news-pop-headline">{news.headline}</p>
         {/* From the ticker-tagged store: the publisher's teaser, and whether
             the story is inside the 24h window or an older stored one. */}
@@ -6342,6 +6355,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
           <MomxNewsPopover
             symbol={newsOpenSymbol}
             news={newsOf(newsOpenRow)}
+            verdict={newsColumnCell(newsOpenRow)}
             onClose={onNewsClose}
           />
         ) : null}

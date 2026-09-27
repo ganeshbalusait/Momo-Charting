@@ -2,6 +2,16 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-09-27T02:15:00-04:00",
+      "heading": "News cell says positive or negative",
+      "items": [
+        "The MomX News cell is now green for positive news, red for negative and purple for neutral - the whole cell, not just the star. A fresh coloured story (under 3 hours) flashes three times when it appears.",
+        "Hover the cell on the desktop and the first line reads 'Positive news' or 'Negative news', with '(AI read)' when the AI reader judged the story or '(keyword read)' when only the scraper's keyword score did.",
+        "On the phone, tap the row's news to open it: the same word sits at the top of the popover.",
+        "A story nobody has judged yet stays uncoloured, exactly as before - no guess is made."
+      ]
+    },
+    {
       "at": "2026-09-27T00:30:00-04:00",
       "heading": "New GO + short RVOL + MACD filter",
       "items": [
