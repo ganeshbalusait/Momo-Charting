@@ -10408,6 +10408,24 @@ body.global-price-alert-visible .topbar.trading-header {
   gap: 5px;
 }
 
+/* Why the AI called it Positive/Negative: printed under the headline so it
+   reads on a phone too, where there is no hover tooltip. */
+.scanner-news-reason {
+  color: #a9a9b8;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.scanner-news-reason-positive {
+  color: #75f1bf;
+}
+
+.scanner-news-reason-negative {
+  color: #ff9eac;
+}
+
 .scanner-news-cell {
   display: grid;
   gap: 4px;

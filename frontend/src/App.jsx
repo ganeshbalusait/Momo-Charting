@@ -23595,6 +23595,9 @@ function TradingWorkspace({ authUser, onLogout }) {
         {news.url
           ? <a className="scanner-news-headline" href={news.url} target="_blank" rel="noreferrer" title={news.summary || news.headline}>{news.headline}</a>
           : <span className="scanner-news-headline" title={news.summary || news.headline}>{news.headline}</span>}
+        {news.sentiment_reason
+          ? <small className={`scanner-news-reason scanner-news-reason-${tone.key}`}>{String(news.sentiment_source || "") === "ai" ? "AI: " : ""}{news.sentiment_reason}</small>
+          : null}
         {meta ? <small className="scanner-news-meta">{meta}</small> : null}
       </span>
     );

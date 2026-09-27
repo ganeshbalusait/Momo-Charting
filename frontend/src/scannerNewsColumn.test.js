@@ -89,3 +89,12 @@ test("an AI-labelled headline shows the AI tag with its reason; keyword labels d
   const cssSource = readFileSync(new URL("./index.css", import.meta.url), "utf8");
   assert.match(cssSource, /\.news-ai-tag \{[^}]*cursor: help;[^}]*\}/);
 });
+
+test("the AI reason is printed under the headline, not only in a tooltip", () => {
+  const cellStart = appSource.indexOf("const renderScannerNewsCell = ");
+  const cell = appSource.slice(cellStart, appSource.indexOf("const renderOiNewsLink = "));
+  assert.match(cell, /\{news\.sentiment_reason\n\s*\? <small className=\{`scanner-news-reason scanner-news-reason-\$\{tone\.key\}`\}>/);
+  const cssSource = readFileSync(new URL("./index.css", import.meta.url), "utf8");
+  assert.match(cssSource, /\.scanner-news-reason \{[^}]*white-space: normal;[^}]*\}/);
+  assert.match(cssSource, /\.scanner-news-reason-negative \{\n\s*color: #ff9eac;/);
+});
