@@ -112,3 +112,8 @@ artifacts/credential_health.json
 artifacts/.schwab_stream_chart_history.json-*.tmp
 artifacts/plot-deps/
 artifacts/api_server_*.log
+
+# A captured Chrome profile (cookies, logins, session storage) and macOS
+# resource-fork stubs were tracked by mistake on 2026-08-10 - keep them out.
+tmp-mobile/
+__MACOSX/
