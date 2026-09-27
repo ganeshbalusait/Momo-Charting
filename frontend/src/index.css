@@ -10342,16 +10342,48 @@ body.global-price-alert-visible .topbar.trading-header {
   text-decoration: none;
 }
 
-.oi-news-fresh {
-  border-color: #168c69;
+/* News pill tone = headline sentiment, never age. Positive news flashes
+   green, negative news flashes red, neutral news sits still in grey. */
+.oi-news-positive {
+  border-color: #1fa877;
   background: #0b4939;
   color: #75f1bf;
 }
 
-.oi-news-stored {
+.oi-news-negative {
+  border-color: #b5414f;
+  background: #4a1b27;
+  color: #ff9eac;
+}
+
+.oi-news-neutral {
   border-color: #55555f;
-  background: #0b3b47;
-  color: #82e9f5;
+  background: #232328;
+  color: #b4b4c0;
+}
+
+.oi-news-positive.oi-news-flash {
+  animation: oi-news-flash-positive 1.6s ease-in-out infinite;
+}
+
+.oi-news-negative.oi-news-flash {
+  animation: oi-news-flash-negative 1.6s ease-in-out infinite;
+}
+
+@keyframes oi-news-flash-positive {
+  0%, 100% { background: #0b4939; box-shadow: 0 0 0 0 rgba(63, 232, 160, 0); }
+  50% { background: #13704f; box-shadow: 0 0 0 4px rgba(63, 232, 160, .28); }
+}
+
+@keyframes oi-news-flash-negative {
+  0%, 100% { background: #4a1b27; box-shadow: 0 0 0 0 rgba(255, 110, 130, 0); }
+  50% { background: #7a2536; box-shadow: 0 0 0 4px rgba(255, 110, 130, .28); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oi-news-flash {
+    animation: none;
+  }
 }
 
 .scanner-news-cell {

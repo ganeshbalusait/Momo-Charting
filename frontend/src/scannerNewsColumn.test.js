@@ -42,3 +42,34 @@ test("saved scanner column profiles gain the News column once", () => {
     /String\(storageKey\)\.includes\("scanner"\)\) \{\n\s*visibleKeys = \[\.\.\.visibleKeys, \.\.\.newsColumnKeys/,
   );
 });
+
+test("news cell is coloured by sentiment, never by headline age", () => {
+  const start = appSource.indexOf("const renderScannerNewsCell = ");
+  const end = appSource.indexOf("const renderOiNewsLink = ");
+  const cell = appSource.slice(start, end);
+  assert.match(cell, /const tone = newsSentimentTone\(news\.sentiment\);/);
+  assert.match(cell, /className=\{`oi-news-status oi-news-\$\{tone\.key\}\$\{tone\.flash \? " oi-news-flash" : ""\}`\}/);
+  assert.match(cell, /\{tone\.label\}/);
+  // No age-based branch is left: freshness only drives the News Feed filter.
+  assert.doesNotMatch(cell, /newsFreshnessMeta|isFresh|oi-news-fresh|oi-news-stored|"Fresh"|"Stored"/);
+  // The published time still shows as plain meta text.
+  assert.match(cell, /news\.published_at \? formatTimeLabel\(news\.published_at\) : ""/);
+  assert.match(appSource, /import \{ newsSentimentTone \} from "\.\/newsSentimentTone";/);
+});
+
+test("positive news flashes green and negative news flashes red; neutral stays still", () => {
+  const cssSource = readFileSync(new URL("./index.css", import.meta.url), "utf8");
+  assert.match(cssSource, /\.oi-news-positive \{[^}]*color: #75f1bf;[^}]*\}/);
+  assert.match(cssSource, /\.oi-news-negative \{[^}]*color: #ff9eac;[^}]*\}/);
+  assert.match(cssSource, /\.oi-news-positive\.oi-news-flash \{\n\s*animation: oi-news-flash-positive [^;]*infinite;\n\}/);
+  assert.match(cssSource, /\.oi-news-negative\.oi-news-flash \{\n\s*animation: oi-news-flash-negative [^;]*infinite;\n\}/);
+  assert.match(cssSource, /@keyframes oi-news-flash-positive \{/);
+  assert.match(cssSource, /@keyframes oi-news-flash-negative \{/);
+  assert.doesNotMatch(cssSource, /\.oi-news-neutral[^{]*\{[^}]*animation/);
+  assert.match(cssSource, /@media \(prefers-reduced-motion: reduce\) \{\n\s*\.oi-news-flash \{\n\s*animation: none;/);
+  assert.doesNotMatch(cssSource, /\.oi-news-fresh|\.oi-news-stored/);
+});
+
+test("a sentiment change re-renders stable scanner rows", () => {
+  assert.match(appSource, /row\?\.__news\?\.headline \?\? "",\n\s*row\?\.__news\?\.sentiment \?\? "",/);
+});

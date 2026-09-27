@@ -61,6 +61,7 @@ import { CLOUD_BAND_STUDIES, calculateTosCloudBandPoints } from "./cloudBandStud
 import { buildFutureChartTimes, projectFutureChartTime } from "./chartFutureTime";
 import { findPriceAlertLevel, priceAlertChipText } from "./priceAlertLevels";
 import { lineStyleDashArray, momoxLevelAnchorTime, trimPointsToAnchor } from "./chartSessionAnchor";
+import { newsSentimentTone } from "./newsSentimentTone";
 import { holdStudyPointsOnChartGrid, snapStudyPointsToChartGrid } from "./chartGridProjection";
 import {
   MOMOX_ONCHART_PALETTE_OVERRIDES,
@@ -6920,6 +6921,7 @@ function buildOiTableRowSignature(row, index = 0) {
     row?.__isNew ? "1" : "0",
     row?.__news?.published_at ?? "",
     row?.__news?.headline ?? "",
+    row?.__news?.sentiment ?? "",
     row?.scanned_at ?? "",
   ].join("~");
 }
@@ -23549,33 +23551,34 @@ function TradingWorkspace({ authUser, onLogout }) {
 
   // Latest ticker-tagged headline for a scanner row. Information only: the
   // cell links to the article and to the News Feed, nothing else reads it.
+  // The pill is coloured by the headline's sentiment, never by its age:
+  // Strong/Positive flash green, Negative flashes red, Neutral stays grey.
+  // The published time is still printed in the meta line for context.
   const renderScannerNewsCell = (rawSymbol, attachedNews) => {
     const symbol = String(rawSymbol || "").trim().toUpperCase();
     const news = attachedNews === undefined ? oiNewsBySymbol.get(symbol) : attachedNews;
     if (!news) return <span className="oi-news-status oi-news-none">No</span>;
-    const freshness = newsFreshnessMeta(news.published_at);
-    const isFresh = freshness.ageHours <= 24;
-    const sentiment = String(news.sentiment || "neutral").toLowerCase();
+    const tone = newsSentimentTone(news.sentiment);
     const publisher = String(news.source || "").trim();
     const aggregator = String(news.via || "").trim();
     const meta = [publisher, aggregator && aggregator.toLowerCase() !== publisher.toLowerCase() ? `via ${aggregator}` : "", news.published_at ? formatTimeLabel(news.published_at) : ""]
       .filter(Boolean)
       .join(" · ");
     return (
-      <span className="scanner-news-cell">
+      <span className={`scanner-news-cell scanner-news-${tone.key}`}>
         <span className="scanner-news-badges">
           <a
-            className={`oi-news-status ${isFresh ? "oi-news-fresh" : "oi-news-stored"}`}
+            className={`oi-news-status oi-news-${tone.key}${tone.flash ? " oi-news-flash" : ""}`}
             href="#news-feed"
             onClick={(event) => {
               event.preventDefault();
               openTickerNews(symbol);
             }}
-            title={`Open the News Feed for ${symbol}`}
+            title={`${tone.label} news for ${symbol} - open the News Feed`}
+            aria-label={`${tone.label} news for ${symbol}, open the News Feed`}
           >
-            {isFresh ? "Fresh" : "Stored"}
+            {tone.label}
           </a>
-          <span className={`news-sentiment news-sentiment-${sentiment}`}>{news.sentiment || "Neutral"}</span>
         </span>
         {news.url
           ? <a className="scanner-news-headline" href={news.url} target="_blank" rel="noreferrer" title={news.summary || news.headline}>{news.headline}</a>
