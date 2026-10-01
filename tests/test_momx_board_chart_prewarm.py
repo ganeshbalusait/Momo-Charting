@@ -751,9 +751,16 @@ class NewMatchFastPath(_PrewarmStub):
         super().setUp()
         self.painted: list = []
 
+        self.paint_done = True
+
+        class Future:
+            def done(future_self):
+                return self.paint_done
+
         class Pool:
             def submit(pool_self, fn, *args):
                 self.painted.append(args)
+                return Future()
 
         self.state.oi_finder_chart_paint_pool = Pool()
 
@@ -793,10 +800,25 @@ class NewMatchFastPath(_PrewarmStub):
         self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
         self.assertEqual(self.painted, [])
 
-    def test_a_burst_is_capped_per_tick(self) -> None:
-        self._new_match_board("AAA", "BBB", "CCC", "DDD", "EEE")
-        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 3)
-        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 2)
+    def test_a_burst_is_taken_one_per_tick(self) -> None:
+        self._new_match_board("AAA", "BBB", "CCC")
+        for _ in range(3):
+            self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 1)
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        self.assertEqual(sorted(args[0] for args in self.painted), ["AAA", "BBB", "CCC"])
+
+    def test_only_one_background_paint_runs_at_a_time(self) -> None:
+        """Three paint workers are shared with his clicks, and a paint can stall
+        on the broker for 40s; a second background paint waits its turn and is
+        retried, never dropped."""
+        self._new_match_board("AAA", "BBB")
+        self.state._board_prewarm_new_match_pass(now_et=self.clock())
+        self.paint_done = False                      # the first paint is still running
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        self.assertEqual(len(self.painted), 1)
+        self.paint_done = True                       # it finished: the next match goes
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 1)
+        self.assertEqual(len(self.painted), 2)
 
     def test_both_switches_and_the_clock_gate_stop_it(self) -> None:
         self._new_match_board("LASR")

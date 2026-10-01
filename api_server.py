@@ -11422,8 +11422,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     BOARD_PREWARM_FAST_TICK_SECONDS: float = 5.0
     # How recently a row must have entered the matches to count as new.
     BOARD_PREWARM_NEW_MATCH_WINDOW_SECONDS: float = 900.0
-    # Bound a burst (the open can bring many new matches at once).
-    BOARD_PREWARM_MAX_NEW_MATCHES_PER_TICK: int = 3
+    # Bound a burst (the open can bring many new matches at once). One per
+    # tick is still 12 a minute, and together with the one-paint-in-flight
+    # rule below it leaves 2 of the 3 paint workers free for his own clicks
+    # even when a paint stalls on the broker (40.9s measured, AAPL 08-19).
+    BOARD_PREWARM_MAX_NEW_MATCHES_PER_TICK: int = 1
     BOARD_PREWARM_CYCLE_SECONDS: float = 60.0
     # Last in line at boot: after the watchlist warmer (45s) and the hot
     # refresher (90s), so restart ordering is unchanged.
@@ -12217,7 +12220,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         session_start = self._most_recent_session_start(
             now_et.astimezone(timezone.utc)
         ).timestamp()
-        cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_NEW_MATCHES_PER_TICK", 3)))
+        cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_NEW_MATCHES_PER_TICK", 1)))
         started = 0
         for symbol, since in self._board_prewarm_new_matches(now_epoch):
             if started >= cap:
@@ -12229,6 +12232,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 handled[symbol] = since
                 continue
             verdict = self._board_prewarm_classify(symbol, session_start, now_epoch)
+            if verdict == "cold":
+                # ONE background paint in flight at a time, so his clicks
+                # always find a free paint worker. A busy slot leaves this
+                # match unhandled: the next tick tries it again.
+                previous = getattr(self, "_board_prewarm_paint_future", None)
+                if previous is not None and not previous.done():
+                    break
             handled[symbol] = since
             self._board_prewarm_trim(handled, str)
             try:
@@ -12237,7 +12247,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     # alone, and a partial payload is never saved to disk, so
                     # it can neither clear another build's guard nor clobber a
                     # deep archive. It stays "cold" for the 60s cycle.
-                    self.oi_finder_chart_paint_pool.submit(
+                    self._board_prewarm_paint_future = self.oi_finder_chart_paint_pool.submit(
                         self._refresh_oi_finder_chart_payload,
                         symbol, False, False, True,
                     )
