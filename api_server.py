@@ -10707,6 +10707,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             now_et = datetime.now(ZoneInfo(EASTERN_TZ))
             hole = chart_backfill.today_premarket_hole(frame, now_et)
             if hole is None:
+                # Nothing to patch (the tape already has today's premarket, a
+                # weekend, or before 04:10): a healthy state, so an earlier
+                # morning's note must not keep the badge up.
+                self._premarket_backfill_state = ""
+                self._premarket_backfill_error = ""
                 return frame
             cache = getattr(self, "_premarket_backfill_cache", None)
             if not isinstance(cache, dict):
@@ -10727,65 +10732,46 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             else:
                 # Remember WHY this produced nothing. A premarket hole with no
                 # explanation is the single most expensive silence in this app:
-                # 04:00-07:00 is unavailable from every source we have except
-                # Tradier (verified 2026-08-27 by direct probe - Schwab returns
-                # its first current-day bar at 07:00 on BOTH profiles, and the
-                # Alpaca BOATS feed returns zero bars at or after 04:00), so
-                # when the Tradier token is refused the chart just draws empty
-                # space and reads as "the chart is broken" rather than "a key
-                # expired". Ganesh spent a day on that reading.
+                # Schwab returns its first current-day bar at 07:00 on BOTH
+                # profiles and Alpaca BOATS has nothing at or after 04:00
+                # (verified 2026-08-27), so an empty fill must say so rather
+                # than leave the chart looking broken.
+                # The app runs on Schwab (TOS API) and Alpaca only. Schwab has
+                # no bars before 07:00 ET, so Alpaca feed=sip fills 04:00-07:00
+                # directly (verified 2026-08-28: 161 one-minute AAPL bars on
+                # the free owner key). Tradier is no longer used: asking it
+                # first cost a refused request on every build and printed a
+                # "renew the Tradier token" note for a feed nobody has.
+                fill = chart_backfill.timesales_to_frame(None)
+                detail = ""
                 try:
-                    fill = chart_backfill.timesales_to_frame(
-                        _house_tradier_client().get_timesales(target, hole[0], hole[1], interval=interval)
+                    sip_key, sip_secret = self._owner_alpaca_credentials()
+                    sip_bars = fetch_boats_bars(
+                        sip_key, sip_secret, [str(target).upper()],
+                        hole[0], hole[1], interval, feed="sip",
                     )
-                    self._premarket_backfill_error = ""
-                    self._premarket_backfill_state = ""
+                    fill = boats_bars_to_frame(
+                        (sip_bars or {}).get(str(target).upper())
+                    )
                 except Exception as exc:
                     detail = str(exc)
-                    # Tradier is down (dead token, outage). The original claim
-                    # that "this window has no other source" tested Alpaca
-                    # feed=iex and feed=boats, both genuinely empty here - but
-                    # feed=sip carries the full 04:00-07:00 on the same free
-                    # owner key (verified 2026-08-28: 161 one-minute AAPL bars,
-                    # all nine scanner symbols covered). Same ~15-minute
-                    # recency wall as BOATS, which clamp_end clears. So the
-                    # dead-Tradier morning degrades to "15 minutes behind"
-                    # instead of "three hours of empty space".
                     fill = chart_backfill.timesales_to_frame(None)
-                    try:
-                        sip_key, sip_secret = self._owner_alpaca_credentials()
-                        sip_bars = fetch_boats_bars(
-                            sip_key, sip_secret, [str(target).upper()],
-                            hole[0], hole[1], interval, feed="sip",
-                        )
-                        fill = boats_bars_to_frame(
-                            (sip_bars or {}).get(str(target).upper())
-                        )
-                    except Exception:
-                        fill = chart_backfill.timesales_to_frame(None)
-                    if fill is not None and not fill.empty:
-                        # Candles ARE present in the window, just late.
-                        # The badge says BACKUP, not DOWN: labelling a
-                        # working fallback as an outage is how a warning
-                        # stops being read.
-                        self._premarket_backfill_state = "backup"
-                        self._premarket_backfill_error = (
-                            "Premarket 04:00-07:00 is running on the Alpaca SIP "
-                            "backup (about 15 minutes behind). Tradier, the "
-                            "primary, refused the request"
-                            + (" - renew its access token in Settings."
-                               if "401" in detail or "not approved" in detail.lower()
-                               else ".")
-                        )
-                    else:
-                        self._premarket_backfill_state = "missing"
-                        self._premarket_backfill_error = (
-                            "Premarket 04:00-07:00 is unavailable: the Tradier feed refused the "
-                            "request and the Alpaca SIP backup returned nothing. "
-                            + ("Check the Tradier access token in Settings."
-                               if "401" in detail or "not approved" in detail.lower()
-                               else detail[:160])
-                        )
+                if fill is not None and not fill.empty:
+                    # Candles ARE present, but the free SIP feed lands them
+                    # about 15 minutes late while the window is live; the
+                    # badge keeps saying so (warn, not down).
+                    self._premarket_backfill_state = "backup"
+                    self._premarket_backfill_error = (
+                        "Premarket 04:00-07:00 comes from Alpaca SIP (about 15 minutes "
+                        "behind while live); Schwab has no bars before 07:00."
+                    )
+                else:
+                    self._premarket_backfill_state = "missing"
+                    self._premarket_backfill_error = (
+                        "Premarket 04:00-07:00 is unavailable: Schwab has no bars before "
+                        "07:00 and Alpaca SIP returned nothing"
+                        + (f" ({detail[:160]})." if detail else ".")
+                    )
                 cache[key] = {
                     "frame": fill,
                     "at": time.monotonic(),
