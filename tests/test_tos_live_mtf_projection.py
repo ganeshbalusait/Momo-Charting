@@ -227,3 +227,32 @@ def test_forming_4h_cross_prints_on_the_open_bucket_first_candle_like_tos() -> N
     four_hour = [s for s in payload["signals"] if s["timeframe"] == "4H" and s["direction"] == "CALL"]
     assert four_hour and all(s["time"] == nine for s in four_hour)
     assert all(s["liveForming"] for s in four_hour)
+
+
+def test_confirmation_reads_the_forming_day_as_of_now_like_a_tos_repaint() -> None:
+    """COHR 2026-10-01 at 13:15: the 09:00-13:00 4H bar had closed, and TOS
+    labelled its 9x20 cross CALL4H because today's still-forming DAY bar had
+    EMA9 >= EMA20 as of now. Read at the 09:00 bar's own pre-rally price the
+    day was still bearish, which printed the compact C4H."""
+    eastern = "America/New_York"
+    stamps = pd.date_range("2026-08-17 04:00", "2026-10-01 13:15", freq="5min", tz=eastern)
+    stamps = stamps[(stamps.weekday < 5) & ((stamps.hour * 60 + stamps.minute) >= 240) & (stamps.hour < 20)]
+    today = pd.Timestamp("2026-10-01", tz=eastern)
+    rally = pd.Timestamp("2026-10-01 09:35", tz=eastern)
+    first, last_prior = stamps[0], today - pd.Timedelta(minutes=1)
+    span = (last_prior - first).total_seconds()
+
+    def close_at(stamp):
+        if stamp >= rally:
+            return 140.0
+        if stamp >= today:
+            return 100.0
+        # Steady decline 120 -> 100: daily EMA9 < EMA20 going into today.
+        return 120.0 - 20.0 * (stamp - first).total_seconds() / span
+
+    frame = pd.DataFrame({"timestamp": stamps, "close": [close_at(t) for t in stamps]})
+    payload = _tos_mtf_ema_signal_payload(frame)
+    nine = int(pd.Timestamp("2026-10-01 09:00", tz=eastern).timestamp())
+    cross = [s for s in payload["signals"] if s["family"] == "9x20" and s["timeframe"] == "4H" and s["time"] == nine]
+    assert cross and cross[-1]["direction"] == "CALL"
+    assert cross[-1]["label"] == "CALL4H"
