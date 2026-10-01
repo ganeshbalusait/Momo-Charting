@@ -59,7 +59,7 @@ from oi_auto_alerts import (
     normalize_symbol as normalize_oi_auto_alert_symbol,
     normalize_symbols as normalize_oi_auto_alert_symbols,
 )
-from scanner import MomentumScanner, _tos_mtf_ema_signal_payload, _tos_watchlist_mtf_signal_payload, scan_live_4h_volume, scan_live_price_change
+from scanner import MomentumScanner, _tos_mtf_ema_signal_payload, merge_mtf_study_tapes, _tos_watchlist_mtf_signal_payload, scan_live_4h_volume, scan_live_price_change
 from ganesh_higher_timeframe_signals import (
     SCHEMA_VERSION as GANESH_SCHEMA_VERSION,
     SIGNAL_MODE as GANESH_SIGNAL_MODE,
@@ -9588,7 +9588,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     )
             if not isinstance(study_frame, pd.DataFrame) or study_frame.empty:
                 study_frame = signal_frame if isinstance(signal_frame, pd.DataFrame) and not signal_frame.empty else frame
-            mtf_payload = _tos_mtf_ema_signal_payload(study_frame)
+            # TOS evaluates the 4x8/9x20 studies on real 15m/30m/1h/2h/4h
+            # candles. The deep 30-minute tape alone turns every 15m bucket
+            # into a 30m candle (no CALL15 can ever land on :15/:45), so stitch
+            # deep 30m -> 60-day 5m -> live 1m: fine recent candles, deep warm-up.
+            mtf_payload = _tos_mtf_ema_signal_payload(
+                merge_mtf_study_tapes(study_frame, signal_frame, frame)
+            )
             watchlist_mtf_payload = _tos_watchlist_mtf_signal_payload(study_frame)
             # Column-wise zip serialization: iterrows() on a 13k-row frame
             # burned seconds of CPU per build; zip keeps it in milliseconds.

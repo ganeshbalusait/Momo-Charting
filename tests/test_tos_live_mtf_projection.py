@@ -66,3 +66,39 @@ def test_tos_projection_detects_cross_from_equal_ema_state() -> None:
     assert put_signals
     assert all(signal["liveForming"] is True for signal in put_signals)
     assert all(signal["secondaryBucketStart"] is True for signal in put_signals)
+
+
+def _flat_frame(start: str, end: str, freq: str) -> pd.DataFrame:
+    timestamps = pd.date_range(start, end, freq=freq, tz="America/New_York")
+    return pd.DataFrame({"timestamp": timestamps, "close": [100.0] * len(timestamps)})
+
+
+def test_merged_tapes_keep_fine_recent_candles_for_15m_signals() -> None:
+    from scanner import merge_mtf_study_tapes
+
+    # Deep 30m history (EMA warm-up) followed by a recent 5m window in which
+    # price jumps at 10:45 - a 15-minute-only boundary a 30m tape cannot show.
+    deep = _flat_frame("2026-07-01 04:00", "2026-07-22 19:30", "30min")
+    recent = _flat_frame("2026-07-20 04:00", "2026-07-22 16:00", "5min")
+    recent.loc[recent["timestamp"] >= pd.Timestamp("2026-07-22 10:45", tz="America/New_York"), "close"] = 110.0
+    # The 10:30 30m candle closes at 110 as well, so the deep tape alone sees
+    # the move but can only place it on a 30-minute boundary.
+    deep.loc[deep["timestamp"] >= pd.Timestamp("2026-07-22 10:30", tz="America/New_York"), "close"] = 110.0
+    expected_time = int(pd.Timestamp("2026-07-22 10:45", tz="America/New_York").timestamp())
+
+    deep_only = _tos_mtf_ema_signal_payload(deep)
+    merged = merge_mtf_study_tapes(deep, recent)
+    payload = _tos_mtf_ema_signal_payload(merged)
+
+    assert merged["timestamp"].is_monotonic_increasing
+    assert not merged["timestamp"].duplicated().any()
+    # Rows from the coarse tape stop where the fine tape begins.
+    assert merged["timestamp"].min() == pd.Timestamp("2026-07-01 04:00", tz="America/New_York")
+    assert (merged["timestamp"].diff().dropna() <= pd.Timedelta("30min")).all()
+    assert not any(
+        signal["label"] == "CALL15" and signal["time"] == expected_time for signal in deep_only["signals"]
+    )
+    assert any(
+        signal["family"] == "4x8" and signal["label"] == "CALL15" and signal["time"] == expected_time
+        for signal in payload["signals"]
+    )

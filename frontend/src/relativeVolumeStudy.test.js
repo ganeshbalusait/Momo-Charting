@@ -37,9 +37,30 @@ describe("shared_RelVol_Candles_v324 translation", () => {
     const result = calculateRelativeVolumeCandleStudy(bars, {
       relVolLength: 5,
       relVolNumDev: 1.5,
+    });
+
+    assert.deepEqual(result.candleStyles[4], { borderColor: "#ff00ff", wickColor: "#ff00ff" });
+  });
+
+  it("drops the RelVol border with the VolAvg toggle, as the script gates both on it", () => {
+    // borderBuyReVol/borderSellReVol = `borderhighlightVolAvg and ...Cond`.
+    const bars = [bar(1, 100), bar(2, 100), bar(3, 100), bar(4, 100), bar(5, 400, { close: 2 })];
+    const result = calculateRelativeVolumeCandleStudy(bars, {
+      relVolLength: 5,
+      relVolNumDev: 1.5,
       relVolHighlightAverage: false,
     });
 
+    assert.deepEqual(result.candleStyles[4], {});
+    assert.equal(result.markers.length, 1);
+  });
+
+  it("treats a zero-range candle as bearish like the TOS 0/0 NaN", () => {
+    const bars = [bar(1, 100), bar(2, 100), bar(3, 100), bar(4, 100), bar(5, 400, { high: 5, low: 5, open: 5, close: 5 })];
+    const result = calculateRelativeVolumeCandleStudy(bars, { relVolLength: 5, relVolNumDev: 1.5 });
+
+    assert.equal(result.markers[0].position, "aboveBar");
+    assert.equal(result.markers[0].color, "#ff00ff");
     assert.deepEqual(result.candleStyles[4], { borderColor: "#ff00ff", wickColor: "#ff00ff" });
   });
 

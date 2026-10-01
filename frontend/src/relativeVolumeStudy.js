@@ -58,17 +58,25 @@ export function calculateRelativeVolumeCandleStudy(bars, options = {}) {
     const low = Number(bar?.low || 0);
     const close = Number(bar?.close || 0);
     const range = high - low;
-    const buying = range > 0 ? volume * (close - low) / range : volume / 2;
-    const selling = range > 0 ? volume * (high - close) / range : volume / 2;
-    const bullish = buying >= selling;
+    // buying/selling divide by (high - low). On a zero-range bar TOS gets
+    // NaN, so `isBullish = buying >= selling` is false (bearish/magenta) and
+    // neither VolAvg comparison is true.
+    const validRange = range > 0;
+    const buying = validRange ? volume * (close - low) / range : Number.NaN;
+    const selling = validRange ? volume * (high - close) / range : Number.NaN;
+    const bullish = validRange && buying >= selling;
     const isHighRelativeVolume = rawRelativeVolume >= threshold;
     const isAboveAverageVolume = volume >= averages[index];
     const color = bullish
       ? (options.relVolBullColor || "#00ffff")
       : (options.relVolBearColor || "#ff00ff");
 
-    const highlighted = (highlightRelative && isHighRelativeVolume)
-      || (highlightAverage && isAboveAverageVolume);
+    // The script gates the RelVol borders on BOTH toggles
+    // (`borderBuyReVol = if borderhighlightVolAvg and bullishBorderCond`).
+    const highlighted = highlightAverage && (
+      (highlightRelative && isHighRelativeVolume)
+      || (validRange && isAboveAverageVolume)
+    );
     candleStyles.push(highlighted ? { borderColor: color, wickColor: color } : {});
 
     // RelVolAbove/RelVolBelow are not controlled by either border toggle.

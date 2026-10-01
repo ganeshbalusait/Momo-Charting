@@ -614,6 +614,33 @@ def _tos_session_mtf_ema_signal_payload(frame: pd.DataFrame) -> dict:
     return {"signals": ordered, "states": states, "mode": "tos_completed_secondary_5am_et", "sourceTimeframe": "5Min", "bullishSignals": session_bullish, "sessionBullishSignals": session_bullish, "bullishSignalPass": bool(grouped["groups"]), "bullishSignalLabels": grouped["labels"], "bullishSignalGroups": grouped["groups"], "bullishTimeframes": sorted({item["timeframe"] for item in session_bullish}), "bullishFamilies": sorted({item["family"] for item in session_bullish}), "bullishBoth2H4H": grouped["bothCall2H4H"]}
 
 
+def merge_mtf_study_tapes(*frames: pd.DataFrame | None) -> pd.DataFrame:
+    """Stitch history tapes, ordered coarse/deep to fine/recent, into one tape.
+
+    TOS evaluates ``close(period = FIFTEEN_MIN)`` from real 15-minute candles.
+    A deep 30-minute tape alone cannot build those (every 15m bucket would be
+    a 30m candle), while the fine tapes alone are too short to seed a 4H EMA20.
+    Each finer tape therefore replaces every coarser row from its first
+    timestamp onward, so the recent window has true fine resolution and the
+    older window still provides EMA warm-up depth.
+    """
+    stitched = pd.DataFrame()
+    for candidate in frames:
+        if not isinstance(candidate, pd.DataFrame) or candidate.empty or "timestamp" not in candidate:
+            continue
+        current = candidate.copy()
+        current["timestamp"] = pd.to_datetime(current["timestamp"], errors="coerce", utc=True)
+        current = current.dropna(subset=["timestamp"])
+        if current.empty:
+            continue
+        if not stitched.empty:
+            stitched = stitched[stitched["timestamp"] < current["timestamp"].min()]
+        stitched = pd.concat([stitched, current], ignore_index=True) if not stitched.empty else current
+    if stitched.empty:
+        return stitched
+    return stitched.sort_values("timestamp").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
+
+
 # Public chart API: calculate each TOS secondary aggregation independently and
 # project its result to the opening primary bar of that aggregation bucket.
 def _tos_mtf_ema_signal_payload(frame: pd.DataFrame) -> dict:
