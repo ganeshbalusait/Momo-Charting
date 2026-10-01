@@ -585,8 +585,8 @@ def _tos_live_mtf_projection(
     def developing_ema(buckets, span: int, history: list[tuple[int, float]] | None = None):
         # thinkScript ExpAverage over the higher-timeframe bar closes, seeded
         # at the first bar. Completed buckets get their FINAL value on every
-        # 5m bar (stair-step); only the last, still-forming bucket carries the
-        # developing value bar by bar.
+        # 5m bar (stair-step); the still-forming bucket gets its CURRENT
+        # developing value on every 5m bar (TOS repaint).
         alpha = 2.0 / (span + 1.0)
         out = [0.0] * count
         if count == 0:
@@ -609,8 +609,15 @@ def _tos_live_mtf_projection(
         for bucket_number, (first, last) in enumerate(zip(starts, ends)):
             forming = bucket_number == len(starts) - 1
             if forming:
+                # TOS repaints the still-forming higher bar: EVERY primary bar
+                # inside it reads the bar's CURRENT close, not the value it had
+                # when that primary bar printed. COHR 2026-10-01 13:15: the
+                # 09:00 4H cross was CALL4H in TOS because today's forming DAY
+                # EMA9 >= EMA20 as of now; per-bar developing values read the
+                # pre-rally 09:00 day value and printed C4H.
+                current = closes[last - 1] if ema is None else ema + alpha * (closes[last - 1] - ema)
                 for index in range(first, last):
-                    out[index] = closes[index] if ema is None else ema + alpha * (closes[index] - ema)
+                    out[index] = current
                 continue
             final_close = bucket_final.get(buckets[first], closes[last - 1])
             ema = final_close if ema is None else ema + alpha * (final_close - ema)
