@@ -148,3 +148,12 @@ test("a later tick must not drag the pill anchor with the tape", () => {
   // The working EMAs still track the live tape even though the pin does not.
   assert.notEqual(drifted[0].fastEma, first[0].fastEma);
 });
+
+test("a live cross is drawn on its forming candle's first bar, like a TOS repaint", () => {
+  const midCandle = context().candleTimestamp + 40 * 60;
+  const live = reconcileLiveMtfSignals([], [context()], { time: midCandle, price: 110 });
+
+  assert.equal(live.length, 1);
+  assert.equal(live[0].time, context().candleTimestamp);
+  assert.equal(live[0].candleTimestamp, context().candleTimestamp);
+});

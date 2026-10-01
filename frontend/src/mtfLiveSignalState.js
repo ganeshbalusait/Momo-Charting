@@ -124,7 +124,11 @@ export function reconcileLiveMtfSignals(currentSignals, liveContexts, update) {
       color: context.color,
       timeframe: context.timeframe,
       confirmationTimeframe: context.confirmationTimeframe,
-      time: Math.floor(Number(existing?.time || eventTime) / 60) * 60,
+      // TOS repaints every bar of the forming higher candle with its current
+      // value, so the one cross it shows sits on the candle's FIRST bar - the
+      // same place the server stamps it (COHR 2026-10-01: CALL4H on 09:00,
+      // not on the 09:40 tick where the developing value flipped).
+      time: Math.floor(candleStart),
       candleTimestamp: Math.floor(candleStart),
       updatedAt: eventTime,
       direction,
