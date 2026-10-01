@@ -11588,10 +11588,28 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 picked.append(symbol)
         return picked
 
+    #: Board files in the order their rows claim the capped slots. Measured
+    #: 2026-10-01 18:50 ET: alphabetical order filled all 64 slots with
+    #: Daily_news, Mag7.bear and Watchlist.bear before Watchlist.json was
+    #: read - 2 of the 50 rows on his main BULL board were prewarmed and none
+    #: of its top 20, so nearly every scanner click paid a cold build.
+    BOARD_PREWARM_FILE_ORDER: tuple = ("Watchlist", "Mag7", "Movers")
+
+    def _board_prewarm_file_priority(self, path) -> tuple:
+        """Bull lists first (Watchlist, Mag7, Movers), other bull files, then
+        the bear mirrors in the same order; alphabetical within a tier."""
+        stem = Path(path).stem
+        bear = stem.endswith(".bear")
+        base = stem[: -len(".bear")] if bear else stem
+        order = tuple(getattr(self, "BOARD_PREWARM_FILE_ORDER", ()))
+        rank = order.index(base) if base in order else len(order)
+        return (bear, rank, stem)
+
     def _board_prewarm_symbols(self, now_epoch: float | None = None) -> list:
         """Every board's top rows, de-duped, board order preserved, capped."""
         try:
-            paths = sorted(self._board_prewarm_cache_dir().glob("*.json"))
+            paths = sorted(self._board_prewarm_cache_dir().glob("*.json"),
+                           key=self._board_prewarm_file_priority)
         except OSError:
             return []
         cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_SYMBOLS", 24)))
@@ -11777,6 +11795,22 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 plan["cold"].append(symbol)
         return plan
 
+    def _board_prewarm_cold_paused(self) -> bool:
+        """This loop's OWN cold-build switch: artifacts/prewarm_cold_paused.
+
+        Until 2026-10-01 cold builds obeyed artifacts/keeper_paused, dropped
+        2026-08-28 against the external keeper and the inline 380-symbol
+        watchlist warmer and never removed. Measured that evening: 38 of 64
+        board tickers cold, 0 builds, every one a 29s (idle) to 45-199s
+        (market hours) wait when clicked - while the warm ones opened in
+        0.7s. keeper_paused still stops those two heavy paths; this one,
+        one lane-arbitrated build at a time that yields to any chart he
+        opens, answers to its own marker."""
+        try:
+            return (ARTIFACTS_DIR / "prewarm_cold_paused").exists()
+        except OSError:
+            return False
+
     def _board_prewarm_cold_build_allowed(self, symbol: str) -> bool:
         """The yield. Reuses the EXISTING interactive signals, no new ones.
 
@@ -11797,8 +11831,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
            15 minutes however busy the app is, so a permanently open tab
            cannot starve this into the silent no-op it would otherwise be.
 
-        4. _warmer_is_paused - artifacts/keeper_paused or artifacts/
-           warmer_paused. This gate applies to the EXPENSIVE path ONLY; the
+        4. SUPERSEDED 2026-10-01: now _board_prewarm_cold_paused
+           (artifacts/prewarm_cold_paused) - see that method for the
+           measurement. History: it was _warmer_is_paused - artifacts/
+           keeper_paused or artifacts/warmer_paused. This gate applied to the EXPENSIVE path ONLY; the
            tail splices above it run regardless. Review's operational point,
            which is correct and does not cost the feature anything: a human
            dropped keeper_paused on this box on 2026-08-28 during a live
@@ -11815,7 +11851,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         if not target:
             return False
         try:
-            if self._warmer_is_paused():
+            if self._board_prewarm_cold_paused():
                 return False
             if self._chart_symbol_is_interactive(target):
                 return False

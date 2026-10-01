@@ -161,8 +161,23 @@ class SymbolSelection(_PrewarmStub):
     def test_two_boards_merge_and_dedupe(self) -> None:
         board_file(self.boards, "Mag7", ["TSLA", "NVDA"])
         board_file(self.boards, "Watchlist", ["CRCL", "TSLA"])
-        # Mag7 sorts first; TSLA is on both boards and must occupy one slot.
-        self.assertEqual(self.state._board_prewarm_symbols(), ["TSLA", "NVDA", "CRCL"])
+        # Watchlist claims slots first; TSLA is on both boards and must
+        # occupy one slot.
+        self.assertEqual(self.state._board_prewarm_symbols(), ["CRCL", "TSLA", "NVDA"])
+
+    def test_the_bull_watchlist_claims_slots_before_bear_and_news_boards(self) -> None:
+        """2026-10-01: alphabetical order spent all 64 slots on Daily_news,
+        Mag7.bear and Watchlist.bear; 2/50 of his main board were warmed."""
+        self.state.BOARD_PREWARM_MAX_SYMBOLS = 4
+        board_file(self.boards, "Daily_news", ["N1", "N2"])
+        board_file(self.boards, "Watchlist.bear", ["B1", "B2"])
+        board_file(self.boards, "Mag7.bear", ["M1"])
+        board_file(self.boards, "Watchlist", ["W1", "W2"])
+        board_file(self.boards, "Mag7", ["T1"])
+        self.assertEqual(self.state._board_prewarm_symbols(), ["W1", "W2", "T1", "N1"])
+        self.state.BOARD_PREWARM_MAX_SYMBOLS = 64
+        self.assertEqual(self.state._board_prewarm_symbols(),
+                         ["W1", "W2", "T1", "N1", "N2", "B1", "B2", "M1"])
 
     def test_a_row_that_is_not_a_ticker_never_spends_a_slot(self) -> None:
         board_file(
@@ -355,7 +370,7 @@ class TheKillSwitch(_PrewarmStub):
             self.state._momx_board_chart_prewarm_cycle(now_et=self.clock())
         self.assertEqual(self.touched, ["QMCO"])
 
-    def test_keeper_paused_DOES_stop_the_expensive_cold_build(self) -> None:
+    def test_prewarm_cold_paused_stops_the_cold_build_and_keeper_paused_does_not(self) -> None:
         """The other half, and review's operational point. A human dropped
         keeper_paused on this box during a live incident to stop background
         chart BUILDING. Shipping a second background full-build path that the
@@ -364,7 +379,11 @@ class TheKillSwitch(_PrewarmStub):
         it for the expensive path only costs the feature nothing measurable."""
         board_file(self.boards, "Watchlist", ["ZZNEW"])
         self.assertTrue(self.state._board_prewarm_cold_build_allowed("ZZNEW"))
+        # 2026-10-01: keeper_paused (left over from 08-28) no longer stops
+        # this loop's cold builds - it blocked 38/64 board charts for a month.
         (self.artifacts / "keeper_paused").write_text("", encoding="utf-8")
+        self.assertTrue(self.state._board_prewarm_cold_build_allowed("ZZNEW"))
+        (self.artifacts / "prewarm_cold_paused").write_text("", encoding="utf-8")
         self.assertFalse(self.state._board_prewarm_cold_build_allowed("ZZNEW"))
         with patch.object(api_server.time, "sleep"):
             self.state._momx_board_chart_prewarm_cycle(now_et=self.clock())
