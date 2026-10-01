@@ -27,7 +27,7 @@ def test_tos_projection_backfills_higher_timeframe_call_to_bucket_start() -> Non
         and signal["direction"] == "CALL"
     ]
 
-    assert payload["mode"] == "tos_final_secondary_5m"
+    assert payload["mode"] == "tos_repaint_secondary_5m"
     assert matching
     signal_time = pd.to_datetime(matching[-1]["time"], unit="s", utc=True).tz_convert("America/New_York")
     # The move starts on the bucket's first candle, so the developing cross
@@ -147,7 +147,7 @@ def test_historical_crosses_sit_on_bucket_starts_and_two_hour_bars_use_odd_hours
     }
     assert stamps == {"09:00"}
     assert all(s["secondaryBucketStart"] for s in two_hour)
-    assert payload["mode"] == "tos_final_secondary_5m"
+    assert payload["mode"] == "tos_repaint_secondary_5m"
     # No 2H PUT flicker anywhere on that day.
     assert not [s for s in payload["signals"] if s["timeframe"] == "2H" and s["direction"] == "PUT"
                 and pd.to_datetime(s["time"], unit="s", utc=True).tz_convert("America/New_York").strftime("%Y-%m-%d") == "2026-07-22"]
@@ -159,7 +159,7 @@ def test_overnight_bars_belong_to_the_next_session() -> None:
     timestamps = pd.date_range("2026-07-19 20:00", "2026-07-20 16:00", freq="5min", tz="America/New_York")
     frame = pd.DataFrame({"timestamp": timestamps, "close": [100.0] * len(timestamps)})
     payload = _tos_mtf_ema_signal_payload(frame)
-    assert payload["mode"] == "tos_final_secondary_5m"
+    assert payload["mode"] == "tos_repaint_secondary_5m"
     # Flat tape: no crosses, but the engine must accept the night without
     # trimming it away as a separate (sixth) session.
     assert payload["signals"] == []
@@ -357,3 +357,15 @@ def test_confirmation_reads_the_forming_day_as_of_now_like_a_tos_repaint() -> No
     cross = [s for s in payload["signals"] if s["family"] == "9x20" and s["timeframe"] == "4H" and s["time"] == nine]
     assert cross and cross[-1]["direction"] == "CALL"
     assert cross[-1]["label"] == "CALL4H"
+
+
+def test_a_payload_cached_by_the_previous_engine_is_not_current() -> None:
+    """COHR 2026-10-01 16:38: after the restart the chart still served C4H
+    from artifacts/oi_chart_cache, because the old payload carried the same
+    engine mode string. The renamed mode marks it stale, so it is recomputed."""
+    import api_server
+
+    old = {"mtfSignalMode": "tos_final_secondary_5m", "mtfSignalsByTimeframe": {}, "mtfSourceSessions": 52}
+    new = {**old, "mtfSignalMode": api_server.DashboardState.OI_CHART_MTF_ENGINE_MODE}
+    assert api_server.DashboardState._chart_payload_has_current_mtf_labels(old) is False
+    assert api_server.DashboardState._chart_payload_has_current_mtf_labels(new) is True

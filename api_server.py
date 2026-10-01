@@ -13150,7 +13150,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         mtf_payload = remembered["payload"]
                         mtf_signals_by_timeframe = remembered["by_timeframe"]
                     else:
-                        mtf_payload = {"signals": [], "states": [], "mode": "tos_final_secondary_5m", "pending": True}
+                        mtf_payload = {"signals": [], "states": [], "mode": "tos_repaint_secondary_5m", "pending": True}
                         mtf_signals_by_timeframe = None
                     watchlist_mtf_payload = _tos_watchlist_mtf_signal_payload(study_frame)
                 else:
@@ -13655,7 +13655,12 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     # The TOS MTF label engine's current contract. A cached payload built by
     # an older engine (2026-08-24 had four in one night) is complete chart
     # history but its labels are not the ones the trader compares with TOS.
-    OI_CHART_MTF_ENGINE_MODE = "tos_final_secondary_5m"
+    # Renamed from "tos_final_secondary_5m" on 2026-10-01: the forming higher
+    # bar now repaints (CALL4H on the bucket's first candle, labelled from the
+    # forming DAY's current trend), so every payload cached by the older
+    # engine - in memory or in artifacts/oi_chart_cache - is recomputed on
+    # load instead of serving its stale C4H labels until a full rebuild.
+    OI_CHART_MTF_ENGINE_MODE = "tos_repaint_secondary_5m"
 
     @staticmethod
     def _fine_tape_session_span(payload: dict | None) -> int:

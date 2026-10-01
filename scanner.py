@@ -485,7 +485,7 @@ def _tos_live_mtf_projection(
     """
     required = {"timestamp", "close"}
     if frame is None or frame.empty or not required.issubset(frame.columns):
-        return {"signals": [], "states": [], "liveSignalContexts": [], "mode": "tos_final_secondary_5m", "sourceTimeframe": "5Min", "bullishSignals": [], "sessionBullishSignals": [], "bullishSignalPass": False, "bullishSignalLabels": [], "bullishSignalGroups": [], "bullishTimeframes": [], "bullishFamilies": [], "bullishBoth2H4H": False}
+        return {"signals": [], "states": [], "liveSignalContexts": [], "mode": "tos_repaint_secondary_5m", "sourceTimeframe": "5Min", "bullishSignals": [], "sessionBullishSignals": [], "bullishSignalPass": False, "bullishSignalLabels": [], "bullishSignalGroups": [], "bullishTimeframes": [], "bullishFamilies": [], "bullishBoth2H4H": False}
 
     source = frame[["timestamp", "close"]].copy()
     source["timestamp"] = pd.to_datetime(source["timestamp"], errors="coerce")
@@ -794,7 +794,7 @@ def _tos_live_mtf_projection(
     latest_date = pd.Timestamp(source.iloc[-1]["timestamp"]).tz_convert(EASTERN_TZ).date()
     session_bullish = [item for item in ordered if item["direction"] == "CALL" and pd.to_datetime(item["time"], unit="s", utc=True).tz_convert(EASTERN_TZ).date() == latest_date]
     grouped = _group_mtf_call_signals(session_bullish)
-    return {"signals": ordered, "states": states, "liveSignalContexts": live_contexts, "mode": "tos_final_secondary_5m", "sourceTimeframe": f"{bar_minutes}Min", "barMinutes": bar_minutes, "bullishSignals": session_bullish, "sessionBullishSignals": session_bullish, "bullishSignalPass": bool(grouped["groups"]), "bullishSignalLabels": grouped["labels"], "bullishSignalGroups": grouped["groups"], "bullishTimeframes": sorted({item["timeframe"] for item in session_bullish}), "bullishFamilies": sorted({item["family"] for item in session_bullish}), "bullishBoth2H4H": grouped["bothCall2H4H"]}
+    return {"signals": ordered, "states": states, "liveSignalContexts": live_contexts, "mode": "tos_repaint_secondary_5m", "sourceTimeframe": f"{bar_minutes}Min", "barMinutes": bar_minutes, "bullishSignals": session_bullish, "sessionBullishSignals": session_bullish, "bullishSignalPass": bool(grouped["groups"]), "bullishSignalLabels": grouped["labels"], "bullishSignalGroups": grouped["groups"], "bullishTimeframes": sorted({item["timeframe"] for item in session_bullish}), "bullishFamilies": sorted({item["family"] for item in session_bullish}), "bullishBoth2H4H": grouped["bothCall2H4H"]}
 
 
 def _tos_session_mtf_ema_signal_payload(frame: pd.DataFrame) -> dict:

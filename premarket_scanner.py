@@ -491,14 +491,14 @@ def tos_bull_momo_signals(bars: object, study_bars: object = None) -> list[dict]
 
 
 # The chart's TOS MTF engine (scanner._tos_live_mtf_projection, mode
-# "tos_final_secondary_5m") is the single source of truth for the crosses:
+# "tos_repaint_secondary_5m") is the single source of truth for the crosses:
 # it runs on the 5m tape with the overnight session, TOS's final-close
 # stair-step and the midnight-Central candle clock. The scanner must never
 # disagree with the chart (2026-08-24 23:00 ET: META showed CALL4H on the
 # scanner from this module's own EMA path while the chart had no 4H label),
 # so when the payload carries that engine's signals the scan is evaluated
 # on THEM - only the TOS scan window and the 12-bar lookback are applied here.
-CHART_ENGINE_MODE = "tos_final_secondary_5m"
+CHART_ENGINE_MODE = "tos_repaint_secondary_5m"
 
 
 def tos_scan_from_chart_signals(mtf_signals: object, bars: object, study_bars: object = None) -> list[dict]:
