@@ -11414,9 +11414,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     BOARD_PREWARM_MAX_SYMBOLS: int = 64
     # NEW-MATCH FAST PATH (2026-10-01, "I cannot wait for 2 mins"). A symbol
     # that just entered the scanner matches is the one he is about to click.
-    # Checked every few seconds instead of once a minute, and started WITHOUT
-    # waiting behind another full build: the ~2s candles-first paint runs on
-    # the paint pool and the full build queues on the single-worker deep pool.
+    # Checked every few seconds instead of once a minute, and its ~2s
+    # candles-first paint starts at once on the paint pool. Its FULL build is
+    # left to the 60s cycle: the deep pool is one FIFO worker shared with his
+    # own chart opens, so queueing background full builds there would put his
+    # next click behind them (ChartBuildLane only orders running builds).
     BOARD_PREWARM_FAST_TICK_SECONDS: float = 5.0
     # How recently a row must have entered the matches to count as new.
     BOARD_PREWARM_NEW_MATCH_WINDOW_SECONDS: float = 900.0
@@ -12142,20 +12144,37 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             paths = list(self._board_prewarm_cache_dir().glob("*.json"))
         except OSError:
             return []
+        # Parse a board only when its file changed. Each one carries full rows
+        # for the whole universe (~370 symbols), and this runs every few
+        # seconds - re-parsing unchanged files would be pure GIL time.
+        parsed = self.__dict__.setdefault("_board_prewarm_new_match_files", {})
         for path in paths:
             try:
-                board = json.loads(Path(path).read_bytes().decode("utf-8"))
-                generated = datetime.fromisoformat(str(board.get("generatedAt") or "")).timestamp()
-            except Exception:
+                mtime = Path(path).stat().st_mtime
+            except OSError:
                 continue
-            # A dead momx_worker's last board must not keep "new" matches alive.
-            if (clock - generated) > max_age:
-                continue
-            for row in board.get("rows") or []:
-                if not isinstance(row, dict) or not row.get("scanPass"):
+            key = str(path)
+            entry = parsed.get(key)
+            if entry is None or entry[0] != mtime:
+                try:
+                    board = json.loads(Path(path).read_bytes().decode("utf-8"))
+                    generated = datetime.fromisoformat(str(board.get("generatedAt") or "")).timestamp()
+                    rows = [
+                        (str(row.get("symbol") or "").strip().upper(), row.get("matchedSince"))
+                        for row in (board.get("rows") or [])
+                        if isinstance(row, dict) and row.get("scanPass")
+                    ]
+                except Exception:
+                    # Torn/locked read (momx rewrites with os.replace): retry
+                    # next tick rather than remember a failure for this mtime.
                     continue
-                symbol = str(row.get("symbol") or "").strip().upper()
-                since = row.get("matchedSince")
+                entry = (mtime, generated, rows)
+                parsed[key] = entry
+            _, generated, rows = entry
+            # A dead momx_worker's last board must not keep "new" matches alive.
+            if not generated or (clock - generated) > max_age:
+                continue
+            for symbol, since in rows:
                 if not (symbol and isinstance(since, str)
                         and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", symbol)):
                     continue
@@ -12167,18 +12186,20 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     continue
                 if since_epoch > found.get(symbol, (None, -1.0))[1]:
                     found[symbol] = (since, since_epoch)
+        for stale in [key for key in parsed if key not in {str(p) for p in paths}]:
+            parsed.pop(stale, None)
         ordered = sorted(found.items(), key=lambda item: -item[1][1])
         return [(symbol, value[0]) for symbol, value in ordered]
 
     def _board_prewarm_new_match_pass(self, now_et=None) -> int:
         """Start each NEW scanner match's chart now. Returns how many started.
 
-        Cold: _start_oi_finder_chart_refresh(full_history=True) - its ~2s
-        candles-first paint makes the click instant, then the full build
-        queues on the single-worker deep pool behind any build already
-        running. Unlike the 60s cycle this does NOT wait for that build to
-        finish first: that wait is what left a new match (LASR, 2026-10-01)
-        without even its candles for minutes. Behind: the ~4s tail splice.
+        Cold: the ~2s candles-first paint, on the paint pool, at once - a
+        click then opens on today's candles instead of a blank "loading".
+        That paint is all this does for a cold symbol: its full build stays
+        with the 60s cycle, which queues one only when no full build is in
+        flight (the deep pool is one FIFO worker shared with his own opens),
+        and reaches a new Watchlist match first. Behind: the ~4s tail splice.
         Each (symbol, matchedSince) is started once.
         """
         if now_et is None:
@@ -12212,8 +12233,14 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             self._board_prewarm_trim(handled, str)
             try:
                 if verdict == "cold":
-                    self._start_oi_finder_chart_refresh(symbol, full_history=True)
-                    self._board_prewarm_note_cold_attempt(symbol)
+                    # Paint only: release=False leaves every in-flight guard
+                    # alone, and a partial payload is never saved to disk, so
+                    # it can neither clear another build's guard nor clobber a
+                    # deep archive. It stays "cold" for the 60s cycle.
+                    self.oi_finder_chart_paint_pool.submit(
+                        self._refresh_oi_finder_chart_payload,
+                        symbol, False, False, True,
+                    )
                 elif verdict == "behind":
                     self._board_prewarm_note_touch(symbol)
                     self._touch_chart_tail(symbol)
@@ -12226,7 +12253,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             status["lastNewMatch"] = {
                 "symbol": symbol,
                 "matchedSince": since,
-                "action": "paint+build" if verdict == "cold" else "tail",
+                "action": "paint" if verdict == "cold" else "tail",
                 "at": datetime.now(timezone.utc).isoformat(),
             }
             print(f"[board-prewarm] new match {symbol} ({verdict}) started", flush=True)

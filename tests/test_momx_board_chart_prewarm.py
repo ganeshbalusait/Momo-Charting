@@ -741,9 +741,21 @@ def weekday_at(hour: int, minute: int) -> datetime:
 
 class NewMatchFastPath(_PrewarmStub):
     """2026-10-01: LASR entered the matches while a cold build was running, so
-    the 60s cycle neither noticed it for up to a minute nor started it until
-    that 45-199s build ended. "I cannot wait for 2 mins." A new match now gets
-    its ~2s candles-first paint (and its queued full build) within one tick."""
+    the 60s cycle neither noticed it for up to a minute nor started anything
+    until that 45-199s build ended. "I cannot wait for 2 mins." A new match
+    now gets its ~2s candles-first paint within one tick - and ONLY the paint:
+    the full build stays with the cycle, so it never queues ahead of his own
+    chart opens on the single-worker deep pool."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.painted: list = []
+
+        class Pool:
+            def submit(pool_self, fn, *args):
+                self.painted.append(args)
+
+        self.state.oi_finder_chart_paint_pool = Pool()
 
     def _match_row(self, symbol, since):
         return {"symbol": symbol, "last": 1.0, "pctChange": 0.0,
@@ -754,30 +766,32 @@ class NewMatchFastPath(_PrewarmStub):
         board_file(self.boards, "Watchlist", list(symbols),
                    rows=[self._match_row(symbol, since) for symbol in symbols])
 
-    def test_a_new_cold_match_starts_at_once_even_behind_a_running_build(self) -> None:
+    def test_a_new_cold_match_gets_its_paint_at_once_even_behind_a_running_build(self) -> None:
         self._new_match_board("LASR")
         self.state._chart_refresh_in_flight = lambda *a, **k: True  # another full build running
         self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 1)
-        self.assertEqual(self.built, [("LASR", True)])
-        self.assertEqual(self.state._board_prewarm_status["lastNewMatch"]["symbol"], "LASR")
+        # Paint only: (symbol, full_history=False, release=False, skip_studies=True).
+        self.assertEqual(self.painted, [("LASR", False, False, True)])
+        self.assertEqual(self.built, [])
+        self.assertEqual(self.state._board_prewarm_status["lastNewMatch"]["action"], "paint")
 
     def test_each_match_is_started_once(self) -> None:
         self._new_match_board("LASR")
         self.state._board_prewarm_new_match_pass(now_et=self.clock())
         self.state._board_prewarm_new_match_pass(now_et=self.clock())
-        self.assertEqual(self.built, [("LASR", True)])
+        self.assertEqual(len(self.painted), 1)
 
     def test_a_behind_match_gets_the_fast_tail_splice(self) -> None:
         self._new_match_board("LASR")
         self.cache_file("LASR", mtime=self.fresh(ago=3 * 86400))
         self.state._board_prewarm_new_match_pass(now_et=self.clock())
         self.assertEqual(self.touched, ["LASR"])
-        self.assertEqual(self.built, [])
+        self.assertEqual(self.painted, [])
 
     def test_an_old_match_is_left_to_the_regular_cycle(self) -> None:
         self._new_match_board("OLDM", ago=2 * 3600)
         self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
-        self.assertEqual(self.built, [])
+        self.assertEqual(self.painted, [])
 
     def test_a_burst_is_capped_per_tick(self) -> None:
         self._new_match_board("AAA", "BBB", "CCC", "DDD", "EEE")
@@ -793,13 +807,27 @@ class NewMatchFastPath(_PrewarmStub):
         self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
         (self.artifacts / "prewarm_paused").unlink()
         self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock(hour=21)), 0)
-        self.assertEqual(self.built, [])
+        self.assertEqual(self.painted, [])
 
     def test_a_chart_he_already_has_open_is_left_alone(self) -> None:
         self._new_match_board("LASR")
         self.state._chart_symbol_is_interactive = lambda symbol, now=None: symbol == "LASR"
         self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
-        self.assertEqual(self.built, [])
+        self.assertEqual(self.painted, [])
+
+    def test_an_unchanged_board_is_not_reparsed_and_a_torn_read_is_retried(self) -> None:
+        self._new_match_board("LASR")
+        reads = []
+        real = api_server.json.loads
+        with patch.object(api_server.json, "loads", lambda text: reads.append(1) or real(text)):
+            self.state._board_prewarm_new_matches(self.clock().timestamp())
+            self.state._board_prewarm_new_matches(self.clock().timestamp())
+        self.assertEqual(len(reads), 1)
+        # A failed read is not remembered: the next tick tries again.
+        self.state.__dict__.pop("_board_prewarm_new_match_files", None)
+        with patch.object(api_server.json, "loads", side_effect=ValueError("torn")):
+            self.assertEqual(self.state._board_prewarm_new_matches(self.clock().timestamp()), [])
+        self.assertEqual([s for s, _ in self.state._board_prewarm_new_matches(self.clock().timestamp())], ["LASR"])
 
     def test_the_loop_checks_new_matches_every_tick_and_cycles_once_a_minute(self) -> None:
         calls = {"cycle": 0, "fast": 0, "sleeps": []}
