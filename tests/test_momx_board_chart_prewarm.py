@@ -502,6 +502,28 @@ class TheClockGate(_PrewarmStub):
         self.assertEqual((self.touched, self.built), ([], []))
         self.assertEqual(delay, 120.0)
 
+    def test_the_evening_after_the_close_runs(self) -> None:
+        """Until midnight ET: at 19:57 on 2026-10-01 the trader could not try a
+        fix until 03:30 the next day. A new match at 21:00 still gets its paint."""
+        since = datetime.fromtimestamp(weekday_at(20, 59).timestamp(), timezone.utc)
+        board_file(self.boards, "Watchlist", ["LASR"], rows=[
+            {"symbol": "LASR", "last": 1.0, "pctChange": 0.0, "scanPass": True, "matchedSince": since.isoformat()},
+        ])
+        painted = []
+
+        class Pool:
+            def submit(pool_self, fn, *args):
+                painted.append(args[0])
+
+                class Done:
+                    def done(self):
+                        return True
+                return Done()
+
+        self.state.oi_finder_chart_paint_pool = Pool()
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=weekday_at(21, 0)), 1)
+        self.assertEqual(painted, ["LASR"])
+
     def test_the_weekend_does_nothing(self) -> None:
         board_file(self.boards, "Watchlist", ["QMCO"])
         eastern = ZoneInfo(api_server.EASTERN_TZ)
@@ -828,7 +850,7 @@ class NewMatchFastPath(_PrewarmStub):
         (self.artifacts / "prewarm_paused").write_text("", encoding="utf-8")
         self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
         (self.artifacts / "prewarm_paused").unlink()
-        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock(hour=21)), 0)
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock(hour=2)), 0)
         self.assertEqual(self.painted, [])
 
     def test_a_chart_he_already_has_open_is_left_alone(self) -> None:

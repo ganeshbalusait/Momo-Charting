@@ -11436,9 +11436,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     # ready when he opens it; on a Monday the board's top rows end on Friday.
     # Thirty minutes of cycles clears them before the premarket session.
     BOARD_PREWARM_START_MINUTE: int = 3 * 60 + 30
-    # 20:00 ET matches _hot_chart_refresher_loop, so the two loops agree on
-    # when the tape stops moving.
-    BOARD_PREWARM_END_MINUTE: int = 20 * 60
+    # Midnight ET (was 20:00, matching _hot_chart_refresher_loop). The app
+    # carries the 20:00-04:00 overnight session (Alpaca), the scanner keeps
+    # running after the close, and he works the board in the evening: at
+    # 19:57 ET on 2026-10-01 a fix could not even be tried until 03:30 the
+    # next day. Steady state is still free (stat() calls, no builds); only
+    # 00:00-03:30 stays idle.
+    BOARD_PREWARM_END_MINUTE: int = 24 * 60
     # A board file older than this means momx_worker is dead or wedged. We
     # then have no idea what is on his screen, so the candidate list must go
     # EMPTY rather than stay frozen on rows he stopped looking at.
