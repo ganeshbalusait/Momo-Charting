@@ -1,0 +1,1155 @@
+{
+ "INTC_0933": {
+  "at": "2026-09-21T09:33:02.522896-04:00",
+  "row": {
+   "badge": {
+    "on": true,
+    "reasons": [
+     "weeklies",
+     "rvol"
+    ],
+    "tooltip": "Weekly options - unusual volume (RVOL 7.0)"
+   },
+   "color": {
+    "bg": "white",
+    "fg": null,
+    "value": null
+   },
+   "highLow": {
+    "bg": "green",
+    "fg": "black",
+    "value": 0.79
+   },
+   "hourHighLow": {
+    "high": 119.29,
+    "low": 114.53
+   },
+   "industry": "Semis",
+   "last": 118.92,
+   "matchedSince": "2026-09-21T13:25:55.164565+00:00",
+   "news": {
+    "at": "2026-09-21T12:06:17+00:00",
+    "headline": "What's Going On With Intel Stock Monday?",
+    "namedCount": 5,
+    "scope": "market-wide",
+    "source": "benzinga",
+    "url": "https://www.benzinga.com/markets/tech/26/09/61891827/whats-going-on-with-intel-stock-monday-7"
+   },
+   "pctChange": 9.152854511970546,
+   "rvol": {
+    "15m": {
+     "barAt": 1789997400,
+     "bg": "cyan",
+     "fg": "black",
+     "pace": 7.0,
+     "value": 6.8
+    },
+    "1h": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": 1.1,
+     "value": 0.2
+    },
+    "2h": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": 1.6,
+     "value": -0.1
+    },
+    "30m": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": 3.1,
+     "value": 0.3
+    },
+    "4h": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": -0.3
+    },
+    "5m": {
+     "barAt": 1789997400,
+     "bg": "cyan",
+     "fg": "black",
+     "pace": null,
+     "value": 7.0,
+     "xAvg": 33.0
+    },
+    "D": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": -2.9
+    }
+   },
+   "scanPass": true,
+   "scanReasons": [
+    "ema9x20:3D",
+    "ema4x8:4D",
+    "sqzfired:Wk",
+    "rvol:5m",
+    "rvol:15m"
+   ],
+   "skittles": {
+    "2D": {
+     "barAt": 1789704000,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 77
+    },
+    "2h": {
+     "barAt": 1789995600,
+     "bg": "black",
+     "fg": "dark_green",
+     "value": 92
+    },
+    "3D": {
+     "barAt": 1789704000,
+     "bg": "cyan",
+     "fg": "black",
+     "value": 71
+    },
+    "4D": {
+     "barAt": 1789531200,
+     "bg": "lime",
+     "fg": "black",
+     "value": 61
+    },
+    "4h": {
+     "barAt": 1789995600,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 87
+    },
+    "D": {
+     "barAt": 1789963200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 77
+    },
+    "M": {
+     "barAt": 1788235200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 72
+    },
+    "Wk": {
+     "barAt": 1789963200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 66
+    }
+   },
+   "sqz": {
+    "2h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "4h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "D": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "Wk": {
+     "bg": "cyan",
+     "fg": "black",
+     "value": "1"
+    }
+   },
+   "symbol": "INTC"
+  }
+ },
+ "META_0933": {
+  "at": "2026-09-21T09:33:02.522896-04:00",
+  "row": {
+   "badge": {
+    "on": true,
+    "reasons": [
+     "weeklies",
+     "rvol"
+    ],
+    "tooltip": "Weekly options - unusual volume (RVOL 7.0)"
+   },
+   "color": {
+    "bg": "white",
+    "fg": null,
+    "value": null
+   },
+   "highLow": {
+    "bg": "green",
+    "fg": "black",
+    "value": 1.0
+   },
+   "hourHighLow": {
+    "high": 690.0,
+    "low": 678.61
+   },
+   "industry": "Interactive Media",
+   "last": 689.85,
+   "matchedSince": "2026-09-21T13:33:02.483451+00:00",
+   "news": {
+    "at": "2026-09-20T20:41:10+00:00",
+    "headline": "Shorts Prevail as Oklo and NuScale Stocks Dive as SMR Risks Rise",
+    "namedCount": 3,
+    "scope": "specific",
+    "source": "benzinga",
+    "url": "https://www.benzinga.com/markets/equities/26/09/61885903/shorts-prevail-as-oklo-and-nuscale-stocks-dive-as-smr-risks-rise"
+   },
+   "pctChange": 3.6725497559143894,
+   "rvol": {
+    "15m": {
+     "barAt": 1789997400,
+     "bg": "cyan",
+     "fg": "black",
+     "pace": 7.0,
+     "value": 6.9,
+     "xAvg": 28.4
+    },
+    "1h": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": 2.0,
+     "value": 0.3
+    },
+    "2h": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": 2.5,
+     "value": -0.1
+    },
+    "30m": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": 3.3,
+     "value": 0.3
+    },
+    "4h": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": -0.4
+    },
+    "5m": {
+     "barAt": 1789997400,
+     "bg": "cyan",
+     "fg": "black",
+     "pace": null,
+     "value": 7.0,
+     "xAvg": 32.6
+    },
+    "D": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": -2.2
+    }
+   },
+   "scanPass": true,
+   "scanReasons": [
+    "macd:M",
+    "ema9x20:M",
+    "ema4x8:M",
+    "sqzfired:4h",
+    "sqzfired:Wk",
+    "rvol:5m",
+    "rvol:15m"
+   ],
+   "skittles": {
+    "2D": {
+     "barAt": 1789704000,
+     "bg": "black",
+     "fg": "dark_green",
+     "value": 94
+    },
+    "2h": {
+     "barAt": 1789995600,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 85
+    },
+    "3D": {
+     "barAt": 1789704000,
+     "bg": "black",
+     "fg": "dark_green",
+     "value": 91
+    },
+    "4D": {
+     "barAt": 1789531200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 73
+    },
+    "4h": {
+     "barAt": 1789995600,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 60
+    },
+    "D": {
+     "barAt": 1789963200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 85
+    },
+    "M": {
+     "barAt": 1788235200,
+     "bg": "cyan",
+     "fg": "black",
+     "value": 39
+    },
+    "Wk": {
+     "barAt": 1789963200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 70
+    }
+   },
+   "sqz": {
+    "2h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "4h": {
+     "bg": "cyan",
+     "fg": "black",
+     "value": "1"
+    },
+    "D": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "Wk": {
+     "bg": "cyan",
+     "fg": "black",
+     "value": "1"
+    }
+   },
+   "symbol": "META"
+  }
+ },
+ "QCOM_0942": {
+  "at": "2026-09-21T09:42:17.283492-04:00",
+  "row": {
+   "badge": {
+    "on": true,
+    "reasons": [
+     "weeklies",
+     "rvol"
+    ],
+    "tooltip": "Weekly options - unusual volume (RVOL 6.9)"
+   },
+   "color": {
+    "bg": "white",
+    "fg": null,
+    "value": null
+   },
+   "highLow": {
+    "bg": "green",
+    "fg": "black",
+    "value": 0.54
+   },
+   "hourHighLow": {
+    "high": 181.99,
+    "low": 179.44
+   },
+   "industry": "Semis",
+   "last": 181.1,
+   "matchedSince": "2026-09-21T13:42:17.188545+00:00",
+   "news": null,
+   "pctChange": 1.9299459824442964,
+   "rvol": {
+    "15m": {
+     "barAt": 1789997400,
+     "bg": "cyan",
+     "fg": "black",
+     "pace": 6.9,
+     "value": 6.9,
+     "xAvg": 27.1
+    },
+    "1h": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.1,
+     "value": -0.1
+    },
+    "2h": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": 0.0,
+     "value": -0.2
+    },
+    "30m": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": 0.0,
+     "value": -0.1
+    },
+    "4h": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": 0.1,
+     "value": -0.3
+    },
+    "5m": {
+     "barAt": 1789998000,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": 0.4
+    },
+    "D": {
+     "barAt": 1789997400,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": -1.5
+    }
+   },
+   "scanPass": true,
+   "scanReasons": [
+    "ema4x8:2h",
+    "macd:4h",
+    "ema9x20:3D",
+    "rvol:15m"
+   ],
+   "skittles": {
+    "2D": {
+     "barAt": 1789704000,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 81
+    },
+    "2h": {
+     "barAt": 1789995600,
+     "bg": "black",
+     "fg": "magenta",
+     "value": 72
+    },
+    "3D": {
+     "barAt": 1789704000,
+     "bg": "cyan",
+     "fg": "black",
+     "value": 79
+    },
+    "4D": {
+     "barAt": 1789531200,
+     "bg": "black",
+     "fg": "magenta",
+     "value": 70
+    },
+    "4h": {
+     "barAt": 1789995600,
+     "bg": "dark_green",
+     "fg": "downtick",
+     "value": 23
+    },
+    "D": {
+     "barAt": 1789963200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 65
+    },
+    "M": {
+     "barAt": 1788235200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 42
+    },
+    "Wk": {
+     "barAt": 1789963200,
+     "bg": "black",
+     "fg": "magenta",
+     "value": 63
+    }
+   },
+   "sqz": {
+    "2h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "4h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "D": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "Wk": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    }
+   },
+   "symbol": "QCOM"
+  }
+ },
+ "QCOM_1041": {
+  "at": "2026-09-21T10:41:31.011709-04:00",
+  "row": {
+   "badge": {
+    "on": true,
+    "reasons": [
+     "weeklies"
+    ],
+    "tooltip": "Weekly options"
+   },
+   "color": {
+    "bg": "white",
+    "fg": null,
+    "value": null
+   },
+   "highLow": {
+    "bg": "green",
+    "fg": "black",
+    "value": 0.98
+   },
+   "hourHighLow": {
+    "high": 187.475,
+    "low": 180.46
+   },
+   "industry": "Semis",
+   "last": 187.375,
+   "matchedSince": "2026-09-21T13:42:17.188545+00:00",
+   "news": {
+    "at": "2026-09-21T13:00:05+00:00",
+    "headline": "QUALCOMM Incorporated (QCOM) is Attracting Investor Attention: Here is What You Should Know",
+    "namedCount": 0,
+    "scope": "specific",
+    "source": "Yahoo Finance",
+    "url": "https://finance.yahoo.com/markets/stocks/articles/qualcomm-incorporated-qcom-attracting-investor-130005250.html?.tsrc=rss"
+   },
+   "pctChange": 5.4355165428764325,
+   "rvol": {
+    "15m": {
+     "barAt": 1790001300,
+     "bg": "black",
+     "fg": "green",
+     "pace": 1.8,
+     "value": 1.1
+    },
+    "1h": {
+     "barAt": 1789999800,
+     "bg": "black",
+     "fg": "black",
+     "pace": 0.2,
+     "value": 0.0
+    },
+    "2h": {
+     "barAt": 1789998900,
+     "bg": "black",
+     "fg": "black",
+     "pace": 0.3,
+     "value": 0.2
+    },
+    "30m": {
+     "barAt": 1790001300,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.1,
+     "value": -0.2
+    },
+    "4h": {
+     "barAt": 1789998900,
+     "bg": "black",
+     "fg": "black",
+     "pace": 0.7,
+     "value": 0.1
+    },
+    "5m": {
+     "barAt": 1790001300,
+     "bg": "black",
+     "fg": "dark_green",
+     "pace": null,
+     "value": 0.8
+    },
+    "D": {
+     "barAt": 1789998600,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": -1.2
+    }
+   },
+   "scanPass": true,
+   "scanReasons": [
+    "ema4x8:2h",
+    "macd:4h",
+    "ema4x8:4h",
+    "ema9x20:3D",
+    "ema9x20:4D",
+    "ema9x20:Wk",
+    "macd:M"
+   ],
+   "skittles": {
+    "2D": {
+     "barAt": 1789704000,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 85
+    },
+    "2h": {
+     "barAt": 1789995600,
+     "bg": "black",
+     "fg": "magenta",
+     "value": 76
+    },
+    "3D": {
+     "barAt": 1789704000,
+     "bg": "cyan",
+     "fg": "black",
+     "value": 83
+    },
+    "4D": {
+     "barAt": 1789531200,
+     "bg": "cyan",
+     "fg": "black",
+     "value": 74
+    },
+    "4h": {
+     "barAt": 1789995600,
+     "bg": "dark_green",
+     "fg": "downtick",
+     "value": 31
+    },
+    "D": {
+     "barAt": 1789963200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 71
+    },
+    "M": {
+     "barAt": 1788235200,
+     "bg": "green",
+     "fg": "black",
+     "value": 43
+    },
+    "Wk": {
+     "barAt": 1789963200,
+     "bg": "cyan",
+     "fg": "black",
+     "value": 66
+    }
+   },
+   "sqz": {
+    "2h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "4h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "D": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "Wk": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    }
+   },
+   "symbol": "QCOM"
+  }
+ },
+ "RIOT_0902": {
+  "at": "2026-09-21T09:02:01.304639-04:00",
+  "row": {
+   "badge": {
+    "on": true,
+    "reasons": [
+     "weeklies",
+     "rvol"
+    ],
+    "tooltip": "Weekly options - unusual volume (RVOL 3.3)"
+   },
+   "color": {
+    "bg": "white",
+    "fg": null,
+    "value": null
+   },
+   "highLow": {
+    "bg": "green",
+    "fg": "black",
+    "value": 0.86
+   },
+   "hourHighLow": {
+    "high": 25.0,
+    "low": 24.75
+   },
+   "industry": "Crypto",
+   "last": 24.9831,
+   "matchedSince": "2026-09-21T12:51:29.207257+00:00",
+   "news": {
+    "at": "2026-09-21T12:44:44+00:00",
+    "headline": "Strategy Jumps 6% as Bitcoin Hits Highest Level Since January; MARA Climbs 5%, Riot Rises 4%",
+    "namedCount": 0,
+    "scope": "specific",
+    "source": "Yahoo Finance",
+    "url": "https://247wallst.com/investing/2026/09/21/strategy-jumps-6-as-bitcoin-hits-highest-level-since-january-mara-climbs-5-riot-rises-4/?.tsrc=rss"
+   },
+   "pctChange": 5.192000000000001,
+   "rvol": {
+    "15m": {
+     "barAt": 1789994400,
+     "bg": "green",
+     "fg": "black",
+     "pace": 2.5,
+     "value": 2.5
+    },
+    "1h": {
+     "barAt": 1789993500,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.5,
+     "value": -0.5
+    },
+    "2h": {
+     "barAt": 1789991700,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.5,
+     "value": -0.5
+    },
+    "30m": {
+     "barAt": 1789994400,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.4,
+     "value": -0.4
+    },
+    "4h": {
+     "barAt": 1789989900,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.5,
+     "value": -0.6
+    },
+    "5m": {
+     "barAt": 1789994400,
+     "bg": "cyan",
+     "fg": "black",
+     "pace": null,
+     "value": 3.3
+    },
+    "D": {
+     "barAt": 1789757400,
+     "bg": "black",
+     "fg": "dark_green",
+     "pace": null,
+     "value": 0.6
+    }
+   },
+   "scanPass": true,
+   "scanReasons": [
+    "ema9x20:2D",
+    "ema9x20:3D",
+    "ema4x8:4D",
+    "macd:Wk",
+    "ema4x8:Wk",
+    "macd:M"
+   ],
+   "skittles": {
+    "2D": {
+     "barAt": 1789704000,
+     "bg": "cyan",
+     "fg": "black",
+     "value": 76
+    },
+    "2h": {
+     "barAt": 1789988400,
+     "bg": "black",
+     "fg": "dark_green",
+     "value": 94
+    },
+    "3D": {
+     "barAt": 1789704000,
+     "bg": "cyan",
+     "fg": "black",
+     "value": 70
+    },
+    "4D": {
+     "barAt": 1789531200,
+     "bg": "black",
+     "fg": "magenta",
+     "value": 54
+    },
+    "4h": {
+     "barAt": 1789981200,
+     "bg": "black",
+     "fg": "dark_green",
+     "value": 95
+    },
+    "D": {
+     "barAt": 1789704000,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 62
+    },
+    "M": {
+     "barAt": 1788235200,
+     "bg": "green",
+     "fg": "black",
+     "value": 58
+    },
+    "Wk": {
+     "barAt": 1789358400,
+     "bg": "green",
+     "fg": "black",
+     "value": 49
+    }
+   },
+   "sqz": {
+    "2h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "4h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "D": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "Wk": {
+     "bg": "orange",
+     "fg": "black",
+     "value": "3"
+    }
+   },
+   "symbol": "RIOT"
+  }
+ },
+ "XOVR_0001": {
+  "at": "2026-09-22T00:01:26.399216-04:00",
+  "row": {
+   "badge": {
+    "on": false,
+    "reasons": [],
+    "tooltip": ""
+   },
+   "color": {
+    "bg": "white",
+    "fg": null,
+    "value": null
+   },
+   "highLow": {
+    "bg": "green",
+    "fg": "black",
+    "value": 0.73
+   },
+   "hourHighLow": {
+    "high": 21.49,
+    "low": 21.32
+   },
+   "industry": "ETF",
+   "last": 21.44,
+   "matchedSince": "2026-09-21T23:26:37.729872+00:00",
+   "news": null,
+   "pctChange": 1.9971469329529157,
+   "quoteTrend": [
+    {
+     "bg": "black",
+     "fg": "gray",
+     "price": 21.465,
+     "value": 0
+    },
+    {
+     "bg": "dark_green",
+     "fg": "green",
+     "price": 21.5001,
+     "value": 1
+    },
+    {
+     "bg": "dark_red",
+     "fg": "red",
+     "price": 21.485,
+     "value": -1
+    },
+    {
+     "bg": "dark_red",
+     "fg": "red",
+     "price": 21.475,
+     "value": -1
+    },
+    {
+     "bg": "dark_green",
+     "fg": "green",
+     "price": 21.4801,
+     "value": 1
+    },
+    {
+     "bg": "dark_red",
+     "fg": "red",
+     "price": 21.44,
+     "value": -1
+    },
+    {
+     "bg": "dark_green",
+     "fg": "green",
+     "price": 21.45,
+     "value": 1
+    },
+    {
+     "bg": "black",
+     "fg": "gray",
+     "price": 21.45,
+     "value": 0
+    },
+    {
+     "bg": "dark_red",
+     "fg": "red",
+     "price": 21.3393,
+     "value": -1
+    },
+    {
+     "bg": "dark_green",
+     "fg": "green",
+     "price": 21.34,
+     "value": 1
+    },
+    {
+     "bg": "dark_red",
+     "fg": "red",
+     "price": 21.32,
+     "value": -1
+    },
+    {
+     "bg": "black",
+     "fg": "gray",
+     "price": 21.32,
+     "value": 0
+    },
+    {
+     "bg": "dark_green",
+     "fg": "green",
+     "price": 21.4299,
+     "value": 1
+    },
+    {
+     "bg": "dark_red",
+     "fg": "red",
+     "price": 21.4,
+     "value": -1
+    },
+    {
+     "bg": "dark_red",
+     "fg": "red",
+     "price": 21.39,
+     "value": -1
+    },
+    {
+     "bg": "dark_green",
+     "fg": "green",
+     "price": 21.44,
+     "value": 1
+    }
+   ],
+   "rvol": {
+    "15m": {
+     "barAt": 1790034000,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.9,
+     "value": -1.0
+    },
+    "1h": {
+     "barAt": 1790033100,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.6,
+     "value": -0.7
+    },
+    "2h": {
+     "barAt": 1790033100,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.6,
+     "value": -0.8
+    },
+    "30m": {
+     "barAt": 1790034000,
+     "bg": "black",
+     "fg": "black",
+     "pace": -0.7,
+     "value": -0.7
+    },
+    "4h": {
+     "barAt": 1790033100,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": -0.7
+    },
+    "5m": {
+     "barAt": 1790034000,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": -0.9
+    },
+    "D": {
+     "barAt": 1790010000,
+     "bg": "black",
+     "fg": "black",
+     "pace": null,
+     "value": -0.8
+    }
+   },
+   "scanPass": true,
+   "scanReasons": [
+    "macd:2D",
+    "sqzfired:D"
+   ],
+   "skittles": {
+    "2D": {
+     "barAt": 1789704000,
+     "bg": "green",
+     "fg": "black",
+     "value": 69
+    },
+    "2h": {
+     "barAt": 1790031600,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 81
+    },
+    "3D": {
+     "barAt": 1789704000,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 80
+    },
+    "4D": {
+     "barAt": 1789531200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 81
+    },
+    "4h": {
+     "barAt": 1790024400,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 85
+    },
+    "D": {
+     "barAt": 1789963200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 72
+    },
+    "M": {
+     "barAt": 1788235200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 69
+    },
+    "Wk": {
+     "barAt": 1789963200,
+     "bg": "black",
+     "fg": "cyan",
+     "value": 85
+    }
+   },
+   "sparkline": [
+    21.465,
+    21.465,
+    21.475,
+    21.5,
+    21.49,
+    21.495,
+    21.48,
+    21.4841,
+    21.485,
+    21.475,
+    21.475,
+    21.475,
+    21.48,
+    21.465,
+    21.475,
+    21.475,
+    21.485,
+    21.505,
+    21.48,
+    21.475,
+    21.47,
+    21.465,
+    21.47,
+    21.465,
+    21.465,
+    21.5001,
+    21.485,
+    21.475,
+    21.4801,
+    21.44,
+    21.45,
+    21.45,
+    21.3393,
+    21.34,
+    21.32,
+    21.32,
+    21.4299,
+    21.4,
+    21.39,
+    21.44
+   ],
+   "sqz": {
+    "2h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "4h": {
+     "bg": "black",
+     "fg": "black",
+     "value": "-"
+    },
+    "D": {
+     "bg": "cyan",
+     "fg": "black",
+     "value": "1"
+    },
+    "Wk": {
+     "bg": "orange",
+     "fg": "black",
+     "value": "5"
+    }
+   },
+   "symbol": "XOVR"
+  }
+ }
+}
