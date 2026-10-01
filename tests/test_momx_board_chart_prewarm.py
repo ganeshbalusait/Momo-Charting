@@ -509,6 +509,14 @@ class TheClockGate(_PrewarmStub):
         self.assertEqual((self.touched, self.built), ([], []))
         self.assertEqual(delay, 120.0)
 
+    def test_the_evening_after_the_close_runs(self) -> None:
+        """Until midnight ET: at 19:57 on 2026-10-01 the trader could not try a
+        fix until 03:30 the next day. A 21:00 cycle is open, not 'closed'."""
+        board_file(self.boards, "Watchlist", ["QMCO"])
+        with patch.object(api_server.time, "sleep"):
+            self.state._momx_board_chart_prewarm_cycle(now_et=weekday_at(21, 0))
+        self.assertNotEqual(self.state._board_prewarm_status.get("state"), "closed")
+
     def test_the_weekend_does_nothing(self) -> None:
         board_file(self.boards, "Watchlist", ["QMCO"])
         eastern = ZoneInfo(api_server.EASTERN_TZ)
