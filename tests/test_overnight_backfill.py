@@ -254,16 +254,17 @@ def test_fetch_defaults_to_boats_so_the_overnight_path_is_unchanged():
     assert calls[0]["feed"] == "boats"
 
 
-def test_a_dead_tradier_token_falls_through_to_sip_not_to_empty_space():
-    # Source-level pin on _backfill_today_premarket: the Tradier except-path
-    # must try SIP before surrendering, and each outcome must say which feed
-    # the trader is actually looking at.
+def test_premarket_fills_from_alpaca_sip_without_tradier():
+    # Source-level pin on _backfill_today_premarket: the app runs on Schwab
+    # and Alpaca only, so 04:00-07:00 comes straight from Alpaca SIP (no
+    # Tradier request first), and each outcome says which feed is live.
     import inspect
     import api_server
 
     source = inspect.getsource(api_server.DashboardState._backfill_today_premarket)
-    assert 'feed="sip"' in source, "the Tradier failure path no longer tries SIP"
-    assert "running on the Alpaca SIP" in source, "a silent fallback hides which feed is live"
-    assert "the Alpaca SIP backup returned nothing" in source, (
-        "a double failure must say both sources failed"
+    assert 'feed="sip"' in source, "the premarket window no longer reads Alpaca SIP"
+    assert "_house_tradier_client" not in source, "Tradier is not used any more"
+    assert "comes from Alpaca SIP" in source, "a silent fill hides which feed is live"
+    assert "Alpaca SIP returned nothing" in source, (
+        "an empty fill must say the only premarket source failed"
     )
