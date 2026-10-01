@@ -355,21 +355,24 @@ class TheKillSwitch(_PrewarmStub):
             self.state._momx_board_chart_prewarm_cycle(now_et=self.clock())
         self.assertEqual(self.touched, ["QMCO"])
 
-    def test_keeper_paused_DOES_stop_the_expensive_cold_build(self) -> None:
-        """The other half, and review's operational point. A human dropped
-        keeper_paused on this box during a live incident to stop background
-        chart BUILDING. Shipping a second background full-build path that the
-        marker does not cover means the next time he reaches for that lever it
-        silently will not work, and he has no way to find out why. Honouring
-        it for the expensive path only costs the feature nothing measurable."""
+    def test_keeper_paused_no_longer_stops_board_cold_builds(self) -> None:
+        """keeper_paused (2026-08-28) targets the 380-name watchlist warmer's
+        inline builds. Honouring it here left 32 of 64 board symbols cold on
+        2026-10-01 (health: coldBuildsPaused true, builds 0), so every scanner
+        chart opened on a full build. This loop's own switch still stops it."""
         board_file(self.boards, "Watchlist", ["ZZNEW"])
-        self.assertTrue(self.state._board_prewarm_cold_build_allowed("ZZNEW"))
         (self.artifacts / "keeper_paused").write_text("", encoding="utf-8")
+        self.assertTrue(self.state._warmer_is_paused())
+        self.assertTrue(self.state._board_prewarm_cold_build_allowed("ZZNEW"))
+        self.assertFalse(self.state._board_prewarm_status_payload()["coldBuildsPaused"])
+
+    def test_prewarm_paused_stops_cold_builds_and_health_says_so(self) -> None:
+        board_file(self.boards, "Watchlist", ["ZZNEW"])
+        (self.artifacts / "prewarm_paused").write_text("", encoding="utf-8")
         self.assertFalse(self.state._board_prewarm_cold_build_allowed("ZZNEW"))
         with patch.object(api_server.time, "sleep"):
             self.state._momx_board_chart_prewarm_cycle(now_et=self.clock())
         self.assertEqual(self.built, [])
-        # ...and health says so, rather than looking healthy and idle.
         self.assertTrue(self.state._board_prewarm_status_payload()["coldBuildsPaused"])
 
     def test_no_marker_means_running(self) -> None:
@@ -725,6 +728,44 @@ def weekday_at(hour: int, minute: int) -> datetime:
     while probe.weekday() >= 5 or probe >= datetime.now(eastern):
         probe -= timedelta(days=1)
     return probe
+
+
+class NewestMatchFirst(_PrewarmStub):
+    """2026-10-01 19:08 ET: LASR entered the matches while 32 board symbols
+    were cold. In plain board order it queued behind them at one build a
+    minute, so clicking it opened on a 45-199s full build."""
+
+    def _row(self, symbol, matched=None):
+        row = {"symbol": symbol, "last": 1.0, "pctChange": 0.0}
+        if matched is not None:
+            row.update({"scanPass": True, "matchedSince": matched.isoformat()})
+        return row
+
+    def test_the_newest_match_on_any_board_is_first_in_line(self) -> None:
+        now = datetime.now(timezone.utc)
+        board_file(self.boards, "Alpha", ["OLD1", "OLD2"], rows=[
+            self._row("OLD1"), self._row("OLD2", now - timedelta(hours=3)),
+        ])
+        board_file(self.boards, "Watchlist", ["NVDA", "LASR"], rows=[
+            self._row("NVDA", now - timedelta(hours=1)), self._row("LASR", now - timedelta(minutes=2)),
+        ])
+        self.assertEqual(self.state._board_prewarm_symbols(), ["LASR", "NVDA", "OLD2", "OLD1"])
+
+    def test_the_new_match_is_the_cold_build_of_the_next_cycle(self) -> None:
+        now = datetime.now(timezone.utc)
+        board_file(self.boards, "Alpha", ["OLD1"], rows=[self._row("OLD1")])
+        board_file(self.boards, "Watchlist", ["LASR"], rows=[self._row("LASR", now - timedelta(minutes=1))])
+        with patch.object(api_server.time, "sleep"):
+            self.state._momx_board_chart_prewarm_cycle(now_et=self.clock())
+        self.assertEqual(self.built, [("LASR", True)])
+
+    def test_a_skipped_cold_build_says_why_in_health(self) -> None:
+        board_file(self.boards, "Watchlist", ["ZZNEW"])
+        (self.artifacts / "prewarm_paused").write_text("", encoding="utf-8")
+        self.assertEqual(self.state._board_prewarm_cold_skip_reason("ZZNEW"), "prewarm_paused")
+        self.state.oi_finder_interactive_until = 10**12
+        (self.artifacts / "prewarm_paused").unlink()
+        self.assertEqual(self.state._board_prewarm_cold_skip_reason("ZZNEW"), "trader-active")
 
 
 if __name__ == "__main__":  # pragma: no cover

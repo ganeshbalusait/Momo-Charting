@@ -11534,7 +11534,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         return Path(override) if override else (ARTIFACTS_DIR / "momx_board_cache")
 
     def _board_prewarm_read_file(self, path, now_epoch: float | None = None) -> list:
-        """The top rows of ONE board file, in board order. Never raises.
+        """The top symbols of ONE board file, in board order. Never raises."""
+        return [symbol for symbol, _ in self._board_prewarm_read_entries(path, now_epoch)]
+
+    def _board_prewarm_read_entries(self, path, now_epoch: float | None = None) -> list:
+        """(symbol, matched_epoch or None) for ONE board's top rows. Never raises.
 
         READ DISCIPLINE. momx/service.py writes with os.replace, which on
         Windows raises PermissionError against an open reader because
@@ -11576,6 +11580,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         rows = board.get("rows")
         if not isinstance(rows, list):
             return []
+        return self._board_prewarm_rows(rows)
+
+    def _board_prewarm_rows(self, rows) -> list:
+        """(symbol, matched_epoch or None) for a board's top rows, in order."""
         top_n = max(0, int(getattr(self, "BOARD_PREWARM_TOP_N", 12)))
         picked = []
         for row in rows[:top_n]:
@@ -11584,8 +11592,15 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             symbol = str(row.get("symbol") or "").strip().upper()
             # Same ticker grammar _oi_finder_chart_disk_path enforces, applied
             # BEFORE a slot is spent: the board's universe file is hand-edited.
-            if symbol and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", symbol):
-                picked.append(symbol)
+            if not (symbol and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", symbol)):
+                continue
+            matched = None
+            if row.get("scanPass") and isinstance(row.get("matchedSince"), str):
+                try:
+                    matched = datetime.fromisoformat(row["matchedSince"]).timestamp()
+                except ValueError:
+                    matched = None
+            picked.append((symbol, matched))
         return picked
 
     def _board_prewarm_symbols(self, now_epoch: float | None = None) -> list:
@@ -11595,15 +11610,26 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         except OSError:
             return []
         cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_SYMBOLS", 24)))
-        ordered, seen = [], set()
+        entries = []
         for path in paths:
-            for symbol in self._board_prewarm_read_file(path, now_epoch):
-                if symbol in seen:
-                    continue
-                seen.add(symbol)
-                ordered.append(symbol)
-                if len(ordered) >= cap:
-                    return ordered
+            entries.extend(self._board_prewarm_read_entries(path, now_epoch))
+        # NEWEST SCAN MATCH FIRST, across every board. A symbol that just
+        # entered the matches (LASR, 2026-10-01 19:08 ET) is the one he is
+        # about to click; in plain board order it queued behind 31 older cold
+        # names at one build a minute. Unmatched rows keep board order.
+        order = sorted(
+            range(len(entries)),
+            key=lambda i: (entries[i][1] is None, -(entries[i][1] or 0.0), i),
+        )
+        ordered, seen = [], set()
+        for i in order:
+            symbol = entries[i][0]
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            ordered.append(symbol)
+            if len(ordered) >= cap:
+                break
         return ordered
 
     def _board_prewarm_classify(
@@ -11797,28 +11823,29 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
            15 minutes however busy the app is, so a permanently open tab
            cannot starve this into the silent no-op it would otherwise be.
 
-        4. _warmer_is_paused - artifacts/keeper_paused or artifacts/
-           warmer_paused. This gate applies to the EXPENSIVE path ONLY; the
-           tail splices above it run regardless. Review's operational point,
-           which is correct and does not cost the feature anything: a human
-           dropped keeper_paused on this box on 2026-08-28 during a live
-           incident to stop background chart BUILDING. Shipping a second
-           background full-build path that the existing marker does not cover
-           means the next time he reaches for that lever it will not work and
-           he has no way to know why. Honouring it here for cold builds only
-           keeps the expensive thing the marker was created to stop stopped,
-           while the ~4s splices - which carry essentially all of this
-           feature's measured value, 8 behind and 0 cold on the live board -
-           keep running. prewarm_paused remains the switch for the whole loop.
+        4. NOT _warmer_is_paused. keeper_paused (2026-08-28) was dropped to
+           stop the 380-name watchlist warmer, whose builds run INLINE on its
+           own thread and froze /api/auth/status for 8-25s each; it still
+           stops that warmer. This path is a different animal: at most one
+           build a minute, through the same bounded pools and ChartBuildLane
+           the browser uses, and it yields to every interactive signal above.
+           Honouring keeper_paused here left 32 of 64 board symbols cold on
+           2026-10-01 (health: coldBuildsPaused true, builds 0), so every
+           scanner chart opened on a full build. The switch for this loop,
+           cold builds included, is artifacts/prewarm_paused.
         """
+        return self._board_prewarm_cold_skip_reason(symbol) is None
+
+    def _board_prewarm_cold_skip_reason(self, symbol: str) -> str | None:
+        """None when a cold build may go now, else WHY not (shown in health)."""
         target = str(symbol or "").strip().upper()
         if not target:
-            return False
+            return "bad-symbol"
         try:
-            if self._warmer_is_paused():
-                return False
+            if self._board_prewarm_is_paused():
+                return "prewarm_paused"
             if self._chart_symbol_is_interactive(target):
-                return False
+                return "chart-open"
             # Under the lock: every writer of oi_finder_chart_refreshes holds
             # it, and list() on a dict being mutated raises RuntimeError. That
             # exception would be swallowed by the except below and degrade to
@@ -11833,13 +11860,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 pending = list(refreshes)
             for other in pending:
                 if self._chart_refresh_in_flight(other, kind="full"):
-                    return False
+                    return "full-build-in-flight"
             last_build = float(getattr(self, "_board_prewarm_last_build_at", 0.0) or 0.0)
             if self._warmer_should_wait(time.monotonic(), last_build):
-                return False
+                return "trader-active"
         except Exception:
-            return False
-        return True
+            return "error"
+        return None
 
     def _momx_board_chart_prewarm_cycle(self, now_et=None) -> float:
         """One cycle. Returns how long to sleep before the next one.
@@ -11930,8 +11957,12 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 pass
             time.sleep(pace)
         builds = 0
+        skip_counts = status.setdefault("coldSkips", {})
         for symbol in plan["cold"]:
-            if not self._board_prewarm_cold_build_allowed(symbol):
+            reason = self._board_prewarm_cold_skip_reason(symbol)
+            status["lastColdSkip"] = {"symbol": symbol, "reason": reason} if reason else None
+            if reason:
+                skip_counts[reason] = int(skip_counts.get(reason, 0)) + 1
                 continue
             try:
                 # The door everyone else uses: split in-flight guard, paint
@@ -12109,8 +12140,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "enabled": str(os.environ.get("AGX_CHART_PREWARM", "1")).strip().lower()
                 not in {"0", "false", "off", "no"},
                 "paused": self._board_prewarm_is_paused(),
-                # Cold builds obey the human's marker too; tails do not.
-                "coldBuildsPaused": self._warmer_is_paused(),
+                # Cold builds stop with this loop's own switch (prewarm_paused),
+                # not with keeper_paused - see _board_prewarm_cold_build_allowed.
+                "coldBuildsPaused": self._board_prewarm_is_paused(),
                 "boardAgeSeconds": board_age,
                 # Makes the LRU-pressure hypothesis falsifiable from one curl.
                 # 16 hot + up to 24 board against OI_FINDER_CHART_WARM_LIMIT
