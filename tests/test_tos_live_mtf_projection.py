@@ -69,10 +69,10 @@ def test_tos_projection_detects_cross_from_equal_ema_state() -> None:
     # liveForming is no longer a hardcoded True: it marks a cross inside the
     # still-forming higher bar (the only one that can still repaint).
     assert all(isinstance(signal["liveForming"], bool) for signal in put_signals)
-    # Historical crosses sit on the higher bucket's first candle (TOS repaints
-    # the whole bucket with its final close once it closes); only a cross in
-    # the still-forming bucket (the 4H 13:00-17:00 bar here) can be mid-bucket.
-    assert all(signal["secondaryBucketStart"] is (not signal["liveForming"]) for signal in put_signals)
+    # Every cross sits on its higher bucket's first candle: a completed bucket
+    # carries its final close on every 5m bar, and TOS repaints the forming
+    # bucket's bars with the current developing value.
+    assert all(signal["secondaryBucketStart"] is True for signal in put_signals)
 
 
 def test_four_hour_secondary_buckets_use_the_tos_central_clock() -> None:
@@ -184,7 +184,9 @@ def test_forming_bucket_shows_only_its_current_cross_like_a_tos_repaint() -> Non
     forming = [s for s in two_hour if s["liveForming"]]
     assert len(forming) == 1
     assert forming[0]["direction"] == "CALL"
-    assert pd.to_datetime(forming[0]["time"], unit="s", utc=True).tz_convert("America/New_York").strftime("%H:%M") == "09:40"
+    # TOS repaints the whole forming bucket, so the single bubble prints on
+    # the bucket's first candle (COHR 2026-10-01: CALL4H on 09:00 at 12:25).
+    assert pd.to_datetime(forming[0]["time"], unit="s", utc=True).tz_convert("America/New_York").strftime("%H:%M") == "09:00"
 
 
 def test_seeding_uses_the_whole_tape_not_only_five_sessions() -> None:
@@ -210,3 +212,18 @@ def test_seeding_uses_the_whole_tape_not_only_five_sessions() -> None:
     # seed-equals-first-close artifact a five-day window produced.
     day4h = next(s for s in payload["states"] if s["family"] == "9x20" and s["timeframe"] == "4H")
     assert day4h["fastEma"] > day4h["slowEma"]
+
+
+def test_forming_4h_cross_prints_on_the_open_bucket_first_candle_like_tos() -> None:
+    """COHR 2026-10-01, TOS 5m at 12:25: CALL1H and CALL4H both on the 09:00
+    candle while the 09:00-13:00 4H bar was still forming. The developing 4H
+    value only crossed once price ran at 09:35; TOS still draws it at 09:00."""
+    stamps = pd.date_range("2026-09-14 04:00", "2026-10-01 12:25", freq="5min", tz="America/New_York")
+    stamps = stamps[(stamps.weekday < 5) & ((stamps.hour * 60 + stamps.minute) >= 240) & (stamps.hour < 20)]
+    move = pd.Timestamp("2026-10-01 09:35", tz="America/New_York")
+    frame = pd.DataFrame({"timestamp": stamps, "close": [130.0 if t >= move else 100.0 for t in stamps]})
+    payload = _tos_mtf_ema_signal_payload(frame)
+    nine = int(pd.Timestamp("2026-10-01 09:00", tz="America/New_York").timestamp())
+    four_hour = [s for s in payload["signals"] if s["timeframe"] == "4H" and s["direction"] == "CALL"]
+    assert four_hour and all(s["time"] == nine for s in four_hour)
+    assert all(s["liveForming"] for s in four_hour)
