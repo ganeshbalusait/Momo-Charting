@@ -745,19 +745,24 @@ def _tos_live_mtf_projection(
                     matching = [item for item in forming if item["direction"] == current]
                     keep = matching[-1] if matching else None
                 if keep is not None:
-                    # TOS repaints the forming bucket with the CURRENT values,
-                    # so CALL vs compact C follows the latest higher-timeframe
-                    # trend, not the one at the bar where the cross first
-                    # appeared. Same rule the chart's per-tick reconcile uses.
-                    higher_bullish_now = higher_fast[-1] >= higher_slow[-1]
-                    confirmed_now = higher_bullish_now == (keep["direction"] == "CALL")
-                    prefix_now = keep["direction"] if confirmed_now else ("C" if keep["direction"] == "CALL" else "P")
+                    # A TOS repaint gives EVERY 5m bar of the forming bucket
+                    # the current developing value, so that one cross prints
+                    # on the bucket's FIRST candle, not where the developing
+                    # value happened to flip. COHR 2026-10-01 at 12:25: TOS
+                    # drew CALL4H on the 09:00 candle of the still-forming
+                    # 09:00-13:00 bar (next to CALL1H); the mid-bucket flip
+                    # time put it on 09:40. The higher trend is the forming
+                    # higher bar's current value too.
+                    confirmed = (higher_fast[-1] >= higher_slow[-1]) == (current == "CALL")
+                    short_label = current if confirmed else ("C" if current == "CALL" else "P")
                     keep = {
                         **keep,
-                        "label": f"{prefix_now}{timeframe}",
-                        "compact": prefix_now in {"C", "P"},
+                        "time": int(epoch[first_forming]),
+                        "label": f"{short_label}{timeframe}",
+                        "compact": short_label in {"C", "P"},
                         "fastEma": round(float(fast[-1]), 4),
                         "slowEma": round(float(slow[-1]), 4),
+                        "secondaryBucketStart": True,
                     }
                 pair_signals = [item for item in pair_signals if not item["liveForming"]]
                 if keep is not None:
