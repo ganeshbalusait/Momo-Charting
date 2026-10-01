@@ -11412,6 +11412,16 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     # must fit inside that LRU or the two sets evict each other, which is
     # what pinned AMZN frozen for 90 minutes on 2026-08-21.
     BOARD_PREWARM_MAX_SYMBOLS: int = 64
+    # NEW-MATCH FAST PATH (2026-10-01, "I cannot wait for 2 mins"). A symbol
+    # that just entered the scanner matches is the one he is about to click.
+    # Checked every few seconds instead of once a minute, and started WITHOUT
+    # waiting behind another full build: the ~2s candles-first paint runs on
+    # the paint pool and the full build queues on the single-worker deep pool.
+    BOARD_PREWARM_FAST_TICK_SECONDS: float = 5.0
+    # How recently a row must have entered the matches to count as new.
+    BOARD_PREWARM_NEW_MATCH_WINDOW_SECONDS: float = 900.0
+    # Bound a burst (the open can bring many new matches at once).
+    BOARD_PREWARM_MAX_NEW_MATCHES_PER_TICK: int = 3
     BOARD_PREWARM_CYCLE_SECONDS: float = 60.0
     # Last in line at boot: after the watchlist warmer (45s) and the hot
     # refresher (90s), so restart ordering is unchanged.
@@ -12100,15 +12110,127 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             flush=True,
         )
         time.sleep(float(getattr(self, "BOARD_PREWARM_BOOT_DELAY_SECONDS", 150.0)))
+        tick = max(1.0, float(getattr(self, "BOARD_PREWARM_FAST_TICK_SECONDS", 5.0)))
+        next_cycle = 0.0
         while True:
-            delay = float(getattr(self, "BOARD_PREWARM_CYCLE_SECONDS", 60.0))
+            if time.monotonic() >= next_cycle:
+                delay = float(getattr(self, "BOARD_PREWARM_CYCLE_SECONDS", 60.0))
+                try:
+                    with background_scope(True):
+                        delay = self._momx_board_chart_prewarm_cycle()
+                except Exception:
+                    # A bad cycle must never kill the thread; back off instead.
+                    delay = 120.0
+                next_cycle = time.monotonic() + max(5.0, delay)
+            # New scanner matches every few seconds, between full cycles.
             try:
                 with background_scope(True):
-                    delay = self._momx_board_chart_prewarm_cycle()
+                    self._board_prewarm_new_match_pass()
             except Exception:
-                # A bad cycle must never kill the thread; back off instead.
-                delay = 120.0
-            time.sleep(max(5.0, delay))
+                pass
+            time.sleep(tick)
+
+    def _board_prewarm_new_matches(self, now_epoch: float | None = None) -> list:
+        """Symbols that entered a board's matches within the window, newest
+        first: [(symbol, matchedSince)]. Same read discipline as
+        _board_prewarm_read_file (one short read, never raises)."""
+        clock = time.time() if now_epoch is None else float(now_epoch)
+        window = float(getattr(self, "BOARD_PREWARM_NEW_MATCH_WINDOW_SECONDS", 900.0))
+        max_age = float(getattr(self, "BOARD_PREWARM_BOARD_MAX_AGE_SECONDS", 1800.0))
+        found: dict = {}
+        try:
+            paths = list(self._board_prewarm_cache_dir().glob("*.json"))
+        except OSError:
+            return []
+        for path in paths:
+            try:
+                board = json.loads(Path(path).read_bytes().decode("utf-8"))
+                generated = datetime.fromisoformat(str(board.get("generatedAt") or "")).timestamp()
+            except Exception:
+                continue
+            # A dead momx_worker's last board must not keep "new" matches alive.
+            if (clock - generated) > max_age:
+                continue
+            for row in board.get("rows") or []:
+                if not isinstance(row, dict) or not row.get("scanPass"):
+                    continue
+                symbol = str(row.get("symbol") or "").strip().upper()
+                since = row.get("matchedSince")
+                if not (symbol and isinstance(since, str)
+                        and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", symbol)):
+                    continue
+                try:
+                    since_epoch = datetime.fromisoformat(since).timestamp()
+                except ValueError:
+                    continue
+                if (clock - since_epoch) > window:
+                    continue
+                if since_epoch > found.get(symbol, (None, -1.0))[1]:
+                    found[symbol] = (since, since_epoch)
+        ordered = sorted(found.items(), key=lambda item: -item[1][1])
+        return [(symbol, value[0]) for symbol, value in ordered]
+
+    def _board_prewarm_new_match_pass(self, now_et=None) -> int:
+        """Start each NEW scanner match's chart now. Returns how many started.
+
+        Cold: _start_oi_finder_chart_refresh(full_history=True) - its ~2s
+        candles-first paint makes the click instant, then the full build
+        queues on the single-worker deep pool behind any build already
+        running. Unlike the 60s cycle this does NOT wait for that build to
+        finish first: that wait is what left a new match (LASR, 2026-10-01)
+        without even its candles for minutes. Behind: the ~4s tail splice.
+        Each (symbol, matchedSince) is started once.
+        """
+        if now_et is None:
+            now_et = datetime.now(ZoneInfo(EASTERN_TZ))
+        minute_of_day = now_et.hour * 60 + now_et.minute
+        start = int(getattr(self, "BOARD_PREWARM_START_MINUTE", 3 * 60 + 30))
+        end = int(getattr(self, "BOARD_PREWARM_END_MINUTE", 20 * 60))
+        if now_et.weekday() >= 5 or not (start <= minute_of_day < end):
+            return 0
+        if self._board_prewarm_is_paused() or self._board_prewarm_cold_paused():
+            return 0
+        now_epoch = now_et.timestamp()
+        handled = self.__dict__.setdefault("_board_prewarm_new_match_seen", {})
+        status = self.__dict__.setdefault("_board_prewarm_status", {})
+        session_start = self._most_recent_session_start(
+            now_et.astimezone(timezone.utc)
+        ).timestamp()
+        cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_NEW_MATCHES_PER_TICK", 3)))
+        started = 0
+        for symbol, since in self._board_prewarm_new_matches(now_epoch):
+            if started >= cap:
+                break
+            if handled.get(symbol) == since:
+                continue
+            # He already has it open: his own request path owns it.
+            if self._chart_symbol_is_interactive(symbol):
+                handled[symbol] = since
+                continue
+            verdict = self._board_prewarm_classify(symbol, session_start, now_epoch)
+            handled[symbol] = since
+            self._board_prewarm_trim(handled, str)
+            try:
+                if verdict == "cold":
+                    self._start_oi_finder_chart_refresh(symbol, full_history=True)
+                    self._board_prewarm_note_cold_attempt(symbol)
+                elif verdict == "behind":
+                    self._board_prewarm_note_touch(symbol)
+                    self._touch_chart_tail(symbol)
+                else:
+                    continue
+            except Exception:
+                continue
+            started += 1
+            status["newMatchStarts"] = int(status.get("newMatchStarts", 0)) + 1
+            status["lastNewMatch"] = {
+                "symbol": symbol,
+                "matchedSince": since,
+                "action": "paint+build" if verdict == "cold" else "tail",
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            print(f"[board-prewarm] new match {symbol} ({verdict}) started", flush=True)
+        return started
 
     def _board_prewarm_status_payload(self) -> dict:
         """What /api/health reports.

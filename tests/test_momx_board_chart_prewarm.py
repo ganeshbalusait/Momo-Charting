@@ -739,5 +739,89 @@ def weekday_at(hour: int, minute: int) -> datetime:
     return probe
 
 
+class NewMatchFastPath(_PrewarmStub):
+    """2026-10-01: LASR entered the matches while a cold build was running, so
+    the 60s cycle neither noticed it for up to a minute nor started it until
+    that 45-199s build ended. "I cannot wait for 2 mins." A new match now gets
+    its ~2s candles-first paint (and its queued full build) within one tick."""
+
+    def _match_row(self, symbol, since):
+        return {"symbol": symbol, "last": 1.0, "pctChange": 0.0,
+                "scanPass": True, "matchedSince": since.isoformat()}
+
+    def _new_match_board(self, *symbols, ago=60.0):
+        since = datetime.fromtimestamp(self.clock().timestamp() - ago, timezone.utc)
+        board_file(self.boards, "Watchlist", list(symbols),
+                   rows=[self._match_row(symbol, since) for symbol in symbols])
+
+    def test_a_new_cold_match_starts_at_once_even_behind_a_running_build(self) -> None:
+        self._new_match_board("LASR")
+        self.state._chart_refresh_in_flight = lambda *a, **k: True  # another full build running
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 1)
+        self.assertEqual(self.built, [("LASR", True)])
+        self.assertEqual(self.state._board_prewarm_status["lastNewMatch"]["symbol"], "LASR")
+
+    def test_each_match_is_started_once(self) -> None:
+        self._new_match_board("LASR")
+        self.state._board_prewarm_new_match_pass(now_et=self.clock())
+        self.state._board_prewarm_new_match_pass(now_et=self.clock())
+        self.assertEqual(self.built, [("LASR", True)])
+
+    def test_a_behind_match_gets_the_fast_tail_splice(self) -> None:
+        self._new_match_board("LASR")
+        self.cache_file("LASR", mtime=self.fresh(ago=3 * 86400))
+        self.state._board_prewarm_new_match_pass(now_et=self.clock())
+        self.assertEqual(self.touched, ["LASR"])
+        self.assertEqual(self.built, [])
+
+    def test_an_old_match_is_left_to_the_regular_cycle(self) -> None:
+        self._new_match_board("OLDM", ago=2 * 3600)
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        self.assertEqual(self.built, [])
+
+    def test_a_burst_is_capped_per_tick(self) -> None:
+        self._new_match_board("AAA", "BBB", "CCC", "DDD", "EEE")
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 3)
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 2)
+
+    def test_both_switches_and_the_clock_gate_stop_it(self) -> None:
+        self._new_match_board("LASR")
+        (self.artifacts / "prewarm_cold_paused").write_text("", encoding="utf-8")
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        (self.artifacts / "prewarm_cold_paused").unlink()
+        (self.artifacts / "prewarm_paused").write_text("", encoding="utf-8")
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        (self.artifacts / "prewarm_paused").unlink()
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock(hour=21)), 0)
+        self.assertEqual(self.built, [])
+
+    def test_a_chart_he_already_has_open_is_left_alone(self) -> None:
+        self._new_match_board("LASR")
+        self.state._chart_symbol_is_interactive = lambda symbol, now=None: symbol == "LASR"
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        self.assertEqual(self.built, [])
+
+    def test_the_loop_checks_new_matches_every_tick_and_cycles_once_a_minute(self) -> None:
+        calls = {"cycle": 0, "fast": 0, "sleeps": []}
+        self.state.BOARD_PREWARM_BOOT_DELAY_SECONDS = 0.0
+        self.state._momx_board_chart_prewarm_cycle = lambda: calls.__setitem__("cycle", calls["cycle"] + 1) or 60.0
+        self.state._board_prewarm_new_match_pass = lambda: calls.__setitem__("fast", calls["fast"] + 1) or 0
+
+        class Stop(Exception):
+            pass
+
+        def fake_sleep(seconds):
+            calls["sleeps"].append(seconds)
+            if len(calls["sleeps"]) > 4:  # the boot sleep + four ticks
+                raise Stop()
+
+        with patch.object(api_server.time, "sleep", fake_sleep), patch.dict(os.environ, {"AGX_CHART_PREWARM": "1"}):
+            with self.assertRaises(Stop):
+                self.state._momx_board_chart_prewarm_loop()
+        self.assertEqual(calls["cycle"], 1)        # 60s cycle: once in ~20s of ticks
+        self.assertEqual(calls["fast"], 4)         # new matches: every tick
+        self.assertEqual(calls["sleeps"][1:], [5.0, 5.0, 5.0, 5.0])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
