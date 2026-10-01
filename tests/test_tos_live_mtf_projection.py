@@ -102,3 +102,30 @@ def test_merged_tapes_keep_fine_recent_candles_for_15m_signals() -> None:
         signal["family"] == "4x8" and signal["label"] == "CALL15" and signal["time"] == expected_time
         for signal in payload["signals"]
     )
+
+
+def _session_tape(start: str, end: str, freq: str) -> pd.DataFrame:
+    timestamps = pd.date_range(start, end, freq=freq, tz="America/New_York")
+    minutes = timestamps.hour * 60 + timestamps.minute
+    timestamps = timestamps[(timestamps.weekday < 5) & (minutes >= 240) & (minutes < 1200)]
+    return pd.DataFrame({"timestamp": timestamps, "close": [100.0] * len(timestamps)})
+
+
+def test_4h_signal_lands_on_tos_0900_candle_regardless_of_history_depth() -> None:
+    from scanner import merge_mtf_study_tapes
+
+    # TOS 4H candles start 01/05/09/13 ET; the 4H and 1H crosses of a move
+    # inside the 09:00 candle both draw on the 09:00 bar. A deep tape that
+    # spans the March DST change must not shift that boundary.
+    deep = _session_tape("2026-02-02 04:00", "2026-09-30 19:30", "30min")
+    fine = _session_tape("2026-08-03 04:00", "2026-10-01 12:00", "1min")
+    fine.loc[fine["timestamp"] >= pd.Timestamp("2026-10-01 09:35", tz="America/New_York"), "close"] = 130.0
+    expected = int(pd.Timestamp("2026-10-01 09:00", tz="America/New_York").timestamp())
+
+    for frame in (fine, merge_mtf_study_tapes(deep, fine)):
+        labels = {
+            signal["label"]
+            for signal in _tos_mtf_ema_signal_payload(frame)["signals"]
+            if signal["time"] == expected
+        }
+        assert {"CALL1H", "CALL4H"}.issubset(labels)

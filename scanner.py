@@ -446,6 +446,22 @@ def _tos_mtf_ema_signal_payload(frame: pd.DataFrame) -> dict:
     }
 
 
+def _tos_wall_clock_bucket(timestamps: pd.Series, minutes: int) -> pd.Series:
+    """Return the Eastern wall-clock start of each timestamp's TOS candle.
+
+    ``resample`` anchors bins to the first day in the data, so once the
+    history spans a daylight-saving change every 4H boundary moved by an hour
+    (CALL4H drew at 08:00 or 09:00 depending on how much history was loaded).
+    TOS equity charts aggregate from midnight Central: 4H candles start at
+    01:00, 05:00, 09:00, 13:00, 17:00 and 21:00 ET all year, the same clock
+    as the chart's own 4H candles (frontend chartAggregation.js). Shorter
+    intraday candles and the day start from Eastern midnight.
+    """
+    wall_clock = pd.to_datetime(timestamps).dt.tz_convert(EASTERN_TZ).dt.tz_localize(None)
+    offset = pd.Timedelta(hours=1) if int(minutes) == 240 else pd.Timedelta(0)
+    return (wall_clock - offset).dt.floor(f"{max(int(minutes), 1)}min") + offset
+
+
 def _tos_live_mtf_projection(frame: pd.DataFrame) -> dict:
     """Project TOS secondary-aggregation signals onto their 5-minute chart bars.
 
@@ -480,16 +496,21 @@ def _tos_live_mtf_projection(frame: pd.DataFrame) -> dict:
     # turn it into 5m first so the chart and the MTF source share timestamps.
     spacing = source["timestamp"].diff().dt.total_seconds().dropna().median()
     if pd.notna(spacing) and spacing < 240:
-        source = _aggregate_mtf_bars(source.assign(open=source["close"], high=source["close"], low=source["close"], volume=0), 5)[["signal_time", "close"]].rename(columns={"signal_time": "timestamp"})
+        # Stamp each 5m bar at its start (09:00, not its last minute 09:04)
+        # so a secondary cross maps onto the right candle on 1m/3m charts too.
+        source = _aggregate_mtf_bars(source.assign(open=source["close"], high=source["close"], low=source["close"], volume=0), 5)[["timestamp", "close"]]
 
     def secondary_series(minutes: int, fast_length: int, slow_length: int) -> pd.DataFrame:
+        # Fixed Eastern wall-clock buckets (see _tos_wall_clock_bucket). Each
+        # bucket is stamped with its first primary bar, which is where TOS
+        # draws a cross of a completed secondary candle.
+        keys = _tos_wall_clock_bucket(source["timestamp"], minutes)
         values = (
-            source.set_index("timestamp")["close"]
-            .resample(f"{minutes}min", label="left", closed="left")
-            .last()
+            source.assign(bucket=keys.to_numpy())
+            .groupby("bucket", sort=True)
+            .agg(timestamp=("timestamp", "first"), close=("close", "last"))
             .dropna()
-            .rename("close")
-            .reset_index()
+            .reset_index(drop=True)
         )
         if values.empty:
             return values
