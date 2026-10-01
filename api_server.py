@@ -11870,8 +11870,16 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             for other in pending:
                 if self._chart_refresh_in_flight(other, kind="full"):
                     return False
-            last_build = float(getattr(self, "_board_prewarm_last_build_at", 0.0) or 0.0)
-            if self._warmer_should_wait(time.monotonic(), last_build):
+            # Only a chart he is OPENING defers us. The 45s "interactive"
+            # window (_warmer_should_wait) is held open by every poll of every
+            # chart tab, so with his charts open - all session - it allowed
+            # one cold build per WARMER_FORCE_PROGRESS_SECONDS (15 min):
+            # measured 2026-10-01 19:10 ET, 32 cold, 0 built in 6 min.
+            # Polling a warm chart is a splice that never takes the lane; an
+            # open of a cold one is an on-demand build, which still wins here
+            # and in ChartBuildLane, and the in-flight check above keeps this
+            # to one full build on the box at a time.
+            if int(getattr(self, "oi_finder_ondemand_builds", 0) or 0) > 0:
                 return False
         except Exception:
             return False
@@ -12146,7 +12154,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 not in {"0", "false", "off", "no"},
                 "paused": self._board_prewarm_is_paused(),
                 # Cold builds obey the human's marker too; tails do not.
-                "coldBuildsPaused": self._warmer_is_paused(),
+                "coldBuildsPaused": self._board_prewarm_cold_paused(),
                 "boardAgeSeconds": board_age,
                 # Makes the LRU-pressure hypothesis falsifiable from one curl.
                 # 16 hot + up to 24 board against OI_FINDER_CHART_WARM_LIMIT

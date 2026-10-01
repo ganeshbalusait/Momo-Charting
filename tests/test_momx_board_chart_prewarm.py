@@ -448,9 +448,17 @@ class ItYieldsToTheTrader(_PrewarmStub):
         self.state.oi_finder_ondemand_builds = 1
         self.assertFalse(self.state._board_prewarm_cold_build_allowed("CRCL"))
 
-    def test_an_active_interactive_window_defers_the_prewarm(self) -> None:
+    def test_chart_polling_alone_no_longer_defers_the_prewarm(self) -> None:
+        """2026-10-01: every open chart tab's poll held the 45s window, so with
+        his charts open the prewarm built one cold chart per 15 min (32 cold,
+        0 built in 6 min). Measured cost of one background build after
+        hours: warm chart refresh 0.29s -> 0.45s avg, auth 0.10s -> 0.23s."""
         self.state.oi_finder_interactive_until = time.monotonic() + 45
         self.state._board_prewarm_last_build_at = time.monotonic()
+        self.assertTrue(self.state._board_prewarm_cold_build_allowed("CRCL"))
+
+    def test_a_chart_he_is_opening_defers_the_prewarm(self) -> None:
+        self.state.oi_finder_ondemand_builds = 1
         self.assertFalse(self.state._board_prewarm_cold_build_allowed("CRCL"))
 
     def test_a_permanently_busy_app_cannot_starve_it_forever(self) -> None:
@@ -461,21 +469,6 @@ class ItYieldsToTheTrader(_PrewarmStub):
             time.monotonic() - DashboardState.WARMER_FORCE_PROGRESS_SECONDS - 1
         )
         self.assertTrue(self.state._board_prewarm_cold_build_allowed("CRCL"))
-
-    def test_a_busy_box_defers_the_FIRST_build_too(self) -> None:
-        """The forced-progress floor compares time.monotonic() - last_build,
-        and time.monotonic() on this box is machine uptime (614671s). Left at
-        the 0.0 default that difference is ALWAYS > 900, so the very first
-        cycle passed the floor unconditionally and would queue a 45-199s
-        ChartBuildLane-holding build 150s after a restart, mid-session, while
-        he was trading - and the lane does not preempt its holder."""
-        self.state.oi_finder_interactive_until = time.monotonic() + 45
-        # Exactly what _momx_board_chart_prewarm_loop now seeds at start.
-        self.state._board_prewarm_last_build_at = time.monotonic()
-        self.assertFalse(self.state._board_prewarm_cold_build_allowed("CRCL"))
-        # The seed is a real statement about the loop, not just this stub.
-        source = inspect.getsource(DashboardState._momx_board_chart_prewarm_loop)
-        self.assertIn("_board_prewarm_last_build_at = time.monotonic()", source)
 
     def test_the_in_flight_scan_holds_the_chart_lock(self) -> None:
         """Every writer of oi_finder_chart_refreshes holds this lock, and
