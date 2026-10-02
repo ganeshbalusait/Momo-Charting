@@ -435,9 +435,13 @@ class GradeFieldsStayOutOfHistoryTests(unittest.TestCase):
     def _assert_slim(self, stored: dict) -> None:
         self.assertNotIn("sqzRaw", stored)
         # ADX: ~336 B of every row, for a reading whose durable copy is
-        # written on the recorded grade / pattern event instead.
-        self.assertNotIn("adx", stored)
+        # written on the recorded grade / pattern event instead. Only the four
+        # numbers the Setup tags read stay (GO / OPT / the ADX tag).
+        self.assertEqual(stored["adx"]["5m"], {"plus": 48.6, "minus": 13.0, "adx": 35.0, "prevAdx": 12.0, "rising": True})
+        self.assertNotIn("cross", stored["adx"]["30m"])
         self.assertNotIn("timeline", stored["gradeFresh"])
+        # The SKIT / SQZ items the Setup tags read, under their own key.
+        self.assertEqual(stored["gradeFresh"]["setupTimeline"], [{"at": T0.isoformat(), "what": "SKIT 4h bg green"}])
         self.assertNotIn("lastCompleted", stored["m5"])
         self.assertEqual(stored["grade"]["letter"], "A+")
         self.assertEqual(stored["grade"]["checks"], {"skit": 7})
@@ -469,6 +473,67 @@ class GradeFieldsStayOutOfHistoryTests(unittest.TestCase):
             self.assertEqual(live["adx"]["5m"]["cross"], "bull")
             self.assertIn("timeline", live["gradeFresh"])
             self.assertIn("lastCompleted", live["m5"])
+
+
+class SetupInputsTests(unittest.TestCase):
+    """2026-10-02 "live setup column has so much information but history it's
+    not there": a History row must carry what the Setup tags are worked out
+    from, and a setup appearing must get its own snapshot."""
+
+    def test_only_setup_timeline_items_and_the_zs_pillar_are_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            row = _graded()
+            row["gradeFresh"]["timeline"] = [
+                {"at": T0.isoformat(), "what": "SQZ 2h released", "extra": 1},
+                {"at": T0.isoformat(), "what": "RVOL 5m bg cyan"},
+                {"at": T0.isoformat(), "what": "SKIT 2D bg cyan"},
+            ]
+            row["m5"]["pillars"] = {"zs": {"above": True, "clear2": True, "barAt": 1790000000}, "vwap": {"x": 1}}
+            record_board(LIST, _payload(row), T0, directory)
+            stored = _entry(directory)["snapshots"][0]["row"]
+            self.assertEqual([e["what"] for e in stored["gradeFresh"]["setupTimeline"]],
+                             ["SQZ 2h released", "SKIT 2D bg cyan"])
+            self.assertEqual(stored["gradeFresh"]["setupTimeline"][0], {"at": T0.isoformat(), "what": "SQZ 2h released"})
+            self.assertEqual(stored["m5"]["pillars"], {"zs": {"above": True, "clear2": True, "barAt": 1790000000}})
+            self.assertEqual(len(row["gradeFresh"]["timeline"]), 3, "live row untouched")
+            self.assertIn("vwap", row["m5"]["pillars"])
+
+    def test_a_chart_arrow_appearing_gets_its_own_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            record_board(LIST, _payload(_row()), T0, directory)
+            arrow = {"label": "CALL2H", "family": "4x8", "timeframe": "2H", "at": "2026-08-31T08:00:00-04:00"}
+            record_board(LIST, _payload(_row(chartSignals=[arrow])), T0 + timedelta(minutes=2), directory)
+            snapshots = _entry(directory)["snapshots"]
+            self.assertEqual(len(snapshots), 2)
+            self.assertEqual(snapshots[1]["changed"], ["setup.chartSignals"])
+            # The same arrow on the next cycle is not news.
+            record_board(LIST, _payload(_row(chartSignals=[arrow])), T0 + timedelta(minutes=4), directory)
+            self.assertEqual(len(_entry(directory)["snapshots"]), 2)
+
+    def test_day_line_go_and_momox_aplus_are_triggers(self) -> None:
+        cases = [
+            ({"dayLines": {"line": "2026-08-31T09:40:00-04:00"}}, "setup.dayLines"),
+            ({"m5": {"state": "holding", "gapGo": {"gap": 2.2, "goAt": 1790000000}}}, "setup.goAt"),
+            ({"momoxAPlus": {"at": "2026-08-31T09:50:00-04:00"}}, "setup.momoxAPlus"),
+        ]
+        for extra, name in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as raw:
+                directory = Path(raw)
+                record_board(LIST, _payload(_row(m5={"state": "holding"})), T0, directory)
+                record_board(LIST, _payload(_row(**{"m5": {"state": "holding"}, **extra})), T0 + timedelta(minutes=2), directory)
+                self.assertEqual(_entry(directory)["snapshots"][-1]["changed"], [name])
+
+    def test_empty_setup_fields_add_no_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            record_board(LIST, _payload(_row()), T0, directory)
+            quiet = _row(chartSignals=[], dayLines={}, momoxAPlus=None, m5={"gapGo": {"goAt": None}})
+            record_board(LIST, _payload(quiet), T0 + timedelta(minutes=2), directory)
+            gone = _row(chartSignals=[{"label": "CALL2H", "at": "x", "goneAt": "y"}])
+            record_board(LIST, _payload(gone), T0 + timedelta(minutes=4), directory)
+            self.assertEqual(len(_entry(directory)["snapshots"]), 1)
 
 
 class DurabilityTests(unittest.TestCase):

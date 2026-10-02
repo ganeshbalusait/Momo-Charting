@@ -446,3 +446,8 @@ test("boardCacheKey keeps bull keys unchanged and suffixes bear", () => {
   assert.equal(boardCacheKey("Mag7", "bear"), "Mag7|bear");
   assert.equal(boardCacheKey(null, "bear"), null);
 });
+
+test("a setup event (chart arrow, day line, GO, MOMOX A+) rings the Setup cell", () => {
+  const keys = changedColumnKeys(["setup.chartSignals", "setup.goAt", "rvol.5m"]);
+  assert.deepEqual([...keys].sort(), ["rvol.5m", "setup"]);
+});

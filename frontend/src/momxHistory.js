@@ -271,6 +271,9 @@ export function changedColumnKeys(changed) {
       keys.add(name);
     } else if (name === "badge.on" || name === "badge" || name === "news.headline" || name === "news" || name === "scanReasons") {
       keys.add("symbol");
+    } else if (name.startsWith("setup.")) {
+      // A chart arrow / day line / GO / MOMOX A+ appeared (momx/history.py).
+      keys.add("setup");
     }
     // Unknown names are ignored rather than guessed at: a future trigger
     // field simply doesn't highlight until this map learns its column.
