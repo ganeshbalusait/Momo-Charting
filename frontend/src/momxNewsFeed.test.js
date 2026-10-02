@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   boardSymbols,
   feedAge,
+  filterFeedGroups,
   groupFeedBySymbol,
   mergeStoredNews,
+  parseNewsQuery,
   sentimentTone,
   sourceHealthLine,
   storedNewsToRowNews,
@@ -128,4 +130,34 @@ test("sentimentTone maps the scraper's words", () => {
   assert.equal(sentimentTone("Neutral"), "flat");
   assert.equal(sentimentTone(""), null);
   assert.equal(sentimentTone(undefined), null);
+});
+
+test("parseNewsQuery tells tickers from words", () => {
+  assert.deepEqual(parseNewsQuery(""), { raw: "", symbols: [], words: "" });
+  assert.deepEqual(parseNewsQuery(" gev "), { raw: "gev", symbols: ["GEV"], words: "gev" });
+  assert.deepEqual(parseNewsQuery("$nvda, amd nvda").symbols, ["NVDA", "AMD"]);
+  assert.equal(parseNewsQuery("$nvda, amd").words, "");
+  assert.deepEqual(parseNewsQuery("BRK.B").symbols, ["BRK.B"]);
+  assert.deepEqual(parseNewsQuery("nuclear"), { raw: "nuclear", symbols: [], words: "nuclear" });
+  assert.deepEqual(parseNewsQuery("Google nuclear deal"), { raw: "Google nuclear deal", symbols: [], words: "google nuclear deal" });
+});
+
+test("filterFeedGroups narrows by ticker, prefix and words", () => {
+  const groups = groupFeedBySymbol([
+    stored("GEV", "Why GE Vernova stock crushed it today", 2),
+    stored("GEV", "Google just went nuclear in Georgia", 6),
+    stored("GE", "GE Aerospace wins engine order", 3),
+    stored("NVDA", "Nvidia AI chips sell out", 1),
+  ], []);
+  assert.equal(filterFeedGroups(groups, "").length, 3);
+  assert.deepEqual(filterFeedGroups(groups, "gev").map((g) => g.symbol), ["GEV"]);
+  // One ticker typed: exact hit first, prefix hits after.
+  assert.deepEqual(filterFeedGroups(groups, "GE").map((g) => g.symbol), ["GE", "GEV"]);
+  assert.deepEqual(filterFeedGroups(groups, "nvda gev").map((g) => g.symbol), ["NVDA", "GEV"]);
+  const nuclear = filterFeedGroups(groups, "nuclear");
+  assert.deepEqual(nuclear.map((g) => g.symbol), ["GEV"]);
+  assert.equal(nuclear[0].items.length, 1);
+  // A short word that looks like a ticker still finds stories by text.
+  assert.deepEqual(filterFeedGroups(groups, "ai").map((g) => g.symbol), ["NVDA"]);
+  assert.deepEqual(filterFeedGroups(groups, "zzzz"), []);
 });

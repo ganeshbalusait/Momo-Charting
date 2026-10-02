@@ -16,6 +16,7 @@ import {
   Settings,
   SlidersHorizontal,
   Star,
+  X,
   Zap,
 } from "lucide-react";
 
@@ -23,8 +24,10 @@ import { tapeState } from "./marketSession.js";
 import {
   boardSymbols,
   feedAge,
+  filterFeedGroups,
   groupFeedBySymbol,
   mergeStoredNews,
+  parseNewsQuery,
   sentimentTone,
   sourceHealthLine,
   MOMX_NEWS_FRESH_MS as NEWSFEED_FRESH_MS,
@@ -2150,10 +2153,113 @@ const SQZ_SWATCH = Object.fromEntries(
 // says where they came from and which feeds did not answer. Shown while NEWS
 // is pressed, above the table, in its own scroller so a long list never pushes
 // the board off a phone. Pure rendering; the data comes from the panel.
+//
+// Search (2026-10-02): the box above the list narrows it to a ticker ("GEV",
+// "nvda amd") or to words ("nuclear"). Pressing Enter / Search on a ticker
+// also asks the store for it - so a ticker that is NOT on the board still
+// gets its headlines - and, when the store has none yet, reads the sources
+// for just that ticker.
 function MomxNewsFeedBox({ payload, busy, symbols, onRefresh }) {
   const [open, setOpen] = useState(true);
+  const [query, setQuery] = useState("");
+  const [lookup, setLookup] = useState(null); // { symbols, payload, busy, note }
+  const lookupSeqRef = useRef(0);
+  useEffect(() => () => { lookupSeqRef.current += 1; }, []);
   const nowMs = Date.now();
-  const groups = useMemo(() => groupFeedBySymbol(payload ? payload.feed : [], symbols), [payload, symbols]);
+  const parsed = useMemo(() => parseNewsQuery(query), [query]);
+  const boardGroups = useMemo(() => groupFeedBySymbol(payload ? payload.feed : [], symbols), [payload, symbols]);
+  const lookupGroups = useMemo(
+    () => (lookup && lookup.payload ? groupFeedBySymbol(lookup.payload.feed, lookup.symbols) : []),
+    [lookup],
+  );
+  const allGroups = useMemo(() => {
+    if (lookupGroups.length === 0) return boardGroups;
+    // A searched ticker's own read is the fresher one; the board copy yields.
+    const searched = new Set(lookupGroups.map((g) => g.symbol));
+    return lookupGroups.concat(boardGroups.filter((g) => !searched.has(g.symbol)));
+  }, [boardGroups, lookupGroups]);
+  const groups = useMemo(() => filterFeedGroups(allGroups, parsed), [allGroups, parsed]);
+  const searching = parsed.raw !== "";
+  const lookupBusy = Boolean(lookup && lookup.busy);
+  const runLookup = useCallback(async (wanted) => {
+    const seq = ++lookupSeqRef.current;
+    const live = () => lookupSeqRef.current === seq;
+    const readStore = async () => {
+      try {
+        const response = await fetch(
+          MOMX_NEWS_LATEST_ENDPOINT + "?symbols=" + encodeURIComponent(wanted.join(",")),
+          { cache: "no-store" },
+        );
+        if (!response.ok) return null;
+        const body = await response.json();
+        return body && typeof body === "object" ? body : null;
+      } catch {
+        return null;
+      }
+    };
+    const missingIn = (body) => {
+      const have = new Set((body && Array.isArray(body.feed) ? body.feed : []).map((item) => String(item && item.symbol || "").toUpperCase()));
+      return wanted.filter((s) => !have.has(s));
+    };
+    setLookup({ symbols: wanted, payload: null, busy: true, note: "Looking up " + wanted.join(", ") + "…" });
+    let body = await readStore();
+    if (!live()) return;
+    let missing = missingIn(body);
+    if (missing.length === 0) {
+      setLookup({ symbols: wanted, payload: body, busy: false, note: "" });
+      return;
+    }
+    setLookup({ symbols: wanted, payload: body, busy: true, note: "Reading the sources for " + missing.join(", ") + "…" });
+    // The server runs ONE scrape at a time: if another is running, wait for
+    // it, then ask again for just the missing tickers (twice at most).
+    const deadline = Date.now() + MOMX_NEWS_REFRESH_WAIT_MS;
+    for (let attempt = 0; attempt < 2 && missing.length > 0 && Date.now() < deadline; attempt += 1) {
+      let started = false;
+      try {
+        const response = await fetch(MOMX_NEWS_REFRESH_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({ symbols: missing.slice(0, MOMX_NEWS_REFRESH_MAX_SYMBOLS) }),
+        });
+        const reply = response.ok ? await response.json() : null;
+        started = Boolean(reply && reply.started);
+      } catch {
+        break;
+      }
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, MOMX_NEWS_REFRESH_POLL_MS));
+        if (!live()) return;
+        const next = await readStore();
+        if (!live()) return;
+        if (next) {
+          body = next;
+          setLookup((prev) => (prev ? { ...prev, payload: next } : prev));
+          if (!next.refreshing) break;
+        }
+      }
+      missing = missingIn(body);
+      if (started) break;
+    }
+    if (!live()) return;
+    setLookup({
+      symbols: wanted,
+      payload: body,
+      busy: false,
+      note: missing.length > 0 ? "No headline found for " + missing.join(", ") + " in the last " + ((body && body.lookbackDays) || 7) + " days." : "",
+    });
+  }, []);
+  const submitSearch = (event) => {
+    event.preventDefault();
+    if (parsed.symbols.length === 0) return;
+    if (!open) setOpen(true);
+    runLookup(parsed.symbols);
+  };
+  const clearSearch = () => {
+    lookupSeqRef.current += 1;
+    setQuery("");
+    setLookup(null);
+  };
   const refreshing = Boolean(busy || (payload && payload.refreshing));
   // `busy` is known before the store has been polled again, so the line says
   // "refreshing" the moment the button does, not a poll later.
@@ -2171,7 +2277,7 @@ function MomxNewsFeedBox({ payload, busy, symbols, onRefresh }) {
         >
           <ChevronDown size={13} aria-hidden="true" className="momx-industry-caret" />
           <span>Headlines</span>
-          <span className="momx-industry-total">{groups.length}</span>
+          <span className="momx-industry-total">{searching ? groups.length + "/" + allGroups.length : groups.length}</span>
         </button>
         <span className={"momx-newsfeed-health" + (unavailable ? " is-down" : "")} data-testid="momx-newsfeed-health" title={health}>
           {health}
@@ -2187,11 +2293,52 @@ function MomxNewsFeedBox({ payload, busy, symbols, onRefresh }) {
           {refreshing ? "Refreshing…" : "Refresh"}
         </button>
       </div>
+      {open ? (
+        <form className="momx-newsfeed-search" role="search" onSubmit={submitSearch} data-testid="momx-newsfeed-search">
+          <Search size={13} aria-hidden="true" className="momx-newsfeed-search-icon" />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Escape") clearSearch(); }}
+            placeholder="Search ticker or words (GEV, nuclear)"
+            aria-label="Search headlines by ticker or words"
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="search"
+            data-testid="momx-newsfeed-search-input"
+          />
+          {query ? (
+            <button type="button" className="momx-newsfeed-search-clear" onClick={clearSearch} aria-label="Clear the search" title="Clear the search">
+              <X size={12} aria-hidden="true" />
+            </button>
+          ) : null}
+          <button
+            type="submit"
+            className="momx-newsfeed-refresh"
+            disabled={parsed.symbols.length === 0 || lookupBusy}
+            title="Look up the headlines for these tickers, even ones not on the board"
+            data-testid="momx-newsfeed-search-go"
+          >
+            {lookupBusy ? "Searching…" : "Search"}
+          </button>
+        </form>
+      ) : null}
+      {open && lookup && lookup.note ? (
+        <p className="momx-newsfeed-empty momx-newsfeed-note" data-testid="momx-newsfeed-search-note">{lookup.note}</p>
+      ) : null}
       {!open ? null : groups.length === 0 ? (
         <p className="momx-newsfeed-empty">
-          {refreshing
-            ? "Reading the sources for " + Math.min(symbols.length, MOMX_NEWS_REFRESH_MAX_SYMBOLS) + " tickers…"
-            : "No stored headline for these tickers yet. Press Refresh."}
+          {searching
+            ? (lookupBusy
+              ? "Searching…"
+              : parsed.symbols.length > 0 && !lookup
+                ? "No headline for \"" + parsed.raw + "\" on the board. Press Search to look it up."
+                : "No headline matches \"" + parsed.raw + "\".")
+            : refreshing
+              ? "Reading the sources for " + Math.min(symbols.length, MOMX_NEWS_REFRESH_MAX_SYMBOLS) + " tickers…"
+              : "No stored headline for these tickers yet. Press Refresh."}
         </p>
       ) : (
         <div className="momx-newsfeed-list">

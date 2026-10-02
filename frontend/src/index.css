@@ -22181,6 +22181,61 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
   cursor: pointer;
 }
 .momx-scanner-panel .momx-newsfeed-refresh:disabled { opacity: 0.55; cursor: default; }
+.momx-scanner-panel .momx-newsfeed-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 6px;
+  min-width: 0;
+}
+.momx-scanner-panel .momx-newsfeed-search-icon {
+  position: absolute;
+  left: 15px;
+  top: 6px;
+  color: #94a3b8;
+  pointer-events: none;
+}
+.momx-scanner-panel .momx-newsfeed-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 26px 0 26px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.6);
+  color: #e2e8f0;
+  font: inherit;
+  /* 16px keeps iOS Safari from zooming the page on focus. */
+  font-size: 16px;
+  line-height: 26px;
+}
+.momx-scanner-panel .momx-newsfeed-search input::-webkit-search-cancel-button { display: none; }
+.momx-scanner-panel .momx-newsfeed-search input:focus {
+  outline: none;
+  border-color: rgba(251, 191, 36, 0.6);
+}
+.momx-scanner-panel .momx-newsfeed-search input::placeholder { color: #64748b; font-size: 12px; }
+.momx-scanner-panel .momx-newsfeed-search-clear {
+  position: absolute;
+  right: 82px;
+  top: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+.momx-scanner-panel .momx-newsfeed-search .momx-newsfeed-refresh {
+  flex: 0 0 66px;
+  height: 26px;
+}
+.momx-scanner-panel .momx-newsfeed-note { padding-top: 0; color: #fbbf24; }
 .momx-scanner-panel .momx-newsfeed-empty {
   margin: 0;
   padding: 6px 10px 8px;
