@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-10-01T23:00:00-04:00",
+      "heading": "Search the MomX Headlines",
+      "items": [
+        "The Headlines box on the MomX NEWS view now has a search field. Type a ticker (GEV, MU) to see only its stories, or type words (nuclear, upgrade) to find every headline or teaser that mentions them. Clear the field to get the full list back.",
+        "Looking for a ticker that is not on the board? Type it and press Enter (or the magnifier). If the news store already has it, its headlines show at once; if not, the app reads the news sources for that one ticker (about half a minute) and shows what it finds, or says plainly that nothing was published in the last 7 days."
+      ]
+    },
+    {
       "at": "2026-09-27T08:40:00-04:00",
       "heading": "News flash toned down: green or red only, no fill",
       "items": [

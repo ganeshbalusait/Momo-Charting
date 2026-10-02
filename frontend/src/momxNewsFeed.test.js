@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   boardSymbols,
   feedAge,
+  filterFeedGroups,
   groupFeedBySymbol,
+  parseNewsSearch,
   mergeStoredNews,
   sentimentTone,
   sourceHealthLine,
@@ -128,4 +130,31 @@ test("sentimentTone maps the scraper's words", () => {
   assert.equal(sentimentTone("Neutral"), "flat");
   assert.equal(sentimentTone(""), null);
   assert.equal(sentimentTone(undefined), null);
+});
+
+test("parseNewsSearch reads a ticker and words at once", () => {
+  assert.deepEqual(parseNewsSearch("  nvda "), { text: "nvda", symbol: "NVDA" });
+  assert.deepEqual(parseNewsSearch("$brk.b"), { text: "$brk.b", symbol: "BRK.B" });
+  assert.equal(parseNewsSearch("rate cut").symbol, null);
+  assert.equal(parseNewsSearch("123").symbol, null);
+  assert.deepEqual(parseNewsSearch(""), { text: "", symbol: null });
+  assert.deepEqual(parseNewsSearch(undefined), { text: "", symbol: null });
+});
+
+test("filterFeedGroups narrows by ticker prefix or headline words", () => {
+  const groups = groupFeedBySymbol([
+    stored("GEV", "GE Vernova wins nuclear deal", 2),
+    stored("GEV", "Analyst upgrades GE Vernova", 5),
+    stored("GE", "GE Aerospace engine order", 1),
+    stored("MU", "Micron beats on memory demand", 3, { summary: "Nuclear-powered data centers need DRAM" }),
+  ], ["GEV", "GE", "MU"]);
+  assert.equal(filterFeedGroups(groups, ""), groups);
+  // Exact ticker first, prefix matches keep all their stories.
+  const ge = filterFeedGroups(groups, "ge");
+  assert.deepEqual(ge.map((g) => g.symbol), ["GE", "GEV"]);
+  assert.equal(ge[1].items.length, 2);
+  // Words: only the matching stories, teaser included, case-insensitive.
+  const nuclear = filterFeedGroups(groups, "NUCLEAR");
+  assert.deepEqual(nuclear.map((g) => [g.symbol, g.items.length]), [["GEV", 1], ["MU", 1]]);
+  assert.deepEqual(filterFeedGroups(groups, "zzzz"), []);
 });

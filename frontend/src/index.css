@@ -22364,3 +22364,45 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .momx-news-pop-verdict.is-up { color: #4ade80; }
 .momx-news-pop-verdict.is-down { color: #f87171; }
 .momx-news-pop-verdict.is-flat { color: #c4b5fd; }
+.momx-scanner-panel .momx-newsfeed-search {
+  display: flex;
+  align-items: center;
+  flex: 1 1 150px;
+  max-width: 240px;
+  min-width: 0;
+  height: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.6);
+}
+.momx-scanner-panel .momx-newsfeed-search:focus-within { border-color: rgba(251, 191, 36, 0.6); }
+.momx-scanner-panel .momx-newsfeed-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: #e2e8f0;
+  font: inherit;
+  font-size: 16px; /* 16px keeps iOS Safari from zooming on focus */
+  line-height: 1;
+  outline: none;
+}
+@media (min-width: 761px) {
+  .momx-scanner-panel .momx-newsfeed-search input { font-size: 12px; }
+}
+.momx-scanner-panel .momx-newsfeed-search button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid rgba(148, 163, 184, 0.25);
+  background: transparent;
+  color: #fbbf24;
+  cursor: pointer;
+}
+.momx-scanner-panel .momx-newsfeed-search button:disabled { color: #64748b; cursor: default; }

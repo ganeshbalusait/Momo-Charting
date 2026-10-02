@@ -166,3 +166,41 @@ export function sentimentTone(sentiment) {
   if (word === "neutral") return "flat";
   return null;
 }
+
+// The Headlines search (2026-10-02). What he typed, read two ways at once: as a
+// ticker (AAPL, BRK.B) and as words to find in a headline or teaser. `symbol` is
+// null when the text cannot be a ticker (spaces, digits-only, too long).
+export function parseNewsSearch(query) {
+  const text = typeof query === "string" ? query.trim() : "";
+  const upper = text.replace(/^\$/, "").toUpperCase();
+  const symbol = /^[A-Z][A-Z0-9.\-]{0,9}$/.test(upper) ? upper : null;
+  return { text: text.toLowerCase(), symbol };
+}
+
+// The grouped list narrowed to the search. A ticker whose symbol starts with
+// the query keeps all its stories; any other ticker keeps only the stories
+// whose headline, teaser or publisher contains the words. An exact ticker
+// match is listed first. Empty query: the groups untouched.
+export function filterFeedGroups(groups, query) {
+  const list = Array.isArray(groups) ? groups : [];
+  const { text, symbol } = parseNewsSearch(query);
+  if (text === "") return list;
+  const exact = [];
+  const rest = [];
+  for (const group of list) {
+    if (!group || typeof group.symbol !== "string") continue;
+    if (symbol && group.symbol.startsWith(symbol)) {
+      (group.symbol === symbol ? exact : rest).push(group);
+      continue;
+    }
+    const items = (Array.isArray(group.items) ? group.items : []).filter((item) => {
+      const hay = [item.headline, item.summary, item.source, item.via]
+        .filter((part) => typeof part === "string")
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(text);
+    });
+    if (items.length > 0) rest.push({ ...group, items });
+  }
+  return exact.concat(rest);
+}
