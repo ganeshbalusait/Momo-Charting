@@ -2104,3 +2104,19 @@ test("History: evaluating an old snapshot never touches the live OPT latch", () 
   assert.equal(earlyOpt(optRow({ symbol: "LIVE", m5: { state: "holding" } }), today("11:00")).clock, "09:40", "today's latch kept");
   assert.equal(earlyOpt(optRow({ symbol: "OLD", m5: { state: "holding" } }), today("11:00")), null, "nothing leaked into today");
 });
+test("History: SQZ fires and Skittles breaks read the stored setupTimeline", () => {
+  const at = Date.parse("2026-10-01T10:12:00-04:00");
+  const stored = row({
+    symbol: "COHR",
+    skittles: { D: { bg: "cyan" } },
+    gradeFresh: { setupTimeline: [
+      { at: "2026-10-01T10:03:00-04:00", what: "SQZ 2h released" },
+      { at: "2026-10-01T10:05:00-04:00", what: "SKIT D bg cyan" },
+    ] },
+  });
+  assert.deepEqual(sqzFires(stored, at).map((f) => f.tf), ["2h"]);
+  const texts = strategyTags(stored, at, { archive: true }).map((t) => t.text);
+  assert.ok(texts.includes("SQZ 2h 10:03") && texts.includes("SKIT↑ D 10:05"), texts.join(" | "));
+  // A live row's full timeline still wins when both are present.
+  assert.deepEqual(sqzFires({ ...stored, gradeFresh: { timeline: [], setupTimeline: stored.gradeFresh.setupTimeline } }, at), []);
+});

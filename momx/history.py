@@ -121,6 +121,17 @@ STRIPPED_FIELDS = ("sparkline", "quoteTrend")
 GRADE_STRIPPED_FIELDS = ("sqzRaw", "adx")
 GRADE_STRIPPED_SUBFIELDS = (("m5", "lastCompleted"), ("m5", "pillars"), ("gradeFresh", "timeline"))
 
+#: ...but the Setup cell is worked out in the browser FROM those fields
+#: (2026-10-02, "live setup column has so much information but history it's
+#: not there"): GO / GO+ / OPT read adx["30m"] +DI/-DI, the ADX tag reads
+#: adx["5m"], SQZ-fire and Skittles-break tags read the gradeFresh timeline,
+#: ZS reads m5.pillars.zs. A History row keeps ONLY those pieces:
+#: four numbers per ADX timeframe (not the ~336 B cells), the timeline items
+#: the Setup tags read as ``gradeFresh.setupTimeline`` (a different key, so
+#: the why panel never shows a filtered list as THE timeline), and pillars.zs.
+SETUP_ADX_KEYS = ("plus", "minus", "adx", "prevAdx", "rising")
+_SETUP_TIMELINE_WHAT = re.compile(r"^(SQZ (2h|4h|D|Wk) released|SKIT \S+ bg \S+)$")
+
 #: RVOL timeframes scanned for peakRvol. Extra timeframes on a row are
 #: included too; missing ones are simply skipped.
 _RVOL_TIMEFRAMES = ("5m", "15m", "30m", "1h", "2h", "4h", "D")
@@ -200,6 +211,31 @@ def _fingerprint(row: dict) -> dict[str, list]:
     news = row.get("news")
     if isinstance(news, dict):
         fingerprint["news.headline"] = [news.get("headline"), None, None]
+    # Setup-cell events that change no cell above (2026-10-02): a chart
+    # arrow, a daily-line fire, a GO candle or MOMOX A+ appearing must get its
+    # own snapshot, or History never shows the setup the live board showed.
+    # Added only when present, so rows stored before this change (which
+    # carry the same fields) compare equal and get no extra snapshot.
+    signals = row.get("chartSignals")
+    if isinstance(signals, list):
+        arrows = sorted(
+            "|".join(str(s.get(key) or "") for key in ("label", "family", "at"))
+            for s in signals
+            if isinstance(s, dict) and s.get("label") and not s.get("goneAt")
+        )
+        if arrows:
+            fingerprint["setup.chartSignals"] = [arrows, None, None]
+    day_lines = row.get("dayLines")
+    fired = sorted(str(k) for k, v in day_lines.items() if v) if isinstance(day_lines, dict) else []
+    if fired:
+        fingerprint["setup.dayLines"] = [fired, None, None]
+    m5 = row.get("m5")
+    gap_go = m5.get("gapGo") if isinstance(m5, dict) else None
+    if isinstance(gap_go, dict) and gap_go.get("goAt"):
+        fingerprint["setup.goAt"] = [gap_go.get("goAt"), None, None]
+    aplus = row.get("momoxAPlus")
+    if isinstance(aplus, dict) and aplus.get("at"):
+        fingerprint["setup.momoxAPlus"] = [aplus.get("at"), None, None]
     return fingerprint
 
 
@@ -246,7 +282,35 @@ def _archive_row(row: dict, *, strip_bulk: bool) -> dict:
         inner = out.get(field)
         if isinstance(inner, dict) and sub in inner:
             out[field] = {key: value for key, value in inner.items() if key != sub}
+    _keep_setup_inputs(row, out)
     return out
+
+
+def _keep_setup_inputs(row: dict, out: dict) -> None:
+    """Put back the slim pieces of the stripped fields the Setup tags read."""
+    adx = row.get("adx")
+    if isinstance(adx, dict):
+        slim = {
+            tf: {key: cell.get(key) for key in SETUP_ADX_KEYS if key in cell}
+            for tf, cell in adx.items()
+            if isinstance(cell, dict)
+        }
+        if slim:
+            out["adx"] = slim
+    fresh = row.get("gradeFresh")
+    timeline = fresh.get("timeline") if isinstance(fresh, dict) else None
+    if isinstance(timeline, list) and isinstance(out.get("gradeFresh"), dict):
+        events = [
+            {"at": item.get("at"), "what": item.get("what")}
+            for item in timeline
+            if isinstance(item, dict) and _SETUP_TIMELINE_WHAT.match(str(item.get("what") or ""))
+        ]
+        if events:
+            out["gradeFresh"] = {**out["gradeFresh"], "setupTimeline": events}
+    m5 = row.get("m5")
+    pillars = m5.get("pillars") if isinstance(m5, dict) else None
+    if isinstance(pillars, dict) and pillars.get("zs") is not None and isinstance(out.get("m5"), dict):
+        out["m5"] = {**out["m5"], "pillars": {"zs": pillars.get("zs")}}
 
 
 def _change_row(row: dict) -> dict:

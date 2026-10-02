@@ -497,12 +497,24 @@ export function chartArrows(row, nowMs = Date.now()) {
 }
 
 /**
+ * The grade's timeline items. A History snapshot does not store the full
+ * timeline, only the SQZ-release / SKIT items the Setup tags read
+ * (momx/history.py gradeFresh.setupTimeline).
+ */
+function gradeTimeline(row) {
+  const fresh = row && row.gradeFresh;
+  if (!fresh) return [];
+  if (Array.isArray(fresh.timeline)) return fresh.timeline;
+  return Array.isArray(fresh.setupTimeline) ? fresh.setupTimeline : [];
+}
+
+/**
  * The first 2h / 4h squeeze FIRE seen today in regular hours, per timeframe,
  * from the grade's own timeline ("SQZ 2h released" - the cell turning to its
  * fired state). 2026-09-25 PYPL: SQZ 2h fired 10:07, C4H 10:10, then +3.3%.
  */
 export function sqzFires(row, nowMs = Date.now()) {
-  const timeline = row && row.gradeFresh && Array.isArray(row.gradeFresh.timeline) ? row.gradeFresh.timeline : [];
+  const timeline = gradeTimeline(row);
   const today = etParts(nowMs).day;
   const first = new Map();
   for (const e of timeline) {
@@ -1319,7 +1331,7 @@ export function skittlesBreaks(row, nowMs = Date.now()) {
   if (!row || !row.skittles) return [];
   const bear = isBearRow(row);
   const set = bear ? SKIT_BREAK_BEAR : new Set(["cyan", "green", "lime"]);
-  const timeline = row.gradeFresh && Array.isArray(row.gradeFresh.timeline) ? row.gradeFresh.timeline : [];
+  const timeline = gradeTimeline(row);
   const seen = new Map();
   for (const e of timeline) {
     const m = /^SKIT (\S+) bg (\S+)$/.exec(String((e && e.what) || ""));
