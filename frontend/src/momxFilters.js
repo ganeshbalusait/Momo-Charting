@@ -188,12 +188,32 @@ export function resetOptLatch() {
     // no storage
   }
 }
-/** {clock, at(ms)} when this row's OPT first showed today before 10:00 ET, else null. */
-export function earlyOpt(row, nowMs = Date.now()) {
+/** The latch for `day` without touching the live one (History reads old days). */
+function peekOptLatch(day, direction) {
+  const held = optLatches[direction];
+  if (held && held.day === day) return held;
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(direction === "bear" ? OPT_LATCH_KEY_BEAR : OPT_LATCH_KEY) || "null");
+    if (saved && saved.day === day && saved.seen && typeof saved.seen === "object") return saved;
+  } catch {
+    // no storage
+  }
+  return { day, seen: {} };
+}
+/**
+ * {clock, at(ms)} when this row's OPT first showed today before 10:00 ET, else null.
+ * readOnly (History): evaluate an archived snapshot without loading another
+ * day into, or writing to, the live board's latch.
+ */
+export function earlyOpt(row, nowMs = Date.now(), { readOnly = false } = {}) {
   const sym = row && row.symbol;
   if (!sym || isEtfRow(row)) return null;
   const direction = isBearRow(row) ? "bear" : "bull";
   const now = etParts(nowMs);
+  if (readOnly) {
+    const at = peekOptLatch(now.day, direction).seen[sym];
+    return at && at <= nowMs ? { at, clock: etClock(new Date(at).toISOString()) } : null;
+  }
   const latch = loadOptLatch(now.day, direction);
   if (!(sym in latch.seen) && now.min >= 9 * 60 + 30 && now.min < OPT_CUTOFF_MIN && optionsSetup(row)) {
     latch.seen[sym] = nowMs;
@@ -1076,7 +1096,11 @@ function dayLineTags(row, nowMs, tags) {
       + ". TEST rule, tracked by the bot." });
 }
 
-export function strategyTags(row, nowMs = Date.now(), { legacy = true } = {}) {
+/**
+ * archive: the row is a History snapshot evaluated at its own time (nowMs);
+ * nothing on it may write the live board's state (the OPT latch).
+ */
+export function strategyTags(row, nowMs = Date.now(), { legacy = true, archive = false } = {}) {
   const verdict = row && row.strategy && typeof row.strategy === "object" ? row.strategy : null;
   const RULES = strategyRules(isBearRow(row) ? "bear" : "bull");
   // The "5m cross" tag was removed 2026-09-24 09:25 ET at his request ("too
@@ -1085,7 +1109,7 @@ export function strategyTags(row, nowMs = Date.now(), { legacy = true } = {}) {
   const tags = [];
   // Everything from here to the ADX tag is the 2026-09-24/25 set (see
   // MOMX_NEW_SETUPS): the Setup cell reads as it did on 2026-09-24 morning.
-  if (MOMX_NEW_SETUPS) newSetupTags(row, nowMs, RULES, tags);
+  if (MOMX_NEW_SETUPS) newSetupTags(row, nowMs, RULES, tags, archive);
   dayLineTags(row, nowMs, tags);
   const mom = sqzMomentumTag(row);
   if (mom) tags.push(mom);
@@ -1153,12 +1177,12 @@ function markFreshTags(tags, nowMs) {
   });
 }
 
-function newSetupTags(row, nowMs, RULES, tags) {
+function newSetupTags(row, nowMs, RULES, tags, archive = false) {
   const confirmedGo = goRvolMacd(row, nowMs);
   if (confirmedGo) tags.push({ key: isBearRow(row) ? "go-rvol-macd-bear" : "go-rvol-macd", text: (isBearRow(row) ? "GO+ ↓ " : "GO+ ") + confirmedGo.clock,
     atMs: confirmedGo.atMs, title: "GO + short RVOL + MACD. Confirmation candle closed "
       + confirmedGo.clock + " ET. " + RULES.goRvolMacd });
-  const opt = earlyOpt(row, nowMs);
+  const opt = earlyOpt(row, nowMs, { readOnly: archive });
   const starRank = row && Number.isFinite(Number(row.bestRank)) ? Number(row.bestRank) : null;
   if (starRank) {
     tags.push({

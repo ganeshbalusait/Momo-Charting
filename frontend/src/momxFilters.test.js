@@ -2081,3 +2081,26 @@ test("SQZ fire tag counts D and Wk too (2026-09-30)", async () => {
   ] } };
   assert.deepEqual(sqzFires(row, now).map((f) => f.tf + " " + f.clock), ["D 09:45", "Wk 10:05"]);
 });
+
+// History (2026-10-02 "same setup it's not showing in history"): a snapshot's
+// Setup tags are worked out at the snapshot's own time, not at Date.now().
+test("History: a snapshot shows the tags the live board showed at that moment", () => {
+  const snapAt = Date.parse("2026-10-01T10:20:00-04:00");
+  const snap = optRow({
+    symbol: "COHR",
+    chartSignals: [{ label: "CALL2H", family: "4x8", timeframe: "2H", at: "2026-10-01T10:00:00-04:00" }],
+  });
+  const then = strategyTags(snap, snapAt, { archive: true }).map((t) => t.text);
+  assert.ok(then.some((t) => /CALL2H/.test(t)), "CALL2H at 10:20: " + then.join(" "));
+  const nextDay = strategyTags(snap, Date.parse("2026-10-02T10:20:00-04:00")).map((t) => t.text);
+  assert.ok(!nextDay.some((t) => /CALL2H/.test(t)), "the same row read the next day has lost it (the bug)");
+});
+test("History: evaluating an old snapshot never touches the live OPT latch", () => {
+  resetOptLatch();
+  const today = (hm) => Date.parse("2026-10-02T" + hm + ":00-04:00");
+  assert.equal(earlyOpt(optRow({ symbol: "LIVE" }), today("09:40")).clock, "09:40");
+  // Yesterday's 09:45 snapshot, read from History: no latch write, no day swap.
+  strategyTags(optRow({ symbol: "OLD" }), Date.parse("2026-10-01T09:45:00-04:00"), { archive: true });
+  assert.equal(earlyOpt(optRow({ symbol: "LIVE", m5: { state: "holding" } }), today("11:00")).clock, "09:40", "today's latch kept");
+  assert.equal(earlyOpt(optRow({ symbol: "OLD", m5: { state: "holding" } }), today("11:00")), null, "nothing leaked into today");
+});

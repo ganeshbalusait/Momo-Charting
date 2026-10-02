@@ -2418,7 +2418,10 @@ function hlBlock(cell) {
   );
 }
 
-function gradeCell(column, row, onOpenGrade, base = "momx-cell") {
+// atMs: a History snapshot's own time. Its Setup tags are worked out as of
+// that moment (chart arrows, SQZ fires, GO... all expire against the clock),
+// so the row shows what the live board showed then, not what is left today.
+function gradeCell(column, row, onOpenGrade, base = "momx-cell", atMs = undefined) {
   if (column.kind === "setup") {
     const text = setupText(row);
     const parts = setupParts(text);
@@ -2431,7 +2434,7 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell") {
         (typeof m5.trigger === "number" && Number.isFinite(m5.trigger) ? "$" + m5.trigger.toFixed(2) : "–")
       : "";
     const hover = [since, chartPart].filter(Boolean).join(" · ") || undefined;
-    const tags = strategyTags(row);
+    const tags = Number.isFinite(atMs) ? strategyTags(row, atMs, { archive: true }) : strategyTags(row);
     // The momentum WORD (Fading / Holding / Extended / Building) is no longer
     // printed here (his ask, 2026-09-24): it describes only the last few 5m
     // candles, and "A+ · Fading" read as a downtrend - FSLY showed "A ·
@@ -2900,7 +2903,7 @@ const MomxHistoryRow = memo(function MomxHistoryRow({ entry, newsTime, onOpenSna
       {columns.map((column) => {
         const base = "momx-cell" + (changed && changed.has(column.key) ? " is-changed" : "");
         if (column.kind === "setup" || column.kind === "fresh") {
-          return gradeCell(column, row, onOpenGrade, base);
+          return gradeCell(column, row, onOpenGrade, base, entry.atMs || undefined);
         }
         if (column.kind === "news" || column.kind === "event") {
           // News age as of the snapshot, like the badge; Event = today's calendar.
