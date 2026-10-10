@@ -282,6 +282,19 @@ import {
 } from "./liveMarketStream";
 import { chartWakeDecision } from "./chartWake";
 import {
+  oiChartCachedPayloadIsNewer,
+  oiChartEmptyResponseIsStale,
+  oiChartErrorPlacement,
+  oiChartForceNewCanUseCached,
+  oiChartForceNewMayJoin,
+  oiChartHasBarsPollDelay,
+  oiChartRequestTimeoutMs,
+  oiChartResponseMayApply,
+  oiChartShouldPullDeepOnHistoryReady,
+  OI_CHART_FIRST_PAINT_WATCHDOG_MS,
+  shouldForceNewOiChartRequest,
+} from "./oiChartPollPolicy";
+import {
   isSchwabTosChartPacket,
   mergeLatestStreamBar,
   reconcileRestBarsWithLiveTail,
@@ -369,7 +382,10 @@ const OI_CHART_CLIENT_CACHE_SCHEMA_VERSION = 4;
 // chain 65.1s), then drops to 2-3s once warm. A 60s budget against a 109s
 // answer aborts every cold open and leaves the pane on "Loading live
 // one-minute candles" - which is exactly the timeout the trader kept hitting.
-const OI_CHART_INITIAL_REQUEST_TIMEOUT_MS = 300_000;
+// 2026-10-10: that 300s budget now applies to the deep=true pull only. Since
+// the server acknowledges a cold symbol as warming at once, a 300s budget on
+// every request let one stuck request hide bars the server already held for
+// up to five minutes. See oiChartRequestTimeoutMs in oiChartPollPolicy.js.
 const OI_CHART_HISTORY_STATUS_TIMEOUT_MS = 15_000;
 const OI_FINDER_COMPACT_CHAIN_REQUEST_TIMEOUT_MS = 20_000;
 const OI_CHART_REST_RECONCILE_MS = 30_000;
@@ -11783,6 +11799,11 @@ const priceAlertTriggerLocks = new Set();
 const oiAlertLivePrices = new Map();
 
 const oiChartPayloadCache = new Map();
+// Issue order of chart requests across every pane. A forceNew request can now
+// overlap an older one for the same symbol, so a stored payload carries the
+// generation of the request that produced it and an older request that
+// resolves later must not overwrite it (2026-10-10).
+let oiChartRequestGeneration = 0;
 const oiFinderChainPrefetchCache = new Map();
 const mobileQuickOptionsPrefetchCache = new Map();
 
@@ -12711,6 +12732,7 @@ async function loadSharedOiChartPayload(
   forceFullTape = false,
   initialStudySeed = false,
   compactHistory = false,
+  { forceNew = false, stuckSince = 0, firstPaint = false } = {},
 ) {
   const key = String(symbol || "").trim().toUpperCase();
   if (!key) throw new Error("Select a ticker to load live candles.");
@@ -12731,7 +12753,25 @@ async function loadSharedOiChartPayload(
     setOiChartPayloadCacheEntry(key, cached);
     return cached.payload;
   }
-  if (cached?.promise) {
+  // A sibling pane already got bars after this pane's request went stuck:
+  // that payload is the answer, no request needed (bypassCache would refuse
+  // it, so this is checked first).
+  if (forceNew && oiChartForceNewCanUseCached({
+    cachedBarCount: cached?.payload?.bars?.length || 0,
+    cachedSavedAt: cached?.savedAt,
+    stuckSince,
+  })) {
+    return cached.payload;
+  }
+  // forceNew: the pane has never painted and the request it would join has
+  // been waiting for seconds while the server reports it already holds bars.
+  // Joining would strand the pane behind that one stuck request - but only a
+  // STUCK promise is skipped; one a sibling pane started moments ago is the
+  // fresh request this pane wanted, so it is joined.
+  if (cached?.promise && (!forceNew || oiChartForceNewMayJoin({
+    promiseStartedAt: cached.promiseStartedAt,
+    nowMs: now,
+  }))) {
     setOiChartPayloadCacheEntry(key, cached);
     const pendingPayload = await cached.promise;
     if (!initialStudySeed || oiChartHasInitialStudySeed(pendingPayload)) return pendingPayload;
@@ -12749,9 +12789,14 @@ async function loadSharedOiChartPayload(
     );
   }
 
+  oiChartRequestGeneration += 1;
+  const requestGeneration = oiChartRequestGeneration;
   const promise = (async () => {
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), OI_CHART_INITIAL_REQUEST_TIMEOUT_MS);
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      oiChartRequestTimeoutMs({ deep: forceFullTape, refresh: refreshServerHistory, firstPaint }),
+    );
     try {
       // A speculative warm-up needs the same bounded candle seed as a visible
       // first paint. Downloading the full 20-year indicator tape on hover made
@@ -12810,7 +12855,22 @@ async function loadSharedOiChartPayload(
         if (payload.warming || payload.refreshing) return payload;
         throw new Error(responsePayload?.error || `No live one-minute candles are available for ${key}.`);
       }
-      setOiChartPayloadCacheEntry(key, { payload, savedAt: Date.now() });
+      const latestEntry = oiChartPayloadCache.get(key);
+      // A later-issued (forceNew) request already stored its tape: this older
+      // snapshot must not roll the shared cache back.
+      if (!oiChartCachedPayloadIsNewer(latestEntry?.payloadGeneration, requestGeneration)) {
+        // Keep a newer request's promise in the entry so later callers still
+        // join it instead of issuing a third request.
+        const newerPromise = latestEntry?.promise && latestEntry.promise !== promise
+          ? latestEntry.promise
+          : null;
+        setOiChartPayloadCacheEntry(key, {
+          payload,
+          savedAt: Date.now(),
+          payloadGeneration: requestGeneration,
+          ...(newerPromise ? { promise: newerPromise } : {}),
+        });
+      }
       return payload;
     } catch (error) {
       if (isTransientOiChartTransportError(error)) {
@@ -12825,7 +12885,7 @@ async function loadSharedOiChartPayload(
     }
   })();
 
-  setOiChartPayloadCacheEntry(key, { ...cached, promise });
+  setOiChartPayloadCacheEntry(key, { ...cached, promise, promiseStartedAt: now });
   try {
     const payload = await promise;
     // Warming responses intentionally have no candle tape yet. Do not leave
@@ -18144,6 +18204,17 @@ function OiFinderCandleChart({
     // previous evening with price, day-move and candles all stopped at that
     // instant, twelve hours after the fact.
     let requestStartedAt = 0;
+    // 2026-10-10: a never-painted pane may now run a second request beside a
+    // stuck one (see shouldForceNewOiChartRequest), so the boolean above is
+    // derived from a count, and each request carries an issue number so the
+    // older one resolving last cannot roll newer candles back.
+    let requestsInFlight = 0;
+    let deepRequestsInFlight = 0;
+    let requestSeq = 0;
+    let appliedRequestSeq = 0;
+    // True once THIS symbol's REST tape has painted. Stream ticks alone do not
+    // count: they cannot seed studies, and the readiness poll must keep asking.
+    let restBarsPainted = false;
     // Consecutive transport failures (5xx / timeout / lost connection) for THIS
     // symbol. Scoped to the effect so switching ticker starts clean. Without
     // it every failure looked like "warming" and the chart showed the loading
@@ -18174,17 +18245,40 @@ function OiFinderCandleChart({
             // the trader pans near its beginning; downloading and replaying
             // several megabytes behind the latest candles is what made every
             // mobile gesture stall after first paint.
-            if (shouldAutoLoadDeepChartHistory({
-              isMobile: isPhoneChartViewport(),
-              requested: mobileDeepHistoryRequestedRef.current,
+            // Only once painted (review 2026-10-10). On a blank pane the
+            // multi-MB deep pull raced the ordinary paint request below; the
+            // loser was dropped and the deep tape downloaded twice at first
+            // paint. The ordinary request of a history-ready symbol already
+            // carries the full tapes, so nothing is lost by waiting.
+            if (oiChartShouldPullDeepOnHistoryReady({
+              autoDeep: shouldAutoLoadDeepChartHistory({
+                isMobile: isPhoneChartViewport(),
+                requested: mobileDeepHistoryRequestedRef.current,
+              }),
+              panePainted: restBarsPainted,
             })) {
               loadChart(true, false, true);
             }
+            // Same swallowed-signal rule as hasBars below (2026-10-10). A pane
+            // with nothing painted asks for the ordinary paint request - which
+            // may overtake a stuck one - and keeps polling until candles show.
+            // Phones need this too: the deep pull above is desktop-only, so a
+            // blank phone pane used to get no request at all from this branch.
+            if (!restBarsPainted) loadChart(true, false, false, { serverHasBars: true });
+            const nextPollMs = oiChartHasBarsPollDelay({ panePainted: restBarsPainted });
+            if (nextPollMs != null) scheduleHistoryRefresh(nextPollMs);
           } else if (status?.hasBars) {
             // The fast background seed is ready. Paint those candles now;
             // loadChart will continue polling for the heavier study tape.
             emptyStatusPolls = 0;
-            loadChart(true);
+            loadChart(true, false, false, { serverHasBars: true });
+            // 2026-10-10: that loadChart returns at the in-flight guard while an
+            // older request is still waiting, and this branch used to schedule
+            // nothing - the signal was swallowed and the pane sat empty until
+            // that request (300s budget) or the 30s reconcile came back. Keep
+            // polling until candles are actually on screen.
+            const nextPollMs = oiChartHasBarsPollDelay({ panePainted: restBarsPainted });
+            if (nextPollMs != null) scheduleHistoryRefresh(nextPollMs);
           } else {
             // Ask the chart endpoint DIRECTLY rather than waiting on a flag
             // that only sees the memory cache. It answers from disk, so the
@@ -18208,17 +18302,41 @@ function OiFinderCandleChart({
       bypassCache = false,
       refreshServerHistory = false,
       forceFullTape = false,
+      { serverHasBars = false } = {},
     ) => {
       if (!symbol) return;
+      const forceNew = shouldForceNewOiChartRequest({
+        serverHasBars,
+        panePainted: restBarsPainted,
+        requestInFlight,
+        requestStartedAt,
+        concurrentRequests: requestsInFlight,
+        nowMs: Date.now(),
+      });
       if (requestInFlight) {
         // A quote can expose a multi-minute hole while the initial snapshot is
         // still downloading. Do not discard that full TOS backfill request:
         // run it immediately after the current request settles.
-        if (refreshServerHistory) queuedFullHistoryRefresh = true;
-        if (forceFullTape) queuedFullTapeLoad = true;
-        return;
+        // forceNew is the one exception: a never-painted pane overtaking a
+        // stuck request goes out now, beside it.
+        if (!forceNew) {
+          if (refreshServerHistory) queuedFullHistoryRefresh = true;
+          // The historyReady poll now repeats every 450ms until candles paint.
+          // A deep pull already in flight IS that request; queueing another
+          // would download the multi-MB tape twice.
+          if (forceFullTape && !deepRequestsInFlight) queuedFullTapeLoad = true;
+          return;
+        }
       }
       requestInFlight = true;
+      requestsInFlight += 1;
+      if (forceFullTape) deepRequestsInFlight += 1;
+      requestSeq += 1;
+      const thisRequestSeq = requestSeq;
+      // The stuck request's start, for the shared loader's "a sibling pane
+      // already stored newer bars" check.
+      const stuckSince = forceNew ? requestStartedAt : 0;
+      const firstPaint = !restBarsPainted;
       requestStartedAt = Date.now();
       const cacheDecision = oiChartClientCacheDecision(
         oiChartPayloadCache.get(normalizeOiChartSymbol(symbol, "")),
@@ -18240,7 +18358,21 @@ function OiFinderCandleChart({
           forceFullTape,
           oiChartNeedsInitialStudySeed(selectedTimeframeMinutesRef.current),
           compactHistory,
+          { forceNew, stuckSince, firstPaint },
         );
+        if (cancelled) return;
+        // A later request already painted: this older snapshot (the stuck one
+        // a forceNew request overtook) must not roll the pane back. Its empty
+        // answer is stale too - the newer request reports its own state.
+        if (!oiChartResponseMayApply({ requestSeq: thisRequestSeq, appliedSeq: appliedRequestSeq })) {
+          // A deep pull overtaken by a quicker paint still owes the pane its
+          // full history: ask again once the lane is clear (the server answers
+          // a deep request from its cache by then).
+          if (forceFullTape) queuedFullTapeLoad = true;
+          return;
+        }
+        if (!payload?.bars?.length
+          && oiChartEmptyResponseIsStale({ requestSeq: thisRequestSeq, latestRequestSeq: requestSeq })) return;
         chartHistoryLoadingRef.current = Boolean(payload?.historyLoading);
         setChartHistoryLoading(Boolean(payload?.historyLoading));
         // Only when the key is PRESENT: delta reconciles ship tail+scalars and
@@ -18294,6 +18426,10 @@ function OiFinderCandleChart({
         // panel, the other panels' payloads queued into the SAME React pass and
         // six full study recomputes ran back to back (measured 14-22s stalls).
         // flushSync bounds a pass to this panel's own work.
+        if (!cancelled) {
+          restBarsPainted = true;
+          appliedRequestSeq = thisRequestSeq;
+        }
         if (!cancelled) flushSync(() => {
           // Preserve a streamed in-progress candle if the slower REST
           // reconciliation response ends at the same (or an older) minute.
@@ -18447,10 +18583,17 @@ function OiFinderCandleChart({
           }
         });
       } catch (requestError) {
-        if (!cancelled) setChartError(requestError instanceof Error ? requestError.message : "Live candle chart unavailable.");
-      } finally {
-        requestInFlight = false;
+        // A superseded request's failure says nothing about the newer one.
         if (!cancelled
+          && !oiChartEmptyResponseIsStale({ requestSeq: thisRequestSeq, latestRequestSeq: requestSeq })) {
+          setChartError(requestError instanceof Error ? requestError.message : "Live candle chart unavailable.");
+        }
+      } finally {
+        requestsInFlight = Math.max(0, requestsInFlight - 1);
+        if (forceFullTape) deepRequestsInFlight = Math.max(0, deepRequestsInFlight - 1);
+        requestInFlight = requestsInFlight > 0;
+        if (!cancelled
+          && !requestInFlight
           && (queuedFullHistoryRefresh || queuedFullTapeLoad)
           && !queuedFullHistoryRefreshTimer) {
           const refreshHistory = queuedFullHistoryRefresh;
@@ -18509,6 +18652,13 @@ function OiFinderCandleChart({
     chartHistoryLoadingRef.current = false;
     mobileDeepHistoryRequestedRef.current = false;
     loadChart();
+    // See OI_CHART_FIRST_PAINT_WATCHDOG_MS: if this first request is still
+    // unanswered, ask the status endpoint once so a hasBars answer can
+    // overtake it. A separate timer, so it never delays the normal poll slot.
+    let firstPaintWatchdogTimer = window.setTimeout(() => {
+      firstPaintWatchdogTimer = 0;
+      if (!cancelled && !restBarsPainted) scheduleHistoryRefresh(0);
+    }, OI_CHART_FIRST_PAINT_WATCHDOG_MS);
     let lastFullHistoryRefreshAt = Date.now();
     const timer = setInterval(
       () => {
@@ -18552,7 +18702,13 @@ function OiFinderCandleChart({
       // socket died with the suspension and its `finally` will never clear the
       // in-flight flag, so every later loadChart returns early forever. This is
       // what left CRWV frozen on 19:55 candles for twelve hours.
-      if (decision.abandonRequest) requestInFlight = false;
+      if (decision.abandonRequest) {
+        requestInFlight = false;
+        // The dead request's `finally` may never run; its late answer (if any)
+        // is handled by the request-sequence guards in loadChart.
+        requestsInFlight = 0;
+        deepRequestsInFlight = 0;
+      }
       if (decision.mode === "full") loadChart(true, true);
       else if (decision.mode === "delta") loadChart(true);
     };
@@ -18565,6 +18721,7 @@ function OiFinderCandleChart({
       window.removeEventListener("pageshow", onChartWake);
       window.removeEventListener("online", onChartWake);
       if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
+      if (firstPaintWatchdogTimer) clearTimeout(firstPaintWatchdogTimer);
       if (staleRefreshTimer) clearTimeout(staleRefreshTimer);
       if (queuedFullHistoryRefreshTimer) clearTimeout(queuedFullHistoryRefreshTimer);
       if (streamRenderTimerRef.current) {
@@ -22719,6 +22876,7 @@ function OiFinderCandleChart({
     hostElement.dataset.renderChanges = JSON.stringify(Object.fromEntries(top));
   });
 
+  const chartErrorPlacement = oiChartErrorPlacement({ error: chartError, barCount: chartBars.length });
   return (
     <section
       className={`oi-finder-chart-card ${isMaximized ? "is-maximized" : ""} ${isMaximized && maximizeCompanion && isMaximizedCompanionVisible ? "has-maximized-option-chain" : ""} ${layoutPanel ? "is-layout-panel" : ""} ${isActiveLinked ? "is-linked-active" : ""} ${isWidthExpanded ? "is-wide-panel" : ""}`}
@@ -23710,7 +23868,12 @@ function OiFinderCandleChart({
           ))}
         </div>
       ) : null}
-      {chartError ? <div className="oi-finder-chart-empty">{chartError}</div> : !chartBars.length ? <div className="oi-finder-chart-empty">{bars.length ? "Refreshing valid live candles from Schwab/TOS..." : "Loading live one-minute candles from Schwab/TOS..."}</div> : (
+      {/* 2026-10-10: once candles exist the error is an overlay INSIDE the
+          mounted chart host. Swapping the host for this notice unmounted the
+          Lightweight Charts canvas, and its create effect (keyed on symbol and
+          has-bars, both unchanged) never rebuilt it - the pane stayed blank
+          after the notice cleared. */}
+      {chartErrorPlacement === "replace" ? <div className="oi-finder-chart-empty">{chartError}</div> : !chartBars.length ? <div className="oi-finder-chart-empty">{bars.length ? "Refreshing valid live candles from Schwab/TOS..." : "Loading live one-minute candles from Schwab/TOS..."}</div> : (
         <div
           className={`oi-finder-candle-chart${showDrawingToolbar ? " has-drawing-toolbar" : ""}`}
           ref={candleChartRef}
@@ -23719,6 +23882,9 @@ function OiFinderCandleChart({
           } : undefined}
         >
           <div className="oi-finder-chart-canvas" ref={chartRef} />
+          {chartErrorPlacement === "overlay" ? (
+            <div className="oi-finder-chart-error-overlay" role="status" aria-live="polite">{chartError}</div>
+          ) : null}
           <ProfiledOiChartScrollbar
             applyRef={chartScrollbarApplyRef}
             label={normalizeOiChartSymbol(symbol)}

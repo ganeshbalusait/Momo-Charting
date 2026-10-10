@@ -248,6 +248,17 @@ export function mergeOiFinderFeedResponse(current, incoming, { compact = false, 
   if (current && sameSymbol) {
     try {
       if (JSON.stringify(merged) === JSON.stringify(current)) return current;
+      // 2026-10-10: while a cold symbol warms, the server answers every poll
+      // with the same empty stub and only a new updatedAt stamp. That stamp
+      // alone re-rendered the whole chart workspace on every poll, during the
+      // very seconds the first candles are trying to paint.
+      const bothWarmingStubs = Boolean(merged.warming || merged.refreshing)
+        && Boolean(current.warming || current.refreshing)
+        && !hasUsableOiFinderChain(merged)
+        && !hasUsableOiFinderChain(current);
+      if (bothWarmingStubs
+        && JSON.stringify({ ...merged, updatedAt: undefined })
+          === JSON.stringify({ ...current, updatedAt: undefined })) return current;
     } catch {
       // Non-serializable feed content falls through to the normal merge.
     }

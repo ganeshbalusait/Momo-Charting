@@ -264,6 +264,22 @@ test("an identical chain poll keeps the current feed reference", () => {
   assert.equal(mergeOiFinderFeedResponse(current, changed).callRows[0].strike, 605);
 });
 
+test("repeated warming stubs that differ only by updatedAt keep the current reference", () => {
+  const current = { ...oiFinderWarmingFeed("NVDA"), updatedAt: "2026-10-10T14:00:00Z" };
+  const repeat = { ...oiFinderWarmingFeed("NVDA"), updatedAt: "2026-10-10T14:00:02Z" };
+  assert.equal(mergeOiFinderFeedResponse(current, repeat), current);
+  assert.equal(mergeOiFinderFeedResponse(current, repeat, { compact: true }), current);
+
+  // Anything beyond the stamp is real news and must still re-render.
+  const withError = { ...repeat, errors: [{ error: "Schwab cooling down" }] };
+  assert.notEqual(mergeOiFinderFeedResponse(current, withError), current);
+  const otherSymbol = { ...oiFinderWarmingFeed("AMD"), updatedAt: "2026-10-10T14:00:02Z" };
+  assert.notEqual(mergeOiFinderFeedResponse(current, otherSymbol), current);
+  // The first real chain after warm-up always replaces the stub.
+  const ready = { ...repeat, warming: false, refreshing: false, callRows: [{ strike: 180 }] };
+  assert.equal(mergeOiFinderFeedResponse(current, ready).callRows[0].strike, 180);
+});
+
 test("failed refreshes keep a usable same-symbol option chain on screen", () => {
   const current = {
     symbol: "META",

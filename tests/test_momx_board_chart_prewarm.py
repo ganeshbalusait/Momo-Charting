@@ -727,5 +727,140 @@ def weekday_at(hour: int, minute: int) -> datetime:
     return probe
 
 
+class ColdBoardRowsGetCandles(_PrewarmStub):
+    """2026-10-10: the deep-build veto lets a cold board row through at most
+    once per 900s while anything else builds, so most cold rows had NO
+    candles when clicked - and a click during a Schwab 429 cooldown showed a
+    blank chart for 10-87s (harness S2/S7). Vetoed cold rows now get a
+    capped, candles-only paint on the background paint pool."""
+
+    class _Pool:
+        def __init__(self) -> None:
+            self.jobs: list = []
+
+        def submit(self, fn, *args, **kwargs):
+            self.jobs.append((fn, args, kwargs))
+
+    def setUp(self) -> None:
+        super().setUp()
+        import threading
+
+        self.state.oi_finder_chart_lock = threading.RLock()
+        self.paint_pool = self._Pool()
+        self.live_pool = self._Pool()
+        self.state.oi_finder_chart_paint_pool = self.paint_pool
+        self.state.oi_finder_chart_interactive_paint_pool = self.live_pool
+        # He touched a chart seconds ago: the deep-build veto is ON.
+        self.state.oi_finder_interactive_until = time.monotonic() + 60.0
+        self.state._board_prewarm_last_build_at = time.monotonic()  # no forced-progress pass
+        api_server.SCHWAB_GATE.reset()
+        self.addCleanup(api_server.SCHWAB_GATE.reset)
+        self.symbols = [f"C{index}" for index in range(10)]
+        board_file(self.boards, "Watchlist", self.symbols)
+
+    def cycle(self):
+        with patch.object(api_server.time, "sleep"):
+            return self.state._momx_board_chart_prewarm_cycle(now_et=self.clock())
+
+    def test_vetoed_cold_rows_get_capped_paints_and_no_deep_builds(self) -> None:
+        self.cycle()
+        cap = DashboardState.BOARD_PREWARM_MAX_COLD_PAINTS_PER_CYCLE
+        self.assertEqual(self.built, [], "the deep-build veto is unchanged")
+        self.assertEqual(len(self.paint_pool.jobs), cap)
+        self.assertEqual(self.live_pool.jobs, [], "background work, background pool")
+        self.assertEqual(self.state._board_prewarm_status["paints"], cap)
+        self.assertEqual(
+            [job[1][0] for job in self.paint_pool.jobs], self.symbols[:cap],
+        )
+
+    def test_no_paints_during_a_schwab_gate_cooldown(self) -> None:
+        api_server.SCHWAB_GATE.note_rate_limited(10.0)
+        self.cycle()
+        self.assertEqual(self.paint_pool.jobs, [])
+
+    def test_no_paints_while_a_clicked_chart_is_painting(self) -> None:
+        self.state._note_chart_symbol_requested("CLICK")
+        self.state._claim_chart_paint("CLICK", lane="live")
+        self.cycle()
+        self.assertEqual(self.paint_pool.jobs, [])
+
+    def test_a_painted_current_row_is_not_painted_again(self) -> None:
+        now = self.clock().timestamp()
+        self.state.oi_finder_chart_cache["C0"] = {
+            "cached_at": time.monotonic(),
+            "payload": {"bars": [{"time": int(now) - 60, "open": 1, "high": 1, "low": 1, "close": 1}]},
+            "history_ready": False,
+            "built_at_epoch": 0.0,
+        }
+        self.cycle()
+        painted = [job[1][0] for job in self.paint_pool.jobs]
+        self.assertNotIn("C0", painted)
+        # A second cycle does not re-fetch the rows just dispatched either;
+        # the cap moves on down the board instead.
+        before = len(self.paint_pool.jobs)
+        self.cycle()
+        second = [job[1][0] for job in self.paint_pool.jobs[before:]]
+        self.assertEqual(second, ["C7", "C8", "C9"])
+        self.assertFalse(set(second) & set(painted), "no duplicate per cycle")
+
+    def _finish_paints_empty(self, seconds_ago: float) -> None:
+        """Run every queued prewarm paint against a broker that answers with
+        no bars, then age the paint guard as if they finished seconds_ago."""
+        jobs, self.paint_pool.jobs = self.paint_pool.jobs, []
+        with patch.object(self.state, "_refresh_oi_finder_chart_payload"):
+            for fn, args, kwargs in jobs:
+                fn(*args, **kwargs)
+        for entry in self.state.oi_finder_chart_paint_guard.values():
+            entry[1] -= seconds_ago
+            if entry[2] is not None:
+                entry[2] -= seconds_ago
+
+    def test_empty_paints_do_not_starve_the_rows_below_them(self) -> None:
+        # Review 2026-10-10 (scratchpad/review/test_starve.py): C0-C5 painted
+        # empty, finished 31s ago - past the 30s claim interval. The next
+        # cycle used to dispatch C0-C5 AGAIN and C6-C9 never got a paint.
+        self.cycle()
+        self._finish_paints_empty(31.0)
+        self.cycle()
+        second = [job[1][0] for job in self.paint_pool.jobs]
+        self.assertEqual(second, ["C6", "C7", "C8", "C9"])
+
+    def test_a_stale_held_row_is_not_repainted_every_cycle(self) -> None:
+        # Premarket: rows held with yesterday's tape still "want" a paint.
+        yesterday = int(self.clock().timestamp()) - 20 * 3600
+        for symbol in self.symbols[:6]:
+            self.state.oi_finder_chart_cache[symbol] = {
+                "cached_at": time.monotonic(),
+                "payload": {"bars": [{"time": yesterday, "open": 1, "high": 1, "low": 1, "close": 1}]},
+                "history_ready": False,
+                "built_at_epoch": 0.0,
+            }
+        self.cycle()
+        first = [job[1][0] for job in self.paint_pool.jobs]
+        self._finish_paints_empty(31.0)
+        self.cycle()
+        second = [job[1][0] for job in self.paint_pool.jobs]
+        self.assertFalse(set(first) & set(second))
+
+    def test_empty_prewarm_paints_count_as_strikes(self) -> None:
+        strikes = DashboardState.BOARD_PREWARM_FAILURE_STRIKES
+        self.state.BOARD_PREWARM_COLD_PAINT_COOLDOWN_SECONDS = 0.0
+        for _ in range(strikes):
+            self.cycle()
+            self._finish_paints_empty(31.0)
+        self.cycle()
+        status = self.state._board_prewarm_status
+        self.assertIn("C0", status["blocked"], "an always-empty row stops costing calls")
+        self.assertNotIn("C0", [job[1][0] for job in self.paint_pool.jobs])
+
+    def test_a_row_whose_deep_build_went_out_is_not_also_painted(self) -> None:
+        self.state.oi_finder_interactive_until = 0.0  # veto off: one build goes out
+        self.state._board_prewarm_last_build_at = 0.0
+        self.cycle()
+        self.assertEqual(self.built, [("C0", True)])
+        painted = [job[1][0] for job in self.paint_pool.jobs]
+        self.assertNotIn("C0", painted, "its deep build paints first anyway")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

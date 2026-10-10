@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import base64
 import gzip
 import hashlib
+import inspect
 from io import BytesIO
 import json
 import math
@@ -62,6 +63,7 @@ from data.alpaca_client import AlpacaClient
 from data.market_data import create_market_data_client
 from data.schwab_client import SchwabClient
 from data.schwab_rate_limit import GATE as SCHWAB_GATE
+from data.schwab_rate_limit import SchwabUnavailable
 from data.alpaca_overnight import boats_bars_to_frame, fetch_boats_bars
 from data.schwab_otm_activity import (
     build_dashboard_response,
@@ -455,7 +457,34 @@ OI_FINDER_CHART_FULL_REFRESH_DEFER_SECONDS = 0.25
 # 3+ minute blank chart. The paint now has its own short guard and retries on
 # the client's polls until the first candles land.
 OI_FINDER_CHART_COLD_PAINT_RETRY_SECONDS = 3.0
+# The 45s deadline clocks a paint that is RUNNING. A paint still waiting in
+# the pool queue is not wedged, it is in line: clocking queue time as a stall
+# (the first cut of this fix did) declared a queued paint dead and enqueued a
+# duplicate at the back of the same queue - harness S9 showed two identical
+# fetches 60ms apart at 59.7s. A queued paint is only given up on after the
+# long cap below, which exists for a pool that has genuinely stopped.
 OI_FINDER_CHART_COLD_PAINT_DEADLINE_SECONDS = 45.0
+OI_FINDER_CHART_PAINT_QUEUED_CAP_SECONDS = 300.0
+# Stale-tape fast paint (2026-10-10). A ticker opened yesterday, on the hot
+# set or warmed by the board prewarm HAS candles - just not today's - so the
+# cold retry above never fired for it, and today's bars waited for the
+# 2-worker FIFO recency pool with a full study replay (minutes under board +
+# warmer load). A tape not current for the session, or whose tail is more
+# than this far behind the clock, gets the same candles-only paint, rate
+# limited to one broker call per OI_FINDER_CHART_REFRESH_SECONDS per symbol.
+OI_FINDER_CHART_PAINT_BEHIND_SECONDS = 120.0
+# Set by _run_chart_paint for the duration of its splice: that worker (off the
+# request thread) also replays the MTF labels on the merged tapes.
+_CHART_PAINT_WORKER = threading.local()
+# Ceiling of the flat-paint backoff (see _chart_paint_flat_backoff).
+OI_FINDER_CHART_PAINT_FLAT_BACKOFF_CAP_SECONDS = 300.0
+# Queued refresh jobs (2026-10-10). The recency/deep deadlines above clock
+# STARTED work. A job still waiting in its pool's queue past the deadline used
+# to be "presumed wedged" and replaced; the replacement went to the back of
+# the queue and the original was dropped at dequeue as superseded - so under
+# a deep enough backlog the symbol's own polls kept replacing its job and it
+# never ran at all. A queued job is now only replaced after this cap.
+OI_FINDER_CHART_REFRESH_QUEUED_CAP_SECONDS = 3600.0
 # The browser polls the dashboard every five seconds, but the full payload
 # includes broker reconciliation and hundreds of historical-trade reads. All
 # user actions explicitly invalidate this cache and the response overlays its
@@ -1316,17 +1345,42 @@ class DashboardState:
             max_workers=3,
             thread_name_prefix="oi-finder-paint",
         )
-        # Deep (full-history) builds get their own single worker. They used to
-        # share the 2-slot pool above, so one 39-79s deep build (measured
+        # The paint of a chart the trader is LOOKING AT gets its own two
+        # workers (2026-10-10). The pool above also carries background paints
+        # - the mtfSignalsPending Timer wave, board prewarm, warmers - in FIFO
+        # order, so a clicked ticker's ~2s paint queued behind them: harness
+        # S5 5.4s, S9 60s. Only _chart_symbol_is_interactive symbols outside
+        # background_scope land here, so this lane stays short by design.
+        self.oi_finder_chart_interactive_paint_pool = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="oi-finder-paint-live",
+        )
+        # Deep (full-history) builds get their own pool. They used to share
+        # the 2-slot pool above, so one 39-79s deep build (measured
         # 2026-09-22: NKE full 79.16s, HOOD 53.99s, SHOP 48.01s) held HALF the
         # tail capacity for a minute-plus and pushed every tail refresh past its
-        # deadline - the first shove in that day's churn incident. One worker,
-        # because ChartBuildLane already serialises deep builds: this changes
-        # nothing about deep concurrency, it just stops them eating tail slots.
+        # deadline - the first shove in that day's churn incident.
+        # FOUR workers, not one (2026-10-10). ChartBuildLane still serialises
+        # the builds themselves, so deep concurrency is unchanged; what the
+        # extra workers buy is that waiting jobs wait INSIDE the lane, where
+        # interactive priority re-sorts them and on_wait stamps their guard.
+        # With one worker they waited in the executor's FIFO queue instead,
+        # which knows nothing about priority: the clicked ticker's deep build
+        # sat behind prewarm/Timer builds (main S8: 185s of deep queue).
         # Named so a py-spy dump says which kind of build a thread is running.
         self.oi_finder_chart_full_pool = ThreadPoolExecutor(
-            max_workers=1,
+            max_workers=4,
             thread_name_prefix="oi-finder-chart-full",
+        )
+        # ...but only the first four dequeued jobs reach the lane's priority
+        # sort; a fifth background job onward still waits in that executor's
+        # FIFO queue, and the post-restart Timer wave alone is 16+ of them.
+        # So a clicked ticker's deep build is DISPATCHED to its own pair, which
+        # acquires the same ChartBuildLane (still one build at a time) and is
+        # sorted first there (2026-10-10).
+        self.oi_finder_chart_interactive_full_pool = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="oi-finder-chart-full-live",
         )
         self.oi_finder_chart_disk_cache_dir = ARTIFACTS_DIR / "oi_chart_cache"
         self.oi_finder_interactive_until = 0.0
@@ -11441,6 +11495,25 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     BOARD_PREWARM_BOARD_MAX_AGE_SECONDS: float = 1800.0
     BOARD_PREWARM_MAX_TAILS_PER_CYCLE: int = 2
     BOARD_PREWARM_MAX_COLD_BUILDS_PER_CYCLE: int = 1
+    # Candles-only paints for cold board symbols the deep-build veto keeps
+    # out (2026-10-10). That veto lets a cold build through at most once per
+    # 900s while anything else builds, so most cold rows never got ANY
+    # candles before the trader clicked them - and a click during a Schwab
+    # 429 cooldown then showed a blank chart for 10-87s (harness S2/S7). A
+    # paint is one 1-minute Schwab call on the background paint pool, so six
+    # a cycle is ~6 calls a minute next to the MomX worker's 716 per board.
+    # Skipped during a gate cooldown and while any interactive paint is in
+    # flight. Memory-only until a deep build lands (no disk save without
+    # history), which is all a click needs.
+    BOARD_PREWARM_MAX_COLD_PAINTS_PER_CYCLE: int = 6
+    # A row the prewarm painted is not re-planned for this long, whatever the
+    # paint produced. Without it the cap picked the same first six eligible
+    # rows every 60s cycle (an empty paint is never stored, and a premarket
+    # tape still "wants" a paint), so rows 7+ never got candles and an
+    # empty-but-listed row cost ~3 Schwab calls a minute forever. Skipped
+    # rows do not use the cap, so it walks down the board. Empty paints also
+    # count toward the strikes ledger (2026-10-10).
+    BOARD_PREWARM_COLD_PAINT_COOLDOWN_SECONDS: float = 600.0
     BOARD_PREWARM_TAIL_PACE_SECONDS: float = 2.0
     # CEILING ON "WARM". Deliberately the same 900s as
     # WARMER_TAPE_LAG_TOLERANCE_SECONDS, and for the same measured reason.
@@ -11747,6 +11820,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         strikes_ledger = self.__dict__.setdefault("_board_prewarm_strikes", {})
         tail_cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_TAILS_PER_CYCLE", 2)))
         build_cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_COLD_BUILDS_PER_CYCLE", 1)))
+        paint_cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_COLD_PAINTS_PER_CYCLE", 6)))
+        painted = self.__dict__.setdefault("_board_prewarm_painted_at", {})
+        paint_cooldown = float(getattr(self, "BOARD_PREWARM_COLD_PAINT_COOLDOWN_SECONDS", 600.0))
+        resident = getattr(self, "oi_finder_chart_cache", None) or {}
         cooldown = float(getattr(self, "BOARD_PREWARM_TOUCH_COOLDOWN_SECONDS", 900.0))
         strikes = max(1, int(getattr(self, "BOARD_PREWARM_FAILURE_STRIKES", 3)))
         fail_cooldown = float(getattr(self, "BOARD_PREWARM_FAILURE_COOLDOWN_SECONDS", 21600.0))
@@ -11754,6 +11831,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "warm": [],
             "tails": [],
             "cold": [],
+            # Cold symbols to give a candles-only paint (capped). Overlaps
+            # "cold" on purpose: the cycle skips whichever got its deep build
+            # dispatched, since that build paints first anyway.
+            "coldPaints": [],
             "blocked": [],
             "candidates": 0,
             # Observed verdicts, before any cap or cooldown. Sums to
@@ -11784,9 +11865,71 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             if entry and int(entry[0]) >= strikes and (clock - float(entry[1])) < fail_cooldown:
                 plan["blocked"].append(symbol)
                 continue
+            recently_painted = (
+                symbol in painted and (clock - float(painted[symbol])) < paint_cooldown
+            )
+            if len(plan["coldPaints"]) < paint_cap and not recently_painted:
+                # Already painted and current in memory (the paint does not
+                # write the file, so the stat() verdict stays "cold"): leave
+                # it, or every cycle would re-fetch the same candles.
+                held = resident.get(symbol)
+                if held is None or self._chart_entry_wants_fast_paint(held, now_epoch) is not None:
+                    plan["coldPaints"].append(symbol)
             if len(plan["cold"]) < build_cap:
                 plan["cold"].append(symbol)
         return plan
+
+    def _board_prewarm_dispatch_cold_paints(self, symbols, building=()) -> int:
+        """Submit the candles-only paints the plan chose; returns how many went
+        out. Background pool only, through _claim_chart_paint so a paint the
+        trader's own click already started is never doubled (and a click
+        still preempts one of these that is only queued)."""
+        pool = getattr(self, "oi_finder_chart_paint_pool", None)
+        if pool is None or not symbols:
+            return 0
+        try:
+            # The gate is shared: a paint now is a refusal now, and the
+            # first call after the cooldown should be his, not ours.
+            if SCHWAB_GATE.state().get("coolingDown"):
+                return 0
+        except Exception:
+            return 0
+        sent = 0
+        for symbol in symbols:
+            if symbol in building:
+                continue
+            try:
+                if self._chart_paint_in_flight(interactive_only=True):
+                    break  # a clicked chart is painting: do not compete with it
+                if self._chart_symbol_is_interactive(symbol):
+                    continue  # his request path owns this symbol's paint
+                token = self._claim_chart_paint(
+                    symbol, min_interval=OI_FINDER_CHART_REFRESH_SECONDS, lane="bg",
+                )
+                if token is None:
+                    continue
+                ledger = self.__dict__.setdefault("_board_prewarm_painted_at", {})
+                ledger[symbol] = time.monotonic()
+                self._board_prewarm_trim(ledger, float)
+                pool.submit(self._board_prewarm_run_cold_paint, symbol, token)
+                sent += 1
+            except Exception:
+                continue
+        return sent
+
+    def _board_prewarm_run_cold_paint(self, symbol: str, token) -> int:
+        """The prewarm's paint job: an empty answer that was not a Schwab
+        cooldown refusal is a strike, like a failed cold build."""
+        bars = self._run_chart_paint(symbol, token)
+        if bars:
+            return bars
+        with self.oi_finder_chart_lock:
+            entry = self._chart_paint_guard().get(symbol)
+            refused = bool(entry is not None and len(entry) > 6 and entry[6])
+            superseded = entry is None or entry[0] != token
+        if not refused and not superseded:
+            self._board_prewarm_note_cold_attempt(symbol)
+        return bars
 
     def _board_prewarm_cold_build_allowed(self, symbol: str) -> bool:
         """The yield. Reuses the EXISTING interactive signals, no new ones.
@@ -11880,8 +12023,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "blocked": [],
             "tails": 0,
             "builds": 0,
+            "paints": 0,
             "tailsPlanned": 0,
             "buildsPlanned": 0,
+            "paintsPlanned": 0,
         }
         start = int(getattr(self, "BOARD_PREWARM_START_MINUTE", 3 * 60 + 30))
         end = int(getattr(self, "BOARD_PREWARM_END_MINUTE", 20 * 60))
@@ -11941,6 +12086,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 pass
             time.sleep(pace)
         builds = 0
+        building: set = set()
         for symbol in plan["cold"]:
             if not self._board_prewarm_cold_build_allowed(symbol):
                 continue
@@ -11952,12 +12098,19 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 # call has none of that, and that is what keeper_paused was
                 # created to stop.
                 self._start_oi_finder_chart_refresh(symbol, full_history=True)
+                building.add(symbol)
                 self._board_prewarm_note_cold_attempt(symbol)
                 self._board_prewarm_last_build_at = time.monotonic()
                 builds += 1
                 print(f"[board-prewarm] {symbol} cold build queued", flush=True)
             except Exception:
                 pass
+        # The vetoed rest still get candles (see
+        # BOARD_PREWARM_MAX_COLD_PAINTS_PER_CYCLE). The deep-build veto is
+        # untouched: these are ~2s fetches with no study replay and no lane.
+        paints = self._board_prewarm_dispatch_cold_paints(
+            plan.get("coldPaints") or [], building,
+        )
         # One line per newly blocked symbol, so the NEXT GOOGLE is found in
         # minutes instead of by timestamping wc -l output for twenty.
         announced = status.setdefault("_announced", {})
@@ -11992,8 +12145,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "blocked": list(plan["blocked"]),
                 "tailsPlanned": len(plan["tails"]),
                 "buildsPlanned": len(plan["cold"]),
+                "paintsPlanned": len(plan.get("coldPaints") or []),
                 "tails": tails,
                 "builds": builds,
+                "paints": paints,
             }
         )
         return float(getattr(self, "BOARD_PREWARM_CYCLE_SECONDS", 60.0))
@@ -12667,6 +12822,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
 
         try:
             produced = payload.get("bars") or payload.get("dailyBars")
+            # A build Schwab refused to send (cooldown) proves nothing about
+            # the symbol, and the control quote would be refused by the same
+            # gate - skip the probe rather than spend a call on "None".
+            if payload.get("brokerUnavailableKind"):
+                return payload
             if not produced and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", target):
                 verdict = self._symbol_unknown_to_broker(target)
                 if verdict is True:
@@ -12720,6 +12880,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             schwab_client = schwab_bar_clients[0] if schwab_bar_clients else SchwabClient()
             chart_source = "Schwab/TOS API"
             schwab_chart_error = ""
+            # Set when Schwab refused BEFORE sending (cooldown / our own gate)
+            # on a candles-only build. Opt-in via raise_unavailable so only
+            # these builds see it; everything else keeps the empty-frame
+            # contract (2026-10-10).
+            schwab_refusal = None
             frame = pd.DataFrame()
             # One-minute source bars let the browser form exact 3m/5m/10m/
             # 15m/30m/1h/2h/4h candles from the same Schwab/TOS stream. This
@@ -12746,16 +12911,28 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     # Fetch the gap we actually have to close instead, clamped
                     # to the same 30-day window the deep tape already uses, so
                     # even a 200-hour-old cache costs one bounded request.
-                    frame = schwab_client.get_chart_bars(
-                        target,
-                        timeframe="1Min",
-                        days_back=self._chart_recency_lookback_days(target) if fast_start else 30,
-                    )
+                    days_back = self._chart_recency_lookback_days(target) if fast_start else 30
+                    if skip_studies and _bars_call_accepts_raise_unavailable(schwab_client):
+                        frame = schwab_client.get_chart_bars(
+                            target, timeframe="1Min", days_back=days_back,
+                            raise_unavailable=True,
+                        )
+                    else:
+                        frame = schwab_client.get_chart_bars(
+                            target, timeframe="1Min", days_back=days_back,
+                        )
+                except SchwabUnavailable as exc:
+                    schwab_refusal = exc
+                    schwab_chart_error = str(exc)
+                    self._note_chart_broker_refusal(target, exc)
                 except Exception as exc:
                     schwab_chart_error = str(exc)
             else:
                 schwab_chart_error = "Schwab/TOS is not connected."
-            if not isinstance(frame, pd.DataFrame) or frame.empty:
+            # The spare profile shares the process-wide gate, so during a
+            # cooldown it is refused too - one more refusal, and on a stalled
+            # network up to 15s more of a paint the trader is waiting on.
+            if schwab_refusal is None and (not isinstance(frame, pd.DataFrame) or frame.empty):
                 # Before conceding to Alpaca, try the OTHER configured Schwab
                 # profile. `configured` only proves a credential is present,
                 # not that Schwab accepts it, so a corrupted market-data secret
@@ -13425,10 +13602,32 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "premarketGapNote": str(getattr(self, '_premarket_backfill_error', '') or ''),
                 "premarketGapState": str(getattr(self, '_premarket_backfill_state', '') or ''),
                 "historyLoading": not history_complete,
+                # Honest error text (2026-10-10): the Alpaca sentence sent the
+                # trader to Settings for a fallback that is switched OFF, and
+                # a 429 cooldown read exactly like a ticker with no bars.
                 "error": "" if bars else (
                     f"No one-minute candles were returned for {target}. "
-                    f"Schwab/TOS: {schwab_chart_error or 'no data'}; Alpaca fallback "
-                    "needs a working key saved in Settings."
+                    + (
+                        f"Schwab/TOS is cooling down ({getattr(schwab_refusal, 'kind', '')}); "
+                        f"retrying in {max(0.0, float(getattr(schwab_refusal, 'retry_after', 0.0) or 0.0)):.0f}s."
+                        if schwab_refusal is not None
+                        else f"Schwab/TOS: {schwab_chart_error or 'no data'}."
+                    )
+                    + (
+                        " Alpaca fallback needs a working key saved in Settings."
+                        if CHART_BARS_USE_ALPACA_FALLBACK and schwab_refusal is None
+                        else ""
+                    )
+                ),
+                # Machine-readable twin of the error above: why a candles-only
+                # build came back empty, and when the broker will answer.
+                "brokerUnavailableKind": (
+                    str(getattr(schwab_refusal, "kind", "") or "")
+                    if schwab_refusal is not None and not bars else ""
+                ),
+                "brokerRetryAfter": (
+                    round(max(0.0, float(getattr(schwab_refusal, "retry_after", 0.0) or 0.0)), 2)
+                    if schwab_refusal is not None and not bars else 0.0
                 ),
                 "updatedAt": datetime.now().astimezone().isoformat(),
             }
@@ -13799,6 +13998,50 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         payload["historyLoading"] = False
         return payload
 
+    def _relabel_painted_chart_payload(self, target: str, payload: dict) -> dict:
+        """Replay the MTF labels on a COPY of a just-stored paint payload and
+        swap it in if the entry still holds that payload (a newer store wins).
+        Returns whichever payload the caller should persist."""
+        relabeled = dict(payload)
+        if not self._refresh_mtf_block_from_payload_tapes(target, relabeled):
+            return payload
+        relabeled["mtfSourceSessions"] = self._fine_tape_session_span(relabeled)
+        with self.oi_finder_chart_lock:
+            entry = self.oi_finder_chart_cache.get(target)
+            if entry is None or entry.get("payload") is not payload:
+                return payload
+            entry["payload"] = relabeled
+            entry.pop("windowed_payload", None)
+        return relabeled
+
+    @staticmethod
+    def _splice_chart_minute_bars(old_bars: list, new_bars: list, keep_held: bool = False) -> list:
+        """The held tape before the fetch window + the fetched bars.
+
+        keep_held (candles-only paints, 2026-10-10): inside the window, merge
+        by timestamp instead of truncating - held bars the fetch did not
+        return survive, and the broker row wins on a collision (the
+        merge_backfill rule). A paint skips the Tradier premarket and Alpaca
+        BOATS overnight backfills, so truncating deleted every backfilled
+        04:00-07:00 and 20:00-04:00 candle inside the paint window - and the
+        history_ready store then saved that damaged tape to disk until the
+        next backfilling pass, minutes later under load, put them back.
+        Recency/full builds backfill themselves, so they keep the plain
+        truncate (a bar their fetch no longer returns is meant to go).
+        """
+        if not old_bars or not new_bars:
+            return list(new_bars or old_bars or [])
+        first_new_time = new_bars[0]["time"]
+        head = [bar for bar in old_bars if bar["time"] < first_new_time]
+        if not keep_held:
+            return head + list(new_bars)
+        window = {bar["time"]: bar for bar in old_bars if bar["time"] >= first_new_time}
+        if not window:
+            return head + list(new_bars)
+        for bar in new_bars:
+            window[bar["time"]] = bar
+        return head + [window[key] for key in sorted(window)]
+
     def _refresh_oi_finder_chart_payload(
         self,
         target: str,
@@ -13810,6 +14053,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         # release=False keeps the in-flight guard held across a two-phase
         # refresh (recency pass then deep rebuild); dropping it between the
         # phases would let a second refresh start for the same ticker.
+        # relabel: a paint worker (never the request thread - see
+        # _CHART_PAINT_WORKER) replays the TOS MTF labels from the merged
+        # tapes after the store. A thread flag rather than a keyword so the
+        # many stand-ins for this method keep their signature.
+        relabel = bool(getattr(_CHART_PAINT_WORKER, "relabel", False))
         try:
             build_lane = getattr(self, "oi_finder_chart_build_lane", None)
             if full_history and build_lane is not None:
@@ -13870,10 +14118,15 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     # cache is "ready" so nothing else asks for a deep build).
                     # Queue one deep build so the labels come back on their
                     # own instead of staying pending until a browser deep pull.
-                    threading.Timer(
-                        3.0,
-                        lambda: self._start_oi_finder_chart_refresh(target, full_history=True),
-                    ).start()
+                    # background_scope: this wave is housekeeping, so its
+                    # paint stays on the shared paint pool and never takes an
+                    # interactive-paint worker from a clicked ticker
+                    # (2026-10-10).
+                    def _queue_deep_for_labels() -> None:
+                        with background_scope(True):
+                            self._start_oi_finder_chart_refresh(target, full_history=True)
+
+                    threading.Timer(3.0, _queue_deep_for_labels).start()
             if payload.get("bars"):
                 # Read the cached entry under the lock, then RELEASE it for the
                 # splice. The merge below walks 12,500 live bars and rebuilds a
@@ -13887,6 +14140,8 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 # every refresh carries the newest bars, so that is correct.
                 with self.oi_finder_chart_lock:
                     cached = self.oi_finder_chart_cache.get(target)
+                # Read BEFORE the carry-forward below clears it.
+                arrived_without_studies = bool(payload.get("studiesPending"))
                 if True:  # splice + staleness run OUTSIDE the lock
                     if not full_history and cached and cached.get("history_ready"):
                         # A recency refresh fetches only ~2 days of bars. Splice
@@ -13897,10 +14152,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         old_bars = previous.get("bars") or []
                         new_bars = payload.get("bars") or []
                         if old_bars and new_bars:
-                            first_new_time = new_bars[0]["time"]
-                            payload["bars"] = [
-                                bar for bar in old_bars if bar["time"] < first_new_time
-                            ] + new_bars
+                            payload["bars"] = self._splice_chart_minute_bars(
+                                old_bars, new_bars, keep_held=arrived_without_studies,
+                            )
                         # Fold the HELD tape before comparing lengths. This
                         # comparison is a ratchet: it keeps whichever tape has
                         # more rows, and a 1-minute tape written by the old
@@ -13970,6 +14224,36 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                                         "watchlistMtfStates", "ganeshHigherTimeframeSignals"):
                                 if previous_any.get(key) is not None:
                                     payload[key] = previous_any[key]
+                    # The per-timeframe TOS MTF label block rides along too
+                    # (2026-10-10). Both lists above predate it, so a paint
+                    # spliced onto a history_ready entry stored, and SAVED TO
+                    # DISK, a payload with mtfSignalsByTimeframe=None and
+                    # mtfSignalsPending=True. The next disk load then judged it
+                    # not content-ready, replayed the labels on the request
+                    # thread and queued a full rebuild - every paint path
+                    # poisoned the copy it was meant to freshen. Copied
+                    # whenever the previous payload has the block, signals or
+                    # none: a ticker with zero labels is still a computed one.
+                    #
+                    # But NOT their mtfSourceSessions stamp. The labels were
+                    # computed on the pre-paint tape; carrying the stamp made
+                    # them pass _chart_payload_has_current_mtf_labels on a
+                    # payload whose 1-minute and fine tapes now run into
+                    # today, so the cached branch's one-shot recompute never
+                    # fired and yesterday's CALL5/CALL4H state was served as
+                    # current until a studies pass landed (minutes under
+                    # load). Unstamped, the carried block is shown but judged
+                    # stale; relabel=True (the paint worker) replays it from
+                    # the merged tapes right after the store below.
+                    if arrived_without_studies:
+                        previous_labels = (cached or {}).get("payload") or {}
+                        if isinstance(previous_labels.get("mtfSignalsByTimeframe"), dict):
+                            for key in ("mtfSignalsByTimeframe",
+                                        "mtfSignalsPending", "mtfSignalMode",
+                                        "mtfSignals", "mtfSignalStates"):
+                                if previous_labels.get(key) is not None:
+                                    payload[key] = previous_labels[key]
+                            payload.pop("mtfSourceSessions", None)
                     # The splice replaced the tape this payload was judged on,
                     # so the verdict is re-taken against the merged bars.
                     self._note_chart_market_tape(payload.get("bars"))
@@ -13987,10 +14271,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     old_bars = previous_depth.get("bars") or []
                     new_bars = payload.get("bars") or []
                     if old_bars and new_bars and len(old_bars) > len(new_bars):
-                        first_new_time = new_bars[0]["time"]
-                        payload["bars"] = [
-                            bar for bar in old_bars if bar["time"] < first_new_time
-                        ] + new_bars
+                        payload["bars"] = self._splice_chart_minute_bars(
+                            old_bars, new_bars, keep_held=arrived_without_studies,
+                        )
                     for depth_key in ("studyBars", "fineStudyBars"):
                         old_depth = previous_depth.get(depth_key) or []
                         if len(old_depth) > len(payload.get(depth_key) or []):
@@ -14086,6 +14369,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         )[:-OI_FINDER_CHART_WARM_LIMIT]
                         for key in oldest:
                             self.oi_finder_chart_cache.pop(key, None)
+                if relabel and arrived_without_studies and not payload.get("historyLoading"):
+                    # AFTER the store, so the candles are already served; the
+                    # replay is <1s of the paint worker's time, and the copy
+                    # saved below is then stamped with labels that match its
+                    # tapes. A replay that cannot run (tapes too short) leaves
+                    # the carried, unstamped block for the cached branch.
+                    payload = self._relabel_painted_chart_payload(target, payload)
                 if not payload.get("historyLoading"):
                     # Full builds AND recency splices both persist. When only
                     # full builds saved, an evicted symbol's next serve loaded
@@ -14161,6 +14451,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 max(0.0, time.monotonic() - float(queued_at)) if queued_at is not None else 0.0,
             )
             return
+        # Dequeued: from here the recency/deep deadline clocks this job. Until
+        # now its guard carried the queued cap, so the symbol's own polls
+        # could not replace it while it waited (the 2026-10-10 livelock).
+        self._mark_chart_refresh_started(target, full_history, token)
         counted = bool(full_history)
         if counted:
             with self.oi_finder_chart_lock:
@@ -14195,7 +14489,18 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     ) - 1)
 
     def _chart_paint_guard(self) -> dict:
-        """symbol -> [token, started_monotonic, finished_monotonic|None].
+        """symbol -> [token, stamp, finished|None, started, retry_not_before, lane,
+        refusal_kind].
+
+        stamp is the CLAIM time while the paint waits in its pool and is
+        re-stamped to the START time when a worker picks it up, so the
+        deadline clocks running work and never queue wait (see
+        OI_FINDER_CHART_PAINT_QUEUED_CAP_SECONDS). retry_not_before is a
+        monotonic time before which no new paint may be claimed: set when the
+        last paint met a Schwab cooldown, so the retry lands when the
+        cooldown ends instead of on a blind 3s clock. lane is "live" for a
+        paint on the interactive pool, "bg" otherwise. refusal_kind names that
+        cooldown for the warming stub (see _chart_paint_refusal_fields).
 
         Lazily created: states built with __new__ (tests, stubs) never ran
         __init__, and every helper here tolerates missing state.
@@ -14206,73 +14511,356 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             self.oi_finder_chart_paint_guard = guard
         return guard
 
-    def _claim_chart_paint(self, target: str, min_interval: float = 0.0):
+    def _claim_chart_paint(self, target: str, min_interval: float = 0.0, lane: str = "bg"):
         """Claim the candles-only paint for target, or None if one is running
-        (or, with min_interval, finished too recently to try again)."""
+        or queued, the last one finished too recently (min_interval), or the
+        last one met a Schwab cooldown that has not ended yet.
+
+        One exception to "queued means wait": a "live" claim takes over a
+        "bg" paint that has not STARTED. Otherwise a board-prewarm paint
+        queued behind other background paints would hold the symbol and the
+        trader's click would wait in that same FIFO line - the head-of-line
+        block the interactive pool exists to remove. The displaced job sees
+        its token is gone when dequeued and returns without fetching."""
         now = time.monotonic()
         with self.oi_finder_chart_lock:
             guard = self._chart_paint_guard()
             entry = guard.get(target)
             if entry is not None:
-                started, finished = float(entry[1]), entry[2]
-                if finished is None and (now - started) < OI_FINDER_CHART_COLD_PAINT_DEADLINE_SECONDS:
-                    return None
-                if finished is not None and (now - float(finished)) < min_interval:
+                stamp, finished = float(entry[1]), entry[2]
+                started = bool(entry[3]) if len(entry) > 3 else True
+                retry_not_before = float(entry[4] or 0.0) if len(entry) > 4 else 0.0
+                if finished is None:
+                    limit = (
+                        OI_FINDER_CHART_COLD_PAINT_DEADLINE_SECONDS if started
+                        else OI_FINDER_CHART_PAINT_QUEUED_CAP_SECONDS
+                    )
+                    held_lane = str(entry[5]) if len(entry) > 5 else "bg"
+                    preempt = lane == "live" and held_lane != "live" and not started
+                    if (now - stamp) < limit and not preempt:
+                        return None
+                elif retry_not_before:
+                    # The broker told us when it will answer again; that
+                    # replaces the blind min_interval (both ways - a 1s
+                    # cooldown does not wait 3s, a 15s one does not retry at
+                    # 3s and earn the next strike on the 5/15/60s ladder).
+                    if now < retry_not_before:
+                        return None
+                elif (now - float(finished)) < min_interval:
                     return None
             sequence = int(getattr(self, "_chart_paint_token_seq", 0)) + 1
             self._chart_paint_token_seq = sequence
-            guard[target] = [sequence, now, None]
+            guard[target] = [sequence, now, None, False, 0.0, lane, ""]
             if len(guard) > 256:
                 for stale in sorted(guard, key=lambda key: guard[key][1])[:-256]:
                     guard.pop(stale, None)
             return sequence
 
+    def _chart_paint_in_flight(self, interactive_only: bool = False) -> bool:
+        """Is any paint claimed and not finished (within its deadline/cap)?
+
+        interactive_only narrows it to symbols a client is polling, which is
+        what the board prewarm yields to: a background paint must never be
+        the thing a clicked ticker's paint competes with for Schwab slots.
+        """
+        now = time.monotonic()
+        with self.oi_finder_chart_lock:
+            items = list(self._chart_paint_guard().items())
+        for symbol, entry in items:
+            if entry[2] is not None:
+                continue
+            started = bool(entry[3]) if len(entry) > 3 else True
+            limit = (
+                OI_FINDER_CHART_COLD_PAINT_DEADLINE_SECONDS if started
+                else OI_FINDER_CHART_PAINT_QUEUED_CAP_SECONDS
+            )
+            if (now - float(entry[1])) >= limit:
+                continue
+            if interactive_only and not self._chart_symbol_is_interactive(symbol, now):
+                continue
+            return True
+        return False
+
+    def _chart_paint_refusal_fields(self, target: str) -> dict:
+        """brokerUnavailableKind/brokerRetryAfter for the warming stub while
+        this symbol's last paint is waiting out a Schwab cooldown.
+
+        The build puts the same fields on its own payload, but an EMPTY paint
+        payload is never stored, so nothing the client receives carried them:
+        a 429 blank read exactly like a symbol still warming (2026-10-10).
+        Machine-readable only; the client does not render them yet."""
+        now = time.monotonic()
+        with self.oi_finder_chart_lock:
+            entry = self._chart_paint_guard().get(target)
+            if entry is None or entry[2] is None or len(entry) < 7:
+                return {}
+            retry_not_before = float(entry[4] or 0.0)
+            kind = str(entry[6] or "")
+        if not kind or retry_not_before <= now:
+            return {}
+        return {
+            "brokerUnavailableKind": kind,
+            "brokerRetryAfter": round(retry_not_before - now, 2),
+        }
+
+    def _note_chart_broker_refusal(self, target: str, exc) -> None:
+        """Side channel from the build to _run_chart_paint: an EMPTY paint
+        payload is never stored, so the paint cannot read why it was empty
+        from the cache. Plain dict ops (atomic under the GIL); bounded."""
+        refusals = self.__dict__.setdefault("_chart_broker_refusals", {})
+        refusals[target] = {
+            "kind": str(getattr(exc, "kind", "") or "unavailable"),
+            "retryAfter": max(0.0, float(getattr(exc, "retry_after", 0.0) or 0.0)),
+        }
+        if len(refusals) > 256:
+            for stale in list(refusals)[:-256]:
+                refusals.pop(stale, None)
+
+    def _pop_chart_broker_refusal(self, target: str):
+        refusals = self.__dict__.get("_chart_broker_refusals")
+        if not isinstance(refusals, dict):
+            return None
+        return refusals.pop(target, None)
+
     def _run_chart_paint(self, target: str, token) -> int:
         """Candles only, no study replay: fetch + serialize, ~2s. Returns the
         bar count now cached. Never raises - a failed paint is retried by the
         next poll, and the deep build queued alongside it still runs."""
+        with self.oi_finder_chart_lock:
+            entry = self._chart_paint_guard().get(target)
+            if entry is None or entry[0] != token:
+                # Superseded while it sat in the queue (its claim passed the
+                # queued cap and a replacement was dispatched). The
+                # replacement is doing this exact fetch; doing it twice is
+                # the S9 duplicate, and a second Schwab call for nothing.
+                return 0
+            # Started NOW: from here the 45s deadline clocks real work.
+            entry[1] = time.monotonic()
+            if len(entry) > 3:
+                entry[3] = True
+        # A refusal recorded by some other candles-only build (the inline
+        # forced extend) is not this paint's answer.
+        self._pop_chart_broker_refusal(target)
         started = time.perf_counter()
         bars = 0
+        refusal = None
+        newest_before = newest_after = 0
         try:
-            self._refresh_oi_finder_chart_payload(
-                target, False, release=False, skip_studies=True,
-            )
+            with self.oi_finder_chart_lock:
+                entry = self.oi_finder_chart_cache.get(target) or {}
+            newest_before = self._chart_payload_newest_bar_time(entry.get("payload"))
+            _CHART_PAINT_WORKER.relabel = True
+            try:
+                self._refresh_oi_finder_chart_payload(
+                    target, False, release=False, skip_studies=True,
+                )
+            finally:
+                _CHART_PAINT_WORKER.relabel = False
             with self.oi_finder_chart_lock:
                 entry = self.oi_finder_chart_cache.get(target) or {}
             bars = len(((entry.get("payload") or {}).get("bars")) or [])
+            newest_after = self._chart_payload_newest_bar_time(entry.get("payload"))
         except Exception:  # noqa: BLE001 - a failed paint must never break the caller
             bars = 0
         finally:
+            refusal = self._pop_chart_broker_refusal(target)
+            if not refusal:
+                # A refused paint says nothing about the tape; its retry is
+                # timed by retry_not_before instead.
+                self._note_chart_paint_progress(target, newest_before, newest_after or newest_before)
             with self.oi_finder_chart_lock:
                 entry = self._chart_paint_guard().get(target)
                 if entry is not None and entry[0] == token:
-                    entry[2] = time.monotonic()
-        # Observability: one line per paint, so a slow/empty paint is visible.
-        print(f"[build-timing] {target:6s} paint  {time.perf_counter() - started:6.2f}s bars={bars}", flush=True)
+                    finished = time.monotonic()
+                    entry[2] = finished
+                    if refusal and len(entry) > 4:
+                        # Retry the moment the gate opens again, not on the
+                        # blind clock. A small floor so a "throttled" refusal
+                        # with retry_after ~0 cannot turn every poll into a
+                        # claim.
+                        entry[4] = finished + max(0.5, float(refusal.get("retryAfter") or 0.0))
+                        if len(entry) > 6:
+                            entry[6] = str(refusal.get("kind") or "unavailable")
+        # Observability: one line per paint, so a slow/empty paint is visible,
+        # and a 429 blank reads differently from a ticker with no bars.
+        refused = f" refused={refusal.get('kind')}" if refusal else ""
+        print(
+            f"[build-timing] {target:6s} paint  {time.perf_counter() - started:6.2f}s bars={bars}{refused}",
+            flush=True,
+        )
         return bars
 
-    def _retry_cold_chart_paint(self, target: str) -> bool:
-        """A client is waiting on a ticker with NO cached candles: make sure a
-        candles-only paint is running, independent of the deep-build guard.
-        Rate limited per symbol so a broker that keeps answering empty costs
-        one request per OI_FINDER_CHART_COLD_PAINT_RETRY_SECONDS, not one per
-        poll."""
+    @staticmethod
+    def _chart_payload_newest_bar_time(payload) -> int:
+        bars = (payload or {}).get("bars") or []
+        try:
+            return int((bars[-1] or {}).get("time") or 0) if bars else 0
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
+    def _chart_paint_executor(self, target: str):
+        """(pool, lane) for a paint: the interactive pair for a chart a client
+        is polling right now (and not from a background chore), the shared
+        background paint pool otherwise. getattr: stub states may carry only
+        the background pool."""
+        if not in_background_request() and self._chart_symbol_is_interactive(target):
+            pool = getattr(self, "oi_finder_chart_interactive_paint_pool", None)
+            if pool is not None:
+                return pool, "live"
+        return getattr(self, "oi_finder_chart_paint_pool", None), "bg"
+
+    def _chart_entry_wants_fast_paint(self, entry, now_epoch: float | None = None):
+        """The min interval a fast paint for this entry is rate limited to, or
+        None when the served tape needs none.
+
+        No bars at all: the cold retry, every OI_FINDER_CHART_COLD_PAINT_
+        RETRY_SECONDS. Bars that do not reach the current session, or whose
+        tail is more than OI_FINDER_CHART_PAINT_BEHIND_SECONDS behind: once
+        per OI_FINDER_CHART_REFRESH_SECONDS. Judged on the DATA, like
+        _chart_entry_tail_is_behind - cached_at says nothing about it.
+        """
+        bars = ((entry or {}).get("payload") or {}).get("bars") or []
+        if not bars:
+            return OI_FINDER_CHART_COLD_PAINT_RETRY_SECONDS
+        clock = time.time() if now_epoch is None else float(now_epoch)
+        try:
+            newest = int((bars[-1] or {}).get("time") or 0)
+        except (AttributeError, TypeError, ValueError):
+            newest = 0
+        behind = (not newest) or (clock - newest) > OI_FINDER_CHART_PAINT_BEHIND_SECONDS
+        if behind and newest and not self._schwab_minute_window_open(clock):
+            # Outside Schwab's 1-minute window (07:00-20:00 ET weekdays) a
+            # paint cannot make a tape current: the market mark below is
+            # advanced by Alpaca BOATS overnight and Tradier premarket bars
+            # the paint never fetches (it skips both backfills). Without this
+            # every watched chart without an overnight print stayed "behind"
+            # from 20:00 to 07:00 and spent a useless Schwab call per 30s
+            # (2026-10-10). Session currency alone decides out there.
+            behind = False
+        if behind and newest:
+            # Behind the CLOCK is not behind the MARKET. After 20:00 and over
+            # a weekend every tape ends minutes-to-days ago, and painting each
+            # watched chart every 30s would buy nothing. The market-wide
+            # high-water mark (_note_chart_market_tape) says where tapes
+            # actually got to; within the threshold of it, this tape is as
+            # current as the market. Unknown (0, just after boot) still paints.
+            market = float(getattr(self, "_chart_market_newest_bar_epoch", 0.0) or 0.0)
+            if market and (market - newest) <= OI_FINDER_CHART_PAINT_BEHIND_SECONDS:
+                behind = False
+        if behind or not self._chart_entry_tape_is_current(entry, clock):
+            # A tape the market HAS moved past, or one that does not reach the
+            # session: one candles-only call per 30s, the same budget the
+            # recency kick already spends on it.
+            return OI_FINDER_CHART_REFRESH_SECONDS
+        return None
+
+    @staticmethod
+    def _schwab_minute_window_open(now_epoch: float) -> bool:
+        """Weekday 07:00-20:00 ET: when Schwab pricehistory can hold a newer
+        1-minute bar than the one a tape already ends on."""
+        try:
+            probe = datetime.fromtimestamp(float(now_epoch), tz=ZoneInfo(EASTERN_TZ))
+        except (TypeError, ValueError, OverflowError, OSError):
+            return True
+        if probe.weekday() >= 5:
+            return False
+        return 7 <= probe.hour < 20
+
+    def _chart_paint_flat_backoff(self, target: str, min_interval: float, entry) -> float:
+        """Stretch a held tape's paint interval while paints stop moving it.
+
+        A halted or illiquid ticker stays "behind" while SPY/QQQ move the
+        market mark, so it was painted every 30s for as long as it was open -
+        each one a Schwab call, a 12,500-bar merge and a multi-MB disk save
+        returning the same bars, on the two-worker pool clicks depend on
+        (2026-10-10). Each paint that did not advance the newest bar doubles
+        the interval (30, 60, 120 ... up to the cap); one that advances it
+        resets. Cold entries (no bars) keep the short click retry.
+        """
+        if not ((entry or {}).get("payload") or {}).get("bars"):
+            return min_interval
+        streak = int((self.__dict__.get("_chart_paint_flat_streak") or {}).get(target) or 0)
+        if streak <= 0:
+            return min_interval
+        return min(
+            float(min_interval) * (2 ** min(streak, 8)),
+            max(float(min_interval), OI_FINDER_CHART_PAINT_FLAT_BACKOFF_CAP_SECONDS),
+        )
+
+    def _note_chart_paint_progress(self, target: str, before: int, after: int) -> None:
+        """Feed _chart_paint_flat_backoff. Only paints onto a held tape count."""
+        ledger = self.__dict__.setdefault("_chart_paint_flat_streak", {})
+        if not before:
+            return
+        if after > before:
+            ledger.pop(target, None)
+            return
+        ledger[target] = int(ledger.get(target) or 0) + 1
+        if len(ledger) > 256:
+            for stale in list(ledger)[:-256]:
+                ledger.pop(stale, None)
+
+    def _kick_interactive_chart_paint(self, target: str, prefetch: bool = False) -> bool:
+        """A client is waiting on a ticker whose served tape has no candles,
+        or not today's: make sure a candles-only paint is running for it,
+        independent of the deep-build and recency guards (both of which can
+        be held for minutes by work queued behind other symbols).
+
+        Generalised 2026-10-10 from the cold-only _retry_cold_chart_paint: a
+        previously opened, hot-set or board ticker has a tape, so the cold
+        retry never fired and today's candles waited for the FIFO recency
+        pool. Prefetches and background chores never dispatch - they are
+        speculative, and a keeper touching 120 symbols must not paint them.
+        """
+        if prefetch or in_background_request():
+            return False
         with self.oi_finder_chart_lock:
             entry = self.oi_finder_chart_cache.get(target)
-            if entry and (entry.get("payload") or {}).get("bars"):
-                return False
-        token = self._claim_chart_paint(
-            target, min_interval=OI_FINDER_CHART_COLD_PAINT_RETRY_SECONDS,
-        )
-        if token is None:
+        min_interval = self._chart_entry_wants_fast_paint(entry)
+        if min_interval is None:
             return False
-        pool = getattr(self, "oi_finder_chart_paint_pool", None)
+        min_interval = self._chart_paint_flat_backoff(target, min_interval, entry)
+        pool, lane = self._chart_paint_executor(target)
         if pool is None:
-            with self.oi_finder_chart_lock:
-                self._chart_paint_guard().pop(target, None)
+            return False
+        token = self._claim_chart_paint(target, min_interval=min_interval, lane=lane)
+        if token is None:
             return False
         pool.submit(self._run_chart_paint, target, token)
         return True
+
+    # Old name kept for callers/tests written against the cold-only retry.
+    _retry_cold_chart_paint = _kick_interactive_chart_paint
+
+    @staticmethod
+    def _chart_refresh_entry_live(entry, now: float, deadline: float) -> bool:
+        """Does a recency/deep guard entry still count as in flight?
+
+        [token, stamp, started]. The deadline applies to STARTED jobs only;
+        a job still in its pool's queue gets OI_FINDER_CHART_REFRESH_QUEUED_
+        CAP_SECONDS (see that constant for the livelock it removes). Two-
+        element entries - the pre-2026-10-10 shape, still written by test
+        stubs - count as started, which is the old behaviour exactly.
+        """
+        started = len(entry) < 3 or bool(entry[2])
+        limit = deadline if started else max(deadline, OI_FINDER_CHART_REFRESH_QUEUED_CAP_SECONDS)
+        return (now - float(entry[1])) < limit
+
+    def _mark_chart_refresh_started(self, target: str, full_history: bool, token) -> None:
+        if token is None:
+            return
+        with self.oi_finder_chart_lock:
+            if full_history:
+                guard = getattr(self, "oi_finder_chart_refreshes", None)
+            else:
+                guard = self._chart_recency_refreshes()
+            if not isinstance(guard, dict):
+                return
+            entry = guard.get(target)
+            if entry and entry[0] == token:
+                entry[1] = time.monotonic()
+                if len(entry) > 2:
+                    entry[2] = True
 
     def _start_oi_finder_chart_refresh(self, target: str, full_history: bool) -> None:
         now = time.monotonic()
@@ -14292,7 +14880,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             entry = guard.get(target)
             if entry is not None:
                 age = now - float(entry[1])
-                if age < deadline:
+                if self._chart_refresh_entry_live(entry, now, deadline):
                     return
                 # No progress past the deadline: presumed wedged. Only a
                 # restart used to clear this state - NVDA sat un-refreshable
@@ -14316,7 +14904,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             sequence = int(getattr(self, "_chart_refresh_token_seq", 0)) + 1
             self._chart_refresh_token_seq = sequence
             token = (kind, sequence)
-            guard[target] = [token, now]
+            # started=False until a worker dequeues it (see
+            # _chart_refresh_entry_live).
+            guard[target] = [token, now, False]
         # Split dispatch so the fast paint is never stuck behind a slow study
         # build. A full-history refresh runs its ~2s candles-first paint on the
         # priority paint pool, then hands the 9-101s study build to the bounded
@@ -14326,19 +14916,25 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         if full_history:
             # Claimed HERE, synchronously, so a request that lands before the
             # pool picks this job up sees the paint as in flight and does not
-            # dispatch a second one (see _retry_cold_chart_paint).
-            paint_token = self._claim_chart_paint(target)
+            # dispatch a second one (see _kick_interactive_chart_paint).
+            paint_pool, paint_lane = self._chart_paint_executor(target)
+            paint_token = self._claim_chart_paint(target, lane=paint_lane)
 
             def _paint_then_queue_full() -> None:
                 if paint_token is not None:
                     self._run_chart_paint(target, paint_token)
-                # Deep builds queue on their OWN single-worker pool so a 39-79s
-                # full build cannot occupy half the tail pool (2026-09-22).
-                self._chart_refresh_executor(True).submit(
+                # Deep builds queue on their OWN pool so a 39-79s full build
+                # cannot occupy half the tail pool (2026-09-22). A clicked
+                # ticker's goes to the interactive deep pair (see __init__).
+                self._chart_refresh_executor(True, interactive=paint_lane == "live").submit(
                     self._run_oi_finder_chart_refresh, target, True, token, True,
                     time.monotonic(),
                 )
-            self.oi_finder_chart_paint_pool.submit(_paint_then_queue_full)
+            if paint_lane == "live":
+                # The trader's own click: the interactive pair (see __init__).
+                paint_pool.submit(_paint_then_queue_full)
+            else:
+                self.oi_finder_chart_paint_pool.submit(_paint_then_queue_full)
         else:
             self.oi_finder_chart_refresh_pool.submit(
                 self._run_oi_finder_chart_refresh, target, False, token,
@@ -14585,11 +15181,15 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         return True
                 else:
                     entry = refreshes.get(target)
-                    if entry and (clock - float(entry[1])) < OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS:
+                    if entry and self._chart_refresh_entry_live(
+                        entry, clock, OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS,
+                    ):
                         return True
         if kind in (None, "recency"):
             entry = self._chart_recency_refreshes().get(target)
-            if entry and (clock - float(entry[1])) < OI_FINDER_CHART_RECENCY_DEADLINE_SECONDS:
+            if entry and self._chart_refresh_entry_live(
+                entry, clock, OI_FINDER_CHART_RECENCY_DEADLINE_SECONDS,
+            ):
                 return True
         return False
 
@@ -14602,14 +15202,19 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 if entry and entry[0] == token:
                     entry[1] = time.monotonic()
 
-    def _chart_refresh_executor(self, full_history: bool):
+    def _chart_refresh_executor(self, full_history: bool, interactive: bool = False):
         """Which pool a queued build runs on.
 
-        Deep builds have their own single-worker pool (see __init__); tails
-        keep the 2-worker pool. getattr, not attribute access, because states
-        built with __new__ (tests, stubs) never ran __init__ - the house rule
-        that every helper tolerates missing state.
+        Deep builds have their own pool (see __init__), and a deep build for
+        a ticker the trader just clicked has a separate pair; tails keep the
+        2-worker pool. getattr, not attribute access, because states built
+        with __new__ (tests, stubs) never ran __init__ - the house rule that
+        every helper tolerates missing state.
         """
+        if full_history and interactive:
+            pool = getattr(self, "oi_finder_chart_interactive_full_pool", None)
+            if pool is not None:
+                return pool
         if full_history:
             pool = getattr(self, "oi_finder_chart_full_pool", None)
             if pool is not None:
@@ -14739,6 +15344,21 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             return False
         return newest >= session_start
 
+    def _chart_disk_tape_present(self, target: str) -> bool:
+        """stat()-only: would _load_oi_finder_chart_disk_payload find a file?
+        (Same age ceiling; content is judged by the loader, not here.) False
+        for stub states with no disk cache dir."""
+        if not getattr(self, "oi_finder_chart_disk_cache_dir", None):
+            return False
+        try:
+            path = self._oi_finder_chart_disk_path(target)
+            if path is None:
+                return False
+            age = max(0.0, time.time() - path.stat().st_mtime)
+        except (OSError, TypeError, ValueError):
+            return False
+        return age <= OI_FINDER_CHART_DISK_CACHE_MAX_AGE_SECONDS
+
     def oi_finder_chart_history_status(self, symbol: str) -> dict:
         """Tiny readiness response so ticker-switch polls do not re-ship tapes."""
         target = (symbol or "").strip().upper()
@@ -14762,15 +15382,28 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             and self._chart_entry_tape_is_current(cached)
         )
         has_bars = bool(cached and cached.get("payload", {}).get("bars"))
+        # Not in memory but on disk (2026-10-10): the chart endpoint serves
+        # that file the moment it is asked, and its own load path starts the
+        # right refresh and paint for it. Firing them from here instead cost
+        # a Schwab paint call for candles that were one gunzip away, plus a
+        # recency build whose 2-day store was the "cold historyStatus recency
+        # race" the deep-tape rescue exists to undo. Only a stat() - loading
+        # a ~4MB file on a 450ms readiness poll would be the cost itself.
+        on_disk = not cached and self._chart_disk_tape_present(target)
+        if on_disk:
+            has_bars = True
         # Self-healing: polling must restart a stalled build rather than
         # report a cold cache forever. A content-ready entry whose tape is
         # merely short of the session gets the recency splice, not a full.
-        if not refreshing and (not cached or not history_ready):
+        # No entry at all gets the same full build (paint first) as a cold
+        # chart request, which dedupes against it; it used to get a recency
+        # build WITH studies here, on top of the paint.
+        if not refreshing and not on_disk and (not cached or not history_ready):
             self._start_oi_finder_chart_refresh(
-                target, full_history=bool(cached) and not content_ready,
+                target, full_history=(not cached) or not content_ready,
             )
             refreshing = True
-        if not has_bars and self._retry_cold_chart_paint(target):
+        if not on_disk and self._kick_interactive_chart_paint(target):
             refreshing = True
         return {
             "symbol": target,
@@ -14982,9 +15615,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 # days-old deep tape, leaving a visible gap and stale 4H/D/W/M
                 # panes. A tape that does not reach the current session is not
                 # ready, so it earns a full rebuild instead.
-                disk_bars = disk_payload.get("bars") or []
-                newest_bar_time = int(disk_bars[-1].get("time") or 0) if disk_bars else 0
-                tape_age_seconds = max(0.0, time.time() - newest_bar_time) if newest_bar_time else float("inf")
                 # The 26h window alone is not enough once a session is under way.
                 # Measured 2026-08-19 at 10:53 ET: SPY's tape ended 19:59 the
                 # previous evening - 14.9h old, comfortably inside the window -
@@ -14993,13 +15623,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 # one minute fresh. A tape that does not reach the CURRENT
                 # session is stale however new the window says it looks; the
                 # window still governs overnight and weekend gaps.
-                session_start_epoch = self._most_recent_session_start(
-                    datetime.now(timezone.utc)
-                ).timestamp()
-                tape_current = (
-                    tape_age_seconds <= OI_FINDER_CHART_STALE_TAPE_SECONDS
-                    and newest_bar_time >= session_start_epoch
-                )
+                #
+                # That verdict now lives in _chart_entry_tape_is_current (the
+                # in-memory twin), which _kick_interactive_chart_paint applies
+                # to this entry once it is stored below - so a behind disk
+                # tape gets today's candles from a ~2s paint instead of from
+                # the queued recency pass. The local tape_current computed
+                # here was never read and has been removed (2026-10-10).
                 content_ready = (
                     not bool(disk_payload.get("historyLoading"))
                     # An old-schema payload is complete enough to show, but it
@@ -15015,7 +15645,12 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     and self._chart_payload_has_current_mtf_labels(disk_payload)
                 )
                 if not self._chart_payload_has_current_mtf_labels(disk_payload):
-                    self._refresh_mtf_block_from_payload_tapes(target, disk_payload)
+                    if self._refresh_mtf_block_from_payload_tapes(target, disk_payload):
+                        # Stamp the sessions the replay just used, as the
+                        # cached branch does; unstamped, the cached branch
+                        # found the same labels "not current" and replayed
+                        # them a second time on the next request (2026-10-10).
+                        disk_payload["mtfSourceSessions"] = self._fine_tape_session_span(disk_payload)
                 disk_payload["studySchemaStale"] = not self._chart_payload_has_ready_ganesh_signals(
                     disk_payload,
                 )
@@ -15039,6 +15674,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 if not prefetch:
                     self._start_oi_finder_chart_refresh(target, full_history=not content_ready)
                     refreshing = True
+                    # Last night's tape is the normal boot case: paint today's
+                    # candles now rather than after the queued pass.
+                    self._kick_interactive_chart_paint(target, prefetch=prefetch)
         if cached:
             # Deep-tape rescue: a shallow first store (the cold historyStatus
             # recency race at boot) sits in memory and BLOCKS the disk load,
@@ -15158,6 +15796,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 elif not self._chart_refresh_in_flight(target, kind="recency"):
                     self._start_oi_finder_chart_refresh(target, full_history=False)
                     refreshing = True
+            # The recency pass above is a FIFO job with a study replay; under
+            # hot-set, board and warmer load it waits minutes. A watched tape
+            # that is not today's, or is >2 min behind, also gets the
+            # candles-only paint on its own lane (2026-10-10). Rate limited
+            # per symbol inside; prefetch/background never dispatch.
+            if self._kick_interactive_chart_paint(target, prefetch=prefetch):
+                refreshing = True
             # Window at SERVE time, not just at build time: payloads persisted
             # to disk before the windowing fix still carry the whole
             # multi-year replay (6,000+ signals), and they are served verbatim
@@ -15225,13 +15870,14 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             # The deep build's guard may already be held (an earlier click, the
             # board prewarm) with its paint come back empty; without this the
             # pane waited for that whole queued build.
-            self._retry_cold_chart_paint(target)
+            self._kick_interactive_chart_paint(target)
         return {
             "symbol": target,
             "bars": [],
             "warming": True,
             "refreshing": True,
             "historyLoading": True,
+            **self._chart_paint_refusal_fields(target),
             "updatedAt": datetime.now().astimezone().isoformat(),
         }
 
@@ -21313,6 +21959,27 @@ def _oi_auto_alert_plain_error(exc: object, *, kept: bool = False) -> str:
     if kept:
         plain += " Today's levels are still armed."
     return plain
+
+
+def _bars_call_accepts_raise_unavailable(client) -> bool:
+    """Does client.get_chart_bars take the opt-in raise_unavailable flag?
+
+    SchwabClient does (2026-10-10); stand-ins injected through
+    _schwab_market_clients or a patched SchwabClient may not, and passing an
+    unknown keyword would turn every paint into a TypeError swallowed as "no
+    bars". Read from the BOUND callable every time, not cached per class: an
+    instance whose get_chart_bars was replaced (patch.object on an instance,
+    a per-instance wrapper) would otherwise inherit the class's answer and
+    fail order-dependently. inspect.signature is microseconds next to the
+    broker call it guards.
+    """
+    try:
+        params = inspect.signature(client.get_chart_bars).parameters
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return "raise_unavailable" in params or any(
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
 
 
 def _schwab_market_clients():

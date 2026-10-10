@@ -2,6 +2,19 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-10-10T04:59:00-04:00",
+      "heading": "Scanner clicks open charts fast, even when Schwab is busy",
+      "items": [
+        "Clicking a scanner ticker no longer waits behind other charts that are building their history in the background. The clicked chart gets its own fast lane, so its candles show in about a second when Schwab is answering.",
+        "If Schwab is briefly rate-limiting when you click, the chart now retries the moment Schwab's pause ends, about 1 second later, instead of waiting minutes for the full history build.",
+        "A ticker you already opened on an earlier day shows its old candles at once and catches up to today's candles in about a second, instead of waiting in a queue.",
+        "Tickers on the MomX board get their candles fetched ahead of time in the background, so clicking a board row usually shows the chart immediately.",
+        "If one chart request gets stuck, the chart now asks again after a few seconds instead of waiting up to 5 minutes.",
+        "A connection problem now shows as a notice on top of the chart instead of blanking it, and the chart comes back on its own when the connection recovers.",
+        "Indicators, signals and the long 4H/D/W/M history still fill in a moment after the candles, the same as before."
+      ]
+    },
+    {
       "at": "2026-10-10T01:34:00-04:00",
       "heading": "Scanner ticker clicks: candles show in seconds, not minutes",
       "items": [

@@ -269,7 +269,11 @@ def test_full_and_recency_builds_use_different_executors():
     assert len(state.oi_finder_chart_full_pool.jobs) == 1
 
 
-def test_the_deep_pool_is_one_worker_and_names_its_threads():
+def test_the_deep_pool_is_bounded_and_names_its_threads():
+    # 1 worker until 2026-10-10. Now 4, so waiting deep jobs block INSIDE
+    # ChartBuildLane (interactive priority, on_wait stamping) instead of in
+    # the executor's priority-blind FIFO queue. The lane still serialises the
+    # builds - see test_chart_refresh_guard_livelock.py for that pinned.
     init = inspect.getsource(DashboardState.__init__)
     m = re.search(
         r"oi_finder_chart_full_pool = ThreadPoolExecutor\(\s*max_workers=(\d+),\s*"
@@ -277,7 +281,7 @@ def test_the_deep_pool_is_one_worker_and_names_its_threads():
         init,
     )
     assert m, "the deep build pool must exist, bounded and named for py-spy"
-    assert int(m.group(1)) == 1, "ChartBuildLane already serialises deep builds"
+    assert int(m.group(1)) == 4, "a few lane waiters, not an unbounded pile of threads"
     assert m.group(2) != "oi-finder-chart", "the two pools must be tellable apart in a dump"
 
 

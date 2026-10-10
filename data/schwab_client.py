@@ -230,7 +230,14 @@ class SchwabClient:
         timeframe: str,
         start: datetime,
         end: datetime | None = None,
+        raise_unavailable: bool = False,
     ) -> dict[str, pd.DataFrame]:
+        """raise_unavailable (opt-in, 2026-10-10): re-raise SchwabUnavailable
+        instead of folding it into an empty frame. The chart paint needs to
+        tell "Schwab is cooling down for 14s" from "this ticker has no bars":
+        the first means retry when the cooldown ends, the second means the
+        ticker may not exist. Every existing caller keeps the empty-frame
+        contract by not passing it."""
         if timeframe not in TIMEFRAME_PARAMS:
             return {}
         if not self.configured:
@@ -240,6 +247,10 @@ class SchwabClient:
         for symbol in [str(item).strip().upper() for item in symbols if str(item).strip()]:
             try:
                 frame = self._get_price_history(symbol, timeframe, start, end)
+            except SchwabUnavailable:
+                if raise_unavailable:
+                    raise
+                frame = pd.DataFrame()
             except Exception:
                 frame = pd.DataFrame()
             if not frame.empty:
@@ -366,6 +377,7 @@ class SchwabClient:
         symbols: Iterable[str],
         timeframe: str = "1Min",
         days_back: int = 1,
+        raise_unavailable: bool = False,
     ) -> dict[str, pd.DataFrame]:
         now = datetime.now(tz=self._tz)
         start = (now - timedelta(days=max(days_back, self._default_intraday_lookback_days(now)))).replace(
@@ -374,7 +386,10 @@ class SchwabClient:
             second=0,
             microsecond=0,
         )
-        return self.get_stock_bars(symbols=symbols, timeframe=timeframe, start=start, end=now)
+        return self.get_stock_bars(
+            symbols=symbols, timeframe=timeframe, start=start, end=now,
+            raise_unavailable=raise_unavailable,
+        )
 
     def get_daily_bars(
         self,
@@ -393,8 +408,12 @@ class SchwabClient:
         symbol: str,
         timeframe: str = "1Min",
         days_back: int = 2,
+        raise_unavailable: bool = False,
     ) -> pd.DataFrame:
-        return self.get_intraday_bars([symbol], timeframe=timeframe, days_back=days_back).get(symbol.upper(), pd.DataFrame())
+        return self.get_intraday_bars(
+            [symbol], timeframe=timeframe, days_back=days_back,
+            raise_unavailable=raise_unavailable,
+        ).get(symbol.upper(), pd.DataFrame())
 
     def get_option_chain(
         self,
