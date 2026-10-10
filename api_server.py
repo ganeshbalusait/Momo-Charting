@@ -444,6 +444,18 @@ OI_FINDER_QUICK_ANALYTICS_WORKERS = 6
 OI_FINDER_CHAIN_DISK_CACHE_MAX_AGE_SECONDS = 5 * 24 * 60 * 60
 OI_FINDER_CHAIN_QUOTE_SCHEMA_VERSION = 1
 OI_FINDER_CHART_FULL_REFRESH_DEFER_SECONDS = 0.25
+# Cold-open paint retry (2026-10-10). A ticker clicked on the scanner with no
+# cached tape gets ONE candles-only paint, dispatched together with its deep
+# rebuild - and the deep rebuild's in-flight guard is held from that moment
+# for up to OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS. When that single paint
+# came back empty (Schwab 429 cooldown or a throttled gate slot while the
+# scanner was busy, a slow broker answer), nothing ever painted again: every
+# poll saw "a refresh is in flight" and waited for the deep build, which sits
+# behind other symbols' 40-200s builds on a one-worker lane. That wait was the
+# 3+ minute blank chart. The paint now has its own short guard and retries on
+# the client's polls until the first candles land.
+OI_FINDER_CHART_COLD_PAINT_RETRY_SECONDS = 3.0
+OI_FINDER_CHART_COLD_PAINT_DEADLINE_SECONDS = 45.0
 # The browser polls the dashboard every five seconds, but the full payload
 # includes broker reconciliation and hundreds of historical-trade reads. All
 # user actions explicitly invalidate this cache and the response overlays its
@@ -14182,6 +14194,86 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         getattr(self, "oi_finder_ondemand_builds", 0) or 0
                     ) - 1)
 
+    def _chart_paint_guard(self) -> dict:
+        """symbol -> [token, started_monotonic, finished_monotonic|None].
+
+        Lazily created: states built with __new__ (tests, stubs) never ran
+        __init__, and every helper here tolerates missing state.
+        """
+        guard = getattr(self, "oi_finder_chart_paint_guard", None)
+        if not isinstance(guard, dict):
+            guard = {}
+            self.oi_finder_chart_paint_guard = guard
+        return guard
+
+    def _claim_chart_paint(self, target: str, min_interval: float = 0.0):
+        """Claim the candles-only paint for target, or None if one is running
+        (or, with min_interval, finished too recently to try again)."""
+        now = time.monotonic()
+        with self.oi_finder_chart_lock:
+            guard = self._chart_paint_guard()
+            entry = guard.get(target)
+            if entry is not None:
+                started, finished = float(entry[1]), entry[2]
+                if finished is None and (now - started) < OI_FINDER_CHART_COLD_PAINT_DEADLINE_SECONDS:
+                    return None
+                if finished is not None and (now - float(finished)) < min_interval:
+                    return None
+            sequence = int(getattr(self, "_chart_paint_token_seq", 0)) + 1
+            self._chart_paint_token_seq = sequence
+            guard[target] = [sequence, now, None]
+            if len(guard) > 256:
+                for stale in sorted(guard, key=lambda key: guard[key][1])[:-256]:
+                    guard.pop(stale, None)
+            return sequence
+
+    def _run_chart_paint(self, target: str, token) -> int:
+        """Candles only, no study replay: fetch + serialize, ~2s. Returns the
+        bar count now cached. Never raises - a failed paint is retried by the
+        next poll, and the deep build queued alongside it still runs."""
+        started = time.perf_counter()
+        bars = 0
+        try:
+            self._refresh_oi_finder_chart_payload(
+                target, False, release=False, skip_studies=True,
+            )
+            with self.oi_finder_chart_lock:
+                entry = self.oi_finder_chart_cache.get(target) or {}
+            bars = len(((entry.get("payload") or {}).get("bars")) or [])
+        except Exception:  # noqa: BLE001 - a failed paint must never break the caller
+            bars = 0
+        finally:
+            with self.oi_finder_chart_lock:
+                entry = self._chart_paint_guard().get(target)
+                if entry is not None and entry[0] == token:
+                    entry[2] = time.monotonic()
+        # Observability: one line per paint, so a slow/empty paint is visible.
+        print(f"[build-timing] {target:6s} paint  {time.perf_counter() - started:6.2f}s bars={bars}", flush=True)
+        return bars
+
+    def _retry_cold_chart_paint(self, target: str) -> bool:
+        """A client is waiting on a ticker with NO cached candles: make sure a
+        candles-only paint is running, independent of the deep-build guard.
+        Rate limited per symbol so a broker that keeps answering empty costs
+        one request per OI_FINDER_CHART_COLD_PAINT_RETRY_SECONDS, not one per
+        poll."""
+        with self.oi_finder_chart_lock:
+            entry = self.oi_finder_chart_cache.get(target)
+            if entry and (entry.get("payload") or {}).get("bars"):
+                return False
+        token = self._claim_chart_paint(
+            target, min_interval=OI_FINDER_CHART_COLD_PAINT_RETRY_SECONDS,
+        )
+        if token is None:
+            return False
+        pool = getattr(self, "oi_finder_chart_paint_pool", None)
+        if pool is None:
+            with self.oi_finder_chart_lock:
+                self._chart_paint_guard().pop(target, None)
+            return False
+        pool.submit(self._run_chart_paint, target, token)
+        return True
+
     def _start_oi_finder_chart_refresh(self, target: str, full_history: bool) -> None:
         now = time.monotonic()
         kind = "full" if full_history else "recency"
@@ -14232,21 +14324,14 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         # study pool. Both pools are bounded, so a burst still queues rather than
         # saturating the GIL.
         if full_history:
+            # Claimed HERE, synchronously, so a request that lands before the
+            # pool picks this job up sees the paint as in flight and does not
+            # dispatch a second one (see _retry_cold_chart_paint).
+            paint_token = self._claim_chart_paint(target)
+
             def _paint_then_queue_full() -> None:
-                _paint_t0 = time.perf_counter()
-                _paint_bars = 0
-                try:
-                    self._refresh_oi_finder_chart_payload(
-                        target, False, release=False, skip_studies=True,
-                    )
-                    with self.oi_finder_chart_lock:
-                        _entry = self.oi_finder_chart_cache.get(target) or {}
-                    _paint_bars = len(((_entry.get("payload") or {}).get("bars")) or [])
-                except Exception:  # noqa: BLE001 - a failed paint must still queue the full build
-                    pass
-                # Observability: the split dropped the old paint timing line, so
-                # a slow/empty paint was invisible. One line per cold open.
-                print(f"[build-timing] {target:6s} paint  {time.perf_counter() - _paint_t0:6.2f}s bars={_paint_bars}", flush=True)
+                if paint_token is not None:
+                    self._run_chart_paint(target, paint_token)
                 # Deep builds queue on their OWN single-worker pool so a 39-79s
                 # full build cannot occupy half the tail pool (2026-09-22).
                 self._chart_refresh_executor(True).submit(
@@ -14684,6 +14769,8 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             self._start_oi_finder_chart_refresh(
                 target, full_history=bool(cached) and not content_ready,
             )
+            refreshing = True
+        if not has_bars and self._retry_cold_chart_paint(target):
             refreshing = True
         return {
             "symbol": target,
@@ -15135,6 +15222,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         # start background work, exactly as before.
         if not prefetch:
             self._start_oi_finder_chart_refresh(target, full_history=True)
+            # The deep build's guard may already be held (an earlier click, the
+            # board prewarm) with its paint come back empty; without this the
+            # pane waited for that whole queued build.
+            self._retry_cold_chart_paint(target)
         return {
             "symbol": target,
             "bars": [],

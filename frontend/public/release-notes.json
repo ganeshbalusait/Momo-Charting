@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-10-10T01:34:00-04:00",
+      "heading": "Scanner ticker clicks: candles show in seconds, not minutes",
+      "items": [
+        "Clicking a ticker on the scanner that the app had not charted yet could leave the chart on 'Loading live one-minute candles' for 3+ minutes. If the first quick candle fetch came back empty (Schwab busy or briefly rate-limiting while the scanner is running), the chart waited for the slow full-history build, which queues behind other tickers.",
+        "Now the chart keeps retrying the quick candle fetch every few seconds until candles arrive, so a new ticker paints as soon as Schwab answers. Indicators and the long 4H/D/W/M history still fill in a moment later, the same as before."
+      ]
+    },
+    {
       "at": "2026-10-01T23:08:00-04:00",
       "heading": "Search the MomX headlines by ticker or word",
       "items": [
