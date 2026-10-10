@@ -75,6 +75,7 @@ THE INCREMENTAL STORE (why a refresh takes seconds, not minutes)
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import math
 import threading
@@ -181,7 +182,31 @@ IEX_TAIL_END_CLAMP_MINUTES = 1
 # ~6.9s projected for the 357-symbol Watchlist whose build already takes
 # 31-39s. Affordable.
 SCHWAB_VOLUME_TIMEFRAMES = ("5Min", "30Min")
-SCHWAB_VOLUME_WORKERS = 12
+
+
+def _schwab_volume_workers() -> int:
+    """Concurrent Schwab calls in the volume pass (2026-10-10: 12 -> 3).
+
+    WHY FEWER. Twelve workers fire a board's ~716 pricehistory calls in a
+    few-second burst, and Akamai/Schwab bans the IP, not the app - so that
+    burst lands on every chart in api_server too. A 429 during a chart's first
+    candle fetch was what left a scanner click blank for minutes (Schwab's own
+    5/15/60s cooldown ladder). Three workers spread the same calls across the
+    board cycle instead of bursting them. Same calls, same bars, same RVOL
+    values; the pass simply takes longer, so each board refresh lands later.
+
+    MOMX_SCHWAB_VOLUME_WORKERS overrides it without a code change (1-16;
+    anything unreadable falls back to 3). Set 12 to restore the old burst.
+    """
+    raw = os.environ.get("MOMX_SCHWAB_VOLUME_WORKERS", "").strip()
+    try:
+        value = int(raw) if raw else 3
+    except ValueError:
+        value = 3
+    return max(1, min(value, 16))
+
+
+SCHWAB_VOLUME_WORKERS = _schwab_volume_workers()
 #: How far back to ask Schwab for. Must comfortably exceed SIP's recency block
 #: (~20 min) so the whole thin tail is covered even when a build runs slow.
 SCHWAB_VOLUME_LOOKBACK_MINUTES = 60

@@ -208,3 +208,44 @@ def test_no_symbols_means_no_calls(enabled):
     client = Fine()
     assert feed._schwab_volume_map([], "5Min", None, client=client) == {}
     assert client.calls == []
+
+
+# ---------------------------------------------------------------------------
+# burst size (2026-10-10): fewer concurrent Schwab calls, same coverage
+# ---------------------------------------------------------------------------
+
+def test_the_volume_pass_defaults_to_three_workers(monkeypatch):
+    monkeypatch.delenv("MOMX_SCHWAB_VOLUME_WORKERS", raising=False)
+    assert feed._schwab_volume_workers() == 3
+
+
+@pytest.mark.parametrize("raw, expected", [("12", 12), ("0", 1), ("99", 16), ("x", 3), (" ", 3)])
+def test_the_worker_override_is_clamped(monkeypatch, raw, expected):
+    monkeypatch.setenv("MOMX_SCHWAB_VOLUME_WORKERS", raw)
+    assert feed._schwab_volume_workers() == expected
+
+
+def test_three_workers_still_cover_every_symbol_and_never_exceed_three(enabled, monkeypatch):
+    import threading
+    import time as _time
+
+    monkeypatch.setattr(feed, "SCHWAB_VOLUME_WORKERS", 3)
+    lock = threading.Lock()
+    state = {"now": 0, "peak": 0}
+
+    class Counting(Fine):
+        def _get_price_history(self, symbol, timeframe, start, end):
+            with lock:
+                state["now"] += 1
+                state["peak"] = max(state["peak"], state["now"])
+            _time.sleep(0.01)
+            with lock:
+                state["now"] -= 1
+            return super()._get_price_history(symbol, timeframe, start, end)
+
+    symbols = [f"S{index}" for index in range(30)]
+    client = Counting()
+    got = feed._schwab_volume_map(symbols, "5Min", None, client=client)
+    assert sorted(got) == sorted(symbols)
+    assert all(got[symbol] for symbol in symbols)
+    assert state["peak"] <= 3

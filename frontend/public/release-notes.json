@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-10-10T09:05:00-04:00",
+      "heading": "Scanner sends Schwab fewer requests at once",
+      "items": [
+        "The MomX scanner's Schwab volume check now sends 3 requests at a time instead of 12. The same data is fetched and RVOL values are unchanged, but the requests no longer arrive at Schwab in one burst. That burst is the likely trigger for the Schwab pauses that could stall a chart opening for up to a minute or more.",
+        "Trade-off: each board refresh can land some seconds later than before (an estimate; not yet timed on the live board). To go back to the old speed, set MOMX_SCHWAB_VOLUME_WORKERS=12 and restart the scanner."
+      ]
+    },
+    {
       "at": "2026-10-10T04:59:00-04:00",
       "heading": "Scanner clicks open charts fast, even when Schwab is busy",
       "items": [
