@@ -273,6 +273,7 @@ import {
 import { calculateRelativeVolumeCandleStudy } from "./relativeVolumeStudy";
 import { calculateTosCandlePaints } from "./tosCandleColors";
 import { premarketGapBadge } from "./premarketGap";
+import { mergeStudyHistoryBars } from "./mtfStudySource.js";
 import {
   liveEquityPrice,
   liveNumber,
@@ -9840,6 +9841,11 @@ function chartHhmmToMinutes(value, fallback) {
   return Math.min(23, Number(raw.slice(0, 2)) || 0) * 60 + Math.min(59, Number(raw.slice(2, 4)) || 0);
 }
 
+// Every MTF cloud study (and each CloudBands timeframe) asks for the same
+// cutoff over the same source tape; remember it per tape instead of formatting
+// thousands of timestamps once per study.
+const CHART_MTF_SESSION_CUTOFF_CACHE = new WeakMap();
+
 function chartMtfCloudSessionCutoff(source, easternSessionFormatter, {
   limitRecentSessions,
   sessionsBack,
@@ -9847,22 +9853,35 @@ function chartMtfCloudSessionCutoff(source, easternSessionFormatter, {
   rthEndTime,
   defaultSessionsBack,
 }) {
+  if (limitRecentSessions === false) return Number.NEGATIVE_INFINITY;
+  const bars = Array.isArray(source) ? source : [];
   const rthStart = chartHhmmToMinutes(rthStartTime, 500);
   const rthEnd = chartHhmmToMinutes(rthEndTime, 1600);
-  const sessionStarts = [];
-  const seenRthDates = new Set();
-  source.forEach((bar) => {
-    const time = Number(bar?.time || 0);
-    if (!time) return;
-    const { dateKey: date, minutes: minute } = easternSessionParts(easternSessionFormatter, time);
-    if (minute >= rthStart && minute < rthEnd && !seenRthDates.has(date)) {
-      seenRthDates.add(date);
-      sessionStarts.push(time);
-    }
-  });
-  if (limitRecentSessions === false || !sessionStarts.length) return Number.NEGATIVE_INFINITY;
   const count = Math.max(1, Math.min(30, Number(sessionsBack) || defaultSessionsBack));
-  return sessionStarts[Math.max(0, sessionStarts.length - count)];
+  // Length and newest time guard against a tape array updated in place.
+  const cacheKey = `${rthStart}:${rthEnd}:${count}:${bars.length}:${Number(bars.at(-1)?.time || 0)}`;
+  let cached = CHART_MTF_SESSION_CUTOFF_CACHE.get(bars);
+  if (cached?.formatter !== easternSessionFormatter) {
+    cached = { formatter: easternSessionFormatter, values: new Map() };
+    CHART_MTF_SESSION_CUTOFF_CACHE.set(bars, cached);
+  }
+  if (cached.values.has(cacheKey)) return cached.values.get(cacheKey);
+  // Bars are time-ordered, so walk back from the newest bar and stop once a
+  // session older than the requested window appears. A date's session start
+  // is its earliest bar inside the RTH window (newRTHSession in TOS).
+  const sessionStartByDate = new Map();
+  for (let index = bars.length - 1; index >= 0; index -= 1) {
+    const time = Number(bars[index]?.time || 0);
+    if (!time) continue;
+    const { dateKey: date, minutes: minute } = easternSessionParts(easternSessionFormatter, time);
+    if (minute < rthStart || minute >= rthEnd) continue;
+    if (!sessionStartByDate.has(date) && sessionStartByDate.size >= count) break;
+    sessionStartByDate.set(date, time);
+  }
+  const sessionStarts = [...sessionStartByDate.values()].sort((left, right) => left - right);
+  const cutoff = sessionStarts.length ? sessionStarts[0] : Number.NEGATIVE_INFINITY;
+  cached.values.set(cacheKey, cutoff);
+  return cutoff;
 }
 
 const AUTO_FIB_TIMEFRAMES = Object.freeze([
@@ -10439,7 +10458,7 @@ function calculateMtfEma920Clouds(bars, currentMinutes, easternSessionFormatter,
   });
 }
 
-function calculateMtfSqueezeReleaseClouds(bars, currentMinutes, easternSessionFormatter, options = {}) {
+function calculateMtfSqueezeReleaseClouds(bars, currentMinutes, easternSessionFormatter, options = {}, dailyBars = []) {
   const source = Array.isArray(bars) ? bars : [];
   if (!source.length || !easternSessionFormatter?.formatToParts) return [];
   const displayedMinutes = Math.max(1, Number(currentMinutes) || 1);
@@ -10451,7 +10470,9 @@ function calculateMtfSqueezeReleaseClouds(bars, currentMinutes, easternSessionFo
     defaultSessionsBack: 1,
   });
   const definitions = [
-    { key: "current", label: "Current", bubbleLabel: `${displayedMinutes >= 60 ? `${displayedMinutes / 60}h` : displayedMinutes}`, minutes: displayedMinutes, optionKey: "mtfSqueezeCurrent" },
+    // shared_Cloud_Signal_Squeeze_v20263 hardcodes the chart-aggregation
+    // bubble as "🔥5" whatever the chart timeframe is.
+    { key: "current", label: "Current", bubbleLabel: "5", minutes: displayedMinutes, optionKey: "mtfSqueezeCurrent" },
     { key: "15m", label: "15m", bubbleLabel: "15", minutes: 15, optionKey: "mtfSqueeze15m" },
     { key: "30m", label: "30m", bubbleLabel: "30", minutes: 30, optionKey: "mtfSqueeze30m" },
     { key: "1h", label: "1h", bubbleLabel: "1h", minutes: 60, optionKey: "mtfSqueeze1h" },
@@ -10464,9 +10485,13 @@ function calculateMtfSqueezeReleaseClouds(bars, currentMinutes, easternSessionFo
     // Detection lives in ./squeezeRelease.js so premarket_scanner.py can be
     // pinned against the exact code this chart runs. Everything below is
     // chart presentation: session cutoff, anchor price, bubble label.
-    const timeframeBars = aggregateChartBars(source, definition.minutes);
+    // close/high/low(period = DAY) are the regular-session daily candles.
+    const studySource = definition.minutes === 1440 && Array.isArray(dailyBars) && dailyBars.length
+      ? dailyBars
+      : source;
+    const timeframeBars = aggregateChartBars(studySource, definition.minutes);
     const barsByTime = new Map(timeframeBars.map((bar) => [Number(bar.time), bar]));
-    return squeezeReleaseEvents(source, definition.minutes).flatMap((event) => {
+    return squeezeReleaseEvents(studySource, definition.minutes).flatMap((event) => {
       if (event.bucketTime < cutoffTime) return [];
       const bar = barsByTime.get(event.bucketTime);
       const anchor = event.tone === "bull" ? Number(bar?.low) : Number(bar?.high);
@@ -10521,7 +10546,7 @@ function calculateMtfCloudBands(
   });
 }
 
-function calculateCloudMaxMtfStudy(bars, currentMinutes, options = {}) {
+function calculateCloudMaxMtfStudy(bars, currentMinutes, options = {}, higherTimeframeBars = null) {
   const source = Array.isArray(bars) ? bars : [];
   const displayedMinutes = Math.max(1, Number(currentMinutes) || 1);
   const emptyLines = { ema9: [], ema21: [], ema50: [], sma200: [] };
@@ -10536,6 +10561,9 @@ function calculateCloudMaxMtfStudy(bars, currentMinutes, options = {}) {
   const currentEma4 = calculateNumericEma(currentCloses, 4);
   const currentEma8 = calculateNumericEma(currentCloses, 8);
   const currentEma9 = calculateNumericEma(currentCloses, ema9Length);
+  // EXU/EXD use MovAvgExponential() with its built-in length 9, independent
+  // of the EMA1 input.
+  const currentEmaFixed9 = calculateNumericEma(currentCloses, 9);
   const currentEma20 = calculateNumericEma(currentCloses, 20);
   const currentEma21 = calculateNumericEma(currentCloses, ema21Length);
   const currentEma50 = calculateNumericEma(currentCloses, ema50Length);
@@ -10545,13 +10573,21 @@ function calculateCloudMaxMtfStudy(bars, currentMinutes, options = {}) {
     ema50: currentBars.map((bar, index) => ({ time: bar.time, value: Number(currentEma50[index].toFixed(4)) })),
     sma200: calculateChartSma(currentBars, 200),
   };
+  // close(period = FIFTEEN_MIN/THIRTY_MIN) needs real secondary history for
+  // the EMA20 seed; the short live tape alone shifts the crosses vs TOS.
+  const higherSource = Array.isArray(higherTimeframeBars) && higherTimeframeBars.length
+    ? higherTimeframeBars
+    : source;
   const timeframeStudy = (minutes) => {
     if (minutes < displayedMinutes) return null;
-    const timeframeBars = aggregateChartBars(source, minutes);
+    const timeframeBars = aggregateChartBars(higherSource, minutes);
     const closes = timeframeBars.map((bar) => Number(bar.close || 0));
     return {
       bars: timeframeBars,
+      // MTU/MTD: ExpAverage(close(period = agg), EMA1) vs length 20.
       ema9: calculateNumericEma(closes, ema9Length),
+      // EMA9AGG is hardcoded to length 9 in the script.
+      emaCross9: calculateNumericEma(closes, 9),
       ema20: calculateNumericEma(closes, 20),
     };
   };
@@ -10602,8 +10638,8 @@ function calculateCloudMaxMtfStudy(bars, currentMinutes, options = {}) {
     if (options.cloudMaxShow5mArrows !== false && up920) addSignal(bar, "bull", "", "arrowUp", "920-current");
     if (options.cloudMaxShow5mArrows !== false && down920) addSignal(bar, "bear", "", "arrowDown", "920-current");
     if (options.cloudMaxShowTrendBubbles !== false && options.cloudMaxShow1mBubbles === true) {
-      if (up48 && currentEma9[index] >= currentEma20[index]) addSignal(bar, "bull", "CALL1", "circle", "call1");
-      if (down48 && currentEma9[index] <= currentEma20[index]) addSignal(bar, "bear", "PUT1", "circle", "put1");
+      if (up48 && currentEmaFixed9[index] >= currentEma20[index]) addSignal(bar, "bull", "CALL1", "circle", "call1");
+      if (down48 && currentEmaFixed9[index] <= currentEma20[index]) addSignal(bar, "bear", "PUT1", "circle", "put1");
     }
     if (options.cloudMaxShowTrendBubbles !== false && options.cloudMaxShow5mBubbles !== false) {
       const trend15 = trendAt(fifteen, bar.time);
@@ -10617,8 +10653,8 @@ function calculateCloudMaxMtfStudy(bars, currentMinutes, options = {}) {
     fifteen.bars.forEach((bar, index) => {
       if (index === 0) return;
       if (Number(bar.time) + 15 * 60 > lastPrimaryBarStart) return;
-      const crossedUp = fifteen.ema9[index - 1] <= fifteen.ema20[index - 1] && fifteen.ema9[index] > fifteen.ema20[index];
-      const crossedDown = fifteen.ema9[index - 1] >= fifteen.ema20[index - 1] && fifteen.ema9[index] < fifteen.ema20[index];
+      const crossedUp = fifteen.emaCross9[index - 1] <= fifteen.ema20[index - 1] && fifteen.emaCross9[index] > fifteen.ema20[index];
+      const crossedDown = fifteen.emaCross9[index - 1] >= fifteen.ema20[index - 1] && fifteen.emaCross9[index] < fifteen.ema20[index];
       if (options.cloudMaxShow15mArrows !== false && crossedUp) addSignal(bar, "bull", "", "arrowUp", "920-15");
       if (options.cloudMaxShow15mArrows !== false && crossedDown) addSignal(bar, "bear", "", "arrowDown", "920-15");
       if (options.cloudMaxShowTrendBubbles === false || options.cloudMaxShow15mBubbles === false) return;
@@ -16584,6 +16620,13 @@ function OiFinderCandleChart({
     latestBars.forEach((bar) => merged.set(Number(bar.time), bar));
     return [...merged.values()].sort((left, right) => Number(left.time) - Number(right.time));
   }, [bars, fineStudyBars]);
+  // Higher-timeframe studies (15m..4H, squeeze, ADX, clouds) need TOS-like
+  // warm-up depth: the deep study tape fills the history in front of the fine
+  // live tape so a 20-bar 4H squeeze or a 4H EMA20 is actually seeded.
+  const mtfStudySourceBars = useMemo(
+    () => (usesDailySeed ? cloudBandSourceBars : mergeStudyHistoryBars(studyBars, cloudBandSourceBars)),
+    [cloudBandSourceBars, studyBars, usesDailySeed],
+  );
   const autoFibSourceBars = useMemo(() => {
     const merged = new Map(
       (fineStudyBars.length ? fineStudyBars : bars).map((bar) => [Number(bar.time), bar]),
@@ -16643,7 +16686,7 @@ function OiFinderCandleChart({
       ? holdStudyOutput("mtfSqueeze410", indicatorSettings.mtfSqueeze410Lower
         ? calculateMtfSqueeze410Study(
           chartBars,
-          cloudBandSourceBars,
+          mtfStudySourceBars,
           dailyBars,
           selectedTimeframe.minutes,
           indicatorOptions,
@@ -16652,7 +16695,7 @@ function OiFinderCandleChart({
       : heldStudyOutput("mtfSqueeze410", []),
     [
       chartBars,
-      cloudBandSourceBars,
+      mtfStudySourceBars,
       dailyBars,
       indicatorOptions,
       indicatorSettings.mtfSqueeze410Lower,
@@ -16692,7 +16735,7 @@ function OiFinderCandleChart({
           ? chartBars
           : aggregationMinutes === 1440 && dailyBars.length
             ? dailyBars
-            : aggregateChartBars(cloudBandSourceBars, aggregationMinutes);
+            : aggregateChartBars(mtfStudySourceBars, aggregationMinutes);
         const rawLines = calculateMtfAdxLines(sourceBars, indicatorOptions);
         // A secondary aggregation must be stepped across the chart's own bars.
         // Daily source bars are stamped at 00:00 ET and a 4H source bar at
@@ -16722,7 +16765,7 @@ function OiFinderCandleChart({
         : []),
     [
       chartBars,
-      cloudBandSourceBars,
+      mtfStudySourceBars,
       dailyBars,
       indicatorOptions,
       indicatorSettings.mtfAdxCloudsLower,
@@ -16740,7 +16783,9 @@ function OiFinderCandleChart({
           || definition.minutes < selectedTimeframe.minutes) return [];
         return [{
           ...calculateIchimokuStudy(
-            cloudBandSourceBars,
+            // Only secondary aggregations take the deep merged tape; the
+            // chart's own timeframe keeps its uniform fine source.
+            definition.minutes > selectedTimeframe.minutes ? mtfStudySourceBars : cloudBandSourceBars,
             dailyBars,
             chartBars,
             selectedTimeframe.minutes,
@@ -16757,6 +16802,7 @@ function OiFinderCandleChart({
     [
       chartBars,
       cloudBandSourceBars,
+      mtfStudySourceBars,
       dailyBars,
       easternSessionFormatter,
       indicatorOptions,
@@ -16771,14 +16817,14 @@ function OiFinderCandleChart({
         ? calculateMtfOneSidedClouds(
           // Extended 5-minute study history warms up the 2h/4h EMAs the same
           // way it does for the MACD trend clouds below.
-          selectedTimeframe.minutes < 5 ? bars : cloudBandSourceBars,
+          selectedTimeframe.minutes < 5 ? bars : mtfStudySourceBars,
           selectedTimeframe.minutes,
           easternSessionFormatter,
           indicatorOptions,
         )
         : [])
       : heldStudyOutput("mtf48Clouds", []),
-    [bars, cloudBandSourceBars, selectedTimeframe.minutes, easternSessionFormatter, indicatorOptions, indicatorSettings.mtf48Clouds, stageMtf48CloudsReady],
+    [bars, mtfStudySourceBars, selectedTimeframe.minutes, easternSessionFormatter, indicatorOptions, indicatorSettings.mtf48Clouds, stageMtf48CloudsReady],
   );
   const mtfMacdTrendCloudStudy = useMemo(
     () => stageMtfMacdCloudsReady
@@ -16788,7 +16834,7 @@ function OiFinderCandleChart({
           // MACD 6/12/8 and EMA 9/20 on the 2h/4h aggregations. Keep the raw
           // source only for the 3-minute view because 5-minute bars cannot be
           // losslessly reconstructed into a lower aggregation.
-          selectedTimeframe.minutes < 5 ? bars : cloudBandSourceBars,
+          selectedTimeframe.minutes < 5 ? bars : mtfStudySourceBars,
           selectedTimeframe.minutes,
           easternSessionFormatter,
           indicatorOptions,
@@ -16797,7 +16843,7 @@ function OiFinderCandleChart({
       : heldStudyOutput("mtfMacdClouds", []),
     [
       bars,
-      cloudBandSourceBars,
+      mtfStudySourceBars,
       selectedTimeframe.minutes,
       easternSessionFormatter,
       indicatorOptions,
@@ -16812,27 +16858,35 @@ function OiFinderCandleChart({
           // The 2h/4h EMA 9/20 crosses need the extended 5-minute study tape:
           // the short live 1-minute window leaves EMA20 under-seeded and can
           // place cross clouds on different bars than TOS.
-          selectedTimeframe.minutes < 5 ? bars : cloudBandSourceBars,
+          selectedTimeframe.minutes < 5 ? bars : mtfStudySourceBars,
           selectedTimeframe.minutes,
           easternSessionFormatter,
           indicatorOptions,
         )
         : [])
       : heldStudyOutput("mtfEma920Clouds", []),
-    [bars, cloudBandSourceBars, selectedTimeframe.minutes, easternSessionFormatter, indicatorOptions, indicatorSettings.mtfEma920Clouds, stageMtfEma920CloudsReady],
+    [bars, mtfStudySourceBars, selectedTimeframe.minutes, easternSessionFormatter, indicatorOptions, indicatorSettings.mtfEma920Clouds, stageMtfEma920CloudsReady],
   );
   const mtfSqueezeCloudStudy = useMemo(
     () => stageMtfSqueezeCloudsReady
       ? holdStudyOutput("mtfSqueezeClouds", indicatorSettings.mtfSqueezeClouds
-        ? calculateMtfSqueezeReleaseClouds(bars, selectedTimeframe.minutes, easternSessionFormatter, indicatorOptions)
+        ? calculateMtfSqueezeReleaseClouds(
+          // The 2h/4h/Daily 20-bar squeeze needs the deep study tape; the
+          // two-day live tape alone never reaches 20 four-hour candles.
+          selectedTimeframe.minutes < 5 ? bars : mtfStudySourceBars,
+          selectedTimeframe.minutes,
+          easternSessionFormatter,
+          indicatorOptions,
+          dailyBars,
+        )
         : [])
       : heldStudyOutput("mtfSqueezeClouds", []),
-    [bars, selectedTimeframe.minutes, easternSessionFormatter, indicatorOptions, indicatorSettings.mtfSqueezeClouds, stageMtfSqueezeCloudsReady],
+    [bars, mtfStudySourceBars, dailyBars, selectedTimeframe.minutes, easternSessionFormatter, indicatorOptions, indicatorSettings.mtfSqueezeClouds, stageMtfSqueezeCloudsReady],
   );
   const mtfCloudBandStudy = useMemo(
     () => stageCloudBandsReady
       ? holdStudyOutput("cloudBands", calculateMtfCloudBands(
-        cloudBandSourceBars,
+        mtfStudySourceBars,
         dailyBars,
         selectedTimeframe.minutes,
         easternSessionFormatter,
@@ -16840,7 +16894,7 @@ function OiFinderCandleChart({
         indicatorOptions,
       ))
       : heldStudyOutput("cloudBands", []),
-    [cloudBandSourceBars, dailyBars, selectedTimeframe.minutes, easternSessionFormatter, indicatorOptions, indicatorSettings, stageCloudBandsReady],
+    [mtfStudySourceBars, dailyBars, selectedTimeframe.minutes, easternSessionFormatter, indicatorOptions, indicatorSettings, stageCloudBandsReady],
   );
   const relativeVolumeCandleStudy = useMemo(
     () => stageRelVolCandlesReady
@@ -16853,10 +16907,15 @@ function OiFinderCandleChart({
   const cloudMaxMtfStudy = useMemo(
     () => stageCloudMaxMtfReady
       ? holdStudyOutput("cloudMaxMtf", indicatorSettings.cloudMaxMtf
-        ? calculateCloudMaxMtfStudy(bars, selectedTimeframe.minutes, indicatorOptions)
+        ? calculateCloudMaxMtfStudy(
+          bars,
+          selectedTimeframe.minutes,
+          indicatorOptions,
+          selectedTimeframe.minutes < 5 ? bars : mtfStudySourceBars,
+        )
         : { lines: { ema9: [], ema21: [], ema50: [], sma200: [] }, signals: [] })
       : heldStudyOutput("cloudMaxMtf", { lines: { ema9: [], ema21: [], ema50: [], sma200: [] }, signals: [] }),
-    [bars, selectedTimeframe.minutes, indicatorOptions, indicatorSettings.cloudMaxMtf, stageCloudMaxMtfReady],
+    [bars, mtfStudySourceBars, selectedTimeframe.minutes, indicatorOptions, indicatorSettings.cloudMaxMtf, stageCloudMaxMtfReady],
   );
   const mtfMaLevelsStudy = useMemo(
     () => stageMtfMaLevelsReady
@@ -22045,6 +22104,9 @@ function OiFinderCandleChart({
           position: event.tone === "bull" ? "belowBar" : "aboveBar",
           color: event.tone === "bull" ? indicatorOptions.mtfSqueezeBullColor : indicatorOptions.mtfSqueezeBearColor,
           text: event.bubbleLabel,
+          // TOS anchors the bubble at that timeframe candle's low (bull) or
+          // high (bear): `if direction2 > 0 then lo2 else hi2`.
+          price: Number.isFinite(Number(event.anchor)) ? Number(event.anchor) : undefined,
           direction: event.tone === "bull" ? "CALL" : "PUT",
           family: "squeeze",
           compact: true,
