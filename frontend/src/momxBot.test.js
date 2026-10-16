@@ -133,3 +133,18 @@ test("leaderboard extra columns: avg win/loss, best/worst, days up, per day, pro
   assert.equal(r.daysTraded, 2); assert.equal(r.daysUp, 1); assert.equal(r.perDay, 1.5);
   assert.equal(Math.round(r.profitFactor * 100) / 100, 0.67);   // won $100, lost $150
 });
+
+test("never green: best price never above entry is counted, not hidden as +0%", () => {
+  const rep = botReport([
+    { day: "2026-10-16", trades: [
+      { rule: "go", symbol: "UP", at: "2026-10-16T10:00:00-04:00", entry: 1, best: 1.5, exitPrice: 1.2 },
+      { rule: "go", symbol: "FLAT", at: "2026-10-16T10:01:00-04:00", entry: 1, best: 1, exitPrice: 0.6 },
+      { rule: "go", symbol: "DOWN", at: "2026-10-16T10:02:00-04:00", entry: 2, best: 2, exitPrice: 1 },
+      { rule: "go", symbol: "NOBEST", at: "2026-10-16T10:03:00-04:00", entry: 1, exitPrice: 0.9 },
+      { rule: "turn", symbol: "LATE", at: "2026-10-16T10:04:00-04:00", status: "pending" },
+    ] },
+  ]);
+  assert.equal(rep.total.neverGreen, 2);
+  assert.equal(rep.leaderboard.find((r) => r.rule === "go").neverGreen, 2);
+  assert.equal(rep.leaderboard.find((r) => r.rule === "turn").neverGreen, 0);
+});

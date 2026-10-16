@@ -221,7 +221,7 @@ export default function BotPanel() {
       <section className="bot-kpis" aria-label="Totals">
         <Kpi label="P/L · your exit" value={formatBotDollars(total.dollars)} sub="per 1 contract each" className={tone(total.dollars)} />
         <Kpi label="ROI" value={formatBotPct(total.roi, 1)} sub={"on $" + Math.round(total.invested).toLocaleString("en-US") + " of contracts"} className={tone(total.roi)} />
-        <Kpi label="Win rate" value={total.winRate === null ? "-" : Math.round(total.winRate) + "%"} sub={total.wins + " W · " + total.losses + " L"} />
+        <Kpi label="Win rate" value={total.winRate === null ? "-" : Math.round(total.winRate) + "%"} sub={total.wins + " W · " + total.losses + " L" + (total.neverGreen ? " · " + total.neverGreen + " never green" : "")} />
         <Kpi label="Avg trade" value={formatBotPct(total.avgExit)} sub={"0DTE " + formatBotPct(total.avgZero) + " · max " + formatBotPct(total.avgMax)} className={tone(total.avgExit)} />
         <Kpi label="Trades" value={String(total.trades)} sub={report.days.length + (report.days.length === 1 ? " day" : " days")} />
         <Kpi label="Best rule" value={best ? best.label : "-"} sub={best ? formatBotPct(best.avgExit) + " avg" : ""} className={best ? tone(best.avgExit) : ""} />
@@ -284,7 +284,7 @@ export default function BotPanel() {
                 <tr key={r.rule} className={"is-click" + (rule === r.rule ? " is-selected" : "")} onClick={() => { setRule(r.rule); setTab("trades"); }}>
                   <td className="is-left" title={BOT_RULE_HELP[r.rule] ? BOT_RULE_HELP[r.rule].what + " Needs: " + BOT_RULE_HELP[r.rule].needs : ""}><span className="bot-rank">{i + 1}</span><b>{r.label}</b>{r.test ? <span className="bot-chip">test</span> : null}</td>
                   <td>{r.trades}</td>
-                  <td>{r.wins} / {r.losses}</td>
+                  <td title={r.neverGreen ? r.neverGreen + " never went green (best price never above entry)" : ""}>{r.wins} / {r.losses}{r.neverGreen ? <span className="bot-never-green"> · {r.neverGreen} ✗</span> : null}</td>
                   <td>{r.winRate === null ? "-" : Math.round(r.winRate) + "%"}</td>
                   <td className={"bot-num" + tone(r.avgExit)}>{formatBotPct(r.avgExit)}</td>
                   <td className={"bot-num" + tone(r.dollars)}>{formatBotDollars(r.dollars)}</td>
@@ -486,7 +486,7 @@ export default function BotPanel() {
             {rows.length} shown
             {shownTotal.priced ? (
               <>
-                {" · "}{shownTotal.wins}W {shownTotal.losses}L{" · "}
+                {" · "}{shownTotal.wins}W {shownTotal.losses}L{shownTotal.neverGreen ? " · " + shownTotal.neverGreen + " never green" : ""}{" · "}
                 <b className={"bot-num" + tone(shownTotal.dollars)}>{formatBotDollars(shownTotal.dollars)}</b>
                 {" on $" + Math.round(shownTotal.invested).toLocaleString("en-US") + " · ROI "}
                 <b className={"bot-num" + tone(shownTotal.roi)}>{formatBotPct(shownTotal.roi, 1)}</b>
@@ -574,7 +574,7 @@ export default function BotPanel() {
         <b>How it trades:</b> at each GO+, GO, ⭐1, MX A+, Daily 2 and Market-turn signal (and, as a <i>test</i>, the first 15 a day of
         C2H/C4H, CALL2H/4H, ADX, SKIT, RVOL, SQZ fire and your ZS rule - above EMA 9/21/50, VWAP and the 5m cloud with no level within 2% above) it takes the nearest weekly first out-of-the-money option at the mid price, 09:30-15:30 ET.
         <b> Your exit</b> = the first 5-minute close below VWAP or the 21 EMA, else 15:50. <b>ENTRY strike</b> = the chain's ENTRY strike (the out-of-the-money option with delta just under 0.20, same expiry, same exit). <b>0DTE</b> = the same signal on a same-day option.
-        <b> Hold max</b> = the weekly's best price until it expires (… = still being tracked). Mid prices - real fills are a little worse.
+        <b> Hold max</b> = the weekly's best price until it expires (… = still being tracked). <b>Never green</b> = the best price never went above the entry - a losing trade that best-price scoring shows as +0%. Mid prices - real fills are a little worse.
         Paper tracking of your rules, not advice. Kept {data && data.keepDays ? data.keepDays : 180} days.
       </p>
     </div>

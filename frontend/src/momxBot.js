@@ -133,6 +133,10 @@ function stats(rows) {
     priced: priced.length,
     wins,
     losses: priced.filter((r) => r.results.exit < 0).length,
+    // "Never went green": the best price after entry was never above the entry,
+    // so even a perfect (hindsight) exit only breaks even. Best-price scoring
+    // shows these as +0%, not as losses - count them so they are not hidden.
+    neverGreen: priced.filter((r) => r.results.max !== null && r.results.max <= 0).length,
     winRate: priced.length ? (wins / priced.length) * 100 : null,
     avgExit: avg(priced.map((r) => r.results.exit)),
     avgZero: avg(rows.map((r) => r.results.zero)),

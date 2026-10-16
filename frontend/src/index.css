@@ -22452,6 +22452,7 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .bot-matrix td.bot-cell { font-variant-numeric: tabular-nums; }
 .bot-matrix td.is-best { background: rgba(34, 224, 224, 0.10); box-shadow: inset 0 0 0 1px rgba(34, 224, 224, 0.45); }
 .bot-wl { color: #cfd6e4; font-weight: 700; }
+.bot-never-green { color: #ff6fb5; font-weight: 600; }
 .bot-total-row td { border-top: 1px solid #3a4457; background: #111824; }
 .momx-scanner-panel .momx-strategy-tag.is-fading { border-color: #ff9f43; color: #ff9f43; }
 .momx-scanner-panel .momx-sector-rs.is-cooled { color: #8b95a8; }
