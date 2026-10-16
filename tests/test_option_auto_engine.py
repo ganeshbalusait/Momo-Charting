@@ -1544,7 +1544,7 @@ class OptionEngineUnitTests(unittest.TestCase):
         self.assertNotIn("dashboard", calls)
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["resultCount"], len(state.option_candidate_results.index))
-        self.assertEqual(result["scanLabel"], "Mag7 + Watchlist Options")
+        self.assertEqual(result["scanLabel"], "Option Watchlist")
         self.assertEqual(state.dashboard_cache, {"stale": True})
         self.assertIsNotNone(state.dashboard_cache_timestamp)
 
