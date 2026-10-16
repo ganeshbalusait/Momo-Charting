@@ -1,0 +1,327 @@
+[
+  {
+    "symbol": "LASR",
+    "inTos": true,
+    "close1h": {
+      "pct": 0.38238315356959873,
+      "current": 39.0889,
+      "baseline": 38.94,
+      "currentAt": "2026-09-29T16:00:00-04:00",
+      "baselineAt": "2026-09-29T14:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": 167062.8,
+      "current": 417907.0,
+      "baseline": 250.0,
+      "currentAt": "2026-09-29T13:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 23780.4,
+      "current": 417907.0,
+      "baseline": 1750.0,
+      "currentAt": "2026-09-29T13:00:00-04:00",
+      "baselineAt": "2026-09-28T17:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "SHEL",
+    "inTos": true,
+    "close1h": {
+      "pct": 0.0,
+      "current": 95.14,
+      "baseline": 95.14,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T16:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -100.0,
+      "current": 0.0,
+      "baseline": 4085629.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": -100.0,
+      "current": 0.0,
+      "baseline": 209141.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "NTRA",
+    "inTos": true,
+    "close1h": {
+      "pct": 0.04585716699250231,
+      "current": 414.52,
+      "baseline": 414.33,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T15:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -93.72417646738718,
+      "current": 47284.0,
+      "baseline": 753431.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": -91.86697925463938,
+      "current": 47284.0,
+      "baseline": 581383.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-28T13:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "PM",
+    "inTos": true,
+    "close1h": {
+      "pct": 0.0,
+      "current": 193.9,
+      "baseline": 193.9,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T17:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -99.40819131074772,
+      "current": 4117.0,
+      "baseline": 695664.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 278.4007352941177,
+      "current": 4117.0,
+      "baseline": 1088.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "WELL",
+    "inTos": true,
+    "close1h": {
+      "pct": 0.0,
+      "current": 232.9,
+      "baseline": 232.9,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T17:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -98.34146341463415,
+      "current": 6477.0,
+      "baseline": 390525.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 259.8333333333333,
+      "current": 6477.0,
+      "baseline": 1800.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-28T17:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "AMGN",
+    "inTos": true,
+    "close1h": {
+      "pct": 0.32102728731941976,
+      "current": 425.0,
+      "baseline": 423.64,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T16:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -46.36429070609257,
+      "current": 256339.0,
+      "baseline": 477926.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 70908.03324099722,
+      "current": 256339.0,
+      "baseline": 361.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "CRM",
+    "inTos": true,
+    "close1h": {
+      "pct": 0.2886245617149674,
+      "current": 225.9603,
+      "baseline": 225.31,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T17:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": 184.03399500594762,
+      "current": 4935565.0,
+      "baseline": 1737667.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 28383.177516158816,
+      "current": 4935565.0,
+      "baseline": 17328.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "CHPT",
+    "inTos": false,
+    "close1h": {
+      "pct": 0.3157894736842026,
+      "current": 9.53,
+      "baseline": 9.5,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T17:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -98.91799463272139,
+      "current": 4556.0,
+      "baseline": 421070.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 109.375,
+      "current": 4556.0,
+      "baseline": 2176.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "META",
+    "inTos": false,
+    "close1h": {
+      "pct": 0.5755705352066931,
+      "current": 743.0322,
+      "baseline": 738.78,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T17:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -94.66596867880361,
+      "current": 334822.0,
+      "baseline": 6277091.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 29.064115363711007,
+      "current": 334822.0,
+      "baseline": 259423.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "TEAM",
+    "inTos": false,
+    "close1h": {
+      "pct": 0.3068879290747839,
+      "current": 176.5,
+      "baseline": 175.96,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T17:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -75.72614578673358,
+      "current": 149759.0,
+      "baseline": 616956.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 34486.37413394919,
+      "current": 149759.0,
+      "baseline": 433.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "CLS",
+    "inTos": false,
+    "close1h": {
+      "pct": 0.7960307507769437,
+      "current": 369.74,
+      "baseline": 366.82,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T17:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -98.82009906745179,
+      "current": 11205.0,
+      "baseline": 949656.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 83.17802844531631,
+      "current": 11205.0,
+      "baseline": 6117.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "GME",
+    "inTos": false,
+    "close1h": {
+      "pct": 0.6309448844993959,
+      "current": 24.2907,
+      "baseline": 24.1384,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T17:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -87.49529941961802,
+      "current": 318897.0,
+      "baseline": 2550217.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 358.19192804494315,
+      "current": 318897.0,
+      "baseline": 69599.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  },
+  {
+    "symbol": "RXRX",
+    "inTos": false,
+    "close1h": {
+      "pct": 0.8592777085927983,
+      "current": 4.0495,
+      "baseline": 4.015,
+      "currentAt": "2026-09-29T19:00:00-04:00",
+      "baselineAt": "2026-09-29T17:00:00-04:00"
+    },
+    "volume4h2": {
+      "pct": -98.3088161814314,
+      "current": 167371.0,
+      "baseline": 9896677.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T09:00:00-04:00"
+    },
+    "volume4h3": {
+      "pct": 112.47794238996588,
+      "current": 167371.0,
+      "baseline": 78771.0,
+      "currentAt": "2026-09-29T17:00:00-04:00",
+      "baselineAt": "2026-09-29T05:00:00-04:00"
+    }
+  }
+]

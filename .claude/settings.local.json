@@ -31,7 +31,13 @@
       "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" remote -v)",
       "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" branch --show-current)",
       "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" log --oneline -3)",
-      "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" worktree list)"
+      "PowerShell(git -C \"C:\\\\GANESH\\\\AgenticAI-Trading 7\" worktree list)",
+      "PowerShell(& \"C:\\\\GANESH\\\\AgenticAI-Trading 7\\\\AgenticAI-Trading 2\\\\.venv\\\\Scripts\\\\python.exe\" \"C:\\\\Users\\\\ganes\\\\.claude\\\\scheduled-tasks\\\\momx-strategy-scorecard\\\\forward_eval.py\")",
+      "PowerShell(& \"C:\\\\GANESH\\\\AgenticAI-Trading 7\\\\AgenticAI-Trading 2\\\\.venv\\\\Scripts\\\\python.exe\" \"C:\\\\GANESH\\\\AgenticAI-Trading 7\\\\AgenticAI-Trading 2\\\\scripts\\\\jev_news_eval.py\")",
+      "PowerShell(Get-Date -Format \"yyyy-MM-dd HH:mm:ss dddd\"; try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 http://localhost:3001/api/momx-scanner; \"status $\\($r.StatusCode\\) len $\\($r.Content.Length\\)\" } catch { \"ERR $_\" }; $d=\"C:\\\\Users\\\\ganes\\\\.claude\\\\scheduled-tasks\\\\momx-strategy-scorecard\"; Get-ChildItem $d | Select Name,Length,LastWriteTime | Format-Table -AutoSize)",
+      "PowerShell(Get-Date -Format \"yyyy-MM-dd HH:mm dddd\"; try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 http://localhost:3001/api/momx-scanner; \"STATUS $\\($r.StatusCode\\) LEN $\\($r.Content.Length\\)\" } catch { \"FAIL $_\" })",
+      "PowerShell(& \"C:\\\\GANESH\\\\AgenticAI-Trading 7\\\\AgenticAI-Trading 2\\\\.venv\\\\Scripts\\\\python.exe\" \"C:\\\\Users\\\\ganes\\\\.claude\\\\scheduled-tasks\\\\momx-strategy-scorecard\\\\forward_eval.py\" --direction bear)",
+      "Bash(curl -s -m 20 -o /tmp/b.json -w \"%{http_code} %{size_download}\\\\n\" http://localhost:3001/api/momx-scanner)"
     ]
   }
 }
