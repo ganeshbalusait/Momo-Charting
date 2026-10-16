@@ -2,6 +2,18 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-10-15T23:07:00-04:00",
+      "heading": "Older branch fixes brought into the app",
+      "items": [
+        "OI scanner: rows that pass only on a 2H/4H MTF CALL signal (setup 'MTF EMA C/CALL 2H/4H') are no longer silently dropped by the strategy filter, so they now reach the OI results.",
+        "MTF CALL/PUT bubbles: a live cross on a still-forming 2H/4H bar is drawn on that bar's first candle, matching TOS. Charts saved by the older engine recompute their labels on load instead of showing stale C4H labels until a full rebuild.",
+        "MTF cloud studies (Squeeze, EMA clouds, CloudBands, Ichimoku and similar) now warm up on the deeper study history in front of today's candles, so 2H/4H studies light up instead of staying blank on short history. The Daily squeeze release uses the regular-session daily candles, as in TOS.",
+        "CloudMAX 15m arrows use the script's fixed 9 EMA, and RelVol candles treat a zero-range bar as bearish and RelVol borders follow the script's borderhighlightVolAvg setting, matching the TOS scripts.",
+        "Scanner chart warm-up starts with the bull Watchlist board, keeps running until midnight ET instead of stopping at 20:00, and no longer stays paused by the old keeper_paused file. To pause just its background builds, create artifacts/prewarm_cold_paused.",
+        "MomX History: each saved snapshot now shows the Setup tags the live board showed at that moment (chart arrows, SQZ fires, GO/OPT), instead of only what is still valid now. Viewing an old snapshot never changes today's OPT tags."
+      ]
+    },
+    {
       "at": "2026-10-10T09:05:00-04:00",
       "heading": "Scanner sends Schwab fewer requests at once",
       "items": [
