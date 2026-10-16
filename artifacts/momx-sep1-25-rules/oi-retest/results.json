@@ -1,0 +1,427 @@
+{
+  "candidates": 41,
+  "coverage": {
+    "no break/retest confirmation": 37,
+    "retest found but no next level / insufficient room": 2,
+    "traded": 2
+  },
+  "trades": [
+    {
+      "date": "2026-09-17",
+      "ticker": "MRNA",
+      "goSignalET": "2026-09-17T09:51:06.080542-04:00",
+      "snapshotDate": "2026-09-16",
+      "brokenOILevel": 160.0,
+      "callOI": 11913.0,
+      "breakET": "2026-09-17T10:10:00-04:00",
+      "confirmationET": "2026-09-17T10:15:00-04:00",
+      "entryET": "2026-09-17T10:20:00-04:00",
+      "entry": 161.37,
+      "stop": 159.40678571428572,
+      "target": 165.0,
+      "rewardRisk": 1.8490085501182432,
+      "exit": 159.40678571428572,
+      "exitReason": "stop",
+      "exitET": "2026-09-17T10:40:00-04:00",
+      "ambiguous": false,
+      "net": -1.3165918607636384,
+      "result": "LOSS",
+      "retestFixedNet": -1.6,
+      "originalGONet": 1.9
+    },
+    {
+      "date": "2026-09-18",
+      "ticker": "MSTR",
+      "goSignalET": "2026-09-18T09:41:05.300402-04:00",
+      "snapshotDate": "2026-09-17",
+      "brokenOILevel": 145.0,
+      "callOI": 41268.0,
+      "breakET": "2026-09-18T10:20:00-04:00",
+      "confirmationET": "2026-09-18T10:25:00-04:00",
+      "entryET": "2026-09-18T10:30:00-04:00",
+      "entry": 145.9,
+      "stop": 144.84482,
+      "target": 150.0,
+      "rewardRisk": 3.8855929793968484,
+      "exit": 150.0,
+      "exitReason": "target",
+      "exitET": "2026-09-18T12:20:00-04:00",
+      "ambiguous": false,
+      "net": 2.7101439342015143,
+      "result": "WIN",
+      "retestFixedNet": 1.9,
+      "originalGONet": 1.9
+    }
+  ],
+  "audit": [
+    {
+      "date": "2026-09-01",
+      "ticker": "USO",
+      "goSignalET": "2026-09-01T12:24:25.508359-04:00",
+      "baselineNet": 0.9107526881720341,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-08-31",
+      "strongLevels": "134.0,140.0,145.0,150.0"
+    },
+    {
+      "date": "2026-09-03",
+      "ticker": "BULL",
+      "goSignalET": "2026-09-03T09:40:39.714882-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-01",
+      "strongLevels": "9.0,10.0"
+    },
+    {
+      "date": "2026-09-03",
+      "ticker": "PATH",
+      "goSignalET": "2026-09-03T09:40:39.714882-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-01",
+      "strongLevels": "17.0,18.0,20.0"
+    },
+    {
+      "date": "2026-09-03",
+      "ticker": "SBET",
+      "goSignalET": "2026-09-03T09:40:39.714882-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-02",
+      "strongLevels": "8.0,8.5,9.0"
+    },
+    {
+      "date": "2026-09-03",
+      "ticker": "HOOD",
+      "goSignalET": "2026-09-03T09:43:33.813706-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-02",
+      "strongLevels": "110.0,115.0,120.0"
+    },
+    {
+      "date": "2026-09-03",
+      "ticker": "BMNR",
+      "goSignalET": "2026-09-03T10:01:32.498891-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-02",
+      "strongLevels": "23.0,25.0"
+    },
+    {
+      "date": "2026-09-04",
+      "ticker": "SNDK",
+      "goSignalET": "2026-09-04T10:01:17.226247-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-03",
+      "strongLevels": "1500.0,1600.0,1700.0"
+    },
+    {
+      "date": "2026-09-08",
+      "ticker": "FCX",
+      "goSignalET": "2026-09-08T09:45:56.153298-04:00",
+      "baselineNet": -0.9410973084886253,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-04",
+      "strongLevels": "80.0"
+    },
+    {
+      "date": "2026-09-08",
+      "ticker": "BE",
+      "goSignalET": "2026-09-08T09:51:58.113527-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-03",
+      "strongLevels": "250.0"
+    },
+    {
+      "date": "2026-09-09",
+      "ticker": "NET",
+      "goSignalET": "2026-09-09T09:44:31.366195-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-03",
+      "strongLevels": "300.0,310.0,320.0"
+    },
+    {
+      "date": "2026-09-09",
+      "ticker": "FSLY",
+      "goSignalET": "2026-09-09T09:56:06.616907-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-03",
+      "strongLevels": "23.0"
+    },
+    {
+      "date": "2026-09-11",
+      "ticker": "HPE",
+      "goSignalET": "2026-09-11T09:41:04.513398-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-10",
+      "strongLevels": "55.0,60.0"
+    },
+    {
+      "date": "2026-09-11",
+      "ticker": "DELL",
+      "goSignalET": "2026-09-11T09:47:00.885452-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-10",
+      "strongLevels": "500.0,550.0"
+    },
+    {
+      "date": "2026-09-11",
+      "ticker": "SBET",
+      "goSignalET": "2026-09-11T09:52:42.834901-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-10",
+      "strongLevels": "9.0"
+    },
+    {
+      "date": "2026-09-14",
+      "ticker": "NOW",
+      "goSignalET": "2026-09-14T09:41:53.803303-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-11",
+      "strongLevels": "130.0,140.0,145.0,150.0"
+    },
+    {
+      "date": "2026-09-14",
+      "ticker": "ZS",
+      "goSignalET": "2026-09-14T09:41:53.803303-04:00",
+      "baselineNet": 1.9,
+      "status": "retest found but no next level / insufficient room",
+      "snapshotDate": "2026-09-11",
+      "strongLevels": "170.0,175.0,180.0,185.0,190.0"
+    },
+    {
+      "date": "2026-09-14",
+      "ticker": "OKTA",
+      "goSignalET": "2026-09-14T09:48:17.145914-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-11",
+      "strongLevels": "160.0,170.0,175.0"
+    },
+    {
+      "date": "2026-09-14",
+      "ticker": "PANW",
+      "goSignalET": "2026-09-14T09:52:32.994176-04:00",
+      "baselineNet": 1.9,
+      "status": "retest found but no next level / insufficient room",
+      "snapshotDate": "2026-09-11",
+      "strongLevels": "360.0,370.0,380.0"
+    },
+    {
+      "date": "2026-09-14",
+      "ticker": "CRWD",
+      "goSignalET": "2026-09-14T09:55:21.446991-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-11",
+      "strongLevels": "210.0,215.0,220.0,230.0"
+    },
+    {
+      "date": "2026-09-14",
+      "ticker": "PATH",
+      "goSignalET": "2026-09-14T09:59:21.083027-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-11",
+      "strongLevels": "15.0"
+    },
+    {
+      "date": "2026-09-14",
+      "ticker": "RBRK",
+      "goSignalET": "2026-09-14T10:58:50.387857-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-11",
+      "strongLevels": "90.0"
+    },
+    {
+      "date": "2026-09-16",
+      "ticker": "AMD",
+      "goSignalET": "2026-09-16T09:41:15.837425-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-15",
+      "strongLevels": "490.0,500.0,520.0,530.0,550.0"
+    },
+    {
+      "date": "2026-09-16",
+      "ticker": "LITE",
+      "goSignalET": "2026-09-16T09:41:15.837425-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-15",
+      "strongLevels": "850.0,900.0"
+    },
+    {
+      "date": "2026-09-16",
+      "ticker": "MRVL",
+      "goSignalET": "2026-09-16T09:41:15.837425-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-15",
+      "strongLevels": "240.0"
+    },
+    {
+      "date": "2026-09-17",
+      "ticker": "UMAC",
+      "goSignalET": "2026-09-17T09:43:52.050467-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-16",
+      "strongLevels": "23.5"
+    },
+    {
+      "date": "2026-09-17",
+      "ticker": "MRVL",
+      "goSignalET": "2026-09-17T09:45:38.159168-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-16",
+      "strongLevels": "250.0,260.0"
+    },
+    {
+      "date": "2026-09-17",
+      "ticker": "TEM",
+      "goSignalET": "2026-09-17T09:45:38.159168-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-16",
+      "strongLevels": "70.0,75.0"
+    },
+    {
+      "date": "2026-09-17",
+      "ticker": "DRAM",
+      "goSignalET": "2026-09-17T09:51:06.080542-04:00",
+      "baselineNet": -0.4619129685480393,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-16",
+      "strongLevels": "60.0"
+    },
+    {
+      "date": "2026-09-17",
+      "ticker": "MRNA",
+      "goSignalET": "2026-09-17T09:51:06.080542-04:00",
+      "baselineNet": 1.9,
+      "status": "traded",
+      "snapshotDate": "2026-09-16",
+      "strongLevels": "150.0,160.0,165.0"
+    },
+    {
+      "date": "2026-09-17",
+      "ticker": "AMD",
+      "goSignalET": "2026-09-17T09:55:45.659689-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-16",
+      "strongLevels": "490.0,500.0,520.0,530.0,540.0,550.0"
+    },
+    {
+      "date": "2026-09-17",
+      "ticker": "HL",
+      "goSignalET": "2026-09-17T11:55:18.443067-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-16",
+      "strongLevels": "20.0"
+    },
+    {
+      "date": "2026-09-18",
+      "ticker": "IBIT",
+      "goSignalET": "2026-09-18T09:41:05.300402-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-17",
+      "strongLevels": "45.0,48.0"
+    },
+    {
+      "date": "2026-09-18",
+      "ticker": "MSTR",
+      "goSignalET": "2026-09-18T09:41:05.300402-04:00",
+      "baselineNet": 1.9,
+      "status": "traded",
+      "snapshotDate": "2026-09-17",
+      "strongLevels": "130.0,135.0,140.0,145.0,150.0"
+    },
+    {
+      "date": "2026-09-18",
+      "ticker": "HOOD",
+      "goSignalET": "2026-09-18T10:01:29.491556-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-17",
+      "strongLevels": "110.0,120.0"
+    },
+    {
+      "date": "2026-09-21",
+      "ticker": "MU",
+      "goSignalET": "2026-09-21T09:40:31.015363-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-18",
+      "strongLevels": "1000.0"
+    },
+    {
+      "date": "2026-09-21",
+      "ticker": "TQQQ",
+      "goSignalET": "2026-09-21T09:43:55.687963-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-18",
+      "strongLevels": "75.0"
+    },
+    {
+      "date": "2026-09-21",
+      "ticker": "ARM",
+      "goSignalET": "2026-09-21T09:56:06.275874-04:00",
+      "baselineNet": 1.9,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-18",
+      "strongLevels": "300.0"
+    },
+    {
+      "date": "2026-09-21",
+      "ticker": "WBD",
+      "goSignalET": "2026-09-21T10:00:21.540927-04:00",
+      "baselineNet": 0.9667979648777193,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-18",
+      "strongLevels": "29.0"
+    },
+    {
+      "date": "2026-09-22",
+      "ticker": "SHOP",
+      "goSignalET": "2026-09-22T09:43:43.560051-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-21",
+      "strongLevels": "135.0"
+    },
+    {
+      "date": "2026-09-22",
+      "ticker": "VKTX",
+      "goSignalET": "2026-09-22T09:53:17.724593-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-18",
+      "strongLevels": "40.0"
+    },
+    {
+      "date": "2026-09-25",
+      "ticker": "DELL",
+      "goSignalET": "2026-09-25T09:40:22.478698-04:00",
+      "baselineNet": -1.6,
+      "status": "no break/retest confirmation",
+      "snapshotDate": "2026-09-24",
+      "strongLevels": "600.0"
+    }
+  ]
+}
