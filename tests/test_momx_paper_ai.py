@@ -245,3 +245,21 @@ def test_native_timeout_respects_configured_cpu_agent_budget_and_remains_bounded
         result=Reviewer(tmp_path,transport=transport,gateway_config=profile).request('test',decision)
         assert result['provider']=='openclaw' and not result['fallback']
         assert calls[-1]==expected
+
+
+def test_native_complete_json_fence_does_not_cause_false_fallback(tmp_path):
+    from momx.paper_learning import analysis
+    calls=[]
+    def transport(url,*args,**kwargs):
+        calls.append(url)
+        return {'choices':[{'message':{'content':'```json\n{"summary":"s","hypothesis":"h","validation":"v"}\n```'}}]}
+    out=reviewer(tmp_path,transport).request('research',analysis)
+    assert out['provider']=='openclaw' and out['fallback'] is False
+    assert len(calls)==1 and out['summary']=='s'
+
+
+@pytest.mark.parametrize('content', ['Prose\n```json\n{"action":"approve","reason":"x"}\n```', '```json\n{"action":"approve"}\n```', '```json\n{}\n```\n```json\n{}\n```'])
+def test_json_fence_does_not_bypass_validation_or_accept_prose(content):
+    from momx.paper_ai import _structured_text
+    with pytest.raises((ValueError,TypeError)):
+        decision(_structured_text(content))

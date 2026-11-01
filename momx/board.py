@@ -571,7 +571,8 @@ def _scan_batch(items):
     in recv while the scan stage took 65 s).
     """
     started = time.time()
-    results = [_scan_one_guarded(item) for item in items]
+    from momx.scan_reuse import run
+    results = [run(item, _scan_one_guarded, _newest_bar_epoch, started) for item in items]
     return started, time.time(), results
 
 

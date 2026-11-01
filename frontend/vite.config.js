@@ -60,6 +60,11 @@ export default defineConfig({
     // Asset filenames are content-hashed, so superseded files are inert; they
     // accumulate until a manual `npm run build -- --emptyOutDir` prunes them.
     emptyOutDir: false,
+    // Generated output and local logs must never trigger another production
+    // build. Keep the watcher responsive to source and public-file edits.
+    watch: process.argv.includes("--watch") ? {
+      exclude: ["**/dist/**", "**/node_modules/**", "**/artifacts/**", "**/*.log", "**/.tmp-*/**", "**/.restyle-backup/**"],
+    } : null,
   },
   server: {
     port: 5173,

@@ -93,6 +93,19 @@ def decision(text):
     return {"approved": value["action"] == "approve", "reason": reason[:240]}
 
 
+def _structured_text(text):
+    """Accept a complete JSON fence, never extract JSON from surrounding prose.
+
+    Native local agents can wrap otherwise valid structured output despite
+    response_format. The caller's existing field/schema checks still apply.
+    """
+    if isinstance(text, str):
+        stripped = text.strip()
+        if stripped.startswith('```json\n') and stripped.endswith('\n```') and stripped.count('```') == 2:
+            return stripped[8:-4].strip()
+    return text
+
+
 class Reviewer:
     def __init__(self, directory=None, transport=_post, clock=time.time, gateway_config=None, agent_id="main"):
         self.directory = Path(directory or ai_filter._dir()) / "paper"
@@ -157,7 +170,7 @@ class Reviewer:
                                          "name": "bot_review", "strict": True, "schema": parse.schema}}
                                          if hasattr(parse, "schema") else {"type": "json_object"})},
                                     {"Authorization": "Bearer " + gateway["auth"]["token"]}, timeout=timeout)
-            return {**parse(result["choices"][0]["message"]["content"]), "provider": "openclaw", "agent": self.agent_id, "fallback": False}
+            return {**parse(_structured_text(result["choices"][0]["message"]["content"])), "provider": "openclaw", "agent": self.agent_id, "fallback": False}
         except _LocalPrimary:
             pass
         except Exception as exc:
@@ -168,7 +181,7 @@ class Reviewer:
                                      "stream": False, "think": False,
                                      "format": getattr(parse, "schema", "json"),
                                      "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 600}}, timeout=180)
-            return {**parse(result["message"]["content"]), "provider": "ollama", "agent": self.agent_id, "fallback": bool(errors), **({"primaryError": errors[0]} if errors else {})}
+            return {**parse(_structured_text(result["message"]["content"])), "provider": "ollama", "agent": self.agent_id, "fallback": bool(errors), **({"primaryError": errors[0]} if errors else {})}
         except Exception as exc:
             return {"approved": False, "provider": "unavailable", "fallback": True,
                     "reason": "AI response unavailable; no advisory result", "errors": errors + [type(exc).__name__]}

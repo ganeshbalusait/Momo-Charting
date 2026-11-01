@@ -15,6 +15,9 @@ $entry = Join-Path $env:APPDATA 'npm\node_modules\openclaw\dist\index.js'
 if (-not (Test-Path -LiteralPath $entry)) { throw 'Installed native OpenClaw entry is unavailable.' }
 $env:OPENCLAW_STATE_DIR = $profileRoot
 $env:OPENCLAW_CONFIG_PATH = $configPath
+$env:NODE_COMPILE_CACHE = Join-Path $profileRoot 'node-compile-cache'
+# Child workers and helpers must use the same supported runtime as the gateway.
+$env:PATH = (Split-Path -Parent $nodeRuntime) + ';' + $env:PATH
 $artifacts = Join-Path $projectRoot 'artifacts'
 $gateway = Start-Process -FilePath $nodeRuntime -ArgumentList '--stack-size=8192', $entry, 'gateway', '--port', '18790' `
     -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $artifacts 'openclaw-bot-profile.out.log') `
