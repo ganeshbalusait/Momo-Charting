@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
+from functools import lru_cache
+from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 from pandas import Timedelta
 
 from config import EASTERN_TZ, settings
+
+_EASTERN_ZONE = ZoneInfo(EASTERN_TZ)
 from data.alpaca_client import AlpacaClient
 from data.market_data import create_market_data_client
 from indicators import atr, cumulative_vwap, ema, regular_session, relative_volume, session_progress, volume_acceleration
@@ -430,7 +436,7 @@ def _tos_mtf_ema_signal_payload(frame: pd.DataFrame) -> dict:
         if signal["direction"] == "CALL"
         and (
             latest_market_date is None
-            or pd.to_datetime(signal["time"], unit="s", utc=True).tz_convert(EASTERN_TZ).date() == latest_market_date
+            or _eastern_date_of_epoch(signal["time"]) == latest_market_date
         )
     ]
     latest_state_times = {
@@ -461,6 +467,27 @@ def _tos_mtf_ema_signal_payload(frame: pd.DataFrame) -> dict:
     }
 
 
+@lru_cache(maxsize=65536)
+def _eastern_date_of_epoch(epoch: int):
+    """ET calendar date of an epoch-seconds signal time.
+
+    Was ``pd.to_datetime(t, unit="s", utc=True).tz_convert(ET).date()`` once
+    per signal: 811 pandas conversions, ~0.35 s of every ~1 s MTF projection
+    (2026-10-06 profile), run on every chart refresh. Same IANA zone, same
+    date; the cache makes repeat times free.
+    """
+    return datetime.fromtimestamp(int(epoch), tz=_EASTERN_ZONE).date()
+
+
+def _first_index_of(values, target) -> int:
+    """Index of the first element equal to ``target`` (it must be present).
+
+    Replaces ``next(i for i in range(count) if values[i] == target)``, a
+    Python scan over ~20k numpy scalars run three times per pair per MTF
+    projection (~0.2 s per call, 2026-10-06 profile). Same first match."""
+    return int(np.flatnonzero(np.asarray(values) == target)[0])
+
+
 # The TOS chart the trader compares against is a 5 D chart: its secondary-
 # aggregation EMAs are seeded at the first bar of those five sessions.
 TOS_CHART_SESSION_DAYS = 5
@@ -485,7 +512,7 @@ def _tos_live_mtf_projection(
     """
     required = {"timestamp", "close"}
     if frame is None or frame.empty or not required.issubset(frame.columns):
-        return {"signals": [], "states": [], "mode": "tos_repaint_secondary_5m", "sourceTimeframe": "5Min", "bullishSignals": [], "sessionBullishSignals": [], "bullishSignalPass": False, "bullishSignalLabels": [], "bullishSignalGroups": [], "bullishTimeframes": [], "bullishFamilies": [], "bullishBoth2H4H": False}
+        return {"signals": [], "states": [], "liveSignalContexts": [], "mode": "tos_repaint_secondary_5m", "sourceTimeframe": "5Min", "bullishSignals": [], "sessionBullishSignals": [], "bullishSignalPass": False, "bullishSignalLabels": [], "bullishSignalGroups": [], "bullishTimeframes": [], "bullishFamilies": [], "bullishBoth2H4H": False}
 
     source = frame[["timestamp", "close"]].copy()
     source["timestamp"] = pd.to_datetime(source["timestamp"], errors="coerce")
@@ -567,7 +594,12 @@ def _tos_live_mtf_projection(
         daily = daily.dropna().sort_values("timestamp")
         if not daily.empty:
             day_starts = (daily["timestamp"].dt.normalize().astype("int64") // 10**9).to_numpy()
-            daily_closes = list(zip((int(value) for value in day_starts), daily["close"].astype(float)))
+            # Key each day by ITS SESSION START (20:00 ET the evening before),
+            # the same key bucket_starts(1440) gives the DAY buckets. Keyed by
+            # midnight they never matched, so every in-tape day fell back to
+            # its ~19:55 ET extended-hours 5m close instead of the real daily
+            # close (MSFT CALL4H/C4H flipped; 2026-10-01 parity audit).
+            daily_closes = list(zip((int(value) - 4 * 3600 for value in day_starts), daily["close"].astype(float)))
 
     def bucket_starts(minutes: int):
         span = minutes * 60
@@ -583,15 +615,16 @@ def _tos_live_mtf_projection(
         # 5m bar (stair-step); the still-forming bucket gets its CURRENT
         # developing value on every 5m bar (TOS repaint).
         alpha = 2.0 / (span + 1.0)
-        out = [0.0] * count
         if count == 0:
-            return out
-        # bucket -> index range
-        starts = [0]
-        for index in range(1, count):
-            if buckets[index] != buckets[index - 1]:
-                starts.append(index)
+            return []
+        # bucket -> index range. Vectorised (2026-10-06): the per-bar Python
+        # compare/fill loops over ~20k numpy scalars were ~0.27 s of every
+        # chart refresh's MTF projection. Same values, same order of the EMA
+        # arithmetic, so the output is identical.
+        bucket_array = np.asarray(buckets)
+        starts = [0] + (np.flatnonzero(bucket_array[1:] != bucket_array[:-1]) + 1).tolist()
         ends = starts[1:] + [count]
+        values: list[float] = []
         bucket_final = {item[0]: item[1] for item in (history or [])}
         ema = None
         if history:
@@ -611,14 +644,13 @@ def _tos_live_mtf_projection(
                 # EMA9 >= EMA20 as of now; per-bar developing values read the
                 # pre-rally 09:00 day value and printed C4H.
                 current = closes[last - 1] if ema is None else ema + alpha * (closes[last - 1] - ema)
-                for index in range(first, last):
-                    out[index] = current
+                values.append(current)
                 continue
             final_close = bucket_final.get(buckets[first], closes[last - 1])
             ema = final_close if ema is None else ema + alpha * (final_close - ema)
-            for index in range(first, last):
-                out[index] = ema
-        return out
+            values.append(ema)
+        lengths = [last - first for first, last in zip(starts, ends)]
+        return np.repeat(np.asarray(values, dtype=float), lengths).tolist()
 
     bucket_cache = {}
     ema_cache = {}
@@ -639,6 +671,8 @@ def _tos_live_mtf_projection(
     )
     signals: list[dict] = []
     states: list[dict] = []
+    live_contexts: list[dict] = []
+    live_pairs: set[tuple[str, str]] = set()
     for family, fast_length, slow_length, color, pairs in family_specs:
         for timeframe, minutes, higher_timeframe, higher_minutes in pairs:
             if minutes < bar_minutes:
@@ -697,9 +731,38 @@ def _tos_live_mtf_projection(
             # the developing value made on the way (BABA 2026-08-24 21:15
             # PUT2H / 21:25 C2H / 21:30 PUT2H). Keep the latest flip into the
             # current direction; drop every other forming-bucket cross.
+            # Per-tick live context for the still-forming bucket. The chart's
+            # reconcileLiveMtfSignals (frontend/src/mtfLiveSignalState.js)
+            # rebuilds this pair's forming bubble on EVERY stream trade from
+            # these completed-bucket EMAs:
+            #   ema_now = ema_base + alpha * (price - ema_base)
+            # which is exactly developing_ema's forming value above, so the
+            # live bubble equals what the next rebuild would print. Without it
+            # (never produced before 2026-10-01) a bubble waited for a full
+            # server rebuild - 1-6 min behind TOS on every ticker.
+            first_forming_index = _first_index_of(buckets, last_bucket)
+            higher_buckets = bucket_cache[higher_minutes]
+            higher_first_forming = _first_index_of(higher_buckets, higher_buckets[-1])
+            if first_forming_index > 0 and higher_first_forming > 0:
+                live_contexts.append({
+                    "family": family,
+                    "color": color,
+                    "timeframe": timeframe,
+                    "signalMinutes": minutes,
+                    "candleTimestamp": int(last_bucket),
+                    "confirmationTimeframe": higher_timeframe,
+                    "fastLength": fast_length,
+                    "slowLength": slow_length,
+                    "baseFastEma": float(fast[first_forming_index - 1]),
+                    "baseSlowEma": float(slow[first_forming_index - 1]),
+                    "higherBaseFastEma": float(higher_fast[higher_first_forming - 1]),
+                    "higherBaseSlowEma": float(higher_slow[higher_first_forming - 1]),
+                    "aggregationAnchor": "TOS_MIDNIGHT_CT",
+                })
+                live_pairs.add((family, timeframe))
             forming = [item for item in pair_signals if item["liveForming"]]
             if forming:
-                first_forming = next(i for i in range(count) if buckets[i] == last_bucket)
+                first_forming = _first_index_of(buckets, last_bucket)
                 previous_difference = (
                     fast[first_forming - 1] - slow[first_forming - 1] if first_forming > 0 else 0.0
                 )
@@ -738,6 +801,11 @@ def _tos_live_mtf_projection(
                     pair_signals.append(keep)
             signals.extend(pair_signals)
 
+    # A forming bubble with a live context is repainted by the chart on every
+    # trade (created, relabelled or removed); without one it must stay as is.
+    for item in signals:
+        item["isLiveSignal"] = bool(item["liveForming"] and (item["family"], item["timeframe"]) in live_pairs)
+
     timeframe_rank = {"15": 0, "30": 1, "1H": 2, "2H": 3, "4H": 4}
     family_rank = {"4x8": 0, "9x20": 1}
     ordered = sorted(
@@ -749,9 +817,9 @@ def _tos_live_mtf_projection(
         ),
     )
     latest_date = pd.Timestamp(source.iloc[-1]["timestamp"]).tz_convert(EASTERN_TZ).date()
-    session_bullish = [item for item in ordered if item["direction"] == "CALL" and pd.to_datetime(item["time"], unit="s", utc=True).tz_convert(EASTERN_TZ).date() == latest_date]
+    session_bullish = [item for item in ordered if item["direction"] == "CALL" and _eastern_date_of_epoch(item["time"]) == latest_date]
     grouped = _group_mtf_call_signals(session_bullish)
-    return {"signals": ordered, "states": states, "mode": "tos_repaint_secondary_5m", "sourceTimeframe": f"{bar_minutes}Min", "barMinutes": bar_minutes, "bullishSignals": session_bullish, "sessionBullishSignals": session_bullish, "bullishSignalPass": bool(grouped["groups"]), "bullishSignalLabels": grouped["labels"], "bullishSignalGroups": grouped["groups"], "bullishTimeframes": sorted({item["timeframe"] for item in session_bullish}), "bullishFamilies": sorted({item["family"] for item in session_bullish}), "bullishBoth2H4H": grouped["bothCall2H4H"]}
+    return {"signals": ordered, "states": states, "liveSignalContexts": live_contexts, "mode": "tos_repaint_secondary_5m", "sourceTimeframe": f"{bar_minutes}Min", "barMinutes": bar_minutes, "bullishSignals": session_bullish, "sessionBullishSignals": session_bullish, "bullishSignalPass": bool(grouped["groups"]), "bullishSignalLabels": grouped["labels"], "bullishSignalGroups": grouped["groups"], "bullishTimeframes": sorted({item["timeframe"] for item in session_bullish}), "bullishFamilies": sorted({item["family"] for item in session_bullish}), "bullishBoth2H4H": grouped["bothCall2H4H"]}
 
 
 def _tos_session_mtf_ema_signal_payload(frame: pd.DataFrame) -> dict:
@@ -804,7 +872,7 @@ def _tos_session_mtf_ema_signal_payload(frame: pd.DataFrame) -> dict:
     if frame is not None and not frame.empty and "timestamp" in frame:
         stamp = pd.Timestamp(pd.to_datetime(frame["timestamp"], errors="coerce").dropna().max())
         latest_date = (stamp.tz_localize(EASTERN_TZ) if stamp.tzinfo is None else stamp.tz_convert(EASTERN_TZ)).date()
-    session_bullish = [item for item in ordered if item["direction"] == "CALL" and (latest_date is None or pd.to_datetime(item["time"], unit="s", utc=True).tz_convert(EASTERN_TZ).date() == latest_date)]
+    session_bullish = [item for item in ordered if item["direction"] == "CALL" and (latest_date is None or _eastern_date_of_epoch(item["time"]) == latest_date)]
     grouped = _group_mtf_call_signals(session_bullish)
     return {"signals": ordered, "states": states, "mode": "tos_completed_secondary_5am_et", "sourceTimeframe": "5Min", "bullishSignals": session_bullish, "sessionBullishSignals": session_bullish, "bullishSignalPass": bool(grouped["groups"]), "bullishSignalLabels": grouped["labels"], "bullishSignalGroups": grouped["groups"], "bullishTimeframes": sorted({item["timeframe"] for item in session_bullish}), "bullishFamilies": sorted({item["family"] for item in session_bullish}), "bullishBoth2H4H": grouped["bothCall2H4H"]}
 

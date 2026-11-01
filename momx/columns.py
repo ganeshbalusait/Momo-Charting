@@ -16,13 +16,8 @@ PAYLOAD CONTRACT
     ``"light_red"``, ...). The backend never emits hex; the frontend maps
     names to CSS.
 
-*** WARNING: high_low_cell IS INFERRED, NOT SUPPLIED ***
-    The trader gave a script for RVOL, Squeeze, Skittles and Quote Trend. For
-    the High/Low column they gave only "2h aggregation, length 8, EXT" -- no
-    formula and no colour ladder. :func:`high_low_cell` implements the obvious
-    reading (where close sits inside the 8-bar high/low range) and is the ONLY
-    function in this module that is not TOS-verifiable. It must be replaced
-    the moment the real script arrives. Do not treat its colours as parity.
+High/Low uses the supplied HighLowGraph formula (Aug 28 / Sep 3) and the
+Sep 25 colour ladder. See high_low_cell for the source and column settings.
 
 This module must never import ``api_server``.
 """
@@ -92,6 +87,10 @@ PALETTE = (
 #: Column -> timeframe keys, exactly as the payload contract names them.
 RVOL_TIMEFRAMES = ("5m", "15m", "30m", "1h", "2h", "4h", "D")
 SQUEEZE_TIMEFRAMES = ("2h", "4h", "D", "Wk")
+#: 30m / 1h squeezes (2026-09-28, his ask for MX A+: "2hr or 4h or D or 1hr or
+#: 30min sqz"). A SEPARATE field (row["sqzFast"]): the SQZ columns, his TOS
+#: scan (scan.py) and the grade keep reading 2h/4h/D/Wk exactly as before.
+SQUEEZE_FAST_TIMEFRAMES = ("30m", "1h")
 SKITTLES_TIMEFRAMES = ("2h", "4h", "D", "2D", "3D", "4D", "Wk", "M")
 #: ADX is RECORDED, not graded: these two tapes are the ones the trader reads
 #: the chart's ADX study on. Nothing in momx/grade.py may read this field.
@@ -788,7 +787,7 @@ def skittles_cell(bars: Any) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# High/Low -- INFERRED
+# High/Low -- supplied HighLowGraph, 2h EXT, length 8
 # ---------------------------------------------------------------------------
 
 def high_low_cell(bars_2h: Any, length: int = HIGH_LOW_LENGTH) -> dict:
@@ -810,10 +809,9 @@ def high_low_cell(bars_2h: Any, length: int = HIGH_LOW_LENGTH) -> dict:
     not at the low. On a 2h EXT tape those 8 bars are about 16 hours of
     extended session, so this is emphatically not "today's range".
 
-    NOT from his script: the COLOUR. His ends at ``plot HighLowDegree;`` with
-    no colour assignment at all - thinkorswim draws the column as a graph (it
-    is named "High/Low Graph"). Green above the midpoint and red below is
-    OUR rendering of his number. Anything else here is his.
+    The Sep 25 supplied AssignBackgroundColor ladder is evaluated on the
+    unrounded degree: >0.5 dark_green, >0 green, <-0.5 dark_red, <0 red,
+    otherwise gray. The earlier supplied version omitted the colours.
 
     Historical note: this file used to label the column INFERRED at
     HIGH_LOW_LENGTH while this docstring said "ported literally". The
@@ -837,10 +835,17 @@ def high_low_cell(bars_2h: Any, length: int = HIGH_LOW_LENGTH) -> dict:
 
     hh = max(high_window)
     ll = min(low_window)
+    # Scope live extrema to this forming 2h bar. A rolled window must discard
+    # previously observed extremes that may have left the trailing 8 bars.
+    try:
+        bar_at = int(bars_2h[-1].get("time"))
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        bar_at = None
+    window = {"barAt": bar_at} if bar_at is not None else {}
     if hh == ll:
         # The script's own guard: a zero-width range is 0, not a divide -
         # and 0 falls to his colour ladder's else: GRAY.
-        return cell(0.0, "gray", "black")
+        return {**cell(0.0, "gray", "black"), "degree": 0.0, "hh": hh, "ll": ll, **window}
     mid = (hh + ll) / 2.0
     degree = (close - mid) / (hh - mid)
     # His colours (script re-sent 2026-09-25 with AssignBackgroundColor):
@@ -856,7 +861,13 @@ def high_low_cell(bars_2h: Any, length: int = HIGH_LOW_LENGTH) -> dict:
         background = "red"
     else:
         background = "gray"
-    return cell(_ts_round(degree, 2), background, "black")
+    # hh/ll ride along so the panel can re-evaluate the SAME formula against
+    # the live price between rebuilds - his TOS column re-sorts live
+    # (2026-09-30); a board frozen at build time did not.
+    # Preserve the actual plot value for sorting. Rounding before sorting
+    # falsely tied 0.996 and 1.000 and promoted names alphabetically.
+    return {**cell(_ts_round(degree, 2), background, "black"), "degree": degree,
+            "hh": hh, "ll": ll, **window}
 
 
 # ---------------------------------------------------------------------------
@@ -1007,6 +1018,30 @@ def pct_change(
     if not (math.isfinite(latest) and math.isfinite(previous)) or previous == 0:
         return None
     return (latest - previous) / previous * 100.0
+
+
+def pct_base(daily_bars: Any, intraday_bars: Any = None) -> float | None:
+    """The close :func:`pct_change` measures against, by the SAME rule:
+    premarket (today's daily bar not formed) the newest daily close,
+    otherwise the one before it. Shipped as ``prevClose`` so the panel can
+    re-run the identical percentage on the live price between rebuilds -
+    his TOS %Change moves live; ours sat at the build value (ZETA 6.87% vs
+    TOS 8.39%, 2026-09-30). None whenever pct_change would be None-based."""
+    closes = _closes(daily_bars)
+    if not closes:
+        return None
+    daily_rows = _rows(daily_bars)
+    intraday_rows = _rows(intraday_bars)
+    if daily_rows and intraday_rows:
+        daily_date = _bar_session_date(daily_rows[-1])
+        intraday_date = _bar_session_date(intraday_rows[-1])
+        if daily_date and intraday_date and intraday_date > daily_date:
+            base = closes[-1]
+            return base if math.isfinite(base) and base != 0 else None
+    if len(closes) < 2:
+        return None
+    previous = closes[-2]
+    return previous if math.isfinite(previous) and previous != 0 else None
 
 
 def sparkline(intraday_bars: Any, points: int = SPARKLINE_POINTS) -> list[float]:
@@ -1270,7 +1305,7 @@ def adx_cell(bars: Any, length: int = ADX_LENGTH) -> dict:
             "prevPlus": None, "prevMinus": None, "prevAdx": None,
             "cross": None, "rising": False,
             "strongPlus": False, "strongMinus": False,
-            "barAt": bar_at,
+            "barAt": bar_at, "closedCross": None, "closedCrossAt": None,
         }
 
     plus, minus, adx = plus_line[-1], minus_line[-1], adx_line[-1]
@@ -1288,7 +1323,26 @@ def adx_cell(bars: Any, length: int = ADX_LENGTH) -> dict:
         strong_plus = prev_plus <= ADX_STRONG < plus
         strong_minus = prev_minus <= ADX_STRONG < minus
 
+    # The same cross read on the last CLOSED candle (2026-10-03, MOM FLIP rule):
+    # the tape's last bar is still forming, so ``cross`` can appear and vanish
+    # inside 5 minutes; this one cannot. ``closedCrossAt`` = that candle's open.
+    closed_cross: str | None = None
+    closed_cross_at: int | None = None
+    if len(adx_line) >= 3 and adx_line[-2] is not None and None not in (
+            plus_line[-2], minus_line[-2], plus_line[-3], minus_line[-3]):
+        if plus_line[-3] <= minus_line[-3] and plus_line[-2] > minus_line[-2]:
+            closed_cross = "bull"
+        elif minus_line[-3] <= plus_line[-3] and minus_line[-2] > plus_line[-2]:
+            closed_cross = "bear"
+        if closed_cross and len(rows) >= 2:
+            try:
+                closed_cross_at = int(rows[-2].get("time"))
+            except (AttributeError, KeyError, TypeError, ValueError):
+                closed_cross_at = None
+
     return {
+        "closedCross": closed_cross,
+        "closedCrossAt": closed_cross_at,
         "plus": published(plus),
         "minus": published(minus),
         "adx": published(adx),
@@ -1373,6 +1427,14 @@ def build_row(symbol: str, tapes: Any, industry: str | None = None) -> dict:
         rows = _tape(tapes, key)
         squeeze[key] = squeeze_cell(rows) if len(rows) >= SQUEEZE_MIN_BARS else null_cell()
 
+    sqz_fast: dict[str, dict] = {}
+    try:
+        for key in SQUEEZE_FAST_TIMEFRAMES:
+            rows = _tape(tapes, key)
+            sqz_fast[key] = squeeze_cell(rows) if len(rows) >= SQUEEZE_MIN_BARS else null_cell()
+    except Exception:  # noqa: BLE001 - a bad tape costs sqzFast, never the row
+        sqz_fast = {}
+
     skittles: dict[str, dict] = {}
     for key in SKITTLES_TIMEFRAMES:
         rows = _tape(tapes, key)
@@ -1437,8 +1499,10 @@ def build_row(symbol: str, tapes: Any, industry: str | None = None) -> dict:
         # intraday + last so the premarket case has a live price and a way to
         # tell that today's daily bar has not formed yet.
         "pctChange": pct_change(_tape(tapes, "D"), intraday, last),
+        "prevClose": pct_base(_tape(tapes, "D"), intraday),
         "rvol": rvol,
         "sqz": squeeze,
+        "sqzFast": sqz_fast,
         "skittles": skittles,
         "highLow": high_low,
         "color": color_cell(),

@@ -1,0 +1,17 @@
+# Chart gamma concentration
+
+**Show gamma text / number boxes** independently hides the overlay labels and component boxes while retaining strike guides and enabled clouds. White negative and orange positive clouds stay compact at the right edge around their concentration bars; they do not extend left across candle history. On phone-sized panes the bar is at most 72 px and the halo 84 px; larger panes use at most 120/132 px. The halo is also thinner, leaving candles and other studies visible. Relative bar lengths still use the same exposure ratios. Text and glow choices are saved with the other indicator options. Cloud width does not imply exposure changed through historical time.
+
+This optional overlay is an original estimate, not a translation of the supplied screenshots. Their study/formula was unavailable. Optional gamma glow bands use white for negative estimates and amber/orange for positive estimates; they are static bands at the current snapshot's strikes, not a replay of historical gamma clouds.
+
+For each loaded contract in the selected expiry:
+
+`dollar gamma per 1% move = provider gamma × contract count × multiplier × spot² × 0.01`
+
+Contract count is either the provider's open interest or cumulative session volume. The multiplier defaults to 100 for standard contracts unless provided explicitly. The overlay nets call exposure minus put exposure by strike. This call-positive/put-negative convention is a modeling assumption; both long calls and long puts have positive option gamma. The result does not identify actual dealer inventory, trade direction, newly opened positions, or future hedging behavior.
+
+Bars show the largest absolute net concentrations, bounded to 12. Gold denotes a positive modeled net value and white a negative one; strike guides are cyan. Each row has a gray net box, a white put box, and a gold call box. P% is `put / (call + put) × 100`, rounded to a whole percent; it describes the share of absolute modeled exposure and is not a prediction probability. All component and net values use the same selected basis. Mini-bars show these component shares. Very narrow grid panes retain the net label and expose components in Method / values. Native price coordinates align bars during navigation without adding chart series or altering autoscaling. Values shown across timeframes describe the latest chain snapshot, not historical gamma at each candle.
+
+Only contracts whose underlying matches the chart are accepted. Snapshots are deduplicated by expiry, side and strike. Missing/negative/nonfinite inputs are excluded and coverage is disclosed; genuine zeros remain valid. Empty data produces an empty-state message, never a guessed level. The expiry dropdown contains only expiries already loaded in the chain. No additional data requests are made.
+
+Enable **Gamma concentration (estimate)** in Indicators. OI is the starting basis. A saved Volume selection with no nonzero levels explains whether counts, gamma, or net exposure are zero/missing, and offers **Show OI gamma** when a nonzero OI estimate exists. This switches the displayed basis explicitly; it never presents OI as volume. Basis, expiry and level count use the existing indicator-profile save/reset mechanism. Method/values displays the spot, source snapshot time, component exposures, and modeled net values. Source snapshot age and provider availability limit freshness; matching proprietary studies requires their formulas and data conventions.

@@ -283,6 +283,13 @@ test("arrival rows show the chart cells, change rows blank them", () => {
   assert.equal(arrival.changedKeys.size, 0);
 });
 
+test("a change row that carries its chart cells shows them (stored since 2026-10-02)", () => {
+  const withChart = { ...CHANGE, row: { ...CHANGE.row, sparkline: [3, 2, 1], quoteTrend: [{ value: 2 }] } };
+  const [entry] = flattenHistoryRows([withChart]);
+  assert.equal(entry.isArrival, false);
+  assert.equal(entry.showChart, true);
+});
+
 test("snapshots keep one row each, ordered by time, with ET time labels", () => {
   // Fed out of order on purpose; the view must read as the day's timeline.
   const entries = flattenHistoryRows([CHANGE, ARRIVAL]);
@@ -445,9 +452,4 @@ test("boardCacheKey keeps bull keys unchanged and suffixes bear", () => {
   assert.equal(boardCacheKey("Mag7", undefined), "Mag7");
   assert.equal(boardCacheKey("Mag7", "bear"), "Mag7|bear");
   assert.equal(boardCacheKey(null, "bear"), null);
-});
-
-test("a setup event (chart arrow, day line, GO, MOMOX A+) rings the Setup cell", () => {
-  const keys = changedColumnKeys(["setup.chartSignals", "setup.goAt", "rvol.5m"]);
-  assert.deepEqual([...keys].sort(), ["rvol.5m", "setup"]);
 });

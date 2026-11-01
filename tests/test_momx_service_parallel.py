@@ -70,6 +70,9 @@ def install(monkeypatch, sizes, durations, failures=()):
     ``durations``  list name -> how long its build blocks, in seconds.
     Returns a recorder with ``.log`` of (event, name, monotonic) tuples.
     """
+    # These tests exercise gating and overlap, not the unviewed-list cadence
+    # (service.UNVIEWED_MIN_DELAY_SECONDS), so every fake list stays fast.
+    monkeypatch.setattr(service, "UNVIEWED_MIN_DELAY_SECONDS", 0.0)
 
     class Recorder:
         def __init__(self):

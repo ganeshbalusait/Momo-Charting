@@ -99,7 +99,10 @@ def pick_catalyst(items: object, now_utc: datetime, symbol: str) -> dict | None:
     """The single most decision-relevant recent headline for a symbol.
 
     Preference order, applied to headlines no older than
-    MAX_CATALYST_AGE_SECONDS:
+      MAX_CATALYST_AGE_SECONDS:
+      0. a headline that NAMES the company beats one that only carries its ticker tag
+         (2026-10-02: META's premarket row showed "Apple Takes Aim at AI Agents...",
+         MSFT's a Google Gemini story - tagged, so they outranked Meta/Microsoft news);
       1. a headline that classifies to a tag beats one that does not
          (a tagged story is a CATALYST; an untagged one is just coverage);
       2. a story about few tickers beats a broad market wrap-up
@@ -124,7 +127,9 @@ def pick_catalyst(items: object, now_utc: datetime, symbol: str) -> dict | None:
         if target and symbols and target not in symbols:
             continue
         tag = classify_headline(headline)
+        about = _names_company(target, headline)
         candidates.append((
+            0 if about else 1,
             0 if tag else 1,
             len(symbols) if symbols else 99,
             age,
@@ -134,12 +139,26 @@ def pick_catalyst(items: object, now_utc: datetime, symbol: str) -> dict | None:
                 "publishedAt": published.isoformat(),
                 "ageMinutes": int(age // 60),
                 "source": str(item.get("source") or "").strip() or None,
+                # False = the story does not name the company (shown as related news)
+                "aboutCompany": about,
             },
         ))
     if not candidates:
         return None
-    candidates.sort(key=lambda entry: entry[:3])
-    return candidates[0][3]
+    candidates.sort(key=lambda entry: entry[:4])
+    return candidates[0][4]
+
+
+def _names_company(symbol: str, headline: str) -> bool | None:
+    """news_names' strict matcher (ticker or company name in the headline). None when it
+    cannot run - then no candidate gets a boost and the old order stands."""
+    if not symbol:
+        return None
+    try:
+        import news_names
+        return bool(news_names.default_names().tickers_in(headline, [symbol]))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def news_credentials(getenv=os.environ.get) -> tuple[str, str] | None:

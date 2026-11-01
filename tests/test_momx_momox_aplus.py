@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from momx import momox_aplus as mx
 
 ET = ZoneInfo("America/New_York")
-BULL = {tf: {"bg": "black", "fg": "cyan"} for tf in mx.SKIT_TFS}
+BULL = {tf: {"bg": "cyan", "fg": "cyan"} for tf in mx.SKIT_TFS}
 
 
 def row(**over):
@@ -23,15 +23,19 @@ def row(**over):
     return base
 
 
-def chain(wall_oi=5000, strike=705.0, spot=700.0, em=5.0, stale=False):
+def chain(wall_oi=5000, strike=705.0, spot=700.0, em=5.0, stale=False, scanned=None):
     rows = [{"side": "CALL", "strike": strike, "open_interest": wall_oi, "expiry": "2026-09-26"},
             {"side": "PUT", "strike": 690.0, "open_interest": 3000, "expiry": "2026-09-26"}]
-    return {"selectedExpiryChainRows": rows, "underlyingPrice": spot, "stale": stale,
-            "currentAtm": {"expectedMove": em}}
+    out = {"selectedExpiryChainRows": rows, "underlyingPrice": spot, "stale": stale,
+           "currentAtm": {"expectedMove": em}}
+    if scanned:
+        out["scannedAt"] = scanned
+    return out
 
 
 def book_at(directory, payload=None, **kw):
     fetch = kw.pop("fetch", lambda sym: chain() if payload is None else payload)
+    kw.setdefault("oi_required", True)   # the wall tests; the live default is OFF since 2026-09-29
     return mx.MomoxAPlusBook(directory, fetch=fetch, background=False, **kw)
 
 
@@ -57,7 +61,8 @@ def test_all_pillars_latch_once_with_weeklies(tmp_path):
 
 def test_each_pillar_is_required(tmp_path):
     for bad in (dict(news=None), dict(rvol={"30m": {"bg": "green"}}), dict(sqz={"4h": {"bg": "orange"}}),
-                dict(skittles={**BULL, "M": {"bg": "black", "fg": "magenta"}}), dict(industry="ETF-Lev")):
+                dict(skittles={tf: {"bg": "black", "fg": "magenta"} for tf in mx.SKIT_TFS}),
+                dict(industry="ETF-Lev")):
         book = book_at(tmp_path / str(len(str(bad))))
         payload = {"rows": [row(**bad)], "rest": []}
         book.apply("Watchlist", payload, t("09:40"))
@@ -132,3 +137,64 @@ def test_a_small_stocks_own_biggest_wall_is_its_magnet(tmp_path):
     book.apply("Watchlist", payload, t("09:55"))
     hit = payload["rows"][0]["momoxAPlus"]
     assert hit["oiStrike"] == 35.0 and hit["oi"] == 739
+
+
+def test_skittles_any_one_of_d_to_m_is_enough(tmp_path):
+    one = {tf: {"bg": "black", "fg": "magenta"} for tf in mx.SKIT_TFS}
+    one["Wk"] = {"bg": "cyan", "fg": "black"}
+    book = book_at(tmp_path)
+    payload = {"rows": [row(skittles=one)], "rest": []}
+    book.apply("Watchlist", payload, t("09:40"))
+    assert payload["rows"][0]["momoxAPlus"] is not None
+
+
+def test_a_refreshing_chain_from_today_counts_one_from_yesterday_does_not(tmp_path):
+    # The server marks every copy older than ~15s "stale" while it refreshes;
+    # that flag blocked every MX A+ 09-26..09-28. The chain's own date decides.
+    today = chain(stale=True, scanned="2026-09-21T08:59:02-05:00")
+    book = book_at(tmp_path / "a", today)
+    payload = {"rows": [row()], "rest": []}
+    book.apply("Watchlist", payload, t("09:40"))
+    assert payload["rows"][0]["momoxAPlus"]["oiStrike"] == 705.0
+    old = chain(stale=True, scanned="2026-09-18T15:00:00-04:00")
+    book = book_at(tmp_path / "b", old)
+    payload = {"rows": [row()], "rest": []}
+    book.apply("Watchlist", payload, t("09:40"))
+    assert payload["rows"][0]["momoxAPlus"] is None
+
+
+def test_a_30m_or_1h_squeeze_counts_too(tmp_path):
+    for tf in ("30m", "1h"):
+        book = book_at(tmp_path / tf)
+        payload = {"rows": [row(sqz={}, sqzFast={tf: {"bg": "cyan"}})], "rest": []}
+        book.apply("Watchlist", payload, t("09:40"))
+        stamp = payload["rows"][0]["momoxAPlus"]
+        assert stamp is not None and tf in stamp["sqz"], tf
+
+
+
+def test_bear_mx_aplus_mirror():
+    bear_row = {"skittles": {"D": {"bg": "magenta"}}, "rvol": {"30m": {"bg": "magenta"}}, "sqz": {"4h": {"bg": "magenta"}}}
+    assert mx.skittles_bullish(bear_row, bear=True) and not mx.skittles_bullish(bear_row)
+    assert mx.rvol_cyan(bear_row, bear=True) and not mx.rvol_cyan(bear_row)
+    assert mx.sqz_cyan_now(bear_row, bear=True) == ["4h"] and mx.sqz_cyan_now(bear_row) == []
+    c = chain(strike=695.0, spot=700.0, em=5.0)
+    for r in c["selectedExpiryChainRows"]:
+        if r["side"] == "PUT":
+            r["open_interest"] = 9000
+    from datetime import datetime
+    wall = mx.call_wall(c, datetime(2026, 9, 21, 9, 40, tzinfo=ET), bear=True)
+    assert wall["ok"] and wall["strike"] == 690.0
+
+
+def test_his_2026_09_29_update_rvol_4h_d_skittles_cyan_green_no_wall(tmp_path):
+    assert mx.OI_REQUIRED is False                      # the call-wall gate is off by default
+    book = mx.MomoxAPlusBook(tmp_path, fetch=lambda s: None, background=False)
+    p = {"rows": [row(rvol={"15m": {"bg": "black", "value": 1.0}, "D": {"bg": "cyan", "value": 3.4}})], "rest": []}
+    book.apply("Watchlist", p, t("09:40"))
+    assert p["rows"][0]["momoxAPlus"] is not None       # D RVOL cyan counts, no chain needed
+    lime = {tf: {"bg": "lime", "fg": "cyan"} for tf in mx.SKIT_TFS}
+    assert not mx.skittles_bullish(row(skittles=lime))  # lime / fg-only no longer count
+    one = {**{tf: {"bg": "black", "fg": "black"} for tf in mx.SKIT_TFS}, "Wk": {"bg": "green"}}
+    assert mx.skittles_bullish(row(skittles=one))       # ANY one cyan/green of D..M
+    assert mx.rvol_cyan(row(rvol={"4h": {"bg": "cyan"}}))

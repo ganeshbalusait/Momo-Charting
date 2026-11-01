@@ -737,7 +737,14 @@ class GradeLog:
                 if bg in self._sets["rvol_bg"] and prev["rvol"].get(tf) not in self._sets["rvol_bg"]:
                     items.append(("RVOL", f"RVOL {tf} {_cell(row, 'rvol', tf).get('value')}"))
             for tf, bg in current["sqz"].items():
-                if bg == self._sets["sqz_fired"] and prev["sqz"].get(tf) != self._sets["sqz_fired"]:
+                # Fired = the box turns cyan (bear magenta: a regular squeeze released
+                # with momentum our way) OR white -> orange: in his TOS squeeze
+                # column white is the HIGH squeeze ON and the next rung is HSF
+                # (high squeeze fired) - MRNA 2h 10-09 09:47 fired that way and the
+                # Setup column never showed SQZ (his catch, 2026-10-11).
+                before = prev["sqz"].get(tf)
+                high_fired = bg == "orange" and before == "white"
+                if (bg == self._sets["sqz_fired"] and before != self._sets["sqz_fired"]) or high_fired:
                     items.append(("SQZ", f"SQZ {tf} released"))
             # LATCHED PER BAR, not edge-triggered like the kinds above.
             #

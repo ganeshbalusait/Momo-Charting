@@ -52,6 +52,14 @@ _os.environ["AGX_MOMX_HISTORY_DIR"] = str(_SCRATCH_DIR / "momx_history")
 # tape and events are the scanner grade's trade record. Fixture boards must
 # never land in the real artifacts/momx_grade_tape or momx_grade_events.
 _os.environ["AGX_MOMX_GRADE_DIR"] = str(_SCRATCH_DIR / "momx_grade")
+# The persister can finish after a test's monkeypatch has been restored. Its
+# fallback must still be a session scratch directory, never the live boards.
+_os.environ["MOMX_BOARD_CACHE_DIR"] = str(_SCRATCH_DIR / "momx_board_cache")
+# API imports otherwise parse the account's entire multi-million-bar stream
+# archive during collection. Tests use their own files; leave live history
+# and the running trading app's memory/IO budget alone.
+_os.environ["AGX_STREAM_HISTORY_PATH"] = str(_SCRATCH_DIR / "stream_history.json.gz")
+_os.environ["AGX_NEWS_MODEL"] = "disabled"  # no real neural workloads from API fixtures
 # Fourth: the AI news reader (momx/news_catalyst.py) runs off the same build
 # and would spend REAL news + AI calls on fixture boards. Off for the suite.
 _os.environ["AGX_CATALYST_READER"] = "0"
@@ -59,6 +67,15 @@ _os.environ["AGX_SECTOR_ROTATION"] = "0"  # same reason: no real daily-bar fetch
 # Options-only gate (momx/optionable.py): fixture tickers (AAA, NVDA stubs) have no
 # option chain in the scratch store; the gate has its own tests with it switched on.
 _os.environ["AGX_MOMX_OPTIONS_ONLY"] = "0"
+_os.environ["AGX_MOMX_OPTION_TRACK"] = "0"  # no real chain calls from fixture boards
+_os.environ["AGX_MOMX_ETF_REFRESH"] = "0"  # no listing-directory download in tests
+# The monthly EMA touch lists (momx/ema_touch.py) would add two names to every
+# fixture universe document and start an Alpaca refresher; their own tests switch them on.
+_os.environ["AGX_MOMX_EMA_LISTS"] = "0"
+# The TOS/Alpaca toolbar choice (momx/feed.py set_data_source): no test may read
+# the trader's real artifacts/momx_data_source.json (the suite would behave
+# differently once he unticks TOS) or write it (it would flip the live scanner).
+_os.environ["AGX_MOMX_DATA_SOURCE_PATH"] = str(_SCRATCH_DIR / "momx_data_source.json")
 
 
 # The MomX volume correction reads Schwab. Feed tests drive the tape with a
@@ -71,6 +88,10 @@ try:
     from momx import feed as _momx_feed
 
     _momx_feed.SCHWAB_VOLUME_ENABLED = False
+    # The background TOS refresher thread must never run under tests.
+    _momx_feed.TOS_REFRESHER_ENABLED = False
+    # ...nor poll the real api_server running on this machine.
+    _momx_feed.STREAM_LIVE_ENABLED = False
 except Exception:  # pragma: no cover - momx optional in some test runs
     pass
 
@@ -86,5 +107,28 @@ def _reset_schwab_gate():
     """
     from data.schwab_rate_limit import GATE
     GATE.reset()
+    # Same shape: momx/feed.py's TOS budget is a process-wide 60s window, so
+    # one test spending it would leave later TOS-mode tests "queued".
+    try:
+        from momx import feed as _feed
+        _feed._tos_reset()
+    except Exception:  # pragma: no cover - momx optional in some test runs
+        _feed = None
     yield
     GATE.reset()
+    if _feed is not None:
+        _feed._tos_reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_alpaca_keys_in_tests(monkeypatch):
+    """No test may reach Alpaca with the real .env keys (2026-10-04). The owner Alpaca
+    client now falls through to ANY working .env key (a dead Settings key no longer blanks
+    the premarket fill), so a DashboardState built without a fake client fetched REAL
+    candles. Tests that exercise the key choice monkeypatch _owner_alpaca_key_candidates
+    themselves, which overrides this."""
+    import sys
+    module = sys.modules.get("api_server")
+    if module is not None and hasattr(module, "_owner_alpaca_key_candidates"):
+        monkeypatch.setattr(module, "_owner_alpaca_key_candidates", lambda: [])
+    yield

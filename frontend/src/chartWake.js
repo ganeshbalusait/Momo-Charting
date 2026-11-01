@@ -7,6 +7,7 @@
 // the same rule. Pure so it can be unit-tested without a browser.
 
 import { MAX_LIVE_BAR_GAP_SECONDS } from "./chartStreamBars.js";
+import { marketSessionState } from "./marketSession.js";
 
 // One forming minute plus the 30s REST reconcile slack. Anything older means
 // the reconcile itself is not landing and the tab must act.
@@ -59,4 +60,16 @@ export function chartStaleLabel(barAgeMs) {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest ? `STALE (${hours}h ${rest}m)` : `STALE (${hours}h)`;
+}
+
+// May a chart ask the SERVER to rebuild its history (refresh=true)? Only while
+// the extended session (weekdays 04:00-20:00 ET) can add bars to that history.
+// Overnight and at weekends a rebuild cannot add one candle, yet each one cost
+// 41-90s of server CPU: measured 2026-09-29 23:22 CT on DIA, where a phone
+// woke onto its in-memory Friday tape, asked for a rebuild on every wake and
+// every 150s, and sat on Friday candles while the server already held
+// Tuesday's. A plain reload returns the server tape in ~1s. Holidays count as
+// open (no calendar), which only keeps the old behaviour.
+export function chartServerRebuildAllowed(nowMs = Date.now()) {
+  return marketSessionState(nowMs).open;
 }

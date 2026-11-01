@@ -18,22 +18,22 @@ New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
 # session's manual restart) produced FOUR duplicate api_server pairs on
 # 2026-08-10; one of those pairs concurrently refreshed the Schwab trading
 # token and revoked it (Schwab rotates the refresh token on every refresh).
-# v2 lock: the v1 lock's handle stayed held after a watchdog was killed
-# unexpectedly (2026-08-20), and every replacement exited silently for hours.
-# A fresh path retires the stale holder; the exit below is also LOGGED now,
-# because Write-Host in a hidden window is how the outage stayed invisible.
-$lockPath = Join-Path $artifacts "scanner_watchdog.v2.lock"
+# File locks have remained held after the watchdog exits (both v1 and v2).
+# A mutex belongs to this thread, cannot be kept owned by a child service,
+# and is automatically abandoned on termination. Share it across checkouts
+# because all of them supervise the same ports in this Windows session.
+$script:watchdogMutex = [System.Threading.Mutex]::new($false, 'Local\AgenticAI-Trading-Watchdog')
 try {
-    $script:lockStream = [System.IO.File]::Open(
-        $lockPath,
-        [System.IO.FileMode]::OpenOrCreate,
-        [System.IO.FileAccess]::ReadWrite,
-        [System.IO.FileShare]::None
-    )
+    $ownsWatchdogMutex = $script:watchdogMutex.WaitOne(0)
 }
-catch {
+catch [System.Threading.AbandonedMutexException] {
+    # WaitOne grants ownership when the previous owner exited unexpectedly.
+    $ownsWatchdogMutex = $true
+}
+if (-not $ownsWatchdogMutex) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Add-Content -LiteralPath (Join-Path $artifacts "scanner_watchdog.log") -Value "$timestamp DUPLICATE watchdog (pid $PID) exiting: lock held at $lockPath"
+    Add-Content -LiteralPath $watchdogLog -Value "$timestamp DUPLICATE watchdog (pid $PID) exiting: another watchdog owns the mutex"
+    $script:watchdogMutex.Dispose()
     exit 0
 }
 
@@ -84,6 +84,7 @@ function Start-Backend {
     # two sockets share a port, silently splitting the front door with the
     # gateway - observed live on 2026-08-20.
     $env:AGX_PORT = "3002"
+    $script:backendHasListened = $false
     # Crash forensics (2026-08-21): api_server died SILENTLY at 09:14, 09:46
     # and 10:04 CT under market load - no Python traceback, so a native
     # fault or hard kill. faulthandler dumps every thread's stack to stderr
@@ -124,6 +125,21 @@ function Start-Backend {
 function Get-MomxWorkerProcesses {
     @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like "*momx_worker.py*" })
+}
+
+function Test-OrphanedPoolWorker {
+    param($Process, [hashtable]$ParentsById)
+    # multiprocessing's declared parent identifies its owner. A living pytest
+    # or API parent is just as valid as momx_worker; only reap abandoned work.
+    $ownerMatch = [regex]::Match([string]$Process.CommandLine, 'parent_pid=(\d+)')
+    if (-not $ownerMatch.Success) { return $false }
+    $owner = $ParentsById[[int]$ownerMatch.Groups[1].Value]
+    if ($null -eq $owner) { return $true }
+    # Windows can reuse a dead parent's PID for a newer, unrelated process.
+    if ($null -ne $owner.CreationDate -and $null -ne $Process.CreationDate) {
+        return $owner.CreationDate -gt $Process.CreationDate
+    }
+    return $false
 }
 
 function Start-MomxWorker {
@@ -318,7 +334,11 @@ function Remove-StaleDistAssets {
 # 300, not 180: right after a Windows reboot the first boot runs on a cold disk
 # and took >180s (2026-09-22 23:10 - pid 15500 was killed as "wedged" at 180s;
 # its replacement listened at ~140s), so every reboot paid a needless restart.
-$backendStartupGraceSeconds = 300
+# Cold startup exceeded five minutes after the folder migration on 2026-10-22.
+# Allow initialization to finish, but do not give an already-serving process
+# this grace period when it stops answering later.
+$backendStartupGraceSeconds = 900
+$backendHasListened = $false
 
 # A healthy backend can still miss a TCP accept: the background study builder
 # pegs python near 95% CPU, and under that GIL pressure a connect can exceed the
@@ -343,7 +363,7 @@ while ($true) {
             else {
                 $newest = ($existing | Sort-Object CreationDate -Descending | Select-Object -First 1)
                 $ageSeconds = [Math]::Round(((Get-Date) - $newest.CreationDate).TotalSeconds)
-                if ($ageSeconds -lt $backendStartupGraceSeconds) {
+                if (-not $backendHasListened -and $ageSeconds -lt $backendStartupGraceSeconds) {
                     Write-WatchdogLog "Port 3002 closed but api_server pid $($newest.ProcessId) is ${ageSeconds}s old (starting up); waiting."
                 }
                 elseif ($backendMisses -lt $backendMissThreshold) {
@@ -362,6 +382,7 @@ while ($true) {
         }
         else {
             $backendMisses = 0
+            $backendHasListened = $true
         }
         # The gateway is stateless and boots in about a second, so recovery
         # is aggressive: port closed -> kill any wedged remnant -> restart.
@@ -390,10 +411,12 @@ while ($true) {
         # die with their parent, and a hard kill cannot be trapped in-process,
         # so 8 of them survived every restart on 2026-08-28 and competed with
         # the chart engine at NORMAL priority.
-        $momxParents = (Get-MomxWorkerProcesses | ForEach-Object { $_.ProcessId })
-        Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        $pythonProcesses = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue)
+        $pythonParents = @{}
+        foreach ($process in $pythonProcesses) { $pythonParents[[int]$process.ProcessId] = $process }
+        $pythonProcesses |
             Where-Object { $_.CommandLine -like "*spawn_main*" } |
-            Where-Object { $keep = $false; foreach ($pp in $momxParents) { if ($_.CommandLine -like "*parent_pid=$pp*") { $keep = $true } }; -not $keep } |
+            Where-Object { Test-OrphanedPoolWorker -Process $_ -ParentsById $pythonParents } |
             ForEach-Object {
                 Write-WatchdogLog "Reaping orphaned MomX pool worker $($_.ProcessId)."
                 Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue

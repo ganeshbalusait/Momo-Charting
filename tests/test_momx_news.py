@@ -518,3 +518,42 @@ def test_rss_can_be_switched_off():
         os.environ.pop(news.RSS_ENV, None)
     assert out == {}
     assert calls == []
+
+
+def test_a_headline_naming_the_company_beats_a_newer_tag_along_story(monkeypatch):
+    """NBIS 2026-10-02: a CoreWeave price-target story (tagged NBIS) filled the cell."""
+    from datetime import datetime, timedelta, timezone
+    from momx import news as n
+    monkeypatch.setattr(n, "_about", lambda headline, symbols: [s for s in symbols if "Nebius" in headline])
+    now = datetime(2026, 10, 2, 14, 0, tzinfo=timezone.utc)
+    arts = [
+        {"headline": "Nebius acquires Inferize", "created_at": (now - timedelta(hours=3)).isoformat(), "symbols": ["NBIS"]},
+        {"headline": "The Most Aggressive Price Target in AI Right Now Belongs to CoreWeave",
+         "created_at": (now - timedelta(minutes=10)).isoformat(), "symbols": ["CRWV", "NBIS"]},
+    ]
+    got = n._newest_per_symbol(arts, {"NBIS", "CRWV"}, now - timedelta(hours=24))
+    assert got["NBIS"]["headline"] == "Nebius acquires Inferize" and got["NBIS"]["about"] is True
+    assert got["CRWV"]["about"] is False          # demoted, never hidden: still CRWV's only story
+
+
+def test_store_headlines_names_the_company_skips_round_ups_and_the_future(tmp_path, monkeypatch):
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    from momx import news as n
+    monkeypatch.setattr(n, "_about", lambda headline, symbols: [s for s in symbols if s in headline or ("Nebius" in headline and s == "NBIS")])
+    db = tmp_path / "t.db"
+    c = sqlite3.connect(db)
+    c.execute("create table catalyst_items (symbol text, headline text, source text, url text, published_at text)")
+    now = datetime(2026, 10, 2, 13, 53, tzinfo=timezone.utc)
+    iso = lambda h: (now + timedelta(hours=h)).isoformat()  # noqa: E731
+    c.executemany("insert into catalyst_items values (?,?,?,?,?)", [
+        ("NBIS", "ADPT, MRNA, CRWV, NBIS, JAZZ trending with analysts", "TipRanks", "", iso(-1)),   # round-up
+        ("NBIS", "Why Hyperscalers Need Nebius", "Seeking Alpha", "", iso(-3)),
+        ("NBIS", "Burry shifts to long-dated AI bets", "Benzinga", "", iso(-2)),                    # tag-along
+        ("NBIS", "Nebius fair value falls", "Simply Wall St.", "", iso(+8)),                        # after 'now'
+        ("NBIS", "Nebius old story", "x", "", iso(-30)),                                           # outside window
+    ])
+    c.commit(); c.close()
+    got = n._store_headlines(["NBIS"], now - timedelta(hours=24), db_path=db, until=now)
+    assert got["NBIS"]["headline"] == "Why Hyperscalers Need Nebius"
+    assert n._store_headlines(["NBIS"], now - timedelta(hours=24), db_path=tmp_path / "missing.db", until=now) == {}

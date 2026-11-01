@@ -35,3 +35,22 @@ def test_fast_path_equals_the_loop_on_a_tz_aware_frame_with_a_nat():
 def test_fast_path_declines_other_shapes():
     assert board._frame_to_bars_fast([{"time": 1}]) is None
     assert board._frame_to_bars_fast(pd.DataFrame({"time": [1], "close": [1.0]})) is None
+
+
+def test_newest_bar_epoch_matches_the_last_full_bar():
+    """2026-10-09: _tape_as_of built every bar just to read the last time (53%
+    of a Watchlist build). _newest_bar_epoch must equal frame_to_bars()[-1]."""
+    import pandas as pd
+    from momx import board
+
+    et = "America/New_York"
+    stamps = pd.date_range("2026-10-09 04:00", periods=50, freq="5min", tz=et)
+    base = pd.DataFrame({"timestamp": stamps, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0})
+    with_nat = base.copy()
+    with_nat.loc[len(with_nat)] = [pd.NaT, 1.0, 1.0, 1.0, 1.0, 1.0]
+    cases = [base, with_nat, base.iloc[:1], base.iloc[:0],
+             [{"time": 1791000000, "close": 1.0}, {"time": 1791000300, "close": 2.0}]]
+    for frame in cases:
+        bars = board.frame_to_bars(frame)
+        want = bars[-1]["time"] if bars else None
+        assert board._newest_bar_epoch(frame) == want

@@ -11,7 +11,7 @@ Colour meanings are momx/columns.py's, not ours:
   SKIT fg cyan / dark_green = EMA9 > EMA20 (dark green: and FastD >= 90)
   SKIT bg cyan/green/lime/dark_green = a bullish cross on this bar
   RVOL bg cyan (z>=3) / green (z>=2) with the bar closing in its upper half
-  H/L bg green = close above the midpoint of the last 8 two-hour bars
+  H/L bg green / dark_green = close above the last 8 two-hour bars' midpoint
 """
 from __future__ import annotations
 
@@ -62,7 +62,12 @@ SKIT_BEAR_TREND_FG = frozenset({"magenta", "plum"})
 #: dropped from the bull set on 2026-09-22.
 SKIT_BEAR_CROSS_BG = frozenset({"magenta", "red", "light_red"})
 SQZ_FIRED_BG = {"bull": "cyan", "bear": "magenta"}
-HL_BG = {"bull": "green", "bear": "red"}
+HL_BG = {"bull": frozenset({"green", "dark_green"}),
+         "bear": frozenset({"red", "dark_red"})}
+# The Sep 25 H/L colour ladder split each side at +/-0.5. Both shades still
+# satisfy Draft 2's original midpoint check; the darker shade is not a veto.
+# Retain the paint test because the displayed value rounds tiny degrees to 0.
+RULE_VERSION = "draft2-hl-ladder-2026-10-30"
 
 
 def is_bear(direction) -> bool:
@@ -134,7 +139,7 @@ def grade_row(row: Any, now: datetime, direction: str = "bull") -> dict | None:
     skit = len(bullish)
 
     hl = row.get("highLow") if isinstance(row.get("highLow"), Mapping) else {}
-    above_mid = hl.get("bg") == S["hl_bg"]
+    above_mid = hl.get("bg") in S["hl_bg"]
     try:
         hl_degree = float(hl.get("value")) if hl.get("value") is not None else None
     except (TypeError, ValueError):
@@ -171,6 +176,7 @@ def grade_row(row: Any, now: datetime, direction: str = "bull") -> dict | None:
         reasons.append(f"already {pct:+.1f}% today")
 
     return {
+        "ruleVersion": RULE_VERSION,
         "letter": letter,
         "direction": S["direction"],
         "checks": {

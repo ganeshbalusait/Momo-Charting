@@ -19,19 +19,20 @@ export function initialChartChainOpen({ embedded = false, isMobile = false, save
   return saved == null ? true : String(saved) === "true";
 }
 
-export function shouldAutoLoadDeepChartHistory({ isMobile = false, requested = false } = {}) {
-  return !isMobile || requested;
+export function shouldAutoLoadDeepChartHistory({ isMobile = false, deferUntilNavigation = false, requested = false } = {}) {
+  return (!isMobile && !deferUntilNavigation) || requested;
 }
 
 export function shouldRequestDeepChartHistory({
   isMobile = false,
+  deferUntilNavigation = false,
   historyLoading = false,
   alreadyRequested = false,
   logicalRange = null,
   barCount = 0,
   preloadBars = MOBILE_CHART_HISTORY_PRELOAD_BARS,
 } = {}) {
-  if (!isMobile || !historyLoading || alreadyRequested) return false;
+  if ((!isMobile && !deferUntilNavigation) || !historyLoading || alreadyRequested) return false;
   const from = Number(logicalRange?.from);
   const to = Number(logicalRange?.to);
   const count = Math.max(0, Math.floor(Number(barCount) || 0));

@@ -3,12 +3,11 @@ import assert from "node:assert/strict";
 import {
   boardSymbols,
   feedAge,
-  filterFeedGroups,
   groupFeedBySymbol,
   mergeStoredNews,
-  parseNewsQuery,
   sentimentTone,
   sourceHealthLine,
+  liveFeedsPart,
   storedNewsToRowNews,
 } from "./momxNewsFeed.js";
 
@@ -132,32 +131,25 @@ test("sentimentTone maps the scraper's words", () => {
   assert.equal(sentimentTone(undefined), null);
 });
 
-test("parseNewsQuery tells tickers from words", () => {
-  assert.deepEqual(parseNewsQuery(""), { raw: "", symbols: [], words: "" });
-  assert.deepEqual(parseNewsQuery(" gev "), { raw: "gev", symbols: ["GEV"], words: "gev" });
-  assert.deepEqual(parseNewsQuery("$nvda, amd nvda").symbols, ["NVDA", "AMD"]);
-  assert.equal(parseNewsQuery("$nvda, amd").words, "");
-  assert.deepEqual(parseNewsQuery("BRK.B").symbols, ["BRK.B"]);
-  assert.deepEqual(parseNewsQuery("nuclear"), { raw: "nuclear", symbols: [], words: "nuclear" });
-  assert.deepEqual(parseNewsQuery("Google nuclear deal"), { raw: "Google nuclear deal", symbols: [], words: "google nuclear deal" });
+test("headline search: ticker exact, then prefix, then words (2026-10-01)", async () => {
+  const { searchFeedGroups } = await import("./momxNewsFeed.js");
+  const groups = [
+    { symbol: "GEV", items: [{ headline: "Why GE Vernova Stock Crushed it Today" }, { headline: "GE Vernova rises" }] },
+    { symbol: "GE", items: [{ headline: "GE Aerospace order" }] },
+    { symbol: "NVDA", items: [{ headline: "Nvidia earnings beat", summary: "data center" }] },
+  ];
+  assert.deepEqual(searchFeedGroups(groups, "ge").map((g) => g.symbol), ["GE"]);
+  assert.deepEqual(searchFeedGroups(groups, "NV").map((g) => g.symbol), ["NVDA"]);
+  const w = searchFeedGroups(groups, "crushed");
+  assert.equal(w.length, 1); assert.equal(w[0].items.length, 1);
+  assert.equal(searchFeedGroups(groups, "").length, 3);
+  assert.equal(searchFeedGroups(groups, "zzzz").length, 0);
 });
 
-test("filterFeedGroups narrows by ticker, prefix and words", () => {
-  const groups = groupFeedBySymbol([
-    stored("GEV", "Why GE Vernova stock crushed it today", 2),
-    stored("GEV", "Google just went nuclear in Georgia", 6),
-    stored("GE", "GE Aerospace wins engine order", 3),
-    stored("NVDA", "Nvidia AI chips sell out", 1),
-  ], []);
-  assert.equal(filterFeedGroups(groups, "").length, 3);
-  assert.deepEqual(filterFeedGroups(groups, "gev").map((g) => g.symbol), ["GEV"]);
-  // One ticker typed: exact hit first, prefix hits after.
-  assert.deepEqual(filterFeedGroups(groups, "GE").map((g) => g.symbol), ["GE", "GEV"]);
-  assert.deepEqual(filterFeedGroups(groups, "nvda gev").map((g) => g.symbol), ["NVDA", "GEV"]);
-  const nuclear = filterFeedGroups(groups, "nuclear");
-  assert.deepEqual(nuclear.map((g) => g.symbol), ["GEV"]);
-  assert.equal(nuclear[0].items.length, 1);
-  // A short word that looks like a ticker still finds stories by text.
-  assert.deepEqual(filterFeedGroups(groups, "ai").map((g) => g.symbol), ["NVDA"]);
-  assert.deepEqual(filterFeedGroups(groups, "zzzz"), []);
+test("liveFeedsPart: the push feeds' state rides on the health line", () => {
+  const live = { alpaca: { status: "live" }, wires: { status: "error" }, edgar: { status: "live" } };
+  assert.equal(liveFeedsPart(live), "live feeds 2/3 (Wires down)");
+  assert.equal(liveFeedsPart({ alpaca: { status: "live" }, wires: { status: "live" }, edgar: { status: "live" } }), "live feeds 3/3");
+  assert.equal(liveFeedsPart(null), "");
+  assert.equal(sourceHealthLine({ feed: [], refreshing: true, live }), "0 headlines · refreshing the sources now · live feeds 2/3 (Wires down)");
 });

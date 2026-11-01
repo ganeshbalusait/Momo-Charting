@@ -95,6 +95,9 @@ def make_state(repository: FakeRepository, *, frames: dict[str, pd.DataFrame] | 
     state.repository = repository
     state.market_data_client = FakeMarketData(frames or {})
     state.client = FakeBrokerClient(clock or FakeClock(False, datetime(2026, 8, 17, 9, 30, tzinfo=ET)))
+    # The fixtures live on 2026-08-17 and the prune measures "30 days" from the REAL
+    # clock, so from 2026-09-16 every test event was pruned the moment it was recorded.
+    state.OI_AUTO_ALERT_HISTORY_DAYS = 36500
     state.payloads: dict[str, dict] = {}
     state.payload_calls: list[str] = []
 
@@ -376,6 +379,7 @@ class OiAutoAlertStateTests(unittest.TestCase):
 
     def test_history_keeps_thirty_days_and_drops_older_alerts(self) -> None:
         state = make_state(FakeRepository())
+        del state.OI_AUTO_ALERT_HISTORY_DAYS        # this test checks the real 30-day window
         today = datetime.now(ET).date()
 
         def confirm(day_offset: int, symbol: str, side: str) -> dict:

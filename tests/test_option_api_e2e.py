@@ -34,7 +34,7 @@ class FakeDashboardState:
                 "deltaTarget": self.option_bot_config["deltaTarget"],
                 "expectedMove": self.option_bot_config["expectedMove"],
                 "watchlistSource": self.option_bot_config["watchlistSource"],
-                "watchlistLabel": "MAG7-Watchlist Options" if self.option_bot_config["watchlistSource"] == "mag7" else "Option Watchlist",
+                "watchlistLabel": "Mag7 + Watchlist Options" if self.option_bot_config["watchlistSource"] == "mag7" else "Option Watchlist",
                 "watchlistCount": (
                     len(api_server.DEFAULT_MAG7_OPTION_WATCHLIST)
                     if self.option_bot_config["watchlistSource"] == "mag7"
@@ -115,10 +115,6 @@ class OptionApiEndToEndTests(unittest.TestCase):
                     print(f"auto-login seed failed: {exc}")
         self.original_state = api_server.STATE
         api_server.STATE = FakeDashboardState()
-        # Every /api route except auth and health is session-gated; sign the
-        # test client in rather than exercising the auth flow here.
-        self.original_session_user = api_server.ApiHandler._session_user
-        api_server.ApiHandler._session_user = lambda handler: {"id": 1, "email": "test@example.com"}
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), api_server.ApiHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -129,7 +125,6 @@ class OptionApiEndToEndTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
         api_server.STATE = self.original_state
-        api_server.ApiHandler._session_user = self.original_session_user
 
     def request_json(self, path, payload=None, method=None):
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -164,7 +159,7 @@ class OptionApiEndToEndTests(unittest.TestCase):
         self.assertEqual(settings_payload["optionBot"]["deltaTarget"], "0.20")
         self.assertEqual(settings_payload["optionBot"]["expectedMove"], ">=2")
         self.assertEqual(settings_payload["optionBot"]["watchlistSource"], "mag7")
-        self.assertEqual(settings_payload["optionBot"]["watchlistLabel"], "MAG7-Watchlist Options")
+        self.assertEqual(settings_payload["optionBot"]["watchlistLabel"], "Mag7 + Watchlist Options")
 
         control_status, control_payload = self.request_json("/api/option-bot-control", {"state": "Running"})
         self.assertEqual(control_status, 200)

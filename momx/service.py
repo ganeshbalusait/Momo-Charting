@@ -45,7 +45,7 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from config import ARTIFACTS_DIR, EASTERN_TZ
-from momx import board, chart_signals, feed, grade_log, history, market_turn, momo_alert, momox_aplus, news_catalyst, optionable, scan, sectors, solo, strategy
+from momx import board, chart_signals, ema_touch, etf_list, feed, freshness, grade_log, history, market_turn, momo_alert, momox_aplus, news_catalyst, option_track, optionable, scan, sectors, solo, strategy
 
 #: How often the warmer rebuilds a list. 15s makes the board feel like the
 #: TOS scanner -- continuously re-running, no dead minute between builds --
@@ -64,6 +64,13 @@ REFRESH_SECONDS = 15.0
 #: rows - the ones he trades - are rebuilt EVERY cycle regardless, and so
 #: is any symbol that newly matches.
 FULL_ROW_REFRESH_EVERY = 4
+#: A row that matches ONLY the bear scan rebuilds its study columns on every
+#: Nth build (bull matches: every build). 1 = every build, the behaviour
+#: until 2026-10-16. On a down day most of the Watchlist matches bear (217
+#: of 368 that day vs 16 bull) and those rebuilds were most of the scan.
+#: 2 = his call 2026-10-16 ("Yes, do bear rows every 2nd build"); price, %chg,
+#: the scan verdicts and the chart arrows stay live every build.
+BEAR_ONLY_FULL_ROWS_EVERY = 2
 
 #: Hard ceiling on the post-build idle. See _next_delay: without it a single
 #: slow build silently freezes the board for as long as the build took.
@@ -73,6 +80,17 @@ MAX_IDLE_SECONDS = 45.0
 #: not zero so a hard outage cannot become a hot retry loop; short enough
 #: that a transient Alpaca blip heals within one refresh.
 RETRY_SECONDS = 15.0
+# Lists that rebuild continuously whether or not a screen shows them: the main
+# board and Mag7 (the Momo alert evaluator diffs both every 10 s). Every other
+# list (Movers, the EMA Touch lists, ...) rebuilds at most every
+# UNVIEWED_MIN_DELAY_SECONDS unless a screen asked for it within
+# VIEW_FRESH_SECONDS. Measured 2026-10-09 14:28 ET: five lists rebuilt
+# back-to-back in parallel and starved each other - Watchlist 678 s per build,
+# Mag7 80 s, the board on his screen 20 minutes old.
+ALWAYS_WARM_LISTS = frozenset({"Watchlist", "Mag7"})
+UNVIEWED_MIN_DELAY_SECONDS = 300.0
+VIEW_FRESH_SECONDS = 120.0
+_VIEWED: dict[str, float] = {}
 
 #: Longest the loop sleeps between checks. Only a ceiling on responsiveness to
 #: a newly-added list; a due list is never delayed by it, because
@@ -175,6 +193,28 @@ HEAVY_LIST_MIN_SYMBOLS = 50
 #: acquire raises HERE instead of silently widening the ceiling and letting
 #: the pile-up back in months later.
 _HEAVY_GATE = threading.BoundedSemaphore(1)
+#: Per warm thread: does THIS thread hold the heavy gate right now?
+_GATE_HELD = threading.local()
+#: list -> stamp of the shared scan its last build borrowed (board.shared_scan_stamp).
+_BORROWED_AT: dict[str, float] = {}
+SKIPPED_BUILD = -1.0
+SHARED_SCAN_POLL_SECONDS = 3.0
+#: A list that borrows a bigger list's scan WAITS for that list's next scan
+#: when its borrowed one ages out, instead of scanning everything itself
+#: (2026-10-16: whenever a Watchlist build ran past the 90 s share window,
+#: Liquid Movers did its own full 229-ticker build - ~80 s holding the heavy
+#: gate - and the Watchlist, his #2 priority, waited behind it). Bounded: a
+#: borrower whose last borrowed scan is older than this builds on its own.
+BORROWER_WAIT_MAX_SECONDS = 240.0
+#: ... and only while the bigger list is building or due this soon.
+LENDER_DUE_SECONDS = 60.0
+
+
+def _release_heavy_gate_early() -> None:
+    """Release the heavy gate if this thread holds it. Idempotent."""
+    if getattr(_GATE_HELD, "held", False):
+        _GATE_HELD.held = False
+        _HEAVY_GATE.release()
 
 #: Set only by _stop_warmer(), which exists for tests. Production never sets
 #: it: the warmer runs until the process exits, and the threads are daemons.
@@ -190,10 +230,19 @@ SUPERVISOR_POLL_SECONDS = 30.0
 
 def _state(name: str) -> _ListState:
     """The state for ``name``, created on first sight. Caller must hold no lock."""
+    # Asked BEFORE the lock: it reads the universe file.
+    warm_at_once = name in ALWAYS_WARM_LISTS or _is_active(name)
     with _LOCK:
         state = _STATES.get(name)
         if state is None:
             state = _STATES[name] = _ListState()
+            if not warm_at_once:
+                # First build of an extra list waits its turn: at a restart
+                # every list was due at once, and the 21/50 EMA Touch builds
+                # (~250 s each) held the Watchlist's first build back 10+ min
+                # (2026-10-09 15:00-15:10 ET). Until then the last board on
+                # disk serves; note_viewed() still builds it at once on demand.
+                state.due_at = time.monotonic() + UNVIEWED_MIN_DELAY_SECONDS
         return state
 
 
@@ -431,6 +480,11 @@ _MARKET_TURN = market_turn.MarketTurnBook(grade_dir(), notify=_push_market_turn)
 #: MOMOX A+ (momx/momox_aplus.py): catalyst + RVOL cyan + squeeze fire +
 #: Skittles D..M bullish, latched per symbol per day.
 _MOMOX_APLUS = momox_aplus.MomoxAPlusBook(grade_dir())
+#: Bear MX A+ and bear Market turn (2026-09-28, "build it same as rule for
+#: bear"): the same books on the bear board, files under artifacts/bear/.
+#: No push notification for the bear turn. Not back-tested.
+_BEAR_MOMOX_APLUS = momox_aplus.MomoxAPlusBook(grade_dir("bear"), direction="bear")
+_BEAR_MARKET_TURN = market_turn.MarketTurnBook(grade_dir("bear"), direction="bear")
 
 #: The BEAR books (spec 2026-09-24): own instances on the bear root, applied
 #: to the bear board only. No catalyst / sector / SOLO twins: those are
@@ -438,6 +492,28 @@ _MOMOX_APLUS = momox_aplus.MomoxAPlusBook(grade_dir())
 _BEAR_GRADE_LOG = grade_log.GradeLog(grade_dir("bear"), direction="bear")
 _BEAR_STRATEGY = strategy.StrategyBook(grade_dir("bear"), direction="bear")
 _BEAR_CHART_SIGNALS = chart_signals.ChartSignalBook(grade_dir("bear"), direction="bear")
+
+#: Real OPTION results per rule (momx/option_track.py, 2026-09-27): at each
+#: GO / GO+RVOL+MACD / MX A+ / Daily 2 / market-turn signal the nearest OTM
+#: contract is priced and followed to the close, for the scorecard.
+#: AGX_MOMX_OPTION_TRACK=0 turns it off (the test suite does).
+from momx.paper_learning import trade_first as _review_bot_entry
+_OPTION_TRACK = option_track.OptionTrackBook(grade_dir(), ai_policy=_review_bot_entry)
+_BEAR_OPTION_TRACK = option_track.OptionTrackBook(grade_dir("bear"), direction="bear", ai_policy=_review_bot_entry)
+#: Jev scores every matched scanner row (momx/jev_scanner.py, 2026-10-02 TEST): the
+#: "Jev" column and the bot's "Jev pick" rule. Runs only with the option tracker.
+from momx import jev_scanner as _jev_scanner_mod
+_JEV_SCANNER = _jev_scanner_mod.JevScannerBook(grade_dir())
+from momx import ai_filter  # noqa: E402 - the Setup column AI tag (2026-10-17)
+_BEAR_JEV_SCANNER = _jev_scanner_mod.JevScannerBook(grade_dir("bear"), direction="bear")
+# Jev also reads the other side's chart arrows (PUT2H on a call ticker and the reverse).
+from momx import jev_trade as _jev_trade_mod
+_jev_trade_mod.register_arrows("bull", lambda symbol: _CHART_SIGNALS.signals_for(symbol))
+_jev_trade_mod.register_arrows("bear", lambda symbol: _BEAR_CHART_SIGNALS.signals_for(symbol))
+
+
+def _option_track_on() -> bool:
+    return os.environ.get("AGX_MOMX_OPTION_TRACK", "1").strip() != "0"
 
 
 def _fetch_5m_bars(symbols: list[str], days: int = 1) -> dict[str, list[dict]]:
@@ -478,7 +554,8 @@ def _grade_nightly() -> None:
         pass
 
 
-def _record_history(name: str, payload: Mapping[str, Any], direction: str = "bull") -> None:
+def _record_history(name: str, payload: Mapping[str, Any], direction: str = "bull",
+                    now_et: datetime | None = None) -> None:
     """Archive this build's matched rows. NEVER raises.
 
     Called right after :func:`_write_disk`, outside the lock, so a slow disk
@@ -492,7 +569,7 @@ def _record_history(name: str, payload: Mapping[str, Any], direction: str = "bul
         history.record_board(
             name,
             payload,
-            now_et=datetime.now(ZoneInfo(EASTERN_TZ)),
+            now_et=now_et or datetime.now(ZoneInfo(EASTERN_TZ)),
             directory=history_dir(direction),
         )
     except Exception:  # noqa: BLE001 - a history failure must never cost a scan
@@ -645,6 +722,67 @@ def _apply_matched_since(name: str, payload: dict, direction: str = "bull") -> N
 
 
 # ---------------------------------------------------------------------------
+# fired-at -- WHEN each signal on a row first fired (his ask 2026-10-03: "add the fired
+# time like momox" - MomoX prints "fired 0 min ago on the weekly · 10:25 AM ET")
+# ---------------------------------------------------------------------------
+# Same model as matched-since: every build stamps ``firedAt = {reason: iso}`` onto each
+# row (rows AND rest) for every non-"blocked:" scanReason. A reason seen before keeps its
+# ORIGINAL stamp; a new one gets this build's generatedAt; a reason that stops firing is
+# forgotten, so a re-fire restamps fresh. It is OUR scanner's first sighting - the honest
+# "fired at" we have; the stamps ride the disk cache, so a restart does not reset them
+# to "just now".
+
+_FIRED: dict[tuple[str, str], dict[str, dict[str, str]]] = {}
+
+
+def _fire_reasons(row: Mapping[str, Any]) -> list[str]:
+    raw = row.get("scanReasons")
+    return [str(r) for r in raw if r and not str(r).lower().startswith("blocked")] if isinstance(raw, list) else []
+
+
+def _seed_fired_from_disk(name: str, direction: str = "bull") -> dict[str, dict[str, str]]:
+    """The persisted firedAt map from the disk cache's rows + rest. NEVER raises."""
+    try:
+        raw = json.loads(_cache_file(name, direction).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    seeded: dict[str, dict[str, str]] = {}
+    for bucket in (raw.get("rows"), raw.get("rest")) if isinstance(raw, dict) else ():
+        for entry in bucket if isinstance(bucket, list) else []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("firedAt"), dict):
+                continue
+            symbol = str(entry.get("symbol") or "").strip().upper()
+            if symbol:
+                seeded[symbol] = {str(k): str(v) for k, v in entry["firedAt"].items() if v}
+    return seeded
+
+
+def _apply_fired_at(name: str, payload: dict, direction: str = "bull") -> None:
+    """Stamp ``firedAt`` onto every row of ``payload`` (rows and rest), in place.
+    Called by the warmer thread BEFORE publish / disk write, like _apply_matched_since."""
+    key = (name, "bear" if scan.is_bear(direction) else "bull")
+    with _LOCK:
+        held = _FIRED.get(key)
+    if held is None:
+        held = _seed_fired_from_disk(name, direction)
+    stamp = payload.get("generatedAt") or datetime.now(timezone.utc).isoformat()
+    fresh: dict[str, dict[str, str]] = {}
+    for bucket in (payload.get("rows"), payload.get("rest")):
+        for row in bucket if isinstance(bucket, list) else []:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            reasons = _fire_reasons(row)
+            if not symbol or not reasons:
+                row.pop("firedAt", None)
+                continue
+            before = held.get(symbol) or {}
+            row["firedAt"] = fresh[symbol] = {r: before.get(r) or stamp for r in reasons}
+    with _LOCK:
+        _FIRED[key] = fresh
+
+
+# ---------------------------------------------------------------------------
 # the warmer
 # ---------------------------------------------------------------------------
 
@@ -685,6 +823,7 @@ def _reuse_kwargs(state) -> dict:
     # momentum on 3 of every 4 builds (review 2026-09-25). A COPY of the row
     # gets the key - the published payload is never touched.
     bear_m5: dict[str, Any] = {}
+    bear_matched: set[str] = set()
     if isinstance(previous_bear, Mapping):
         for bucket in (previous_bear.get("rows"), previous_bear.get("rest")):
             for row in bucket if isinstance(bucket, (list, tuple)) else []:
@@ -695,13 +834,16 @@ def _reuse_kwargs(state) -> dict:
                     continue
                 bear_m5[symbol] = row.get("m5")
                 if row.get("scanPass"):
-                    matched.add(symbol)
+                    bear_matched.add(symbol)
     for symbol, row in list(cache.items()):
         if "m5Bear" not in row:
             cache[symbol] = {**row, "m5Bear": bear_m5.get(symbol)}
     if not cache:
         return {}
-    return {"full_rows_for": matched, "reuse_rows": cache}
+    bear_only = bear_matched - matched
+    if builds % max(1, BEAR_ONLY_FULL_ROWS_EVERY) == 0:
+        return {"full_rows_for": matched | bear_only, "reuse_rows": cache}
+    return {"full_rows_for": matched, "reuse_rows": cache, "reuse_bear_rows_for": bear_only}
 
 
 #: The LIVE ⚡ seeds per board (momx/live_bolt.py): {board: {symbol: seed}}.
@@ -760,14 +902,38 @@ def _build_once(name: str) -> float:
     """Rebuild ONE named list. Returns how long it took, in seconds."""
     state = _state(name)
     started = time.monotonic()
+    scan_started_at = datetime.now(timezone.utc).isoformat()
     try:
         symbols, gate = _options_gate(board.load_universe(name))
-        payload = board.cached_board(
-            symbols, ttl_seconds=0.0, **_reuse_kwargs(state)
-        )
+        gated_at = time.monotonic()
+        # A list that would only re-borrow the SAME shared scan it already
+        # published has nothing new to show (2026-10-16: Liquid Movers rebuilt
+        # 2-3 times per Watchlist scan, and each rebuild's bot / history /
+        # signal steps slowed the Watchlist). Skip until a newer scan lands.
+        stamp = board.shared_scan_stamp(symbols)
+        if stamp is not None and _BORROWED_AT.get(name) == stamp and state.payload is not None:
+            _release_heavy_gate_early()
+            return SKIPPED_BUILD
+        if stamp is None and state.payload is not None and _lender_coming(name, len(symbols)):
+            _release_heavy_gate_early()
+            return SKIPPED_BUILD
+        try:
+            payload = board.cached_board(
+                symbols, ttl_seconds=0.0, **_reuse_kwargs(state)
+            )
+            boarded_at = time.monotonic()
+        finally:
+            # The heavy gate covers the fetch + scan only (2026-10-16): held
+            # across the post-build steps (bot, history, signals) it made the
+            # Watchlist wait ~60-90 s behind Liquid Movers' bookkeeping while
+            # Liquid Movers' own scan took 0 s.
+            _release_heavy_gate_early()
         payload["list"] = name
         if gate is not None:
             payload["optionsGate"] = gate
+        # "Use only stocks" (2026-09-27): row["etf"] from the official listing
+        # directory, BEFORE any book runs - no rule fires on an ETF.
+        etf_list.mark(payload)
     except Exception as exc:  # noqa: BLE001 - a warmer must never die
         elapsed = time.monotonic() - started
         with _LOCK:
@@ -775,11 +941,15 @@ def _build_once(name: str) -> float:
             state.last_build_seconds = elapsed
         return elapsed
     elapsed = time.monotonic() - started
+    post_started = time.monotonic()
+    if stamp is not None:
+        _BORROWED_AT[name] = stamp
     _harvest_live_seeds(name, payload)
     # Stamp matched-since BEFORE the payload is published in memory or cached
     # to disk, so every serving path -- fresh, stale-with-error, post-restart
     # disk fallback -- carries the same stamps.
     _apply_matched_since(name, payload)
+    _apply_fired_at(name, payload)
     # Grade freshness/latch runs BEFORE the payload is published (below) or
     # cached to disk, so every serving path -- the in-memory publish, the
     # disk cache, and History -- always sees rows that already carry
@@ -799,6 +969,11 @@ def _build_once(name: str) -> float:
     _SOLO.apply(name, payload, stamped_at)
     _MARKET_TURN.apply(name, payload, stamped_at)
     _MOMOX_APLUS.apply(name, payload, stamped_at)
+    if _option_track_on():
+        _JEV_SCANNER.apply(name, payload, stamped_at)
+        _OPTION_TRACK.apply(name, payload, stamped_at)
+    # The shadow AI's best score per ticker -> the Setup column's AI tag (2026-10-17).
+    ai_filter.mark_rows(payload, "bull")
     # The BEAR board (spec 2026-09-24): the same rows with the bear verdicts
     # promoted, its own books, its own matched-since, published together with
     # the bull board so a reader never sees one without the other. The bull
@@ -808,9 +983,20 @@ def _build_once(name: str) -> float:
     board.strip_bear(payload)
     bear["list"] = name
     _apply_matched_since(name, bear, "bear")
+    _apply_fired_at(name, bear, "bear")
     _BEAR_GRADE_LOG.apply(name, bear, stamped_at)
     _BEAR_STRATEGY.apply(name, bear, stamped_at)
     _BEAR_CHART_SIGNALS.apply(name, bear, stamped_at)
+    _BEAR_MARKET_TURN.apply(name, bear, stamped_at)
+    _BEAR_MOMOX_APLUS.apply(name, bear, stamped_at)
+    if _option_track_on():
+        _BEAR_JEV_SCANNER.apply(name, bear, stamped_at)
+        _BEAR_OPTION_TRACK.apply(name, bear, stamped_at)
+    ai_filter.mark_rows(bear, "bear")
+    payload["scanStartedAt"] = scan_started_at
+    payload["scanCompletedAt"] = datetime.now(timezone.utc).isoformat()
+    bear["scanStartedAt"] = payload["scanStartedAt"]
+    bear["scanCompletedAt"] = payload["scanCompletedAt"]
     with _LOCK:
         state.payload = payload
         state.bear = bear
@@ -820,13 +1006,73 @@ def _build_once(name: str) -> float:
     # Cache the completed board to disk OUTSIDE the lock so a slow disk cannot
     # block a reader, and so a restart serves this board instantly instead of
     # "UPDATED never". Failures degrade to in-memory-only inside _write_disk.
+    # The 30-day scan-match archive rides the same completed build. Wrapped
+    # (never raises) so history can never cost a scan. In the worker both run
+    # on the persist thread (see _persist), off this list's build path.
+    finished = time.monotonic()
+    _persist(name, payload, bear, datetime.now(ZoneInfo(EASTERN_TZ)))
+    # The steps after the scan delay this list's next build too (2026-10-16).
+    print(f"[board-post] list={name} build={elapsed:.1f}s (gate={gated_at - started:.1f}s "
+          f"board={boarded_at - gated_at:.1f}s) post={finished - post_started:.1f}s", flush=True)
+    return elapsed
+
+
+#: The disk cache + History archive writes, OFF the build path (2026-10-16:
+#: 7-14 s per Watchlist build that the list's next build waited for). One
+#: FIFO thread, so each list's snapshots still land in build order; the ET
+#: stamp is taken at publish time, exactly as before. start_warmer() turns it
+#: on; tests that drive _build_once directly keep the synchronous writes.
+ASYNC_PERSIST = False
+_PERSIST_QUEUE: "queue.Queue" = None  # type: ignore[assignment]
+_PERSIST_LOCK = threading.Lock()
+
+
+def _persist_now(name: str, payload: Mapping[str, Any], bear: Mapping[str, Any], now_et: datetime) -> None:
+    started = time.monotonic()
     _write_disk(name, payload)
     _write_disk(name, bear, "bear")
-    # The 30-day scan-match archive rides the same completed build. Wrapped
-    # (never raises) so history can never cost a scan.
-    _record_history(name, payload)
-    _record_history(name, bear, "bear")
-    return elapsed
+    _record_history(name, payload, now_et=now_et)
+    _record_history(name, bear, "bear", now_et=now_et)
+    if ASYNC_PERSIST:
+        print(f"[board-persist] list={name} {time.monotonic() - started:.1f}s", flush=True)
+
+
+def _persist_loop() -> None:
+    while True:
+        job = _PERSIST_QUEUE.get()
+        try:
+            _persist_now(*job)
+        except Exception:  # noqa: BLE001 - the writer must never die
+            pass
+
+
+def _persist(name: str, payload: Mapping[str, Any], bear: Mapping[str, Any], now_et: datetime) -> None:
+    global _PERSIST_QUEUE
+    if not ASYNC_PERSIST:
+        _persist_now(name, payload, bear, now_et)
+        return
+    with _PERSIST_LOCK:
+        if _PERSIST_QUEUE is None:
+            import queue
+            _PERSIST_QUEUE = queue.Queue()
+            threading.Thread(target=_persist_loop, name="momx-persist", daemon=True).start()
+    _PERSIST_QUEUE.put((name, payload, bear, now_et))
+
+
+def _lender_coming(name: str, size: int) -> bool:
+    """Is a bigger list, whose scan ``name`` borrowed recently, about to
+    publish a new one? (see BORROWER_WAIT_MAX_SECONDS). Never raises."""
+    try:
+        last = _BORROWED_AT.get(name)
+        now = time.monotonic()
+        if last is None or now - last > BORROWER_WAIT_MAX_SECONDS:
+            return False
+        with _LOCK:
+            soon = [other for other, st in _STATES.items()
+                    if other != name and (st.building or st.due_at - now <= LENDER_DUE_SECONDS)]
+        return any(len(board.load_universe(other)) > size for other in soon)
+    except Exception:  # noqa: BLE001 - when unsure, build
+        return False
 
 
 def _next_delay(elapsed: float, failed: bool) -> float:
@@ -905,20 +1151,112 @@ def _build_claimed(name: str) -> bool:
         state.building = True
     heavy = _is_heavy(name)
     if heavy:
+        _yield_to_higher_priority(name)
         _HEAVY_GATE.acquire()
+        _GATE_HELD.held = True
     elapsed = 0.0
     try:
         elapsed = _build_once(name)
     finally:
-        # Release in the reverse order of acquisition, and ALWAYS: a build
-        # that raised must not leave the gate held, or every heavy list stops
-        # for the life of the process.
-        if heavy:
-            _HEAVY_GATE.release()
+        # ALWAYS released (unless _build_once already let it go after its
+        # scan): a build that raised must not leave the gate held, or every
+        # heavy list stops for the life of the process.
+        _release_heavy_gate_early()
         with _LOCK:
             state.building = False
-            state.due_at = time.monotonic() + _next_delay(elapsed, bool(state.error))
+            if elapsed == SKIPPED_BUILD:
+                # Nothing new to borrow yet: look again shortly.
+                delay = SHARED_SCAN_POLL_SECONDS
+            else:
+                delay = _next_delay(elapsed, bool(state.error))
+                if heavy and name in LIST_PRIORITY and not state.error:
+                    delay = min(delay, PRIORITY_HEAVY_IDLE_SECONDS)
+                if not _is_viewed(name):
+                    delay = max(delay, UNVIEWED_MIN_DELAY_SECONDS)
+            state.due_at = time.monotonic() + delay
     return True
+
+
+#: His order (2026-10-16 "top priority 1. Mag7 2. watchlist 3. liquid movers"):
+#: when two big lists are due together, the earlier one in this tuple takes the
+#: one-at-a-time heavy gate first. The active list comes right after these;
+#: everything else after that. Mag7 is small and never waits on the gate.
+LIST_PRIORITY = ("Mag7", "Watchlist")
+#: The Watchlist (a heavy list in LIST_PRIORITY) idles only this long between
+#: builds (2026-10-16, "under 1 min"): the 15 s+ politeness idle was a quarter
+#: of the target. The scanner runs at IDLE priority, so the chart engine still
+#: wins every core it wants; Liquid Movers borrows this scan, it adds no build.
+PRIORITY_HEAVY_IDLE_SECONDS = 3.0
+PRIORITY_YIELD_MAX_SECONDS = 90.0
+
+
+def _priority_rank(name: str) -> int:
+    if name in LIST_PRIORITY:
+        return LIST_PRIORITY.index(name)
+    return len(LIST_PRIORITY) if _is_active(name) else len(LIST_PRIORITY) + 1
+
+
+def _yield_to_higher_priority(name: str) -> None:
+    """Before a heavy build takes the gate, let a higher-priority heavy list
+    that is due (or already waiting) go first. Bounded, never raises."""
+    try:
+        rank = _priority_rank(name)
+        if rank == 0:
+            return
+        deadline = time.monotonic() + PRIORITY_YIELD_MAX_SECONDS
+        while time.monotonic() < deadline and not _STOP.is_set():
+            now = time.monotonic()
+            with _LOCK:
+                ahead = [
+                    other for other, st in _STATES.items()
+                    if other != name and (st.building or st.due_at <= now)
+                ]
+            if not any(_priority_rank(o) < rank and _is_heavy(o) for o in ahead):
+                return
+            _STOP.wait(MIN_SLEEP_SECONDS)
+    except Exception:  # noqa: BLE001 - priority is a nicety; the build must still run
+        return
+
+
+def _is_active(name: str) -> bool:
+    """Is ``name`` the active list (the one the scanner opens on)? Never raises."""
+    try:
+        return name == board.active_list()
+    except Exception:  # noqa: BLE001 - an unreadable universe file is just "not active"
+        return False
+
+
+def _is_viewed(name: str) -> bool:
+    """Always-warm list, the ACTIVE list (the one the scanner opens on), or one
+    a screen asked for within VIEW_FRESH_SECONDS.
+
+    The active list joined 2026-10-16: he scans "Liquid Movers", and with the
+    phone asleep or between polls it fell to the 300 s unviewed cadence -
+    rebuilt only every 7-9 min all day, the 09:30 open included (09:24, 09:32,
+    09:40, 09:49, 09:58), while the Watchlist he was not looking at rebuilt
+    every 2-4 min."""
+    if name in ALWAYS_WARM_LISTS or _is_active(name):
+        return True
+    return time.monotonic() - _VIEWED.get(name, float("-inf")) <= VIEW_FRESH_SECONDS
+
+
+def note_viewed(list_name: Any = None) -> None:
+    """A screen is showing this list: keep it on the fast cadence, and if it
+    was parked on the slow one, rebuild it now (the last board still serves
+    instantly meanwhile). Never raises."""
+    try:
+        name = board.resolve_list_name(list_name)
+    except Exception:  # noqa: BLE001 - an unknown list is the route's 400, not ours
+        return
+    now = time.monotonic()
+    parked = not _is_viewed(name)
+    _VIEWED[name] = now
+    if parked:
+        state = _state(name)
+        with _LOCK:
+            if state.due_at > now + REFRESH_SECONDS:
+                state.due_at = now
+        state.wake.set()
 
 
 def _warm_due_lists(names: list[str]) -> list[str]:
@@ -1001,8 +1339,12 @@ def _loop() -> None:
 
 def start_warmer() -> None:
     """Start the warmer threads if they are not running. Idempotent."""
-    global _THREAD
+    global _THREAD, ASYNC_PERSIST
     _STOP.clear()
+    ASYNC_PERSIST = True
+    # The monthly EMA touch lists read their members from this refresher's
+    # cache (momx/ema_touch.py); only the warmer process fetches.
+    ema_touch.start_refresher(lambda: board.load_universe(board.WATCHLIST_LIST_NAME))
     # Staff the lists FIRST so the very first snapshot() triggers builds
     # immediately rather than waiting on the supervisor's first tick.
     _ensure_threads(_known_names())
@@ -1105,26 +1447,51 @@ def snapshot(list_name: Any = None, direction: str = "bull") -> dict:
     # nothing exists anywhere; a stale board always beats a blank one.
     if payload is not None:
         if not error:
-            return payload
+            return _with_data_source(name, payload)
         # Serve the stale in-memory board WITH the error attached rather than
         # replacing a good board with a failure page: a trader would rather see
         # minute-old numbers labelled stale than an empty screen.
         stale = dict(payload)
         stale["errors"] = {**(payload.get("errors") or {}), "_refresh": error}
         stale["stale"] = True
-        return stale
+        return _with_data_source(name, stale)
     # Nothing in memory (this is the post-restart cold path). The last board
     # cached on disk is served instantly, flagged stale, so a restart shows the
     # last tickers in milliseconds instead of "UPDATED never" for minutes.
     disk = _load_disk(name, "bear" if bear else "bull")
     if disk is not None:
-        return disk
+        return _with_data_source(name, disk)
     warming = _warming_payload(
         name, f"First {name} board build failed: {error}" if error else ""
     )
     if bear:
         warming["direction"] = "bear"
-    return warming
+    return _with_data_source(name, warming)
+
+
+def _with_data_source(name: str, payload: dict) -> dict:
+    """The TOS/Alpaca toolbar state (2026-09-30), stamped at SERVE time - a
+    tick flips it for the next poll, not the next build - on a shallow copy,
+    because the in-memory board is shared with every other reader."""
+    out = dict(payload)
+    # Scores arrive asynchronously. Reconcile a copy at serve time so the
+    # cached board neither waits for another scan nor keeps yesterday's AI.
+    for key in ("rows", "rest"):
+        out[key] = [dict(row) for row in payload.get(key) or []]
+    ai_filter.mark_rows(out, "bear" if payload.get("direction") == "bear" else "bull")
+    try:
+        # The switch the feed ACTUALLY uses, not a re-read of the file (a
+        # failed read would otherwise report "tos" while running Alpaca).
+        out["dataSource"] = "tos" if feed.SCHWAB_ONLY else "alpaca"
+        out["freshness"] = freshness.snapshot(payload, out["dataSource"])
+        if out["dataSource"] == "tos":
+            universe = payload.get("universe")
+            if not isinstance(universe, list):
+                universe = list(board.load_universe(name))
+            out["tosStatus"] = feed.tos_status(universe)
+    except Exception:  # noqa: BLE001 - a status line must never cost the board
+        pass
+    return out
 
 
 def lists() -> dict:
@@ -1142,8 +1509,15 @@ def lists() -> dict:
         state = _state(name)
         with _LOCK:
             payload = state.payload
+        ema = ema_touch.parse_name(name)
+        if ema is not None:
+            # The panel shows the Monthly / Weekly / Daily dropdown off these.
+            extra = {"emaLength": ema[0], "timeframe": ema[1], "timeframes": list(ema_touch.TIMEFRAMES)}
+        else:
+            extra = {}
         entries.append(
             {
+                **extra,
                 "name": name,
                 "count": len(symbols),
                 "builtAt": (payload or {}).get("generatedAt"),
@@ -1153,7 +1527,7 @@ def lists() -> dict:
                 # different failure modes, and only the server knows which is
                 # which. Sent per list so the UI never has to guess from the
                 # name.
-                "builtIn": name in board.LIST_SEEDS,
+                "builtIn": board.is_builtin(name),
             }
         )
     return {"lists": entries, "active": active, "maxLists": MAX_LISTS}
@@ -1206,6 +1580,11 @@ def status() -> dict:
             "running": running,
             "active": active,
             "refreshSeconds": REFRESH_SECONDS,
+            "jevEnabled": bool(os.getenv("TYPESAFE_API_KEY")) and os.getenv("AGX_JEV_BOT", "1") != "0",
+            "localAi": {"model": getattr(ai_filter._SCORER, "champion", None),
+                        "loaded": getattr(ai_filter._SCORER, "model", None) is not None,
+                        "modelWarning": getattr(ai_filter._SCORER, "model_load_error", None),
+                        "scoreDay": getattr(ai_filter._SCORER, "_day", None), "placesOrders": False},
             # Aggregates kept so the old single-board status keys still mean
             # something to anything already reading them.
             "builds": sum(item["builds"] for item in detail),
@@ -1438,6 +1817,9 @@ def create_list(list_name: Any, text: Any = None) -> dict:
     existing = board.list_names()
     if any(name.lower() == known.lower() for known in existing):
         return {"ok": False, "error": f"You already have a list called {name}."}
+    # The EMA touch lists hold a handful of tickers each, so they do not use
+    # up a slot the trader's own lists need.
+    existing = [known for known in existing if not ema_touch.is_derived(known)]
     if len(existing) >= MAX_LISTS:
         # Not arbitrary: every list gets its own warm thread, and any list of
         # 50+ symbols queues behind ONE heavy semaphore, so lists do not scan
@@ -1511,6 +1893,33 @@ def rename_list(list_name: Any, new_name: Any) -> dict:
     }
 
 
+def set_ema_timeframe(length: Any, timeframe: Any) -> dict:
+    """The Monthly / Weekly / Daily dropdown on the EMA touch lists.
+
+    The timeframe is part of the list's name, so this swaps which list is
+    shown; if the trader was on the old one, he lands on the new one.
+    """
+    # Read the active list BEFORE the switch: afterwards the old name no
+    # longer exists and the document reads it back as the default (Mag7).
+    try:
+        was_active = board.active_list()
+    except Exception:  # noqa: BLE001
+        was_active = ""
+    try:
+        previous = ema_touch.list_name(int(length))
+        name = ema_touch.set_timeframe(length, timeframe)
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "error": str(exc)}
+    try:
+        if was_active.lower() == previous.lower():
+            board.set_active_list(name)
+    except Exception:  # noqa: BLE001 - the switch itself already landed
+        pass
+    start_warmer()
+    refresh_now(name)
+    return {"ok": True, "list": name, "previous": previous, "active": board.active_list()}
+
+
 def set_active(list_name: Any) -> dict:
     """Persist which list a caller gets when it names none."""
     name = board.set_active_list(list_name)
@@ -1536,6 +1945,7 @@ __all__ = [
     "request_rebuild",
     "reset_universe",
     "set_active",
+    "set_ema_timeframe",
     "set_universe",
     "snapshot",
     "start_warmer",

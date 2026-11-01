@@ -26,6 +26,36 @@ from catalyst_engine import (
 NOW = datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc)
 
 
+class _FrozenClock(datetime):
+    """catalyst_engine's clock pinned to NOW. The fixtures are dated 2026-09-26 and the
+    engine drops anything older than its lookback (7 days) from the REAL clock, so
+    without this every fixture went stale a week after it was written (2026-10-03)."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
+
+    @classmethod
+    def utcnow(cls):
+        return NOW.replace(tzinfo=None)
+
+
+_CLOCK_PATCH = None
+
+
+def setUpModule() -> None:
+    global _CLOCK_PATCH
+    from unittest import mock
+    import catalyst_engine
+    _CLOCK_PATCH = mock.patch.object(catalyst_engine, "datetime", _FrozenClock)
+    _CLOCK_PATCH.start()
+
+
+def tearDownModule() -> None:
+    if _CLOCK_PATCH is not None:
+        _CLOCK_PATCH.stop()
+
+
 def _epoch(hours_ago: float) -> int:
     return int((NOW - timedelta(hours=hours_ago)).timestamp())
 
@@ -572,16 +602,31 @@ class FakeHttp:
                 return HttpResponse(status=200, body=json.dumps(ALPHA_VANTAGE_RATE_LIMIT).encode())
             assert query.get("apikey") == ["av-key"], url
             return HttpResponse(status=200, body=json.dumps(ALPHA_VANTAGE_NEWS).encode())
+        if host == "news.google.com":
+            return HttpResponse(status=200, body=b'<?xml version="1.0"?><rss><channel></channel></rss>')
+        if host == "seekingalpha.com":
+            # A story about another ticker only: the source answers but adds no AAPL row,
+            # so the merge expectations below are the same as before it existed.
+            return HttpResponse(status=200, body=SEEKING_ALPHA_RSS.encode())
         if host == "api.tiingo.com":
             assert query.get("token") == ["tg-key"], url
             return HttpResponse(status=200, body=json.dumps(TIINGO_NEWS).encode())
         return HttpResponse(status=404, body=b"")
 
 
+SEEKING_ALPHA_RSS = """<?xml version="1.0"?><rss xmlns:sa="https://seekingalpha.com/api/1.0" version="2.0"><channel>
+<item><title>Microsoft story</title><link>https://seekingalpha.com/symbol/MSFT/news</link>
+<guid isPermaLink="false">https://seekingalpha.com/MarketCurrent:9</guid><pubDate>Fri, 25 Sep 2026 10:00:00 -0400</pubDate>
+<sa:stock><sa:symbol>MSFT</sa:symbol></sa:stock></item></channel></rss>"""
+
+
 def _engine(http: FakeHttp, **overrides) -> CatalystEngine:
     options = dict(alpaca_credentials=("key", "secret"), http_get=http, cache_ttl_seconds=0, per_symbol_limit=25)
     options.update(overrides)
-    return CatalystEngine(**options)
+    engine = CatalystEngine(**options)
+    from news_names import CompanyNames
+    engine.company_names = CompanyNames(fetch=lambda: {})     # no SEC download in tests
+    return engine
 
 
 ALL_KEYS = {"finnhub": "fh-key", "polygon": "pg-key", "alphavantage": "av-key", "tiingo": "tg-key"}
@@ -590,7 +635,8 @@ ALL_KEYS = {"finnhub": "fh-key", "polygon": "pg-key", "alphavantage": "av-key", 
 class ParserTests(unittest.TestCase):
     def test_default_sources_are_ticker_tagged_and_google_is_opt_in(self) -> None:
         self.assertEqual(parse_source_list(None), DEFAULT_SOURCES)
-        self.assertEqual(DEFAULT_SOURCES, ("yahoo_search", "yahoo_rss", "alpaca", "benzinga", "finviz", "nasdaq", "sec_edgar"))
+        self.assertEqual(DEFAULT_SOURCES, ("yahoo_search", "yahoo_rss", "alpaca", "benzinga", "finviz", "nasdaq", "sec_edgar",
+                                           "seeking_alpha", "google_news_strict"))
         self.assertNotIn("google_news", DEFAULT_SOURCES)
         for name in KEY_SOURCES:
             self.assertNotIn(name, DEFAULT_SOURCES)

@@ -37,7 +37,15 @@ export function storedNewsToRowNews(item) {
     score: Number.isFinite(Number(item.score)) ? Number(item.score) : 0,
     summary: typeof item.summary === "string" ? item.summary : "",
     tags: typeof item.tags === "string" ? item.tags : "",
+    jev: item.jev && typeof item.jev === "object" ? item.jev : null,
+    aiNews: item.aiNews && typeof item.aiNews === "object" ? item.aiNews : null,
   };
+}
+
+// Ranking changes do not change the set of headlines the scanner needs.
+export function newsSymbolKey(symbols) {
+  return [...new Set((Array.isArray(symbols) ? symbols : []).filter(s => typeof s === "string")
+    .map(s => s.trim().toUpperCase()).filter(Boolean))].sort().join(",");
 }
 
 function publishedMs(news) {
@@ -131,10 +139,47 @@ export function groupFeedBySymbol(feed, symbolOrder) {
   return out;
 }
 
+// Search box on the HEADLINES list (his ask 2026-10-01 "add search ticker
+// news"): a ticker typed in shows that ticker's group (exact match first,
+// then tickers that start with it); any other text matches words in the
+// headline or teaser, keeping only the matching stories. Empty = everything.
+export function searchFeedGroups(groups, query) {
+  const list = Array.isArray(groups) ? groups : [];
+  const q = String(query || "").trim();
+  if (q === "") return list;
+  const upper = q.toUpperCase();
+  const exact = list.filter((g) => g.symbol === upper);
+  if (exact.length) return exact;
+  const prefix = list.filter((g) => g.symbol.startsWith(upper));
+  if (prefix.length) return prefix;
+  const lower = q.toLowerCase();
+  return list
+    .map((g) => ({ ...g, items: g.items.filter((it) => (String(it.headline || "") + " " + String(it.summary || "")).toLowerCase().includes(lower)) }))
+    .filter((g) => g.items.length > 0);
+}
+
 // "N headlines · k/n sources OK · Unavailable: Finviz, Nasdaq" - the one line
 // under the NEWS list that says where the headlines came from and which feeds
 // did not answer on the last scrape. Before any scrape: says so, never "0/0".
+// The push feeds (news_live.py, 2026-10-02): Benzinga stream, press-release
+// wires and SEC latest filings. "live feeds 3/3", or which ones are down.
+const LIVE_FEED_LABELS = { alpaca: "Benzinga", wires: "Wires", edgar: "SEC", media: "CNBC/MarketWatch/Investing" };
+export function liveFeedsPart(live) {
+  if (!live || typeof live !== "object") return "";
+  const names = Object.keys(LIVE_FEED_LABELS).filter((name) => live[name] && typeof live[name] === "object");
+  if (names.length === 0) return "";
+  const down = names.filter((name) => live[name].status !== "live");
+  const part = "live feeds " + (names.length - down.length) + "/" + names.length;
+  return down.length ? part + " (" + down.map((name) => LIVE_FEED_LABELS[name] + " down").join(", ") + ")" : part;
+}
+
 export function sourceHealthLine(payload) {
+  const line = sourceHealthLineBase(payload);
+  const live = liveFeedsPart(payload && payload.live);
+  return live ? line + " · " + live : line;
+}
+
+function sourceHealthLineBase(payload) {
   const meta = payload && typeof payload === "object" && payload.newsFeedMeta && typeof payload.newsFeedMeta === "object"
     ? payload.newsFeedMeta
     : null;
@@ -165,67 +210,4 @@ export function sentimentTone(sentiment) {
   if (word === "negative") return "down";
   if (word === "neutral") return "flat";
   return null;
-}
-
-// Headlines search (2026-10-02). One box takes either tickers ("GEV",
-// "nvda, amd") or words ("nuclear"). A query made only of ticker-shaped
-// tokens is a ticker search; anything else is a word search over the
-// headline, teaser, publisher and ticker. `symbols` is what the box asks the
-// store about when a ticker is not on the board.
-const NEWS_QUERY_TICKER = /^\$?[A-Za-z][A-Za-z0-9.\-]{0,9}$/;
-export function parseNewsQuery(text) {
-  const raw = typeof text === "string" ? text.trim() : "";
-  if (raw === "") return { raw: "", symbols: [], words: "" };
-  const tokens = raw.split(/[\s,]+/).filter(Boolean);
-  // Lower-case single words ("nuclear", "deal") read as words, not tickers,
-  // unless he typed a $ or the word is short enough to be a ticker (<= 5).
-  const tickerish = tokens.every((t) => NEWS_QUERY_TICKER.test(t) && (t.startsWith("$") || t.length <= 5 || t === t.toUpperCase()));
-  if (tickerish && tokens.length <= 10) {
-    const symbols = [];
-    for (const t of tokens) {
-      const s = t.replace(/^\$/, "").toUpperCase();
-      if (!symbols.includes(s)) symbols.push(s);
-    }
-    return { raw, symbols, words: tokens.length === 1 ? raw.replace(/^\$/, "").toLowerCase() : "" };
-  }
-  return { raw, symbols: [], words: raw.toLowerCase() };
-}
-
-// Narrow grouped headlines to the query. Ticker search: groups whose ticker
-// matches exactly, or starts with the one ticker typed - and, for a single
-// short word like "ai" or "fed", any headline containing it, so a word that
-// happens to look like a ticker still finds stories. Word search: stories whose
-// text contains the words; groups keep only the matching stories.
-export function filterFeedGroups(groups, query) {
-  const list = Array.isArray(groups) ? groups : [];
-  const q = query && typeof query === "object" ? query : parseNewsQuery(query);
-  if (!q.raw) return list;
-  const wanted = new Set(q.symbols);
-  const prefix = q.symbols.length === 1 ? q.symbols[0] : "";
-  const words = q.words;
-  const matchesText = (item) => {
-    if (!words) return false;
-    const hay = [item.headline, item.summary, item.source, item.via, item.symbol]
-      .filter((v) => typeof v === "string")
-      .join(" ")
-      .toLowerCase();
-    return hay.includes(words);
-  };
-  const out = [];
-  for (const group of list) {
-    if (!group || typeof group.symbol !== "string") continue;
-    if (wanted.has(group.symbol) || (prefix && group.symbol.startsWith(prefix))) {
-      out.push(group);
-      continue;
-    }
-    const items = (group.items || []).filter(matchesText);
-    if (items.length > 0) out.push({ ...group, items });
-  }
-  // Exact ticker hits first, in the order typed; the rest keep their order.
-  if (wanted.size > 0) {
-    const order = q.symbols;
-    const rank = (g) => (order.includes(g.symbol) ? order.indexOf(g.symbol) : order.length);
-    out.sort((a, b) => rank(a) - rank(b));
-  }
-  return out;
 }

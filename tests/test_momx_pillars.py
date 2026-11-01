@@ -58,7 +58,8 @@ def test_summarize_carries_pillars():
 def test_pillars_only_on_the_bull_pass_and_not_in_the_archive():
     bars = bars_rising(120)
     bear = mm.summarize(bars, {}, now_epoch=bars[-1]["time"] + 600, direction="bear")
-    assert bear["pillars"] is None
+    # The bear pass carries only the bear ZS read (2026-09-28), never the Five Pillars.
+    assert bear["pillars"] is None or set(bear["pillars"]) == {"zs"}
     from momx import history
     assert ("m5", "pillars") in history.GRADE_STRIPPED_SUBFIELDS
 

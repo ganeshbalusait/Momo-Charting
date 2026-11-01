@@ -104,7 +104,10 @@ class CleanupSafeStorageTests(unittest.TestCase):
         make_file(outside, threshold + 1)
         backup = self.root / "database" / "trades.before-link.db"
         backup.parent.mkdir(parents=True)
-        backup.symlink_to(outside)
+        try:
+            backup.symlink_to(outside)
+        except OSError as exc:      # Windows without Developer Mode cannot create symlinks
+            self.skipTest(f"cannot create a symlink here: {exc}")
         self.addCleanup(lambda: outside.unlink(missing_ok=True))
 
         plan = cleanup.collect_plan(self.root, threshold)

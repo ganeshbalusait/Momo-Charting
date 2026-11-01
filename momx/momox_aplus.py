@@ -9,15 +9,17 @@ tested, mostly before 10:00; the week of Sep 21-25 went 9 W / 5 L / 2 flat
 
 The rule, per symbol, first time it holds 09:35-15:30 ET (latched for the day):
   * CATALYST - a news headline for the symbol within 24h (row.news);
-  * RVOL     - a 15m / 30m / 1h / 2h RVOL cell with a CYAN background;
-  * SQZ FIRE - a 2h / 4h / D / Wk squeeze cell CYAN (fired up) now, or seen
+  * RVOL     - ANY 15m / 30m / 1h / 2h / 4h / D RVOL cell CYAN (z >= 3 on a
+               bullish bar; 4h / D added 2026-09-29, his update);
+  * SQZ FIRE - a 30m / 1h / 2h / 4h / D / Wk squeeze cell CYAN (fired up) now
+               (30m / 1h added 2026-09-28, untested), or seen
                cyan within the last 30 minutes (it lights for ~2 bars). The
                Weekly counts: META 9/24 fired only there;
-  * SKITTLES - D, 2D, 3D, 4D, Wk and M all bullish, read exactly as
-               momx/grade.py reads them (bg cyan/green/lime = a bullish cross,
-               or fg cyan/dark_green = EMA9 above EMA20);
+  * SKITTLES - ANY of D, 2D, 3D, 4D, Wk or M with a CYAN or GREEN
+               background (ALL six until 2026-09-28; lime and the fg trend
+               read dropped 2026-09-29, his update);
   * no ETFs (QQQ / TQQQ fired and went nowhere in the test).
-  * HIGH OI  - (required since 2026-09-26, Ganesh: "yes build it") the
+  * HIGH OI  - REMOVED 2026-09-29 (his update); was required from 2026-09-26: the
                biggest call wall ABOVE the price and within +2x the expected
                move - the same walls the ticker card draws (EM2, top 3).
                "High" is RELATIVE to the stock's own chain, no fixed floor:
@@ -52,17 +54,34 @@ import oi_auto_alerts
 ET = ZoneInfo("America/New_York")
 DIRNAME = "momx_momox_aplus"
 FROM_MIN, UNTIL_MIN = 9 * 60 + 35, 15 * 60 + 30
-RVOL_TFS = ("15m", "30m", "1h", "2h")
-SQZ_TFS = ("2h", "4h", "D", "Wk")
+#: 2026-09-29 (his update): ANY of 15m..D with a CYAN cell (RVOL z >= 3 on a
+#: bullish bar) - e.g. 15m = 5 cyan while 30m = 1 still counts. Was 15m-2h.
+RVOL_TFS = ("15m", "30m", "1h", "2h", "4h", "D")
+#: Any of these firing counts (2026-09-28, his ask: "not only 4H sqz - 2Hr or
+#: 4h or D or 1hr or 30min"). 30m / 1h come from row["sqzFast"]; Wk kept (META
+#: 9/24 fired only there). The 30m / 1h widening is NOT back-tested.
+SQZ_TFS = ("30m", "1h", "2h", "4h", "D", "Wk")
+SQZ_FAST_TFS = ("30m", "1h")
 SKIT_TFS = ("D", "2D", "3D", "4D", "Wk", "M")
 SQZ_LOOKBACK_SECONDS = 30 * 60
 NEWS_WINDOW_SECONDS = 24 * 3600
 # Same sets as momx/grade.py (SKIT_CROSS_BG / SKIT_TREND_FG): bg dark_green is
 # a MACD cross against the EMA trend and is deliberately NOT bullish.
-SKIT_BULL_BG = frozenset({"cyan", "green", "lime"})
-SKIT_BULL_FG = frozenset({"cyan", "dark_green"})
+#: 2026-09-29 (his update, "Skittles bullish on any of D-Mo (cyan/Green)"): the
+#: cell's background CYAN or GREEN only - lime and the fg-only trend read no
+#: longer count.
+SKIT_BULL_BG = frozenset({"cyan", "green"})
+SKIT_BULL_FG: frozenset = frozenset()
+#: BEAR mirror (2026-09-28, "build it same as rule for bear"; grade.py's bear
+#: sets): Skittles bg magenta/red/light_red or fg magenta/plum, RVOL magenta,
+#: squeeze fired DOWN (magenta), the biggest PUT wall BELOW the price within
+#: 2x EM. Not back-tested - no bear mirror has shown an edge yet.
+SKIT_BEAR_BG = frozenset({"magenta", "red"})      # mirror of cyan / green (2026-09-29)
+SKIT_BEAR_FG: frozenset = frozenset()
 
-OI_REQUIRED = os.environ.get("AGX_MOMOX_APLUS_OI", "1") != "0"
+#: REMOVED 2026-09-29 (his update: "Remove - the stock's biggest call wall
+#: above price within 2x"). Off by default; AGX_MOMOX_APLUS_OI=1 brings it back.
+OI_REQUIRED = os.environ.get("AGX_MOMOX_APLUS_OI", "0") == "1"
 CHAIN_URL = os.environ.get("AGX_MOMX_CHAIN_URL", "http://127.0.0.1:3001/api/oi-finder-chain?symbol=")
 MIN_WALL_OI = 1           # any real open interest: the stock's own biggest wall is its magnet
 WALL_EM_MULTIPLE = 2.0    # the ticker card's EM2 band
@@ -83,23 +102,27 @@ def _num(value: Any) -> float | None:
     return out if out == out else None
 
 
-def skittles_bullish(row: Mapping) -> bool:
+def skittles_bullish(row: Mapping, bear: bool = False) -> bool:
+    """ANY of D..M bullish (Ganesh 2026-09-28: "skittle any D to M"; it was
+    ALL six until then - the Sep 1-25 back-test numbers are for ALL)."""
     cells = _m(row.get("skittles"))
+    bg_set, fg_set = (SKIT_BEAR_BG, SKIT_BEAR_FG) if bear else (SKIT_BULL_BG, SKIT_BULL_FG)
     for tf in SKIT_TFS:
         cell = _m(cells.get(tf))
-        if not (cell.get("bg") in SKIT_BULL_BG or cell.get("fg") in SKIT_BULL_FG):
-            return False
-    return True
+        if cell.get("bg") in bg_set or cell.get("fg") in fg_set:
+            return True
+    return False
 
 
-def rvol_cyan(row: Mapping) -> bool:
+def rvol_cyan(row: Mapping, bear: bool = False) -> bool:
     cells = _m(row.get("rvol"))
-    return any(_m(cells.get(tf)).get("bg") == "cyan" for tf in RVOL_TFS)
+    return any(_m(cells.get(tf)).get("bg") == ("magenta" if bear else "cyan") for tf in RVOL_TFS)
 
 
-def sqz_cyan_now(row: Mapping) -> list[str]:
-    cells = _m(row.get("sqz"))
-    return [tf for tf in SQZ_TFS if _m(cells.get(tf)).get("bg") == "cyan"]
+def sqz_cyan_now(row: Mapping, bear: bool = False) -> list[str]:
+    cells = {**_m(row.get("sqz")), **{tf: v for tf, v in _m(row.get("sqzFast")).items() if tf in SQZ_FAST_TFS}}
+    fired = "magenta" if bear else "cyan"
+    return [tf for tf in SQZ_TFS if _m(cells.get(tf)).get("bg") == fired]
 
 
 def has_catalyst(row: Mapping, now: datetime) -> bool:
@@ -116,7 +139,9 @@ def has_catalyst(row: Mapping, now: datetime) -> bool:
 
 
 def is_etf(row: Mapping) -> bool:
-    return "ETF" in str(row.get("industry") or "")
+    # The official listing flag first (momx/etf_list.py stamps row["etf"]):
+    # the label alone missed IBIT ("Crypto") and DRAM ("Semis").
+    return row.get("etf") is True or "ETF" in str(row.get("industry") or "")
 
 
 def weeklies(row: Mapping) -> bool:
@@ -128,11 +153,25 @@ def _http_chain(symbol: str) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def call_wall(payload: Any, as_of: datetime) -> dict | None:
+def call_wall(payload: Any, as_of: datetime, bear: bool = False) -> dict | None:
     """The High-OI verdict for one chain: {"ok", "strike", "oi"}, or None when
     the chain is unusable (no rows / no spot / stale) - "unknown", never "no"."""
     chain = _m(payload)
-    if chain.get("stale") is True:
+    # Age by the chain's own scannedAt, NOT the "stale" flag (2026-09-28): the
+    # gateway and api_server stamp stale=True on ANY copy older than ~15s while
+    # a refresh runs, so the flag was true on every read and this gate blocked
+    # every MomoX A+ from 09-26 to 09-28. Open interest changes once a day, so
+    # a chain scanned today is good; one from an earlier day is "unknown".
+    scanned = str(chain.get("scannedAt") or "").strip()
+    if scanned:
+        try:
+            at = datetime.fromisoformat(scanned.replace("Z", "+00:00"))
+            day = (as_of.astimezone(ET) if as_of.tzinfo else as_of).date()
+            if (at.astimezone(ET) if at.tzinfo else at).date() != day:
+                return None
+        except ValueError:
+            return None
+    elif chain.get("stale") is True:
         return None
     rows = chain.get("selectedExpiryChainRows") or [
         *(chain.get("callRows") or []), *(chain.get("putRows") or [])]
@@ -142,8 +181,12 @@ def call_wall(payload: Any, as_of: datetime) -> dict | None:
     em = _num(_m(chain.get("currentAtm")).get("expectedMove")) or 0.0
     walls = oi_auto_alerts.build_high_oi_walls(rows, spot, as_of=as_of.date(),
                                                top_per_side=WALLS_PER_SIDE, expected_move=em)
-    reach = spot + WALL_EM_MULTIPLE * em if em > 0 else float("inf")
-    near = [w for w in walls.get("calls") or [] if spot < float(w["strike"]) <= reach]
+    if bear:   # the biggest PUT wall BELOW the price, within -2x EM
+        floor = spot - WALL_EM_MULTIPLE * em if em > 0 else float("-inf")
+        near = [w for w in walls.get("puts") or [] if floor <= float(w["strike"]) < spot]
+    else:
+        reach = spot + WALL_EM_MULTIPLE * em if em > 0 else float("inf")
+        near = [w for w in walls.get("calls") or [] if spot < float(w["strike"]) <= reach]
     if not near:
         return {"ok": False, "strike": None, "oi": 0}
     best = max(near, key=lambda w: w["openInterest"])
@@ -153,8 +196,9 @@ def call_wall(payload: Any, as_of: datetime) -> dict | None:
 class MomoxAPlusBook:
     def __init__(self, directory: Path, *, fetch: Callable[[str], Any] | None = None,
                  background: bool = True, oi_required: bool | None = None,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic, direction: str = "bull") -> None:
         self.directory = Path(directory)
+        self.bear = str(direction or "").strip().lower() == "bear"
         self._lock = threading.Lock()
         self._day = ""
         self._boards: dict[str, dict] = {}   # board -> {"hits": {...}, "sqzSeen": {sym: {tf: ts}}}
@@ -188,7 +232,7 @@ class MomoxAPlusBook:
 
     def _judge(self, symbol: str, now: datetime) -> dict | None:
         try:
-            return call_wall(self._fetch(symbol), now)
+            return call_wall(self._fetch(symbol), now, self.bear)
         except Exception:  # noqa: BLE001 - a failed chain is "not known yet", never a crash
             return None
 
@@ -219,13 +263,13 @@ class MomoxAPlusBook:
                     symbol = row.get("symbol")
                     if not isinstance(symbol, str):
                         continue
-                    for tf in sqz_cyan_now(row):
+                    for tf in sqz_cyan_now(row, self.bear):
                         seen.setdefault(symbol, {})[tf] = ts
                     if (symbol in hits or local.weekday() >= 5 or not (FROM_MIN <= minute <= UNTIL_MIN)
                             or is_etf(row)):
                         continue
                     recent = [tf for tf, at in (seen.get(symbol) or {}).items() if ts - at <= SQZ_LOOKBACK_SECONDS]
-                    if recent and rvol_cyan(row) and skittles_bullish(row) and has_catalyst(row, local):
+                    if recent and rvol_cyan(row, self.bear) and skittles_bullish(row, self.bear) and has_catalyst(row, local):
                         wall = self._oi_verdict(symbol, local) if self.oi_required else None
                         if self.oi_required and not (wall and wall["ok"]):
                             continue   # no magnet above (or not known yet): re-judged next build

@@ -28,6 +28,12 @@ SESSION_LIFETIME_DAYS = 30
 # immediately, so the window only ever delays an out-of-band change to a row
 # nothing in this process touched.
 IDENTITY_CACHE_SECONDS = 15.0
+#: Past IDENTITY_CACHE_SECONDS, an entry of the CURRENT generation is still
+#: served for this long while one background read refreshes it (2026-10-06:
+#: the per-request gate's miss read of trades.db stalled gated requests 2-9 s
+#: during market hours while ungated ones stayed under 0.4 s). Any write made
+#: through this class still bumps the generation and forces a fresh read.
+IDENTITY_STALE_SECONDS = 120.0
 IDENTITY_CACHE_MAX_ENTRIES = 512
 SESSION_ACTIVITY_TOUCH_SECONDS = 60.0
 SESSION_ACTIVITY_BUSY_TIMEOUT_MS = 250
@@ -51,6 +57,7 @@ class AuthService:
         self._identity_cache: dict[tuple, tuple[float, int, object]] = {}
         self._identity_cache_lock = threading.Lock()
         self._identity_generation = 0
+        self._identity_refreshing: set[tuple] = set()
         self._session_touch_lock = threading.Lock()
         self._session_touch_times: dict[str, float] = {}
         self._cipher = Fernet(self._resolve_encryption_key(encryption_key))
@@ -775,7 +782,15 @@ class AuthService:
             self._identity_generation += 1
             self._identity_cache.clear()
 
-    def _identity_cached(self, key: tuple):
+    def _identity_cached(self, key: tuple, refresh=None):
+        """The memoized identity, or None.
+
+        With ``refresh`` (a no-argument callable that re-reads the database),
+        an entry past IDENTITY_CACHE_SECONDS but within IDENTITY_STALE_SECONDS
+        of the current generation is returned at once and ``refresh`` runs on
+        one background thread per key - the request never waits on SQLite.
+        """
+        start_refresh = False
         with self._identity_cache_lock:
             entry = self._identity_cache.get(key)
             if entry is None:
@@ -783,10 +798,35 @@ class AuthService:
             cached_at, generation, value = entry
             if generation != self._identity_generation:
                 return None
-            if time.monotonic() - cached_at >= IDENTITY_CACHE_SECONDS:
+            age = time.monotonic() - cached_at
+            if age < IDENTITY_CACHE_SECONDS:
+                return value
+            if refresh is None or age >= IDENTITY_STALE_SECONDS:
                 self._identity_cache.pop(key, None)
                 return None
-            return value
+            if key not in self._identity_refreshing:
+                self._identity_refreshing.add(key)
+                start_refresh = True
+                started_generation = self._identity_generation
+        if start_refresh:
+            def run() -> None:
+                try:
+                    found = refresh()
+                    with self._identity_cache_lock:
+                        # Gone (session deleted, user disabled out of band), or
+                        # a write through this class landed while we read: the
+                        # read may predate it, so never let it stand.
+                        if found is None or self._identity_generation != started_generation:
+                            self._identity_cache.pop(key, None)
+                except Exception:  # noqa: BLE001 - the next request retries
+                    pass
+                finally:
+                    with self._identity_cache_lock:
+                        self._identity_refreshing.discard(key)
+            thread = threading.Thread(target=run, name="auth-identity-refresh", daemon=True)
+            self._last_identity_refresh_thread = thread
+            thread.start()
+        return value
 
     def _remember_identity(self, key: tuple, value) -> None:
         with self._identity_cache_lock:
@@ -800,7 +840,10 @@ class AuthService:
         now = self._now()
         token_hash = self._session_token_hash(token)
         cache_key = ("session", token_hash, self._device_token_hash(device_token) if device_token else "")
-        cached = self._identity_cached(cache_key)
+        cached = self._identity_cached(
+            cache_key,
+            refresh=lambda: self._user_for_session_from_db(token_hash, device_token, cache_key, self._now()),
+        )
         if cached is not None:
             cached_user, cached_expires_at, cached_device_id = cached
             # The memo must never outlive the session it describes, so expiry
@@ -808,6 +851,10 @@ class AuthService:
             if cached_expires_at > now:
                 self._schedule_session_activity_touch(token_hash, cached_device_id, now)
                 return dict(cached_user)
+        return self._user_for_session_from_db(token_hash, device_token, cache_key, now)
+
+    def _user_for_session_from_db(self, token_hash: str, device_token: str | None,
+                                  cache_key: tuple, now: str) -> dict | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -939,9 +986,14 @@ class AuthService:
         if not normalized:
             return None
         cache_key = ("email", normalized)
-        cached = self._identity_cached(cache_key)
+        cached = self._identity_cached(
+            cache_key, refresh=lambda: self._user_by_email_from_db(normalized, cache_key),
+        )
         if cached is not None:
             return dict(cached)
+        return self._user_by_email_from_db(normalized, cache_key)
+
+    def _user_by_email_from_db(self, normalized: str, cache_key: tuple) -> dict | None:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM app_users WHERE email = ? COLLATE NOCASE AND is_active = 1",

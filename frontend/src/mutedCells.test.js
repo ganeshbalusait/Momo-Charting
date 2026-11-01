@@ -19,7 +19,8 @@
 // the tests below pin BOTH: the deliberate hide is obeyed, and the accidental
 // clash is still corrected.
 
-import { describe, expect, test } from "vitest";
+import { describe, test } from "node:test";
+import { expect } from "./nodeExpect.js";
 
 import { cellStyle, isMutedCell } from "./momxCells.js";
 

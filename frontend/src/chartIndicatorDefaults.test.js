@@ -7,10 +7,7 @@ const appSource = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
 test("new and legacy chart profiles open with focused overlays and both lower panes", () => {
   assert.match(appSource, /FOCUSED_CHART_INDICATOR_SETTINGS_VERSION = "focused-chart-indicators-v18"/);
   [
-    "mtfMacdClouds",
     "cloudBands5m",
-    "cloudMaxMtf",
-    "autoFibSingleTf",
     "squeezeMomentumLower",
     "pivotPoints",
     "personsPivots",
@@ -27,6 +24,16 @@ test("new and legacy chart profiles open with focused overlays and both lower pa
     "mtfCloudLabelLower",
     "mtfSqueeze410Lower",
     "mtfMaLevels",
+    // 2026-09-30: he asked for MACD 5m-4h - MTF MACD clouds are on by default.
+    "mtfMacdClouds",
+    // 2026-09-30: his TOS AutoFib (Day, lookback 20) is on by default.
+    "autoFibSingleTf",
+    // 2026-09-30: TOS 4x8 red/lime arrows live in CloudMax MTF - on by default.
+    "cloudMaxMtf",
+    // 2026-10-01 TOS parity: his cloud studies are on by default.
+    "mtfEma920Clouds",
+    "mtfSqueezeClouds",
+    "cloudBands15m",
   ].forEach((key) => {
     assert.match(appSource, new RegExp(`${key}: true`));
   });

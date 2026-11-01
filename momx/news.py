@@ -269,6 +269,7 @@ def _newest_per_symbol(
         named = {str(raw or "").strip().upper() for raw in (article.get("symbols") or [])}
         named.discard("")
         specific = len(named) <= SPECIFIC_SYMBOL_LIMIT
+        about_set = set(_about(headline, [s for s in named if s in requested]))
         entry = {
             "headline": headline,
             "at": at.astimezone(timezone.utc).isoformat(),
@@ -282,15 +283,78 @@ def _newest_per_symbol(
         for symbol in named:
             if symbol not in requested:
                 continue
+            # A headline that NAMES the company outranks one that only carries the tag
+            # (NBIS 2026-10-02: "...Price Target... Belongs to CoreWeave" and a day-old
+            # Burry/SOXX story filled the cell while a Nebius story existed). Then
+            # specific over market-wide, then newest. Demote, never hide.
+            rank = (symbol in about_set, specific)
             held = out.get(symbol)
             if held is not None:
-                held_specific = held.get("scope") == "specific"
-                if held_specific and not specific:
-                    continue  # a market-wide story never displaces a specific one
-                if held_specific == specific and at <= best_at.get(symbol, at - timedelta(seconds=1)):
+                held_rank = (bool(held.get("about")), held.get("scope") == "specific")
+                if held_rank > rank:
+                    continue
+                if held_rank == rank and at <= best_at.get(symbol, at - timedelta(seconds=1)):
                     continue  # same class, older
             best_at[symbol] = at
-            out[symbol] = entry
+            out[symbol] = {**entry, "about": symbol in about_set}
+    return out
+
+
+def _about(headline: str, symbols: list[str]) -> list[str]:
+    """The symbols this headline actually NAMES (ticker or company name - news_names'
+    strict matcher, the same one the news store files headlines with). Never raises."""
+    if not symbols:
+        return []
+    try:
+        import news_names
+        return news_names.default_names().tickers_in(headline, symbols)
+    except Exception:  # noqa: BLE001 - no matcher = no ranking boost, nothing worse
+        return []
+
+
+#: A headline naming this many tickers or more is a round-up ("ADPT, MRNA, CRWV, NBIS, JAZZ
+#: trending with analysts"), not a story about any one of them.
+ROUNDUP_TICKERS = 3
+
+
+def _store_headlines(symbols: list[str], cutoff: datetime, db_path: Any = None,
+                     until: datetime | None = None) -> dict[str, dict]:
+    """Newest headline per symbol from the app's own news store (catalyst_items - the 8
+    ticker-tagged sources api_server collects), kept ONLY when the headline names the
+    company. The scanner cell used to read Benzinga + a capped Yahoo feed only, so on
+    2026-10-02 the Simply Wall St Nebius story (06:09 ET) never reached NBIS's row and
+    the cell went blank at 09:53. Read-only, one query, never raises."""
+    if not symbols:
+        return {}
+    try:
+        import sqlite3
+        if db_path is None:
+            from config import DATABASE_PATH as db_path
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        try:
+            marks = ",".join("?" for _ in symbols)
+            rows = conn.execute(
+                f"SELECT UPPER(symbol), headline, source, url, published_at FROM catalyst_items "
+                f"WHERE UPPER(symbol) IN ({marks}) AND published_at >= ? AND published_at <= ? "
+                f"ORDER BY published_at DESC",
+                [*symbols, cutoff.astimezone(timezone.utc).isoformat(),
+                 (until or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()]).fetchall()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - the store is a bonus; never costs the board
+        return {}
+    out: dict[str, dict] = {}
+    for symbol, headline, source, url, published in rows:
+        if symbol in out or not headline:
+            continue
+        at = _parse_when(published)
+        if at is None or at < cutoff or not _about(headline, [symbol]):
+            continue
+        if len(_about(headline, symbols)) >= ROUNDUP_TICKERS or len(re.findall(r"\b[A-Z]{2,5}\b,", headline)) >= ROUNDUP_TICKERS - 1:
+            continue                    # a ticker round-up, not a story about this company
+        out[symbol] = {"headline": str(headline).strip(), "at": at.astimezone(timezone.utc).isoformat(),
+                       "source": source or None, "url": url or None, "scope": "specific", "namedCount": 1,
+                       "about": True}
     return out
 
 
@@ -501,6 +565,15 @@ def fresh_news(
             )
             if backfilled:
                 result = {**backfilled, **result}
+        # The app's own news store fills any symbol still without a headline that NAMES
+        # the company (blank, or only a tag-along / round-up story) - the same stories
+        # the NEWS feed and Jev's news labels use. Production only (get unset): unit
+        # tests that inject a Benzinga stub never touch the real database.
+        if get is None:
+            weak = [symbol for symbol in wanted if not (result.get(symbol) or {}).get("about")]
+            stored = _store_headlines(weak, cutoff, until=moment)
+            if stored:
+                result = {**result, **stored}
 
         with _LOCK:
             _CACHE[key] = (stamp, result)

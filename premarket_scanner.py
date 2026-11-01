@@ -186,7 +186,8 @@ def true_ranges(bars: object) -> list[float]:
     return output
 
 
-def squeeze_release_events(bars: object, minutes: object) -> list[dict]:
+def squeeze_release_events(bars: object, minutes: object, *, include_forming: bool = False,
+                           timeframe_bars: list | None = None) -> list[dict]:
     """Squeeze releases on one aggregation, matching the chart's flames.
 
     A release is a bucket-CLOSE fact (live commit 461d4af): the forming
@@ -195,7 +196,9 @@ def squeeze_release_events(bars: object, minutes: object) -> list[dict]:
     """
     source = [bar for bar in (bars or []) if isinstance(bar, dict)]
     span = max(int(minutes or 1), 1)
-    timeframe_bars = aggregate_chart_bars(source, span)
+    # timeframe_bars / include_forming mirror squeezeRelease.js's options: the
+    # chart passes the real daily bars for DAY and fires on the forming bucket.
+    timeframe_bars = timeframe_bars if timeframe_bars else aggregate_chart_bars(source, span)
     if len(timeframe_bars) <= SQUEEZE_LENGTH:
         return []
 
@@ -219,7 +222,7 @@ def squeeze_release_events(bars: object, minutes: object) -> list[dict]:
             continue
         bucket_time = int(timeframe_bars[index]["time"])
         close_time = bucket_time + span * 60
-        if close_time > last_source_time:
+        if not include_forming and close_time > last_source_time:
             continue
         events.append({
             "minutes": span,
@@ -381,13 +384,21 @@ def window_call_signals(mtf_signals: object, start: int, end: int) -> list[dict]
 # SecondsFromTime/SecondsTillTime read the BAR'S START on an aggregated chart,
 # so a 2h cross qualifies only on the 08:00 bucket and a 4h cross only on the
 # 09:00 bucket (TOS 4h buckets sit at 01/05/09/13/17 ET).
+#
+# WIDENED 2026-09-28 at the trader's request, knowingly past TOS parity: the
+# 2h window opens at 07:00 (adds the 07:00 bucket) and the 4h at 05:00 (adds
+# the 05:00 bucket). NVDA gapped +3% that morning with CALL4H on the 05:00
+# bucket and CALL2H on the 07:00 bucket and never showed. Back-test (9
+# tickers, Dec 2025 - Sep 2026, judged at 09:30): the added rows did no better
+# than a random ticker-day (-0.09% by 10:30 vs +0.14% for the old window) -
+# this is for visibility of early movers, not edge.
 # ---------------------------------------------------------------------------
 TOS_SCAN_LOOKBACK_BARS = 12
 TOS_SCAN_MIN_LAST = 3.0
 # minutes -> (timeframe label, window start, window end) as seconds from ET midnight
 TOS_SCAN_WINDOWS = {
-    120: ("2H", 8 * 3600, 9 * 3600 + 30 * 60),
-    240: ("4H", 7 * 3600, 9 * 3600 + 30 * 60),
+    120: ("2H", 7 * 3600, 9 * 3600 + 30 * 60),
+    240: ("4H", 5 * 3600, 9 * 3600 + 30 * 60),
 }
 
 
@@ -798,7 +809,7 @@ def premarket_scan_row(
         calls = tos_bull_momo_signals(bars, payload.get("studyBars"))
     # The premarket scanner is a TODAY view. The TOS scan's 12-bar lookback
     # reaches back ~24h on the 2h aggregation, and the window check only tests
-    # time-of-day (08:00-09:30), so a cross from YESTERDAY'S premarket still
+    # time-of-day (07:00-09:30 on 2h), so a cross from YESTERDAY'S premarket still
     # qualifies this morning (META/AMZN/AAPL showed 8/24 rows at 8 AM on 8/25).
     # Those belong in Scanner History - drop any cross before today's session
     # start (the same midnight-ET floor the D-M cyan scan uses below).

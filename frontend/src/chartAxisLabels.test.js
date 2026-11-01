@@ -101,3 +101,32 @@ test("does not move labels away from the pane edge", () => {
     { key: "inside", top: 9 },
   ]);
 });
+
+// 2026-09-30 MNKD $3.97 on the phone: nine MTF MA levels within a few cents
+// all merged into the LIVE chip, which grew wider than the pane and pushed
+// "LIVE MNKD 3.97" off-screen; 200sD / 200eD appeared twice.
+test("MTF MA names never swallow the LIVE chip and merged chips stay short", () => {
+  const ma = (key, title, top) => ({ key: `mtf-ma-${key}`, top, title, priority: 1, mergeWhenBlocked: true });
+  const positioned = layoutChartAxisLabels([
+    { key: "live-price", top: 100, title: "LIVE MNKD 3.97", preservePricePosition: true },
+    ma("DAY-sma200", "200sD", 102),
+    ma("DAY-ema200", "200eD", 103),
+    { key: "oi-wall-0-3.5", top: 300, title: "15 10/16", preservePricePosition: true },
+    ma("WEEK-ema50", "50eWk", 301),
+    ma("WEEK-ema200", "200eWk", 302),
+    ma("MONTH-ema9", "9eMo", 303),
+    ma("DAY-sma200b", "200sD", 304),
+    ma("DAY-sma50", "50sD", 305),
+    ma("WEEK-ema21", "21eWk", 306),
+  ], { paneHeight: 600 });
+  const live = positioned.find((label) => label.key === "live-price");
+  assert.equal(live.title, "LIVE MNKD 3.97");
+  assert.equal(live.parts, undefined);
+  const wall = positioned.find((label) => label.key === "oi-wall-0-3.5");
+  const titles = wall.parts.map((part) => part.title);
+  assert.equal(new Set(titles).size, titles.length, "no duplicate names in one chip");
+  const names = wall.parts.filter((part) => part.key !== "merged-overflow");
+  assert.ok(names.length <= 3, `wall + at most 2 names, got ${titles.join(" · ")}`);
+  assert.equal(wall.title, "15 10/16 · 50eWk · 200eWk · +4");
+  assert.match(wall.title, /\+\d+$/, "hidden names are counted, not silently dropped");
+});

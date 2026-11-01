@@ -446,3 +446,30 @@ test("keeps a graded label and its circle inside the pane at the right edge", ()
   // Away from the edge a grade does not move the box off its candle.
   assert.equal(nativeSignalBoxLeft(100, boxWidth, paneWidth, "A"), 80);
 });
+
+test("a level segment's explicit gutter lets it run to the price axis (AutoFib expansion)", () => {
+  const primitive = new TosNativeChartPrimitive();
+  primitive.setData({
+    bars: [{ time: 100, high: 11, low: 9 }, { time: 200, high: 12, low: 10 }],
+    levelSegments: [
+      { price: 10, startTime: 200, color: "#00ffff", gutter: 0 },
+      { price: 11, startTime: 200, color: "#ff00ff" },
+      { price: 9, startTime: 200, color: "#ff00ff", gutter: null },
+    ],
+  });
+  const chart = {
+    paneSize: () => ({ width: 400, height: 200 }),
+    timeScale: () => ({
+      timeToCoordinate: (time) => (Number(time) === 100 ? 100 : 200),
+      options: () => ({ barSpacing: 6 }),
+      getVisibleRange: () => null,
+    }),
+  };
+  const series = { priceToCoordinate: (price) => 200 - Number(price) * 10 };
+  const lines = nativeGeometry(primitive.model, chart, series).lines.filter((line) => line.y1 === line.y2);
+  const byY = new Map(lines.map((line) => [line.y1, line]));
+  assert.equal(byY.get(100).x1, 200);
+  assert.equal(byY.get(100).x2, 400);            // gutter 0: meets the axis
+  assert.equal(byY.get(90).x2, 400 - 92);         // no label: default reserve
+  assert.equal(byY.get(110).x2, 400 - 92);        // null is not "0" (Number(null) === 0)
+});

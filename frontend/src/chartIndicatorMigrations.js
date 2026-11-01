@@ -49,6 +49,50 @@ export function migrateMtfMaLevelsVisibility(saved = {}) {
   };
 }
 
+// 2026-09-30 (his ask): "we don't have MACD 5/15/30m/1h/2h/4h" - the
+// shared_Cloud_Signal_MACD_v20263 translation existed but the focused-chart
+// cleanup had switched it OFF for every chart. Turn it on once; after that
+// his own checkbox wins.
+export const MTF_MACD_CLOUD_VISIBILITY_VERSION = "mtf-macd-clouds-visible-v1";
+
+export function migrateMtfMacdCloudVisibility(saved = {}) {
+  if (saved.mtfMacdCloudVisibilityVersion === MTF_MACD_CLOUD_VISIBILITY_VERSION) return {};
+  return {
+    mtfMacdCloudVisibilityVersion: MTF_MACD_CLOUD_VISIBILITY_VERSION,
+    mtfMacdClouds: true,
+  };
+}
+
+// 2026-09-30 (his TEAM 5m screenshot: "in TOS I see the red arrow, not in
+// our app"): the big lime/red 4x8 cross arrows are CloudMax MTF's, and the
+// focused-chart cleanup had switched that study OFF. Turn it on once; after
+// that his own checkbox wins.
+export const CLOUD_MAX_MTF_VISIBILITY_VERSION = "cloudmax-mtf-visible-v1";
+
+export function migrateCloudMaxMtfVisibility(saved = {}) {
+  if (saved.cloudMaxMtfVisibilityVersion === CLOUD_MAX_MTF_VISIBILITY_VERSION) return {};
+  return {
+    cloudMaxMtfVisibilityVersion: CLOUD_MAX_MTF_VISIBILITY_VERSION,
+    cloudMaxMtf: true,
+  };
+}
+
+// 2026-10-01 TOS parity audit: he runs shared_Cloud_Signal_EMA_v20263,
+// shared_Cloud_Signal_Squeeze_v20263 and shared_CloudBands_v2026_SingleTF3
+// (AP2 = FIFTEEN_MIN) in TOS, but the focused-chart cleanup had them OFF.
+// Turn them on once; after that his own checkboxes win.
+export const TOS_CLOUD_STUDIES_VISIBILITY_VERSION = "tos-cloud-studies-visible-v1";
+
+export function migrateTosCloudStudiesVisibility(saved = {}) {
+  if (saved.tosCloudStudiesVisibilityVersion === TOS_CLOUD_STUDIES_VISIBILITY_VERSION) return {};
+  return {
+    tosCloudStudiesVisibilityVersion: TOS_CLOUD_STUDIES_VISIBILITY_VERSION,
+    mtfEma920Clouds: true,
+    mtfSqueezeClouds: true,
+    cloudBands15m: true,
+  };
+}
+
 export const MOMOX_ONCHART_PALETTE_VERSION = "momox-onchart-palette-v11";
 
 // Colours below are transcribed from the trader's actual MomoX ThinkScripts
@@ -203,20 +247,12 @@ export const MOMOX_ONCHART_PALETTE_OVERRIDES = Object.freeze({
   sessionLineColor: "#c0bffe",
   // The trader's TOS profile runs every session-windowed study from the
   // 4:00 AM ET premarket open, not the 5:00 AM script default.
-  signalRthStartTime: 400,
   mtfCloudRthStartTime: 400,
-  mtfMacdCloudRthStartTime: 400,
-  mtfEma920RthStartTime: 400,
-  mtfSqueezeRthStartTime: 400,
   autoFibRthStartTime: 400,
   // MomoX paints signals, clouds, and bands across the whole loaded history
   // (scrolling to an older day still shows the full study picture), so the
   // last-N-sessions limits are off everywhere.
-  signalLimitRecentSessions: false,
   mtfCloudLimitRecentSessions: false,
-  mtfMacdCloudLimitRecentSessions: false,
-  mtfEma920LimitRecentSessions: false,
-  mtfSqueezeLimitRecentSessions: false,
   ichimokuLimitRecentSessions: false,
   autoFibLimitRecentSessions: false,
   // Squeeze channel bands: white high band over the MomoX gold mid/low fill.
@@ -228,18 +264,113 @@ export const MOMOX_ONCHART_PALETTE_OVERRIDES = Object.freeze({
   // in exactly the wrong direction.
   ...Object.fromEntries(CLOUD_BAND_STUDIES.flatMap(({ indicatorKey }) => [
     [`${indicatorKey}HighColor`, MOMOX.white],
-    [`${indicatorKey}MidColor`, MOMOX.cloudGold],
-    [`${indicatorKey}LowColor`, MOMOX.cloudGold],
+    // 15m is the single band TOS draws: script gold (255,218,0), no pre-dim.
+    [`${indicatorKey}MidColor`, indicatorKey === "cloudBands15m" ? "#ffda00" : MOMOX.cloudGold],
+    [`${indicatorKey}LowColor`, indicatorKey === "cloudBands15m" ? "#ffda00" : MOMOX.cloudGold],
     [`${indicatorKey}Opacity`, 11],
-    [`${indicatorKey}RthStartTime`, 400],
-    [`${indicatorKey}LimitRecentSessions`, false],
   ])),
 });
+
+// 2026-10-01 (his answer: "Match tos"): every TOS script we hold for these
+// studies says limitToLastNSessions = yes, sessionsBack = 1, rthStartTime =
+// 0500 (shared_Signal_MTF_EMA48/_EMA, Cloud_Signal_MACD/_EMA/_Squeeze,
+// CloudBands_SingleTF3; his MACD settings screenshot shows the same). The
+// palette pass had forced 04:00 and "whole history" on all of them. Applied
+// once to saved profiles; afterwards his own inputs win. Studies without a
+// script on file (4x8 clouds, AutoFib, Ichimoku) are untouched.
+export const TOS_SESSION_WINDOW_VERSION = "tos-session-window-v1";
+const TOS_SESSION_WINDOW_PREFIXES = Object.freeze([
+  "signal", "mtfMacdCloud", "mtfEma920", "mtfSqueeze",
+  "cloudBands5m", "cloudBands15m", "cloudBands30m", "cloudBands1h",
+  "cloudBands2h", "cloudBands4h", "cloudBandsDay",
+]);
+
+export function migrateTosSessionWindow(saved = {}) {
+  if (saved.tosSessionWindowVersion === TOS_SESSION_WINDOW_VERSION) return {};
+  return {
+    tosSessionWindowVersion: TOS_SESSION_WINDOW_VERSION,
+    ...Object.fromEntries(TOS_SESSION_WINDOW_PREFIXES.flatMap((prefix) => [
+      [`${prefix}LimitRecentSessions`, true],
+      [`${prefix}SessionsBack`, 1],
+      [`${prefix}RthStartTime`, 500],
+    ])),
+    // Script gold for the 15m band, unless he picked his own colour.
+    ...Object.fromEntries(["cloudBands15mMidColor", "cloudBands15mLowColor"]
+      .filter((key) => saved[key] === undefined || saved[key] === MOMOX.cloudGold)
+      .map((key) => [key, "#ffda00"])),
+  };
+}
+
+// 2026-10-01: his TOS chart runs shared_RelVol_Candles_v324 (the cyan "1.9"
+// values in his StochasX screenshot) but the app had it off. On once.
+export const RELVOL_VISIBILITY_VERSION = "relvol-visible-v1";
+
+export function migrateRelVolVisibility(saved = {}) {
+  if (saved.relVolVisibilityVersion === RELVOL_VISIBILITY_VERSION) return {};
+  return { relVolVisibilityVersion: RELVOL_VISIBILITY_VERSION, relVolCandles: true };
+}
+
+// 2026-10-02 (his shared_MTF_ADXClouds_v225 + TOS screenshot): the script
+// draws the Weak-vs-DI+/DI- plum/dark-green clouds whenever showCloud is on;
+// the app had them off. Switched on once; his checkbox wins afterwards.
+export const ADX_CLOUDS_PARITY_VERSION = "adx-clouds-parity-v1";
+
+// 2026-10-03 (his shared_MTF_Squeeze410 CRDO screenshot): TOS Color.ORANGE
+// is (255, 200, 0); the app shipped #ffa500. Only the old default is moved -
+// a colour he picked himself stays.
+export const SQUEEZE410_TOS_ORANGE_VERSION = "squeeze410-tos-orange-v1";
+
+export function migrateSqueeze410TosOrange(saved = {}) {
+  if (saved.squeeze410TosOrangeVersion === SQUEEZE410_TOS_ORANGE_VERSION) return {};
+  const old = String(saved.mtfSqueeze410MidColor || "").toLowerCase();
+  return {
+    squeeze410TosOrangeVersion: SQUEEZE410_TOS_ORANGE_VERSION,
+    ...(old === "" || old === "#ffa500" ? { mtfSqueeze410MidColor: "#ffc800" } : {}),
+  };
+}
+
+// 2026-10-03 (his TOS ADXClouds screenshot: the axis shows only 100/75/50/
+// 25/0%): the Strong / Weak / ADX line bubbles go off once; signal bubbles
+// stay. His checkbox wins afterwards.
+// v2: v1 was marked done while the loader still rebuilt the bubbles from the
+// original saved copy (fixed 2026-10-03), so it runs once more.
+export const ADX_AXIS_LIKE_TOS_VERSION = "adx-axis-like-tos-v2";
+const ADX_LINE_PLOT = /^(Strong|Weak|ADX\d?)$/;
+
+export function migrateAdxAxisLikeTos(saved = {}) {
+  if (saved.adxAxisLikeTosVersion === ADX_AXIS_LIKE_TOS_VERSION) return {};
+  const controls = saved.mtfAdxPlotControls && typeof saved.mtfAdxPlotControls === "object"
+    ? saved.mtfAdxPlotControls : null;
+  if (!controls) return { adxAxisLikeTosVersion: ADX_AXIS_LIKE_TOS_VERSION };
+  const next = Object.fromEntries(Object.entries(controls).map(([plot, control]) => [
+    plot,
+    ADX_LINE_PLOT.test(plot) && control && typeof control === "object" ? { ...control, showBubble: false } : control,
+  ]));
+  return { adxAxisLikeTosVersion: ADX_AXIS_LIKE_TOS_VERSION, mtfAdxPlotControls: next };
+}
+
+export function migrateAdxCloudsParity(saved = {}) {
+  if (saved.adxCloudsParityVersion === ADX_CLOUDS_PARITY_VERSION) return {};
+  return { adxCloudsParityVersion: ADX_CLOUDS_PARITY_VERSION, mtfAdxShowDirectionalWeakClouds: true };
+}
 
 export function migrateMomoxOnChartPalette(saved = {}) {
   if (saved.momoxOnChartPaletteVersion === MOMOX_ONCHART_PALETTE_VERSION) return {};
   return {
     momoxOnChartPaletteVersion: MOMOX_ONCHART_PALETTE_VERSION,
     ...MOMOX_ONCHART_PALETTE_OVERRIDES,
+  };
+}
+
+// 2026-09-30: he pasted his TOS AutoFib study and asked for it on the chart
+// ("I need same like TEAM ticker"). The focused-profile migration had turned it
+// off for everyone; switch it on ONCE, then his checkbox wins again.
+export const AUTO_FIB_VISIBILITY_VERSION = "autofib-visible-v1";
+
+export function migrateAutoFibVisibility(saved = {}) {
+  if (saved.autoFibVisibilityVersion === AUTO_FIB_VISIBILITY_VERSION) return {};
+  return {
+    autoFibVisibilityVersion: AUTO_FIB_VISIBILITY_VERSION,
+    autoFibSingleTf: true,
   };
 }

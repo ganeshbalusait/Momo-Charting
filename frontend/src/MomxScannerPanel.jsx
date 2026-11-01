@@ -1,6 +1,19 @@
 import { Fragment, createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { TOS_LINK_GROUPS, sendTickerToCharts, tosLinkGroup } from "./tosLinkGroups.js";
+import { TOS_LINK_GROUPS, sendTickerToCharts, warmTickerForCharts, tosLinkGroup } from "./tosLinkGroups.js";
+import { createScannerRequestScope } from "./scannerRequestScope.js";
+import { readScannerBoard } from "./scannerBoardRead.js";
+import { createLiveRowProjector, liveQuote } from "./scannerLiveRows.js";
+
+function useScannerReadFetch() {
+  const scope = useRef(null);
+  if (!scope.current) scope.current = createScannerRequestScope();
+  useEffect(() => {
+    scope.current.resume();
+    return () => scope.current.abortReads();
+  }, []);
+  return scope.current.fetch;
+}
 
 import MomxTickerCard from "./MomxTickerCard.jsx";
 import {
@@ -16,20 +29,24 @@ import {
   Settings,
   SlidersHorizontal,
   Star,
-  X,
   Zap,
 } from "lucide-react";
 
-import { tapeState } from "./marketSession.js";
+import { etParts, isTradingDay } from "./marketSession.js";
+import { tapeAsOfNote } from "./tapeAsOfNote.js";
+import { scannerFreshness, scannerRowFreshness } from "./scannerFreshness.js";
+import SetupColumnPicker from './SetupColumnPicker.jsx';
+import { scannerRecordLearning } from './scannerRecordLearning.js';
+import { createRvolObservationTracker, observeConfirmationBoard, observeConfirmationHistory, scannerConfirmation, confirmationDescription } from "./scannerConfirmation.js";
 import {
   boardSymbols,
   feedAge,
-  filterFeedGroups,
   groupFeedBySymbol,
+  searchFeedGroups,
   mergeStoredNews,
-  parseNewsQuery,
   sentimentTone,
   sourceHealthLine,
+  newsSymbolKey,
   MOMX_NEWS_FRESH_MS as NEWSFEED_FRESH_MS,
 } from "./momxNewsFeed.js";
 
@@ -70,6 +87,9 @@ import {
   describeFilters,
   describeMembership,
   filterRows,
+  filtersAreActive,
+  visibleFilterRows,
+  withSetupRules,
   filteringGroups,
   gatesActive,
   groupPassCounts,
@@ -87,16 +107,23 @@ import {
   topMode,
   whyNothingPasses,
   writeStoredFilters,
+  recordCell,
+  aiTags,
+  jevRecordTag,
+  setRuleRecord,
+  selectedSetupRules,
 } from "./momxFilters.js";
 
 import MomxGradeWhy from "./MomxGradeWhy.jsx";
 import MomxColumnManager from "./MomxColumnManager.jsx";
+import { fetchWithNetworkRetry, isNetworkDrop, networkDropMessage } from "./momxNetworkRetry.js";
 import MomxColumnHeaderMenu, { useColumnHeaderControls, usePinnedColumns } from "./MomxColumnHeaderMenu.jsx";
 import {
   applyLayout,
   columnGroupSpans,
   defaultLayout,
   effectiveSort,
+  nextSortState,
   readStoredLayout,
   writeStoredLayout,
 } from "./momxColumnLayout.js";
@@ -109,6 +136,7 @@ import {
   setupSortValue,
   setupText,
   setupParts,
+  hasSetupGrade,
   setupTone,
 } from "./momxGrade.js";
 
@@ -129,6 +157,10 @@ import {
   rvolNotLiveReason,
   cellAgeIsFresh,
   sectorRollup,
+  sectorsForDirection,
+  sortSectorsByMove,
+  jevLabel,
+  jevScoreCell,
   SECTOR_MOVE_PCT,
   decideBoardView,
   filterByIndustries,
@@ -147,6 +179,7 @@ import {
   quoteTrendBars,
   readBoardCache,
   sortRows,
+  highLowSortValue,
   sparklinePath,
   writeBoardCache,
   newsBadgeTitle,
@@ -212,21 +245,38 @@ const MOMX_UNIVERSE_ADD_ENDPOINT = "/api/momx-scanner/universe/add";
 const MOMX_LIST_CREATE_ENDPOINT = "/api/momx-scanner/lists/create";
 const MOMX_LIST_RENAME_ENDPOINT = "/api/momx-scanner/lists/rename";
 const MOMX_LIST_DELETE_ENDPOINT = "/api/momx-scanner/lists/delete";
+// Monthly / Weekly / Daily on the 21 / 50 EMA touch lists (momx/ema_touch.py).
+const MOMX_EMA_TIMEFRAME_ENDPOINT = "/api/momx-scanner/ema-timeframe";
 // Force-rebuild for the refresh/SCAN buttons: marks the list due on the
 // worker's warmer instead of re-reading the cached board. Older workers do not
 // have this route; a 404 (or network error) falls back to a plain cached-board
 // reload so the buttons never become a no-op on version skew.
 const MOMX_REBUILD_ENDPOINT = "/api/momx-scanner/rebuild";
+// TOS checkbox (2026-09-30): which data the scanner reads - "tos" (Schwab
+// price history only, rate-paced) or "alpaca" (SIP/BOATS/IEX tapes). The
+// switch is GLOBAL on the worker (every viewer), so api_server lets only an
+// admin POST it.
+const MOMX_DATA_SOURCE_ENDPOINT = "/api/momx-scanner/data-source";
+const MOMX_TOS_TOOLTIP =
+  "TOS: scan only on your TOS (Schwab) data - matches the TOS scanner. The full list refreshes every few minutes because Schwab limits requests; the top rows stay live. Untick for Alpaca data: the full list refreshes about every minute, but volume and prices can differ from TOS.";
 // NEWS store (2026-09-26): api_server keeps headlines scraped from feeds where
 // the PUBLISHER tagged the ticker (Yahoo, Alpaca/Benzinga, Benzinga, Finviz,
 // Nasdaq, SEC EDGAR). `latest` is a DB read for the board's tickers; `refresh`
 // starts ONE background scrape and returns at once, so the tab polls `latest`
 // until `refreshing` clears. Neither touches the scanner worker.
 const MOMX_NEWS_LATEST_ENDPOINT = "/api/news-feed/latest";
+// The last news-store answer, kept across tab switches (2026-10-07). Leaving
+// MomX and coming back remounted the panel with NO store data, so every News
+// cell fell back to the worker headline (which carries no Jev read) and the
+// ▲/▼ vanished until the first /latest answered - measured 35 s cold. The
+// merge is per symbol and newer-wins, so a slightly old copy is safe to show.
+let lastNewsFeedPayload = null;
 const MOMX_NEWS_REFRESH_ENDPOINT = "/api/news-feed/refresh";
 const MOMX_NEWS_REFRESH_POLL_MS = 3000;
 const MOMX_NEWS_REFRESH_WAIT_MS = 150000;
-const MOMX_NEWS_STORE_POLL_MS = 5 * 60 * 1000;
+// 2 min (was 5, 2026-10-01): the server now refreshes the store by itself
+// every 2 minutes, so the column can follow it.
+const MOMX_NEWS_STORE_POLL_MS = 2 * 60 * 1000;
 // Every ticker costs one request per source, so a refresh reads the FIRST N
 // tickers in board order (ranked). Mirrors the server cap
 // (NEWS_MOMX_REFRESH_MAX_SYMBOLS) so the list's "reading N tickers" is honest.
@@ -357,6 +407,10 @@ const MOMX_COLUMNS = [
   // News + Event, as MomoX prints them (2026-09-25): the headline's age with a
   // ✦ when the AI reader judged it, and the next earnings date.
   { key: "news", label: "News", kind: "news", sortable: true },
+  // Jev score (2026-10-02): Jev's take chance on today's bot trade here.
+  // RECORD (2026-10-10): was the Jev score (a coin flip in testing). Same key,
+  // so saved column layouts keep it where it was.
+  { key: "jev", label: "Record", kind: "jev", sortable: true },
   { key: "event", label: "Event", kind: "event", sortable: true },
 
   // CHART / 1D: the day's shape, as its own column.
@@ -442,6 +496,30 @@ const AUTO_CARDS_SEEN_KEY = "momx-auto-cards-seen-v1";
 // live row its own entry as a prop, so the row memo still holds.
 let EARNINGS_BY_SYMBOL = new Map();
 
+// The Jev score cell (2026-10-02), shared by the live board and the History table.
+function jevScoreTd(column, row, className, asOfMs = undefined) {
+  const now = asOfMs || Date.now();
+  const rec = recordCell(row, now);
+  const stale = scannerRowFreshness(row, now);
+  const ai = stale ? null : aiTags(row, now, 0)[0] || null;
+  const learning = scannerRecordLearning(row, now);
+  const label = learning.text;
+  const explanation = ai ? ai.title : stale ? "AI score unavailable: study data is old." : "No AI score recorded for this ticker and session.";
+  const detail = [...learning.lines, explanation, "Experimental local model score; a calibrated net-profit win probability has not passed validation.", ...(rec?.lines || [])].join("\n");
+  const open = event => {
+    event.stopPropagation();
+    window.dispatchEvent(new CustomEvent(MOMX_TAG_EXPLAIN_EVENT, { detail: {
+      text: `Record · ${row.symbol}`, plain: explanation, title: detail,
+    } }));
+  };
+  return (
+    <td key={column.key} data-col={column.key}
+      className={className + " momx-recordcol"} title={detail} onClick={open}>
+      {label}
+    </td>
+  );
+}
+
 // The News / Event cells, shared by the live board and the History table.
 // onOpen (live board only): clicking the News cell opens the same popover as
 // the newspaper icon - asked for 2026-09-27, the cell is the bigger target on
@@ -469,6 +547,10 @@ function newsEventCell(column, row, earnings, className, nowMs, onOpen) {
         onClick={openable ? (event) => { event.stopPropagation(); onOpen(); } : undefined}
         onKeyDown={openable ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); onOpen(); } } : undefined}
       >
+        {/* Jev's Bullish ▲ / Bearish ▼ (2026-10-02); nothing for Not important. */}
+        {cell && cell.arrow ? (
+          <span className={"momx-newscol-jev is-" + (cell.jev && cell.jev.tone)} aria-label={cell.jev ? cell.jev.text : undefined}>{cell.arrow}</span>
+        ) : null}
         {cell ? cell.text : ""}
         {/* MomoX3-style sparkle on every row with a headline; colour = the AI
             verdict when judged, else the scraper's keyword sentiment. */}
@@ -614,13 +696,20 @@ const SESSION_POPOUTS = { list: [] };
 
 function MomxSymbolLink({ symbol, className }) {
   const link = useContext(MomxChartLinkContext);
+  const warmTimer = useRef(null);
+  useEffect(() => () => window.clearTimeout(warmTimer.current), []);
   const text = symbol || "";
+  const warm = () => warmTickerForCharts(text, link?.group?.value);
   if (!link || !text) return <span className={className}>{text}</span>;
   return (
     <button
       type="button"
       className={className + " momx-symbol-link"}
       style={{ "--momx-link-color": link.group.color }}
+      onPointerEnter={() => { warmTimer.current = window.setTimeout(warm, 160); }}
+      onPointerLeave={() => window.clearTimeout(warmTimer.current)}
+      onFocus={warm}
+      onPointerDown={warm}
       onClick={(event) => {
         event.stopPropagation();
         link.openChart(text);
@@ -785,6 +874,10 @@ function columnSortValue(row, column, newsMode) {
     const e = EARNINGS_BY_SYMBOL.get(row.symbol);
     return e ? -e.daysUntil : null;
   }
+  if (column.kind === "jev") {
+    const rec = recordCell(row);
+    return rec && rec.best ? rec.best.roi : null;
+  }
   if (column.kind === "cell") {
     const cell = cellFor(row, column);
     if (!cell || typeof cell !== "object") return null;
@@ -793,7 +886,7 @@ function columnSortValue(row, column, newsMode) {
   if (column.kind === "bar") {
     const cell = row[column.field];
     if (!cell || typeof cell !== "object") return null;
-    return cell.value === undefined ? null : cell.value;
+    return highLowSortValue(cell);
   }
   if (column.kind === "quoteTrend") {
     if (!Array.isArray(row.quoteTrend) || row.quoteTrend.length === 0) return null;
@@ -858,77 +951,7 @@ function cellText(cell, format) {
 
 // Trading days are read in market time, so the "last updated" stamp is ET even
 // when the trader is travelling.
-// "Data as of ..." note - now a THREE-way verdict, not an age threshold.
-//
-// It used to say "newest bar over 30 minutes old = stale, paint it amber",
-// which is true every evening and all weekend. On Saturday 2026-09-05 the
-// trader read the resulting amber "DATA AS OF FRI 8:00 PM ET" chip and asked
-// "it's scanner is not running?" - it was: verified live, the worker rebuilt
-// and wrote its board cache at 13:29 ET while the payload reported generatedAt
-// Sat 13:28 ET, tapeAsOf Fri 20:00 ET and zero errors. Friday 20:00 ET is
-// simply the last bar of the week.
-//
-// A warning that fires on the normal case is not a warning. marketSession.js
-// answers the question that actually matters - has the market had a CHANCE to
-// produce a newer bar - so the chip can be quiet when the market is shut and
-// still shout when the tape has genuinely stalled, including the case a plain
-// age test misses (a tape stuck since Monday is only ~26h old on Tuesday
-// night, yet a whole session behind).
-
-export function tapeAsOfNote(iso, nowMs) {
-  // ALWAYS returns a label when the stamp is readable - {text, tone, stale}.
-  // It used to return null while the tape was fresh, so the note vanished the
-  // moment things were healthy and the trader could not tell WHEN the data ran
-  // ("how i know when the data ran?", 2026-08-31). UPDATED already says when
-  // the SCAN built; this says how old the BARS are, which is the number that
-  // decides whether a signal is actionable.
-  //
-  // `stale` is kept as a boolean because callers style on it, and it now means
-  // "there is something wrong" rather than "the market is shut".
-  if (!iso) return null;
-  const stamp = new Date(iso);
-  if (Number.isNaN(stamp.getTime())) return null;
-  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
-  const verdict = tapeState(stamp.getTime(), now);
-  if (!verdict) return null;
-
-  const clockOf = (options) => {
-    try {
-      return stamp.toLocaleString("en-US", { timeZone: "America/New_York", ...options });
-    } catch {
-      return null;
-    }
-  };
-  const dayClock = clockOf({
-    weekday: "short", hour: "numeric", minute: "2-digit", hour12: true,
-  });
-
-  if (verdict.state === "stale") {
-    return {
-      tone: "stale",
-      stale: true,
-      text: dayClock ? `Tape stale - last bar ${dayClock} ET` : "Tape stale",
-    };
-  }
-  if (verdict.state === "closed") {
-    // NEUTRAL. The market being shut is not a fault, and the header already
-    // carries a MARKET CLOSED pill - this only adds which bar we stopped at.
-    return {
-      tone: "closed",
-      stale: false,
-      text: dayClock ? `Last bar ${dayClock} ET` : "Last bar of the session",
-    };
-  }
-  const minutes = Math.floor(Math.max(0, verdict.ageMs) / 60000);
-  const clock = clockOf({ hour: "2-digit", minute: "2-digit", hour12: false });
-  return {
-    tone: "live",
-    stale: false,
-    // "Data 11:05 ET (3m)" - the timestamp AND the age, because a stamp alone
-    // still makes you do arithmetic against the wall clock.
-    text: clock ? `Data ${clock} ET (${minutes}m)` : "Data is current",
-  };
-}
+export { tapeAsOfNote } from "./tapeAsOfNote.js";
 
 function formatUpdatedAt(iso) {
   if (!iso) return "never";
@@ -1582,13 +1605,14 @@ function MomoSettings({ onClose }) {
 // PORTALED to <body> for the same reason MomoSettings is - the pinned toolbar
 // and the sticky table headers each form a stacking context that would slice
 // an in-panel dialog (seen on the phone, 2026-08-30).
-function MomxFiltersPanel({ config, count, total, counts, onChange, onReset, onClose, direction = "bull" }) {
+function MomxFiltersPanel({ config, count, total, counts, onChange, onReset, onClose, direction = "bull", enabled = false }) {
   // The BULL / BEAR switch lives on the board; this popover only reads it.
   // Before it was passed in, opening FILTERS threw "direction is not defined"
   // and took the whole workspace down (2026-09-25).
   const bear = direction === "bear";
   const setGroup = (name, patch) =>
     onChange({ ...config, [name]: { ...config[name], ...patch } });
+  const setupSelections = selectedSetupRules(config);
 
   // Which groups actually decide anything. A group can be switched ON and
   // still not filter (Skittles on "push to top"), and until 2026-09-05 nothing
@@ -1604,6 +1628,7 @@ function MomxFiltersPanel({ config, count, total, counts, onChange, onReset, onC
       <span className="momx-filters-tf">{label}</span>
       <select
         className="momx-filters-mode"
+        disabled={setupSelections.length > 0}
         value={config[name] || "any"}
         onChange={(event) => setGate(name, event.target.value)}
         aria-label={label}
@@ -1639,7 +1664,7 @@ function MomxFiltersPanel({ config, count, total, counts, onChange, onReset, onC
   const strategy = strategyOf(config);
   const groupOff = (name) => !(config[name] && config[name].on);
   const groupClass = (name) =>
-    "momx-filters-group" + (groupOff(name) || strategy ? " is-off" : "");
+    "momx-filters-group" + (groupOff(name) || strategy || setupSelections.length ? " is-off" : "");
   const offTag = (name) => (groupOff(name) ? (
     <span
       className="momx-filters-offtag"
@@ -1740,10 +1765,11 @@ function MomxFiltersPanel({ config, count, total, counts, onChange, onReset, onC
         ) : null}
         <p className="momx-filters-note">
           Runs on top of the scan results.{" "}
-          {strategy ? (
+          {setupSelections.length ? 'Setup column choices are the active filter; other gates and groups are on standby. Edit the choices using Setup ▼ in the table header.' : strategy ? (
             <>
-              Strategy <strong>{STRATEGY_LABELS[strategy]}</strong> (in A/A+ Setup below) decides on
-              its own - this dropdown and the groups are not used until you set A/A+ Setup back.
+              Strategy <strong>{STRATEGY_LABELS[strategy]}</strong> (in A/A+ Setup below)
+              {setupSelections.length ? ' applies together with your selected Setup checkboxes' : ' decides on its own'}
+              {' - this dropdown and the groups are not used until you set A/A+ Setup back.'}
             </>
           ) : mode === "all" ? (
             <>
@@ -1778,6 +1804,8 @@ function MomxFiltersPanel({ config, count, total, counts, onChange, onReset, onC
           </p>
         ) : null}
 
+        <p className="momx-filters-hint" role="status">Filters {enabled ? 'ON · the table shows matching rows' : 'OFF · the table shows the unfiltered board'}. Setup rule selections are edited from Setup ▼ in the table header.</p>
+
         {/* ---------------------------------------------- SCANNER GRADE
             Requirements, not ANY-of members: "A+ only" removes a B row
             whatever its RVOL reads. A row with no grade never passes. */}
@@ -1789,29 +1817,36 @@ function MomxFiltersPanel({ config, count, total, counts, onChange, onReset, onC
           </header>
           <div className="momx-filters-gates">
             {gateSelect("setup", "A/A+ Setup", [
-              // Grouped 2026-09-25 ("so many dropdown, so much confusion"):
-              // the everyday choice alone on top, then the rest by purpose.
-              ...(MOMX_NEW_SETUPS ? [{ group: "⭐ Use every day", options: [["best", "⭐ Best setups (GO, or OPT before 10:00)"]] }] : []),
-              { group: "Letters only", options: [["any", "Any"], ["aAndUp", "A and up"], ["aPlus", "A+ only"]] },
-              { group: MOMX_NEW_SETUPS ? "Extra ideas (still being tested)" : "Chart", options: [
-                ...(MOMX_NEW_SETUPS ? [
-                  ["goRvolMacd", "GO + short RVOL + MACD (bull only)"],
-                  ["bestHot", "Best setups in 🔥 hot sectors"],
-                  ["hotLead", "🔥 Hot sector leaders (#1 / #2)"],
-                  ["solo", "SOLO big-money stocks"],
-                  ["newsMomo", "News + momentum (AI news, then A/A+)"],
-                ] : []),
-                // His own chart read, kept by his ask 2026-09-24.
-                ["chart", "Chart CALL2H / CALL4H (live)"],
+              // ONE list, the Setup column's tags in the column's own order
+              // (2026-10-10, his ask: "Setup column and filters should be
+              // same"). Each choice passes exactly the rows showing that tag.
+              { group: "Setup column (same order)", options: [
+                ["tagBolt", "⚡ A setup fired today"],
+                ["go", "GO"],
+                ["goRvolMacd", "GO+"],
+                ["mxaplus", "MX A+"],
+                ["tagStar1", "⭐1"],
+                ...(bear ? [] : [["tagSector", "🔥 / 🔸 SECTOR"]]),
+                ["dayLine", bear ? "LINE↓" : "LINE↑"],
+                ["dayLine100", bear ? "$LINE↓" : "$LINE↑"],
+                ["dayReclaim", bear ? "RECLAIM↓" : "RECLAIM↑"],
+                ["tagZs", bear ? "ZS↓" : "ZS↑"],
+                ["tagAbvx", bear ? "ABVX↓" : "ABVX↑"],
+                ["tagMomStrong", bear ? "MOM↓ (strong, filled)" : "MOM↑ (strong, filled)"],
+                ["tagFlip", bear ? "FLIP↓" : "FLIP↑"],
+                ["tagRvol", bear ? "RVOL↓" : "RVOL↑"],
+                ["tagSkit", bear ? "SKIT↓" : "SKIT↑"],
+                ["tagSqz", "SQZ fire"],
+                ["tagChartSqz", "🔥 Chart squeeze"],
+                ["tagAdx", "ADX"],
+                ["chart", bear ? "PUT2H / PUT4H" : "CALL2H / CALL4H"],
+                ["chartShort", bear ? "P2H / P4H" : "C2H / C4H"],
+                ["tagWarn", "⚠ Warning"],
+                ["tagExplosive", "💥 Explosive"],
+                ["tagSteady", "📈 Steady"],
               ] },
-              // Never stopped running (his ask 2026-09-25 to bring them back).
-              { group: "My older strategies", options: [
-                ["v2", "Strategy V2"],
-                ["v3", "Strategy V3"],
-                ["daily2", "Strategy Daily 2"],
-                ["g", "Strategy G (my rules)"],
-                ...(MOMX_NEW_SETUPS ? [["go", "GO only"], ["opt", "OPT only"]] : []),
-              ] },
+              { group: "Record column", options: [["tagAi", "AI score 55%+ (test)"]] },
+              { group: "Grade letter", options: [["any", "Any"], ["aAndUp", "A and up"], ["aPlus", "A+ only"]] },
             ])}
             {gateSelect("momentum", "Momentum", [
               ["any", "Any"],
@@ -1827,8 +1862,9 @@ function MomxFiltersPanel({ config, count, total, counts, onChange, onReset, onC
           {strategy ? (
             <p className="momx-filters-hint is-strategy" data-testid="momx-filters-strategy-rules">
               <strong>Strategy {STRATEGY_LABELS[strategy]}:</strong> {strategyRules(direction)[strategy]}.
-              {" "}This is the whole filter - Momentum, Pattern and the groups below are
+              {" "}{setupSelections.length ? 'The strategy controls the other gates - ' : 'This is the whole filter - '}Momentum, Pattern and the groups below are
               left out. Test only (not proven): sell at +2%, cut at -1.5%.
+              {setupSelections.length ? ' Selected Setup checkbox rules are also required.' : ''}
             </p>
           ) : (
             <p className="momx-filters-hint">
@@ -2153,113 +2189,12 @@ const SQZ_SWATCH = Object.fromEntries(
 // says where they came from and which feeds did not answer. Shown while NEWS
 // is pressed, above the table, in its own scroller so a long list never pushes
 // the board off a phone. Pure rendering; the data comes from the panel.
-//
-// Search (2026-10-02): the box above the list narrows it to a ticker ("GEV",
-// "nvda amd") or to words ("nuclear"). Pressing Enter / Search on a ticker
-// also asks the store for it - so a ticker that is NOT on the board still
-// gets its headlines - and, when the store has none yet, reads the sources
-// for just that ticker.
 function MomxNewsFeedBox({ payload, busy, symbols, onRefresh }) {
   const [open, setOpen] = useState(true);
   const [query, setQuery] = useState("");
-  const [lookup, setLookup] = useState(null); // { symbols, payload, busy, note }
-  const lookupSeqRef = useRef(0);
-  useEffect(() => () => { lookupSeqRef.current += 1; }, []);
   const nowMs = Date.now();
-  const parsed = useMemo(() => parseNewsQuery(query), [query]);
-  const boardGroups = useMemo(() => groupFeedBySymbol(payload ? payload.feed : [], symbols), [payload, symbols]);
-  const lookupGroups = useMemo(
-    () => (lookup && lookup.payload ? groupFeedBySymbol(lookup.payload.feed, lookup.symbols) : []),
-    [lookup],
-  );
-  const allGroups = useMemo(() => {
-    if (lookupGroups.length === 0) return boardGroups;
-    // A searched ticker's own read is the fresher one; the board copy yields.
-    const searched = new Set(lookupGroups.map((g) => g.symbol));
-    return lookupGroups.concat(boardGroups.filter((g) => !searched.has(g.symbol)));
-  }, [boardGroups, lookupGroups]);
-  const groups = useMemo(() => filterFeedGroups(allGroups, parsed), [allGroups, parsed]);
-  const searching = parsed.raw !== "";
-  const lookupBusy = Boolean(lookup && lookup.busy);
-  const runLookup = useCallback(async (wanted) => {
-    const seq = ++lookupSeqRef.current;
-    const live = () => lookupSeqRef.current === seq;
-    const readStore = async () => {
-      try {
-        const response = await fetch(
-          MOMX_NEWS_LATEST_ENDPOINT + "?symbols=" + encodeURIComponent(wanted.join(",")),
-          { cache: "no-store" },
-        );
-        if (!response.ok) return null;
-        const body = await response.json();
-        return body && typeof body === "object" ? body : null;
-      } catch {
-        return null;
-      }
-    };
-    const missingIn = (body) => {
-      const have = new Set((body && Array.isArray(body.feed) ? body.feed : []).map((item) => String(item && item.symbol || "").toUpperCase()));
-      return wanted.filter((s) => !have.has(s));
-    };
-    setLookup({ symbols: wanted, payload: null, busy: true, note: "Looking up " + wanted.join(", ") + "…" });
-    let body = await readStore();
-    if (!live()) return;
-    let missing = missingIn(body);
-    if (missing.length === 0) {
-      setLookup({ symbols: wanted, payload: body, busy: false, note: "" });
-      return;
-    }
-    setLookup({ symbols: wanted, payload: body, busy: true, note: "Reading the sources for " + missing.join(", ") + "…" });
-    // The server runs ONE scrape at a time: if another is running, wait for
-    // it, then ask again for just the missing tickers (twice at most).
-    const deadline = Date.now() + MOMX_NEWS_REFRESH_WAIT_MS;
-    for (let attempt = 0; attempt < 2 && missing.length > 0 && Date.now() < deadline; attempt += 1) {
-      let started = false;
-      try {
-        const response = await fetch(MOMX_NEWS_REFRESH_ENDPOINT, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({ symbols: missing.slice(0, MOMX_NEWS_REFRESH_MAX_SYMBOLS) }),
-        });
-        const reply = response.ok ? await response.json() : null;
-        started = Boolean(reply && reply.started);
-      } catch {
-        break;
-      }
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => window.setTimeout(resolve, MOMX_NEWS_REFRESH_POLL_MS));
-        if (!live()) return;
-        const next = await readStore();
-        if (!live()) return;
-        if (next) {
-          body = next;
-          setLookup((prev) => (prev ? { ...prev, payload: next } : prev));
-          if (!next.refreshing) break;
-        }
-      }
-      missing = missingIn(body);
-      if (started) break;
-    }
-    if (!live()) return;
-    setLookup({
-      symbols: wanted,
-      payload: body,
-      busy: false,
-      note: missing.length > 0 ? "No headline found for " + missing.join(", ") + " in the last " + ((body && body.lookbackDays) || 7) + " days." : "",
-    });
-  }, []);
-  const submitSearch = (event) => {
-    event.preventDefault();
-    if (parsed.symbols.length === 0) return;
-    if (!open) setOpen(true);
-    runLookup(parsed.symbols);
-  };
-  const clearSearch = () => {
-    lookupSeqRef.current += 1;
-    setQuery("");
-    setLookup(null);
-  };
+  const allGroups = useMemo(() => groupFeedBySymbol(payload ? payload.feed : [], symbols), [payload, symbols]);
+  const groups = useMemo(() => searchFeedGroups(allGroups, query), [allGroups, query]);
   const refreshing = Boolean(busy || (payload && payload.refreshing));
   // `busy` is known before the store has been polled again, so the line says
   // "refreshing" the moment the button does, not a poll later.
@@ -2277,7 +2212,7 @@ function MomxNewsFeedBox({ payload, busy, symbols, onRefresh }) {
         >
           <ChevronDown size={13} aria-hidden="true" className="momx-industry-caret" />
           <span>Headlines</span>
-          <span className="momx-industry-total">{searching ? groups.length + "/" + allGroups.length : groups.length}</span>
+          <span className="momx-industry-total">{groups.length}</span>
         </button>
         <span className={"momx-newsfeed-health" + (unavailable ? " is-down" : "")} data-testid="momx-newsfeed-health" title={health}>
           {health}
@@ -2294,51 +2229,28 @@ function MomxNewsFeedBox({ payload, busy, symbols, onRefresh }) {
         </button>
       </div>
       {open ? (
-        <form className="momx-newsfeed-search" role="search" onSubmit={submitSearch} data-testid="momx-newsfeed-search">
-          <Search size={13} aria-hidden="true" className="momx-newsfeed-search-icon" />
+        <div className="momx-newsfeed-search">
           <input
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Escape") clearSearch(); }}
-            placeholder="Search ticker or words (GEV, nuclear)"
-            aria-label="Search headlines by ticker or words"
+            placeholder="Search ticker or word (e.g. NVDA, earnings)"
+            aria-label="Search the headlines by ticker or word"
             autoCapitalize="characters"
             autoCorrect="off"
             spellCheck={false}
-            enterKeyHint="search"
-            data-testid="momx-newsfeed-search-input"
+            data-testid="momx-newsfeed-search"
           />
-          {query ? (
-            <button type="button" className="momx-newsfeed-search-clear" onClick={clearSearch} aria-label="Clear the search" title="Clear the search">
-              <X size={12} aria-hidden="true" />
-            </button>
-          ) : null}
-          <button
-            type="submit"
-            className="momx-newsfeed-refresh"
-            disabled={parsed.symbols.length === 0 || lookupBusy}
-            title="Look up the headlines for these tickers, even ones not on the board"
-            data-testid="momx-newsfeed-search-go"
-          >
-            {lookupBusy ? "Searching…" : "Search"}
-          </button>
-        </form>
+          {query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear the search">✕</button> : null}
+        </div>
       ) : null}
-      {open && lookup && lookup.note ? (
-        <p className="momx-newsfeed-empty momx-newsfeed-note" data-testid="momx-newsfeed-search-note">{lookup.note}</p>
-      ) : null}
-      {!open ? null : groups.length === 0 ? (
+      {!open ? null : groups.length === 0 && query.trim() ? (
+        <p className="momx-newsfeed-empty">No headline for "{query.trim()}" on this board. Only tickers on the scanner are read - add it to the list, then Refresh.</p>
+      ) : groups.length === 0 ? (
         <p className="momx-newsfeed-empty">
-          {searching
-            ? (lookupBusy
-              ? "Searching…"
-              : parsed.symbols.length > 0 && !lookup
-                ? "No headline for \"" + parsed.raw + "\" on the board. Press Search to look it up."
-                : "No headline matches \"" + parsed.raw + "\".")
-            : refreshing
-              ? "Reading the sources for " + Math.min(symbols.length, MOMX_NEWS_REFRESH_MAX_SYMBOLS) + " tickers…"
-              : "No stored headline for these tickers yet. Press Refresh."}
+          {refreshing
+            ? "Reading the sources for " + Math.min(symbols.length, MOMX_NEWS_REFRESH_MAX_SYMBOLS) + " tickers…"
+            : "No stored headline for these tickers yet. Press Refresh."}
         </p>
       ) : (
         <div className="momx-newsfeed-list">
@@ -2351,6 +2263,7 @@ function MomxNewsFeedBox({ payload, busy, symbols, onRefresh }) {
               <ul>
                 {group.items.map((item) => {
                   const tone = sentimentTone(item.sentiment);
+                  const jev = jevLabel(item.aiNews || item.jev);
                   const fresh = item.atMs !== null && nowMs - item.atMs <= NEWSFEED_FRESH_MS;
                   const whence = [
                     item.source,
@@ -2360,7 +2273,9 @@ function MomxNewsFeedBox({ payload, busy, symbols, onRefresh }) {
                   return (
                     <li key={item.url || item.headline} className="momx-newsfeed-item">
                       <span className={"momx-newsfeed-pill" + (fresh ? " is-fresh" : "")}>{fresh ? "Fresh" : "Stored"}</span>
-                      {tone ? <span className={"momx-newsfeed-sent is-" + tone}>{item.sentiment}</span> : null}
+                      {jev ? (
+                        <span className={"momx-newsfeed-sent momx-jev is-" + jev.tone} title={jev.title || "TypeSafe Jev's reading of this headline for this ticker - a TEST"}>{jev.text}</span>
+                      ) : tone ? <span className={"momx-newsfeed-sent is-" + tone}>{item.sentiment}</span> : null}
                       {item.url ? (
                         <a href={item.url} target="_blank" rel="noopener noreferrer">{item.headline}</a>
                       ) : (
@@ -2465,7 +2380,9 @@ function MomxNewsPopover({ symbol, news, verdict, onClose }) {
           {news.stored ? (
             <span className={"momx-newsfeed-pill" + (news.fresh ? " is-fresh" : "")}>{news.fresh ? "Fresh" : "Stored"}</span>
           ) : null}
-          {news.sentiment ? (
+          {news.jev ? (
+            <span className={"momx-newsfeed-sent momx-jev is-" + news.jev.tone} title={news.jev.title || "TypeSafe Jev's reading of this headline - a TEST"}>{news.jev.text}</span>
+          ) : news.sentiment ? (
             <span className={"momx-newsfeed-sent is-" + (sentimentTone(news.sentiment) || "flat")}>{news.sentiment}</span>
           ) : null}
           {news.age ? <span>{news.age}</span> : null}
@@ -2543,10 +2460,82 @@ function hlBlock(cell) {
   );
 }
 
-// atMs: a History snapshot's own time. Its Setup tags are worked out as of
-// that moment (chart arrows, SQZ fires, GO... all expire against the clock),
-// so the row shows what the live board showed then, not what is left today.
-function gradeCell(column, row, onOpenGrade, base = "momx-cell", atMs = undefined) {
+// Tap a Setup tag -> its explanation (2026-10-10, "I see ZS in setup column I
+// want explanation"): a phone has no hover, so the title tooltip never showed.
+// One box for the whole panel (MomxTagExplain), fed by this event.
+const MOMX_TAG_EXPLAIN_EVENT = "momx-tag-explain";
+// The tag -> the FILTERS dropdown entry that explains it in plain words.
+function tagRuleKey(tag) {
+  const key = String((tag && tag.key) || "");
+  if (key === "sqzmom" || key === "sqzmom-bear") return tag.strong ? "tagMomStrong" : "tagMom";
+  if (key.startsWith("momflip")) return "tagFlip";
+  if (key.startsWith("sqzfire")) return "tagSqz";
+  if (key === "chartsqz") return "tagChartSqz";
+  if (key === "ai") return "tagAi";
+  if (key.startsWith("chart-")) return /^(C|P)[24]H/.test(String(tag.text)) ? "chartShort" : "chart";
+  if (key.startsWith("go-rvol-macd")) return "goRvolMacd";
+  if (key === "rank" && tag.text === "⭐1") return "tagStar1";
+  return { rvol: "tagRvol", skit: "tagSkit", abvx: "tagAbvx", jev: "tagJev", adx: "tagAdx", zsrule: "tagZs",
+    dayline: "dayLine", dayline100: "dayLine100", dayreclaim: "dayReclaim", mxaplus: "mxaplus", sector: "tagSector",
+    bolt: "tagBolt", warn: "tagWarn",
+    go: "go", opt: "opt", v2: "v2", v3: "v3", daily2: "daily2", g: "g" }[key] || null;
+}
+
+function explainTag(event, tag, row) {
+  event.stopPropagation();
+  if (!tag) return;
+  const ruleKey = tagRuleKey(tag);
+  const plain = ruleKey ? strategyRules(row && row.direction === "bear" ? "bear" : "bull")[ruleKey] : "";
+  if (!plain && !tag.title) return;
+  window.dispatchEvent(new CustomEvent(MOMX_TAG_EXPLAIN_EVENT, {
+    detail: { text: tag.text, plain: plain || "", title: tag.title && tag.title !== plain ? tag.title : "" },
+  }));
+}
+
+// Loads the bot's per-rule record for the Record column; refreshed every 10 min.
+function MomxRuleRecordLoader() {
+  const fetch = useScannerReadFetch();
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const load = () => fetch("/api/momx-scanner/rule-record?days=10", { credentials: "include", cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (alive && data) { setRuleRecord(data); setTick((n) => n + 1); } })
+      .catch(() => {});
+    load();
+    const id = window.setInterval(load, 10 * 60 * 1000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, []);
+  return null;
+}
+
+function MomxTagExplain() {
+  const [shown, setShown] = useState(null);
+  useEffect(() => {
+    const onExplain = (event) => setShown(event.detail || null);
+    window.addEventListener(MOMX_TAG_EXPLAIN_EVENT, onExplain);
+    return () => window.removeEventListener(MOMX_TAG_EXPLAIN_EVENT, onExplain);
+  }, []);
+  if (!shown) return null;
+  return createPortal(
+    <div className="momx-tag-explain" role="dialog" aria-label={"What " + shown.text + " means"} onClick={() => setShown(null)}>
+      <div className="momx-tag-explain-box" onClick={(event) => event.stopPropagation()}>
+        <div className="momx-tag-explain-head">
+          <strong>{shown.text}</strong>
+          <button type="button" onClick={() => setShown(null)} aria-label="Close">×</button>
+        </div>
+        {shown.plain ? <p>{shown.plain}.</p> : null}
+        {shown.title ? <p className="momx-tag-explain-detail" style={{ whiteSpace: "pre-line" }}>{shown.title}</p> : null}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// asOfMs (History, 2026-10-10): judge every time-based tag - SKIT, SQZ, RVOL,
+// chart arrows - as of the SNAPSHOT, not now; by evening a Date.now() check
+// failed them all and History showed a bare "A". No flashing in History.
+function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefined, dataWarning = null) {
   if (column.kind === "setup") {
     const text = setupText(row);
     const parts = setupParts(text);
@@ -2559,14 +2548,25 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", atMs = undefine
         (typeof m5.trigger === "number" && Number.isFinite(m5.trigger) ? "$" + m5.trigger.toFixed(2) : "–")
       : "";
     const hover = [since, chartPart].filter(Boolean).join(" · ") || undefined;
-    const tags = Number.isFinite(atMs) ? strategyTags(row, atMs, { archive: true }) : strategyTags(row);
+    const evaluatedAt = asOfMs ?? Date.now();
+    const tags = (asOfMs
+      ? strategyTags(row, evaluatedAt).map((tag) => (tag.fresh ? { ...tag, fresh: false } : tag))
+      : strategyTags(row, evaluatedAt))
+      // Plain MOM↑ (outline) hidden, STRONG MOM↑ (cyan fill) kept - his ask
+      // 2026-10-10: "too many it's coming". Display only; alerts, filters and
+      // the bot's MOM rule are unchanged. MOM↓ (bear) left as it was. Live
+      // board AND History; History rows archived before 2026-10-10 carry no
+      // ADX, so "strong" is unknown there and their MOM↑ is hidden too.
+      .filter((tag) => !(tag.key === "sqzmom" && !tag.strong))
+      .map(tag => dataWarning ? { ...tag, fresh: false } : tag);
+    const confirmation = scannerConfirmation(row, evaluatedAt, tags);
     // The momentum WORD (Fading / Holding / Extended / Building) is no longer
     // printed here (his ask, 2026-09-24): it describes only the last few 5m
     // candles, and "A+ · Fading" read as a downtrend - FSLY showed "A ·
     // Fading" at 13:00 on 2026-09-23, the moment its chart fired CALL2H and
     // CALL4H. The cell is the letter + his strategy / chart tags; the 5m state
     // stays in the why panel and still drives the V2 rules.
-    const hasLetter = Boolean(parts.letter) && parts.letter.replace(/[^A-Z+]/g, "") !== "";
+    const hasLetter = hasSetupGrade(row);
     return (
       <td
         key={column.key}
@@ -2574,14 +2574,29 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", atMs = undefine
         className={`${base} momx-setup is-${setupTone(row)} mom-${momentumTone(row)}`}
         title={hover}
       >
+        {dataWarning ? (
+          <span className="momx-strategy-tag is-data-age" data-testid="momx-row-data-age"
+            title={dataWarning.title} onClick={event => explainTag(event, dataWarning, row)}>
+            {dataWarning.text}
+          </span>
+        ) : null}
+        {confirmation.level > 0 ? (
+          <span className={`momx-strategy-tag is-confirmation is-level-${confirmation.level}`}
+            data-testid="momx-confirmation-level"
+            title={confirmationDescription(confirmation)}
+            onClick={event => explainTag(event, { text: `Confirm L${confirmation.level}`, title: confirmationDescription(confirmation) }, row)}>
+            Confirm L{confirmation.level}
+          </span>
+        ) : null}
         {/* MomoX's ⚡ goes FIRST, before the letter, so it never sits beside
             the grade's Explosive pattern icon (💥 since 2026-09-25). */}
         {tags.filter((tag) => tag.key === "bolt").map((tag) => (
           <span
             key={tag.key}
-            className={"momx-strategy-tag is-" + tag.key + (tag.fresh ? " is-fresh" : "")}
+            className={"momx-strategy-tag is-" + tag.key + (tag.color ? " is-color-" + tag.color : "") + (tag.fresh ? " is-fresh" : "") + (tag.gone ? " is-gone" : "") + (tag.strong ? " is-strong" : "")}
             title={tag.title}
             data-testid={"momx-strategy-tag-" + tag.key}
+            onClick={(event) => explainTag(event, tag, row)}
           >
             {tag.text}
           </span>
@@ -2606,9 +2621,10 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", atMs = undefine
         {tags.filter((tag) => tag.key !== "bolt").map((tag) => (
           <span
             key={tag.key}
-            className={"momx-strategy-tag is-" + tag.key + (tag.fresh ? " is-fresh" : "")}
+            className={"momx-strategy-tag is-" + tag.key + (tag.color ? " is-color-" + tag.color : "") + (tag.fresh ? " is-fresh" : "") + (tag.gone ? " is-gone" : "") + (tag.strong ? " is-strong" : "")}
             title={tag.title}
             data-testid={"momx-strategy-tag-" + tag.key}
+            onClick={(event) => explainTag(event, tag, row)}
           >
             {tag.text}
           </span>
@@ -2626,27 +2642,13 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", atMs = undefine
   return null;
 }
 
-const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, bolt }) {
+const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, bolt, sourceWarning }) {
   const passed = Boolean(row && row.scanPass);
-  // LIVE % Chg: the build's pct is minutes old by definition; when the Schwab
-  // fastlane holds a fresh last for this symbol, recompute against the same
-  // previous close the build used (prevClose = buildClose / (1 + pct/100)).
-  // Falls back to the build's number whenever the stream is quiet.
-  const buildPct = Number(row && row.pctChange);
-  const quoteCells = row && Array.isArray(row.quoteTrend) ? row.quoteTrend : [];
-  const lastCell = quoteCells.length > 0 ? quoteCells[quoteCells.length - 1] : null;
-  const buildClose = Number(lastCell && lastCell.price);
-  let pct = buildPct;
-  if (
-    Number.isFinite(liveLast) &&
-    liveLast > 0 &&
-    Number.isFinite(buildPct) &&
-    Number.isFinite(buildClose) &&
-    buildClose > 0
-  ) {
-    const prevClose = buildClose / (1 + buildPct / 100);
-    if (prevClose > 0) pct = (liveLast / prevClose - 1) * 100;
-  }
+  // Use the same session change as the scanner, filters and sorting. A live
+  // after-hours last is not the regular-session close used by this percentage;
+  // inferring its denominator from a quote-trend cell changed LASR -1.37% to
+  // +0.23%. The next scanner refresh updates this authoritative value.
+  const pct = row?.pctChange;
   const up = Number.isFinite(pct) ? pct >= 0 : null;
   const fires = firesOf(row);
   // MomoX-style: the ticker itself flashes while a fresh setup (GO / OPT /
@@ -2678,7 +2680,11 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
     <tr className={classes.join(" ")} title={reasons}>
       {(columns || MOMX_COLUMNS).map((column) => {
         if (column.kind === "setup" || column.kind === "fresh") {
-          return gradeCell(column, row, onOpenGrade);
+          return gradeCell(column, row, onOpenGrade, "momx-cell", undefined,
+            sourceWarning ? scannerRowFreshness(row) : null);
+        }
+        if (column.kind === "jev") {
+          return jevScoreTd(column, row, "momx-cell");
         }
         if (column.kind === "news" || column.kind === "event") {
           return newsEventCell(column, row, earnings, "momx-cell", undefined,
@@ -2722,8 +2728,9 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
             );
           }
           return (
-            <td key={column.key} data-col={column.key} className="momx-cell momx-col-time">
-              <span className="momx-history-time">{snapshotTimeLabel(row && row.matchedSince)}</span>
+            <td key={column.key} data-col={column.key} className="momx-cell momx-col-time"
+              title={sourceWarning ? `Old study data. Scanner registered this match at ${row.matchedSince || "unknown"}; that is not a new market candle.` : "When this ticker entered the scanner's matched set"}>
+              <span className="momx-history-time">{sourceWarning || snapshotTimeLabel(row && row.matchedSince)}</span>
             </td>
           );
         }
@@ -2922,8 +2929,8 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
         // every symbol's bar rolls at once - 73 cells on a 50-row board. That
         // is accurate rather than wrong (they really did all just roll), and
         // it is 00:00-00:15 ET, so it is left uniform rather than special-cased.
-        // "Real RVOL": a closing-auction or earlier-day reading keeps its TOS
-        // number but loses the bright fill and never pulses as live.
+        // Preserve the study colours, including old and closing-auction cells.
+        // Freshness controls the pulse and tooltip, not the study output.
         const notLive = column.section === "rvol" && hasPaintedBackground(cell) ? rvolNotLiveReason(cell) : "";
         const liveSpike =
           (column.section === "rvol" || column.section === "skittles")
@@ -2933,15 +2940,15 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
           <td
             key={column.key}
             data-col={column.key}
-            className={"momx-cell" + (liveSpike ? " momx-cell--live" : "") + (notLive ? " momx-cell--notlive" : "")}
+            className={"momx-cell" + (liveSpike ? " momx-cell--live" : "")}
             data-rvol-notlive={notLive || undefined}
             // Only saturated RVOL cells get a tooltip; everywhere else the
             // number already says everything and a title would be noise.
             title={column.section === "rvol"
               ? (notLive === "auction"
-                ? "Closing auction volume (3:50-4:10 PM): the number matches TOS, but it is end-of-day orders, not buying - dimmed"
+                ? "Volume timestamp is in the closing-auction window (3:50-4:10 PM ET); study colours are preserved."
                 : notLive === "old"
-                  ? "From an earlier session - not live today, dimmed"
+                  ? "From an earlier session; study colours are preserved."
                   : rvolSaturationNote(cell) || undefined)
               : undefined}
             // Foreground only: the BACKGROUND rides on the pill inside, which
@@ -3042,7 +3049,10 @@ const MomxHistoryRow = memo(function MomxHistoryRow({ entry, newsTime, onOpenSna
       {columns.map((column) => {
         const base = "momx-cell" + (changed && changed.has(column.key) ? " is-changed" : "");
         if (column.kind === "setup" || column.kind === "fresh") {
-          return gradeCell(column, row, onOpenGrade, base, entry.atMs || undefined);
+          return gradeCell(column, row, onOpenGrade, base, Number(entry.atMs) || undefined);
+        }
+        if (column.kind === "jev") {
+          return jevScoreTd(column, row, base, Number(entry.atMs) || undefined);
         }
         if (column.kind === "news" || column.kind === "event") {
           // News age as of the snapshot, like the badge; Event = today's calendar.
@@ -3530,11 +3540,8 @@ const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, on
   const [rawHistorySort, setHistorySort] = useState(MOMX_HISTORY_DEFAULT_SORT);
   const onHistorySort = (column) => {
     if (!column || !column.sortable) return;
-    setHistorySort((current) => (
-      current.key === column.key
-        ? { key: column.key, direction: current.direction === "asc" ? "desc" : "asc" }
-        : { key: column.key, direction: column.key === "time" ? "asc" : "desc" }
-    ));
+    // Same three-state cycle as the live board, ending in NO SORT (timeline order).
+    setHistorySort((current) => nextSortState(current, column, column.key === "time" ? "asc" : "desc"));
   };
   // Same hidden-sort-column fix as the live board: the saved sort key can
   // point at a column just hidden from the History layout. ONE effective sort
@@ -3548,7 +3555,7 @@ const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, on
   // against whatever now happens to sit above it and invent changes that
   // never happened.
   const fullTimeline = useMemo(
-    () => annotateChanges(flattenHistoryRows(payload ? payload.rows : null)),
+    () => observeConfirmationHistory(annotateChanges(flattenHistoryRows(payload ? payload.rows : null))),
     [payload],
   );
   // NEWS on the archive (asked 2026-09-02: "Add history also news so I can
@@ -4113,6 +4120,7 @@ const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, on
 });
 
 export default function MomxScannerPanel({ initialList = null, embedded = false, background = false }) {
+  const fetch = useScannerReadFetch();
   // `embedded` = this board is inside a pop-out window. It owns no windows of
   // its own (that would recurse), shows no pop-out button, and - the one that
   // silently breaks the main page if forgotten - never writes the shared
@@ -4123,6 +4131,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // list cannot be mistaken for the newly selected one. The rows actually shown
   // are decided by decideBoardView (live board vs cached board) further down.
   const [board, setBoard] = useState(null);
+  const [boardReceivedAt, setBoardReceivedAt] = useState(null);
   const [boardList, setBoardList] = useState(() => initialList || readStoredList());
   // Seeded from the cache so a cold mount paints the tab bar immediately
   // rather than after the /lists round trip -- which is also what made
@@ -4145,6 +4154,38 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // wait-polls do not flash the board-wide loading state.
   const [rebuilding, setRebuilding] = useState(false);
   const [matchesOnly, setMatchesOnly] = useState(true);
+  // TOS checkbox: the worker's data source as last reported by a board
+  // payload. Kept apart from `board` because a list switch nulls the board,
+  // and the source is global - the checkbox must not vanish on every switch.
+  // null = this worker never reported one (older worker): no checkbox at all.
+  // Seeded from the last value this browser saw (2026-10-01: during a worker
+  // blip the panel got boards without dataSource and the box vanished from
+  // his screen); a later board always overrides it.
+  const [serverSource, setServerSourceState] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem("momx-data-source");
+      return saved === "tos" || saved === "alpaca" ? saved : null;
+    } catch {
+      return null;
+    }
+  });
+  const setServerSource = useCallback((value) => {
+    setServerSourceState(value);
+    try {
+      if (value === "tos" || value === "alpaca") window.localStorage.setItem("momx-data-source", value);
+    } catch {
+      // storage blocked: the box still follows the live boards
+    }
+  }, []);
+  // The value being POSTed (optimistic), null when nothing is in flight.
+  const [sourcePending, setSourcePending] = useState(null);
+  const sourceHoldRef = useRef(null);
+  // When the request behind the board on screen STARTED (see the hold below).
+  const boardRequestedAtRef = useRef(0);
+  const boardFetchControllerRef = useRef(null);
+  const boardRequestKeyRef = useRef("");
+  boardRequestKeyRef.current = boardCacheKey(activeList || readStoredList(), direction);
+  useEffect(() => () => boardFetchControllerRef.current?.abort(), []);
   const [boltView, setBoltViewState] = useState(() => {
     try {
       const held = window.localStorage.getItem(BOLT_VIEW_KEY);
@@ -4171,11 +4212,11 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   const boltCounts = useMemo(() => {
     let today = 0;
     let now = 0;
+    // ⚡ TODAY = every bolt that fired today (2026-09-28: "on" dropped to 0 by
+    // the evening, hiding the day's 15 bolts); ⚡ NOW = on and passing now.
     for (const item of Object.values(liveBolts)) {
-      if (item && item.on) {
-        today += 1;
-        if (item.now) now += 1;
-      }
+      if (item && item.firedAt) today += 1;
+      if (item && item.on && item.now) now += 1;
     }
     return { today, now };
   }, [liveBolts]);
@@ -4211,8 +4252,8 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
         if (full) {
           const hl = {};
           for (const [symbol, item] of Object.entries(bolts)) {
-            const v = Number(item && item.hlMomentum);
-            if (Number.isFinite(v)) hl[symbol] = v;
+            const v = item?.hlMomentum;
+            if (v != null && Number.isFinite(Number(v))) hl[symbol] = Number(v);
           }
           setLiveHl(hl);
         }
@@ -4237,6 +4278,11 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // NEWS pressed or not. Not persisted: it is a "show me the catalysts right
   // now" look, not a way he wants the board to open tomorrow.
   const [newsOnly, setNewsOnly] = useState(false);
+  // ▲ BULLISH / ▼ BEARISH news (his ask 2026-10-07: "show only bullish news in
+  // bull scanner, same way bear scanner"): only the rows whose News cell carries
+  // Jev's ▲ (BULL) or ▼ (BEAR). Same reach as NEWS - the whole board, match or
+  // not - and, like NEWS, not remembered across visits.
+  const [newsToneOnly, setNewsToneOnly] = useState(false);
   // FILTERS: the trader's second gate (RVOL / SQZ / Skittles), ANY or ALL of
   // the following - his choice at the top of the panel since 2026-09-22. The
   // CONFIG (that choice included) is remembered - it is his tuning, and
@@ -4244,8 +4290,15 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // replaces. Whether the filter is PRESSED is not, for the same reason NEWS
   // is not: a filter he forgot he left on makes the scan look broken.
   const [filters, setFilters] = useState(readStoredFilters);
-  const [filtersOn, setFiltersOn] = useState(false);
+  const [filtersOn, setFiltersOn] = useState(() => selectedSetupRules(filters).length > 0);
+  const filtersActive = filtersAreActive(filters, filtersOn);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [setupPicker, setSetupPicker] = useState(null);
+  const closeSetupPicker = useCallback(() => setSetupPicker(null), []);
+  const changeSetupColumn = useCallback(next => {
+    setFilters(next);
+    setFiltersOn(selectedSetupRules(next).length > 0);
+  }, []);
 
   // ---- back to top -------------------------------------------------------
   // He reported the board scrolled down and refusing to come back up on his
@@ -4497,6 +4550,8 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // generatedAt of the newest LIVE payload runFetch accepted. The rebuild wait
   // loop compares against this to know when the worker finished a fresh build.
   const liveGeneratedAtRef = useRef(null);
+  const confirmationTrackerRef = useRef(null);
+  if (!confirmationTrackerRef.current) confirmationTrackerRef.current = createRvolObservationTracker();
   // Monotonic token: a second refresh click invalidates the first click's wait
   // loop, so two loops never fight over the spinner.
   const rebuildTokenRef = useRef(0);
@@ -4719,6 +4774,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       // An empty response means "the worker has not registered its lists yet",
       // not "there are no lists". Keeping what is on screen is the honest
       // reading and the one that does not strand him without tabs.
+      if (items.length === 0) return;
       if (items.length > 0) {
         setLists(items);
         writeCachedLists(items);
@@ -4762,10 +4818,20 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
 
   const runFetch = useCallback(async (quiet, listName) => {
     if (!quiet && mountedRef.current) setLoading(true);
+    const controller = new AbortController();
+    boardFetchControllerRef.current = controller;
+    const requestKey = boardCacheKey(listName || readStoredList(), direction);
     try {
       const url = (listName ? MOMX_ENDPOINT + "?list=" + encodeURIComponent(listName) : MOMX_ENDPOINT + "?")
         + dirQuery;
-      const response = await fetch(url, { cache: "no-store" });
+      // A dropped phone connection is retried before anything is shown.
+      const { response, payload, requestedAt } = await readScannerBoard(url, {
+        fetchImpl: fetch, signal: controller.signal,
+        onRetry: message => {
+          if (mountedRef.current && boardRequestKeyRef.current === requestKey) setError(message);
+        },
+      });
+      if (!mountedRef.current || controller.signal.aborted || boardRequestKeyRef.current !== requestKey) return;
       if (!response.ok) {
         if (response.status === 400) {
           // The remembered tab is not a list the server knows. Drop it so the
@@ -4782,8 +4848,6 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
             : "The MomX scanner service answered with an error (" + response.status + ").",
         );
       }
-      const payload = await response.json();
-      if (!mountedRef.current) return;
       if (!payload || typeof payload !== "object") {
         throw new Error("The MomX scanner sent a reply this page could not read.");
       }
@@ -4793,21 +4857,28 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       // in `board` so the warming banner and per-symbol errors stay accurate.
       // The bear board is cached under its own key (spec 2026-09-24).
       writeCachedBoard(cacheKey, payload);
-      setBoard(payload);
+      boardRequestedAtRef.current = requestedAt;
+      setBoard(observeConfirmationBoard(payload, confirmationTrackerRef.current, cacheKey));
+      setBoardReceivedAt(new Date().toISOString());
       setBoardList(cacheKey);
       liveGeneratedAtRef.current = payload.generatedAt || null;
       setError("");
     } catch (caught) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || controller.signal.aborted || boardRequestKeyRef.current !== requestKey) return;
       // Never blank the board on a failed refresh: the last good rows stay on
-      // screen and the banner says why they may be stale.
+      // screen and the banner says why they may be stale. A connection that
+      // stayed down through the retries is said in plain words, never as the
+      // browser's "FetchEvent.respondWith received an error: Load failed".
       setError(
-        caught && caught.message
-          ? caught.message
-          : "Could not reach the MomX scanner. The figures below may be out of date.",
+        isNetworkDrop(caught)
+          ? networkDropMessage(liveGeneratedAtRef.current)
+          : caught && caught.message
+            ? caught.message
+            : "Could not reach the MomX scanner. The figures below may be out of date.",
       );
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (boardFetchControllerRef.current === controller) boardFetchControllerRef.current = null;
+      if (mountedRef.current && boardRequestKeyRef.current === requestKey) setLoading(false);
     }
   }, [direction, dirQuery]);
 
@@ -4815,10 +4886,12 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     async (options) => {
       const quiet = Boolean(options && options.quiet);
       const queue = Boolean(options && options.queue);
+      const requestKey = boardCacheKey(activeList || readStoredList(), direction);
       if (inFlightRef.current) {
         if (!queue) return;
         await inFlightRef.current.catch(() => {});
       }
+      if (!mountedRef.current || boardRequestKeyRef.current !== requestKey) return;
       const request = runFetch(quiet, activeList);
       inFlightRef.current = request;
       try {
@@ -4827,7 +4900,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
         if (inFlightRef.current === request) inFlightRef.current = null;
       }
     },
-    [runFetch, activeList],
+    [runFetch, activeList, direction],
   );
 
   // The refresh and SCAN buttons. They used to call load(), which only
@@ -4889,6 +4962,77 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     }
   }, [activeList, load]);
 
+  // Adopt the data source each board reports. The worker stamps dataSource at
+  // SERVE time (momx/service.py _with_data_source), so the first board
+  // REQUESTED after the switch's POST resolved already carries the new value.
+  // The only stale answer is a poll that was already in flight: ignore a
+  // board whose request started before the switch, adopt anything after -
+  // including a later switch back by another admin or tab (a time-based hold
+  // pinned the box to the wrong value for minutes in that case).
+  useEffect(() => {
+    const reported = board && board.dataSource;
+    if (reported !== "tos" && reported !== "alpaca") return;
+    const hold = sourceHoldRef.current;
+    if (hold) {
+      if (reported !== hold.value && boardRequestedAtRef.current < hold.since) return;
+      sourceHoldRef.current = null;
+    }
+    setServerSource(reported);
+  }, [board]);
+
+  // The TOS checkbox. POST the new source (worker saves it and queues a
+  // rebuild), then run the Refresh button's rebuild-and-wait so the new build
+  // is picked up as soon as it lands. Any failure reverts the box.
+  const onDataSourceChange = useCallback(
+    async (checked) => {
+      if (sourcePending) return;
+      const next = checked ? "tos" : "alpaca";
+      setSourcePending(next);
+      setNotice("");
+      try {
+        let response;
+        try {
+          response = await fetch(MOMX_DATA_SOURCE_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            cache: "no-store",
+            body: JSON.stringify({ source: next }),
+          });
+        } catch {
+          throw new Error("Could not reach the MomX scanner. The data source was not changed.");
+        }
+        if (!response.ok) {
+          throw new Error(
+            response.status === 403
+              ? "Only an admin can change the data source."
+              : response.status === 404
+                ? "This copy of the scanner service cannot switch data source yet."
+                : "The data source was not changed (the service answered " + response.status + ").",
+          );
+        }
+        const saved = await response.json().catch(() => null);
+        const applied = saved && (saved.source === "tos" || saved.source === "alpaca") ? saved.source : next;
+        if (!mountedRef.current) return;
+        sourceHoldRef.current = { value: applied, since: Date.now() };
+        setServerSource(applied);
+        setError("");
+        setNotice(
+          applied === "tos"
+            ? "Switched to TOS data. Rebuilding the board - the full list fills in over a few minutes."
+            : "Switched to Alpaca data. Rebuilding the board.",
+        );
+        forceRebuild();
+      } catch (caught) {
+        if (!mountedRef.current) return;
+        setError(caught && caught.message ? caught.message : "The data source was not changed.");
+      } finally {
+        if (mountedRef.current) setSourcePending(null);
+      }
+    },
+    [forceRebuild, sourcePending],
+  );
+
   useEffect(() => {
     mountedRef.current = true;
     loadLists();
@@ -4908,6 +5052,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
 
     return () => {
       mountedRef.current = false;
+      boardFetchControllerRef.current?.abort();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [load, loadLists]);
@@ -5428,31 +5573,46 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // the store's headline whenever it is newer than the worker's (or the worker
   // has none). The store never blocks the board: a failed read leaves the
   // worker's headlines exactly as they were.
-  const [newsFeed, setNewsFeed] = useState(null);
+  const [newsFeed, setNewsFeed] = useState(() => lastNewsFeedPayload);
   const [newsFeedBusy, setNewsFeedBusy] = useState(false);
   const newsLatest = newsFeed && newsFeed.latest && typeof newsFeed.latest === "object" ? newsFeed.latest : EMPTY_OBJECT;
   const allRows = useMemo(
     () => mergeStoredNews(restRows.length > 0 ? rows.concat(restRows) : rows, newsLatest),
     [rows, restRows, newsLatest],
   );
-  const newsSymbols = useMemo(() => boardSymbols(allRows), [allRows]);
+  // Every row on the board (was the first 120), so the News column of a
+  // ticker far down the list also gets its stored headline (2026-10-01).
+  const newsSymbols = useMemo(() => boardSymbols(allRows, 400), [allRows]);
   newsSymbolsRef.current = newsSymbols;
-  const newsSymbolsKey = newsSymbols.join(",");
+  const newsSymbolsKey = newsSymbolKey(newsSymbols);
+  const newsFeedRequestRef = useRef(null);
+  useEffect(() => () => newsFeedRequestRef.current?.controller.abort(), []);
   const loadNewsFeed = useCallback(async (symbols) => {
     if (!Array.isArray(symbols) || symbols.length === 0) return null;
-    try {
-      const response = await fetch(
-        MOMX_NEWS_LATEST_ENDPOINT + "?symbols=" + encodeURIComponent(symbols.join(",")),
-        { cache: "no-store" },
-      );
-      if (!response.ok) return null;
-      const payload = await response.json();
-      if (!payload || typeof payload !== "object") return null;
-      if (mountedRef.current) setNewsFeed(payload);
-      return payload;
-    } catch {
-      return null; // news can never break the board
-    }
+    const key = newsSymbolKey(symbols);
+    if (newsFeedRequestRef.current?.key === key) return newsFeedRequestRef.current.promise;
+    newsFeedRequestRef.current?.controller.abort();
+    const controller = new AbortController();
+    const deadline = window.setTimeout(() => controller.abort(), MOMX_POLL_MS);
+    const promise = (async () => {
+      try {
+        const response = await fetch(MOMX_NEWS_LATEST_ENDPOINT + "?symbols=" + encodeURIComponent(key),
+          { cache: "no-store", signal: controller.signal });
+        if (!response.ok) return null;
+        const payload = await response.json();
+        if (!payload || typeof payload !== "object" || controller.signal.aborted) return null;
+        lastNewsFeedPayload = payload;
+        if (mountedRef.current) setNewsFeed(payload);
+        return payload;
+      } catch {
+        return null;
+      } finally {
+        window.clearTimeout(deadline);
+        if (newsFeedRequestRef.current?.controller === controller) newsFeedRequestRef.current = null;
+      }
+    })();
+    newsFeedRequestRef.current = {key, controller, promise};
+    return promise;
   }, []);
   // Ask api_server to read every source again for these tickers, then poll the
   // store until the scrape finishes (or a bounded wait runs out).
@@ -5495,6 +5655,18 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     }, MOMX_NEWS_STORE_POLL_MS);
     return () => window.clearInterval(id);
   }, [loadNewsFeed]);
+  // Until the store has answered ONCE, ask again every 15 s rather than every
+  // 2 minutes (2026-10-07): a cold /latest read waits on the shared database
+  // lock while the news collector saves (measured 6-35 s), and a read that
+  // failed on the phone left the board without Jev ▲/▼ for 2 whole minutes.
+  const newsFeedLoaded = newsFeed !== null;
+  useEffect(() => {
+    if (newsFeedLoaded && !(Number(newsFeed?.newsAi?.queued) > 0)) return undefined;
+    const id = window.setInterval(() => {
+      if (newsSymbolsRef.current.length > 0) loadNewsFeed(newsSymbolsRef.current);
+    }, 15 * 1000);
+    return () => window.clearInterval(id);
+  }, [newsFeedLoaded, newsFeed?.newsAi?.queued, loadNewsFeed]);
 
   // Metadata for the list currently selected, for the picker button's count
   // and building state. An empty object is fine: every read of it is guarded.
@@ -5506,18 +5678,12 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // ---- fastlane: live quotes for the rows on screen -----------------------
   // {symbol: last}. Object identities are reused per symbol when the price is
   // unchanged, so MomxRow's memo only re-renders the rows that actually ticked.
-  const [liveLastBySymbol, setLiveLastBySymbol] = useState(EMPTY_OBJECT);
+  const [liveQuotesBySymbol, setLiveQuotesBySymbol] = useState(EMPTY_OBJECT);
+  const liveLastBySymbol = Object.fromEntries(Object.entries(liveQuotesBySymbol)
+    .map(([symbol, quote]) => [symbol, liveQuote(quote)?.last]).filter(([, last]) => last != null));
   const liveQuotesInFlightRef = useRef(false);
   const liveQuotesServingRef = useRef(true);
   const liveSymbolsRef = useRef("");
-
-  useEffect(() => {
-    liveSymbolsRef.current = (rows || [])
-      .map((row) => row && row.symbol)
-      .filter(Boolean)
-      .slice(0, 60)
-      .join(",");
-  }, [rows]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5534,20 +5700,11 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
         );
         if (!res.ok) return; // older api_server: fastlane simply stays dark
         const data = await res.json();
+        if (cancelled) return;
         liveQuotesServingRef.current = Boolean(data && data.serving);
-        const quotes = (data && data.quotes) || {};
-        setLiveLastBySymbol((held) => {
-          let changed = false;
-          const next = { ...held };
-          for (const [symbol, quote] of Object.entries(quotes)) {
-            const last = Number(quote && quote.last);
-            if (Number.isFinite(last) && last > 0 && held[symbol] !== last) {
-              next[symbol] = last;
-              changed = true;
-            }
-          }
-          return changed ? next : held;
-        });
+        // Scope to this reply's symbols. Disconnected/missing/stale quotes
+        // must not remain in a growing map and override newer board values.
+        setLiveQuotesBySymbol(data?.serving ? data.quotes || EMPTY_OBJECT : EMPTY_OBJECT);
       } catch {
         // Network blip: keep showing build prices; next tick retries.
       } finally {
@@ -5603,6 +5760,17 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // matches stay obvious inside it - MomxRow still paints them is-pass-up.
   const newsRows = useMemo(() => allRows.filter((row) => newsOf(row) !== null), [allRows]);
   const newsCount = newsRows.length;
+  // The rows the ▲ BULLISH / ▼ BEARISH button keeps: the SAME newsOf() gate as
+  // the News cell, so the button count and the arrows on screen always agree.
+  const newsToneLabel = bear ? "bearish" : "bullish";
+  // Follows "Scan matches only" (his ask 2026-10-08: "I need same as scanner" -
+  // NEWS ▲ said 99 while the scanner had 15 matches): ticked = the scan
+  // matches with Jev-bullish (BEAR: bearish) news; unticked = the whole list.
+  const newsToneRows = useMemo(
+    () => scanRows.filter((row) => { const n = newsOf(row); return Boolean(n && n.jev && n.jev.label === newsToneLabel); }),
+    [scanRows, newsToneLabel],
+  );
+  const newsToneCount = newsToneRows.length;
 
   // A picked STRATEGY (V2 / V3 / Daily 2 / G) reads the whole board, not just
   // the scan matches: its tickers are judged by their own rules, and a Daily 2
@@ -5615,17 +5783,17 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // the button state made the panel say "0 of 5 tickers - no ticker has
   // qualified for V2" while 9 had, whenever FILTERS was still off (smoke test
   // 2026-09-24): the count read the 5 scan matches, the board the whole list.
-  const strategyPicked = Boolean(strategyOf(filters));
-  const unfilteredRows = newsOnly ? newsRows : scanRows;
-  const filterSourceRows = newsOnly ? newsRows : strategyPicked ? allRows : scanRows;
+  const strategyPicked = Boolean(strategyOf(filters)) || selectedSetupRules(filters).length > 0;
+  const unfilteredRows = newsToneOnly ? newsToneRows : newsOnly ? newsRows : scanRows;
+  const filterSourceRows = newsToneOnly ? newsToneRows : newsOnly ? newsRows : strategyPicked ? allRows : scanRows;
 
   // The FILTERS gate. Sits BEFORE the industry chips and the sector rollup on
   // purpose, exactly like the NEWS narrowing above: those two are summaries OF
   // the board, and a chip counting rows the table is not showing is the same
   // disagreement the news count/icon gate exists to prevent.
   const baseRows = useMemo(
-    () => (filtersOn ? filterRows(filterSourceRows, filters) : unfilteredRows),
-    [filterSourceRows, unfilteredRows, filtersOn, filters],
+    () => visibleFilterRows(filterSourceRows, unfilteredRows, filters, filtersActive),
+    [filterSourceRows, unfilteredRows, filtersActive, filters],
   );
 
   // Counted on the set the filter reads, so the button can say how many rows a
@@ -5646,13 +5814,13 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // per row: MomxRow takes a boolean, so the memo still holds for every row
   // whose star did not change on this build.
   const starredSymbols = useMemo(() => {
-    if (!filtersOn || !filters || !filters.skittles || !filters.skittles.rankToTop) {
+    if (!filtersActive || !filters || !filters.skittles || !filters.skittles.rankToTop) {
       return EMPTY_STARS;
     }
     const out = new Set();
     for (const row of baseRows) if (row && isStarred(row, filters)) out.add(row.symbol);
     return out.size === 0 ? EMPTY_STARS : out;
-  }, [baseRows, filtersOn, filters]);
+  }, [baseRows, filtersActive, filters]);
 
   const chips = useMemo(() => industryCounts(baseRows), [baseRows]);
   // Derived from the rows already on screen, so it can never disagree with the
@@ -5710,29 +5878,56 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       { minMembers: 1, limit: 8 },
     ).filter((group) => group.hot || group.late);
     const names = new Set(hot.map((group) => group.name));
-    return hot.concat(onScreen.filter((group) => !names.has(group.name)));
-  }, [baseRows, allRows]);
+    // Bull: a 🔥 sector that turned negative today is shown cooled; bear: 🔥 =
+    // falling sectors (momxCells.sectorsForDirection, 2026-09-28).
+    return sortSectorsByMove(
+      sectorsForDirection(hot.concat(onScreen.filter((group) => !names.has(group.name))), allRows, direction), direction);
+  }, [baseRows, allRows, direction]);
+
+  // Live H/L rows, reused per symbol while neither the built row nor its live
+  // price changed, so MomxRow's memo only re-renders rows that actually ticked.
+  const liveHlRowsRef = useRef(null);
+  if (!liveHlRowsRef.current) liveHlRowsRef.current = createLiveRowProjector();
 
   const visibleRows = useMemo(() => {
+    // The hourly bolt service is bull-only. Its hidden controls must not
+    // continue filtering or ordering the bear board after a direction switch.
+    const activeBoltView = bear ? "all" : boltView;
     // A clicked momentum chip WINS over every other filter: the trader asked
     // for one specific symbol, so it is pulled from the FULL row set - a
     // lost_match must still be findable with "Scan matches only" ticked.
+    // The ⚡ views read the WHOLE board: a stock that fired a bolt is listed
+    // even when it is no longer a scan match.
     const byIndustry = focusSymbol
       ? allRows.filter((row) => row && row.symbol === focusSymbol)
-      : filterByIndustries(baseRows, selectedIndustries);
+      : filterByIndustries(activeBoltView === "all" ? baseRows : allRows, selectedIndustries);
     // ⚡ TODAY = the bolt is on (fired today, still in the upper half of its
     // hour); ⚡ NOW = on AND passing the gates this second. ALL = no filter.
-    const filtered = focusSymbol || boltView === "all"
+    const filtered = focusSymbol || activeBoltView === "all"
       ? byIndustry
       : byIndustry.filter((row) => {
         const b = row && liveBolts[row.symbol];
-        return Boolean(b && b.on && (boltView === "today" || b.now));
+        return Boolean(b && (activeBoltView === "today" ? b.firedAt : b.on && b.now));
       });
+    // H/L follows the LIVE price between board rebuilds, like his TOS column
+    // (2h, EXT, length 8), which re-sorts as prices move. The build ships the
+    // 8-bar hh/ll; the live last extends them and the same formula re-runs.
+    const projectLiveRow = liveHlRowsRef.current;
+    // %Chg moves live too (premarket + regular hours only - see livePctChange).
+    const et = etParts(Date.now());
+    const etMinute = et.hour * 60 + et.minute;
+    const pctSessionOk = isTradingDay(et.weekday) && etMinute >= 4 * 60 && etMinute < 16 * 60;
+    const quoteNow = Date.now();
+    // Observe quotes even while an industry/Setup filter hides a row; changing
+    // the filter must not forget the highs/lows already seen in this 2h bar.
+    for (const row of allRows) projectLiveRow(row, liveQuotesBySymbol[row?.symbol], quoteNow, pctSessionOk);
     if (filtered.length === 0) return EMPTY_ROWS;
+    const withLive = filtered.map(row => projectLiveRow(row, liveQuotesBySymbol[row?.symbol], quoteNow, pctSessionOk));
     const column = MOMX_LIVE_COLUMN_BY_KEY.get(sort.key);
     // sortRows only reads FLAT keys, so each row is projected onto a throwaway
     // index object carrying its sort value plus the symbol it tie-breaks on.
-    const index = filtered.map((row) => ({
+    const unsorted = sort.direction === "none";
+    const index = unsorted ? [] : withLive.map((row) => ({
       symbol: row && row.symbol ? row.symbol : null,
       [sort.key]: columnSortValue(row, column, newsOnly),
       row,
@@ -5743,9 +5938,11 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     };
     // H/L ⚡ sort (ScannerX3): who sits at the top of an hour that actually
     // went somewhere - position in the last hour x the hour's size vs usual.
-    const ordered = hlSort
-      ? index.map((entry) => entry.row).sort((a, b) => hlValue(b) - hlValue(a))
-      : sortRows(index, sort.key, sort.direction).map((entry) => entry.row);
+    const ordered = !bear && hlSort
+      ? [...withLive].sort((a, b) => hlValue(b) - hlValue(a))
+      : unsorted
+        ? withLive // NO SORT: the scanner's own order
+        : sortRows(index, sort.key, sort.direction).map((entry) => entry.row);
     // Skittles "push to top" is applied LAST and is a stable partition, not a
     // re-sort: his column sort still decides the order inside each half, so
     // clicking a header does what it always did. Only while the filter is
@@ -5753,7 +5950,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     // would be a mystery.
     // Daily 2 picked: the list reads #1, #2, #3 top-down whatever column is
     // sorted - the order IS the strategy (a no-op for every other setting).
-    const out = filtersOn ? orderByDaily2(pushStarredToTop(ordered, filters), filters) : ordered;
+    const out = filtersActive ? orderByDaily2(pushStarredToTop(ordered, filters), filters) : ordered;
     // ⭐1, ⭐2 ... on the day's best setups, ranked across the WHOLE board by his
     // tested order, visible with or without FILTERS (his ask 2026-09-25: "I
     // don't change any filters, I just use the scanner"). Only ranked rows are
@@ -5762,8 +5959,15 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     return ranks.size ? out.map((row) => (row && ranks.has(row.symbol) ? { ...row, bestRank: ranks.get(row.symbol) } : row)) : out;
   }, [
     allRows, baseRows, selectedIndustries, sort.key, sort.direction, focusSymbol, boltView, liveBolts, liveHl, hlSort,
-    newsOnly, filtersOn, filters, earningsMap,
+    newsOnly, filtersActive, filters, earningsMap, liveQuotesBySymbol, bear,
   ]);
+
+  // Lease the actual top rows the trader sees after H/L sorting/filtering,
+  // including rest rows. The backend's original %Chg-ranked first 50 are a
+  // different set and could leave an on-screen H/L leader without live quotes.
+  useEffect(() => {
+    liveSymbolsRef.current = visibleRows.slice(0, 60).map(row => row?.symbol).filter(Boolean).join(",");
+  }, [visibleRows]);
 
   // Clock for the matchedSince row decorations, read ONCE per render (not
   // state, not a ticker): the 15s board poll re-renders this component anyway,
@@ -5781,13 +5985,8 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
 
   const onSort = useCallback((column) => {
     if (!column.sortable) return;
-    setSort((current) => {
-      if (current.key === column.key) {
-        return { key: column.key, direction: current.direction === "desc" ? "asc" : "desc" };
-      }
-      const textual = column.kind === "industry" || column.kind === "symbol";
-      return { key: column.key, direction: textual ? "asc" : "desc" };
-    });
+    // desc -> asc -> NO SORT (names: asc -> desc -> no sort); momxColumnLayout.
+    setSort((current) => nextSortState(current, column));
   }, [setSort]);
 
   const onToggleIndustry = useCallback((name) => {
@@ -5838,6 +6037,38 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       onChooseList(name);
     },
     [onChooseList],
+  );
+
+  // The timeframe is part of an EMA touch list's name ("21 EMA Touch
+  // Weekly"), so switching it is switching lists: the server renames, then
+  // the same path as picking a list (clears the old rows and chips) runs.
+  const onEmaTimeframe = useCallback(
+    async (timeframe) => {
+      const length = activeMeta.emaLength;
+      if (!length || !timeframe || timeframe === activeMeta.timeframe || listBusy) return;
+      setListBusy(true);
+      setListError("");
+      try {
+        const response = await fetch(MOMX_EMA_TIMEFRAME_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({ length, timeframe }),
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload || payload.ok === false || typeof payload.list !== "string") {
+          throw new Error((payload && payload.error) || "Could not switch the timeframe. Nothing was changed.");
+        }
+        if (!mountedRef.current) return;
+        onChooseTab(payload.list, historyView);
+        await loadLists();
+      } catch (caught) {
+        if (mountedRef.current) setListError(caught && caught.message ? caught.message : "Could not switch the timeframe.");
+      } finally {
+        if (mountedRef.current) setListBusy(false);
+      }
+    },
+    [activeMeta, listBusy, onChooseTab, historyView, loadLists],
   );
 
   const onSubmitUniverse = useCallback(
@@ -6079,15 +6310,35 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // 0 while cached rows are visible.
   const universeCount = boardView.universeCount;
 
+  // TOS checkbox state: the optimistic value while a POST is in flight, else
+  // what the worker last reported. The loading note reads the LIVE board's
+  // tosStatus (per list), and only while TOS is still filling symbols in.
+  const shownSource = sourcePending || serverSource;
+  const tosStatus = liveBoard && liveBoard.tosStatus;
+  const tosLoadingNote =
+    shownSource === "tos" &&
+    !sourcePending &&
+    tosStatus &&
+    typeof tosStatus === "object" &&
+    Number(tosStatus.pending) > 0 &&
+    Number.isFinite(Number(tosStatus.total))
+      ? "TOS loading " + (Number(tosStatus.loaded) || 0) + "/" + Number(tosStatus.total)
+      : "";
+
   // Options only (momx/optionable.py): what the scanner held back and why.
   // Read from the LIVE board, like errorSymbols below - the cache whitelist in
   // decideBoardView would drop an unknown field.
   const optionsNote = optionsGateNote(liveBoard && liveBoard.optionsGate);
 
   // Per-symbol errors are a property of the LIVE fetch, not of cached rows.
+  // TOS mode (2026-09-30): a symbol still waiting for its rate-paced Schwab
+  // turn comes back as "tos: queued" - not a failure, and the "TOS loading
+  // n/N" note already counts it, so it stays out of "No data came back".
   const errorSymbols =
     liveBoard && liveBoard.errors && typeof liveBoard.errors === "object"
-      ? Object.keys(liveBoard.errors)
+      ? Object.keys(liveBoard.errors).filter(
+          (symbol) => !String(liveBoard.errors[symbol]).includes("tos: queued"),
+        )
       : EMPTY_ROWS;
 
   const warming = rawWarming;
@@ -6107,13 +6358,15 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       focusSymbol + " is not on this list right now. Press clear above to see the whole board.";
   } else if (selectedIndustries.size > 0 && baseRows.length > 0) {
     emptyMessage = "No row is in the industries you picked. Click a chip again to clear it.";
+  } else if (newsToneOnly && rows.length > 0) {
+    emptyMessage = "No ticker on the board has news AI reads as " + newsToneLabel + " right now. Press " + (bear ? "NEWS ▼" : "NEWS ▲") + " again to see the whole list.";
   } else if (newsOnly && rows.length > 0) {
     emptyMessage = "No ticker on the board has news from the last 24 hours. Press NEWS again to see the whole list.";
   // Named BEFORE the matchesOnly line: with FILTERS pressed the filter is the
   // narrower cause, and blaming "Scan matches only" would send him to the
   // wrong switch. It also says WHICH conditions are on, because a filter he
   // tuned yesterday is the hardest empty board to explain to himself.
-  } else if (filtersOn && filterSourceRows.length > 0) {
+  } else if (filtersActive && filterSourceRows.length > 0) {
     emptyMessage =
       "No ticker passes your filters right now. Press FILTERS again for the whole board, " +
       "or open the sliders to loosen them. Currently: " + describeFilters(filters, direction);
@@ -6123,6 +6376,8 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
 
   const panel = (
     <section className="momx-scanner-panel" data-testid="momx-scanner-panel" ref={panelRef}>
+      <MomxTagExplain />
+      <MomxRuleRecordLoader />
       {/* ONE row, whatever the list count. The old bar rendered two tabs per
           list (live + History), so it grew 2N: fine at the two built-in lists,
           but at six lists it is twelve buttons wrapping to ~170px of a 375px
@@ -6205,6 +6460,30 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
               onClose={() => setPickerOpen(false)}
             />
           ) : null}
+        </div>
+      ) : null}
+
+      {/* Monthly / Weekly / Daily for the 21 / 50 EMA touch lists, on its OWN
+          row: beside the list button it squeezed the name to "21 ..." on a
+          375px phone (iOS keeps selects at 16px), hiding 21 vs 50. Outside the
+          Live/History branch so it works on both. */}
+      {lists.length > 0 && activeMeta.emaLength && Array.isArray(activeMeta.timeframes) ? (
+        <div className="momx-ema-tf-row">
+          <label className="momx-universe-label" htmlFor="momx-ema-tf">EMA chart:</label>
+          <select
+            id="momx-ema-tf"
+            className="momx-ema-tf"
+            value={activeMeta.timeframe || "Monthly"}
+            disabled={listBusy}
+            onChange={(event) => onEmaTimeframe(event.target.value)}
+            title="Which chart's EMA the touch is measured on"
+            data-testid="momx-ema-tf"
+          >
+            {activeMeta.timeframes.map((tf) => (
+              <option value={tf} key={tf}>{tf}</option>
+            ))}
+          </select>
+          {listError ? <span className="momx-ema-tf-error">{listError}</span> : null}
         </div>
       ) : null}
 
@@ -6354,16 +6633,19 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
             one button so the toolbar does not grow a second cell - the label
             toggles, the icon opens the panel. The count is shown BEFORE he
             presses, same contract as NEWS. */}
-        <span className={"momx-filters-btn" + (filtersOn ? " is-active" : "")}>
+        <span className={"momx-filters-btn" + (filtersActive ? " is-active" : "")}>
           <button
             type="button"
             className="momx-filters-toggle"
-            onClick={() => setFiltersOn((on) => !on)}
-            aria-pressed={filtersOn}
+            onClick={() => {
+              if (selectedSetupRules(filters).length) { setFilters(withSetupRules(filters, [])); setFiltersOn(false); }
+              else setFiltersOn(on => !on);
+            }}
+            aria-pressed={filtersActive}
             data-testid="momx-filters-toggle"
             title={
-              filtersOn
-                ? "Showing only tickers that pass your filters. Press again for the whole board.\n" +
+              filtersActive
+                ? (selectedSetupRules(filters).length ? "Clear Setup choices and show the whole board.\n" : "Showing only tickers that pass your filters. Press again for the whole board.\n") +
                   describeFilters(filters, direction)
                 : "Show only the " + filterCount + " tickers that pass your filters\n" +
                   describeFilters(filters, direction)
@@ -6374,6 +6656,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                 of toolbar). Hiding the label was tried and did NOT win the
                 line back - see index.css - so the word stays. */}
             <span className="momx-filters-label">FILTERS</span>
+            <span className="momx-filters-state">{filtersActive ? 'ON' : 'OFF'}</span>
             <span className="momx-filters-badge">{filterCount}</span>
           </button>
           <button
@@ -6397,8 +6680,12 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
             onReset={() => setFilters(JSON.parse(JSON.stringify(DEFAULT_MOMX_FILTERS)))}
             onClose={() => setFiltersOpen(false)}
             direction={direction}
+            enabled={filtersActive}
           />
         ) : null}
+        {setupPicker ? <SetupColumnPicker config={filters} direction={direction} count={filtersActive ? filterCount : unfilteredRows.length} enabled={selectedSetupRules(filters).length > 0}
+          anchor={setupPicker} onChange={changeSetupColumn} onClose={closeSetupPicker}
+          onSort={() => onSort(MOMX_COLUMNS.find(column => column.key === 'setup'))} /> : null}
 
         {/* Columns: move left/right, show/hide, reset. Same size and weight
             as NEWS beside it; the layout also drives the History table. */}
@@ -6450,6 +6737,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
             // the tickers on the board; the list below the toolbar fills in
             // from the store meanwhile. Pressing it off just restores the board.
             if (!newsOnly) refreshNewsFeed(newsSymbols);
+            setNewsToneOnly(false);
             setNewsOnly((on) => !on);
           }}
           aria-pressed={newsOnly}
@@ -6465,6 +6753,30 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
           <Newspaper size={11} aria-hidden="true" />
           NEWS
           <span className="momx-news-count">{newsCount}</span>
+        </button>
+        <button
+          type="button"
+          className={"momx-news-btn momx-news-tone-btn " + (bear ? "is-bear" : "is-bull") + (newsToneOnly ? " is-active" : "")}
+          onClick={() => {
+            // Same whole-board start as NEWS (see the comment there).
+            setFocusSymbol(null);
+            setSelectedIndustries(EMPTY_SELECTION);
+            setNewsOnly(false);
+            setNewsToneOnly((on) => !on);
+          }}
+          aria-pressed={newsToneOnly}
+          data-testid="momx-news-tone-toggle"
+          title={
+            newsToneOnly
+              ? "Showing only tickers whose news AI reads as " + newsToneLabel + ". Press again for the whole board."
+              : newsToneCount > 0
+                ? "Show only the " + newsToneCount + (matchesOnly ? " scan matches" : " tickers") + " whose news AI reads as " + newsToneLabel
+                : "No scanned ticker has news AI reads as " + newsToneLabel + " right now"
+          }
+        >
+          {/* Named "NEWS ▲" / "NEWS ▼" on his ask (2026-10-07), not BULLISH / BEARISH. */}
+          {bear ? "NEWS ▼" : "NEWS ▲"}
+          <span className="momx-news-count">{newsToneCount}</span>
         </button>
 
         {/* Hidden inside the detached ?popout= window - a button that re-opens
@@ -6531,6 +6843,11 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
             />
             <span>Scan matches only</span>
           </label>
+          {/* No TOS checkbox (2026-10-01, his order): the scanner runs on TOS data
+              permanently; only the "TOS loading n/N" note below remains. */}
+          {tosLoadingNote ? (
+            <span className="momx-since" data-testid="momx-tos-loading">{tosLoadingNote}</span>
+          ) : null}
           {embedded || bear ? null : (
             // ScannerX3's control, one button that CYCLES: ALL -> ⚡ NOW ->
             // ⚡ TODAY -> ALL (2026-09-25 "build flash same as momox3
@@ -6541,7 +6858,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
               onClick={() => setBoltView(boltView === "all" ? "now" : boltView === "now" ? "today" : "all")}
               title={"Which rows show - click to cycle ALL → ⚡ NOW → ⚡ TODAY. "
                 + "⚡ NOW: names passing the gates this second with a live bolt. "
-                + "⚡ TODAY: everything that fired today and is still holding the upper half of its last hour. "
+                + "⚡ TODAY: every stock that fired a bolt today (the bolt runs all session, 09:25-16:05 ET). "
                 + "Live every second on the Schwab stream."}
               data-testid="momx-bolt-view"
             >
@@ -6595,9 +6912,9 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                 with rows visible. A subtle "updating" note rides alongside while
                 a rebuild is in flight. */}
             <span className="momx-stat-value">
-              {formatUpdatedAt(boardView.generatedAt)}
+              {formatUpdatedAt(boardView.scanCompletedAt || boardView.generatedAt)}
               {(() => {
-                const note = tapeAsOfNote(boardView.tapeAsOf);
+                const note = scannerFreshness(boardView, Date.now(), boardReceivedAt);
                 if (!note) return null;
                 // Three tones, three meanings. The old code had two and used
                 // the loud one for "the market is shut", which is how an amber
@@ -6623,7 +6940,8 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                 return (
                   <span
                     className={TONE_CLASS[note.tone] || "momx-since"}
-                    title={TONE_TITLE[note.tone] || TONE_TITLE.live}
+                    title={note.title}
+                    data-testid="momx-data-freshness"
                   >
                     {note.text}
                   </span>
@@ -6635,7 +6953,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                   title={
                     showingCache
                       ? "Showing the last saved board while a fresh one is built."
-                      : "This watchlist is still building. Rows keep filling in."
+                      : "Showing the previous scan while the next complete scan is built."
                   }
                 >
                   updating…
@@ -6794,12 +7112,19 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                 <span className="momx-sector-mark" aria-hidden="true">{sector.hot || sector.late ? "🔥" : "▲"}</span>
                 <span className="momx-sector-name">{sector.name}</span>
                 <span className="momx-sector-count">
-                  {sector.up} of {sector.total} up &ge;{SECTOR_MOVE_PCT}%
+                  {sector.bear
+                    ? sector.breadthUp + " of " + sector.breadthTotal + " down & below VWAP"
+                    : <>{sector.up} of {sector.total} up &ge;{SECTOR_MOVE_PCT}%</>}
                 </span>
                 <span className="momx-sector-avg">avg {avg}</span>
+                {sector.cooled ? (
+                  <span className="momx-sector-rs is-cooled">
+                    was 🔥 · now {sector.today !== null ? (sector.today >= 0 ? "+" : "") + sector.today.toFixed(1) + "%" : "negative"} - cooled, no longer a bull sector today
+                  </span>
+                ) : null}
                 {sector.hot || sector.late ? (
                   <span className="momx-sector-rs">
-                    HOT
+                    {sector.bear ? "FALLING" : "HOT"}
                     {sector.today !== null ? " · today " + (sector.today >= 0 ? "+" : "") + sector.today.toFixed(1) + "%" : ""}
                     {sector.ret3 !== null ? " · 3d " + (sector.ret3 >= 0 ? "+" : "") + sector.ret3.toFixed(1) + "%" : ""}
                     {sector.volUp !== null ? " · vol " + sector.volUp + " of " + sector.breadthTotal : ""}
@@ -6830,7 +7155,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       {!error && notice ? <p className="momx-banner is-notice">{notice}</p> : null}
       {warming && rows.length > 0 ? (
         <p className="momx-banner is-notice">
-          <span>This watchlist is still building. Rows will keep filling in.</span>
+          <span>Showing the previous scan while a fresh scan is built. These matches are not the new scan results.</span>
         </p>
       ) : null}
       {errorSymbols.length > 0 ? (
@@ -6900,7 +7225,9 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                         ? "COLOR"
                         : column.kind === "matchedSince" && newsOnly
                           ? "When the headline was published (ET), newest first - a ticker that matched the scan shows its alert time above the headline time"
-                          : undefined
+                          : column.key === "highLow"
+                            ? "HighLowGraph: price position within the last 8 two-hour EXT bars. +1 = range high, 0 = midpoint, -1 = low. Sorted using the full value; exact ties use symbol. Range position alone does not measure momentum or predict profit."
+                            : undefined
                     }
                     onClick={
                       column.sortable
@@ -6915,9 +7242,16 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                       <span className="momx-visually-hidden">COLOR</span>
                     ) : (
                       <>
-                        <span className="momx-th-label">
+                        {column.key === 'setup' ? <button type="button" className="momx-setup-header-button"
+                          aria-label="Choose Setup column rules" aria-haspopup="dialog" aria-expanded={Boolean(setupPicker)}
+                          onClick={event => {
+                            event.stopPropagation();
+                            if (liveHeader.justDragged()) return;
+                            const box = event.currentTarget.getBoundingClientRect();
+                            setSetupPicker({ left: box.left, bottom: box.bottom });
+                          }}>Setup ▾{selectedSetupRules(filters).length ? ' ' + selectedSetupRules(filters).length : ''}</button> : <span className="momx-th-label">
                           {column.kind === "matchedSince" && newsOnly ? "News" : column.label}
-                        </span>
+                        </span>}
                         {active ? (
                           <span className="momx-sort-arrow">{sort.direction === "asc" ? "▲" : "▼"}</span>
                         ) : null}
@@ -6947,6 +7281,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                 const matched = matchedSinceLabel(row && row.matchedSince, rowClockMs);
                 return (
                   <MomxRow
+                    sourceWarning={scannerRowFreshness(row, rowClockMs)?.text || ""}
                     liveLast={liveLastBySymbol[row && row.symbol]}
                     key={(row && row.symbol) || "row-" + rowIndex}
                     row={row}
@@ -6957,14 +7292,14 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                     // whose flag flips, never the whole board on a 15s tick.
                     // Drives ONLY the background flash; the NEW text badge is
                     // stamp-driven via showNewTag.
-                    isNew={flashNew}
-                    showNewTag={matched ? matched.isNew : flashNew}
+                    isNew={!scannerRowFreshness(row, rowClockMs) && flashNew}
+                    showNewTag={!scannerRowFreshness(row, rowClockMs) && (matched ? matched.isNew : flashNew)}
                     sinceLabel={matched && !matched.isNew ? matched.label : null}
                     columns={liveColumnList}
                     newsTime={newsOnly}
                     starred={starredSymbols.has(row && row.symbol)}
                     earnings={earningsMap.get(row && row.symbol) || null}
-                    bolt={liveBolts[row && row.symbol] || null}
+                    bolt={bear || scannerRowFreshness(row, rowClockMs) ? null : liveBolts[row && row.symbol] || null}
                   />
                 );
               })
@@ -6975,7 +7310,9 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
 
       <p className="momx-footnote">
         Colours come straight from the thinkScript studies on the server. The scanner re-runs
-        continuously; this view picks up the newest scan every 15 seconds while the tab is open.
+        continuously; this view checks for a scan every 15 seconds while the tab is open.
+        When markets are closed or study candles are old, saved rows remain for review with their Data timestamp; a new scan does not mean new market data.
+        {" "}Confirm L1/L2/L3 are rule confirmations, not win probabilities. They require at least three cyan/green RVOL cells to rise versus their previous valid scanner publication; first observations do not match. History uses only earlier loaded snapshots.
         The small number under an RVOL value is how long ago that volume arrived &mdash; 12m is
         happening now, 3h is old news. It brightens under 15 minutes, and pulses when the cell
         is also coloured.

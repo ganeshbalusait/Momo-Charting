@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from data.index_symbols import from_schwab, to_schwab
+
 import asyncio
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
@@ -33,6 +35,12 @@ def event_stream_cursor(last_event_id: object, latest_sequence: object) -> int:
 # Schwab accepts large symbol lists but rejects oversized single requests;
 # 100 per call matches the quote-endpoint chunking used elsewhere.
 _EQUITY_SUBSCRIBE_CHUNK = 100
+#: Schwab's per-connection equity limit. Measured 2026-09-30 11:38 ET: 345
+#: requested -> "You've reached the maximum number of symbols allowed.
+#: (CHART_EQUITY=300, DISCARDED=45)", connected=False, and every live quote
+#: froze (the fastlane served 35-minute-old prices while reporting serving).
+#: Chunking bounds each REQUEST; this bounds the TOTAL.
+_MAX_EQUITY_SYMBOLS = 300
 
 
 class SchwabMarketStream:
@@ -72,12 +80,22 @@ class SchwabMarketStream:
         #: under _condition in _publish; includes Alpaca-failover quotes too,
         #: since those publish through the same pipe with their own source tag.
         self._latest_equity: dict[str, dict] = {}
+        # Newest CHART_EQUITY bar per symbol - the fallback price when the
+        # LEVELONE quote has gone quiet (see latest_equities).
+        self._latest_chart: dict[str, dict] = {}
         self._chart_history_path = Path(chart_history_path) if chart_history_path else None
         self._chart_history_max_bars = max(100, int(chart_history_max_bars))
         self._chart_history_flush_seconds = max(0.0, float(chart_history_flush_seconds))
+        self._chart_history_writer: threading.Thread | None = None
         self._chart_history_last_flush = 0.0
         self._chart_history: dict[str, OrderedDict[int, dict]] = {}
+        # Symbols whose bars changed since the last save, and each symbol's
+        # last encoded JSON. A save re-encodes only the changed symbols: the
+        # full 82.6 MB re-encode cost ~6 s of GIL every 30 s (2026-10-06).
+        self._chart_history_dirty: set[str] = set()
+        self._chart_history_encoded: dict[str, str] = {}
         self._load_chart_history()
+        self._chart_history_dirty.update(self._chart_history)
 
     @staticmethod
     def _number(value):
@@ -122,12 +140,28 @@ class SchwabMarketStream:
                 "sequence": self._sequence,
             }
             if event_type == "equity" and event["symbol"]:
-                self._latest_equity[event["symbol"]] = {**data, "receivedAt": received_at}
+                # LEVELONE sends only the fields that CHANGED. Replacing the
+                # held quote with a bid-only update wiped LAST_PRICE (measured
+                # 2026-09-30: CNQ/CVX/DDOG/GGLL/ZETA held last=None), so merge
+                # and remember when the last price itself was refreshed.
+                fresh = {key: value for key, value in data.items() if value is not None}
+                merged = {**self._latest_equity.get(event["symbol"], {}), **fresh, "receivedAt": received_at}
+                if fresh.get("last") is not None:
+                    merged["lastAt"] = received_at
+                    merged["lastSequence"] = self._sequence
+                self._latest_equity[event["symbol"]] = merged
+            elif event_type == "chart" and event["symbol"]:
+                close = self._number(data.get("close"))
+                if close is not None and close > 0:
+                    self._latest_chart[event["symbol"]] = {
+                        "close": close, "time": data.get("time"), "receivedAt": received_at,
+                        "sequence": self._sequence,
+                    }
             self._condition.notify_all()
 
     def _handle_equity(self, message: dict) -> None:
         for item in message.get("content") or []:
-            symbol = str(item.get("key") or item.get("SYMBOL") or "").strip().upper()
+            symbol = from_schwab(str(item.get("key") or item.get("SYMBOL") or "").strip().upper())
             if symbol:
                 self._publish("equity", symbol, {
                     # Explicit source so consumers can pick a single writer by
@@ -147,7 +181,7 @@ class SchwabMarketStream:
 
     def _handle_chart(self, message: dict) -> None:
         for item in message.get("content") or []:
-            symbol = str(item.get("key") or item.get("SYMBOL") or "").strip().upper()
+            symbol = from_schwab(str(item.get("key") or item.get("SYMBOL") or "").strip().upper())
             chart_time = self._millis(item.get("CHART_TIME_MILLIS"))
             if symbol and chart_time:
                 bar = {
@@ -233,13 +267,44 @@ class SchwabMarketStream:
             history.move_to_end(timestamp)
             while len(history) > self._chart_history_max_bars:
                 history.popitem(last=False)
+            self._chart_history_dirty.add(symbol)
         self._flush_chart_history_if_due()
 
-    def chart_history(self, symbol: str) -> list[dict]:
+    def chart_history(self, symbol: str, *, since: float = 0) -> list[dict]:
         target = str(symbol or "").strip().upper()
+        cutoff = float(since or 0)
         with self._lock:
             history = self._chart_history.get(target) or {}
-            return [dict(bar) for bar in history.values()]
+            # Late corrections move older timestamps to the end of this
+            # OrderedDict. Filter every key instead of breaking at an old
+            # tail; only copy the recent records the caller actually needs.
+            return [dict(bar) for stamp, bar in history.items() if stamp >= cutoff]
+
+    def chart_history_since(self, since: float, symbols=None) -> dict[str, list]:
+        """Minutes with time >= ``since`` as compact [t, o, h, l, c, v] rows,
+        per symbol (all held symbols when ``symbols`` is None). Walks each
+        history from its NEWEST end and stops at ``since``, so a poller asking
+        for the last few minutes costs a few rows, not 12,000 per symbol."""
+        cutoff = float(since or 0)
+        out: dict[str, list] = {}
+        with self._lock:
+            keys = (list(self._chart_history) if symbols is None
+                    else [str(s or "").strip().upper() for s in symbols])
+            for key in keys:
+                history = self._chart_history.get(key)
+                if not history:
+                    continue
+                rows = []
+                for bar in reversed(history.values()):
+                    t = bar.get("time")
+                    if t is None or t < cutoff:
+                        break
+                    rows.append([t, bar.get("open"), bar.get("high"), bar.get("low"),
+                                 bar.get("close"), bar.get("volume")])
+                if rows:
+                    rows.reverse()
+                    out[key] = rows
+        return out
 
     def _flush_chart_history_if_due(self, *, force: bool = False) -> None:
         path = self._chart_history_path
@@ -248,13 +313,45 @@ class SchwabMarketStream:
         now = time.monotonic()
         if not force and now - self._chart_history_last_flush < self._chart_history_flush_seconds:
             return
+        writer = self._chart_history_writer
+        if not force and writer is not None and writer.is_alive():
+            return  # the previous save is still running; never stack them
         with self._lock:
+            # Shallow copy: _record_chart_bar REPLACES each bar dict rather
+            # than mutating it, so the writer can share them. Deep-copying
+            # 12,000 bars x ~210 symbols here was itself seconds of GIL time.
             snapshot = {
-                symbol: [dict(bar) for bar in history.values()]
+                symbol: list(history.values())
                 for symbol, history in self._chart_history.items()
                 if history
             }
+            dirty = set(self._chart_history_dirty)
+            self._chart_history_dirty.clear()
             self._chart_history_last_flush = now
+        if force:
+            # A background save started earlier holds an OLDER snapshot; if it
+            # finished after this one it would overwrite the newer file (seen
+            # as a 1-in-5 flake of the overnight-persistence test). Let it
+            # finish first, then write the newest state.
+            if writer is not None and writer.is_alive():
+                writer.join(timeout=60)
+            self._write_chart_history(path, snapshot, dirty)
+            return
+        # OFF the stream's event loop (2026-09-30). This ran inline inside
+        # _handle_chart: py-spy caught the schwab-market-stream thread in
+        # gzip/json.dump of the ~10 MB history on two dumps 8 s apart while
+        # every quote froze, connected=True and no error logged - the loop
+        # could not read the socket until the save finished, every 30 s.
+        writer = threading.Thread(
+            target=self._write_chart_history,
+            args=(path, snapshot, dirty),
+            name="schwab-chart-history-writer",
+            daemon=True,
+        )
+        self._chart_history_writer = writer
+        writer.start()
+
+    def _write_chart_history(self, path, snapshot: dict, dirty: set | None = None) -> None:
         temporary_path: str | None = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -264,12 +361,40 @@ class SchwabMarketStream:
                 dir=path.parent,
             )
             os.close(descriptor)
-            with gzip.open(temporary_path, "wt", encoding="utf-8", compresslevel=3) as target:
-                json.dump({"version": 1, "symbols": snapshot}, target, separators=(",", ":"))
+            # Encode ONE SYMBOL AT A TIME with the C encoder, yielding the GIL
+            # between symbols, then compress (gzip.compress releases the GIL).
+            #
+            # History: json.dump into a gzip text stream ran the pure-Python
+            # encoder (~11% of GIL time); a2473c9 replaced it with ONE
+            # json.dumps of the whole snapshot - but that is 82.6 MB (513
+            # symbols) and a single C call holds the GIL for ~6 s, every 30 s.
+            # Every request in the process froze behind it (2026-10-06 18:31
+            # ET: TSLA slim open 9.71 s with send:9.64, SPY 5.4 s; py-spy had
+            # the writer in json.dumps in 21 of 120 dumps). Per-symbol chunks
+            # are ~12 ms each. Same bytes on disk as json.dumps of the dict.
+            #
+            # Only symbols that changed since the last save are re-encoded
+            # (``dirty``; None = all). After hours most of the 513 are idle.
+            encoded = self._chart_history_encoded
+            parts = []
+            for symbol, rows in snapshot.items():
+                piece = None if dirty is None or symbol in dirty else encoded.get(symbol)
+                if piece is None:
+                    piece = json.dumps(symbol) + ":" + json.dumps(rows, separators=(",", ":"))
+                    encoded[symbol] = piece
+                    time.sleep(0)  # let request threads take the GIL between symbols
+                parts.append(piece)
+            for gone in [key for key in encoded if key not in snapshot]:
+                encoded.pop(gone, None)
+            body = '{"version":1,"symbols":{' + ",".join(parts) + "}}"
+            with open(temporary_path, "wb") as target:
+                target.write(gzip.compress(body.encode("utf-8"), compresslevel=3))
             os.chmod(temporary_path, 0o600)
             os.replace(temporary_path, path)
             temporary_path = None
         except (OSError, TypeError, ValueError):
+            with self._lock:
+                self._chart_history_dirty.update(snapshot)
             return
         finally:
             if temporary_path:
@@ -458,15 +583,38 @@ class SchwabMarketStream:
         Unknown symbols are simply absent from the result.
         """
         with self._condition:
-            if symbols is None:
-                return {key: dict(value) for key, value in self._latest_equity.items()}
+            keys = (set(self._latest_equity) | set(self._latest_chart)) if symbols is None else [
+                str(raw or "").strip().upper() for raw in symbols
+            ]
             out: dict[str, dict] = {}
-            for raw in symbols:
-                key = str(raw or "").strip().upper()
-                held = self._latest_equity.get(key)
-                if held is not None:
-                    out[key] = dict(held)
+            for key in keys:
+                quote = self._quote_with_chart_fallback(key)
+                if quote is not None:
+                    out[key] = quote
             return out
+
+    def _quote_with_chart_fallback(self, key: str) -> dict | None:
+        """The held quote, with ``last`` taken from the newest CHART_EQUITY bar
+        when that bar arrived after the quote's last price (or it has none).
+
+        2026-09-30 12:25 ET: LEVELONE delivered only AAPL for 40 minutes while
+        CHART_EQUITY bars kept arriving for every subscribed symbol, so the
+        scanner's live layer held 40-minute-old prices. A minute-bar close is
+        at most ~1 minute old; ``lastSource`` says which one was used.
+        Caller holds ``self._condition``."""
+        held = self._latest_equity.get(key)
+        chart = self._latest_chart.get(key)
+        if held is None and chart is None:
+            return None
+        quote = dict(held or {"source": "schwab"})
+        # Order by stream sequence, not wall-clock text: two messages in the
+        # same clock tick would otherwise tie.
+        if chart and (quote.get("last") is None or chart["sequence"] > int(quote.get("lastSequence") or 0)):
+            quote["last"] = chart["close"]
+            quote["lastAt"] = chart["receivedAt"]
+            quote["lastSource"] = "chart"
+            quote.setdefault("receivedAt", chart["receivedAt"])
+        return quote
 
     def status(self) -> dict:
         with self._lock:
@@ -495,11 +643,27 @@ class SchwabMarketStream:
             desired_options = set(self._desired_options)
         new_equities = sorted(desired_equities - equities)
         removed_equities = sorted(equities - desired_equities)
+        room = _MAX_EQUITY_SYMBOLS - (len(equities) - len(removed_equities))
+        if len(new_equities) > room:
+            # Over Schwab's limit: stream what fits, charts first (pinned and
+            # the option chain's underlying), and say so in status - a quiet
+            # partial feed must never again look like a healthy full one.
+            with self._lock:
+                first = set(self._pinned_equities)
+                if self._option_equity:
+                    first.add(self._option_equity)
+            ranked = sorted(new_equities, key=lambda symbol: (symbol not in first, symbol))
+            dropped = len(ranked) - max(0, room)
+            new_equities = sorted(ranked[:max(0, room)])
+            self._last_error = (
+                f"equity cap: {dropped} symbol(s) not streamed "
+                f"(Schwab limit {_MAX_EQUITY_SYMBOLS})"
+            )
         new_options = sorted(desired_options - options)
         removed_options = sorted(options - desired_options)
         if removed_equities:
-            await stream.level_one_equity_unsubs(removed_equities)
-            await stream.chart_equity_unsubs(removed_equities)
+            await stream.level_one_equity_unsubs([to_schwab(s) for s in removed_equities])
+            await stream.chart_equity_unsubs([to_schwab(s) for s in removed_equities])
             equities.difference_update(removed_equities)
         if removed_options:
             await stream.level_one_option_unsubs(removed_options)
@@ -515,12 +679,13 @@ class SchwabMarketStream:
             first_batch = not equities
             for index in range(0, len(new_equities), _EQUITY_SUBSCRIBE_CHUNK):
                 batch = new_equities[index:index + _EQUITY_SUBSCRIBE_CHUNK]
+                wire = [to_schwab(s) for s in batch]       # SPX -> $SPX (data/index_symbols.py)
                 if first_batch and index == 0:
-                    await stream.level_one_equity_subs(batch)
-                    await stream.chart_equity_subs(batch)
+                    await stream.level_one_equity_subs(wire)
+                    await stream.chart_equity_subs(wire)
                 else:
-                    await stream.level_one_equity_add(batch)
-                    await stream.chart_equity_add(batch)
+                    await stream.level_one_equity_add(wire)
+                    await stream.chart_equity_add(wire)
                 equities.update(batch)
         if new_options:
             if options:

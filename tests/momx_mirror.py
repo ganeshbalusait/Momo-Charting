@@ -20,7 +20,7 @@ RVOL_BG = {"cyan": "magenta", "green": "red", "magenta": "cyan", "red": "green"}
 RVOL_FG = {"cyan": "magenta", "green": "red", "dark_green": "dark_red",
            "magenta": "cyan", "red": "green", "dark_red": "dark_green"}
 SQZ_BG = {"cyan": "magenta", "magenta": "cyan"}
-HL_BG = {"green": "red", "red": "green"}
+HL_BG = {"green": "red", "red": "green", "dark_green": "dark_red", "dark_red": "dark_green"}
 
 
 def mirror_price(value, pivot: float = PIVOT):

@@ -314,8 +314,30 @@ class LiveBoltBook:
             return out
 
     def snapshot(self) -> dict[str, dict]:
+        """Live state, plus every bolt already fired today that has not been
+        stepped since (after a restart, or outside the session no quote has
+        ticked yet) - so the day's ⚡ list never goes blank (2026-09-28: after
+        an evening restart it read 0 while the file held 15)."""
         with self._lock:
-            return dict(self._state)
+            out = dict(self._state)
+            for symbol, fired in self._fires.items():
+                if symbol in out or not isinstance(fired, dict) or not fired.get("lastAt"):
+                    continue
+                try:
+                    out[symbol] = {
+                        "hlMomentum": None, "hlPos": None, "on": False, "now": False,
+                        "firedAt": datetime.fromtimestamp(float(fired["lastAt"]), ET).isoformat(timespec="seconds"),
+                        "firstAt": datetime.fromtimestamp(float(fired.get("firstAt") or fired["lastAt"]), ET).isoformat(timespec="seconds"),
+                        "families": list(fired.get("families") or []), "opacity": None,
+                    }
+                except (TypeError, ValueError, OSError):
+                    continue
+            return out
+
+    def load_day(self, now: datetime) -> None:
+        """Read today's saved fires without stepping (at server start)."""
+        with self._lock:
+            self._roll_day(now)
 
     # ------------------------------------------------------------ persistence
 

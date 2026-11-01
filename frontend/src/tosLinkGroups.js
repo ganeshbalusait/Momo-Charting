@@ -48,6 +48,17 @@ function inPopoutWindow() {
 
 export function sendTickerToCharts(symbol, linkGroup, source = "momx-scanner") {
   const message = chartLinkMessage(symbol, linkGroup, source);
+  return sendChartMessage(message);
+}
+
+// A warm message only fetches the bounded candle seed; it never changes a
+// ticker, active page, link colour or saved layout.
+export function warmTickerForCharts(symbol, linkGroup) {
+  const message = chartLinkMessage(symbol, linkGroup);
+  return sendChartMessage(message && { ...message, intent: "warm" });
+}
+
+function sendChartMessage(message) {
   if (!message || typeof window === "undefined") return null;
   // In the main app: THIS window only (a second app window must not jump).
   if (!inPopoutWindow()) {

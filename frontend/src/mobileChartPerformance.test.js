@@ -29,6 +29,17 @@ test("desktop promotes deep history automatically and mobile waits for demand", 
   assert.equal(shouldAutoLoadDeepChartHistory({ isMobile: true, requested: true }), true);
 });
 
+test("desktop scanner launches defer history until actual navigation demand", () => {
+  const scanner = { isMobile: false, deferUntilNavigation: true };
+  assert.equal(shouldAutoLoadDeepChartHistory(scanner), false);
+  assert.equal(shouldAutoLoadDeepChartHistory({ ...scanner, requested: true }), true);
+  const history = { ...scanner, historyLoading: true, barCount: 180 };
+  assert.equal(shouldRequestDeepChartHistory({ ...history, logicalRange: {from: 120, to: 160} }), false);
+  assert.equal(shouldRequestDeepChartHistory({ ...history, logicalRange: {from: 10, to: 60} }), true);
+  assert.equal(shouldRequestDeepChartHistory({ ...history, alreadyRequested: true, logicalRange: {from: 0, to: 60} }), false);
+  assert.equal(shouldRequestDeepChartHistory({ ...history, historyLoading: false, logicalRange: {from: 0, to: 60} }), false);
+});
+
 test("mobile requests deep history only when the compact tape reaches the viewport", () => {
   const base = { isMobile: true, historyLoading: true, barCount: 180 };
   assert.equal(shouldRequestDeepChartHistory({ ...base, logicalRange: { from: 120, to: 160 } }), false);

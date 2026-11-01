@@ -72,11 +72,13 @@ test("upgrades legacy and v1 profiles to the ThinkScript-exact MomoX palette", (
   assert.equal(migrated.mtfCloudBullColor, "#00d7ff");
   assert.equal(migrated.mtfCloudBearColor, "#ff008c");
   assert.equal(migrated.mtfCloudOpacity, 20);
-  // Session-windowed studies follow the trader's 4:00 AM ET premarket start.
-  assert.equal(migrated.signalRthStartTime, 400);
+  // 2026-10-01 "Match tos": studies with a TOS script on file keep the
+  // script session window (migrateTosSessionWindow); 4x8 clouds (no script)
+  // keep the 4:00 AM start.
+  assert.equal(migrated.signalRthStartTime, undefined);
   assert.equal(migrated.mtfCloudRthStartTime, 400);
-  assert.equal(migrated.cloudBands5mRthStartTime, 400);
-  assert.equal(migrated.cloudBandsDayRthStartTime, 400);
+  assert.equal(migrated.cloudBands5mRthStartTime, undefined);
+  assert.equal(migrated.cloudBandsDayRthStartTime, undefined);
   // Prior-period levels: cyan/magenta by side, orange prior-month ceiling.
   assert.equal(migrated.previousDayBullColor, "#00ffff");
   assert.equal(migrated.previousDayBearColor, "#ff00ff");
@@ -143,4 +145,99 @@ test("respects saved colour edits once the MomoX palette version is stored", () 
     }),
     {},
   );
+});
+
+test("MTF MACD clouds are switched on once, then the trader's checkbox wins", async () => {
+  const { migrateMtfMacdCloudVisibility, MTF_MACD_CLOUD_VISIBILITY_VERSION } = await import("./chartIndicatorMigrations.js");
+  assert.deepEqual(migrateMtfMacdCloudVisibility({ mtfMacdClouds: false }), {
+    mtfMacdCloudVisibilityVersion: MTF_MACD_CLOUD_VISIBILITY_VERSION,
+    mtfMacdClouds: true,
+  });
+  assert.deepEqual(migrateMtfMacdCloudVisibility({
+    mtfMacdCloudVisibilityVersion: MTF_MACD_CLOUD_VISIBILITY_VERSION,
+    mtfMacdClouds: false,
+  }), {});
+});
+
+test("AutoFib is switched on once, then the trader's checkbox wins", async () => {
+  const { migrateAutoFibVisibility, AUTO_FIB_VISIBILITY_VERSION } = await import("./chartIndicatorMigrations.js");
+  assert.deepEqual(migrateAutoFibVisibility({ autoFibSingleTf: false }), {
+    autoFibVisibilityVersion: AUTO_FIB_VISIBILITY_VERSION,
+    autoFibSingleTf: true,
+  });
+  assert.deepEqual(migrateAutoFibVisibility({
+    autoFibVisibilityVersion: AUTO_FIB_VISIBILITY_VERSION,
+    autoFibSingleTf: false,
+  }), {});
+});
+
+test("CloudMax MTF (the 4x8 arrows) is switched on once, then the trader's checkbox wins", async () => {
+  const { migrateCloudMaxMtfVisibility, CLOUD_MAX_MTF_VISIBILITY_VERSION } = await import("./chartIndicatorMigrations.js");
+  assert.deepEqual(migrateCloudMaxMtfVisibility({ cloudMaxMtf: false }), {
+    cloudMaxMtfVisibilityVersion: CLOUD_MAX_MTF_VISIBILITY_VERSION,
+    cloudMaxMtf: true,
+  });
+  assert.deepEqual(migrateCloudMaxMtfVisibility({
+    cloudMaxMtfVisibilityVersion: CLOUD_MAX_MTF_VISIBILITY_VERSION,
+    cloudMaxMtf: false,
+  }), {});
+});
+
+test("TOS cloud studies are switched on once, then the trader's checkboxes win", async () => {
+  const { migrateTosCloudStudiesVisibility, TOS_CLOUD_STUDIES_VISIBILITY_VERSION } = await import("./chartIndicatorMigrations.js");
+  assert.deepEqual(migrateTosCloudStudiesVisibility({ mtfSqueezeClouds: false }), {
+    tosCloudStudiesVisibilityVersion: TOS_CLOUD_STUDIES_VISIBILITY_VERSION,
+    mtfEma920Clouds: true,
+    mtfSqueezeClouds: true,
+    cloudBands15m: true,
+  });
+  assert.deepEqual(migrateTosCloudStudiesVisibility({ tosCloudStudiesVisibilityVersion: TOS_CLOUD_STUDIES_VISIBILITY_VERSION }), {});
+});
+
+test("session windows match the TOS scripts once: 1 session from 05:00", async () => {
+  const { migrateTosSessionWindow, TOS_SESSION_WINDOW_VERSION, MOMOX_ONCHART_PALETTE_OVERRIDES } = await import("./chartIndicatorMigrations.js");
+  const migrated = migrateTosSessionWindow({ signalLimitRecentSessions: false, signalRthStartTime: 400 });
+  assert.equal(migrated.signalLimitRecentSessions, true);
+  assert.equal(migrated.signalSessionsBack, 1);
+  assert.equal(migrated.signalRthStartTime, 500);
+  assert.equal(migrated.mtfSqueezeRthStartTime, 500);
+  assert.equal(migrated.cloudBands15mLimitRecentSessions, true);
+  // The 15m band (the one TOS draws) moves to script gold unless he chose a colour.
+  assert.equal(migrated.cloudBands15mMidColor, "#ffda00");
+  assert.equal(migrateTosSessionWindow({ cloudBands15mMidColor: "#123456" }).cloudBands15mMidColor, undefined);
+  assert.deepEqual(migrateTosSessionWindow({ tosSessionWindowVersion: TOS_SESSION_WINDOW_VERSION }), {});
+  // New profiles no longer get the 04:00 / whole-history override for these.
+  assert.equal(MOMOX_ONCHART_PALETTE_OVERRIDES.signalRthStartTime, undefined);
+  assert.equal(MOMOX_ONCHART_PALETTE_OVERRIDES.signalLimitRecentSessions, undefined);
+});
+
+test("RelVol candles switch on once, then his checkbox wins", async () => {
+  const { migrateRelVolVisibility, RELVOL_VISIBILITY_VERSION } = await import("./chartIndicatorMigrations.js");
+  assert.deepEqual(migrateRelVolVisibility({ relVolCandles: false }), { relVolVisibilityVersion: RELVOL_VISIBILITY_VERSION, relVolCandles: true });
+  assert.deepEqual(migrateRelVolVisibility({ relVolVisibilityVersion: RELVOL_VISIBILITY_VERSION }), {});
+});
+
+test("ADX directional weak clouds switch on once, then his checkbox wins", async () => {
+  const { migrateAdxCloudsParity, ADX_CLOUDS_PARITY_VERSION } = await import("./chartIndicatorMigrations.js");
+  assert.deepEqual(migrateAdxCloudsParity({ mtfAdxShowDirectionalWeakClouds: false }), { adxCloudsParityVersion: ADX_CLOUDS_PARITY_VERSION, mtfAdxShowDirectionalWeakClouds: true });
+  assert.deepEqual(migrateAdxCloudsParity({ adxCloudsParityVersion: ADX_CLOUDS_PARITY_VERSION }), {});
+});
+
+test("Squeeze410 mid colour moves to TOS orange once, a custom colour stays", async () => {
+  const { migrateSqueeze410TosOrange, SQUEEZE410_TOS_ORANGE_VERSION } = await import("./chartIndicatorMigrations.js");
+  assert.deepEqual(migrateSqueeze410TosOrange({ mtfSqueeze410MidColor: "#FFA500" }), { squeeze410TosOrangeVersion: SQUEEZE410_TOS_ORANGE_VERSION, mtfSqueeze410MidColor: "#ffc800" });
+  assert.deepEqual(migrateSqueeze410TosOrange({ mtfSqueeze410MidColor: "#123456" }), { squeeze410TosOrangeVersion: SQUEEZE410_TOS_ORANGE_VERSION });
+  assert.deepEqual(migrateSqueeze410TosOrange({ squeeze410TosOrangeVersion: SQUEEZE410_TOS_ORANGE_VERSION, mtfSqueeze410MidColor: "#ffa500" }), {});
+});
+
+test("ADX pane bubbles: Strong / Weak / ADX lines off once, signal bubbles kept", async () => {
+  const { migrateAdxAxisLikeTos, ADX_AXIS_LIKE_TOS_VERSION } = await import("./chartIndicatorMigrations.js");
+  const out = migrateAdxAxisLikeTos({ mtfAdxPlotControls: {
+    Strong: { showPlot: true, showBubble: true }, ADX5: { showBubble: true }, Call: { showBubble: true } } });
+  assert.equal(out.adxAxisLikeTosVersion, ADX_AXIS_LIKE_TOS_VERSION);
+  assert.equal(out.mtfAdxPlotControls.Strong.showBubble, false);
+  assert.equal(out.mtfAdxPlotControls.Strong.showPlot, true);
+  assert.equal(out.mtfAdxPlotControls.ADX5.showBubble, false);
+  assert.equal(out.mtfAdxPlotControls.Call.showBubble, true);
+  assert.deepEqual(migrateAdxAxisLikeTos({ adxAxisLikeTosVersion: ADX_AXIS_LIKE_TOS_VERSION }), {});
 });

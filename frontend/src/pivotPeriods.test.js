@@ -112,3 +112,60 @@ test("keeps completed daily OHLC authoritative over extended chart bars", () => 
 
   assert.deepEqual(merged[0], day("2026-07-31", 269, 272.52, 259.10, 266.75));
 });
+
+// 2026-10-01 TOS parity: his TOS weekly pivot on CLS read 359.95 = the
+// CALENDAR week Sep 21-25 ((381.3013 + 333.1 + 365.44) / 3). The rolling
+// 7-day window gave 364.08 and no TOS reading ever supported it.
+test("PivotPoints WEEK uses the last completed calendar week (CLS 359.95)", async () => {
+  const { pivotPointsSourcePeriod } = await import("./pivotPeriods.js");
+  const days = [
+    day("2026-09-17", 337.75, 353.96, 329.52, 329.94),
+    day("2026-09-18", 332.06, 339.9, 328.92, 332.63),
+    day("2026-09-21", 341.45, 348.0, 333.1, 344.4),
+    day("2026-09-22", 342.49, 359.05, 341.5, 356.09),
+    day("2026-09-23", 356.02, 367.8999, 354.37, 361.84),
+    day("2026-09-24", 354.25, 379.0, 352.9, 373.56),
+    day("2026-09-25", 380.51, 381.3013, 365.01, 365.44),
+    day("2026-09-28", 363.93, 372.97, 349.52, 356.53),
+    day("2026-09-29", 362.35, 375.28, 361.7, 366.47),
+    day("2026-09-30", 369.51, 376.76, 353.52, 361.43),
+  ];
+  const week = pivotPointsSourcePeriod(days, "2026-10-01", "WEEK");
+  assert.equal(week.high, 381.3013);
+  assert.equal(week.low, 333.1);
+  assert.equal(week.close, 365.44);
+  assert.equal(((week.high + week.low + week.close) / 3).toFixed(2), "359.95");
+  // DAY stays the previous trading day.
+  assert.equal(pivotPointsSourcePeriod(days, "2026-10-01", "DAY").close, 361.43);
+});
+
+test("cached calendar periods give the same answer as the original scan (2026-10-02 speed fix)", async () => {
+  const { previousCompletedPivotPeriodReference } = await import("./pivotPeriods.js");
+  const days = [];
+  let price = 100;
+  const start = Date.UTC(2023, 0, 2);
+  for (let i = 0; i < 1100; i += 1) {
+    const date = new Date(start + i * 86400000);
+    if (date.getUTCDay() === 0 || date.getUTCDay() === 6) continue;
+    price += Math.sin(i) * 2;
+    days.push({
+      date: date.toISOString().slice(0, 10),
+      open: price, high: price + 3 + (i % 5), low: price - 2 - (i % 3), close: price + 1,
+    });
+  }
+  days.splice(400, 1, { date: "bad", open: 1, high: 1, low: 1, close: 1 });
+  days.splice(500, 1, { ...days[500], high: Number.NaN });
+  for (const timeframe of ["WEEK", "MONTH"]) {
+    for (let i = 0; i < days.length; i += 7) {
+      const current = days[i].date;
+      assert.deepEqual(
+        previousCompletedPivotPeriod(days, current, timeframe),
+        previousCompletedPivotPeriodReference(days, current, timeframe),
+        `${timeframe} ${current}`,
+      );
+    }
+    assert.deepEqual(previousCompletedPivotPeriod(days, "2022-06-01", timeframe), null);
+  }
+  assert.equal(previousCompletedPivotPeriod([], "2026-10-02", "WEEK"), null);
+  assert.equal(previousCompletedPivotPeriod(null, "2026-10-02", "WEEK"), null);
+});

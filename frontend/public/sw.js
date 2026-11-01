@@ -27,7 +27,7 @@
 // If you ever need to add caching here, do not. Ask why first: the cost of
 // getting it wrong is the trader looking at yesterday's prices.
 
-const VERSION = "agx-network-only-v1";
+const VERSION = "agx-network-only-v2";
 
 self.addEventListener("install", () => {
   // Take over immediately rather than waiting for every tab to close - a
@@ -52,6 +52,19 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  // API calls are not touched at all (2026-10-02): routed through
+  // respondWith, a phone connection drop surfaced on the MomX board as
+  // "FetchEvent.respondWith received an error: Load failed", and the worker
+  // added nothing to those requests. Not calling respondWith lets the
+  // browser make them natively; the handler still exists, so the app stays
+  // installable.
+  let path = "";
+  try {
+    path = new URL(event.request.url).pathname;
+  } catch (err) {
+    path = "";
+  }
+  if (path.startsWith("/api/")) return;
   // Straight to the network, always. This handler exists so the app is
   // installable; it deliberately adds no behaviour of its own. The catch
   // lets the browser show its normal offline error rather than a broken

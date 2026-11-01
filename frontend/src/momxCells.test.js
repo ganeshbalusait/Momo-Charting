@@ -50,6 +50,8 @@ import {
   quoteTrendBars,
   readBoardCache,
   sortRows,
+  liveHighLowCell,
+  livePctChange,
   sparklinePath,
   writeBoardCache,
   newsBadgeTitle,
@@ -890,6 +892,25 @@ test("decideBoardView tolerates being called with nothing", () => {
   assert.equal(view.generatedAt, null);
 });
 
+test("a zero-match board with full rest rows replaces obsolete cached matches", () => {
+  const live={rows:[],rest:[{symbol:"AXP",scanPass:false}],generatedAt:"2026-10-30T14:00:00Z",universeCount:371};
+  const cache={rows:[{symbol:"OLD",scanPass:true}]};
+  const view=decideBoardView({liveBoard:live,cache});
+  assert.equal(view.source,"live");assert.deepEqual(view.rows,[]);
+  assert.equal(view.rest[0].symbol,"AXP");assert.equal(view.universeCount,371);
+  assert.equal(view.generatedAt,live.generatedAt);
+});
+
+test("rest-only watchlists survive caching and reload without reviving old matches", () => {
+  const held=new Map(),storage={setItem:(k,v)=>held.set(k,v),getItem:k=>held.get(k)??null};
+  const board={rows:[],rest:[{symbol:"AXP",scanPass:false}],generatedAt:"2026-10-30T14:00:00Z"};
+  assert.equal(writeBoardCache("Watchlist",board,storage),true);
+  const cache=readBoardCache("Watchlist",storage);
+  assert.deepEqual(cache.rows,[]);assert.equal(cache.rest[0].symbol,"AXP");
+  const view=decideBoardView({cache,liveBoard:{rows:[],rest:[],warming:true}});
+  assert.equal(view.source,"cache");assert.equal(view.rest[0].symbol,"AXP");
+});
+
 test("cellStyle keeps a readable script colour but rescues an invisible one", () => {
   // Readable script pairings are preserved (the fg carries signal meaning).
   assert.equal(cellStyle({ bg: "plum", fg: "black" }).color, "#000000");
@@ -916,7 +937,7 @@ test("cellStyle keeps a readable script colour but rescues an invisible one", ()
 // (2026-09-05). A shut market is not a fault; a tape that has fallen behind
 // the market IS, and both must still be distinguishable at a glance.
 test("tapeAsOfNote separates a closed market from a stalled tape", async () => {
-  const { tapeAsOfNote } = await import("./MomxScannerPanel.jsx");
+  const { tapeAsOfNote } = await import("./tapeAsOfNote.js");
 
   // Sunday 03:00 ET holding Friday's 19:55 close - completely normal.
   const sunday = Date.parse("2026-08-30T07:00:00Z");
@@ -959,6 +980,25 @@ test("tapeAsOf survives the view-builder and the localStorage cache round trip",
   const entry = boardCacheEntry(board);
   assert.equal(entry.tapeAsOf, board.tapeAsOf);
   assert.equal(decideBoardView({ cache: entry }).tapeAsOf, board.tapeAsOf);
+});
+
+test("freshness window and scan completion survive live view, storage reload and warming fallback", async () => {
+  const {scannerFreshness}=await import('./scannerFreshness.js');
+  const data={...BOARD,generatedAt:'2026-10-30T07:29:33-04:00',scanStartedAt:'2026-10-30T07:29:33-04:00',
+    scanCompletedAt:'2026-10-30T07:30:09-04:00',dataSource:'tos',
+    freshness:{newestDataAt:'2026-10-30T07:25:00-04:00',barTimestampRole:'start',barIntervalSeconds:300,servedAt:'2026-10-30T07:30:10-04:00'}};
+  const storage=makeStorage();
+  const live=decideBoardView({liveBoard:data});
+  assert.equal(writeBoardCache('Watchlist',data,storage),true);
+  const saved=readBoardCache('Watchlist',storage);
+  const fallback=decideBoardView({cache:saved,liveBoard:{rows:[],scanCompletedAt:'2026-10-30T07:40:00-04:00'},warming:true});
+  for(const view of [live,saved,fallback]){
+    assert.deepEqual(view.freshness,data.freshness);
+    assert.equal(view.scanCompletedAt,data.scanCompletedAt);
+    assert.equal(view.dataSource,'tos');
+    assert.equal(scannerFreshness(view,Date.parse(data.scanCompletedAt)).text,'5m bar 07:25–07:30 ET');
+  }
+  assert.match(scannerFreshness(fallback,Date.parse(data.scanCompletedAt),data.scanCompletedAt).title,/Browser received: unknown/);
 });
 
 // ---------------------------------------------------------------------------
@@ -1422,4 +1462,113 @@ test("newsOf carries the worker's market-wide stamp through", () => {
   });
   assert.equal(out.scope, "market-wide");
   assert.equal(out.namedCount, 12);
+});
+
+test("liveHighLowCell re-runs his H/L formula on the live price", () => {
+  const built = { value: 0.2, bg: "green", fg: "black", hh: 110, ll: 100 };
+  // mid 105: 109 -> (109-105)/(110-105) = 0.8, dark green.
+  assert.deepEqual(liveHighLowCell(built, 109), { ...built, degree: 0.8, value: 0.8, bg: "dark_green", live: true });
+  // A new high widens the window: hh 112, mid 106 -> exactly +1.
+  assert.equal(liveHighLowCell(built, 112).value, 1);
+  // A new low: ll 98, mid 104 -> (98-104)/(110-104) = -1, dark red.
+  assert.deepEqual([liveHighLowCell(built, 98).value, liveHighLowCell(built, 98).bg], [-1, "dark_red"]);
+  assert.equal(liveHighLowCell(built, 104).bg, "red");
+});
+
+test("liveHighLowCell keeps the built cell when inputs are missing", () => {
+  assert.equal(liveHighLowCell({ value: 0.5, bg: "green" }, 100), null);   // old payload, no hh/ll
+  assert.equal(liveHighLowCell({ value: 0.5, hh: 1, ll: 1 }, null), null);  // no live price
+  assert.equal(liveHighLowCell(null, 100), null);
+  assert.deepEqual(liveHighLowCell({ hh: 5, ll: 5 }, 5), { hh: 5, ll: 5, degree: 0, value: 0, bg: "gray", live: true });
+});
+
+test("livePctChange re-runs %Chg on the live price during the session only", () => {
+  // ZETA 2026-09-30: base 29.21 -> live 31.70 = +8.52%.
+  assert.equal(Math.round(livePctChange(29.21, 31.7, true) * 100) / 100, 8.52);
+  assert.equal(livePctChange(29.21, 31.7, false), null);      // after 16:00: keep built
+  assert.equal(livePctChange(null, 31.7, true), null);        // old payload, no base
+  assert.equal(livePctChange(29.21, null, true), null);
+});
+
+test("sector strip: hot first, then biggest average move (2026-10-01)", async () => {
+  const { sortSectorsByMove } = await import("./momxCells.js");
+  const groups = [
+    { name: "AI - Power", hot: true, avg: 2.5 }, { name: "Networking", hot: true, avg: 4.8 },
+    { name: "Semis", hot: true, avg: 1.7 }, { name: "Banks", avg: 6 },
+  ];
+  assert.deepEqual(sortSectorsByMove(groups, "bull").map((g) => g.name), ["Networking", "AI - Power", "Semis", "Banks"]);
+  const bear = [{ name: "A", late: true, avg: -1 }, { name: "B", late: true, avg: -3 }];
+  assert.deepEqual(sortSectorsByMove(bear, "bear").map((g) => g.name), ["B", "A"]);
+});
+
+test("Jev label for display (2026-10-02)", async () => {
+  const { jevLabel } = await import("./momxCells.js");
+  assert.deepEqual(jevLabel({ label: "bullish", p: 0.96 }), { label: "bullish", p: 0.96, text: "Jev: Bullish 96%", why: "", raw: null, tone: "up" });
+  assert.equal(jevLabel({ label: "bearish", p: 0.9 }).tone, "down");
+  assert.equal(jevLabel({ label: "not_important", p: 0.8 }).text, "Jev: Not important 80%");
+  assert.equal(jevLabel({ label: "maybe" }), null);
+  assert.equal(jevLabel(null), null);
+});
+
+test("News column shows Jev's arrow and uses its tone (2026-10-02)", async () => {
+  const { newsColumnCell } = await import("./momxCells.js");
+  const now = Date.parse("2026-10-02T15:00:00Z");
+  const row = (jev, sentiment = "Strong") => ({ symbol: "INOD", news: { headline: "Innodata upgraded", publishedAt: "2026-10-02T14:30:00Z",
+    stored: true, sentiment, jev } });
+  const up = newsColumnCell(row({ label: "bullish", p: 0.96 }), now);
+  assert.equal(up.arrow, "▲"); assert.equal(up.tone, "up"); assert.match(up.title, /Jev: Bullish 96%/);
+  const down = newsColumnCell(row({ label: "bearish", p: 0.9 }, "Strong"), now);
+  assert.equal(down.arrow, "▼"); assert.equal(down.tone, "down");
+  const flat = newsColumnCell(row({ label: "not_important", p: 0.9 }), now);
+  assert.equal(flat.arrow, ""); assert.equal(flat.tone, "flat");
+  assert.equal(newsColumnCell(row(null), now).arrow, "");
+});
+
+test("Jev score cell: take at 30%+, skip below, nothing without a bot trade", async () => {
+  const { jevScoreCell } = await import("./momxCells.js");
+  assert.equal(jevScoreCell({ jevScore: { p: 0.42, rule: "go", n: 2 } }).text, "✓ 42%");
+  assert.equal(jevScoreCell({ jevScore: { p: 0.08 } }).text, "8%");
+  assert.equal(jevScoreCell({ jevScore: { p: 0.08 } }).take, false);
+  assert.equal(jevScoreCell({}), null);
+  assert.equal(jevScoreCell({ jevScore: { p: null } }), null);
+});
+
+test("firesOf drops the 'blocked:' gate reasons - they say why it is NOT a match", () => {
+  const row = { scanReasons: ["blocked:pricechange:volume:4h", "blocked:pricechange:close:1h", "macd:D", "macd:Wk"] };
+  assert.deepEqual(firesOf(row), ["MACD D", "MACD Wk"]);
+});
+
+test("firedWhen: the newest first-sighting, MomoX wording", async () => {
+  const { firedWhen } = await import("./momxCells.js");
+  const now = Date.parse("2026-10-02T10:25:30-04:00");
+  const row = { firedAt: { "macd:D": "2026-10-02T09:40:00-04:00", "macd:Wk": "2026-10-02T10:25:00-04:00", "blocked:price": "2026-10-02T10:30:00-04:00" } };
+  assert.equal(firedWhen(row, now).text, "fired 0 min ago on the weekly · 10:25 AM ET");
+  assert.equal(firedWhen({ firedAt: { "ema9x20:2h": "2026-10-02T08:10:00-04:00" } }, now).text, "fired 2h ago on the 2h · 8:10 AM ET");
+  assert.equal(firedWhen({ firedAt: { "macd:D": "2026-09-30T10:00:00-04:00" } }, now).text, "fired 2d ago on the daily · Wed 10:00 AM ET");
+  assert.equal(firedWhen({}, now), null);
+});
+
+test("board copy stays under its size budget, keeping the top rows", async () => {
+  const { writeBoardCache, readBoardCache, pruneOversizedBoardCaches, MOMX_BOARD_CACHE_MAX_CHARS } = await import("./momxCells.js");
+  const mem = new Map();
+  const storage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)),
+    removeItem: (k) => mem.delete(k), key: (i) => [...mem.keys()][i] ?? null, get length() { return mem.size; } };
+  const rows = Array.from({ length: 400 }, (_, i) => ({ symbol: "S" + i, blob: "x".repeat(6000) }));
+  assert.equal(writeBoardCache("Watchlist", { rows, generatedAt: 1 }, storage), true);
+  const stored = mem.get("momx.board.Watchlist");
+  assert.ok(stored.length <= MOMX_BOARD_CACHE_MAX_CHARS);
+  const back = readBoardCache("Watchlist", storage);
+  assert.equal(back.rows[0].symbol, "S0");
+  assert.ok(back.rows.length > 10 && back.rows.length < 400);
+  mem.set("momx.board.Old", "y".repeat(MOMX_BOARD_CACHE_MAX_CHARS + 1));
+  assert.equal(pruneOversizedBoardCaches(storage), 1);
+  assert.equal(mem.has("momx.board.Old"), false);
+  assert.equal(mem.has("momx.board.Watchlist"), true);
+});
+
+test("jevLabel explains a hidden read: off-topic or under 70%", async () => {
+  const { jevLabel } = await import("./momxCells.js");
+  assert.equal(jevLabel({ label: "not_important", raw: "bullish", p: 0.55, why: "Jev only 55% sure" }).text,
+    "Jev: Not important (read Bullish 55% - Jev only 55% sure)");
+  assert.equal(jevLabel({ label: "not_important", p: null, why: "not about HD", offTopic: true }).text, "Jev: Not important (not about HD)");
 });

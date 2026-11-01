@@ -127,3 +127,18 @@ class NewsCredentialsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_headline_that_names_the_company_beats_a_tagged_tag_along():
+    """2026-10-02: META's premarket row showed an Apple story (tagged AI/PRODUCT)."""
+    from datetime import datetime, timedelta, timezone
+    from catalyst_news import pick_catalyst
+    now = datetime(2026, 10, 2, 13, 0, tzinfo=timezone.utc)
+    at = lambda m: (now - timedelta(minutes=m)).isoformat()  # noqa: E731
+    apple = {"headline": "Apple Takes Aim at AI Agents, Wants Mac Users to Know When Their Data Is Used",
+             "created_at": at(30), "symbols": ["AAPL", "META", "MSFT"]}
+    meta = {"headline": "Meta Platforms stock edges higher premarket", "created_at": at(90), "symbols": ["META"]}
+    picked = pick_catalyst([apple, meta], now, "META")
+    assert picked["headline"].startswith("Meta Platforms") and picked["aboutCompany"] is True
+    only = pick_catalyst([apple], now, "META")
+    assert only["aboutCompany"] is False          # kept, but marked related

@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from catalyst_engine import CatalystEngine, HttpResponse
 
-NOW = datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc).replace(microsecond=0)  # real clock: the engine keeps only the last 7 days
 ARTICLE = {
     "news": [
         {

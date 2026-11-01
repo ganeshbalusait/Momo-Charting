@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from data.index_symbols import from_schwab, to_schwab
+
 import json
 import os
 import threading
@@ -230,14 +232,7 @@ class SchwabClient:
         timeframe: str,
         start: datetime,
         end: datetime | None = None,
-        raise_unavailable: bool = False,
     ) -> dict[str, pd.DataFrame]:
-        """raise_unavailable (opt-in, 2026-10-10): re-raise SchwabUnavailable
-        instead of folding it into an empty frame. The chart paint needs to
-        tell "Schwab is cooling down for 14s" from "this ticker has no bars":
-        the first means retry when the cooldown ends, the second means the
-        ticker may not exist. Every existing caller keeps the empty-frame
-        contract by not passing it."""
         if timeframe not in TIMEFRAME_PARAMS:
             return {}
         if not self.configured:
@@ -247,10 +242,6 @@ class SchwabClient:
         for symbol in [str(item).strip().upper() for item in symbols if str(item).strip()]:
             try:
                 frame = self._get_price_history(symbol, timeframe, start, end)
-            except SchwabUnavailable:
-                if raise_unavailable:
-                    raise
-                frame = pd.DataFrame()
             except Exception:
                 frame = pd.DataFrame()
             if not frame.empty:
@@ -261,7 +252,7 @@ class SchwabClient:
         if not self.configured:
             return {}
 
-        symbol_list = [str(item).strip().upper() for item in symbols if str(item).strip()]
+        symbol_list = [to_schwab(str(item).strip().upper()) for item in symbols if str(item).strip()]
         quotes: dict[str, dict] = {}
         for start in range(0, len(symbol_list), max(int(chunk_size), 1)):
             batch = symbol_list[start:start + max(int(chunk_size), 1)]
@@ -288,7 +279,7 @@ class SchwabClient:
             if not isinstance(payload, dict):
                 continue
             for raw_symbol, raw_quote in payload.items():
-                symbol = str(raw_symbol).strip().upper()
+                symbol = from_schwab(str(raw_symbol).strip().upper())     # $SPX -> SPX
                 if not symbol or not isinstance(raw_quote, dict):
                     continue
                 quote = raw_quote.get("quote") if isinstance(raw_quote.get("quote"), dict) else {}
@@ -337,6 +328,13 @@ class SchwabClient:
                     ),
                     "description": str(reference.get("description") or "").strip(),
                     "asset_type": str(reference.get("assetType") or raw_quote.get("assetMainType") or "").upper(),
+                    # Bid / ask / mark (2026-10-08): the bot prices a new option
+                    # trade from a live quote at the signal (api_server
+                    # option_contract_quotes). Extra keys; no caller reads them before.
+                    "bid": self._first_float(quote, regular, "bidPrice"),
+                    "ask": self._first_float(quote, regular, "askPrice"),
+                    "mark": self._first_float(quote, regular, "mark"),
+                    "quote_time_ms": self._first_float(quote, regular, "quoteTime"),
                 }
         return quotes
 
@@ -377,7 +375,6 @@ class SchwabClient:
         symbols: Iterable[str],
         timeframe: str = "1Min",
         days_back: int = 1,
-        raise_unavailable: bool = False,
     ) -> dict[str, pd.DataFrame]:
         now = datetime.now(tz=self._tz)
         start = (now - timedelta(days=max(days_back, self._default_intraday_lookback_days(now)))).replace(
@@ -386,10 +383,7 @@ class SchwabClient:
             second=0,
             microsecond=0,
         )
-        return self.get_stock_bars(
-            symbols=symbols, timeframe=timeframe, start=start, end=now,
-            raise_unavailable=raise_unavailable,
-        )
+        return self.get_stock_bars(symbols=symbols, timeframe=timeframe, start=start, end=now)
 
     def get_daily_bars(
         self,
@@ -408,12 +402,8 @@ class SchwabClient:
         symbol: str,
         timeframe: str = "1Min",
         days_back: int = 2,
-        raise_unavailable: bool = False,
     ) -> pd.DataFrame:
-        return self.get_intraday_bars(
-            [symbol], timeframe=timeframe, days_back=days_back,
-            raise_unavailable=raise_unavailable,
-        ).get(symbol.upper(), pd.DataFrame())
+        return self.get_intraday_bars([symbol], timeframe=timeframe, days_back=days_back).get(symbol.upper(), pd.DataFrame())
 
     def get_option_chain(
         self,
@@ -426,7 +416,7 @@ class SchwabClient:
         if not self.configured:
             return {}
         params = {
-            "symbol": str(symbol).strip().upper(),
+            "symbol": to_schwab(str(symbol).strip().upper()),
             "contractType": contract_type.upper(),
             "strategy": "SINGLE",
             "strikeCount": max(int(strike_count), 1),
@@ -437,7 +427,10 @@ class SchwabClient:
             params["fromDate"] = from_date.date().isoformat()
         if to_date:
             params["toDate"] = to_date.date().isoformat()
-        return self._get_json(f"{SCHWAB_MARKET_DATA_BASE}/chains?{urlencode(params)}")
+        chain = self._get_json(f"{SCHWAB_MARKET_DATA_BASE}/chains?{urlencode(params)}")
+        # Schwab sends openInterest 0 on every INDEX option (SPX): fill it from CBOE's feed.
+        from data.cboe_oi import fill_open_interest
+        return fill_open_interest(str(symbol), chain)
 
     def ensure_streaming(self, symbols: Iterable[str]) -> None:
         return None
@@ -450,7 +443,8 @@ class SchwabClient:
         end: datetime | None,
     ) -> pd.DataFrame:
         params = {
-            "symbol": symbol,
+            # SPX -> $SPX: Schwab only answers an index by its $ name (data/index_symbols.py)
+            "symbol": to_schwab(symbol),
             "startDate": self._epoch_ms(start),
             "endDate": self._epoch_ms(end or datetime.now(tz=self._tz)),
             "needExtendedHoursData": str(self.config.include_extended_hours).lower(),

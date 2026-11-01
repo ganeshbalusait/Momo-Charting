@@ -10,6 +10,13 @@ from __future__ import annotations
 
 import gzip
 import json
+from datetime import datetime, date, timezone
+from unittest.mock import patch
+import numpy as np
+import pandas as pd
+import pytest
+from unittest.mock import Mock
+from http import HTTPStatus
 
 from api_server import ApiHandler
 
@@ -59,3 +66,71 @@ def test_threshold_is_measured_on_the_encoded_body() -> None:
     just_over = {"pad": "x" * (ApiHandler.GZIP_MIN_BYTES + 100)}
     _, encoding = _handler("gzip")._json_response_body(just_over)
     assert encoding == "gzip"
+
+
+def test_native_chart_reply_does_not_clone_every_bar_before_encoding() -> None:
+    payload = _big_payload()
+    # The converter should only see special values, not every dict/number.
+    with patch("api_server._serialize_value", side_effect=AssertionError("walked native chart data")):
+        body, encoding = _handler(None)._json_response_body(payload)
+    assert encoding == ""
+    assert body == json.dumps(payload).encode("utf-8")
+
+
+def test_special_scalar_reply_matches_existing_conversion_byte_for_byte() -> None:
+    from api_server import _serialize_value
+    payload = {"when": datetime(2026, 10, 29, tzinfo=timezone.utc), "day": date(2026, 10, 29),
+               "nested": [(np.int64(3), np.float32(1.25), pd.NA, None)], "text": "Γ café"}
+    body, encoding = _handler(None)._json_response_body(payload)
+    assert encoding == ""
+    assert body == json.dumps(_serialize_value(payload)).encode("utf-8")
+
+
+def test_nonfinite_chart_values_keep_the_legacy_na_conversion() -> None:
+    from api_server import _serialize_value
+    payload = {"bars": [{"time": 123, "close": float("nan")}], "inf": float("inf")}
+    body, encoding = _handler(None)._json_response_body(payload)
+    assert encoding == ""
+    assert body == json.dumps(_serialize_value(payload)).encode("utf-8")
+    assert json.loads(body)["bars"][0]["close"] is None
+
+
+def test_chart_reply_keeps_bounded_encoding_without_forced_scheduler_pauses() -> None:
+    payload = {"bars": [{"time": i, "close": i / 7} for i in range(3001)]}
+    with patch("api_server.time.sleep", side_effect=AssertionError("reply yielded to background jobs")):
+        body, _ = _handler(None)._json_response_body(payload)
+    assert body == json.dumps(payload).encode("utf-8")
+
+
+@pytest.mark.parametrize("failure", [BrokenPipeError, ConnectionResetError, ConnectionAbortedError])
+@pytest.mark.parametrize("stage", ["headers", "body"])
+def test_cancelled_json_response_closes_without_a_second_reply(failure, stage):
+    handler = _handler("gzip")
+    handler.send_response = Mock()
+    handler.send_header = Mock()
+    handler.end_headers = Mock(side_effect=failure() if stage == "headers" else None)
+    handler.wfile = Mock()
+    if stage == "body":
+        handler.wfile.write.side_effect = failure()
+    handler._send_json(HTTPStatus.OK, _big_payload())
+    assert handler.close_connection is True
+    handler.send_response.assert_called_once_with(200)
+    if stage == "headers":
+        handler.wfile.write.assert_not_called()
+
+
+def test_json_response_still_propagates_unrelated_io_errors():
+    handler = _handler(None)
+    handler.send_response = Mock()
+    handler.send_header = Mock()
+    handler.end_headers = Mock(side_effect=PermissionError("fixture"))
+    with pytest.raises(PermissionError):
+        handler._send_json(HTTPStatus.OK, {"ok": True})
+
+
+@pytest.mark.parametrize("failure", [BrokenPipeError, ConnectionResetError, ConnectionAbortedError])
+def test_cancelled_keepalive_read_closes_cleanly(failure):
+    handler = _handler(None)
+    with patch("http.server.BaseHTTPRequestHandler.handle_one_request", side_effect=failure()):
+        handler.handle_one_request()
+    assert handler.close_connection is True

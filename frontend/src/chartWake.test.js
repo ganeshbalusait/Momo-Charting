@@ -53,3 +53,18 @@ test("stale label reads as minutes, then hours", () => {
   assert.equal(chartStaleLabel(6 * 3_600_000 + 5 * 60_000), "STALE (6h 5m)");
   assert.equal(chartStaleLabel(Infinity), "STALE");
 });
+
+test("a server history rebuild is only worth asking for while the market can add bars", async () => {
+  const { chartServerRebuildAllowed } = await import("./chartWake.js");
+  const et = (iso) => Date.parse(iso);
+  // Tue 2026-09-29 regular hours and pre/post-market: Schwab can add bars.
+  assert.equal(chartServerRebuildAllowed(et("2026-09-29T10:00:00-04:00")), true);
+  assert.equal(chartServerRebuildAllowed(et("2026-09-29T04:30:00-04:00")), true);
+  assert.equal(chartServerRebuildAllowed(et("2026-09-29T19:30:00-04:00")), true);
+  // Tue 23:22 CT = Wed 00:22 ET, the DIA case: a rebuild took 41-90s and
+  // could not add a single candle, while the phone showed Friday's tape.
+  assert.equal(chartServerRebuildAllowed(et("2026-09-30T00:22:00-04:00")), false);
+  assert.equal(chartServerRebuildAllowed(et("2026-09-29T20:05:00-04:00")), false);
+  // Weekend.
+  assert.equal(chartServerRebuildAllowed(et("2026-09-26T12:00:00-04:00")), false);
+});

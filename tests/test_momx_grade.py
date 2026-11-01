@@ -22,6 +22,32 @@ def test_meta_0933_is_a_plus():
     assert "5m" in g["checks"]["pushRvol"]
 
 
+@pytest.mark.parametrize("direction,bg,value,expected", [
+    ("bull", "green", 0.5, "A+"),
+    ("bull", "dark_green", 0.51, "A+"),
+    ("bull", "dark_green", 1.0, "A+"),
+    ("bull", "green", 0.0, "A+"),  # positive unrounded degree, display rounded to zero
+    ("bull", "gray", 0.0, "A"),
+    ("bull", "dark_red", -1.0, "A"),
+    ("bear", "red", -0.5, "A+"),
+    ("bear", "dark_red", -0.51, "A+"),
+    ("bear", "dark_red", -1.0, "A+"),
+    ("bear", "red", 0.0, "A+"),
+    ("bear", "gray", 0.0, "A"),
+    ("bear", "dark_green", 1.0, "A"),
+])
+def test_hl_midpoint_gate_keeps_both_shades_on_the_same_side(direction, bg, value, expected):
+    from copy import deepcopy
+    from momx_mirror import mirror_row
+    item = FIX["META_0933"]
+    row = deepcopy(item["row"]) if direction == "bull" else mirror_row(item["row"])
+    row["highLow"] = {"bg": bg, "value": value}
+    result = grade.grade_row(row, datetime.fromisoformat(item["at"]), direction)
+    assert result["letter"] == expected
+    assert result["checks"]["aboveMid"] == (expected == "A+")
+    assert result["ruleVersion"] == grade.RULE_VERSION
+
+
 def test_qcom_morning_climbs_from_nothing_to_a():
     """QCOM is the fixture that caught the dark_green paint leak.
 

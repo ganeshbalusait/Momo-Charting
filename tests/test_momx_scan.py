@@ -194,31 +194,14 @@ def test_price_floor_rejects_missing_price():
 
 
 # ---------------------------------------------------------------------------
-# The 4h volume gate's alignment - settled by ground truth 2026-09-03
-#
-# He ran his TOS scan twice and sent the results:
-#     18:15 ET -> 10 matches inc. WELL and REGN
-#     18:21 ET ->  9 matches inc. WELL and REGN, with CHTR dropping out
-#
-# Our shipped `volume[2]` rejected WELL and REGN in BOTH readings. Sweeping
-# bars-ago x session x forming-bar, only bars_ago=3 reproduces them: 10/10 and
-# 9/9, and it correctly rejects the CHTR that TOS dropped. 19 positives and one
-# true negative, zero errors.
-#
-# Cause: our 4h tape builds a bucket wherever bars exist, so a thin overnight
-# window becomes a full bar and our series carries one more bucket than his -
-# exactly one index of offset.
+# Live TOS editor verified 2026-09-29: price[length], length=2 on both gates.
 # ---------------------------------------------------------------------------
 
 
-def test_the_volume_row_compares_against_three_bars_back():
-    assert scan.VOLUME_CHANGE_BARS_AGO == 3
-
-
-def test_the_close_row_still_compares_against_two():
-    """Measured, not assumed: shifting this one too gave 7/9 of his matches
-    and MORE rows, against 8/9 and fewer at 2."""
+def test_both_price_change_rows_use_the_verified_two_bar_lookback():
+    assert scan.VOLUME_CHANGE_BARS_AGO == 2
     assert scan.CLOSE_CHANGE_BARS_AGO == 2
+    assert scan.CLOSE_CHANGE_MIN_PCT == 0.3
 
 
 def _vol_tape(volumes):
@@ -226,7 +209,7 @@ def _vol_tape(volumes):
             for v in volumes]
 
 
-def test_the_gate_reads_the_fourth_bar_back_not_the_third():
+def test_volume_gate_rejects_a_spurious_pass_against_a_thin_older_bar():
     """Pins WHICH bar is the baseline, with the two candidates disagreeing.
 
     volumes: [2_000_000, 1_000, 5_000_000, 900, 1_000_000]
@@ -237,13 +220,13 @@ def test_the_gate_reads_the_fourth_bar_back_not_the_third():
     tape = _vol_tape([2_000_000, 1_000, 5_000_000, 900, 1_000_000])
     assert scan.price_change_gate(tape, "volume", 0.5, 3) is True
     assert scan.price_change_gate(tape, "volume", 0.5, 2) is False
-    # and the shipped constant picks the passing one
+    # The verified two-bar filter must reject the spurious three-bar pass.
     assert scan.price_change_gate(
         tape, "volume", scan.VOLUME_CHANGE_MIN_PCT, scan.VOLUME_CHANGE_BARS_AGO
-    ) is True
+    ) is False
 
 
-def test_the_well_and_regn_shape_now_passes():
+def test_legacy_volume_fixture_does_not_justify_changing_the_lookback():
     """The exact failure his readings exposed.
 
     WELL at 18:16: current bucket 1,673,489 against a 1,853,178 baseline three
@@ -269,13 +252,13 @@ def test_there_is_no_time_of_day_exception_any_more():
     assert "blocked:pricechange:volume:4h" in reasons
 
 
-def test_price_change_gate_exactly_half_percent_passes():
+def test_price_change_gate_exact_representable_threshold_passes():
     bars = [
         {"close": 10.0, "volume": 1000.0},
         {"close": 10.0, "volume": 900.0},
-        {"close": 10.0, "volume": 1005.0},
+        {"close": 10.0, "volume": 1125.0},
     ]
-    assert scan.price_change_gate(bars, "volume", 0.5) is True
+    assert scan.price_change_gate(bars, "volume", 12.5) is True
 
 
 def test_price_change_gate_just_under_threshold_fails():
@@ -510,8 +493,7 @@ def test_rvol_scan_short_tape_is_false():
 
 
 def _passing_gate_tapes() -> dict[str, list[dict]]:
-    # FOUR bars: VOLUME_CHANGE_BARS_AGO became 3 on 2026-09-03 (his TOS
-    # ground truth), so the baseline is now the bar four back, not three.
+    # Both two-bar required gates pass on this fixture.
     four_hour = [
         {"close": 10.0, "high": 10.1, "low": 9.9, "open": 10.0, "volume": 1000.0},
         {"close": 10.0, "high": 10.1, "low": 9.9, "open": 10.0, "volume": 1500.0},
@@ -857,3 +839,12 @@ def test_rank_rows_ascending_puts_the_biggest_loser_first():
 def test_is_bear_spells_the_direction_once():
     assert scan.is_bear("bear") and scan.is_bear("BEAR")
     assert not scan.is_bear("bull") and not scan.is_bear(None) and not scan.is_bear("")
+
+
+def test_price_change_matches_tos_ratio_operation_order_at_boundary():
+    # 100*(1.005-1) is just below 0.5 in IEEE doubles. The old
+    # subtraction-first formula yielded exactly 0.5 and incorrectly passed.
+    bars = [{"volume": 1000.0}, {"volume": 800.0}, {"volume": 1005.0}]
+    assert scan.price_change_gate(bars, "volume", 0.5, 2) is False
+    bars[-1]["volume"] = 1006.0
+    assert scan.price_change_gate(bars, "volume", 0.5, 2) is True

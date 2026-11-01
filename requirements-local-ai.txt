@@ -1,0 +1,7 @@
+# Optional local tabular-model training and portable ONNX scoring.
+onnxruntime==1.31.1
+scikit-learn==1.9.1
+skl2onnx==1.20.0
+# Keep the project's Streamlit protobuf range compatible.
+onnx==1.19.1
+protobuf>=4.25.3,<6

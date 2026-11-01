@@ -172,6 +172,28 @@ function normalizeSideLevels(levelSet, side, options) {
     : normalizedLevels;
 }
 
+// The single biggest wall on each side (by OI) is the "High OI" line: drawn a
+// little thicker than every other wall and flashing on the chart (his ask
+// 2026-09-29, e.g. AVGO 360 with 8.2K OI). Ties keep the first level seen.
+export const HIGH_OI_WALL_EXTRA_WIDTH = 1.5;
+
+export function markHighOiWalls(levels = []) {
+  const list = Array.isArray(levels) ? levels : [];
+  const leaderBySide = new Map();
+  list.forEach((level, index) => {
+    const side = String(level?.side || "");
+    const openInterest = number(level?.openInterest);
+    if (!side || openInterest <= 0) return;
+    const current = leaderBySide.get(side);
+    if (!current || openInterest > current.openInterest) leaderBySide.set(side, { index, openInterest });
+  });
+  const leaderIndexes = new Set([...leaderBySide.values()].map((leader) => leader.index));
+  const widest = list.reduce((max, level) => Math.max(max, number(level?.lineWidth, 1)), 1);
+  return list.map((level, index) => (leaderIndexes.has(index)
+    ? { ...level, highOi: true, flash: true, lineWidth: widest + HIGH_OI_WALL_EXTRA_WIDTH }
+    : level));
+}
+
 export function mergeOiChartLevelSources(levelGroups = []) {
   const groups = Array.isArray(levelGroups) && levelGroups.some(Array.isArray)
     ? levelGroups

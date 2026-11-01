@@ -1,3 +1,20 @@
+import { timingCandlesDrawn } from "./chartLoadTiming.js";
+import { oiChartHasInitialStudySeed } from "./oiChartInitialHistory.js";
+
+// Match the server's first-paint tape limits even when an earlier chart left
+// a complete research payload in the shared cache. Keep that full cache
+// intact so panning can still promote it without another download.
+export function compactOiChartPayload(payload, includeStudySeed = false) {
+  if (!Array.isArray(payload?.bars) || !payload.bars.length || payload.initialSlim) return payload;
+  const bars = payload.bars.slice(-900);
+  const hasSeed = includeStudySeed && oiChartHasInitialStudySeed(payload);
+  return { ...payload, bars,
+    fineStudyBars: (payload.fineStudyBars || []).slice(-2400),
+    dailyBars: (payload.dailyBars || []).slice(-320),
+    studyBars: hasSeed ? payload.studyBars.slice(-1600) : bars,
+    initialStudySeed: hasSeed, initialSlim: true, historyLoading: true, refreshing: true,
+  };
+}
 export function normalizeLightweightChartSeriesData(data) {
   const byTime = new Map();
   (Array.isArray(data) ? data : []).forEach((item) => {
@@ -274,6 +291,7 @@ export function chartWallLevelSignature(levels) {
     side: String(level?.side || ""),
     strength: String(level?.strength || ""),
     openInterest: Number(level?.openInterest || 0),
+    highOi: level?.highOi === true,
   })));
 }
 
@@ -344,7 +362,8 @@ export function guardLightweightChartSeriesTree(value, path = "chart", visited =
 // update(point) only touches the tail. Nearly every routine apply changes just
 // the last point (or appends a bar) while the history is byte-identical, so
 // diff against what this series last received and prefer update() for that
-// shape; anything else (history changed, points removed, older times) falls
+// shape, plus bounded corrections to existing populated historical points.
+// Structural changes (backfills, removed points, whitespace transitions) fall
 // back to setData(). The comparison is a linear scan of primitives, microseconds
 // against the milliseconds a time-index rebuild costs.
 // ---------------------------------------------------------------------------
@@ -394,25 +413,43 @@ export function applySeriesData(series, data, options = {}) {
   const maxAppended = Number.isFinite(options.maxAppended) ? Math.max(0, options.maxAppended) : 8;
   const appended = next.length - previous.length;
   if (previous.length && appended >= 0 && appended <= maxAppended) {
-    // Everything before the previous last point must be identical: update()
-    // can restate the last point and append newer ones, nothing older.
+    // Normal update() handles the last point and appends; update(point, true)
+    // can correct existing historical values without rebuilding the time index.
     const stableCount = previous.length - 1;
     let historyIdentical = true;
+    const historicalUpdates = [];
+    // Higher-timeframe studies revise several already-plotted points when
+    // their forming bucket changes. Replacing the entire series for those
+    // few values rebuilds the chart-wide time index, once per study line.
+    // Keep this bounded and only update existing, non-whitespace points:
+    // changing whitespace membership requires a full replacement in LWC.
+    const maxHistorical = 32;
     for (let index = 0; index < stableCount; index += 1) {
       if (!seriesPointsEqual(previous[index], next[index])) {
-        historyIdentical = false;
-        break;
+        const before = previous[index];
+        const after = next[index];
+        const time = seriesPointTime(after);
+        const populated = (point) => Number.isFinite(point?.value)
+          || [point?.open, point?.high, point?.low, point?.close].every(Number.isFinite);
+        if (historicalUpdates.length >= maxHistorical
+          || !Number.isFinite(time) || time !== seriesPointTime(before)
+          || !populated(before) || !populated(after)) {
+          historyIdentical = false;
+          break;
+        }
+        historicalUpdates.push(after);
       }
     }
     if (historyIdentical) {
       let lastTime = seriesPointTime(previous[stableCount]);
-      let changed = false;
+      let changed = historicalUpdates.length > 0;
       let ordered = true;
       const updates = [];
       for (let index = stableCount; index < next.length; index += 1) {
         const point = next[index];
         const time = seriesPointTime(point);
-        if (!Number.isFinite(time) || time < lastTime) {
+        if (!Number.isFinite(time) || time < lastTime
+          || (index >= previous.length && time === lastTime)) {
           ordered = false;
           break;
         }
@@ -440,6 +477,7 @@ export function applySeriesData(series, data, options = {}) {
         // older than the series' own last one. That must never take the panel
         // down: fall back to a full setData, which re-baselines everything.
         try {
+          historicalUpdates.forEach((point) => series.update(point, true));
           updates.forEach((point) => series.update(point));
           appliedSeriesData.set(series, next);
           return "update";
@@ -453,6 +491,8 @@ export function applySeriesData(series, data, options = {}) {
   }
   series.setData(next);
   appliedSeriesData.set(series, next);
+  // candle tape (has OHLC) -> "candles drawn" for the phone load timing (chartLoadTiming.js)
+  if (next.length > 50 && next[next.length - 1] && next[next.length - 1].open != null) timingCandlesDrawn(next.length);
   return "setData";
 }
 

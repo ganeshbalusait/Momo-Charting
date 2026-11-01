@@ -91,6 +91,8 @@ class _ServePathTestCase(unittest.TestCase):
             ("full", 1), time.monotonic(),
         ]
 
+    session_open = False
+
     def serve(self, content_ready: bool = True, **kwargs):
         with (
             patch.object(self.state, "_chart_payload_has_ready_ganesh_signals",
@@ -102,6 +104,10 @@ class _ServePathTestCase(unittest.TestCase):
             patch.object(self.state, "_windowed_payload_for_cache_entry",
                          side_effect=lambda entry: dict(entry["payload"])),
             patch.object(self.state, "_start_oi_finder_chart_refresh") as kick,
+            # The background GET kick (ABehindTapeKicksItsOwnExtend) is off unless a
+            # test opts in, so other tests never start a real broker fetch.
+            patch.object(type(self.state), "_extended_session_open",
+                         staticmethod(lambda now_epoch=None: self.session_open)),
         ):
             payload = self.state._oi_finder_chart_payload_impl(self.SYMBOL, **kwargs)
         return payload, kick
@@ -219,6 +225,57 @@ class ForcedRefreshReplacesAStaleTape(_ServePathTestCase):
 
         self.assertEqual(forced.call_count, 1)
 
+
+
+class ForcedRefreshNeverHoldsTheWake(_ServePathTestCase):
+    """2026-10-05: a phone wake sends refresh=true and the inline extend took 11-25 s
+    under premarket load; the request now waits at most FORCED_TAIL_EXTEND_WAIT_SECONDS."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        jobs = getattr(self.state, "_chart_forced_extend_jobs", {})
+        self.addCleanup(setattr, self.state, "_chart_forced_extend_jobs", jobs)
+        self.state._chart_forced_extend_jobs = {}
+        wait = self.state.FORCED_TAIL_EXTEND_WAIT_SECONDS
+        self.addCleanup(setattr, self.state, "FORCED_TAIL_EXTEND_WAIT_SECONDS", wait)
+        self.state.FORCED_TAIL_EXTEND_WAIT_SECONDS = 0.2
+
+    def test_a_slow_extend_answers_with_the_cached_tape_and_keeps_running(self) -> None:
+        import threading
+        self.seed(minutes_behind=151.8)
+        release = threading.Event()
+        finished = threading.Event()
+
+        def slow(target, full_history, release=True, skip_studies=False, release_token=None):
+            gate.wait(5)
+            finished.set()
+
+        gate = release
+        with patch.object(self.state, "_refresh_oi_finder_chart_payload", side_effect=slow):
+            started = time.monotonic()
+            payload, _ = self.serve(refresh=True)
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 2.0)
+            self.assertTrue(payload["bars"])
+            self.assertFalse(finished.is_set())
+            release.set()
+            self.assertTrue(finished.wait(5))
+
+    def test_a_second_wake_joins_the_running_extend(self) -> None:
+        import threading
+        gate = threading.Event()
+        calls = []
+
+        def slow(target, full_history, release=True, skip_studies=False, release_token=None):
+            calls.append(target)
+            gate.wait(5)
+
+        with patch.object(self.state, "_refresh_oi_finder_chart_payload", side_effect=slow):
+            self.state._force_chart_tail_extend(self.SYMBOL)
+            self.state._force_chart_tail_extend(self.SYMBOL)
+            gate.set()
+            self.state._chart_forced_extend_jobs[self.SYMBOL].result(5)
+        self.assertEqual(calls, [self.SYMBOL])
 
 class TailSpliceExtendsTheStoredTape(unittest.TestCase):
     """The store itself: fresh broker bars must land on the served tape, and
@@ -453,3 +510,251 @@ class MtfStudyMemo(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class LabelRescueStaysOffTheRequestThread(_ServePathTestCase):
+    """2026-10-05 07:55 ET: a wake refresh=true re-ran the whole MTF label replay on the
+    request thread (7-16 s) while a refresh that recomputes them was already in flight."""
+
+    def serve_with_stale_labels(self, **kwargs):
+        with (
+            patch.object(self.state, "_fine_tape_session_span", return_value=999),
+            patch.object(self.state, "_refresh_mtf_block_from_payload_tapes", return_value=False) as rescue,
+            patch.object(self.state, "_chart_payload_has_ready_ganesh_signals", return_value=True),
+            patch.object(self.state, "_chart_payload_has_multi_timeframe_depth", return_value=True),
+            patch.object(self.state, "_chart_payload_has_current_mtf_labels", return_value=False),
+            patch.object(self.state, "_windowed_payload_for_cache_entry",
+                         side_effect=lambda entry: dict(entry["payload"])),
+            patch.object(self.state, "_start_oi_finder_chart_refresh"),
+            patch.object(self.state, "_force_chart_tail_extend", return_value=False),
+        ):
+            self.state._oi_finder_chart_payload_impl(self.SYMBOL, **kwargs)
+        return rescue
+
+    def test_a_refresh_in_flight_skips_the_inline_label_replay(self) -> None:
+        self.seed(minutes_behind=151.8)
+        rescue = self.serve_with_stale_labels(refresh=True)
+        rescue.assert_not_called()
+        self.assertFalse(self.state.oi_finder_chart_cache[self.SYMBOL].get("mtf_recompute_checked"))
+
+    def test_with_nothing_in_flight_the_labels_are_healed_in_the_background(self) -> None:
+        entry = self.seed(minutes_behind=0.2)
+        entry["cached_at"] = time.monotonic()
+        entry["built_at_epoch"] = time.time()
+        with patch.object(self.state, "_submit_chart_label_heal") as heal:
+            rescue = self.serve_with_stale_labels()
+        rescue.assert_not_called()
+        heal.assert_called_once()
+        self.assertTrue(entry.get("mtf_recompute_checked"))
+
+
+class DiskLabelReplayStaysOffTheRequestThread(_ServePathTestCase):
+    """2026-10-06 05:34 ET, first opens after a restart: CRWD 11.2 s with
+    disklabels:10.13 - the saved chart's labels predated the engine and the
+    replay ran inline. 22 of 384 saved charts were in that state."""
+
+    def test_old_labels_are_hidden_and_healed_off_thread(self) -> None:
+        newest = time.time() - 60
+        disk = {
+            "symbol": self.SYMBOL,
+            "bars": minute_bars(120, newest),
+            "studyBars": minute_bars(90, newest),
+            "dailyBars": minute_bars(60, newest),
+            "mtfSignals": [{"time": int(newest), "label": "old-engine"}],
+            "mtfSignalsByTimeframe": {"5": [{"time": int(newest)}]},
+        }
+        with (
+            patch.object(self.state, "_load_oi_finder_chart_disk_payload", return_value=disk),
+            patch.object(self.state, "_refresh_mtf_block_from_payload_tapes") as inline,
+            patch.object(self.state, "_submit_chart_label_heal") as heal,
+            patch.object(self.state, "_chart_payload_has_ready_ganesh_signals", return_value=True),
+            patch.object(self.state, "_chart_payload_has_multi_timeframe_depth", return_value=True),
+            patch.object(self.state, "_chart_payload_has_current_mtf_labels", return_value=False),
+            patch.object(self.state, "_windowed_payload_for_cache_entry",
+                         side_effect=lambda entry: dict(entry["payload"])),
+            patch.object(self.state, "_start_oi_finder_chart_refresh"),
+            patch.object(type(self.state), "_extended_session_open",
+                         staticmethod(lambda now_epoch=None: False)),
+        ):
+            payload = self.state._oi_finder_chart_payload_impl(self.SYMBOL)
+        inline.assert_not_called()
+        heal.assert_called_once()
+        # The job got the ORIGINAL tapes; the client got no old-engine labels.
+        self.assertEqual(len(heal.call_args[0][1]["bars"]), 120)
+        self.assertEqual(payload["mtfSignals"], [])
+        self.assertTrue(payload["mtfSignalsPending"])
+        self.assertEqual(len(payload["bars"]), 120)
+
+    def test_the_heal_job_installs_labels_without_losing_newer_candles(self) -> None:
+        entry = self.seed(minutes_behind=0.2)
+        entry["payload"]["mtfSignalsPending"] = True
+        entry["windowed_payload"] = {"stale": True}
+
+        def fake_replay(target, payload):
+            payload["mtfSignals"] = [{"time": 1, "label": "new"}]
+            payload["mtfSignalsByTimeframe"] = {"5": []}
+            payload["mtfSignalsPending"] = False
+            return True
+
+        with (
+            patch.object(self.state, "_refresh_mtf_block_from_payload_tapes", side_effect=fake_replay),
+            patch.object(self.state, "_fine_tape_session_span", return_value=60),
+            patch.object(self.state, "_chart_payload_has_current_mtf_labels", return_value=False),
+        ):
+            # Source tape is shorter than what the entry holds now (a splice landed).
+            installed = self.state._heal_chart_labels_now(self.SYMBOL, {"bars": minute_bars(5, time.time())})
+        self.assertTrue(installed)
+        stored = self.state.oi_finder_chart_cache[self.SYMBOL]
+        self.assertEqual(stored["payload"]["mtfSignals"][0]["label"], "new")
+        self.assertFalse(stored["payload"]["mtfSignalsPending"])
+        self.assertEqual(stored["payload"]["mtfSourceSessions"], 60)
+        self.assertEqual(len(stored["payload"]["bars"]), 120)
+        self.assertNotIn("windowed_payload", stored)
+
+
+
+class ABehindTapeKicksItsOwnExtend(_ServePathTestCase):
+    """2026-10-05: an ordinary GET on a tape minutes behind queued its recency job
+    behind the hot set (AAOI 06:41 for 4+ min); it now also starts the candles-only
+    extend on the chart-force pool, without waiting."""
+
+    def serve_at(self, open_session: bool, **kwargs):
+        self.session_open = open_session
+        with patch.object(self.state, "_submit_chart_tail_extend") as background:
+            self.serve(**kwargs)
+        return background
+
+    def test_a_tape_minutes_behind_kicks_a_background_extend(self) -> None:
+        self.seed(minutes_behind=95)
+        self.serve_at(True).assert_called_once_with(self.SYMBOL)
+
+    def test_a_fresh_tape_kicks_nothing(self) -> None:
+        self.seed(minutes_behind=1)
+        self.serve_at(True).assert_not_called()
+
+    def test_nothing_is_kicked_outside_the_extended_session(self) -> None:
+        self.seed(minutes_behind=95)
+        self.serve_at(False).assert_not_called()
+
+    def test_a_prefetch_kicks_nothing(self) -> None:
+        self.seed(minutes_behind=95)
+        self.serve_at(True, prefetch=True).assert_not_called()
+
+    def test_repeat_gets_are_rate_limited(self) -> None:
+        self.seed(minutes_behind=95)
+        self.serve_at(True).assert_called_once()
+        self.serve_at(True).assert_not_called()
+
+
+class SlowChartLineNamesItsSteps(_ServePathTestCase):
+    """2026-10-05: three first views took 6-30 s and py-spy never caught one; the
+    [chart-timing] line now carries per-step seconds."""
+
+    def test_the_slow_line_lists_the_steps(self) -> None:
+        import contextlib
+        import io
+        self.seed(minutes_behind=0.2)
+        clock = iter([0.0] + [float(i) for i in range(1, 200)])
+        out = io.StringIO()
+        with patch.object(api_server.time, "perf_counter", side_effect=lambda: next(clock)), \
+                contextlib.redirect_stdout(out):
+            with (
+                patch.object(self.state, "_chart_payload_has_ready_ganesh_signals", return_value=True),
+                patch.object(self.state, "_chart_payload_has_multi_timeframe_depth", return_value=True),
+                patch.object(self.state, "_chart_payload_has_current_mtf_labels", return_value=True),
+                patch.object(self.state, "_windowed_payload_for_cache_entry",
+                             side_effect=lambda entry: dict(entry["payload"])),
+                patch.object(self.state, "_start_oi_finder_chart_refresh"),
+            ):
+                self.state.oi_finder_chart_payload(self.SYMBOL, initial_paint=True, prefetch=True)
+        line = out.getvalue()
+        self.assertIn("[chart-timing]", line)
+        self.assertIn("steps=", line)
+        for step in ("lock:", "lookup:", "window:", "slim:"):
+            self.assertIn(step, line)
+
+
+class ACandlesOnlyTopUpKeepsTheLabelStatus(TailSpliceExtendsTheStoredTape):
+    """2026-10-05 19:14 ET: AAPL took 28.6 s because a candles-only top-up saved its
+    tape with mtfSignalsPending=True, so the next disk load replayed every label."""
+
+    def test_current_labels_stay_current_after_a_candles_only_top_up(self) -> None:
+        newest = self.seed(minutes_behind=10)
+        held = self.state.oi_finder_chart_cache[self.SYMBOL]["payload"]
+        held.update({
+            "mtfSignalMode": api_server.DashboardState.OI_CHART_MTF_ENGINE_MODE,
+            "mtfSignalsPending": False,
+            "mtfSignals": [{"time": int(newest), "direction": "CALL"}],
+            "mtfSignalsByTimeframe": {"5": []},
+            "mtfSourceSessions": api_server.TOS_CHART_SESSION_DAYS,
+        })
+        self.assertTrue(api_server.DashboardState._chart_payload_has_current_mtf_labels(held))
+        built = {
+            "symbol": self.SYMBOL,
+            "bars": minute_bars(300, time.time() - 30),
+            "studyBars": minute_bars(120, time.time() - 30),
+            "dailyBars": minute_bars(3, time.time() - 30),
+            "historyLoading": False,
+            "studiesPending": True,
+            "mtfSignalsPending": True,
+            "mtfSignals": [],
+        }
+        with (
+            patch.object(self.state, "_build_oi_finder_chart_payload", return_value=built),
+            patch.object(self.state, "_save_oi_finder_chart_disk_payload") as saved,
+        ):
+            self.state._refresh_oi_finder_chart_payload(self.SYMBOL, False, release=False, skip_studies=True)
+        stored = self.held()
+        self.assertTrue(api_server.DashboardState._chart_payload_has_current_mtf_labels(stored))
+        if saved.call_args:
+            self.assertFalse(saved.call_args[0][1].get("mtfSignalsPending"))
+
+
+class ASpliceKeepsCandlesTheFetchCannotCarry(unittest.TestCase):
+    """2026-10-06 07:05 ET: SPY's tape went 10-05 19:59 -> 10-06 07:00 - every
+    overnight (BOATS) and premarket (SIP) candle was deleted by a candles-only
+    recency splice, whose Schwab fetch has nothing 20:00-07:00."""
+
+    @staticmethod
+    def run_of(start: int, count: int, price: float = 100.0) -> list[dict]:
+        return minute_bars(count, start + (count - 1) * 60, price)
+
+    def test_overnight_and_premarket_minutes_survive_a_schwab_only_fetch(self) -> None:
+        midnight = 1_790_000_000 - (1_790_000_000 % 86_400)
+        yesterday_close = midnight - 5 * 3600           # 19:00 the evening before
+        held = (
+            self.run_of(yesterday_close, 60)            # yesterday's last hour
+            + self.run_of(midnight + 4 * 3600, 180)     # 04:00-06:59 backfilled
+        )
+        fetched = (
+            self.run_of(yesterday_close + 1800, 30)     # overlaps yesterday
+            + self.run_of(midnight + 7 * 3600, 3)       # Schwab's first live minutes
+        )
+        merged = DashboardState._splice_chart_bars(held, fetched)
+        times = [bar["time"] for bar in merged]
+        self.assertEqual(times, sorted(set(times)))
+        for bar in held[60:]:
+            self.assertIn(bar["time"], times)
+        self.assertEqual(times[-1], fetched[-1]["time"])
+
+    def test_the_fetch_wins_every_minute_it_has(self) -> None:
+        start = 1_790_000_000
+        held = self.run_of(start, 5, price=1.0)
+        fetched = self.run_of(start + 120, 3, price=2.0)
+        merged = DashboardState._splice_chart_bars(held, fetched)
+        self.assertEqual([bar["close"] for bar in merged], [1.0, 1.0, 2.0, 2.0, 2.0])
+
+
+class TheWholeChartRequestIsTimed(unittest.TestCase):
+    """2026-10-06: NVDA opens of 8.7-9.1 s left no [chart-timing] line - that
+    wrapper starts after the session gate and ends before the reply is sent."""
+
+    def test_the_slow_request_line_names_gate_chart_and_send(self) -> None:
+        import inspect
+
+        source = inspect.getsource(api_server.DashboardRequestHandler._dispatch_get) \
+            if hasattr(api_server, "DashboardRequestHandler") else open(api_server.__file__, encoding="utf-8").read()
+        self.assertIn("[chart-request]", source)
+        for step in ("gate:", "chart:", "parity:", "send:"):
+            self.assertIn(step, source)
+        self.assertIn("self._request_gate_done = time.perf_counter()", source)

@@ -327,16 +327,19 @@ class FakeProfile:
         self.secret = secret
 
 
-def test_the_dead_paper3_key_is_never_selected():
+def test_no_profile_is_skipped_by_name_a_refused_key_falls_through_instead(monkeypatch):
+    # paper3 was hard-coded "dead" until 2026-10-04, when it got a new, working key; a
+    # static list outlives the fact it recorded. Every configured key is now a candidate,
+    # in order, and a 401 falls through to the next (test below).
+    monkeypatch.setattr(feed, "_vault_credentials", lambda: [])
     candidates = [
-        FakeProfile("paper3", "dead-key", "dead-secret"),
+        FakeProfile("paper3", "p3-key", "p3-secret"),
         FakeProfile("paper5", "live-key", "live-secret"),
     ]
 
     resolved = feed.resolve_credentials(candidates)
 
-    assert [credential.profile_id for credential in resolved] == ["paper5"]
-    assert all(credential.key != "dead-key" for credential in resolved)
+    assert [credential.profile_id for credential in resolved] == ["paper3", "paper5"]
 
 
 def test_the_vault_key_is_tried_before_the_env_profiles(monkeypatch):
@@ -892,17 +895,25 @@ def test_schwab_volume_false_never_calls_the_correction(monkeypatch):
 
 def test_schwab_volume_defaults_to_true_and_calls_the_correction(monkeypatch):
     fake = FakeAlpaca({"AAPL": [_bar("2026-08-27T12:00:00Z")]})
+    iex = FakeAlpaca({"AAPL": [_bar("2026-08-27T14:50:00Z")]})
     calls: list[tuple] = []
-    real = feed._schwab_volume_map
 
-    def spy(symbols, timeframe, now, client=None):
+    def spy(symbols, timeframe, now, client=None, **kw):   # bars_out since 2026-09-29
         calls.append((tuple(symbols), timeframe))
-        return real(symbols, timeframe, now, client=client)
+        return {}   # never the network
 
+    def get(url, params=None, headers=None, timeout=None):
+        # 2026-09-30: the paced correction is only requested for a frame that
+        # holds an IEX-marked (thin-volume) bar, so the IEX leg must give one.
+        source = iex if (params or {}).get("feed") == "iex" else fake
+        return source.get(url, params=params, headers=headers, timeout=timeout)
+
+    monkeypatch.setattr(feed, "SCHWAB_VOLUME_ENABLED", True)
+    monkeypatch.setattr(feed, "SCHWAB_ONLY", False)
     monkeypatch.setattr(feed, "_schwab_volume_map", spy)
 
     bars, errors = feed.fetch_5m(
-        ["AAPL"], days=1, get=fake.get, credentials=[GOOD], now=NOW, max_workers=1,
+        ["AAPL"], days=1, get=get, credentials=[GOOD], now=NOW, max_workers=1,
     )
 
     assert errors == {}

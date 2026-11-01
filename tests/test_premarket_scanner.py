@@ -370,12 +370,19 @@ def test_two_hour_cross_counts_only_on_the_0900_bucket():
     assert all(datetime.fromtimestamp(s["time"], tz=EASTERN).strftime("%H:%M") == "09:00" for s in two_hour)
     assert all(s["label"] == "CALL2H" and s["direction"] == "CALL" for s in two_hour)
 
-    # The same rise starting at 07:00 lands on the 07:00 2h bucket, which the
-    # TOS window (SecondsFromTime(0800) >= 0) excludes; the 4h side sees it on
-    # the 05:00 TOS bucket, also outside 07:00-09:30.
+    # Widened 2026-09-28 (NVDA): the same rise starting at 07:00 lands on the
+    # 07:00 2h bucket and the 05:00 4h bucket - both now inside the window.
     rise_early = datetime(2026, 8, 20, 7, 0, tzinfo=EASTERN)
     early = tos_bull_momo_signals(_minute_bars(day, 4 * 24 * 60, _flat_then_rise(int(rise_early.timestamp()))), None)
-    assert early == []
+    assert {(s["timeframe"], datetime.fromtimestamp(s["time"], tz=EASTERN).strftime("%H:%M")) for s in early} == {
+        ("2H", "07:00"), ("4H", "05:00"),
+    }
+
+    # A rise at 03:00 lands on the 03:00 2h bucket and the 01:00 4h bucket -
+    # still before the widened window opens.
+    rise_night = datetime(2026, 8, 20, 3, 0, tzinfo=EASTERN)
+    night = tos_bull_momo_signals(_minute_bars(day, 4 * 24 * 60, _flat_then_rise(int(rise_night.timestamp()))), None)
+    assert night == []
 
 
 def test_four_hour_cross_counts_on_the_0900_bucket():
@@ -481,11 +488,11 @@ def test_scan_row_uses_the_chart_engine_signals_when_present():
         return int(datetime(y, m, d, hh, 0, tzinfo=EASTERN).timestamp())
 
     chart_signals = [
-        # 2h cross on the 09:00 bucket today - inside the 08:00-09:30 window
+        # 2h cross on the 09:00 bucket today - inside the 07:00-09:30 window
         {"family": "4x8", "timeframe": "2H", "direction": "CALL", "label": "CALL2H", "time": stamp(2026, 8, 24, 9), "candleTimestamp": stamp(2026, 8, 24, 9)},
         # compact C4H = the cross fired (daily not confirming): the scan counts it
         {"family": "9x20", "timeframe": "4H", "direction": "CALL", "label": "C4H", "time": stamp(2026, 8, 24, 9), "candleTimestamp": stamp(2026, 8, 24, 9)},
-        # 4h cross on Friday 01:00 - outside the 07:00-09:30 window: ignored
+        # 4h cross on Friday 01:00 - outside the 05:00-09:30 window: ignored
         {"family": "4x8", "timeframe": "4H", "direction": "CALL", "label": "CALL4H", "time": stamp(2026, 8, 21, 1), "candleTimestamp": stamp(2026, 8, 21, 1)},
         # PUT never counts
         {"family": "4x8", "timeframe": "2H", "direction": "PUT", "label": "PUT2H", "time": stamp(2026, 8, 24, 9), "candleTimestamp": stamp(2026, 8, 24, 9)},

@@ -40,7 +40,7 @@ class ScannerLinesTests(unittest.TestCase):
     def test_strongest_row_gets_the_full_sentence(self) -> None:
         payload = {"rows": [
             _row("NVDA", "STRONG", 5, cyan=["CALL2H"], yellow=["CALL4H"], fires=["1h"],
-                 catalyst={"tag": "AI/PRODUCT", "headline": "Price Hikes Above 15%", "ageMinutes": 180}),
+                 catalyst={"tag": "AI/PRODUCT", "headline": "Nvidia Price Hikes Above 15%", "ageMinutes": 180}),
             _row("META", "MODERATE", 2, cyan=["CALL2H"], forming=True),
         ]}
         lines = scanner_lines(payload)
@@ -49,7 +49,7 @@ class ScannerLinesTests(unittest.TestCase):
         self.assertIn("CALL4H yellow", lines[0])
         self.assertIn("fire 1h", lines[0])
         self.assertIn("STRONG (5)", lines[0])
-        self.assertIn("Catalyst - AI/PRODUCT: Price Hikes Above 15% (3h ago)", lines[0])
+        self.assertIn("Catalyst - AI/PRODUCT: Nvidia Price Hikes Above 15% (3h ago)", lines[0])
         self.assertEqual(lines[1], "Also set up: META (MODERATE 2, forming).")
 
     def test_no_rows_says_so_plainly(self) -> None:
@@ -76,10 +76,10 @@ class MoverLinesTests(unittest.TestCase):
     }
 
     def test_top_movers_ranked_thresholded_and_excluded(self) -> None:
-        lines = mover_lines(self.QUOTES, {"SMCI": {"tag": "EARNINGS", "headline": "Beats", "ageMinutes": 60}},
+        lines = mover_lines(self.QUOTES, {"SMCI": {"tag": "EARNINGS", "headline": "SMCI Beats", "ageMinutes": 60}},
                             exclude={"NVDA"})
         self.assertEqual(lines[0],
-                         "Watchlist gainers: **SMCI** +6.2% (EARNINGS: Beats (1h ago)), **MARA** +4.1%, **COIN** +3.8%.")
+                         "Watchlist gainers: **SMCI** +6.2% (EARNINGS: SMCI Beats (1h ago)), **MARA** +4.1%, **COIN** +3.8%.")
         self.assertEqual(lines[1], "Watchlist losers: **BYND** -5.1%, **PLUG** -2.7%.")
 
     def test_quiet_tape_yields_no_lines(self) -> None:
@@ -89,9 +89,17 @@ class MoverLinesTests(unittest.TestCase):
 class WatchLineTests(unittest.TestCase):
     def test_lead_row_with_catalyst_wins(self) -> None:
         payload = {"rows": [_row("NVDA", "STRONG", 5,
-                                 catalyst={"headline": "Price Hikes", "tag": "NEWS"})]}
+                                 catalyst={"headline": "Nvidia Price Hikes", "tag": "NEWS"})]}
         self.assertEqual(watch_line(payload, {}),
                          "Watch NVDA at the open - signals and news agree.")
+
+    def test_a_catalyst_that_does_not_name_the_company_is_not_agreement(self) -> None:
+        # Oct 2: META's "catalyst" was a general AI-trading survey story.
+        payload = {"rows": [_row("META", "MODERATE", 2, catalyst={
+            "headline": "Would You Let AI Trade Your Money? Only 12% Said Never", "tag": "AI/PRODUCT"})]}
+        self.assertIn("does not name the company", watch_line(payload, {}))
+        line = scanner_lines(payload)[0]
+        self.assertIn("related news, not about META - AI/PRODUCT:", line)
 
     def test_lead_row_without_catalyst_is_flagged(self) -> None:
         payload = {"rows": [_row("META", "MODERATE", 2)]}
@@ -105,7 +113,7 @@ class WatchLineTests(unittest.TestCase):
 class BuildBriefingTests(unittest.TestCase):
     def test_assembles_all_sections_in_order(self) -> None:
         payload = {"rows": [_row("NVDA", "STRONG", 5, cyan=["CALL2H"],
-                                 catalyst={"headline": "Hikes", "tag": "NEWS", "ageMinutes": 30})]}
+                                 catalyst={"headline": "Nvidia Hikes", "tag": "NEWS", "ageMinutes": 30})]}
         quotes = {"SPY": {"change_pct": 0.5}, "QQQ": {"change_pct": 0.7},
                   "SMCI": {"change_pct": 6.2}, "NVDA": {"change_pct": 8.0}}
         briefing = build_briefing(payload, quotes, NOW)
@@ -120,3 +128,16 @@ class BuildBriefingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionLabelTests(unittest.TestCase):
+    def test_after_the_open_the_market_line_says_so(self) -> None:
+        # Oct 2's archived briefing was built at 09:31 and still said "premarket".
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+        quotes = {"SPY": {"change_pct": 0.7}, "QQQ": {"change_pct": 1.0}}
+        self.assertEqual(market_line(quotes, datetime(2026, 10, 2, 9, 31, tzinfo=et)),
+                         "SPY +0.7%, QQQ +1.0% at 9:31 AM (after the open) - tape leans bullish.")
+        self.assertEqual(market_line(quotes, datetime(2026, 10, 2, 9, 29, tzinfo=et)),
+                         "SPY +0.7%, QQQ +1.0% premarket - tape leans bullish.")

@@ -1,0 +1,108 @@
+{
+ "jev": {
+  "what": "Jev pick: TypeSafe Jev scored this scanner ticker as a TAKE.",
+  "needs": "The ticker is on the scanner (a match); Jev read its whole scanner picture - RVOL, Skittles, squeeze, momentum, VWAP, sector, SPY, news - and gave a take chance of 30% or more in the last 15 minutes. Re-scored when the picture changes (at most every 10 minutes). 09:30-15:30."
+ },
+ "goRvolMacd": {
+  "what": "GO, plus fresh buying volume and momentum turning up.",
+  "needs": "Everything GO needs, AND a cyan RVOL on 5m, 15m or 30m, AND 5-minute MACD above its signal line and rising, on completed candles."
+ },
+ "go": {
+  "what": "Gap and go: the stock gapped up and broke out in the first hour.",
+  "needs": "Grade A+ or A; gap up 2% or more; above VWAP, the open and the first 5-minute high by 10:30; 30-minute buyers in control (+DI above -DI)."
+ },
+ "star1": {
+  "what": "The #1 of today's best setups on that board.",
+  "needs": "Ranking: GO in a hot or moving sector first, then other GO, then OPT (first seen before 10:00). Fewer warnings (fading, below VWAP, up 8%+, 30m sellers, bad news) rank higher."
+ },
+ "mxaplus": {
+  "what": "The MomoX-style A+: news + volume + squeeze + trend.",
+  "needs": "News in the last 24h; RVOL cyan (3 or more) on ANY of 15m/30m/1h/2h/4h/D - e.g. 15m at 5 counts even when 30m is 1; a squeeze firing on any of 30m/1h/2h/4h/D/W; Skittles cyan or green on ANY of D-Mo; not an ETF. (Call-wall check removed 2026-09-29.)"
+ },
+ "daily2": {
+  "what": "The first two stocks each day that pass Strategy V2 with volume on 2+ timeframes.",
+  "needs": "A+ grade after 09:35, momentum Extended, not up 10%+, RVOL on at least two timeframes. Only the first two a day."
+ },
+ "turn": {
+  "what": "Market turn: SPY recovers and these are the strongest names at that moment.",
+  "needs": "SPY back above its VWAP after a morning dip; the stock is one of the 5 strongest then: above VWAP, up 1%+, 30-minute buyers in control (ADX 20+)."
+ },
+ "c2h": {
+  "what": "The chart's short arrow: the 2H or 4H trend just crossed up, but the bigger trend has not turned yet.",
+  "needs": "A C2H or C4H arrow today (4x8 or 9x20), taken the first time the scanner sees it - even if the chart later repaints it away."
+ },
+ "call2h": {
+  "what": "The chart's full arrow: the 2H or 4H crossed up AND the bigger trend agrees.",
+  "needs": "A CALL2H or CALL4H arrow today. Note: the 'bigger trend agrees' part is only known when the higher candle closes, so some CALL arrows appear hours after the candle they are drawn on."
+ },
+ "adx": {
+  "what": "Strong trend right now on the 5-minute chart.",
+  "needs": "5m ADX above 25 with +DI above 25 (the white line above yellow on a cyan background), on a graded row."
+ },
+ "skit": {
+  "what": "A Skittles block (2h to Monthly) just turned cyan/green.",
+  "needs": "A with-trend cross first seen in the last hour that the block still shows."
+ },
+ "rvol": {
+  "what": "Heavy buying volume right now.",
+  "needs": "An RVOL cell painted cyan or green on 5m-D on today's bar."
+ },
+ "sqz": {
+  "what": "A 2h or 4h squeeze just fired (released).",
+  "needs": "The squeeze cell changed to fired during market hours today."
+ },
+ "zs": {
+  "what": "Your ZS entry: above every line with a clear path.",
+  "needs": "5m close above EMA 9, 21, 50, VWAP and the Ichimoku cloud, AND nothing within 2% above: today's high, premarket high, yesterday's high, pivot P/R1/R2. (9eD/21eD, weekly MAs and the High-OI wall are not in the live check.)"
+ },
+ "sectorHot": {
+  "what": "A leader of one of the day's two HOT sectors.",
+  "needs": "The stock is up and above VWAP and listed among its sector's leaders while the sector is one of the two latched HOT sectors (lit 09:35-11:00: most members up and above VWAP, 3-day strength rising)."
+ },
+ "sectorMove": {
+  "what": "A leader of a sector that is 'moving now' (also shown with 🔥).",
+  "needs": "The stock is up and above VWAP and listed among its sector's leaders while the sector is moving now (60%+ of members up and above VWAP, median up 0.5%+) - e.g. Cybersecurity on 09-28: PANW, ZS, CRWD, NET."
+ },
+ "openPath": {
+  "what": "Your ABVX rule: at the open, above EMA 9/21, VWAP and the cloud, a clear $0.50 above, and a chart arrow.",
+  "needs": "09:30-10:30; 5m close above EMA 9 and EMA 21, VWAP and the Ichimoku cloud (the 50 EMA no longer needed - your update 09-30); no level within +$0.50 (pivots P/R1/R2, yesterday's high, premarket high - today's own high does not count); a CALL2H / C2H / C4H / CALL4H arrow on the chart today that has not vanished. High OI is not a filter (it passes ~95% of names)."
+ },
+ "solo": {
+  "what": "SOLO: big money going into ONE stock while its sector is not moving.",
+  "needs": "09:45-11:00; volume so far 5x-20x normal for the time of day, up 1%+, above VWAP and the 09:30 candle, price $5+, its sector NOT moving with it."
+ },
+ "hotLead": {
+  "what": "🔥#1 / #2: the top two leaders of a hot sector.",
+  "needs": "The scanner's 🔥#1 or 🔥#2 tag - the strongest stocks of the day's hot sector."
+ },
+ "dayLine": {
+  "what": "Your daily-line trade: the stock opens past yesterday's high (calls) or low (puts) and the 5m candle closes on that side of the 21 EMA with rising volume or momentum.",
+  "needs": "One of the board's 30 biggest stocks (by dollar volume), or SPY / QQQ; 09:35-11:00; open above yesterday's high (puts: below yesterday's low); 5m close above the 21 EMA (puts: below); volume up (more than the last bar and 1.5x the last 30 min) OR MACD rising above its signal (puts: falling below)."
+ },
+ "dayReclaim": {
+  "what": "The reverse (ZS 09-28): opened past yesterday's line the wrong way, and the first 5m candle closed straight back across it.",
+  "needs": "Calls: open below yesterday's low, the 09:30 candle closes back above it. Puts: open above yesterday's high, the 09:30 candle closes back below it. Any stock, plus SPY / QQQ (no other ETFs)."
+ },
+ "dayLine100": {
+  "what": "Your daily line with your filters: $100+ stock, opened past yesterday's high (calls) or low (puts), $0.50 of room to the next daily line.",
+  "needs": "Open $100 or more; open above yesterday's high (puts: below yesterday's low); no daily line (the last 3 days' open / high / low / close) within $0.50 of the price in the trade's direction; 5m close above the 21 EMA (puts: below) with volume rising or MACD momentum; 09:35-11:00. Any stock, plus SPY / QQQ."
+ },
+ "mom": {
+  "what": "MOM↑: the chart's Squeeze Momentum line is cyan - buying getting stronger (bear MOM↓: magenta, selling getting stronger).",
+  "needs": "On the last 5-minute candle the Squeeze Momentum line (shared_SqueezeChain24, length 20) is above 0 and rising (bear: below 0 and falling). Same as the MOM tag in the Setup column. 09:30-15:30, first time per stock per day."
+ },
+ "momStrong": {
+  "what": "MOM strong: the strong call setup - momentum dots cyan and rising AND the ADX background filled cyan on 5m and 30m (bear: magenta / magenta).",
+  "needs": "On the last 5-minute candle the Squeeze Momentum line (shared_SqueezeChain24) is cyan - above 0 and rising (bear: magenta, below 0 and falling); AND on BOTH 5m and 30m ADX DI+ is above 25 and above DI- (bear: DI- above 25 and above DI+) - buyers pushing harder and the trend strong across timeframes. Same as the solid cyan MOM tag in the Setup column. 09:30-15:30, first time per stock per day.",
+  "tested": "TEST - starts 2026-10-05; not back-tested. Momentum + 5m ADX alone did the same as random stocks (Sep 1-28); the 30m agreement is new."
+ },
+ "momFlip": {
+  "what": "MOM FLIP: the 5m ADX background flips to your side while the momentum dots turn your way - earlier than MOM.",
+  "needs": "On the last CLOSED 5-minute candle the ADX buyers' line (DI+) crosses above the sellers' line (DI-) - background magenta -> cyan - and the Squeeze Momentum dots are rising on that candle (cyan or dark blue). Puts: DI- crosses above DI+ (cyan -> magenta) and the dots are falling (purple or magenta). Does not wait for the dots to cross 0. 09:30-15:30, first time per stock per day.",
+  "tested": "TEST - starts 2026-10-05. Back-test Sep 1-28 (all optionable stocks, 5m): the flip alone, with the dots turning, or with the dots coloured did the SAME as random stocks at the same moment, calls and puts, in both halves of the month. Fires on ~350 stocks a day."
+ },
+ "zs2": {
+  "what": "Your ZS entry, but today's own high does not block it.",
+  "needs": "Same lines as ZS; the clear path ignores today's high and the premarket high (ABVX 09-28 was blocked only by its own day high)."
+ }
+}

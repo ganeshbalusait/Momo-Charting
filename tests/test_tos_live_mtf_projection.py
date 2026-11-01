@@ -214,6 +214,107 @@ def test_seeding_uses_the_whole_tape_not_only_five_sessions() -> None:
     assert day4h["fastEma"] > day4h["slowEma"]
 
 
+# 2026-10-01 "it should not be delayed": the chart's per-tick live reconcile
+# (frontend/src/mtfLiveSignalState.js) needs liveSignalContexts, which the
+# server never produced, so every live bubble waited for a full rebuild.
+def _client_live_label(context: dict, price: float) -> str | None:
+    """Python replica of reconcileLiveMtfSignals' forming-candle formula."""
+    fast_alpha = 2 / (context["fastLength"] + 1)
+    slow_alpha = 2 / (context["slowLength"] + 1)
+    fast = fast_alpha * price + (1 - fast_alpha) * context["baseFastEma"]
+    slow = slow_alpha * price + (1 - slow_alpha) * context["baseSlowEma"]
+    base_difference = context["baseFastEma"] - context["baseSlowEma"]
+    difference = fast - slow
+    direction = None
+    if base_difference <= 0 and difference > 0:
+        direction = "CALL"
+    if base_difference >= 0 and difference < 0:
+        direction = "PUT"
+    if direction is None:
+        return None
+    higher_fast = fast_alpha * price + (1 - fast_alpha) * context["higherBaseFastEma"]
+    higher_slow = slow_alpha * price + (1 - slow_alpha) * context["higherBaseSlowEma"]
+    confirmed = (higher_fast >= higher_slow) == (direction == "CALL")
+    prefix = direction if confirmed else ("C" if direction == "CALL" else "P")
+    return f"{prefix}{context['timeframe']}"
+
+
+def _wave_frame(end: str) -> pd.DataFrame:
+    import math
+
+    timestamps = pd.date_range("2026-07-14 04:00", end, freq="5min", tz="America/New_York")
+    closes = [100 + 3 * math.sin(index / 9.0) + 1.5 * math.sin(index / 2.3) for index in range(len(timestamps))]
+    return pd.DataFrame({"timestamp": timestamps, "close": closes})
+
+
+def test_live_contexts_cover_every_pair_and_point_at_the_forming_bucket() -> None:
+    payload = _tos_mtf_ema_signal_payload(_wave_frame("2026-07-22 10:20"))
+    contexts = payload["liveSignalContexts"]
+    pairs = {(item["family"], item["timeframe"]) for item in contexts}
+    assert pairs == {
+        ("4x8", "15"), ("4x8", "30"), ("4x8", "1H"), ("4x8", "2H"), ("4x8", "4H"),
+        ("9x20", "30"), ("9x20", "1H"), ("9x20", "2H"), ("9x20", "4H"),
+    }
+    last = int(pd.Timestamp("2026-07-22 10:20", tz="America/New_York").timestamp())
+    for context in contexts:
+        start = context["candleTimestamp"]
+        assert start <= last < start + context["signalMinutes"] * 60
+        assert {"fastLength", "slowLength", "baseFastEma", "baseSlowEma", "higherBaseFastEma", "higherBaseSlowEma"} <= set(context)
+
+
+def test_client_live_formula_on_contexts_equals_a_full_server_rebuild() -> None:
+    # Contexts taken at 10:20, applied to the 10:25 / 10:30 / 10:35 prices
+    # inside the same buckets, must give exactly the forming-bucket bubble the
+    # server prints after rebuilding with those bars.
+    early = _tos_mtf_ema_signal_payload(_wave_frame("2026-07-22 10:20"))
+    checked = 0
+    for later_end in ("2026-07-22 10:25", "2026-07-22 10:30", "2026-07-22 10:35"):
+        later_frame = _wave_frame(later_end)
+        later = _tos_mtf_ema_signal_payload(later_frame)
+        later_time = int(pd.Timestamp(later_end, tz="America/New_York").timestamp())
+        price = float(later_frame["close"].iloc[-1])
+        for context in early["liveSignalContexts"]:
+            if later_time >= context["candleTimestamp"] + context["signalMinutes"] * 60:
+                continue  # the bucket closed; the next rebuild sends new contexts
+            expected = [
+                signal["label"] for signal in later["signals"]
+                if signal["family"] == context["family"]
+                and signal["timeframe"] == context["timeframe"]
+                and signal["liveForming"]
+            ]
+            got = _client_live_label(context, price)
+            assert (expected[-1] if expected else None) == got, (context["family"], context["timeframe"], later_end)
+            checked += 1
+    assert checked >= 15
+
+
+def test_forming_bubbles_are_flagged_live_so_the_client_can_repaint_them() -> None:
+    payload = _tos_mtf_ema_signal_payload(_wave_frame("2026-07-22 10:20"))
+    for signal in payload["signals"]:
+        assert bool(signal.get("isLiveSignal")) == bool(signal["liveForming"])
+
+
+def test_day_confirmation_uses_the_real_daily_closes_inside_the_tape() -> None:
+    # 2026-10-01 parity audit: daily closes were keyed by midnight ET while the
+    # DAY buckets are keyed by the 20:00 ET session start, so in-tape days fell
+    # back to the ~19:55 extended-hours 5m close (MSFT CALL4H/C4H flipped).
+    frame = _wave_frame("2026-07-22 10:20")
+    # Real tapes have no Saturday/Sunday sessions (no daily close exists).
+    stamps = pd.to_datetime(frame["timestamp"])
+    session_weekday = (stamps + pd.Timedelta(hours=4)).dt.weekday
+    frame = frame[session_weekday < 5].reset_index(drop=True)
+    days = pd.date_range("2026-06-01", "2026-07-21", freq="B", tz="America/New_York")
+    # Daily closes deliberately far from any 5m close so a fallback is obvious.
+    daily = pd.DataFrame({"timestamp": days, "close": [500.0 + i for i in range(len(days))]})
+    payload = _tos_mtf_ema_signal_payload(frame, daily_frame=daily)
+    context = next(c for c in payload["liveSignalContexts"] if c["family"] == "4x8" and c["timeframe"] == "4H")
+    closes = list(daily["close"])
+    ema4 = closes[0]
+    for close in closes[1:]:
+        ema4 = ema4 + (2 / 5) * (close - ema4)
+    assert abs(context["higherBaseFastEma"] - ema4) < 1e-6
+
+
 def test_forming_4h_cross_prints_on_the_open_bucket_first_candle_like_tos() -> None:
     """COHR 2026-10-01, TOS 5m at 12:25: CALL1H and CALL4H both on the 09:00
     candle while the 09:00-13:00 4H bar was still forming. The developing 4H

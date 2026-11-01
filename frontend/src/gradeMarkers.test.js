@@ -37,3 +37,31 @@ test("candleTimeFor picks the candle the snapshot falls in", () => {
   assert.equal(candleTimeFor(700, bars), 700);
   assert.equal(candleTimeFor(50, bars), null);
 });
+
+test("the per-hour ET day cache matches toLocaleDateString, across the DST change", () => {
+  const fmt = (sec) => new Date(sec * 1000).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  // 2026-11-01 02:00 EDT -> 01:00 EST; walk 3 days in 7-minute steps.
+  const entries = [];
+  for (let sec = s("2026-10-31T00:00:00Z"); sec < s("2026-11-03T00:00:00Z"); sec += 420) {
+    entries.push({ _sec: sec, letter: (sec / 420) % 3 === 0 ? "A" : "B" });
+  }
+  // Reference: the step-up rule with the original per-entry day computation.
+  const reference = [];
+  const lastShown = {};
+  let previousRank = 0;
+  let previousDay = null;
+  for (const entry of entries) {
+    const day = fmt(entry._sec);
+    if (day !== previousDay) { previousRank = 0; previousDay = day; }
+    const rank = entry.letter === "A" ? 1 : 0;
+    if (rank > previousRank && rank > 0) {
+      const last = lastShown[entry.letter];
+      if (last === undefined || entry._sec - last >= 3600) {
+        reference.push({ time: entry._sec, letter: entry.letter });
+        lastShown[entry.letter] = entry._sec;
+      }
+    }
+    previousRank = rank;
+  }
+  assert.deepEqual(gradeStepMarkers(entries), reference);
+});

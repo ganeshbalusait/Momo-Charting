@@ -89,7 +89,7 @@ class SoloBook:
                 if local.weekday() < 5 and FROM_MIN <= minute < UNTIL_MIN:
                     for row in rows:
                         symbol = row.get("symbol")
-                        if not isinstance(symbol, str) or symbol in self._hits:
+                        if not isinstance(symbol, str) or symbol in self._hits or row.get("etf"):  # ETFs never fire a rule (momx/etf_list.py, 2026-09-27 "use only stocks")
                             continue
                         ratio = qualifies(row)
                         if ratio is not None:

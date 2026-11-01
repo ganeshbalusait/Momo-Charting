@@ -31,7 +31,7 @@ function Test-WorkerPort {
 
 Write-Host 'Looking for the MomX scanner worker...'
 $workers = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-    Where-Object { $_.CommandLine -like '*momx_worker*' }
+    Where-Object { $_.CommandLine -match '(?i)(?:^|[\\/\s"])momx_worker\.py(?=$|[\s"])' }
 
 if (-not $workers) {
     Write-Host 'No worker is running. The watchdog will start one within ~15s.'
@@ -48,7 +48,7 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 3
     if (Test-WorkerPort) {
         $fresh = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-            Where-Object { $_.CommandLine -like '*momx_worker*' } |
+            Where-Object { $_.CommandLine -match '(?i)(?:^|[\\/\s"])momx_worker\.py(?=$|[\s"])' } |
             Select-Object -First 1
         if ($fresh) {
             Write-Host ("Worker is back: pid {0}, started {1}" -f $fresh.ProcessId, $fresh.CreationDate) -ForegroundColor Green

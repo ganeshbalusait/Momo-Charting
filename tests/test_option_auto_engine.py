@@ -511,6 +511,10 @@ def bind_state_methods(state, names):
 
 def make_state(rows=None, mid=0.50, buying_power=39729.24):
     state = DashboardState.__new__(DashboardState)
+    # No real Alpaca data client in a unit test: since 2026-10-04 the owner client falls
+    # through to any WORKING .env key, so without this the chart test fetched real
+    # overnight candles (172 bars instead of the fake broker's 1).
+    state._owner_alpaca_chart_client = lambda: None
     state.active_profile_id = "default-paper"
     state.client = FakeBrokerClient()
     state.option_credentials = FakeOptionCredentials()
@@ -680,6 +684,20 @@ def open_pltr_row(state):
 
 
 class OptionEngineUnitTests(unittest.TestCase):
+    def _use_fake_schwab(self, state):
+        """scan_option_chain_liquidity builds its OWN SchwabClient() for quotes and chains,
+        so without this the tests read LIVE Schwab (AMD came back ~$200 instead of the
+        fixture's $2, PLTR with its real day move). Route it to the test's fakes."""
+        from unittest import mock
+        fake = types.SimpleNamespace(
+            configured=True,
+            get_quotes=state.scanner.client.get_quotes,
+            get_option_chain=state.market_data_client.get_option_chain,
+        )
+        patcher = mock.patch.object(api_server, "SchwabClient", lambda *args, **kwargs: fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_option_entry_window_closes_at_345_pm_et(self):
         state = make_state()
         state._option_market_hours_open = types.MethodType(lambda self: True, state)
@@ -1524,7 +1542,7 @@ class OptionEngineUnitTests(unittest.TestCase):
         state.client = types.SimpleNamespace(ensure_streaming=lambda symbols: calls.append("stream"))
         state._option_market_hours_open = types.MethodType(lambda self: True, state)
         state._active_option_watchlist = types.MethodType(lambda self: ["PLTR"], state)
-        state._option_watchlist_source_label = types.MethodType(lambda self: "Option Watchlist", state)
+        state._option_watchlist_source_label = types.MethodType(lambda self: "Mag7 + Watchlist Options", state)   # his bot scans mag7
         state.manage_option_paper_trades = lambda: calls.append("manage") or {"managed": 1, "closed": []}
         state._option_signal_frame_from_fresh_oi = lambda: calls.append("scan") or pd.DataFrame(
             [{"symbol": "PLTR", "allowed": True}]
@@ -1544,7 +1562,7 @@ class OptionEngineUnitTests(unittest.TestCase):
         self.assertNotIn("dashboard", calls)
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["resultCount"], len(state.option_candidate_results.index))
-        self.assertEqual(result["scanLabel"], "Option Watchlist")
+        self.assertEqual(result["scanLabel"], "Mag7 + Watchlist Options")
         self.assertEqual(state.dashboard_cache, {"stale": True})
         self.assertIsNotNone(state.dashboard_cache_timestamp)
 
@@ -1734,7 +1752,12 @@ class OptionEngineUnitTests(unittest.TestCase):
 
         state.scanner = FakeScanner()
         state.market_data_client = types.SimpleNamespace(get_option_chain=lambda *args, **kwargs: {})
+        # No clock in a __new__ state: the scan reads the session only for the 0DTE gate,
+        # which these quote-prefilter tests do not exercise.
+        state.client = types.SimpleNamespace(get_clock=lambda: None)
+        state._session_status = lambda clock: {}
 
+        self._use_fake_schwab(state)
         payload = DashboardState.scan_option_chain_liquidity(
             state,
             symbols=["AAPL", "AMD", "MISSING"],
@@ -1767,7 +1790,12 @@ class OptionEngineUnitTests(unittest.TestCase):
 
         state.scanner = FakeScanner()
         state.market_data_client = types.SimpleNamespace(get_option_chain=lambda *args, **kwargs: {})
+        # No clock in a __new__ state: the scan reads the session only for the 0DTE gate,
+        # which these quote-prefilter tests do not exercise.
+        state.client = types.SimpleNamespace(get_clock=lambda: None)
+        state._session_status = lambda clock: {}
 
+        self._use_fake_schwab(state)
         payload = DashboardState.scan_option_chain_liquidity(
             state,
             symbols=["NVDA", "AAPL"],
@@ -1802,7 +1830,9 @@ class OptionEngineUnitTests(unittest.TestCase):
             get_option_chain=lambda *args, **kwargs: {"underlyingPrice": 150.0},
         )
         state.option_client = types.SimpleNamespace(normalize_option_symbol=lambda value: value)
-        state._approved_oi_strategy_frame = lambda frame: frame
+        state._approved_oi_strategy_frame = lambda frame, **kwargs: frame
+        state.client = types.SimpleNamespace(get_clock=lambda: None)   # read only for the 0DTE gate
+        state._session_status = lambda clock: {}
         state._option_underlying_price_from_chain = lambda payload: 150.0
         state._oi_symbol_expiry_cutoff = lambda payload, anchor: None
         state._option_chain_contracts = lambda payload, contract_type: [{
@@ -1825,6 +1855,7 @@ class OptionEngineUnitTests(unittest.TestCase):
             "atm_open_interest": 50.0,
         }
 
+        self._use_fake_schwab(state)
         payload = DashboardState.scan_option_chain_liquidity(
             state,
             symbols=["PLTR"],
@@ -2274,6 +2305,13 @@ class OptionEngineIntegrationTests(unittest.TestCase):
         self.assertEqual(state.option_client.account_requests, 1)
 
     def test_option_entries_route_mag7_to_paper3_and_watchlist_to_paper5(self):
+        # The routing rule, not this machine's .env: the live config has only paper3, so
+        # the real settings sent BOTH sides to paper3 and the test failed on config.
+        from unittest import mock
+        for name, value in (("option_account_profile_id", "paper3"), ("watchlist_option_account_profile_id", "paper5")):
+            patcher = mock.patch.object(type(api_server.settings), name, lambda self, mode=None, _v=value: _v)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         state = make_state()
         mag7_client = FakeOptionClient()
         watchlist_client = FakeOptionClient()
@@ -2396,7 +2434,7 @@ class OptionEngineIntegrationTests(unittest.TestCase):
         self.assertNotIn("TSLL", active_watchlist)
         self.assertNotIn("SPCU", active_watchlist)
         self.assertEqual(active_watchlist.count("AVGO"), 1)
-        self.assertEqual(state._option_watchlist_source_label(), "MAG7-Watchlist Options")
+        self.assertEqual(state._option_watchlist_source_label(), "Mag7 + Watchlist Options")
 
     def test_option_scan_coverage_reports_no_candidate_symbols(self):
         state = make_state()
@@ -2997,3 +3035,55 @@ class WatchlistBatchEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class MomxScannerOptionSourceTests(unittest.TestCase):
+    """His orders 2026-10-03: the option auto-bot trades the MomX scan MATCHES that Jev
+    approves - Watchlist board -> paper5 "Watchlist option", Mag7 board -> paper3 "Mag7 OPTION"."""
+
+    def _state(self, boards: dict):
+        import json as _json
+        import tempfile
+        from pathlib import Path as _Path
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for name, board in boards.items():
+            (_Path(tmp.name) / name).write_text(_json.dumps(board), encoding="utf-8")
+        state = DashboardState.__new__(DashboardState)
+        state.momx_board_cache_dir = tmp.name
+        state.option_bot_config = {"watchlistSource": "momx"}
+        return state
+
+    @staticmethod
+    def _now():
+        from datetime import datetime as _dt, timezone as _tz
+        return _dt.now(_tz.utc).isoformat()
+
+    def _jev(self, p, at=None):
+        return {"p": p, "at": at or self._now()}
+
+    def test_jev_approved_matches_from_both_boards(self):
+        now = self._now()
+        state = self._state({
+            "Watchlist.json": {"generatedAt": now, "rows": [
+                {"symbol": "APLD", "scanPass": True, "jevRow": self._jev(0.15)},
+                {"symbol": "CRDO", "scanPass": True, "jevRow": self._jev(0.05)},          # Jev says no
+                {"symbol": "SOXL", "scanPass": True, "etf": True, "jevRow": self._jev(0.5)},
+                {"symbol": "NBIS", "jevRow": self._jev(0.5)},                            # not a match
+                {"symbol": "LASR", "scanPass": True, "jevRow": self._jev(0.4, "2026-01-02T15:00:00+00:00")},  # stale score
+                {"symbol": "NVDA", "scanPass": True, "jevRow": self._jev(0.3)}]},        # Mag7 name -> paper3 book
+            "Mag7.json": {"generatedAt": now, "rows": [
+                {"symbol": "NVDA", "scanPass": True, "jevRow": self._jev(0.3)},
+                {"symbol": "TSLA", "scanPass": True, "jevRow": self._jev(0.02)}]},
+        })
+        self.assertEqual(state._option_watchlist_source_label(), "MomX Scanner Options")
+        self.assertEqual(state._active_option_watchlist(), ["APLD", "NVDA"])
+        from unittest import mock
+        with mock.patch.object(type(api_server.settings), "option_account_profile_id", lambda self, mode=None: "paper3"),              mock.patch.object(type(api_server.settings), "watchlist_option_account_profile_id", lambda self, mode=None: "paper5"):
+            self.assertEqual(state._option_profile_for_underlying("NVDA"), "paper3")
+            self.assertEqual(state._option_profile_for_underlying("APLD"), "paper5")
+
+    def test_a_stale_or_missing_board_gives_no_tickers(self):
+        old = {"generatedAt": "2026-01-02T15:00:00+00:00", "rows": [{"symbol": "APLD", "scanPass": True, "jevRow": self._jev(0.9)}]}
+        self.assertEqual(self._state({"Watchlist.json": old})._active_option_watchlist(), [])
+        self.assertEqual(self._state({})._active_option_watchlist(), [])

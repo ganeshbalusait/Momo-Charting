@@ -26,6 +26,25 @@ from momx import board, flags, news
 
 StubResult = namedtuple("StubResult", "bars errors")
 
+
+def test_production_tapes_overlap_and_preserve_each_feed_error(monkeypatch):
+    from types import SimpleNamespace
+    barrier = threading.Barrier(3)
+    completed = []
+    def fetcher(kind):
+        def call(symbols, **kwargs):
+            barrier.wait(timeout=5)
+            completed.append(kind)
+            return StubResult({}, {"AAA": kind + " unavailable"})
+        return call
+    monkeypatch.setattr(board, "feed", SimpleNamespace(
+        fetch_5m=fetcher("five"), fetch_30m=fetcher("thirty"),
+        fetch_daily=fetcher("daily")))
+    result = board.build_board(["AAA"])
+    assert set(completed) == {"five", "thirty", "daily"}
+    for kind in completed:
+        assert kind + " unavailable" in result["errors"]["AAA"]
+
 # 2026-08-03 is a Monday. 14:30 UTC = 10:30 ET, safely inside the session on
 # both sides of a DST boundary, so every bar's Eastern date is its UTC date.
 SESSION_ANCHOR = int(datetime(2026, 8, 3, 14, 30, tzinfo=timezone.utc).timestamp())
@@ -174,9 +193,11 @@ PAYLOAD_KEYS = {"generatedAt",
     # BEAR scanner (spec 2026-09-24): every payload says which way it faces.
     "direction"}
 ROW_KEYS = {
-    "symbol", "industry", "last", "pctChange", "scanPass", "scanReasons",
+    "symbol", "industry", "last", "pctChange", "prevClose", "scanPass", "scanReasons",
     "rvol", "sqz", "skittles", "highLow", "color", "quoteTrend", "sparkline",
     "badge", "news",
+    # 30m / 1h squeezes for MX A+ (2026-09-28).
+    "sqzFast",
     # The ticker card's "1-hr high / 1-hr low" (2026-09-02). This set IS the
     # wire contract: adding a field to _contract_row without adding it here is
     # meant to fail, and removing one is meant to fail louder - the same edit
@@ -211,7 +232,8 @@ def test_payload_key_set_matches_the_contract_exactly():
     assert isinstance(payload["errors"], dict)
 
     (row,) = payload["rows"]
-    assert set(row) == ROW_KEYS
+    assert set(row) == ROW_KEYS | {"marketDataAt"}
+    assert row["marketDataAt"] == SESSION_ANCHOR + 119 * 5 * 60
     assert row["symbol"] == "NVDA"
     assert row["industry"] == "Semis"          # from momx.industries
     assert isinstance(row["scanPass"], bool)
@@ -221,8 +243,11 @@ def test_payload_key_set_matches_the_contract_exactly():
     assert set(row["skittles"]) == {
         "2h", "4h", "D", "2D", "3D", "4D", "Wk", "M",
     }
-    for cell in (row["highLow"], row["color"]):
-        assert set(cell) == {"value", "bg", "fg"}
+    # highLow also carries its 8-bar hh/ll so the panel can re-run the formula
+    # on the live price between rebuilds (2026-09-30).
+    assert set(row["highLow"]) <= {"value", "bg", "fg", "hh", "ll", "barAt", "degree"}
+    assert {"value", "bg", "fg"} <= set(row["highLow"])
+    assert set(row["color"]) == {"value", "bg", "fg"}
     # quoteTrend cells also carry "price" (drives the MomoX-style bar height).
     for cell in row["quoteTrend"]:
         assert set(cell) == {"value", "bg", "fg", "price"}
@@ -1267,9 +1292,11 @@ def test_the_badge_reads_the_row_that_was_actually_built():
 # ----------------------------------------------------------------------
 
 def test_importing_momx_board_starts_no_threads():
-    before = threading.active_count()
+    # Other tests' background threads may finish during reload. Compare
+    # identities so their exit cannot masquerade as an import side effect.
+    before = set(threading.enumerate())
     importlib.reload(board)
-    assert threading.active_count() == before
+    assert not (set(threading.enumerate()) - before)
 
 
 def _imports_api_server_in_a_fresh_interpreter(module: str) -> bool:
@@ -1548,3 +1575,17 @@ def test_contract_row_keeps_bear_momentum_from_a_reused_contract_row():
     fresh = {"symbol": "AAA", "m5": {"direction": "bull"}, "m5Bear": bear_m5}
     assert board._contract_row(fresh, False, [])["bear"]["m5"] is bear_m5
     assert board._contract_row({"symbol": "AAA"}, False, [])["bear"]["m5"] is None
+
+
+def test_a_newly_matching_row_built_in_the_lane_equals_a_full_build(monkeypatch):
+    """2026-10-16: new matches are built inside the scan lane (they were built
+    one by one in the worker's main process, ~9 s a Watchlist build). The row
+    must be exactly what a full build gives for the same tapes."""
+    stale = {"symbol": "BBB", "pctChange": -99.0, "rvol": {"5m": {"value": 42.0}}, "last": 1.0}
+    monkeypatch.setattr(board.scan, "scan_symbol", lambda tapes, last=None, **kwargs: (True, ["rvol:5m"]))
+    skipped = board.build_board(["AAA", "BBB"], feed_module=_two_symbol_feed(), now=None,
+                                full_rows_for=["AAA"], reuse_rows={"BBB": stale})
+    full = board.build_board(["AAA", "BBB"], feed_module=_two_symbol_feed(), now=None)
+    pick = lambda p: {r["symbol"]: {k: v for k, v in r.items() if k != "grade"} for r in p["rows"]}
+    assert pick(skipped)["BBB"] == pick(full)["BBB"]
+    assert not skipped["errors"]

@@ -49,6 +49,9 @@ def _pinned_watchlist_seed(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_warmer_thread(monkeypatch):
     monkeypatch.setattr(service, "start_warmer", lambda: None)
+    # Other modules exercise the real asynchronous persister. These tests
+    # explicitly assert synchronous disk writes and must not inherit its flag.
+    monkeypatch.setattr(service, "ASYNC_PERSIST", False)
 
 
 @pytest.fixture(autouse=True)
@@ -247,10 +250,21 @@ def test_lists_are_built_one_at_a_time_never_concurrently(monkeypatch):
         return {"generatedAt": "x", "universe": list(symbols or []), "rows": [], "errors": {}}
 
     monkeypatch.setattr(board, "cached_board", watcher)
-    before = threading.active_count()
+    caller = threading.get_ident()
+    started_here = []
+    real_start = threading.Thread.start
+
+    def record_start(thread, *args, **kwargs):
+        if threading.get_ident() == caller:
+            started_here.append(thread.name)
+        return real_start(thread, *args, **kwargs)
+
+    monkeypatch.setattr(threading.Thread, "start", record_start)
     service._warm_due_lists(["Mag7", "Watchlist"])
     assert live["max"] == 1
-    assert threading.active_count() == before, "warming must not spawn per-list threads"
+    # Other suite workers can start/finish independently. Observe this call's
+    # starts directly rather than comparing the process-wide thread count.
+    assert started_here == [], "warming must not spawn per-list threads"
 
 
 def test_refresh_now_marks_one_list_due_without_disturbing_the_others(builder):
@@ -810,7 +824,99 @@ def test_reuse_rows_carry_the_bear_momentum_so_a_reused_row_keeps_it():
                   "rest": [{"symbol": "AAA", "scanPass": False, "m5": None}]}
     state.builds = 1
     kwargs = service._reuse_kwargs(state)
-    assert kwargs["full_rows_for"] == {"AAA", "BBB"}
+    # Build 1 is odd: the bear-only match BBB may keep its columns this build
+    # (BEAR_ONLY_FULL_ROWS_EVERY = 2, his call 2026-10-16) - so it MUST carry m5Bear.
+    assert kwargs["full_rows_for"] == {"AAA"} and kwargs["reuse_bear_rows_for"] == {"BBB"}
     assert kwargs["reuse_rows"]["BBB"]["m5Bear"] is bear_m5
     assert kwargs["reuse_rows"]["AAA"]["m5Bear"] is None
     assert "m5Bear" not in state.payload["rows"][0]        # the published row is untouched
+
+
+def test_fired_at_keeps_the_first_sighting_restamps_a_refire_and_survives_restart(monkeypatch):
+    """MomoX-style "fired N min ago" (2026-10-03): firedAt = when OUR scanner first saw it."""
+    service._FIRED.clear()
+    monkeypatch.setattr(board, "cached_board", ScanStub(
+        [{"symbol": "NBIS", "scanPass": False, "scanReasons": ["blocked:pricechange:close:1h", "macd:D"]}],
+    ))
+    service._build_once("Mag7")
+    first = _rows(service.snapshot("Mag7"))["NBIS"]["firedAt"]
+    assert first == {"macd:D": "stamp-1"}                       # blocked: reasons are not fires
+
+    service._STATES.clear()
+    service._FIRED.clear()                                     # a worker restart
+    monkeypatch.setattr(board, "cached_board", ScanStub(
+        [{"symbol": "NBIS", "scanPass": True, "scanReasons": ["macd:D", "ema9x20:2h"]}], prefix="boot2",
+    ))
+    service._build_once("Mag7")
+    fired = _rows(service.snapshot("Mag7"))["NBIS"]["firedAt"]
+    assert fired == {"macd:D": "stamp-1", "ema9x20:2h": "boot2-1"}   # old stamp kept from disk, new one stamped
+
+    monkeypatch.setattr(board, "cached_board", ScanStub(
+        [{"symbol": "NBIS", "scanPass": True, "scanReasons": ["ema9x20:2h"]}], prefix="b3",
+    ))
+    service._build_once("Mag7")
+    monkeypatch.setattr(board, "cached_board", ScanStub(
+        [{"symbol": "NBIS", "scanPass": True, "scanReasons": ["ema9x20:2h", "macd:D"]}], prefix="b4",
+    ))
+    service._build_once("Mag7")
+    assert _rows(service.snapshot("Mag7"))["NBIS"]["firedAt"]["macd:D"] == "b4-1"   # stopped, then re-fired
+
+
+def test_unviewed_extra_lists_rebuild_on_the_slow_cadence(monkeypatch):
+    """2026-10-09 14:28 ET: five lists rebuilt back-to-back and the Watchlist
+    took 678 s per build. Only the always-warm lists and lists a screen polls
+    stay on the fast cadence; the rest wait UNVIEWED_MIN_DELAY_SECONDS."""
+    from momx import service
+    monkeypatch.setattr(service, "_VIEWED", {})
+    assert service._is_viewed("Watchlist") and service._is_viewed("Mag7")
+    assert not service._is_viewed("21 EMA Touch Daily")
+    monkeypatch.setattr(service.board, "resolve_list_name", lambda name: name)
+    state = service._state("21 EMA Touch Daily")
+    with service._LOCK:
+        state.due_at = service.time.monotonic() + service.UNVIEWED_MIN_DELAY_SECONDS
+    service.note_viewed("21 EMA Touch Daily")
+    assert service._is_viewed("21 EMA Touch Daily")
+    assert state.due_at <= service.time.monotonic()          # parked list rebuilds now
+
+
+def test_the_active_list_stays_on_the_fast_cadence(monkeypatch):
+    """2026-10-16: the active "Liquid Movers" list rebuilt only every 7-9 min
+    (09:24, 09:32, 09:40, ...) on the unviewed cadence, the open included."""
+    from momx import service
+    monkeypatch.setattr(service, "_VIEWED", {})
+    monkeypatch.setattr(service, "_STATES", {})
+    monkeypatch.setattr(service.board, "active_list", lambda path=None: "Liquid Movers")
+    assert service._is_viewed("Liquid Movers")
+    assert not service._is_viewed("Movers")
+    assert service._state("Liquid Movers").due_at == 0.0      # first build at once after a restart
+
+
+def test_extra_lists_do_not_build_first_after_a_restart(monkeypatch):
+    """2026-10-09 15:00 ET: at a restart every list was due at once and the EMA
+    Touch builds held the Watchlist's first build back 10+ minutes."""
+    from momx import service
+    monkeypatch.setattr(service, "_STATES", {})
+    now = service.time.monotonic()
+    assert service._state("Watchlist").due_at == 0.0
+    assert service._state("Mag7").due_at == 0.0
+    assert service._state("50 EMA Touch Weekly").due_at >= now + service.UNVIEWED_MIN_DELAY_SECONDS - 1
+
+
+def test_watchlist_takes_the_heavy_gate_before_the_active_list(monkeypatch):
+    """2026-10-16 his order: 1 Mag7, 2 Watchlist, 3 Liquid Movers (active)."""
+    from momx import service
+    monkeypatch.setattr(service, "_STATES", {})
+    monkeypatch.setattr(service.board, "active_list", lambda path=None: "Liquid Movers")
+    monkeypatch.setattr(service, "_is_heavy", lambda name: name != "Mag7")
+    monkeypatch.setattr(service, "PRIORITY_YIELD_MAX_SECONDS", 0.3)
+    assert service._priority_rank("Mag7") < service._priority_rank("Watchlist") < service._priority_rank("Liquid Movers") < service._priority_rank("Movers")
+    wl = service._state("Watchlist")
+    service._state("Liquid Movers")
+    with service._LOCK:
+        wl.due_at = 0.0                      # Watchlist is due and waiting
+    t0 = service.time.monotonic()
+    service._yield_to_higher_priority("Liquid Movers")
+    assert service.time.monotonic() - t0 >= 0.25        # Liquid Movers waited
+    t0 = service.time.monotonic()
+    service._yield_to_higher_priority("Watchlist")
+    assert service.time.monotonic() - t0 < 0.1          # Watchlist never waits on it

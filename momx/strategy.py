@@ -107,7 +107,7 @@ def evaluate(row: Any, now: datetime, direction: str = "bull") -> dict:
     row whose grade / momentum / RVOL push are already the bear readings.
     """
     try:
-        if not isinstance(row, Mapping) or not _in_window(now):
+        if not isinstance(row, Mapping) or not _in_window(now) or row.get("etf"):  # ETFs never fire a rule (momx/etf_list.py, 2026-09-27 "use only stocks")
             return dict(_NONE)
         grade = _map(row.get("grade"))
         checks = _map(grade.get("checks"))
@@ -263,6 +263,8 @@ class StrategyBook:
 
     def _g_row(self, row: dict, symbol: str, now: datetime, local: datetime, board: str) -> bool:
         """Judge one row for Strategy G; returns True when the day list changed."""
+        if row.get("etf"):  # ETFs never fire a rule (momx/etf_list.py, 2026-09-27 "use only stocks")
+            return False
         readings = strategy_g.rvol_readings(row)
         now_vals = self._rvol_now.setdefault(symbol, {})
         prev_vals = self._rvol_prev.setdefault(symbol, {})

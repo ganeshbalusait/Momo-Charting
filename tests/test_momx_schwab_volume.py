@@ -178,6 +178,33 @@ def test_a_raising_schwab_yields_no_correction_not_an_exception(enabled):
     assert feed._schwab_volume_map(["AAPL"], "5Min", None, client=Boom()) == {"AAPL": {}}
 
 
+def test_overlapping_tapes_share_broker_request_limit(enabled, monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    lock = threading.Lock()
+    active = peak = 0
+    monkeypatch.setattr(feed, "_SCHWAB_REQUEST_SLOTS", threading.BoundedSemaphore(2))
+    class Client:
+        def _get_price_history(self, *args):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                time.sleep(0.02)
+                raise RuntimeError("provider unavailable")
+            finally:
+                with lock:
+                    active -= 1
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        jobs = [pool.submit(feed._schwab_volume_map, ["AAA", "BBB", "CCC"],
+                            tf, None, Client()) for tf in ("5Min", "30Min")]
+        assert all(len(job.result()) == 3 for job in jobs)
+    assert peak == 2
+    assert active == 0
+
+
 def test_an_empty_schwab_response_yields_no_correction(enabled):
     assert feed._schwab_volume_map(["AAPL"], "5Min", None, client=Empty()) == {"AAPL": {}}
 
@@ -189,12 +216,13 @@ def test_the_map_is_keyed_by_epoch_and_symbol(enabled):
     }
 
 
-def test_the_daily_tape_is_never_corrected(enabled):
-    # Daily bars are settled; there is no thin live tail to fix, and asking
-    # would burn calls for nothing.
+def test_the_daily_tape_now_comes_from_schwab(enabled):
+    # 2026-09-30, his order "for scanner use only TOS": the daily tape is
+    # Schwab too (SCHWAB_ONLY), so 1Day is a Schwab timeframe now.
+    assert "1Day" in feed.SCHWAB_VOLUME_TIMEFRAMES
     client = Fine()
-    assert feed._schwab_volume_map(["AAPL"], "1Day", None, client=client) == {}
-    assert client.calls == []
+    feed._schwab_volume_map(["AAPL"], "1Day", None, client=client)
+    assert len(client.calls) == 1
 
 
 def test_the_master_switch_stops_all_network_work(monkeypatch):
@@ -210,42 +238,59 @@ def test_no_symbols_means_no_calls(enabled):
     assert client.calls == []
 
 
-# ---------------------------------------------------------------------------
-# burst size (2026-10-10): fewer concurrent Schwab calls, same coverage
-# ---------------------------------------------------------------------------
+def _loop_maps(frame):
+    """The per-row loop _schwab_volume_map ran before 2026-10-16."""
+    import math
+    out = {}
+    for stamp, volume in zip(frame["timestamp"], frame["volume"]):
+        try:
+            key = int(pd.Timestamp(stamp).timestamp())
+            value = float(volume)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0:
+            out[key] = value
+    candles = {}
+    try:
+        for row in frame.itertuples(index=False):
+            o, h, l, c, v = (float(row.open), float(row.high), float(row.low), float(row.close), float(row.volume))
+            if all(math.isfinite(x) for x in (o, h, l, c)) and c > 0:
+                candles[int(pd.Timestamp(row.timestamp).timestamp())] = (o, h, l, c, v)
+    except Exception:
+        candles = {}
+    return out, candles
 
-def test_the_volume_pass_defaults_to_three_workers(monkeypatch):
-    monkeypatch.delenv("MOMX_SCHWAB_VOLUME_WORKERS", raising=False)
-    assert feed._schwab_volume_workers() == 3
+
+@pytest.mark.parametrize("tz", ["UTC", "America/New_York", None])
+def test_vectorised_schwab_maps_equal_the_row_loop(tz):
+    """The whole-column path (25% of the worker GIL as a loop) must give the
+    loop's exact maps - NaT, NaN / zero / negative volume, NaN prices,
+    sub-second stamps, tz-aware or naive."""
+    import numpy as np
+    stamps = pd.to_datetime(["2026-10-16 13:30:00.700", None, "2026-10-16 13:35", "2026-10-16 13:40",
+                             "2026-10-16 13:45", "2026-10-16 13:50"], format="ISO8601")
+    if tz:
+        stamps = stamps.tz_localize("UTC").tz_convert(tz)
+    f = pd.DataFrame({"timestamp": stamps,
+                      "open": [1.0, 2.0, np.nan, 4.0, 5.0, 6.0], "high": [1.5, 2.5, 3.5, 4.5, 5.5, 6.5],
+                      "low": [0.5, 1.5, 2.5, 3.5, 4.5, 5.5], "close": [1.2, 2.2, 3.2, 0.0, 5.2, 6.2],
+                      "volume": [100.0, 200.0, np.nan, 0.0, -5.0, 600.0]})
+    fast = feed._schwab_frame_maps(f, True)
+    assert fast is not None
+    assert fast == _loop_maps(f)
+    assert feed._schwab_frame_maps(f, False) == (_loop_maps(f)[0], {})
 
 
-@pytest.mark.parametrize("raw, expected", [("12", 12), ("0", 1), ("99", 16), ("x", 3), (" ", 3)])
-def test_the_worker_override_is_clamped(monkeypatch, raw, expected):
-    monkeypatch.setenv("MOMX_SCHWAB_VOLUME_WORKERS", raw)
-    assert feed._schwab_volume_workers() == expected
+def test_vectorised_schwab_maps_decline_odd_shapes():
+    assert feed._schwab_frame_maps(pd.DataFrame({"timestamp": ["x"], "volume": [1.0]}), True) is None
+    odd = pd.DataFrame({"timestamp": pd.to_datetime(["2026-10-16 13:30"]).tz_localize("UTC"), "volume": ["n/a"]})
+    assert feed._schwab_frame_maps(odd, False) is None
 
 
-def test_three_workers_still_cover_every_symbol_and_never_exceed_three(enabled, monkeypatch):
-    import threading
-    import time as _time
-
-    monkeypatch.setattr(feed, "SCHWAB_VOLUME_WORKERS", 3)
-    lock = threading.Lock()
-    state = {"now": 0, "peak": 0}
-
-    class Counting(Fine):
-        def _get_price_history(self, symbol, timeframe, start, end):
-            with lock:
-                state["now"] += 1
-                state["peak"] = max(state["peak"], state["now"])
-            _time.sleep(0.01)
-            with lock:
-                state["now"] -= 1
-            return super()._get_price_history(symbol, timeframe, start, end)
-
-    symbols = [f"S{index}" for index in range(30)]
-    client = Counting()
-    got = feed._schwab_volume_map(symbols, "5Min", None, client=client)
-    assert sorted(got) == sorted(symbols)
-    assert all(got[symbol] for symbol in symbols)
-    assert state["peak"] <= 3
+def test_vectorised_schwab_maps_without_a_missing_stamp_keep_candles():
+    import numpy as np
+    stamps = pd.to_datetime(["2026-10-16 13:30", "2026-10-16 13:35"]).tz_localize("UTC")
+    f = pd.DataFrame({"timestamp": stamps, "open": [1.0, np.nan], "high": [1.5, 2.0], "low": [0.5, 1.0],
+                      "close": [1.2, 1.8], "volume": [100.0, 50.0]})
+    fast = feed._schwab_frame_maps(f, True)
+    assert fast == _loop_maps(f) and len(fast[1]) == 1

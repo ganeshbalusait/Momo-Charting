@@ -390,6 +390,7 @@ def test_high_low_close_at_the_range_high_is_plus_one():
     cell = columns.high_low_cell(tape)
     assert cell["value"] == 1.0
     assert cell["bg"] == "dark_green"
+    assert cell["barAt"] == tape[-1]["time"]
 
 
 def test_high_low_uses_only_the_trailing_eight_bars():
@@ -401,6 +402,7 @@ def test_high_low_uses_only_the_trailing_eight_bars():
     cell = columns.high_low_cell(tape)
     assert cell["value"] == pytest.approx(0.78, abs=0.01)
     assert cell["bg"] == "dark_green"
+    assert cell["degree"] == pytest.approx(3.5 / 4.5)
 
 
 def test_high_low_close_at_the_range_low_is_minus_point_seven_eight():
@@ -786,7 +788,7 @@ def test_build_row_never_raises_on_ragged_input():
 def test_build_row_payload_keys_match_the_contract():
     row = columns.build_row("NVDA", {})
     assert set(row) == {
-        "symbol", "industry", "last", "pctChange", "rvol", "sqz", "skittles",
+        "symbol", "industry", "last", "pctChange", "prevClose", "rvol", "sqz", "skittles",
         "highLow", "color", "quoteTrend", "sparkline", "hourHighLow",
         # Scanner grade inputs (spec 2026-09-21, Task 5): m5 (momentum
         # summary) and sqzRaw (raw squeeze states). "grade" itself is added
@@ -797,6 +799,8 @@ def test_build_row_payload_keys_match_the_contract():
         # BEAR scanner (spec 2026-09-24): the bear reading of the 5m tape.
         # board._contract_row files it under row["bear"]["m5"].
         "m5Bear",
+        # 30m / 1h squeezes for MX A+ (2026-09-28).
+        "sqzFast",
     }
 
 
@@ -955,3 +959,14 @@ def test_build_row_carries_a_bear_momentum_summary_beside_the_bull_one():
     assert row["m5"]["direction"] == "bull"
     assert row["m5Bear"]["direction"] == "bear"
     assert row["m5Bear"]["trigger"] <= row["m5"]["trigger"]
+
+
+def test_pct_base_is_the_close_pct_change_measures_against():
+    # Regular hours: the previous daily close; the shipped base reproduces
+    # pctChange exactly from the latest close.
+    daily = [bar(100.0, time=86400 * 1), bar(110.0, time=86400 * 2)]
+    base = columns.pct_base(daily)
+    assert base == 100.0
+    assert columns.pct_change(daily) == pytest.approx((110.0 / base - 1) * 100)
+    assert columns.pct_base([bar(100.0)]) is None
+    assert columns.pct_base([]) is None

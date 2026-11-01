@@ -18,7 +18,11 @@ const appSource = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
 export function navLabelsFromAppSource(source) {
   const block = source.match(/const optionNavItems = \[([\s\S]*?)\r?\n\];/);
   assert.ok(block, "optionNavItems not found in App.jsx - did it get renamed?");
-  return [...block[1].matchAll(/\blabel:\s*"([^"]+)"/g)].map((m) => m[1]);
+  // adminOnly items (the Bot page, 2026-09-28) are hidden from users, so the
+  // user-facing Learn page must not teach them.
+  return [...block[1].matchAll(/\{\s*label:\s*"([^"]+)"([^}]*)\}/g)]
+    .filter((m) => !/adminOnly:\s*true/.test(m[2]))
+    .map((m) => m[1]);
 }
 
 const NAV_LABELS = navLabelsFromAppSource(appSource);

@@ -5,6 +5,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Iterator
 from zoneinfo import ZoneInfo
 
@@ -1517,7 +1518,7 @@ class TradingRepository:
         for start in range(0, len(wanted), 200):
             chunk = wanted[start:start + 200]
             placeholders = ",".join("?" for _ in chunk)
-            frame = self._query_frame(
+            frame = self._read_only_frame(
                 f"""
                 SELECT id, created_at, symbol, headline, source, url, published_at,
                        score, sentiment, tags, via, summary, related_symbols, article_id
@@ -3233,6 +3234,25 @@ class TradingRepository:
     def _query_frame(self, sql: str, params: tuple = ()) -> pd.DataFrame:
         with self._connect() as connection:
             return pd.read_sql_query(sql, connection, params=params)
+
+    def _read_only_frame(self, sql: str, params: tuple = ()) -> pd.DataFrame:
+        """A SELECT on its own read-only connection, WITHOUT the process-wide
+        connection lock (2026-10-07). The database is in WAL mode, so a reader
+        never blocks on SQLite's writer; the only wait was this app's RLock,
+        which queues every read behind every write. Measured 6-35 s for the
+        MomX news-store read while the news collector saved headlines, which
+        left the phone's News column without Jev's arrows. Falls back to the
+        locked path if the read-only open fails (e.g. a path URI quirk)."""
+        try:
+            uri = Path(self.db_path).resolve().as_uri() + "?mode=ro"
+            connection = sqlite3.connect(uri, uri=True, timeout=30.0)
+        except (sqlite3.Error, OSError, ValueError):
+            return self._query_frame(sql, params)
+        try:
+            connection.execute("PRAGMA busy_timeout = 30000")
+            return pd.read_sql_query(sql, connection, params=params)
+        finally:
+            connection.close()
 
     def _ensure_column(self, connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         existing = {

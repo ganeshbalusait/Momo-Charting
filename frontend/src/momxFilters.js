@@ -1,3 +1,7 @@
+import { rvolNotLiveReason, bearSectorRead, BEAR_SECTOR_BREADTH, BEAR_SECTOR_MEDIAN, BEAR_SECTOR_MAX } from "./momxCells.js";
+import { SCANNER_SETUP_CHOICES } from './scannerSetupOptions.js';
+import { hasSetupGrade } from './momxGrade.js';
+
 // The MomX FILTERS panel: a second gate that runs on top of the scan result.
 //
 // SHAPE IS DELIBERATELY THE TOS SCAN'S SHAPE (the trader's instruction,
@@ -70,8 +74,21 @@ export const MOMX_FILTER_VERSION = 4;
 // v2 / v3 / daily2 (2026-09-23) are STRATEGIES, not letter gates: picking one
 // makes it the whole filter (see strategyOf). Added values need no version
 // bump - an older document simply never holds them.
-export const FILTER_SETUP_VALUES = Object.freeze(["any", "aAndUp", "aPlus", "v2", "v3", "daily2", "g", "chart", "opt", "go", "goRvolMacd", "best", "newsMomo", "bestHot", "solo", "hotLead"]);
-export const FILTER_STRATEGY_VALUES = Object.freeze(["v2", "v3", "daily2", "g", "chart", "opt", "go", "goRvolMacd", "best", "newsMomo", "bestHot", "solo", "hotLead"]);
+export const FILTER_SETUP_VALUES = Object.freeze(["any", "tagAi", "tagChartSqz", "aAndUp", "aPlus", "v2", "v3", "daily2", "g", "chart", "opt", "go", "goRvolMacd", "best", "newsMomo", "bestHot", "solo", "hotLead", "mxaplus", "turn", "sector", "zs", "chartShort", "dayLine", "dayReclaim", "dayLine100", "tagMomStrong", "tagMom", "tagFlip", "tagRvol", "tagSkit", "tagSqz", "tagAbvx", "tagJev", "tagAdx", "tagArrow", "tagBolt", "tagStar1", "tagSector", "tagZs", "tagWarn", "tagExplosive", "tagSteady"]);
+export const FILTER_STRATEGY_VALUES = Object.freeze(["tagAi", "tagChartSqz", "v2", "v3", "daily2", "g", "chart", "opt", "go", "goRvolMacd", "best", "newsMomo", "bestHot", "solo", "hotLead", "mxaplus", "turn", "sector", "zs", "chartShort", "dayLine", "dayReclaim", "dayLine100", "tagMomStrong", "tagMom", "tagFlip", "tagRvol", "tagSkit", "tagSqz", "tagAbvx", "tagJev", "tagAdx", "tagArrow", "tagBolt", "tagStar1", "tagSector", "tagZs", "tagWarn", "tagExplosive", "tagSteady"]);
+//: The Setup column's own tags as FILTERS choices (2026-10-10, his ask: "add in
+//: the filters dropdown and explanation also"). Each passes exactly the rows
+//: that show that tag in the Setup column right now.
+//: Taken OUT of the FILTERS dropdown (2026-10-10, his ask: "keep only hot
+//: sectors from hidden, remaining remove from the setup column and filters").
+//: The logic stays (bot + scorecard still score them); a saved filter holding
+//: one starts again at "Any".
+//: "Setup column and filters should be same" (same day): Best setups, Best in
+//: hot sectors, News + momentum, Any chart arrow and the old ZS / Sector
+//: leaders choices left too - each is now its Setup-column tag (⭐1, ZS, SECTOR).
+export const REMOVED_SETUP_VALUES = Object.freeze(["opt", "turn", "hotLead", "solo", "v2", "v3", "daily2", "g", "tagMom", "tagJev",
+  "best", "bestHot", "newsMomo", "tagArrow", "zs", "sector"]);
+export const SETUP_TAG_FILTER_VALUES = Object.freeze(["tagAi", "tagChartSqz", "tagBolt", "tagStar1", "tagSector", "tagZs", "tagWarn", "tagExplosive", "tagSteady", "tagMomStrong", "tagMom", "tagFlip", "tagRvol", "tagSkit", "tagSqz", "tagAbvx", "tagJev", "tagAdx", "tagArrow"]);
 // 2026-09-24 (his ask "use only the best one"): the dropdown offers only
 // "best" = GO or OPT. The older strategies stay valid values (a saved config
 // keeps working, the scorecard keeps judging them) but are not offered.
@@ -93,7 +110,12 @@ export const NEW_SETUP_VALUES = Object.freeze(["opt", "go", "goRvolMacd", "best"
 export const LEGACY_STRATEGY_VALUES = Object.freeze(["v2", "v3", "daily2", "g", "chart", "opt", "go"]);
 export const STRATEGY_LABELS = Object.freeze({
   goRvolMacd: "GO + short RVOL + MACD",
-  v2: "V2", v3: "V3", daily2: "Daily 2", g: "G", chart: "Chart CALL2H / CALL4H", opt: "Options setup", go: "Gap and go", best: "Best setups", newsMomo: "News + momentum", bestHot: "Best setups in hot sectors", solo: "SOLO big-money stocks", hotLead: "Hot sector leaders",
+  v2: "V2", v3: "V3", daily2: "Daily 2", g: "G", chart: "Chart CALL2H / CALL4H", opt: "Options setup", go: "Gap and go", best: "Best setups", newsMomo: "News + momentum", bestHot: "Best setups in hot sectors", solo: "SOLO big-money stocks", hotLead: "Hot sector leaders", mxaplus: "MomoX A+",
+  turn: "Market turn", sector: "🔥 Sector leaders", zs: "ZS rule", chartShort: "Short chart arrows",
+  dayLine: "Daily line", dayReclaim: "Gap reclaim", dayLine100: "Daily line $100",
+  tagMomStrong: "MOM strong (filled)", tagMom: "MOM (any)", tagFlip: "FLIP", tagRvol: "RVOL tag", tagSkit: "SKIT tag",
+  tagSqz: "SQZ fire tag", tagChartSqz: "🔥 Chart squeeze", tagAi: "AI score 55%+ (test)", tagBolt: "⚡ setup fired", tagStar1: "⭐1", tagSector: "🔥 / 🔸 SECTOR", tagZs: "ZS",
+  tagWarn: "⚠ Warning", tagExplosive: "💥 Explosive pattern", tagSteady: "📈 Steady pattern", tagAbvx: "ABVX tag", tagJev: "✓ JEV tag", tagAdx: "ADX tag", tagArrow: "Any chart arrow",
 });
 
 // The META / MRNA picture (2026-09-24, his "we want to catch MRNA, META
@@ -105,12 +127,21 @@ export const STRATEGY_LABELS = Object.freeze({
 const SKIT_CROSS_BULL = new Set(["cyan", "green", "lime", "dark_green"]);
 // The BEAR mirror (spec 2026-09-24): the four bearish paints of the same cell.
 const SKIT_CROSS_BEAR = new Set(["magenta", "red", "light_red", "plum"]);
+const SKIT_BREAK_BEAR = new Set(["magenta", "red", "light_red"]);
 
 /** A row served on the BEAR board (row.direction === "bear"). Every rule
  * below reads this: the worker already put the bear scan/grade/momentum under
  * the usual names, so only the colour sets and the comparisons flip here. */
 export function isBearRow(row) {
   return Boolean(row && row.direction === "bear");
+}
+
+/** "Use only stocks" (2026-09-27): the worker stamps row.etf from the official
+ * US listing directory (momx/etf_list.py - IBIT and DRAM are ETFs even though
+ * their industry label says Crypto / Semis). No setup rule fires on an ETF:
+ * GO, OPT, Best / Star (built from GO and OPT), GO+RVOL+MACD, news momentum. */
+export function isEtfRow(row) {
+  return Boolean(row && row.etf === true);
 }
 
 export function optionsSetup(row) {
@@ -175,32 +206,12 @@ export function resetOptLatch() {
     // no storage
   }
 }
-/** The latch for `day` without touching the live one (History reads old days). */
-function peekOptLatch(day, direction) {
-  const held = optLatches[direction];
-  if (held && held.day === day) return held;
-  try {
-    const saved = JSON.parse(window.localStorage.getItem(direction === "bear" ? OPT_LATCH_KEY_BEAR : OPT_LATCH_KEY) || "null");
-    if (saved && saved.day === day && saved.seen && typeof saved.seen === "object") return saved;
-  } catch {
-    // no storage
-  }
-  return { day, seen: {} };
-}
-/**
- * {clock, at(ms)} when this row's OPT first showed today before 10:00 ET, else null.
- * readOnly (History): evaluate an archived snapshot without loading another
- * day into, or writing to, the live board's latch.
- */
-export function earlyOpt(row, nowMs = Date.now(), { readOnly = false } = {}) {
+/** {clock, at(ms)} when this row's OPT first showed today before 10:00 ET, else null. */
+export function earlyOpt(row, nowMs = Date.now()) {
   const sym = row && row.symbol;
-  if (!sym) return null;
+  if (!sym || isEtfRow(row)) return null;
   const direction = isBearRow(row) ? "bear" : "bull";
   const now = etParts(nowMs);
-  if (readOnly) {
-    const at = peekOptLatch(now.day, direction).seen[sym];
-    return at && at <= nowMs ? { at, clock: etClock(new Date(at).toISOString()) } : null;
-  }
   const latch = loadOptLatch(now.day, direction);
   if (!(sym in latch.seen) && now.min >= 9 * 60 + 30 && now.min < OPT_CUTOFF_MIN && optionsSetup(row)) {
     latch.seen[sym] = nowMs;
@@ -237,6 +248,11 @@ export function newsCatalyst(row) {
  * His wrong-pick patterns (2026-09-24/25 trades and the Thursday replay), on a
  * row that carries a setup. Short labels for a ⚠ tag; [] when clean.
  */
+/** 5m momentum state "fading" (momx/momentum.py) - his no-trade rule, 2026-09-28. */
+export function isFadingRow(row) {
+  return Boolean(row && row.m5 && row.m5.state === "fading");
+}
+
 export function setupWarnings(row) {
   if (!row || typeof row !== "object") return [];
   const out = [];
@@ -306,6 +322,27 @@ export function bestSetupRanks(rows, nowMs = Date.now()) {
   return out;
 }
 
+/** 🔥 SECTOR / 🔸 SECTOR (2026-10-10, his ask - the one hidden tag he kept):
+ * this stock is one of its sector's leaders while the sector is 🔥 hot (one
+ * of the day's two, latched 09:35-11:00) or 🔸 moving now - the same test as
+ * the bot's "🔥 Sector (hot)" / "(moving)" rules (momx/option_track.py). Bull
+ * board: the worker ships the leaders on each row. */
+export function sectorTag(row) {
+  const rot = row && row.sectorRotation;
+  if (!rot || isBearRow(row)) return null;
+  const leaders = Array.isArray(rot.leaders) ? rot.leaders.map((l) => l && l.symbol) : [];
+  if (!leaders.includes(row.symbol)) return null;
+  const hot = rot.hot === true;
+  if (!hot && rot.late !== true) return null;
+  return {
+    key: "sector",
+    text: (hot ? "🔥" : "🔸") + " SECTOR",
+    title: (hot ? "A leader of one of today's two 🔥 HOT sectors" : "A leader of a 🔸 sector moving now")
+      + (rot.name || row.industry ? " (" + (rot.name || row.industry) + ")" : "")
+      + ": its stocks are up and above VWAP together. Bot 2 weeks: hot +0%, moving +6% ROI at middle price.",
+  };
+}
+
 /** The row's industry is a HOT sector today (momx/sectors.py). */
 export function inHotSector(row) {
   return Boolean(row && row.sectorRotation && row.sectorRotation.hot);
@@ -314,6 +351,7 @@ export function inHotSector(row) {
 /** His three steps in order: positive news (AI, medium/high confidence) ->
  * 5m momentum Building or Extended -> letter A+ or A. */
 export function newsMomentum(row) {
+  if (isEtfRow(row)) return false;
   const c = row && row.catalyst;
   const wanted = isBearRow(row) ? "bearish" : "bullish";
   if (!c || c.direction !== wanted || !["high", "medium"].includes(c.confidence) || !NEWS_WORDS[c.category]) return false;
@@ -347,7 +385,7 @@ function inControl30(row) {
 // _gap_go); here: A+/A letter and 30m buyers in control on the live row.
 // Back-test 09-01..23, tickers graded before the entry: 61 trades, 44% ran +4%.
 export function gapAndGo(row, nowMs = Date.now()) {
-  if (!row || !row.grade || !["A+", "A"].includes(row.grade.letter)) return null;
+  if (!row || isEtfRow(row) || !row.grade || !["A+", "A"].includes(row.grade.letter)) return null;
   const g = row.m5 && row.m5.gapGo;
   const t = g && Number(g.goAt);
   // The worker's bear gapGo is gap DOWN and go (below VWAP, the open and the
@@ -359,12 +397,13 @@ export function gapAndGo(row, nowMs = Date.now()) {
   return { clock: etClock(new Date((t + 300) * 1000).toISOString()), gap: Number(g.gap), at: t };
 }
 
-/** Bull-only research combination. Re-evaluated on each snapshot, not latched. */
+/** Direction-specific research combination. Re-evaluated each snapshot, not latched. */
 export function goRvolMacd(row, nowMs = Date.now()) {
-  if (!row || isBearRow(row) || !["A", "A+"].includes(row.grade?.letter)) return null;
+  if (!row || isEtfRow(row) || !["A", "A+"].includes(row.grade?.letter)) return null;
+  const bear = isBearRow(row);
   const c = row.m5?.goConfirmation;
   const goAt = row.m5?.gapGo?.goAt;
-  if (!c || c.macdUp !== true || c.buyers30 !== true
+  if (!c || (bear ? c.macdDown : c.macdUp) !== true || (bear ? c.sellers30 : c.buyers30) !== true
       || !Number.isFinite(c.barAt) || !Number.isFinite(goAt) || goAt <= 0) return null;
   const closeMs = (c.barAt + 300) * 1000;
   // Same freshness window as the replay; no forming/future/previous-day bars.
@@ -372,7 +411,7 @@ export function goRvolMacd(row, nowMs = Date.now()) {
   const now = etParts(nowMs);
   if (now.min < 570 || now.min > 930 || etParts(goAt * 1000).day !== now.day
       || etParts(closeMs).day !== now.day) return null;
-  if (!["5m", "15m", "30m"].some((tf) => row.rvol?.[tf]?.bg === "cyan")) return null;
+  if (!["5m", "15m", "30m"].some((tf) => row.rvol?.[tf]?.bg === (bear ? "magenta" : "cyan"))) return null;
   return { clock: etClock(new Date(closeMs).toISOString()), atMs: closeMs };
 }
 // The rules as the worker applies them (momx/strategy.py) - said once, used by
@@ -380,7 +419,7 @@ export function goRvolMacd(row, nowMs = Date.now()) {
 // Judged ONCE, at the ticker's first A or A+ signal of the day, then kept for
 // the day - the way the back-test measured them (momx/strategy.py).
 export const STRATEGY_RULES = Object.freeze({
-  goRvolMacd: "Bull only, 09:30-15:30 ET: A/A+ with a completed GO breakout, buyers in control on completed 30m candles, a cyan RVOL background on any of 5m/15m/30m, and completed 5m MACD (12,26,9) above its signal with histogram increasing. Checked each refresh; disappears when confirmation no longer passes",
+  goRvolMacd: "BULL, 09:30-15:30 ET: A/A+ with a completed GO breakout, buyers in control on completed 30m candles, a cyan RVOL background on any of 5m/15m/30m, and completed 5m MACD (12,26,9) above its signal with histogram increasing. Checked each refresh; disappears when confirmation no longer passes",
   v2: "at its first A+ or A signal today, from 9:35 AM ET: up less than 10%, momentum Extended, RVOL push. Stays on the list for the day",
   v3: "V2 + a squeeze fired (4h / D / Wk) at that signal",
   daily2: "V2 + RVOL push on 2 or more timeframes at that signal, numbered #1, #2, #3 in the order they qualified today",
@@ -397,11 +436,41 @@ export const STRATEGY_RULES = Object.freeze({
   best: "GO (gap and go, listed first) or OPT (turning up now) when OPT first shows before 10:00 ET. Sep 1-24: 55% win, +0.52% per trade on the stock",
   go: "A+ or A that gapped up 2% or more and, between 09:35 and 10:30, closed a 5m candle above VWAP, the open and the first 5-minute high - with buyers in control on 30m. The META Sept 21 picture",
   opt: "Before 10:00 ET only. A+ or A with a fresh Skittles cross on BOTH 2h and 4h, buyers in control on 30m (+DI above -DI) and 5m momentum Extended - the META / MRNA picture of Sept 24. Checked live, all day",
+  // The bot's other rules (explanations added 2026-10-10 - the box used to say "undefined").
+  mxaplus: "MomoX A+ (the MX A+ tag): news in the last 24 hours + RVOL cyan (3+) on any of 15m to D + a squeeze fired, first time today. Bot 2 weeks: lost money (MX A+)",
+  turn: "TURN #n: the market turned UP (SPY back above its VWAP after the morning dip) and this was one of the first stocks to lead the turn. Bot 2 weeks: about breakeven",
+  sector: "🔥 Sector leaders: the strongest stocks of today's hot or moving-now sector (up and above VWAP)",
+  zs: "ZS↑: a 5-minute candle closed ABOVE the EMA 9, 21 and 50, VWAP and the 5m cloud, with nothing in the way within 2% above (day high, premarket high, yesterday's high, pivots). Bot 2 weeks: +7% ROI at middle price, small",
+  chartShort: "C2H / C4H: the chart's SHORT arrow - the 2-hour or 4-hour trend crossed up while the bigger trend has not turned yet. Market hours only. Bot 2 weeks: +7% ROI at middle price",
+  dayLine: "LINE↑: the stock opened ABOVE yesterday's high and a 5-minute candle closed above the 21 EMA with rising volume or momentum - one of the board's 30 biggest stocks. Bot 2 weeks (calls): lost money",
+  dayReclaim: "RECLAIM↑: gapped DOWN below yesterday's low, then the first 5-minute candle closed back ABOVE it. Bot 2 weeks: lost money",
+  dayLine100: "$LINE↑: the daily line on $100+ stocks only - opened $100+ above yesterday's high with $0.50 of room to the next daily line, 5m closed above the 21 EMA with rising volume or momentum",
+  // The Setup column's tags (2026-10-10).
+  tagMomStrong: "MOM↑ with the CYAN FILL: the 5-minute squeeze-momentum line is above 0 and rising (buying getting stronger) AND the trend is strong on 5m and 30m (+DI above 25 and above -DI). The only MOM↑ the Setup column shows",
+  tagMom: "Every MOM↑, filled or not: the 5-minute squeeze-momentum line is cyan - above 0 and rising - on today's candle. The outlined (not strong) ones are hidden in the Setup column but still pass here",
+  tagAi: "AI 61%: the highest shadow model score among this ticker's recorded call paper trades today, shown from 55%. The Record tooltip identifies the trade and model. This describes an earlier paper trade, not a calibrated win probability for the current setup. Profitability after trading costs has not been established",
+  tagChartSqz: "🔥1h 2h 09:00: the CHART's squeeze flame - the same 🔥 your chart draws (Cloud_Signal_Squeeze) on the 1h, 2h, 4h or Daily candle that started at that time, premarket included, on the forming candle like TOS. Shown for one candle of its timeframe; ✕ = the chart removed it. A different script from the scanner's SQZ column (Squeeze410), so the two can fire at different times. Not back-tested",
+  tagBolt: "⚡ (first in the cell): one of the main setups fired today - GO, GO+ or MX A+. It flashes for 10 minutes when new; the setup's own tag is in the same cell",
+  tagStar1: "⭐1: the #1 of today's best setups, ranked in your tested order - GO inside a hot or moving sector first, then other GO, then OPT (first seen before 10:00); fewer warnings rank higher. Bot 2 weeks: about -4% (bull) / +5% (bear) ROI at middle price",
+  tagSector: "🔥 SECTOR: this stock is a leader of one of today's two HOT sectors (latched 09:35-11:00). 🔸 SECTOR: a leader of a sector moving now. The sector's stocks are up and above VWAP together. Bot 2 weeks: hot +0%, moving +6% ROI at middle price",
+  tagZs: "ZS↑ (time = when it first fired today): a 5-minute candle closed ABOVE the EMA 9, 21 and 50, VWAP and the 5m cloud, with nothing in the way within 2% above (day high, premarket high, yesterday's high, pivots). Bot 2 weeks: +7% ROI at middle price, small",
+  tagWarn: "⚠ Careful: the row shows a setup, but also a pattern seen behind wrong picks - momentum fading, below VWAP, already up 8%+, 30m sellers in control, or bad news. The tag lists which",
+  tagExplosive: "💥 Explosive (shown beside the grade letter): a sudden burst of buying - one of the last 6 five-minute candles traded 3+ times its usual volume swing and closed in its upper half, while the 5m breakout is confirmed or holding. Big money stepped in; the move may already have run. Bot: tracked from Oct 12, not tested yet",
+  tagSteady: "📈 Steady (shown beside the grade letter): a slow, clean climb - at least 4 of the last 6 fifteen-minute candles made a higher high and a higher low, with the price above the 20 EMA. An orderly trend. Bot: tracked from Oct 12, not tested yet",
+  tagFlip: "FLIP↑: on the last closed 5-minute candle the trend background flipped from sellers to buyers (+DI crossed above -DI) while the momentum dots are rising. Earlier than MOM↑",
+  tagRvol: "RVOL↑: heavy BUYING volume right now - the RVOL box is painted cyan or green on 5m, 15m, 30m, 1h, 2h, 4h or D (the timeframes are listed in the tag)",
+  tagSkit: "SKIT↑ 2h 09:30: a Skittles box (2h, 4h, D, 2D, 3D, 4D, W or Mo) turned bullish - cyan (9/20 cross), green (MACD cross) or lime (4/8 cross) - in the last 60 minutes, and still shows it. The time is when the scanner saw it turn",
+  tagSqz: "SQZ 2h 10:07: the 2h, 4h, D or Wk squeeze FIRED (released) today during market hours - the coil let go. The time is when it fired",
+  tagAbvx: "ABVX↑: between 09:30 and 10:30, a 5-minute candle closed above the EMA 9/21, VWAP and the cloud with $0.50 of room above, on a day the chart printed a CALL2H / C2H arrow. Bot 2 weeks: +8% ROI at middle price",
+  tagJev: "✓ JEV: the bot bought a trade on this ticker today and Jev (the AI) said TAKE it. Paper test - see Bot > Jev BOT for its score",
+  tagAdx: "ADX 32 cyan: the 5-minute trend is strong NOW (ADX above 25 with +DI above 25). Shown on A/A+/B rows only. Often late: by then the move has usually run",
+  tagArrow: "Any chart arrow on the row right now - CALL2H / CALL4H (full, the bigger trend agrees) or C2H / C4H (short) - not counting arrows the chart removed (✕)",
 });
 
 // The BEAR wording of the same rules (spec 2026-09-24). Only the rules that
 // have a direction are re-said; sector / SOLO / news keep the bull text.
 export const STRATEGY_RULES_BEAR = Object.freeze({
+  goRvolMacd: "BEAR, 09:30-15:30 ET: bear A/A+ with a completed gap-down GO breakdown, sellers in control on completed 30m candles, a magenta RVOL background on any of 5m/15m/30m, and completed 5m MACD (12,26,9) below its signal with histogram decreasing (more negative). Checked each refresh; disappears when confirmation no longer passes. Bear performance has not been backtested",
   v2: "at its first A+ or A signal today, from 9:35 AM ET: down less than 10%, momentum Extended (down), RVOL selling push. Stays on the list for the day",
   v3: "V2 + a squeeze fired DOWN (4h / D / Wk) at that signal",
   daily2: "V2 + RVOL selling push on 2 or more timeframes at that signal, numbered #1, #2, #3 in the order they qualified today",
@@ -412,6 +481,27 @@ export const STRATEGY_RULES_BEAR = Object.freeze({
   best: "GO (gap down and go, listed first) or OPT (turning down now) when OPT first shows before 10:00 ET. The bull rules mirrored - not back-tested yet; the bear track record starts today",
   go: "A+ or A (bear) that gapped down 2% or more and, between 09:35 and 10:30, closed a 5m candle below VWAP, the open and the first 5-minute low - with sellers in control on 30m",
   opt: "Before 10:00 ET only. A+ or A (bear) with a fresh Skittles cross DOWN on BOTH 2h and 4h, sellers in control on 30m (-DI above +DI) and 5m momentum Extended down. Checked live, all day",
+  turn: "TURN #n: the market turned DOWN (SPY back below its VWAP after the morning bounce) and this was one of the first stocks to lead the drop",
+  sector: "🔥 Falling-sector leaders: the weakest stocks of today's falling sector (down and below VWAP)",
+  zs: "ZS↓: a 5-minute candle closed BELOW the EMA 9, 21 and 50, VWAP and the 5m cloud, with nothing in the way within 2% below. Bot 2 weeks (puts): about breakeven",
+  chartShort: "P2H / P4H: the chart's SHORT put arrow - the 2-hour or 4-hour trend crossed down while the bigger trend has not turned yet. Market hours only",
+  dayLine: "LINE↓: the stock opened BELOW yesterday's low and a 5-minute candle closed below the 21 EMA with rising volume or momentum - one of the board's 30 biggest stocks. Bot 2 weeks: the best put rule BEFORE 10:00 (about 7 of 10 won at middle price)",
+  dayReclaim: "RECLAIM↓: gapped UP above yesterday's high, then the first 5-minute candle closed back BELOW it. Bot 2 weeks: lost money",
+  dayLine100: "$LINE↓: the daily line on $100+ stocks only - opened $100+ below yesterday's low with $0.50 of room, 5m closed below the 21 EMA",
+  tagMomStrong: "MOM↓ with the MAGENTA FILL: the 5-minute squeeze-momentum line is below 0 and falling (selling getting stronger) AND the downtrend is strong on 5m and 30m (-DI above 25 and above +DI)",
+  tagMom: "Every MOM↓, filled or not: the 5-minute squeeze-momentum line is magenta - below 0 and falling - on today's candle",
+  tagAi: "AI 61%: the highest shadow model score among this ticker's recorded put paper trades today, shown from 55%. The Record tooltip identifies the trade and model. This describes an earlier paper trade, not a calibrated win probability for the current setup. Profitability after trading costs has not been established",
+  tagChartSqz: "🔥1h 2h 09:00: the CHART's squeeze flame on the bear side (the release candle closed down) on the 1h, 2h, 4h or Daily candle that started at that time. ✕ = the chart removed it. Not back-tested",
+  tagZs: "ZS↓ (time = when it first fired today): a 5-minute candle closed BELOW the EMA 9, 21 and 50, VWAP and the 5m cloud, with nothing in the way within 2% below. Bot 2 weeks (puts): about breakeven",
+  tagExplosive: "💥 Explosive: a sudden burst of SELLING - one of the last 6 five-minute candles traded 3+ times its usual volume swing and closed in its lower half, while the 5m breakdown holds",
+  tagSteady: "📈 Steady: a slow, clean drop - at least 4 of the last 6 fifteen-minute candles made a lower high and a lower low, below the 20 EMA",
+  tagFlip: "FLIP↓: on the last closed 5-minute candle the trend background flipped from buyers to sellers (-DI crossed above +DI) while the momentum dots are falling. Earlier than MOM↓",
+  tagRvol: "RVOL↓: heavy SELLING volume right now - the RVOL box is painted magenta or red on the timeframes listed in the tag",
+  tagSkit: "SKIT↓: a Skittles box (2h to Mo) turned bearish - magenta, red or light red - in the last 60 minutes, and still shows it",
+  tagSqz: "SQZ 2h 10:07: the 2h, 4h, D or Wk squeeze FIRED (released) today during market hours",
+  tagAbvx: "ABVX↓: between 09:30 and 10:30, a 5-minute candle closed below the EMA 9/21, VWAP and the cloud with $0.50 of room below, on a day with a PUT2H / P2H arrow",
+  tagAdx: "ADX 32 magenta: the 5-minute downtrend is strong NOW (ADX above 25 with -DI above 25). Shown on graded rows only. Often late",
+  tagArrow: "Any chart arrow on the row right now - PUT2H / PUT4H (full) or P2H / P4H (short) - not counting arrows the chart removed (✕)",
 });
 
 /** The rules in the wording of one direction ("bull" | "bear"). */
@@ -442,7 +532,14 @@ export function chartArrows(row, nowMs = Date.now()) {
   for (const s of list) {
     if (!s || !s.label) continue;
     const life = ARROW_LIFE_MS[String(s.timeframe || String(s.label).slice(-2)).toUpperCase()] || ARROW_LIFE_MS["2H"];
-    const at = Date.parse(s.at || "");
+    const candle = Date.parse(s.at || "");
+    const seen = Date.parse(s.seenAt || "");
+    // REDRAWN (2026-09-28, ABVX): the chart stamps a CALL arrow on its candle's
+    // START, but the higher-timeframe confirmation can only exist when that
+    // candle closes - the 09:00 CALL2H first existed at 13:04. When the scanner
+    // saw it after one full candle had passed, the tag shows WHEN it appeared.
+    const redrawn = Number.isFinite(candle) && Number.isFinite(seen) && seen - candle > life;
+    const at = redrawn ? seen : candle;
     if (!Number.isFinite(at) || nowMs >= at + life) continue; // expired
     if (nowMs < at) continue; // not yet (clock skew)
     // One per label PER FAMILY: the chart draws the 4x8 (yellow) and the 9x20
@@ -450,28 +547,22 @@ export function chartArrows(row, nowMs = Date.now()) {
     // the 9x20 ones (his catch, 2026-09-24).
     const key = s.label + "|" + (s.family || "");
     const held = byLabel.get(key);
-    if (!held || String(s.at) < String(held.at)) byLabel.set(key, s);
+    // A live arrow beats one the chart repainted away; otherwise the earliest.
+    if (!held || (held.goneAt && !s.goneAt) || (Boolean(held.goneAt) === Boolean(s.goneAt) && String(s.at) < String(held.at))) {
+      byLabel.set(key, s);
+    }
   }
   const familyRank = (f) => (f === "4x8" ? 0 : 1);
   return [...byLabel.values()]
     .sort((a, b) => String(a.at).localeCompare(String(b.at)) || familyRank(a.family) - familyRank(b.family)
       || String(a.label).localeCompare(String(b.label)))
     .map((s) => ({ label: s.label, family: s.family || "", clock: etClock(s.at), at: s.at, seenAt: s.seenAt,
+      goneAt: s.goneAt || null,
+      redrawn: Number.isFinite(Date.parse(s.seenAt || "")) && Date.parse(s.seenAt) - Date.parse(s.at || "")
+        > (ARROW_LIFE_MS[String(s.timeframe || String(s.label).slice(-2)).toUpperCase()] || ARROW_LIFE_MS["2H"]),
       // C2H / C4H (P2H / P4H): the chart's short arrow - a cross against the
       // higher timeframe's trend. The worker ships them only 09:30-16:00 ET.
       compact: Boolean(s.compact) || !/^(CALL|PUT)/.test(String(s.label)) }));
-}
-
-/**
- * The grade's timeline items. A History snapshot does not store the full
- * timeline, only the SQZ-release / SKIT items the Setup tags read
- * (momx/history.py gradeFresh.setupTimeline).
- */
-function gradeTimeline(row) {
-  const fresh = row && row.gradeFresh;
-  if (!fresh) return [];
-  if (Array.isArray(fresh.timeline)) return fresh.timeline;
-  return Array.isArray(fresh.setupTimeline) ? fresh.setupTimeline : [];
 }
 
 /**
@@ -480,18 +571,19 @@ function gradeTimeline(row) {
  * fired state). 2026-09-25 PYPL: SQZ 2h fired 10:07, C4H 10:10, then +3.3%.
  */
 export function sqzFires(row, nowMs = Date.now()) {
-  const timeline = gradeTimeline(row);
+  const timeline = row && row.gradeFresh && Array.isArray(row.gradeFresh.timeline) ? row.gradeFresh.timeline : [];
   const today = etParts(nowMs).day;
   const first = new Map();
   for (const e of timeline) {
-    const m = /^SQZ (2h|4h) released$/.exec(String((e && e.what) || ""));
+    // 2h / 4h / D / Wk (D and Wk added 2026-09-30, his ask "not only 2h or 4h")
+    const m = /^SQZ (2h|4h|D|Wk) released$/.exec(String((e && e.what) || ""));
     const at = Date.parse((e && e.at) || "");
     if (!m || !Number.isFinite(at) || at > nowMs) continue;
     const p = etParts(at);
     if (p.day !== today || p.min < 9 * 60 + 30 || p.min >= 16 * 60) continue;
     if (!first.has(m[1]) || at < first.get(m[1])) first.set(m[1], at);
   }
-  return ["2h", "4h"].filter((tf) => first.has(tf)).map((tf) => ({
+  return ["2h", "4h", "D", "Wk"].filter((tf) => first.has(tf)).map((tf) => ({
     tf, at: first.get(tf), clock: etClock(new Date(first.get(tf)).toISOString()),
   }));
 }
@@ -595,6 +687,8 @@ export const DEFAULT_MOMX_FILTERS = Object.freeze({
   // "A+ only" removes a B row whatever its RVOL reads. "any" = the gate takes
   // no part.
   setup: "any",
+  setupRules: [],
+  setupRulesMode: "all",
   momentum: "any",
   pattern: "any",
   rvol: {
@@ -871,7 +965,10 @@ export function topMode(config) {
  */
 export function rowPasses(row, config, nowMs = Date.now()) {
   if (!row) return false;
-  // A strategy is the WHOLE filter: its rules already include the letter,
+  if (selectedSetupRules(config).length) return setupRulesPass(row, config, nowMs);
+  if (!setupRulesPass(row, config, nowMs)) return false;
+  // A strategy controls the legacy groups; selected Setup checkboxes remain
+  // additional requirements. Its rules already include the letter,
   // momentum and RVOL, so the groups and other gates are left out (ANDing
   // them would let his ALL + Skittles tuning silently empty the board).
   if (strategyOf(config)) return strategyPasses(row, config, nowMs);
@@ -885,6 +982,31 @@ export function rowPasses(row, config, nowMs = Date.now()) {
   if (skittles !== null) results.push(skittles);
   if (results.length === 0) return true;
   return topMode(config) === "all" ? results.every(Boolean) : results.some(Boolean);
+}
+
+const SETUP_RULE_KEYS = new Set(SCANNER_SETUP_CHOICES.map(([key]) => key));
+export function selectedSetupRules(config) {
+  return Array.isArray(config?.setupRules)
+    ? [...new Set(config.setupRules.filter(key => SETUP_RULE_KEYS.has(key)))] : [];
+}
+export function withSetupRules(config, rules) {
+  const selected = selectedSetupRules({ setupRules: rules });
+  return { ...config, setupRules: selected, ...(selected.length ? { setup: 'any' } : {}) };
+}
+export function setupRulesPass(row, config, nowMs = Date.now()) {
+  const rules = selectedSetupRules(config);
+  const matches = key => {
+    if (key === 'aPlus') return row?.grade?.letter === 'A+';
+    if ((key === 'tagExplosive' || key === 'tagSteady') && !hasSetupGrade(row)) return false;
+    return strategyPasses(row, { setup: key }, nowMs);
+  };
+  return config?.setupRulesMode === 'any' ? !rules.length || rules.some(matches) : rules.every(matches);
+}
+export function setupRulesDescription(config) {
+  const keys = selectedSetupRules(config);
+  if (!keys.length) return '';
+  const names = keys.map(key => SCANNER_SETUP_CHOICES.find(([value]) => value === key)[1]);
+  return 'Setup rules ' + (config?.setupRulesMode === 'any' ? 'ANY of: ' : 'ALL of: ') + names.join(config?.setupRulesMode === 'any' ? ' OR ' : ' + ');
 }
 
 // ---------------------------------------------------------------------------
@@ -913,19 +1035,64 @@ export function strategyOf(config) {
 function strategyPasses(row, config, nowMs = Date.now()) {
   const which = strategyOf(config);
   // The Chart filter stays the confirmed CALL2H / CALL4H only (no C2H / C4H).
-  if (which === "chart") return chartArrows(row, nowMs).some((a) => !a.compact);
+  if (which === "chart") return chartArrows(row, nowMs).some((a) => !a.compact && !a.goneAt);
   if (which === "opt") return earlyOpt(row, nowMs) !== null;
   if (which === "go") return gapAndGo(row, nowMs) !== null;
   if (which === "goRvolMacd") return goRvolMacd(row, nowMs) !== null;
   if (which === "best") return gapAndGo(row, nowMs) !== null || earlyOpt(row, nowMs) !== null;
   if (which === "newsMomo") return newsMomentum(row);
   if (which === "solo") return Boolean(row && row.solo);
+  // MomoX A+ (2026-09-28): the worker's book, first time today - on the bear
+  // board the BEAR MX A+ book's stamp (since 2026-09-28).
+  if (which === "mxaplus") return Boolean(row && row.momoxAPlus && row.momoxAPlus.at);
+  // The bot's other rules as FILTERS choices (2026-09-28), each reading the
+  // board's own side: the market turn picks, the 🔥 sector leaders (bull: hot /
+  // moving-now; bear: falling sectors' weakest), the ZS rule (above / below
+  // every line with a clear 2% path) and the short C2H/C4H (P2H/P4H) arrows.
+  if (which === "turn") return Boolean(row && row.marketTurn && row.marketTurn.at);
+  if (which === "sector") return Boolean(row && SECTOR_LEADERS && SECTOR_LEADERS.has(row.symbol));
+  if (which === "zs") return zsNow(row, nowMs);
+  if (which === "chartShort") return chartArrows(row, nowMs).some((a) => a.compact && !a.goneAt);
+  // His daily-line trade and its reverse (2026-09-29): the bot's stamp for today.
+  if (which === "dayLine") return Boolean(dayLineAt(row, "line", nowMs));
+  if (which === "dayReclaim") return Boolean(dayLineAt(row, "reclaim", nowMs));
+  if (which === "dayLine100") return Boolean(dayLineAt(row, "line100", nowMs));
   if (which === "hotLead") return Boolean(row && row.hotLeader);
+  if (SETUP_TAG_FILTER_VALUES.includes(which)) return setupTagPasses(row, which, nowMs);
   if (which === "bestHot") return inHotSector(row) && (gapAndGo(row, nowMs) !== null || earlyOpt(row, nowMs) !== null);
   const verdict = row && row.strategy && typeof row.strategy === "object" ? row.strategy : null;
   if (!which || !verdict) return false;
   if (which === "daily2" || which === "g") return Boolean(verdict[which] && typeof verdict[which] === "object");
   return verdict[which] === true;
+}
+
+/** A Setup-column tag as a filter: the same functions the column draws from. */
+function setupTagPasses(row, which, nowMs) {
+  if (!row) return false;
+  if (which === "tagMomStrong" || which === "tagMom") {
+    const mom = sqzMomentumTag(row, nowMs);
+    return Boolean(mom && (which === "tagMom" || mom.strong));
+  }
+  if (which === "tagFlip") return momFlipTag(row) !== null;
+  // These read the Setup cell itself, so filter and column cannot disagree.
+  if (which === "tagBolt") return strategyTags(row, nowMs).some((t) => t.key === "bolt");
+  if (which === "tagStar1") return strategyTags(row, nowMs).some((t) => t.key === "rank" && t.text === "⭐1");
+  if (which === "tagWarn") return strategyTags(row, nowMs).some((t) => t.key === "warn");
+  if (which === "tagSector") return sectorTag(row) !== null;
+  if (which === "tagZs") return Boolean(dayLineAt(row, "zs", nowMs));
+  if (which === "tagExplosive" || which === "tagSteady") {
+    return Boolean(row.m5 && row.m5.pattern === (which === "tagExplosive" ? "explosive" : "steady"));
+  }
+  if (which === "tagRvol") return rvolBuilding(row, nowMs) !== null;
+  if (which === "tagSkit") return skittlesBreaks(row, nowMs).length > 0;
+  if (which === "tagSqz") return sqzFires(row, nowMs).length > 0;
+  if (which === "tagChartSqz") return chartSqueezeTags(row, nowMs).some((t) => !t.gone);
+  if (which === "tagAi") return aiTags(row, nowMs).length > 0;
+  if (which === "tagAbvx") return Boolean(dayLineAt(row, "abvx", nowMs));
+  if (which === "tagJev") return jevRecordTag(row, nowMs) !== null;
+  if (which === "tagAdx") return Boolean(row.grade && ["A+", "A", "B"].includes(row.grade.letter) && adxCyan(row));
+  if (which === "tagArrow") return chartArrows(row, nowMs).some((a) => !a.goneAt);
+  return false;
 }
 
 /** The row's number (1, 2, ...) on today's Daily 2 (default) or G list, or null. */
@@ -1003,11 +1170,128 @@ export function adxCyan(row) {
   return { adx: Math.round(adx), plus: Math.round(di), fresh, side };
 }
 
+/** Today's daily-line / gap-reclaim fire (option_track's row.dayLines stamp) as epoch ms, or null. */
+export function dayLineAt(row, key, nowMs = Date.now()) {
+  const at = row && row.dayLines && row.dayLines[key];
+  const ms = at ? Date.parse(at) : NaN;
+  if (!Number.isFinite(ms)) return null;
+  const day = (x) => new Date(x).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  return day(ms) === day(nowMs) ? ms : null;
+}
+
 /**
- * archive: the row is a History snapshot evaluated at its own time (nowMs);
- * nothing on it may write the live board's state (the OPT latch).
+ * The chart's Squeeze Momentum line colour on the last completed 5m bar
+ * (m5.sqzMom, worker 2026-09-29): bull board = CYAN (above 0 and rising),
+ * bear board = MAGENTA (below 0 and falling). DISPLAY ONLY - back-test Sep
+ * 1-28: ADX + this line = same-moment random (89% of ADX signals had it).
  */
-export function strategyTags(row, nowMs = Date.now(), { legacy = true, archive = false } = {}) {
+/**
+ * His "strong call setup" (2026-10-03): the ADX background is cyan - DI+
+ * above 25 (the chart's cyan cloud) and above DI- - on BOTH 5m and 30m, the
+ * two timeframes the scanner carries ADX for. Bear rows read DI- (magenta).
+ */
+export function adxBackgroundAgrees(row) {
+  const bear = isBearRow(row);
+  return ["5m", "30m"].every((tf) => {
+    const c = row && row.adx && row.adx[tf];
+    if (!c || typeof c !== "object") return false;
+    const mine = Number(bear ? c.minus : c.plus);
+    const theirs = Number(bear ? c.plus : c.minus);
+    return Number.isFinite(mine) && Number.isFinite(theirs) && mine > 25 && mine > theirs;
+  });
+}
+
+/**
+ * MOM FLIP (his ask 2026-10-03 after APLD 10:50: "from cyan to magenta flip
+ * then it's MOM put, same way calls"): on the last CLOSED 5m candle the ADX
+ * background flipped to our side (bear: DI- crossed above DI+, cyan ->
+ * magenta; bull: the mirror) while the momentum dots move our way (bear:
+ * falling - purple or magenta; bull: rising - cyan or dark blue). Same
+ * candle for both reads. Earlier than MOM, which waits for the dots to cross 0.
+ */
+export function momFlipTag(row) {
+  const cell = row && row.adx && row.adx["5m"];
+  const m = row && row.m5 && row.m5.sqzMom;
+  if (!cell || !m || !cell.closedCross) return null;
+  const bear = isBearRow(row);
+  if (cell.closedCross !== (bear ? "bear" : "bull")) return null;
+  const value = Number(m.value);
+  const prev = Number(m.prev);
+  if (m.value == null || m.prev == null || !Number.isFinite(value) || !Number.isFinite(prev)) return null;
+  if (bear ? !(value < prev) : !(value > prev)) return null;
+  if (Number(cell.closedCrossAt) && Number(m.barAt) && Number(cell.closedCrossAt) !== Number(m.barAt)) return null;
+  return {
+    key: bear ? "momflip-bear" : "momflip",
+    text: bear ? "FLIP↓" : "FLIP↑",
+    title: (bear
+      ? "MOM FLIP put: on the last closed 5m candle the ADX background flipped cyan -> magenta (sellers' line crossed above buyers') while the momentum dots are falling."
+      : "MOM FLIP call: on the last closed 5m candle the ADX background flipped magenta -> cyan (buyers' line crossed above sellers') while the momentum dots are rising.")
+      + " Earlier than MOM (which waits for the dots to cross 0). TEST rule.",
+  };
+}
+
+export function sqzMomentumTag(row, nowMs = Date.now()) {
+  const m = row && row.m5 && row.m5.sqzMom;
+  if (!m || !m.color) return null;
+  // Today's candle only, as the bot's MOM rule (momx/option_track.py fired)
+  // requires: WBD showed MOM↑ on 2026-10-07 from a 10-05 19:10 candle.
+  if (Number.isFinite(Number(m.barAt)) && Number(m.barAt) > 0
+      && etParts(Number(m.barAt) * 1000).day !== etParts(nowMs).day) return null;
+  const bear = isBearRow(row);
+  if (bear ? m.color !== "magenta" : m.color !== "cyan") return null;
+  const strong = adxBackgroundAgrees(row);
+  return { key: bear ? "sqzmom-bear" : "sqzmom", text: bear ? "MOM↓" : "MOM↑", strong,
+    title: (bear ? "Squeeze Momentum line MAGENTA: below 0 and falling (selling getting stronger)"
+      : "Squeeze Momentum line CYAN: above 0 and rising (buying getting stronger)")
+      + " on the last 5m candle (" + Number(m.value).toFixed(2) + ")."
+      + (strong
+        ? (bear ? " STRONG PUT SETUP: the ADX background is magenta (DI- above 25 and above DI+) on 5m AND 30m - sellers pushing harder and the downtrend strong across timeframes."
+          : " STRONG CALL SETUP: the ADX background is cyan (DI+ above 25 and above DI-) on 5m AND 30m - buyers pushing harder and the trend strong across timeframes.")
+        : " The ADX background does not agree on both 5m and 30m yet.")
+      + " Shown only - back-test Sep 1-28: momentum + 5m ADX did the same as random stocks." };
+}
+
+function dayLineTags(row, nowMs, tags) {
+  const bear = isBearRow(row);
+  // "✓ JEV" (2026-10-02, "Jev has to give me decisions ... I need quality trades"):
+  // the bot bought a trade here today and TypeSafe Jev said TAKE (30%+). TEST -
+  // paper; the "Jev BOT" view on the Bot page keeps its score.
+  const jevAt = dayLineAt(row, "jev", nowMs);
+  if (jevAt) {
+    const pick = row.jevPick || {};
+    const pct = Number.isFinite(Number(pick.p)) ? Math.round(Number(pick.p) * 100) + "%" : "";
+    tags.push({ key: "jev", atMs: jevAt, text: "✓ JEV " + etClock(new Date(jevAt).toISOString()),
+      title: "Jev would TAKE this trade" + (pick.rule ? " (bot rule: " + pick.rule + ")" : "") + (pct ? ", take chance " + pct : "")
+        + ". TEST - paper only; see Bot > Jev BOT for how Jev's picks are doing." });
+  }
+  const line = dayLineAt(row, "line", nowMs);
+  if (line) tags.push({ key: "dayline", atMs: line, text: (bear ? "LINE↓ " : "LINE↑ ") + etClock(new Date(line).toISOString()),
+    title: (bear ? "Daily line (puts): opened BELOW yesterday's low, 5m closed below the 21 EMA" : "Daily line (calls): opened ABOVE yesterday's high, 5m closed above the 21 EMA")
+      + " with rising volume or momentum - one of the board's 30 biggest stocks. TEST rule, tracked by the bot." });
+  const l100 = dayLineAt(row, "line100", nowMs);
+  if (l100) tags.push({ key: "dayline100", atMs: l100, text: (bear ? "$LINE↓ " : "$LINE↑ ") + etClock(new Date(l100).toISOString()),
+    title: "Daily line, your $100 version: opened $100+ " + (bear ? "below yesterday's low" : "above yesterday's high")
+      + " with $0.50 of room to the next daily line, 5m closed " + (bear ? "below" : "above") + " the 21 EMA with rising volume or momentum."
+      + (bear ? " Back-test Sep 1-28: puts no edge." : " Back-test Sep 1-28: calls held to the close beat random $100+ stocks in both halves (+0.36 / +0.58% vs +0.10 / +0.25%).")
+      + " TEST rule, tracked by the bot." });
+  // ZS and ABVX (2026-09-30, his ask): the bot's first fire today.
+  const zsAt = dayLineAt(row, "zs", nowMs);
+  if (zsAt) tags.push({ key: "zsrule", atMs: zsAt, text: (bear ? "ZS↓ " : "ZS↑ ") + etClock(new Date(zsAt).toISOString()),
+    title: (bear ? "ZS rule (puts): 5m close below EMA 9/21/50, VWAP and the 5m cloud, nothing within 2% below"
+      : "ZS rule: 5m close above EMA 9/21/50, VWAP and the 5m cloud, nothing within 2% above (day high, premarket high, yesterday's high, pivots)")
+      + ". TEST rule, tracked by the bot." });
+  const abvxAt = dayLineAt(row, "abvx", nowMs);
+  if (abvxAt) tags.push({ key: "abvx", atMs: abvxAt, text: (bear ? "ABVX↓ " : "ABVX↑ ") + etClock(new Date(abvxAt).toISOString()),
+    title: (bear ? "ABVX rule (puts): 09:30-10:30, 5m close below EMA 9/21, VWAP and the cloud, $0.50 of room below, a PUT2H/P2H arrow today"
+      : "ABVX rule: 09:30-10:30, 5m close above EMA 9/21, VWAP and the cloud, $0.50 of room above, a CALL2H/C2H arrow today")
+      + ". TEST rule, tracked by the bot." });
+  const rec = dayLineAt(row, "reclaim", nowMs);
+  if (rec) tags.push({ key: "dayreclaim", atMs: rec, text: (bear ? "RECLAIM↓ " : "RECLAIM↑ ") + etClock(new Date(rec).toISOString()),
+    title: (bear ? "Gap up above yesterday's high, the first 5m candle closed back BELOW it" : "Gap down below yesterday's low, the first 5m candle closed back ABOVE it (ZS 09-28)")
+      + ". TEST rule, tracked by the bot." });
+}
+
+export function strategyTags(row, nowMs = Date.now(), { legacy = true } = {}) {
   const verdict = row && row.strategy && typeof row.strategy === "object" ? row.strategy : null;
   const RULES = strategyRules(isBearRow(row) ? "bear" : "bull");
   // The "5m cross" tag was removed 2026-09-24 09:25 ET at his request ("too
@@ -1016,8 +1300,20 @@ export function strategyTags(row, nowMs = Date.now(), { legacy = true, archive =
   const tags = [];
   // Everything from here to the ADX tag is the 2026-09-24/25 set (see
   // MOMX_NEW_SETUPS): the Setup cell reads as it did on 2026-09-24 morning.
-  if (MOMX_NEW_SETUPS) newSetupTags(row, nowMs, RULES, tags, archive);
-  const marked = markFreshTags(legacyTags(row, nowMs, verdict, RULES, tags, legacy), nowMs);
+  if (MOMX_NEW_SETUPS) newSetupTags(row, nowMs, RULES, tags);
+  dayLineTags(row, nowMs, tags);
+  const mom = sqzMomentumTag(row, nowMs);
+  if (mom) tags.push(mom);
+  const flip = momFlipTag(row);
+  if (flip) tags.push(flip);
+  const sector = sectorTag(row);
+  if (sector) tags.push(sector);
+  let marked = markFreshTags(legacyTags(row, nowMs, verdict, RULES, tags, legacy), nowMs);
+  if (MOMX_SIMPLE_SETUP) marked = marked.filter(SIMPLE_KEEP);
+  const warn = warnTag(row, marked);
+  if (warn) marked.push(warn);
+  // Fading blocks no rule (his call 2026-09-28, after the data: "then don't
+  // block MX A+ fading"); the ⚠ fading warning above still shows.
   // MomoX's ⚡ (2026-09-25 "flash symbol i need it on setup same as MomoX"):
   // an orange bolt at the FRONT of the Setup cell when a setup fired today,
   // flashing while the newest one is under 10 minutes old.
@@ -1041,7 +1337,22 @@ export const FRESH_TAG_MS = 10 * 60 * 1000;
 // MomoX-style alert (2026-09-25 "do the same for MomoX card ... ticker also
 // have flash symbol"): the SETUP tags that pop a card and flash the ticker.
 // Not the chart arrows / SQZ fires - those fire ~100 times a day.
-export const ALERT_TAG_KEYS = new Set(["go", "opt", "solo", "turn", "hotlead", "mxaplus"]);
+// The SETUPS that light the ⚡, pop a card and flash the ticker (2026-09-28:
+// only what he trades from - GO+, GO, MX A+). OPT / SOLO / market turn / hot
+// leader are still worked out (FILTERS, scorecard) but no longer pop.
+export const ALERT_TAG_KEYS = new Set(["go", "go-rvol-macd", "go-rvol-macd-bear", "mxaplus"]);
+
+// "Lot of rules, it's confusing" (2026-09-28): the Setup column shows ONLY
+// GO+ / GO / ⭐1 / MX A+ / ⚡ / ⚠ / ADX (info) / chart arrows CALL2H-4H + C2H-4H
+// / Skittles breaks 2h..M / SQZ fire. V2, V3, D2, G, OPT, SOLO, market turn,
+// hot leader and the news tag are hidden here (still in FILTERS and on the
+// 4 PM scorecard). setMomxSimpleSetup(false) brings the full set back.
+export let MOMX_SIMPLE_SETUP = true;
+export function setMomxSimpleSetup(on) {
+  MOMX_SIMPLE_SETUP = Boolean(on);
+}
+const SIMPLE_KEEP = (t) => ["bolt", "go", "go-rvol-macd", "go-rvol-macd-bear", "mxaplus", "warn", "adx", "skit", "rvol", "dayline", "dayreclaim", "dayline100", "sqzmom", "sqzmom-bear", "momflip", "momflip-bear", "zsrule", "abvx", "sector", "chartsqz", "ai"].includes(t.key)
+  || t.key.startsWith("sqzfire-") || t.key.startsWith("chart-") || (t.key === "rank" && t.text === "⭐1");
 /** The first fresh setup tag on this row ({key, text, atMs, ...}), or null. */
 export function freshAlert(row, nowMs = Date.now()) {
   if (!row) return null;
@@ -1061,12 +1372,12 @@ function markFreshTags(tags, nowMs) {
   });
 }
 
-function newSetupTags(row, nowMs, RULES, tags, archive = false) {
+function newSetupTags(row, nowMs, RULES, tags) {
   const confirmedGo = goRvolMacd(row, nowMs);
-  if (confirmedGo) tags.push({ key: "go-rvol-macd", text: "GO+ " + confirmedGo.clock,
+  if (confirmedGo) tags.push({ key: isBearRow(row) ? "go-rvol-macd-bear" : "go-rvol-macd", text: (isBearRow(row) ? "GO+ ↓ " : "GO+ ") + confirmedGo.clock,
     atMs: confirmedGo.atMs, title: "GO + short RVOL + MACD. Confirmation candle closed "
-      + confirmedGo.clock + " ET. " + STRATEGY_RULES.goRvolMacd });
-  const opt = earlyOpt(row, nowMs, { readOnly: archive });
+      + confirmedGo.clock + " ET. " + RULES.goRvolMacd });
+  const opt = earlyOpt(row, nowMs);
   const starRank = row && Number.isFinite(Number(row.bestRank)) ? Number(row.bestRank) : null;
   if (starRank) {
     tags.push({
@@ -1116,7 +1427,7 @@ function newSetupTags(row, nowMs, RULES, tags, archive = false) {
     });
   }
   // MOMOX A+ (momx/momox_aplus.py, 2026-09-25): the competitor's A+ - a
-  // catalyst, RVOL cyan, a squeeze fire (2h/4h/D/Wk) and Skittles D..M all
+  // catalyst, RVOL cyan, a squeeze fire (any of 30m/1h/2h/4h/D/Wk) and Skittles (any of D..M)
   // bullish, first time today. "W" = the stock has weekly options.
   const mxa = row && row.momoxAPlus && row.momoxAPlus.at ? row.momoxAPlus : null;
   if (mxa) {
@@ -1124,11 +1435,11 @@ function newSetupTags(row, nowMs, RULES, tags, archive = false) {
       key: "mxaplus",
       atMs: Date.parse(mxa.at),
       text: "MX A+ " + etClock(mxa.at) + (mxa.weeklies ? " W" : ""),
-      title: "MomoX A+ at " + etClock(mxa.at) + " ET: news in the last 24h + RVOL cyan + squeeze fired (" +
-        (mxa.sqz || []).join(", ") + ") + Skittles D, 2D, 3D, 4D, W and M all bullish" +
+      title: "MomoX A+ at " + etClock(mxa.at) + " ET: news in the last 24h + RVOL cyan (3+) on any of 15m-D + squeeze fired (" +
+        (mxa.sqz || []).join(", ") + ") + Skittles cyan/green on any of D-Mo" +
         (mxa.oiStrike ? " + High OI call wall " + mxa.oiStrike + "C (" + Number(mxa.oi || 0).toLocaleString() + " OI) above the price" : "") +
         (mxa.weeklies ? "; has weekly options" : "; no weekly options") +
-        ". Back-test Sep 1-25: 39% hit +2% first, 35% hit -1.5% first, 37% ran +4% (held to close did better). Not proven.",
+        ". Rule updated 2026-09-29 (RVOL 15m-D, Skittles cyan/green, no call-wall check) - the new version is not back-tested.",
     });
   }
   // MARKET TURN (momx/market_turn.py, 2026-09-25): SPY back above VWAP after
@@ -1146,20 +1457,180 @@ function newSetupTags(row, nowMs, RULES, tags, archive = false) {
   }
   const news = newsCatalyst(row);
   if (news) tags.push(news);
-  // ⚠ on a SETUP only (GO / OPT / SOLO) - a warning on a row with no setup
-  // is noise. His wrong-pick patterns; the Best setups order sinks 2+ of them.
-  if (tags.some((t) => ["go", "opt", "solo", "turn", "mxaplus"].includes(t.key))) {
-    const warnings = setupWarnings(row);
-    if (warnings.length) {
-      tags.push({
-        key: "warn",
-        text: "⚠ " + warnings.join(" · "),
-        title: "Careful: " + warnings.join(", ") + ". These are the patterns behind wrong picks " +
-          "(bad news, already up big, momentum fading, price back under VWAP). Two or more push the " +
-          "name down the Best setups list.",
-      });
-    }
+}
+
+// ⚠ on a SETUP only - a warning on a row with no setup is noise. His
+// wrong-pick patterns; the Best setups order sinks 2+ of them. Since
+// 2026-09-28 ("add it") also on V2 / V3 / Daily 2 and GO+ (AAPL showed
+// "D2 #1" with momentum fading and no warning). Added after ALL tags exist:
+// V2 / V3 / D2 come from legacyTags, which runs after newSetupTags.
+export const WARN_SETUP_KEYS = new Set(["go", "opt", "solo", "turn", "mxaplus", "v2", "v3", "daily2",
+  "go-rvol-macd", "go-rvol-macd-bear", "rank"]);
+function warnTag(row, tags) {
+  if (!tags.some((t) => WARN_SETUP_KEYS.has(t.key))) return null;
+  const warnings = setupWarnings(row);
+  if (!warnings.length) return null;
+  return {
+    key: "warn",
+    text: "⚠ " + warnings.join(" · "),
+    title: "Careful: " + warnings.join(", ") + ". These are the patterns behind wrong picks " +
+      "(bad news, already up big, momentum fading, price back under VWAP). Two or more push the " +
+      "name down the Best setups list.",
+  };
+}
+
+// RVOL building (2026-09-28, "RVOL timeframes cyan rvol is increasing ... same
+// way i need in setup column"): the timeframes whose RVOL cell is PAINTED on
+// the board's side - bull cyan/green, bear magenta/red - on a live bar (the
+// 15:50-16:10 auction and prior-session bars are left out, as the board dims
+// them). Information only; the back-test found RVOL built on 30m-4h came late.
+export const RVOL_TAG_TFS = ["5m", "15m", "30m", "1h", "2h", "4h", "D"];
+export function rvolBuilding(row, nowMs) {
+  if (!row || !row.rvol) return null;
+  const bear = isBearRow(row);
+  const set = bear ? RVOL_BEARISH_BG_SET : RVOL_BULLISH_BG_SET;
+  const tfs = RVOL_TAG_TFS.filter((tf) => {
+    const cell = row.rvol[tf];
+    return cell && set.has(cell.bg) && !rvolNotLiveReason(cell, nowMs);
+  });
+  if (!tfs.length) return null;
+  return {
+    key: "rvol",
+    text: (bear ? "RVOL↓ " : "RVOL↑ ") + tfs.join(" "),
+    title: "RVOL is painted " + (bear ? "magenta/red (heavy selling)" : "cyan/green (heavy buying)") + " on " + tfs.join(", ") +
+      " - the same RVOL cells as the board. Information only; in the back-test, RVOL already built on 30m-4h came late.",
+  };
+}
+
+export const SKIT_BREAK_TFS = ["2h", "4h", "D", "2D", "3D", "4D", "Wk", "M"];
+// FRESH only (2026-09-28, "remove that if it fresh then show"): a 2D / 3D
+// block can stay painted for days, so the paint alone is not news. The tag
+// lists a timeframe only when the scanner SAW its block turn to a with-trend
+// cross in the last SKIT_FRESH_MINUTES (the grade log's "SKIT <tf> bg <c>"
+// timeline item - an observed change between two scans, never back-filled)
+// AND the block still shows it now.
+export const SKIT_FRESH_MINUTES = 60;
+// The CHART's squeeze flames on the scanner row (2026-10-11, his "if you see
+// SQZ in chart I want in setup column"): row.chartSqueeze from
+// momx/chart_signals.py runs the chart's own squeeze calculator
+// (shared_Cloud_Signal_Squeeze) on 1h / 2h / 4h / D - premarket included, on
+// the forming candle like TOS. One pill per candle time ("🔥1h 2h 09:00"),
+// shown for one candle of its timeframe from when it was first seen (D: all
+// day); a flame the chart later removed stays struck through (✕ time).
+const CHART_SQZ_LIFE_MS = { "1h": 3600e3, "2h": 7200e3, "4h": 14400e3, D: 86400e3 };
+export function chartSqueezeTags(row, nowMs = Date.now()) {
+  const list = row && Array.isArray(row.chartSqueeze) ? row.chartSqueeze : [];
+  const today = etParts(nowMs).day;
+  const groups = new Map();
+  for (const f of list) {
+    const at = Date.parse((f && f.at) || "");
+    const seen = Date.parse((f && f.seenAt) || "") || at;
+    const life = CHART_SQZ_LIFE_MS[f && f.timeframe];
+    if (!Number.isFinite(at) || !life || etParts(at).day !== today || nowMs < Math.min(at, seen)) continue;
+    if (nowMs >= Math.max(at, seen) + life) continue;
+    const key = etClock(new Date(at).toISOString()) + (f.goneAt ? "|gone" : "");
+    if (!groups.has(key)) groups.set(key, { at, seen, tfs: [], goneAt: f.goneAt || null });
+    groups.get(key).tfs.push(f.timeframe);
   }
+  const order = ["1h", "2h", "4h", "D"];
+  return [...groups.entries()].sort((a, b) => b[1].at - a[1].at).map(([key, g]) => {
+    const clock = key.split("|")[0];
+    const tfs = g.tfs.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    return {
+      key: "chartsqz",
+      atMs: g.seen,
+      gone: Boolean(g.goneAt),
+      text: "🔥" + tfs.join(" ") + " " + clock + (g.goneAt ? " ✕" + etClock(g.goneAt) : ""),
+      title: "The chart's squeeze flame (🔥) on the " + tfs.join(", ") + " candle that started " + clock + " ET - the same flame your "
+        + "chart draws (shared_Cloud_Signal_Squeeze)." + (g.goneAt ? " The chart removed it at " + etClock(g.goneAt) + " ET (the forming candle squeezed again)." : "")
+        + " Different script from the scanner's SQZ column, so the times can differ. Information only, not back-tested.",
+    };
+  });
+}
+
+// The shadow AI model's score on the Setup column (2026-10-17, his "Yes add it
+// for bull and bear"): row.aiScore = {p, rule} from momx/ai_filter.py - the best
+// score among the ticker's Bot trades today on this side. Shown from 55%.
+export const AI_TAG_CUT = 0.55;
+export function aiTags(row, nowMs = Date.now(), minimum = AI_TAG_CUT) {
+  const s = row && row.aiScore;
+  const p = s && Number(s.p);
+  if (!Number.isFinite(p) || p < Math.max(0, minimum) || p > 1) return [];
+  const bear = row && (row.direction === "bear" || row.side === "bear");
+  const at = Date.parse(s.at || "");
+  const scoredAt = Date.parse(s.scoredAt || "");
+  const day = x => new Date(x).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  if (!Number.isFinite(at) || at > nowMs || (Number.isFinite(scoredAt) && scoredAt > nowMs) || day(at) !== day(nowMs)
+      || String(s.symbol || "").toUpperCase() !== String(row.symbol || "").toUpperCase()
+      || s.side !== (bear ? "bear" : "bull")) return [];
+  return [{
+    key: "ai",
+    text: "AI " + Math.round(p * 100) + "%",
+    title: (bear ? "BEAR: " : "BULL: ") + "Highest shadow AI score among this ticker's recorded Bot trades today: " + Math.round(p * 100) + "% (rule: " + (s.rule || "?") + (s.model ? "; model: " + s.model : "") + "; trade " + etClock(s.at) + " ET" + (Number.isFinite(scoredAt) ? "; scored " + etClock(s.scoredAt) + " ET" : "") + "). "
+      + "This is a model estimate for that earlier paper trade, not a calibrated probability for the current setup.",
+  }];
+}
+
+/** An actual recorded Jev TAKE, using the existing 30% cutoff and entry stamp. */
+export function jevRecordTag(row, nowMs = Date.now()) {
+  const pick = row?.jevPick, at = dayLineAt(row, "jev", nowMs);
+  const p = Number(pick?.p), entry = Date.parse(pick?.at || "");
+  if (!at || at > nowMs || !pick?.rule || !Number.isFinite(p) || p < 0.30 || p > 1 || entry !== at) return null;
+  return { key: "jev", text: "JEV TAKE " + Math.round(p * 100) + "%", title:
+    "Jev accepted a recorded paper trade on " + row.symbol + " at " + etClock(pick.at) + " ET (rule: " + pick.rule + "). "
+    + "Take score " + Math.round(p * 100) + "%; the existing cutoff is 30%. This is not a new signal or a win probability." };
+}
+
+export function skittlesBreaks(row, nowMs = Date.now()) {
+  if (!row || !row.skittles) return [];
+  const bear = isBearRow(row);
+  const set = bear ? SKIT_BREAK_BEAR : new Set(["cyan", "green", "lime"]);
+  const timeline = row.gradeFresh && Array.isArray(row.gradeFresh.timeline) ? row.gradeFresh.timeline : [];
+  const seen = new Map();
+  for (const e of timeline) {
+    const m = /^SKIT (\S+) bg (\S+)$/.exec(String((e && e.what) || ""));
+    const at = Date.parse((e && e.at) || "");
+    if (!m || !set.has(m[2]) || !Number.isFinite(at) || at > nowMs) continue;
+    // The FIRST time today: on a still-forming bar the cross can blink off
+    // and back on (BB 4D: 09:47, then again 11:01) - the re-appearance is not
+    // a new cross, so the clock and the freshness run from the first sighting.
+    if (!seen.has(m[1]) || at < seen.get(m[1])) seen.set(m[1], at);
+  }
+  const tfs = SKIT_BREAK_TFS.filter((tf) => seen.has(tf) && nowMs - seen.get(tf) <= SKIT_FRESH_MINUTES * 60000
+    && row.skittles[tf] && set.has(row.skittles[tf].bg));
+  if (!tfs.length) return [];
+  const name = (tf) => (tf === "Wk" ? "W" : tf === "M" ? "Mo" : tf);
+  const clock = (ms) => etClock(new Date(ms).toISOString());
+  // One pill per cross TIME, newest first, and ONLY the newest may flash
+  // (2026-09-28, "it should blink only latest skittles"): UMAC 2h/W at 10:23
+  // and 4h/4D at 10:56 were one flashing pill, so the old crosses blinked too.
+  // One pill per cross TIME and COLOUR (2026-10-10, his ask "real color"):
+  // the pill wears the block's own colour - cyan 9/20, green MACD, lime 4/8
+  // (bear: magenta / red / light red) - so 2h green and 4h cyan at the same
+  // minute are two pills.
+  const groups = new Map();
+  for (const tf of tfs) {
+    const color = row.skittles[tf].bg;
+    const key = clock(seen.get(tf)) + "|" + color;
+    if (!groups.has(key)) groups.set(key, { at: seen.get(tf), tfs: [], color });
+    groups.get(key).tfs.push(tf);
+  }
+  const COLOR_LETTER = { cyan: "C", green: "G", lime: "Y", magenta: "M", red: "R", light_red: "LR" };
+  const COLOR_WORD = { cyan: "cyan (9/20 EMA cross)", green: "green (MACD cross up in an uptrend)", lime: "lime (4/8 EMA cross)",
+    magenta: "magenta (9/20 EMA cross down)", red: "red (MACD cross down in a downtrend)", light_red: "light red (4/8 EMA cross down)" };
+  return [...groups.entries()].sort((a, b) => b[1].at - a[1].at).map(([key, g], i) => ({
+    key: "skit",
+    color: g.color,
+    // atMs drives the 10-minute flash (markFreshTags); older groups get none.
+    ...(i === 0 ? { atMs: g.at } : {}),
+    // ...and a colour LETTER after each timeframe (his "SKT 2h-G"): G green,
+    // C cyan, Y lime/yellow; bear M magenta, R red, LR light red.
+    text: (bear ? "SKIT↓ " : "SKIT↑ ") + g.tfs.map((tf) => name(tf) + (COLOR_LETTER[g.color] ? "-" + COLOR_LETTER[g.color] : "")).join(" ")
+      + " " + key.split("|")[0],
+    title: "Skittles " + (bear ? "bearish" : "bullish") + " cross turned on at " + key.split("|")[0] + " ET on " + g.tfs.map(name).join(", ") +
+      " - the box is " + (COLOR_WORD[g.color] || g.color) +
+      ". Shown for " + SKIT_FRESH_MINUTES + " minutes after the cross; only the newest one flashes. Information only, not back-tested on its own.",
+  }));
 }
 
 function legacyTags(row, nowMs, verdict, RULES, tags, legacy) {
@@ -1185,12 +1656,28 @@ function legacyTags(row, nowMs, verdict, RULES, tags, legacy) {
     text: "SQZ " + f.tf + " " + f.clock,
     title: "The " + f.tf + " squeeze fired (released) - first seen " + f.clock + " ET today. Not yet back-tested on its own.",
   })));
+  // Skittles BREAKS 2h..M (2026-09-28, "CALL2H to M breaks skittles add in
+  // setup column"): the timeframes whose Skittles block shows a with-trend
+  // cross on its CURRENT bar - bull cyan/green/lime (9x20 / MACD / 4x8 up),
+  // bear magenta/red/light_red. The counter-trend dark_green / plum crosses
+  // are left out, as the grade leaves them out. Information, not back-tested.
+  tags.push(...skittlesBreaks(row, nowMs));
+  tags.push(...chartSqueezeTags(row, nowMs));
+  // The AI score lives in the Record column since 2026-10-18 (aiTags still drives its FILTERS choice).
+  const rv = rvolBuilding(row, nowMs);
+  if (rv) tags.push(rv);
   tags.push(...chartArrows(row, nowMs).map((a) => ({
     key: "chart-" + a.label + "-" + (a.family === "9x20" ? "9x20" : "4x8"),
     atMs: Date.parse(a.seenAt || a.at || ""),
-    text: a.label + " " + a.clock,
+    // Redrawn: show WHEN it appeared (↺). Gone: the chart repainted it away -
+    // kept so the trade that was there is not forgotten (✕ + the time).
+    text: a.label + " " + (a.redrawn && a.seenAt ? etClock(a.seenAt) + "↺" : a.clock) + (a.goneAt ? " ✕" + etClock(a.goneAt) : ""),
+    gone: Boolean(a.goneAt),
     title: "The chart's " + (a.family === "9x20" ? "cyan 9/20" : "yellow 4/8") + " " + a.label + " arrow, on the " + a.clock + " ET candle" +
       (a.seenAt ? " (the scanner saw it at " + etClock(a.seenAt) + " ET)" : "") +
+      (a.redrawn ? ". REDRAWN: the chart puts it on the " + a.clock + " candle, but it only appeared at " + etClock(a.seenAt) +
+        " ET when the higher-timeframe candle closed - it could not be traded earlier" : "") +
+      (a.goneAt ? ". GONE at " + etClock(a.goneAt) + " ET: the forming candle crossed back and the chart no longer draws it" : "") +
       (a.compact ? ". Short arrow: the " + a.label.slice(-2) + " crossed while the bigger trend has not turned yet - shown only during market hours; not yet back-tested." : ""),
   })));
   // V2 / V3 / Daily 2 / G tags: shown again since 2026-09-25 (his ask); pass
@@ -1220,7 +1707,7 @@ export function orderByDaily2(rows, config, nowMs = Date.now()) {
   const which = strategyOf(config);
   if (which === "chart") {
     // Earliest arrow first - the order they appeared on the chart today.
-    const first = (row) => (chartArrows(row).filter((a) => !a.compact)[0] || {}).at || "~";
+    const first = (row) => (chartArrows(row).filter((a) => !a.compact && !a.goneAt)[0] || {}).at || "~";
     return list
       .map((row, index) => ({ row, index, key: String(first(row)) }))
       .sort((a, b) => a.key.localeCompare(b.key) || a.index - b.index)
@@ -1252,6 +1739,7 @@ export function orderByDaily2(rows, config, nowMs = Date.now()) {
 /** True when at least one of Setup / Momentum / Pattern is set. */
 export function gatesActive(config) {
   return (
+    selectedSetupRules(config).length > 0 ||
     gateValue(config, "setup", FILTER_SETUP_VALUES) !== "any" ||
     gateValue(config, "momentum", FILTER_MOMENTUM_VALUES) !== "any" ||
     gateValue(config, "pattern", FILTER_PATTERN_VALUES) !== "any"
@@ -1297,7 +1785,7 @@ export function gatesPass(row, config) {
 export function filteringGroups(config) {
   const active = new Set();
   if (!config) return active;
-  if (strategyOf(config)) return active; // a strategy is the whole filter
+  if (selectedSetupRules(config).length || strategyOf(config)) return active;
   const on = (name) => Boolean(config[name] && config[name].on) && groupHasTickedFrame(config, name);
   if (on("rvol")) active.add("rvol");
   if (on("sqz")) active.add("sqz");
@@ -1349,7 +1837,53 @@ export function groupPassCounts(rows, config) {
 export function filterRows(rows, config, nowMs = Date.now()) {
   const list = Array.isArray(rows) ? rows : [];
   if (!config) return list.slice();
-  return list.filter((row) => rowPasses(row, config, nowMs));
+  // The sector choice needs the WHOLE board (a sector's leaders), so it is
+  // worked out once per filter pass.
+  SECTOR_LEADERS = strategyOf(config) === "sector" ? sectorLeaders(list) : null;
+  try {
+    return list.filter((row) => rowPasses(row, config, nowMs));
+  } finally {
+    SECTOR_LEADERS = null;
+  }
+}
+
+export function filtersAreActive(config, manualOn = false) {
+  return Boolean(manualOn) || selectedSetupRules(config).length > 0;
+}
+
+export function visibleFilterRows(sourceRows, unfilteredRows, config, manualOn = false, nowMs = Date.now()) {
+  return filtersAreActive(config, manualOn) ? filterRows(sourceRows, config, nowMs) : unfilteredRows;
+}
+
+let SECTOR_LEADERS = null;
+
+/** Symbols leading a 🔥 sector on this board (bull: hot/moving leaders from
+ * the worker; bear: the weakest of each falling sector - momxCells). */
+export function sectorLeaders(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const out = new Set();
+  if (list.some((r) => isBearRow(r))) {
+    const read = bearSectorRead(list);
+    [...read.entries()]
+      .filter(([, g]) => g.total >= 4 && g.share >= BEAR_SECTOR_BREADTH && g.median !== null && g.median <= BEAR_SECTOR_MEDIAN)
+      .sort((a, b) => b[1].share - a[1].share || a[1].median - b[1].median)
+      .slice(0, BEAR_SECTOR_MAX)
+      .forEach(([, g]) => g.leaders.forEach((l) => out.add(l.symbol)));
+    return out;
+  }
+  for (const row of list) {
+    const rot = row && row.sectorRotation;
+    if (!rot || !(rot.hot || rot.late) || (rot.today !== null && rot.today !== undefined && Number(rot.today) < 0)) continue;
+    for (const l of Array.isArray(rot.leaders) ? rot.leaders : []) if (l && l.symbol) out.add(l.symbol);
+  }
+  return out;
+}
+
+/** The ZS rule on the row's own side (m5.pillars.zs), read on today's bar. */
+export function zsNow(row, nowMs = Date.now()) {
+  const zs = row && row.m5 && row.m5.pillars && row.m5.pillars.zs;
+  if (!zs || zs.above !== true || zs.clear2 !== true || !Number.isFinite(Number(zs.barAt))) return false;
+  return etParts(Number(zs.barAt) * 1000).day === etParts(nowMs).day;
 }
 
 /** How many rows survive - for the count on the FILTERS button. */
@@ -1415,7 +1949,9 @@ export function coerceFilters(saved) {
   return {
     version: MOMX_FILTER_VERSION,
     mode: FILTER_TOP_MODES.includes(saved.mode) ? saved.mode : base.mode,
-    setup: gateValue(saved, "setup", FILTER_SETUP_VALUES),
+    setup: selectedSetupRules(saved).length || REMOVED_SETUP_VALUES.includes(saved.setup) ? "any" : gateValue(saved, "setup", FILTER_SETUP_VALUES),
+    setupRules: selectedSetupRules(saved),
+    setupRulesMode: saved.setupRulesMode === 'any' ? 'any' : 'all',
     momentum: gateValue(saved, "momentum", FILTER_MOMENTUM_VALUES),
     pattern: gateValue(saved, "pattern", FILTER_PATTERN_VALUES),
     rvol: {
@@ -1474,9 +2010,10 @@ export function writeStoredFilters(config) {
  */
 export function describeFilters(config, direction = "bull") {
   if (!config) return "";
+  if (selectedSetupRules(config).length) return setupRulesDescription(config) + '. Other Setup, grade and indicator-group controls are on standby.';
   const bear = direction === "bear";
   const which = strategyOf(config);
-  if (which) return "Strategy " + STRATEGY_LABELS[which] + ": " + strategyRules(direction)[which];
+  if (which) return "Strategy " + STRATEGY_LABELS[which] + ": " + strategyRules(direction)[which] + (setupRulesDescription(config) ? '; also required: ' + setupRulesDescription(config) : '');
   const active = filteringGroups(config);
   const parts = [];
   const rvol = config.rvol || {};
@@ -1568,6 +2105,7 @@ export function describeFilters(config, direction = "bull") {
 // the footer sentence and the "In the filter" line, so the two cannot drift.
 function gateWords(config) {
   const words = [];
+  if (setupRulesDescription(config)) return [setupRulesDescription(config)];
   const setup = gateValue(config, "setup", FILTER_SETUP_VALUES);
   if (setup === "aPlus") words.push("Setup A+");
   if (setup === "aAndUp") words.push("Setup A or A+");
@@ -1607,6 +2145,7 @@ function joinNames(names) {
 export function whyNothingPasses(config, counts) {
   if (!config || !counts) return null;
   if (!(counts.total > 0) || counts.passing > 0) return null;
+  if (selectedSetupRules(config).length) return 'No ticker matches the selected Setup column rules. ' + setupRulesDescription(config) + '.';
   const which = strategyOf(config);
   if (which === "daily2") {
     return "No ticker has qualified for Daily 2 today yet - the first can qualify from 9:35 AM ET.";
@@ -1623,6 +2162,30 @@ export function whyNothingPasses(config, counts) {
   if (which === "hotLead") {
     return "No hot sector yet today - its two leading stocks are picked when a sector lights up between 09:45 and 11:00 ET.";
   }
+  if (which === "mxaplus") {
+    return "No MomoX A+ yet today (news in 24h, RVOL cyan 3+ on any of 15m-D, a squeeze fire on any of 30m/1h/2h/4h/D/Wk, Skittles cyan/green on any of D..M - bear: magenta/red).";
+  }
+  if (which === "turn") {
+    return "No market turn yet today. Bull: SPY dips below VWAP after 09:45 and closes back above it (10:00-14:30). Bear: SPY pops above VWAP, then closes back below.";
+  }
+  if (which === "sector") {
+    return "No 🔥 sector leaders right now. Bull: leaders of the hot / moving-now sectors. Bear: the weakest stocks of falling sectors (60%+ down and below VWAP).";
+  }
+  if (which === "zs") {
+    return "No ZS setup right now: above (bear: below) EMA 9/21/50, VWAP and the 5m cloud with no level within 2%. Read 09:30-16:00.";
+  }
+  if (which === "dayLine") {
+    return "No daily-line trade yet today (30 biggest stocks: open above yesterday's high - puts: below yesterday's low - then a 5m close on that side of the 21 EMA with rising volume or momentum, 09:35-11:00).";
+  }
+  if (which === "dayLine100") {
+    return "No $100 daily-line trade yet today (open $100+ above yesterday's high - puts: below yesterday's low - with $0.50 of room to the next daily line, then a 5m close on that side of the 21 EMA with rising volume or momentum, 09:35-11:00).";
+  }
+  if (which === "dayReclaim") {
+    return "No gap reclaim yet today (opened below yesterday's low and the first 5m candle closed back above it - puts: the mirror at yesterday's high).";
+  }
+  if (which === "chartShort") {
+    return "No short chart arrow right now (C2H / C4H; bear: P2H / P4H).";
+  }
   if (which === "solo") {
     return "No SOLO big-money stock yet today. SOLO is checked 09:45-11:00 ET (volume 5-20x normal, up and above VWAP, sector flat).";
   }
@@ -1636,7 +2199,7 @@ export function whyNothingPasses(config, counts) {
     return "No A+/A ticker has a gap and go today (gap 2%+, above VWAP, the open and the first 5-minute high by 10:30, 30m buyers).";
   }
   if (which === "goRvolMacd") {
-    return "No bull A/A+ ticker currently passes GO + cyan 5m/15m/30m RVOL + rising 5m MACD with completed 30m buyers. Requires fresh completed candles, 09:30-15:30 ET; unavailable on BEAR.";
+    return "No A/A+ ticker currently passes GO + short RVOL + MACD for this direction. BULL needs cyan RVOL, rising MACD and 30m buyers; BEAR needs magenta RVOL, falling MACD and 30m sellers. Requires fresh completed candles, 09:30-15:30 ET.";
   }
   if (which === "opt") {
     return "No ticker shows the Options setup right now (A+/A + 2h and 4h Skittles cross + 30m buyers + Extended).";
@@ -1709,7 +2272,9 @@ export function filterMembership(config) {
  * noise.
  */
 export function describeMembership(config) {
+  if (selectedSetupRules(config).length) return 'In the filter: ' + setupRulesDescription(config) + ' only. Other Setup, grade and indicator-group controls are on standby.';
   const which = strategyOf(config);
+  if (which && selectedSetupRules(config).length) return 'In the filter: Strategy ' + STRATEGY_LABELS[which] + ' AND ' + setupRulesDescription(config) + '. Other group controls keep their existing strategy behavior.';
   if (which === "goRvolMacd") return "In the filter: GO + short RVOL + MACD with its built-in RVOL and MACD checks. The separate RVOL, SQZ, SKITTLES, Momentum and Pattern controls below do not change this strategy.";
   if (which) {
     return "In the filter: Strategy " + STRATEGY_LABELS[which] + " only. Left out while a strategy is picked: " +
@@ -1722,4 +2287,88 @@ export function describeMembership(config) {
   if (off.length) text += " Left out (off): " + joinNames(off) + ".";
   if (noTimeframe.length) text += " Left out (no timeframe ticked): " + joinNames(noTimeframe) + ".";
   return text;
+}
+
+
+// ---------------------------------------------------------------------------
+// RECORD column (2026-10-10, his "yes do it"): replaces the Jev score, which
+// tested as a coin flip (AUC 0.53, Oct 5-9). For each row: the bot's REAL
+// 2-week result for every Setup tag the row shows now, best first. Data:
+// GET /api/momx-scanner/rule-record (api_server, mid prices, bot's own exit).
+export const RECORD_MIN_TRADES = 20;
+let RULE_RECORD = null;
+export function setRuleRecord(record) {
+  RULE_RECORD = record && typeof record === "object" ? record : null;
+}
+
+/** The bot rule that scores a Setup tag (null when the bot has no such rule). */
+export function tagRecordRule(tag, row) {
+  const key = String((tag && tag.key) || "");
+  const text = String((tag && tag.text) || "");
+  if (key === "go") return "go";
+  if (key.startsWith("go-rvol-macd")) return "goRvolMacd";
+  if (key === "mxaplus") return "mxaplus";
+  if (key === "rank" && text === "⭐1") return "star1";
+  if (key === "sector") return text.startsWith("🔥") ? "sectorHot" : "sectorMove";
+  if (key === "dayline") {
+    const clock = (text.match(/(\d\d:\d\d)/) || [])[1] || "";
+    return clock && clock < "10:00" ? "dayLineEarly" : "dayLine";
+  }
+  if (key === "dayline100") return "dayLine100";
+  if (key === "dayreclaim") return "dayReclaim";
+  if (key === "zsrule") return "zs";
+  if (key === "abvx") return "openPath";
+  if (key === "sqzmom" || key === "sqzmom-bear") return tag.strong ? "momStrong" : "mom";
+  if (key.startsWith("momflip")) return "momFlip";
+  if (key === "rvol") return "rvol";
+  if (key === "skit") return "skit";
+  if (key.startsWith("sqzfire")) return "sqz";
+  if (key === "adx") return "adx";
+  if (key.startsWith("chart-")) return /^(CALL|PUT)/.test(text) ? "call2h" : "c2h";
+  return null;
+}
+
+/** {best, lines} for the Record cell, or null when nothing on the row has a record. */
+export function recordCell(row, nowMs = Date.now()) {
+  if (!row || !RULE_RECORD) return null;
+  if (RULE_RECORD.version !== 2) return { text: "History pending", tone: "few", lines: ["Waiting for quote-checked history. Older unchecked totals are not displayed."], title: "History not verified", detail: "No verified totals yet" };
+  if (Number(RULE_RECORD.asOf) * 1000 > nowMs + 1000) return { text: "History unavailable", tone: "few", lines: ["Today's record cannot be used as evidence for an earlier scanner snapshot."], title: "No record saved as of this snapshot", detail: "No future results" };
+  const side = isBearRow(row) ? "bear" : "bull", book = RULE_RECORD[side] || {};
+  const tags = strategyTags(row, nowMs).filter(t => !(t.key === "sqzmom" && !t.strong) && !t.gone);
+  const seen = new Set(), items = [];
+  const add = (rule, label) => {
+    if (!rule || seen.has(rule)) return;
+    seen.add(rule);
+    const r = book[rule];
+    if (r && r.seen > 0) items.push({ rule, label, ...r });
+  };
+  for (const t of tags) add(tagRecordRule(t, row), String(t.text).replace(/\s+\d\d:\d\d.*$/, ""));
+  const pattern = row.m5 && row.m5.pattern;
+  if (pattern === "explosive") add("explosive", "Explosive");
+  if (pattern === "steady") add("steady", "Steady");
+  if (!items.length) return null;
+  // Separate rule histories are correlated. Never pool them or pick the best ROI.
+  items.sort((a,b) => a.rule.localeCompare(b.rule));
+  const range = RULE_RECORD.ranges?.[side] || {};
+  const cash = x => Number.isFinite(x) ? (x < 0 ? "−$" : "$") + Math.abs(x).toFixed(2) : "unavailable";
+  const lines = [
+    "VIRTUAL HISTORY — main option, Strategy exit. Recorded quotes; not broker fills or a prediction for this ticker.",
+    `${range.from || "?"} to ${range.through || "?"} · ${range.days || 0} completed sessions. Built ${RULE_RECORD.builtAt || "unknown"}.`,
+    `One contract per trade. Fees are excluded; results are before fees. Midpoint fills and slippage are not guaranteed.`,
+    `Entry must be within ${RULE_RECORD.maxEntryDelaySeconds}s of its signal; exit quote within ${RULE_RECORD.maxExitQuoteDelaySeconds}s of Strategy exit. Open marks and unverified quotes excluded.`,
+    "Each rule is shown separately across all recorded tickers. Multiple tags do not combine into a win probability.",
+  ];
+  for (const r of items) {
+    lines.push(`\n${r.label} [${r.rule}]: ${r.n} quote-checked closed trades · ${r.wins} wins / ${r.losses} losses / ${r.breakEven} flat.`);
+    if (r.n) lines.push(`Win rate ${r.winRate}% · before-fee ROI ${r.roi}% · before-fee P/L ${cash(r.netPnl)} · average/trade ${cash(r.avgNet)}.`,
+      `Average win ${cash(r.avgWin)} · average loss ${cash(r.avgLoss)} · profit factor ${r.profitFactor ?? "unavailable"} · closed-trade drawdown ${cash(r.maxClosedDrawdown)} (not portfolio drawdown).`);
+    lines.push(`Coverage ${r.n}/${r.seen} (${r.coveragePct}%). Excluded ${r.excludedTotal}: ${Object.entries(r.excluded || {}).map(([k,v]) => k.replaceAll("_", " ") + " " + v).join(", ") || "none"}.`);
+    if (r.n < RECORD_MIN_TRADES || r.coveragePct < 80) lines.push("LIMITED EVIDENCE: small sample or incomplete quote coverage. No trustworthy probability established.");
+  }
+  const single = items.length === 1 ? items[0] : null;
+  const limited = !single || single.n < RECORD_MIN_TRADES || single.coveragePct < 80;
+  const text = single ? (single.n ? `${single.label}: ${single.winRate}% · n=${single.n}` : `${single.label}: no checked exits`) : `${items.length} rule histories`;
+  const detail = single ? `${single.wins}W / ${single.losses}L · ${single.excludedTotal} excluded${limited ? " · limited" : ""}` : "Tap for wins, losses & coverage";
+  return { text, detail, items, lines, days: range.days, title: lines.join("\n"),
+    tone: limited ? "few" : single.netPnl > 0 ? "ok" : "bad", best: null };
 }

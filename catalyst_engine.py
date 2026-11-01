@@ -84,7 +84,7 @@ TICKER_ALIASES = {
     "TSLA": ["tesla", "elon musk"],
 }
 
-DEFAULT_SOURCES = ("yahoo_search", "yahoo_rss", "alpaca", "benzinga", "finviz", "nasdaq", "sec_edgar")
+DEFAULT_SOURCES = ("yahoo_search", "yahoo_rss", "alpaca", "benzinga", "finviz", "nasdaq", "sec_edgar", "seeking_alpha", "google_news_strict")
 # Free API tiers that need a key.  They are enabled only when the key is configured
 # and are never reported as blocked/failed when it is missing.
 KEY_SOURCES = ("finnhub", "polygon", "alphavantage", "tiingo")
@@ -579,6 +579,136 @@ class NasdaqRssSource(NewsSource):
                     article_id=(item.findtext("guid") or "").strip(),
                 )
             )
+        return articles
+
+
+class SeekingAlphaSource(NewsSource):
+    """Seeking Alpha's per-ticker RSS (``/api/sa/combined/<TICKER>.xml``), added
+    2026-10-02 after a measured gap: of 35 stories it carried in 48h for 40 board
+    tickers, 22 were in no other source (e.g. a Brazil regulator shutting part of
+    Sigma Lithium's mine, a Citi target raise on HPE).
+
+    Shape: ``<item>`` with title / pubDate / guid and one ``<sa:stock><sa:symbol>``
+    per tagged ticker. A news item's ``<link>`` is the GENERIC ticker page
+    (``/symbol/HPE/news``), the same for every story, so the URL is rebuilt from
+    the guid (``MarketCurrent:<id>`` -> ``/news/<id>``) or the repository dedupe
+    would keep only the first story. Round-ups tagged to many tickers ("Most and
+    least shorted industrial stocks ...") are skipped. The feed's terms limit it to
+    personal, non-commercial use."""
+
+    name = "seeking_alpha"
+    label = "Seeking Alpha"
+    homepage = "https://seekingalpha.com"
+
+    FEED_URL = "https://seekingalpha.com/api/sa/combined/{symbol}.xml"
+    MAX_TAGGED = 6
+    GUID_RE = re.compile(r"(MarketCurrent|Article):(\d+)")
+
+    def fetch(self, symbol: str, limit: int) -> list[RawArticle]:
+        url = self.FEED_URL.format(symbol=urllib.parse.quote(symbol))
+        response = self._get(url, {"Accept": "application/rss+xml, application/xml, text/xml, */*"})
+        return self.parse(response.text(), symbol, limit)
+
+    def parse(self, text: str, symbol: str, limit: int) -> list[RawArticle]:
+        articles: list[RawArticle] = []
+        for item in self._rss_items(text):
+            related = tuple(dict.fromkeys(
+                (child.text or "").strip().upper()
+                for stock in item if stock.tag.endswith("}stock")
+                for child in stock if child.tag.endswith("}symbol") and (child.text or "").strip()
+            ))
+            if related and symbol not in related:
+                continue
+            if len(related) > self.MAX_TAGGED:
+                continue
+            headline = _strip_html(item.findtext("title"))
+            published = _parse_rfc822(item.findtext("pubDate"))
+            guid = (item.findtext("guid") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            match = self.GUID_RE.search(guid)
+            if match:
+                kind, number = match.groups()
+                link = f"https://seekingalpha.com/{'news' if kind == 'MarketCurrent' else 'article'}/{number}"
+            if not headline or not link or published is None:
+                continue
+            author = ""
+            for child in item:
+                if child.tag.endswith("}author_name") and child.text:
+                    author = child.text.strip()
+                    break
+            articles.append(
+                RawArticle(
+                    headline=headline,
+                    url=link,
+                    published_at=published,
+                    publisher="Seeking Alpha",
+                    summary="",
+                    related_symbols=related or (symbol,),
+                    article_id=guid[:120],
+                    tags=("Analysis",) if author and author not in {"SA News"} and match and match.group(1) == "Article" else (),
+                )
+            )
+            if len(articles) >= limit:
+                break
+        return articles
+
+
+class GoogleNewsStrictSource(NewsSource):
+    """Google News search per ticker, kept STRICT (added 2026-10-02).
+
+    Measured that day on 40 board tickers: 1385 results in 48h, mostly quote pages,
+    option-contract pages and other companies - but, filtered to trusted publishers
+    and a headline that names the company (news_names.CompanyNames), 105 stories no
+    other source had, e.g. "JPMorgan cuts Sigma Lithium stock rating", "Ouster soars
+    as new drone deal ignites investor hopes". One query per ticker. The older
+    opt-in GoogleNewsSource (alias headline match) is left as it was."""
+
+    name = "google_news_strict"
+    label = "Google News"
+    homepage = "https://news.google.com"
+
+    FEED_URL = "https://news.google.com/rss/search"
+    PUBLISHERS = {
+        "Reuters", "Bloomberg", "Bloomberg.com", "CNBC", "The Wall Street Journal", "WSJ", "Barron's", "MarketWatch",
+        "Associated Press", "AP News", "Financial Times", "Business Insider", "Investopedia", "Yahoo Finance",
+        "Fortune", "TechCrunch", "The Verge", "Axios", "Forbes", "Investor's Business Daily", "Benzinga", "TipRanks",
+        "Seeking Alpha", "Investing.com", "Fierce Biotech", "Endpoints News", "STAT", "BioPharma Dive", "Electrek",
+        "CNN", "The New York Times", "Business Wire", "PR Newswire", "GlobeNewswire", "Motley Fool", "The Motley Fool",
+        "Zacks Investment Research", "Nasdaq", "TheStreet", "Quartz", "The Information", "Semafor",
+    }
+
+    def fetch(self, symbol: str, limit: int) -> list[RawArticle]:
+        names = getattr(self.engine, "company_names", None)
+        if names is None:                     # tests hand the engine their own matcher
+            from news_names import default_names
+            names = default_names(self.engine.sec_user_agent)
+        company = (names.names().get(symbol.upper()) or [""])[0]
+        query = f'"{symbol}" OR "{company}" when:2d' if company and len(company) >= 4 else f'"{symbol}" stock when:2d'
+        url = f"{self.FEED_URL}?{urllib.parse.urlencode({'q': query, 'hl': 'en-US', 'gl': 'US', 'ceid': 'US:en'})}"
+        response = self._get(url, {"Accept": "application/rss+xml, application/xml, text/xml, */*"})
+        return self.parse(response.text(), symbol, limit, names)
+
+    def parse(self, text: str, symbol: str, limit: int, names) -> list[RawArticle]:
+        articles: list[RawArticle] = []
+        for item in self._rss_items(text):
+            source_node = item.find("source")
+            publisher = source_node.text.strip() if source_node is not None and source_node.text else ""
+            if publisher not in self.PUBLISHERS:
+                continue
+            headline = _strip_html(item.findtext("title"))
+            suffix = " - " + publisher
+            if headline.endswith(suffix):
+                headline = headline[: -len(suffix)].strip()
+            link = (item.findtext("link") or "").strip()
+            published = _parse_rfc822(item.findtext("pubDate"))
+            if not headline or not link or published is None:
+                continue
+            if symbol.upper() not in names.tickers_in(headline, [symbol]):
+                continue
+            articles.append(RawArticle(headline=headline, url=link, published_at=published, publisher=publisher,
+                                       related_symbols=(symbol,), article_id=(item.findtext("guid") or "")[:120]))
+            if len(articles) >= limit:
+                break
         return articles
 
 
@@ -1158,6 +1288,8 @@ SOURCE_CLASSES: dict[str, type[NewsSource]] = {
     AlphaVantageSource.name: AlphaVantageSource,
     TiingoSource.name: TiingoSource,
     GoogleNewsSource.name: GoogleNewsSource,
+    SeekingAlphaSource.name: SeekingAlphaSource,
+    GoogleNewsStrictSource.name: GoogleNewsStrictSource,
 }
 
 

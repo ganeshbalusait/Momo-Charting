@@ -29,7 +29,8 @@ import { Zap } from "lucide-react";
 
 import MomxStrikeReach from "./MomxStrikeReach.jsx";
 import { buildHighOiContractList, formatCompactVolume } from "./highOiContractList.js";
-import { ageOf, cellStyle, firesOf, formatPctChange, formatRvol, hlBlockStyle, newsOf } from "./momxCells.js";
+import { ageOf, cellStyle, firedWhen, firesOf, formatPctChange, formatRvol, hlBlockStyle, isMutedCell, newsOf } from "./momxCells.js";
+import { dayChartModel } from "./momxDayChart.js";
 
 // ---------------------------------------------------------------------------
 // High-OI walls
@@ -155,7 +156,7 @@ function useOptionChain(symbol) {
 }
 
 /** The walls from a loaded chain, or null when the chain is quiet. */
-function useHighOiWalls(chain) {
+function useHighOiWalls(chain, topPerSide = 3) {
   const model = useMemo(() => {
     if (!chain) return null;
     // THE FULL CHAIN, not callRows/putRows. Those are a pre-filtered subset
@@ -178,14 +179,14 @@ function useHighOiWalls(chain) {
       underlyingPrice: Number(chain.underlyingPrice) || 0,
       // THREE a side: his card shows the wall above and the two below, and a
       // card is a glance. The chart board's own eight would not fit.
-      topPerSide: 3,
+      topPerSide,
       scope: "monthly",
       frontExpiry,
       expectedMove,
       // "±EM2" on his card IS this multiple. Do not change one without the other.
       emBandMultiple: 2,
     });
-  }, [chain]);
+  }, [chain, topPerSide]);
 
   return model;
 }
@@ -310,17 +311,78 @@ function HighLowCell({ cell }) {
   );
 }
 
-/** One measured cell, coloured exactly as the board colours it. */
+/** One measured cell, coloured exactly as the board colours it. A reading the script
+ *  hides (black on black) is printed DIM on the card, like MomoX's card (0.3, 0.1) -
+ *  the board itself still hides it, as TOS does (his ask 2026-10-03 "same as momox"). */
 function Cell({ label, cell, format }) {
   const value = cell && typeof cell === "object" ? cell.value : null;
   const text = format ? format(value) : value === null || value === undefined ? "" : String(value);
+  const style = isMutedCell(cell) ? { ...cellStyle(cell), color: "#6f7480" } : cellStyle(cell);
   return (
     <div className="momx-card-cell" title={label}>
       <span className="momx-card-cell-label">{label}</span>
-      <span className="momx-card-cell-value" style={cellStyle(cell)}>
+      <span className="momx-card-cell-value" style={style}>
         {text}
       </span>
     </div>
+  );
+}
+
+/** Today's 5m closes for the mini chart, from the scanner worker. null until loaded. */
+function useDayBars(symbol, day = "") {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    if (!symbol) return undefined;
+    let alive = true;
+    const url = "/api/momx-scanner/daybars?symbol=" + encodeURIComponent(symbol) + (day ? "&day=" + day : "");
+    const load = () => fetch(url, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (alive) setData(j && Array.isArray(j.bars) ? j : null); })
+      .catch(() => {});
+    setData(null);
+    load();
+    // a snapshot's day never changes - load once; today's chart refreshes every minute
+    const timer = day ? null : window.setInterval(load, 60000);
+    return () => { alive = false; if (timer) window.clearInterval(timer); };
+  }, [symbol, day]);
+  return data;
+}
+
+/** "today 4:00-20:00 ET" with the OI walls and the ±EM2 edges (MomoX-style). */
+function DayChart({ day, walls, markMs = null }) {
+  const model = day ? dayChartModel(day.bars, walls, { width: 360, height: 120, markMs }) : null;
+  if (!model) return null;
+  const em = walls && Number(walls.expectedMove) > 0;
+  const label = markMs
+    ? new Date(day.day + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
+    : "today";
+  return (
+    <figure className="momx-daychart">
+      <figcaption>
+        {label} 4:00–20:00 ET · {model.low.toFixed(2)} – {model.high.toFixed(2)}{em ? " · ±EM2" : ""}
+        {model.mark !== null ? " · ┊ = this snapshot" : ""}
+      </figcaption>
+      <svg viewBox={"0 0 " + model.width + " " + model.height} preserveAspectRatio="none" role="img"
+        aria-label={"Today's price from " + model.low.toFixed(2) + " to " + model.high.toFixed(2)}>
+        {model.shade.map((s, i) => <rect key={i} x={s.x} y="0" width={s.w} height={model.height} className="momx-daychart-ext" />)}
+        {model.band && model.band.top !== null ? <line x1="0" x2={model.width} y1={model.band.top} y2={model.band.top} className="momx-daychart-em is-top" /> : null}
+        {model.band && model.band.bottom !== null ? <line x1="0" x2={model.width} y1={model.band.bottom} y2={model.band.bottom} className="momx-daychart-em is-bottom" /> : null}
+        {model.walls.map((w) => (
+          <line key={w.label} x1="0" x2={model.width} y1={w.y} y2={w.y} className={"momx-daychart-wall is-" + w.side} />
+        ))}
+        {model.segments.map((s, i) => (
+          <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} className={"momx-daychart-line" + (s.up ? " is-up" : " is-down")} />
+        ))}
+        {model.mark !== null ? <line x1={model.mark} x2={model.mark} y1="0" y2={model.height} className="momx-daychart-mark" /> : null}
+      </svg>
+      <ul className="momx-daychart-labels" aria-hidden="true">
+        {model.walls.map((w) => (
+          <li key={w.label} className={"is-" + w.side} style={{ top: (w.y / model.height) * 100 + "%" }}>{w.label}</li>
+        ))}
+        {model.offAbove ? <li className={"is-off is-" + model.offAbove.side} style={{ top: "0%" }}>↑ {model.offAbove.label}</li> : null}
+        {model.offBelow ? <li className={"is-off is-" + model.offBelow.side} style={{ top: "100%" }}>↓ {model.offBelow.label}</li> : null}
+      </ul>
+    </figure>
   );
 }
 
@@ -343,6 +405,15 @@ export default function MomxTickerCard({
   // The walls block below builds this too; both calls are the same useMemo on
   // the same `chain`, so Strike reach reads exactly what the walls draw.
   const walls = useHighOiWalls(chain);
+  // The chart's OI levels: the SAME rule as the OI page's High-OI board (8 a side within
+  // ±EM2), so the strikes around the price show, not just the card's top 3 (his ask
+  // 2026-10-03 "in chart I need OI levels" - ARQQ drew only 22.5P).
+  const chartWalls = useHighOiWalls(chain, 8);
+  // A History snapshot draws ITS day (his ARQQ snapshot 2026-10-04 showed no chart).
+  const snapDay = frozen && Number.isFinite(nowMs)
+    ? new Date(nowMs).toLocaleDateString("en-CA", { timeZone: "America/New_York" })
+    : "";
+  const day = useDayBars(row && typeof row === "object" ? row.symbol || null : null, snapDay);
 
   if (!row || typeof row !== "object") {
     // The symbol left the board while its card was open - it stopped matching,
@@ -411,6 +482,8 @@ export default function MomxTickerCard({
         ))}
       </div>
 
+      <DayChart day={day} walls={chartWalls} markMs={frozen ? nowMs : null} />
+
       {pillars ? (
         <div className={"momx-pillars" + (pillars.ready ? " is-ready" : "")} aria-label="Five pillars checklist">
           <div className="momx-pillars-head">
@@ -433,6 +506,16 @@ export default function MomxTickerCard({
           <>
             {news.headline}
             {news.age ? <em> ({news.age})</em> : null}
+            {/* Jev's word on the card too (his ask 2026-10-02 "I don't see here also") */}
+            {news.jev ? <span className={"momx-card-jev is-" + news.jev.tone}>{news.jev.text}</span> : null}
+            {/* "Add details about jev" (2026-10-10): what Jev is, and how much to trust it. */}
+            <span className="momx-card-jev-detail">
+              {news.jev
+                ? (news.jev.tone === "flat"
+                    ? "No ▲/▼: Jev shows an arrow only when the headline names this company, is real news (not an opinion piece, question, law-firm ad or repeated rating) and Jev is 90%+ sure."
+                    : "Jev (TypeSafe AI) reads the headline for this stock. Blind checks (Oct 5-9): the arrows shown were right about 85-90% of the time and never the opposite way - but even a right read did not predict the next hour's price.")
+                : "Jev has not read this headline yet (it reads headlines from the last 48 hours)."}
+            </span>
           </>
         ) : (
           "no fresh catalyst on the feed"
@@ -470,6 +553,9 @@ export default function MomxTickerCard({
           <Zap size={12} aria-hidden="true" />
           {fires.length ? fires.join(" · ") : "no signals fired on this one"}
         </p>
+        {fires.length && !frozen && firedWhen(row, nowMs) ? (
+          <p className="momx-card-fired-when">{firedWhen(row, nowMs).text}</p>
+        ) : null}
         </div>
       </div>
 

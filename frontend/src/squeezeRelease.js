@@ -44,10 +44,14 @@ export function calculateTrueRanges(bars) {
  * a fixture generated from this function, so the scanner table can never
  * disagree with the flame the chart draws.
  */
-export function squeezeReleaseEvents(bars, minutes) {
+export function squeezeReleaseEvents(bars, minutes, { includeForming = false, timeframeBars: suppliedBars = null } = {}) {
   const source = Array.isArray(bars) ? bars : [];
   const span = Math.max(1, Number(minutes) || 1);
-  const timeframeBars = aggregateChartBars(source, span);
+  // suppliedBars: an already-aggregated tape (the real daily bars TOS uses
+  // for DAY). Defaults keep the scanner pinned to the original behaviour.
+  const timeframeBars = Array.isArray(suppliedBars) && suppliedBars.length
+    ? suppliedBars
+    : aggregateChartBars(source, span);
   if (timeframeBars.length <= SQUEEZE_LENGTH) return [];
 
   const closes = timeframeBars.map((bar) => Number(bar.close || 0));
@@ -58,7 +62,7 @@ export function squeezeReleaseEvents(bars, minutes) {
     average[index] + 2 * standardDeviation[index] - (average[index] + 1.5 * averageTrueRange[index]) <= 0
   ));
 
-  const lastSourceTime = Number(source[source.length - 1]?.time || 0);
+  const lastSourceTime = Number(source[source.length - 1]?.time || timeframeBars[timeframeBars.length - 1]?.time || 0);
   return timeframeBars.flatMap((bar, index) => {
     if (index < SQUEEZE_LENGTH || inSqueeze[index] || !inSqueeze[index - 1]) return [];
     const bucketTime = Number(bar.time);
@@ -66,7 +70,10 @@ export function squeezeReleaseEvents(bars, minutes) {
     // Fire only when the bucket has CLOSED (live commit 461d4af): a forming
     // bucket's bands and ATR move with every tick, so its "release" flickered
     // in and out and the flame badge wandered between its live high and low.
-    if (closeTime > lastSourceTime) return [];
+    // The chart passes includeForming (2026-10-01, TOS parity): the TOS
+    // script evaluates the developing bucket, so the flame fires - and can
+    // vanish again - on the forming candle, exactly as TOS repaints it.
+    if (!includeForming && closeTime > lastSourceTime) return [];
     return [{
       minutes: span,
       bucketTime,

@@ -1,8 +1,24 @@
-function normalizedDateKey(value) {
+// Memoized: the pivot studies normalize the same few hundred date strings
+// hundreds of thousands of times per chart open (regex + Date + toISOString
+// each time) - 2.0s of a 9.3s freeze, profiled 2026-10-02 on MSTR -> COHR.
+const NORMALIZED_DATE_CACHE = new Map();
+const NORMALIZED_DATE_CACHE_LIMIT = 20000;
+
+function normalizedDateKeyUncached(value) {
   const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return "";
   const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
   return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+}
+
+function normalizedDateKey(value) {
+  if (typeof value !== "string") return normalizedDateKeyUncached(value);
+  const cached = NORMALIZED_DATE_CACHE.get(value);
+  if (cached !== undefined) return cached;
+  const result = normalizedDateKeyUncached(value);
+  if (NORMALIZED_DATE_CACHE.size >= NORMALIZED_DATE_CACHE_LIMIT) NORMALIZED_DATE_CACHE.clear();
+  NORMALIZED_DATE_CACHE.set(value, result);
+  return result;
 }
 
 export function completedPivotPeriodKey(dateKey, timeframe) {
@@ -22,7 +38,62 @@ export function completedPivotPeriodKey(dateKey, timeframe) {
   return date;
 }
 
+// Every calendar period of `orderedDays`, sorted by key, built ONCE per (days
+// array, timeframe). The study asks for one period per chart date, and
+// re-aggregating the whole daily history for each date was ~1s of the
+// 2026-10-02 freeze. Same aggregation, so the same answer (equivalence test).
+const COMPLETED_PERIODS_CACHE = new WeakMap();
+
+function aggregatedPivotPeriods(orderedDays, timeframe) {
+  const days = Array.isArray(orderedDays) ? orderedDays : [];
+  const normalizedTimeframe = String(timeframe || "DAY").toUpperCase();
+  let byTimeframe = COMPLETED_PERIODS_CACHE.get(days);
+  if (!byTimeframe) {
+    byTimeframe = new Map();
+    if (Array.isArray(orderedDays)) COMPLETED_PERIODS_CACHE.set(days, byTimeframe);
+  }
+  const held = byTimeframe.get(normalizedTimeframe);
+  if (held && held.length === days.length) return held.periods;
+  const periods = new Map();
+  days.forEach((day) => {
+    const date = normalizedDateKey(day?.date);
+    const key = completedPivotPeriodKey(date, normalizedTimeframe);
+    if (!date || !key) return;
+    const open = Number(day?.open);
+    const high = Number(day?.high);
+    const low = Number(day?.low);
+    const close = Number(day?.close);
+    if (![open, high, low, close].every(Number.isFinite)) return;
+    const existing = periods.get(key);
+    periods.set(key, existing ? {
+      key,
+      open: existing.open,
+      high: Math.max(existing.high, high),
+      low: Math.min(existing.low, low),
+      close,
+    } : { key, open, high, low, close });
+  });
+  const sorted = [...periods.values()].sort((left, right) => left.key.localeCompare(right.key));
+  byTimeframe.set(normalizedTimeframe, { length: days.length, periods: sorted });
+  return sorted;
+}
+
 export function previousCompletedPivotPeriod(orderedDays, currentDate, timeframe) {
+  const currentKey = completedPivotPeriodKey(currentDate, timeframe);
+  if (!currentKey) return null;
+  const sorted = aggregatedPivotPeriods(orderedDays, timeframe);
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) { // first period whose key is >= currentKey
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid].key < currentKey) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo > 0 ? sorted[lo - 1] : null;
+}
+
+// The pre-2026-10-02 implementation, kept only for the equivalence test.
+export function previousCompletedPivotPeriodReference(orderedDays, currentDate, timeframe) {
   const currentKey = completedPivotPeriodKey(currentDate, timeframe);
   if (!currentKey) return null;
   const periods = new Map();
@@ -178,4 +249,17 @@ export function rollingPivotSourcePeriod(orderedDays, currentDate, timeframe) {
   }
   const cutoffDate = cutoff.toISOString().slice(0, 10);
   return aggregatePivotDays(preparedDays.slice(lowerBoundByDate(preparedDays, cutoffDate), priorEnd));
+}
+
+// The period PivotPoints (Schwab built-in) reads its prior H/L/C from.
+// 2026-10-01: his TOS weekly pivot on CLS was the CALENDAR week (359.95);
+// the rolling 7-day lookback above (364.08) had no TOS reading behind it, so
+// WEEK/MONTH now use the last completed calendar period, like PersonsPivots.
+// DAY is the previous trading day either way.
+export function pivotPointsSourcePeriod(orderedDays, currentDate, timeframe) {
+  const normalizedTimeframe = String(timeframe || "DAY").toUpperCase();
+  if (normalizedTimeframe === "WEEK" || normalizedTimeframe === "MONTH") {
+    return previousCompletedPivotPeriod(orderedDays, currentDate, normalizedTimeframe);
+  }
+  return rollingPivotSourcePeriod(orderedDays, currentDate, normalizedTimeframe);
 }

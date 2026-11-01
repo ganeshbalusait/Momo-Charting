@@ -43,3 +43,34 @@ test("a still-forming bucket produces no release", () => {
 
   assert.deepEqual(squeezeReleaseEvents(bars, 60), []);
 });
+
+// 2026-10-01 TOS parity: the CHART fires on the forming bucket like TOS
+// (shared_Cloud_Signal_Squeeze_v20263 evaluates the developing value); the
+// premarket scanner keeps the closed-only default above.
+test("includeForming reports the release on the still-forming bucket", () => {
+  const bars = [];
+  for (let index = 0; index < 21; index += 1) {
+    const time = 1_700_000_000 + index * 3600;
+    bars.push({ time, open: 100, high: 100, low: 100, close: 100 });
+  }
+  bars.push({ time: 1_700_000_000 + 21 * 3600, open: 100, high: 140, low: 60, close: 130 });
+
+  const events = squeezeReleaseEvents(bars, 60, { includeForming: true });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].tone, "bull");
+  // aggregateChartBars floors to whole hours; the breakout is the last bucket.
+  assert.equal(events[0].bucketTime, Math.floor((1_700_000_000 + 21 * 3600) / 3600) * 3600);
+});
+
+// TOS reads the real (regular-hours) daily bars for the DAY aggregation, not
+// days rebuilt from a two-day intraday tape that is too short to compute.
+test("timeframeBars overrides the aggregation (real daily bars)", () => {
+  const daily = [];
+  for (let index = 0; index < 21; index += 1) {
+    daily.push({ time: 1_700_000_000 + index * 86400, open: 50, high: 50, low: 50, close: 50 });
+  }
+  daily.push({ time: 1_700_000_000 + 21 * 86400, open: 50, high: 40, low: 30, close: 35 });
+  const events = squeezeReleaseEvents([], 1440, { includeForming: true, timeframeBars: daily });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].tone, "bear");
+});

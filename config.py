@@ -222,7 +222,7 @@ class NewsSettings:
     # finnhub, polygon, alphavantage, tiingo, google_news.
     # finnhub/polygon/alphavantage/tiingo need a key (below) and switch on automatically
     # when it is set.  Google News is a headline keyword match, so it is opt-in.
-    sources: str = os.getenv("NEWS_SOURCES", "yahoo_search,yahoo_rss,alpaca,benzinga,finviz,nasdaq,sec_edgar")
+    sources: str = os.getenv("NEWS_SOURCES", "yahoo_search,yahoo_rss,alpaca,benzinga,finviz,nasdaq,sec_edgar,seeking_alpha,google_news_strict")
     # Free API tiers.  Leave empty to skip the source (it is listed as "not set", never as failed).
     finnhub_api_key: str = os.getenv("FINNHUB_API_KEY", "")
     polygon_api_key: str = os.getenv("POLYGON_API_KEY", "")

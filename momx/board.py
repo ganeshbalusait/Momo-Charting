@@ -58,12 +58,13 @@ import re
 import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from config import ARTIFACTS_DIR, settings
-from momx import buckets, columns, feed, flags, grade, news, scan
+from momx import buckets, columns, ema_touch, feed, flags, grade, news, scan
 from momx.industries import industry_for
 from momx.industry_lookup import resolve as resolve_industries
 
@@ -398,10 +399,22 @@ PARALLEL_MIN_SYMBOLS = 60
 #: charts staying responsive, so it takes half the machine at most. The worker
 #: process also drops to BELOW_NORMAL priority (see momx_worker.py), which is
 #: the bigger lever: it yields cores rather than competing for them.
+#:
+#: 8 was tried again 2026-10-16 10:41-10:53 ET and was SLOWER: the 368-name
+#: Watchlist scan went from 38-41 s (5 lanes, that morning) to 61-73 s, with
+#: api_server's chart prewarm busier at the same time. Back to 5.
 PARALLEL_WORKERS = 5
 
 _POOL = None
 _POOL_LOCK = threading.Lock()
+#: Lanes for the SMALL lists (Mag7, Movers, the EMA lists), 2026-10-16. They
+#: used to scan in the worker's own process: py-spy showed those scans holding
+#: the GIL while the Watchlist thread waited to absorb its lane results and run
+#: its post-build steps - Mag7 scans took 4-73 s and the Watchlist board landed
+#: ~50 s after its scan finished. Separate from the big lanes so a Mag7 build
+#: never queues behind a Watchlist batch.
+SMALL_LIST_WORKERS = 2
+_SMALL_POOL = None
 
 
 def _skipped_pct(tapes, daily_bars, last):
@@ -415,6 +428,11 @@ def _skipped_pct(tapes, daily_bars, last):
     """
     intraday = tapes.get("5m") or tapes.get("15m") or tapes.get("30m")
     return columns.pct_change(daily_bars, intraday, last)
+
+
+#: build_columns value for a skipped symbol that may keep its previous columns
+#: even when it matches the bear scan again (it matched bear last build too).
+REUSE_BEAR_MATCH = "reuse-bear"
 
 
 def _scan_one(args):
@@ -457,12 +475,26 @@ def _scan_one(args):
     # The BEAR scan on the same tapes (spec 2026-09-24): a few EMA/MACD
     # comparisons and one RVOL pass per timeframe - cheap next to build_row.
     bear_passed, bear_reasons = scan.scan_symbol(tapes, last, direction="bear")
-    if not build_columns:
+    reuse_bear = build_columns == REUSE_BEAR_MATCH   # == not is: it crossed a process boundary
+    if not build_columns or reuse_bear:
         # Caller is reusing this symbol's columns from the previous build.
         # The SCAN still ran - only the display columns are skipped, which
         # is 53% of the per-symbol cost and the half he is not looking at
         # while "Scan matches only" is ticked.
-        return (symbol, None, _skipped_pct(tapes, daily_bars, last), passed, reasons, None, last,
+        pct = _skipped_pct(tapes, daily_bars, last)
+        if passed or (bear_passed and not reuse_bear):
+            # A NEW match must never show last cycle's columns, so build_board
+            # built it - one at a time, in the worker's GIL-bound main process
+            # (~9 s of every Watchlist build, py-spy 2026-10-16). Same tapes,
+            # same call, built here in the lane instead.
+            try:
+                row = columns.build_row(symbol, tapes, industry)
+                failure = None
+            except Exception as exc:  # noqa: BLE001 - per-symbol isolation
+                row = None
+                failure = f"{type(exc).__name__}: {exc}"
+            return symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons
+        return (symbol, None, pct, passed, reasons, None, last,
                 bear_passed, bear_reasons)
     try:
         row = columns.build_row(symbol, tapes, industry)
@@ -532,20 +564,71 @@ def _lane_of(symbol: str, lanes: int) -> int:
 
 
 def _scan_batch(items):
-    """Scan one lane's symbols in one process call (module level: picklable)."""
-    return [_scan_one_guarded(item) for item in items]
+    """Scan one lane's symbols in one process call (module level: picklable).
+
+    Returns (wall-clock start, end, results): the build's timing line splits
+    the scan into hand-off wait vs lane work (2026-10-16: lanes sat 72% idle
+    in recv while the scan stage took 65 s).
+    """
+    started = time.time()
+    results = [_scan_one_guarded(item) for item in items]
+    return started, time.time(), results
+
+
+def _small_pool():
+    """The small-list lanes (see SMALL_LIST_WORKERS). None if they cannot be made."""
+    global _SMALL_POOL
+    with _POOL_LOCK:
+        if _SMALL_POOL is None:
+            try:
+                from concurrent.futures import ProcessPoolExecutor
+
+                _SMALL_POOL = [ProcessPoolExecutor(max_workers=1) for _ in range(SMALL_LIST_WORKERS)]
+            except Exception:  # noqa: BLE001 - sequential is always available
+                _SMALL_POOL = False
+        return _SMALL_POOL or None
 
 
 def shutdown_pool() -> None:
     """Release the workers. Safe to call when idle; the lanes re-create themselves."""
-    global _POOL
+    global _POOL, _SMALL_POOL
     with _POOL_LOCK:
         lanes, _POOL = _POOL, None
-        for lane in (lanes or []):
+        small, _SMALL_POOL = _SMALL_POOL, None
+        for lane in (lanes or []) + (small or []):
             try:
                 lane.shutdown(wait=False)
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _newest_bar_epoch(frame: Any) -> int | None:
+    """Epoch seconds of the LAST bar frame_to_bars would yield, without
+    building every bar. Profiled 2026-10-09 16:20 ET: _tape_as_of converted
+    every symbol's whole 5m tape to dicts just to read the last time - 53% of
+    a Watchlist build (builds 454-476 s). Falls back to frame_to_bars for any
+    frame that is not the common DataFrame shape."""
+    try:
+        import pandas as pd
+
+        if (isinstance(frame, pd.DataFrame) and "timestamp" in frame.columns
+                and "time" not in frame.columns
+                and pd.api.types.is_datetime64_any_dtype(frame["timestamp"])):
+            column = frame["timestamp"]
+            valid = column.iloc[-8:].dropna()      # only the tail is ever read
+            for stamp in reversed(valid.tolist()):
+                seconds = int(stamp.timestamp())
+                if seconds > 0:
+                    return seconds
+            if len(column) <= 8 and len(valid) == 0:
+                return None
+    except Exception:  # noqa: BLE001 - fall back to the exact slow path
+        pass
+    bars = frame_to_bars(frame)
+    if bars:
+        t = bars[-1].get("time")
+        return t if isinstance(t, (int, float)) else None
+    return None
 
 
 def _tape_as_of(five: Mapping[str, Any]) -> str | None:
@@ -557,16 +640,108 @@ def _tape_as_of(five: Mapping[str, Any]) -> str | None:
     """
     newest = None
     for frame in (five or {}).values():
-        bars = frame_to_bars(frame)
-        if bars:
-            t = bars[-1].get("time")
-            if isinstance(t, (int, float)) and (newest is None or t > newest):
-                newest = t
+        t = _newest_bar_epoch(frame)
+        if isinstance(t, (int, float)) and (newest is None or t > newest):
+            newest = t
     if newest is None:
         return None
     import datetime as _dt
 
     return _dt.datetime.fromtimestamp(int(newest), tz=_dt.timezone.utc).isoformat()
+
+
+#: Scan sharing (2026-10-16, "Mag7, watchlist, liquid movers ... less than 1
+#: min"). 230 of Liquid Movers' 231 tickers are on the Watchlist, and the two
+#: heavy lists build one at a time, so each was re-scanning the same tickers
+#: and each refreshed only every ~2 min. A big list whose tickers were nearly
+#: all scanned by a LARGER list's build in the last SCAN_SHARE_MAX_AGE_SECONDS
+#: takes those scan records (same tapes in, same verdict and row out -
+#: _scan_one is a pure function of the tapes) and scans only the rest.
+SCAN_SHARE_MAX_AGE_SECONDS = 90.0
+SCAN_SHARE_MIN_COVERAGE = 0.9
+_LAST_SCAN: dict = {}
+_LAST_SCAN_LOCK = threading.Lock()
+
+
+#: The newest 5m / daily tape per symbol from ANY build (2026-10-16). The
+#: chart-arrow loop (momx/chart_signals.py) re-downloaded both for up to 160
+#: symbols every pass - 35% of the worker main process's GIL (py-spy) plus the
+#: network calls - for bars a build had fetched seconds before.
+_LAST_TAPES: dict = {"5m": {}, "daily": {}}
+
+
+def _remember_tapes(five: Mapping[str, Any], daily: Mapping[str, Any]) -> None:
+    at = time.monotonic()
+    with _LAST_SCAN_LOCK:
+        for kind, tapes in (("5m", five), ("daily", daily)):
+            store = _LAST_TAPES[kind]
+            for symbol, frame in (tapes or {}).items():
+                if frame is not None:
+                    store[symbol] = (at, frame)
+
+
+def recent_tapes(symbols: Iterable[str], max_age: float) -> tuple[dict, dict, list]:
+    """({symbol: 5m frame}, {symbol: daily frame}, [symbols with no recent
+    build tape]) - a build's tapes no older than ``max_age`` seconds."""
+    now = time.monotonic()
+    five: dict = {}
+    daily: dict = {}
+    missing: list = []
+    with _LAST_SCAN_LOCK:
+        for symbol in symbols:
+            f = _LAST_TAPES["5m"].get(symbol)
+            d = _LAST_TAPES["daily"].get(symbol)
+            if f is None or d is None or now - f[0] > max_age or now - d[0] > max_age:
+                missing.append(symbol)
+                continue
+            five[symbol], daily[symbol] = f[1], d[1]
+    return five, daily, missing
+
+
+def _remember_scan(wanted: Sequence[str], scanned: Sequence[Mapping[str, Any]], tape_as_of: Any) -> None:
+    with _LAST_SCAN_LOCK:
+        _LAST_SCAN.clear()
+        _LAST_SCAN.update({
+            "at": time.monotonic(),
+            "size": len(wanted),
+            "tapeAsOf": tape_as_of,
+            "records": {r["symbol"]: r for r in scanned if r.get("_row") is not None},
+        })
+
+
+def _borrow_scan(wanted: Sequence[str]) -> tuple[dict, Any]:
+    """({symbol: record copy}, tapeAsOf) from a recent larger build, or ({}, None)."""
+    import copy
+
+    if len(wanted) < PARALLEL_MIN_SYMBOLS:
+        return {}, None
+    with _LAST_SCAN_LOCK:
+        if not _LAST_SCAN or time.monotonic() - _LAST_SCAN["at"] > SCAN_SHARE_MAX_AGE_SECONDS:
+            return {}, None
+        if _LAST_SCAN["size"] <= len(wanted):
+            return {}, None
+        records = _LAST_SCAN["records"]
+        hits = [s for s in wanted if s in records]
+        if len(hits) < SCAN_SHARE_MIN_COVERAGE * len(wanted):
+            return {}, None
+        return {s: copy.deepcopy(records[s]) for s in hits}, _LAST_SCAN["tapeAsOf"]
+
+
+def shared_scan_stamp(symbols: Iterable[Any]) -> float | None:
+    """The monotonic stamp of the scan a build of ``symbols`` would borrow
+    right now (see _borrow_scan), else None. Cheap: no copies."""
+    wanted = _normalize_symbols(symbols)
+    if len(wanted) < PARALLEL_MIN_SYMBOLS:
+        return None
+    with _LAST_SCAN_LOCK:
+        if not _LAST_SCAN or time.monotonic() - _LAST_SCAN["at"] > SCAN_SHARE_MAX_AGE_SECONDS:
+            return None
+        if _LAST_SCAN["size"] <= len(wanted):
+            return None
+        records = _LAST_SCAN["records"]
+        if sum(1 for s in wanted if s in records) < SCAN_SHARE_MIN_COVERAGE * len(wanted):
+            return None
+        return _LAST_SCAN["at"]
 
 
 def build_board(
@@ -579,6 +754,7 @@ def build_board(
     fetch_kwargs: Mapping[str, Any] | None = None,
     full_rows_for: Iterable[Any] | None = None,
     reuse_rows: Mapping[str, Any] | None = None,
+    reuse_bear_rows_for: Iterable[Any] | None = None,
 ) -> dict:
     """Build the whole board, synchronously, and return the payload document.
 
@@ -612,10 +788,38 @@ def build_board(
             "errors": errors,
         }
 
-    five = _fetch(source, "fetch_5m", wanted, "5m", errors, now, fetch_kwargs)
+    # These source tapes are independent. Waiting for the entire 5m universe
+    # before starting 30m/daily left every published scan minutes behind.
+    # Each task owns its error map; merge only on this thread. The feed's
+    # shared Schwab semaphore preserves the existing broker concurrency cap.
+    borrowed, borrowed_as_of = _borrow_scan(wanted) if feed_module is None else ({}, None)
+    todo = [symbol for symbol in wanted if symbol not in borrowed]
+    specs = (("fetch_5m", "5m"), ("fetch_30m", "30m"), ("fetch_daily", "daily"))
+    _timing_started = time.perf_counter()
+    def fetch_one(spec):
+        local_errors = {}
+        if not todo:
+            return {}, local_errors
+        result = _fetch(source, spec[0], todo, spec[1], local_errors, now, fetch_kwargs)
+        return result, local_errors
+
+    if feed_module is None:
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="momx-tapes") as pool:
+            fetched = list(pool.map(fetch_one, specs))
+    else:
+        # Injected adapters need not be thread-safe.
+        fetched = [fetch_one(spec) for spec in specs]
+    for _, failures in fetched:
+        for symbol, message in failures.items():
+            _record_error(errors, symbol, message)
+    five, thirty, daily = (item[0] for item in fetched)
+    if feed_module is None:
+        _remember_tapes(five, daily)
+    _timing_tapes = time.perf_counter() - _timing_started
     tape_as_of = _tape_as_of(five)
-    thirty = _fetch(source, "fetch_30m", wanted, "30m", errors, now, fetch_kwargs)
-    daily = _fetch(source, "fetch_daily", wanted, "daily", errors, now, fetch_kwargs)
+    if borrowed:
+        # The older of the two halves: never claim fresher data than we used.
+        tape_as_of = min([t for t in (tape_as_of, borrowed_as_of) if t] or [None])
     earnings_map = _earnings_map(wanted, now)
 
     rows: list[dict] = []
@@ -648,6 +852,10 @@ def build_board(
         set() if needs_row is None
         else {symbol for symbol in wanted if symbol not in needs_row}
     )
+    # Symbols that already matched ONLY the bear scan last build and may keep
+    # their columns this build even though they still match (see
+    # service.BEAR_ONLY_FULL_ROWS_EVERY). A bull match is never in here.
+    reuse_bear = {str(item).strip().upper() for item in (reuse_bear_rows_for or [])} & skipped
     work = [
         (
             symbol,
@@ -656,11 +864,16 @@ def build_board(
             daily.get(symbol),
             two_hour_anchor,
             industry_map.get(symbol) or None,
-            symbol not in skipped,
+            (REUSE_BEAR_MATCH if symbol in reuse_bear else False) if symbol in skipped else True,
         )
-        for symbol in wanted
+        for symbol in todo
     ]
-    pool = _pool() if len(wanted) >= PARALLEL_MIN_SYMBOLS else None
+    if len(todo) >= PARALLEL_MIN_SYMBOLS:
+        pool = _pool()
+    else:
+        # Injected test feeds stay sequential, as before.
+        pool = _small_pool() if (todo and feed_module is None) else None
+    _timing_scan_start = time.perf_counter()
 
     def _absorb(result):
         symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons = result
@@ -681,16 +894,22 @@ def build_board(
         )
 
     done = False
+    _lane_spans: list = []
+    _lane_t0 = _lane_t1 = 0.0
     if pool is not None:
         try:
             batches: list[list] = [[] for _ in pool]
             for item in work:
                 batches[_lane_of(item[0], len(pool))].append(item)
+            _lane_t0 = time.time()
             futures = [lane.submit(_scan_batch, batch) for lane, batch in zip(pool, batches) if batch]
             by_symbol = {}
             for future in futures:
-                for result in future.result():
+                started, ended, results = future.result()
+                _lane_spans.append((started - _lane_t0, ended - started))
+                for result in results:
                     by_symbol[result[0]] = result
+            _lane_t1 = time.time()
             # Absorbed in the build's own symbol order, exactly as pool.map did.
             for item in work:
                 result = by_symbol.get(item[0])
@@ -711,6 +930,20 @@ def build_board(
                 _absorb(_scan_one(item))
             except Exception as exc:  # noqa: BLE001 - per-symbol isolation
                 _record_error(errors, item[0], f"{type(exc).__name__}: {exc}")
+    # One line per build (2026-10-09: Watchlist builds took 450-520 s and the
+    # stage could only be inferred from py-spy samples).
+    _timing_scan_end = time.perf_counter()
+    print(
+        f"[board-timing] symbols={len(wanted)} shared={len(borrowed)} tapes={_timing_tapes:.1f}s "
+        f"pre-scan={_timing_scan_start - _timing_started - _timing_tapes:.1f}s "
+        f"scan={_timing_scan_end - _timing_scan_start:.1f}s pool={'yes' if done and pool is not None else 'no'}"
+        + (
+            f" lane-start<={max(a for a, _ in _lane_spans):.1f}s lane-work<={max(b for _, b in _lane_spans):.1f}s"
+            f" collect={_lane_t1 - _lane_t0:.1f}s"
+            if _lane_spans else ""
+        ),
+        flush=True,
+    )
 
     if skipped:
         cached = {
@@ -722,7 +955,7 @@ def build_board(
             symbol = record["symbol"]
             if symbol not in skipped or record["_row"] is not None:
                 continue
-            if record["scanPass"] or record["bearPass"]:
+            if record["scanPass"] or (record["bearPass"] and symbol not in reuse_bear):
                 # A NEW match (bull OR bear). It was skipped because it did
                 # not match on the previous build, which is exactly the case
                 # that must never show last cycle's columns. Build it here -
@@ -758,6 +991,22 @@ def build_board(
                 "last": record["_last"],
             }
 
+    # Preserve the actual source candle START on the raw scan record before
+    # it is lent to another list. RVOL.barAt is a volume midpoint, not this
+    # timestamp, so it must never stand in for source freshness.
+    for record in scanned:
+        row = record.get("_row")
+        stamp = _newest_bar_epoch(five.get(record["symbol"]))
+        if row is not None and stamp is not None:
+            row["marketDataAt"] = stamp
+
+    if borrowed:
+        fresh = {record["symbol"]: record for record in scanned}
+        scanned = [fresh.get(symbol) or borrowed[symbol] for symbol in wanted
+                   if symbol in fresh or symbol in borrowed]
+    elif feed_module is None and len(wanted) >= PARALLEL_MIN_SYMBOLS:
+        _remember_scan(wanted, scanned, tape_as_of)
+
     # rank_board picks the survivors from the cheap fields - matches first,
     # never displaced by a non-matching mover. A symbol whose row build failed
     # in the worker is DROPPED from rows (its error is already recorded), the
@@ -767,7 +1016,7 @@ def build_board(
     def _finished(record: Mapping[str, Any]) -> dict:
         symbol = record["symbol"]
         row = record["_row"]
-        return _contract_row(
+        finished = _contract_row(
             row,
             record["scanPass"],
             record["_reasons"],
@@ -775,6 +1024,9 @@ def build_board(
             record.get("bearPass", False),
             record.get("_bearReasons"),
         )
+        if row.get("marketDataAt") is not None:
+            finished["marketDataAt"] = row["marketDataAt"]
+        return finished
 
     rows.extend(_finished(record) for record in chosen)
 
@@ -899,10 +1151,14 @@ def _contract_row(
         "industry": row.get("industry"),
         "last": row.get("last"),
         "pctChange": row.get("pctChange"),
+        # The pctChange base, so the panel can move %Chg on the live price.
+        "prevClose": row.get("prevClose"),
         "scanPass": bool(passed),
         "scanReasons": list(reasons or []),
         "rvol": row.get("rvol"),
         "sqz": row.get("sqz"),
+        # 30m / 1h squeezes (2026-09-28) - read by MX A+ only.
+        "sqzFast": row.get("sqzFast"),
         "skittles": row.get("skittles"),
         "highLow": row.get("highLow"),
         "color": row.get("color"),
@@ -947,7 +1203,11 @@ def _contract_row(
 #: Row keys that belong to the BULL board's books and must not leak onto the
 #: bear copy (its own books stamp their own): see service._build_once.
 BEAR_DROPPED_ROW_KEYS = ("bear", "matchedSince", "gradeFresh", "strategy", "chartSignals",
-                         "solo", "hotLeader", "sectorRotation", "marketTurn", "momoxAPlus")
+                         "solo", "hotLeader", "sectorRotation", "marketTurn", "momoxAPlus",
+                         # the bull bot's daily-line stamp (option_track, 2026-09-29) and its Jev pick (2026-10-02)
+                         "dayLines", "jevPick", "jevScore", "jevRow",
+                         # the bull reasons' first-fired stamps (2026-10-03); the bear board stamps its own
+                         "firedAt")
 #: Payload keys the bear board carries over verbatim. Anything else on the
 #: bull payload (strategyDaily2, strategyG, sector strip ...) is a bull book's
 #: and is left behind.
@@ -1367,7 +1627,14 @@ def _document_from_raw(raw: Any) -> dict:
     ordered: dict[str, list[str]] = {}
     for name in LIST_SEEDS:
         ordered[name] = lists.get(name) or _seed_for(name)
+    # The 21 / 50 EMA touch lists (momx/ema_touch.py): the Watchlist's tickers
+    # that pass the touch gate on the chosen timeframe, recomputed on every
+    # read and never saved.
+    for name, length in ema_touch.current_lists().items():
+        ordered[name] = ema_touch.touchers(ordered.get(WATCHLIST_LIST_NAME) or [], length)
     for name, symbols in lists.items():
+        if ema_touch.is_derived(name):
+            continue
         if name not in ordered:
             ordered[name] = symbols or _seed_for(name)
 
@@ -1421,6 +1688,8 @@ def _write_document(document: Mapping[str, Any], path: Any = None) -> None:
         current = list(symbols)
         if name in LIST_SEEDS and current == list(_seed_for(name)):
             continue
+        if ema_touch.is_derived(name):
+            continue  # computed on read, never a saved copy
         kept[name] = current
     payload = {
         "schemaVersion": UNIVERSE_SCHEMA_VERSION,
@@ -1488,6 +1757,23 @@ def resolve_list_name(
     raise UnknownListError(wanted, list(lists))
 
 
+def is_builtin(name: Any) -> bool:
+    """Seeded lists and the computed EMA-touch lists: no rename/delete/edit."""
+    return name in LIST_SEEDS or ema_touch.is_derived(name)
+
+
+def _refuse_derived(target: str) -> None:
+    if ema_touch.is_derived(target):
+        raise UnknownListError(
+            target,
+            list(LIST_SEEDS.keys()) + ema_touch.list_names(),
+            message=(
+                f"{target} fills itself from your Watchlist (tickers touching the "
+                f"monthly EMA), so tickers cannot be added, removed, renamed or deleted here."
+            ),
+        )
+
+
 def list_names(path: Any = None) -> list[str]:
     """Every known list name, in display order (seeded names first)."""
     return list((_read_document(path).get("lists") or {}).keys())
@@ -1553,6 +1839,7 @@ def save_universe(
         if not create:
             raise
         target = str(name).strip()
+    _refuse_derived(target)
     document["lists"][target] = cleaned
     _write_document(document, path)
     return cleaned
@@ -1583,6 +1870,7 @@ def add_symbols(
     incoming = parse_universe(symbols) if isinstance(symbols, str) else _clean_symbols(symbols)
     document = _read_document(path)
     target = resolve_list_name(name, document=document)
+    _refuse_derived(target)
     # `existing` must come from the RESOLVED view, not the raw document: a
     # seed-backed list has no key, and starting from [] there would silently
     # replace 357 names with the two he just typed.
@@ -1619,6 +1907,7 @@ def remove_symbols(
     outgoing = parse_universe(symbols) if isinstance(symbols, str) else _clean_symbols(symbols)
     document = _read_document(path)
     target = resolve_list_name(name, document=document)
+    _refuse_derived(target)
     existing = list(load_universe(target, path=path))
     seed = list(_seed_for(target)) if target in LIST_SEEDS else []
     was_tracking = bool(seed) and existing == seed
@@ -1663,6 +1952,7 @@ def reset_universe(name: Any = None, *, path: Any = None) -> list[str]:
     """
     document = _read_document(path)
     target = resolve_list_name(name, document=document)
+    _refuse_derived(target)
     if target not in LIST_SEEDS:
         raise UnknownListError(
             target,
@@ -1689,6 +1979,9 @@ def rename_list(name: Any, new_name: Any, *, path: Any = None) -> dict:
     document = _read_document(path)
     target = resolve_list_name(name, document=document)
     fresh = str(new_name or "").strip()
+    _refuse_derived(target)
+    if ema_touch.is_derived(fresh):
+        raise UnknownListError(target, list(LIST_SEEDS.keys()), message=f"{fresh} is a built-in list name.")
     if target in LIST_SEEDS:
         raise UnknownListError(
             target,
@@ -1731,6 +2024,7 @@ def delete_list(name: Any, *, path: Any = None) -> dict:
     """
     document = _read_document(path)
     target = resolve_list_name(name, document=document)
+    _refuse_derived(target)
     if target in LIST_SEEDS:
         raise UnknownListError(
             target,
@@ -1760,6 +2054,7 @@ __all__ = [
     "DEFAULT_UNIVERSE",
     "add_symbols",
     "delete_list",
+    "is_builtin",
     "remove_symbols",
     "reset_universe",
     "INTRADAY_FROM_30M",

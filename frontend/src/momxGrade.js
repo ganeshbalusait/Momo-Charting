@@ -135,6 +135,11 @@ export function setupParts(text) {
   return { letter: parts[0], momentum: parts.slice(1).join(" · ") };
 }
 
+// The Setup cell renders its grade/pattern button only when this is true.
+export function hasSetupGrade(row) {
+  return Boolean(setupParts(setupText(row)).letter.replace(/[^A-Z+]/g, ''));
+}
+
 export function setupTone(row) {
   const letter = letterOf(row);
   const tones = isBear(row) ? LETTER_TONE_BEAR : LETTER_TONE;

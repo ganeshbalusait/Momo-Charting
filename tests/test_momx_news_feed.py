@@ -18,7 +18,9 @@ from pathlib import Path
 from news_feed_store import MomxNewsStore, dedupe_symbols, scrape_symbols
 
 
-NOW = datetime(2026, 9, 26, 20, 0, tzinfo=timezone.utc)
+# Relative to the real clock: the store reads a 7-day window back from NOW, so a fixed
+# date made 'hours ago' items fall out of the window a week after it was written.
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def _iso(hours_ago: float) -> str:
@@ -220,3 +222,162 @@ class DashboardDelegationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_auto_refresh_batch_movers_first_then_rotation():
+    from news_feed_store import auto_refresh_batch
+    universe = [f"S{i}" for i in range(100)]
+    movers = ["INOD", "S5", "S5", "LITE"]
+    batch, cur = auto_refresh_batch(movers, universe, 0, size=10, mover_share=3)
+    assert batch[:3] == ["INOD", "S5", "LITE"]
+    assert batch[3:] == ["S0", "S1", "S2", "S3", "S4", "S6", "S7"]      # S5 not repeated
+    assert cur == 8
+    batch2, cur2 = auto_refresh_batch([], universe, 98, size=4)
+    assert batch2 == ["S98", "S99", "S0", "S1"] and cur2 == 2           # wraps round
+    assert auto_refresh_batch(["A"], [], 5, size=4) == (["A"], 0)
+
+
+class MomxNewsLatestIsSharedAcrossPolls(unittest.TestCase):
+    """2026-10-05 09:35 ET: every MomX screen's 15 s poll took the process-wide DB
+    lock; 52 of 112 threads queued there and /api/news-feed hung 60 s+."""
+
+    def setUp(self) -> None:
+        import api_server
+        self.state = api_server.STATE
+        saved = self.state.__dict__.get("_momx_news_cache")
+        self.addCleanup(lambda: self.state.__dict__.__setitem__("_momx_news_cache", saved or {}))
+        self.state._momx_news_cache = {}
+
+    def test_repeat_polls_inside_the_window_read_the_database_once(self) -> None:
+        from unittest.mock import patch
+        with patch.object(self.state, "_momx_news_latest_uncached", return_value={"items": []}) as read:
+            self.state.momx_news_latest(["AAPL", "NVDA"])
+            self.state.momx_news_latest(["NVDA", "AAPL"])
+        self.assertEqual(read.call_count, 1)
+
+    def test_a_different_board_gets_its_own_read(self) -> None:
+        from unittest.mock import patch
+        with patch.object(self.state, "_momx_news_latest_uncached", return_value={"items": []}) as read:
+            self.state.momx_news_latest(["AAPL"])
+            self.state.momx_news_latest(["TSLA"])
+        self.assertEqual(read.call_count, 2)
+
+    def test_an_expired_answer_is_read_again(self) -> None:
+        from unittest.mock import patch
+        with patch.object(self.state, "_momx_news_latest_uncached", return_value={"items": []}) as read:
+            self.state.momx_news_latest(["AAPL"])
+            self.state._momx_news_cache[("AAPL",)]["at"] -= self.state.MOMX_NEWS_LATEST_TTL_SECONDS + 1
+            self.state.momx_news_latest(["AAPL"])
+        self.assertEqual(read.call_count, 2)
+
+    def test_concurrent_polls_share_one_read(self) -> None:
+        import threading
+        import time as _t
+        from unittest.mock import patch
+        calls = []
+
+        def slow(symbols):
+            calls.append(1)
+            _t.sleep(0.2)
+            return {"items": []}
+
+        with patch.object(self.state, "_momx_news_latest_uncached", side_effect=slow):
+            threads = [threading.Thread(target=self.state.momx_news_latest, args=(["AAPL"],)) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(5)
+        self.assertEqual(len(calls), 1)
+
+
+class MomxNewsLatestSeesAFinishedScrape(MomxNewsLatestIsSharedAcrossPolls):
+    def test_a_finished_scrape_makes_the_next_poll_read_again(self) -> None:
+        import threading
+        import types as _types
+        from unittest.mock import patch
+        store = _types.SimpleNamespace(lock=threading.Lock(), state={"finishedAt": "t1"})
+        saved = self.state.__dict__.get("momx_news_store")
+        self.addCleanup(lambda: self.state.__dict__.__setitem__("momx_news_store", saved))
+        self.state.momx_news_store = store
+        with patch.object(self.state, "_momx_news_latest_uncached", return_value={"items": []}) as read:
+            self.state.momx_news_latest(["AAPL"])
+            self.state.momx_news_latest(["AAPL"])
+            store.state["finishedAt"] = "t2"
+            self.state.momx_news_latest(["AAPL"])
+        self.assertEqual(read.call_count, 2)
+
+
+class NewsListReadsAreShared(unittest.TestCase):
+    """2026-10-05 19:50 ET: GET /api/news-feed took 10-60 s - its catalyst reads held the
+    process-wide DB lock while waiting for the GIL; one 30 s answer is now shared."""
+
+    def setUp(self) -> None:
+        import api_server
+        self.state = api_server.STATE
+        saved = self.state.__dict__.get("_news_read_cache")
+        self.addCleanup(lambda: self.state.__dict__.__setitem__("_news_read_cache", saved or {}))
+        self.state._news_read_cache = {}
+
+    def test_repeat_reads_inside_the_window_hit_the_database_once(self) -> None:
+        import pandas as pd
+        from unittest.mock import patch
+        frame = pd.DataFrame([{"symbol": "AAPL", "headline": "x"}])
+        with patch.object(self.state.repository, "get_recent_catalysts", return_value=frame) as read:
+            first = self.state._recent_catalysts_or_empty(limit=200)
+            second = self.state._recent_catalysts_or_empty(limit=200)
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1)
+
+    def test_a_finished_scrape_drops_the_shared_answer(self) -> None:
+        import pandas as pd
+        from unittest.mock import patch
+        frame = pd.DataFrame([{"symbol": "AAPL", "headline": "x"}])
+        with patch.object(self.state.repository, "get_latest_catalysts_by_symbol", return_value=frame) as read, \
+                patch.object(self.state, "_refresh_catalyst_information_impl", return_value={"message": ""}):
+            self.state._latest_catalysts_or_empty()
+            self.state._refresh_catalyst_information(["AAPL"])
+            # The refresh button's own read is forced, so it sees the new rows.
+            self.state._latest_catalysts_or_empty(force=True)
+        self.assertEqual(read.call_count, 2)
+
+    def test_a_finished_scrape_marks_the_answer_old_but_keeps_serving_it(self) -> None:
+        import pandas as pd
+        from unittest.mock import patch
+        frame = pd.DataFrame([{"symbol": "AAPL", "headline": "x"}])
+        with patch.object(self.state.repository, "get_latest_catalysts_by_symbol", return_value=frame),                 patch.object(self.state, "_refresh_catalyst_information_impl", return_value={"message": ""}):
+            self.state._latest_catalysts_or_empty()
+            self.state._refresh_catalyst_information(["AAPL"])
+        self.assertEqual(self.state._news_read_cache["latest"]["at"], 0.0)
+        self.assertIsNotNone(self.state._news_read_cache["latest"]["frame"])
+
+    def test_a_failed_read_degrades_to_an_empty_frame(self) -> None:
+        from unittest.mock import patch
+        with patch.object(self.state.repository, "get_recent_catalysts", side_effect=RuntimeError("locked")):
+            self.assertTrue(self.state._recent_catalysts_or_empty(limit=50).empty)
+
+
+class NewsListServesTheHeldAnswerWhileRereading(NewsListReadsAreShared):
+    def test_an_expired_answer_is_served_at_once_and_reread_in_the_background(self) -> None:
+        import threading
+        import pandas as pd
+        from unittest.mock import patch
+        old = pd.DataFrame([{"symbol": "OLD"}])
+        new = pd.DataFrame([{"symbol": "NEW"}, {"symbol": "NEW2"}])
+        gate = threading.Event()
+
+        def slow_read(limit=200):
+            gate.wait(5)
+            return new
+
+        with patch.object(self.state.repository, "get_recent_catalysts", return_value=old):
+            self.state._recent_catalysts_or_empty(limit=200)
+        self.state._news_read_cache["recent:200"]["at"] -= self.state.NEWS_READ_CACHE_SECONDS + 1
+        with patch.object(self.state.repository, "get_recent_catalysts", side_effect=slow_read):
+            served = self.state._recent_catalysts_or_empty(limit=200)
+            self.assertEqual(list(served["symbol"]), ["OLD"])
+            gate.set()
+            slot = self.state._news_read_cache["recent:200"]
+            with slot["lock"]:
+                pass
+        self.assertEqual(len(self.state._recent_catalysts_or_empty(limit=200)), 2)

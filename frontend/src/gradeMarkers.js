@@ -22,6 +22,25 @@ function entrySeconds(entry) {
   return Number.isFinite(ms) ? ms / 1000 : NaN;
 }
 
+// The ET calendar day of an epoch second. toLocaleDateString with a timeZone
+// builds a new formatter on every call: 1.9s of a 9.3s chart-open freeze
+// (profiled 2026-10-02). The ET date only changes on an hour boundary
+// (midnight and DST shifts are both on the hour), so one shared formatter
+// answers once per hour and the result is reused.
+const ET_DAY_FORMAT = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York" });
+const ET_DAY_BY_HOUR = new Map();
+
+function easternDayOf(seconds) {
+  const hour = Math.floor(seconds / 3600);
+  let day = ET_DAY_BY_HOUR.get(hour);
+  if (day === undefined) {
+    if (ET_DAY_BY_HOUR.size > 50000) ET_DAY_BY_HOUR.clear();
+    day = ET_DAY_FORMAT.format(new Date(hour * 3600 * 1000));
+    ET_DAY_BY_HOUR.set(hour, day);
+  }
+  return day;
+}
+
 /** [{ time (epoch s of the snapshot), letter }] - the step-ups into A / A+. */
 export function gradeStepMarkers(entries) {
   const list = (Array.isArray(entries) ? entries : [])
@@ -33,7 +52,7 @@ export function gradeStepMarkers(entries) {
   let previousRank = 0;
   let previousDay = null;
   for (const entry of list) {
-    const day = new Date(entry.sec * 1000).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+    const day = easternDayOf(entry.sec);
     if (day !== previousDay) {
       previousRank = 0; // a new ET day starts from nothing
       previousDay = day;

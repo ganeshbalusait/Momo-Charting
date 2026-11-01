@@ -520,3 +520,22 @@ def test_build_record_keeps_every_existing_aggregate(tmp_path):
                 "patternUnscored"):
         assert key in record, key
     assert record["letters"]["A"]["count"] == 1
+
+
+def test_closed_cross_is_the_cross_the_previous_candle_showed() -> None:
+    """MOM FLIP (2026-10-03) reads the cross on the last CLOSED candle: it must be
+    exactly what ``cross`` said when that candle was the last one."""
+    rows, price = [], 100.0
+    for i in range(120):
+        price += 0.9 * math.sin(i / 4.0) + (0.4 if (i // 15) % 2 else -0.4)
+        rows.append({"time": 1_000_000 + 300 * i, "open": price, "high": price + 0.6,
+                     "low": price - 0.6, "close": price + 0.1, "volume": 1000})
+    seen = 0
+    for k in range(25, len(rows)):
+        before = columns.adx_cell(rows[:k - 1])
+        now = columns.adx_cell(rows[:k])
+        assert now["closedCross"] == before["cross"]
+        if now["closedCross"]:
+            seen += 1
+            assert now["closedCrossAt"] == rows[k - 2]["time"]
+    assert seen >= 2

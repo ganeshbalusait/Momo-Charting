@@ -105,15 +105,3 @@ artifacts/thinkscript/
 # Local scratch: pre-edit .bak copies, and a nested working copy of the project.
 frontend/.restyle-backup/
 Momo-Chart/
-
-# Per-user broker OAuth tokens and local tool dumps - never git-managed
-artifacts/user_tokens/
-artifacts/credential_health.json
-artifacts/.schwab_stream_chart_history.json-*.tmp
-artifacts/plot-deps/
-artifacts/api_server_*.log
-
-# A captured Chrome profile (cookies, logins, session storage) and macOS
-# resource-fork stubs were tracked by mistake on 2026-08-10 - keep them out.
-tmp-mobile/
-__MACOSX/

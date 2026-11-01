@@ -326,6 +326,30 @@ class AlpacaClient:
     def get_positions(self):
         return self._trading_client.get_all_positions()
 
+    def get_option_expirations(self, day: str):
+        """Read broker-confirmed OTM expirations for one date, including all pages."""
+        # NTA posting timestamps can straddle the trade-date boundary. Query a
+        # bounded surrounding interval, then match the broker's activity date.
+        target = date.fromisoformat(day)
+        params = {"activity_types": "OPEXP", "after": (target-timedelta(days=1)).isoformat()+"T00:00:00Z",
+                  "until": (target+timedelta(days=2)).isoformat()+"T00:00:00Z", "direction": "asc", "page_size": 100}
+        rows, seen = [], set()
+        for _ in range(20):
+            page = self._trading_client.get("/account/activities", params)
+            if not isinstance(page, list):
+                raise ValueError("Invalid expiration activity response")
+            for row in page:
+                if row.get("id") not in seen:
+                    rows.append(row)
+                    seen.add(row.get("id"))
+            if len(page) < 100:
+                return [r for r in rows if r.get("date") == day and r.get("activity_type") == "OPEXP"]
+            token = page[-1].get("id")
+            if not token or token == params.get("page_token"):
+                raise ValueError("Incomplete expiration pagination")
+            params["page_token"] = token
+        raise ValueError("Expiration activity page limit reached")
+
     def get_open_orders(self, symbols: list[str] | None = None):
         request = GetOrdersRequest(
             status=QueryOrderStatus.OPEN,

@@ -164,3 +164,11 @@ def test_the_badge_travels_with_the_cached_fill(api_server):
     # It must degrade to "no complaint" rather than inventing an outage.
     assert api_server.premarket_backfill_state_of({"frame": object(), "at": 1.0}) == ("", "")
     assert api_server.premarket_backfill_state_of(None) == ("", "")
+
+
+def test_the_premarket_fill_keeps_refreshing_until_the_delayed_feed_reaches_0700():
+    """2026-10-06: the fill froze at 07:10 while the free SIP feed was ~15-17 min
+    behind, so 06:52-06:59 stayed blank on SPY/NVDA/TSLA all day."""
+    import api_server
+
+    assert api_server.PREMARKET_BACKFILL_SETTLED_MINUTE >= 7 * 60 + 20

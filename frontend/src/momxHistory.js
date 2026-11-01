@@ -271,9 +271,6 @@ export function changedColumnKeys(changed) {
       keys.add(name);
     } else if (name === "badge.on" || name === "badge" || name === "news.headline" || name === "news" || name === "scanReasons") {
       keys.add("symbol");
-    } else if (name.startsWith("setup.")) {
-      // A chart arrow / day line / GO / MOMOX A+ appeared (momx/history.py).
-      keys.add("setup");
     }
     // Unknown names are ignored rather than guessed at: a future trigger
     // field simply doesn't highlight until this map learns its column.
@@ -283,10 +280,10 @@ export function changedColumnKeys(changed) {
 
 // One table row per snapshot - the duplicate entries the trader explicitly
 // asked for - normalised for rendering. Sorted ascending by time so a day
-// reads as the timeline he experienced. Change rows blank the sparkline and
-// quote-trend cells (showChart false): the backend strips those fields from
-// change snapshots, and the blank cells are what make arrivals visually
-// distinct in the table.
+// reads as the timeline he experienced. The 1D chart and Quote cells show
+// whenever the snapshot carries them: since 2026-10-02 the backend keeps them
+// on every snapshot ("dont miss any thing"); older change snapshots were
+// stored without them and stay blank. Arrivals are marked by the NEW tag.
 export function flattenHistoryRows(rows) {
   if (!Array.isArray(rows)) return [];
   const entries = [];
@@ -318,7 +315,7 @@ export function flattenHistoryRows(rows) {
       truncated: Boolean(raw.truncated),
       capped: false, // set below, on the LAST snapshot of a capped ticker
       peakRvol: Number.isFinite(Number(raw.peakRvol)) ? Number(raw.peakRvol) : null,
-      showChart: isArrival,
+      showChart: isArrival || Array.isArray(row.sparkline) || Array.isArray(row.quoteTrend),
       row,
     });
   });
@@ -403,6 +400,8 @@ export function sortHistoryRows(entries, sort, resolveValue) {
   const list = Array.isArray(entries)
     ? entries.filter((entry) => entry && typeof entry === "object")
     : [];
+  // NO SORT (third header click): the timeline order as it arrived.
+  if (sort && sort.direction === "none") return list;
   const key =
     sort && typeof sort.key === "string" && sort.key ? sort.key : MOMX_HISTORY_DEFAULT_SORT.key;
   const direction = sort && String(sort.direction).toLowerCase() === "desc" ? "desc" : "asc";

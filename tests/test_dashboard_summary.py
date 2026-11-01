@@ -588,6 +588,7 @@ class DashboardSummaryTests(unittest.TestCase):
         state = DashboardState.__new__(DashboardState)
         state.oi_finder_lock = threading.Lock()
         state.oi_finder_background_refreshes = set()
+        state.oi_finder_refresh_cooldown = {}     # 62678a7: next-refresh deadlines
         state.submitted = []
 
         def pool(name):

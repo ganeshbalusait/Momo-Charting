@@ -106,33 +106,18 @@ def is_bear(direction: Any) -> bool:
 #: Price_Change(VOLUME) on 4h EXT, at least +0.5% versus 2 bars ago.
 VOLUME_CHANGE_MIN_PCT = 0.5
 
-#: His scan row reads "2 bars ago", but the comparison that reproduces his
-#: TOS is against THREE bars back. Settled 2026-09-03 by ground truth, not
-#: by argument: he ran the scan twice (18:15 -> 10 matches, 18:21 -> 9, with
-#: CHTR dropping out) and only bars_ago=3 reproduces both - 19 positives and
-#: one true negative, zero errors. `volume[2]` rejected WELL and REGN in both
-#: readings while TOS matched them.
-#:
-#: WHY: our 4h tape carries buckets his does not. We build a bucket wherever
-#: bars exist, so a thin overnight window becomes a full bar. "2 bars ago"
-#: then lands on a 102-share bucket for a symbol that traded overnight (the
-#: gate passes by a million percent) and on a session-sized bucket for one
-#: that did not (it fails). One extra bucket in our series is exactly one
-#: index of offset.
-#:
-#: The CLOSE row is deliberately NOT shifted - see CLOSE_CHANGE_BARS_AGO.
-VOLUME_CHANGE_BARS_AGO = 3
-
+#: Verified directly in TOS's Stock Hacker editor on 2026-09-29:
+#: Price_Change uses price[length], with this row's length set to 2.
+#: Do not compensate for session/bucket differences by shifting the index.
+VOLUME_CHANGE_BARS_AGO = 2
 
 
 #: Price_Change(CLOSE) on 1h EXT, at least +0.3% versus 2 bars ago.
+#: Briefly 0.25 on 2026-09-29 from a pasted note; his live Stock Hacker
+#: screenshot the same evening reads 0.3, and the live scan is the spec.
 CLOSE_CHANGE_MIN_PCT = 0.3
 
-#: Stays at 2 even though the VOLUME row moved to 3. Measured on the same
-#: 129-symbol sample against his 18:21 reading: shifting this one too gives
-#: 7/9 of his matches and 14 rows, against 8/9 and 12 at 2. The asymmetry is
-#: recorded rather than explained - the offset is a property of the 4h
-#: bucket series, and the 1h series does not share it.
+#: The live 1h filter also compares against price[2].
 CLOSE_CHANGE_BARS_AGO = 2
 
 #: RVOL scanner inputs: ``relVolLength = 50``, ``numDev = 3``.
@@ -264,7 +249,7 @@ def price_change_gate(
     ``direction="bear"`` flips the comparison to ``<= -min_pct`` (a DROP of at
     least ``min_pct``); the zero/negative-baseline rules are unchanged.
 
-    ``100 * (x[0] - x[-bars_ago]) / x[-bars_ago] >= min_pct``, where ``x[0]``
+    ``100 * (x[0] / x[-bars_ago] - 1) >= min_pct``, where ``x[0]``
     is the LAST bar of the tape and ``source`` is ``"volume"`` or ``"close"``
     (``open``/``high``/``low`` are accepted too). The comparison is "at least",
     so a reading of exactly ``min_pct`` PASSES. No epsilon is applied: TOS
@@ -307,7 +292,7 @@ def price_change_gate(
         threshold = float(min_pct)
     except (TypeError, ValueError):
         return False
-    change = 100.0 * (current - baseline) / baseline
+    change = 100.0 * (current / baseline - 1.0)
     if is_bear(direction):
         return change <= -threshold
     return change >= threshold
@@ -617,62 +602,13 @@ def scan_symbol(
     blocked: list[str] = []
     if not price_floor(last):
         blocked.append("blocked:price")
-    import time as _time
-
-    _now = _time.time()
-    # THE FULL TAPE, developing bucket included - the trader's call on
-    # 2026-09-01: "TOS will look live candle not full candle closed", and then
-    # explicitly "Volume 4h also live candle". He owns the thinkScript this
-    # mirrors, so his reading of TOS is the specification.
-    #
-    # UNRESOLVED, recorded so the next reader does not think it was missed:
-    # this contradicts the 2026-08-31 note below, which says dropping the
-    # developing bucket is what made us match TOS when it showed AAPL passing
-    # and we blocked all ten Mag7 names. Both cannot be true. The most likely
-    # explanation is that the 09:23 blackout was really a bucket-ALIGNMENT
-    # problem - which bucket "2 bars ago" resolves to - and that dropping the
-    # developing bar shifted the window by one and fixed it by accident.
-    #
-    # Measured before changing it, 2026-09-01 09:59 ET, all ten Mag7 names,
-    # both ways: identical verdicts, and the full scan returned the same two
-    # matches (AAPL, USO) either way. Overnight 4h buckets are nearly empty so
-    # any daytime bucket clears the 0.5% threshold by thousands of percent -
-    # the gate only ever bites in a narrow window just after a session
-    # boundary, which is exactly the 09:23 case. So this change is free today
-    # and the risk is confined to that window.
-    #
-    # If the open-bell blackout ever returns, look HERE first, and look at
-    # VOLUME_CHANGE_BARS_AGO alignment before re-adding completed_bars.
-    # No time-of-day exception. b0b9f90 skipped this gate in the 17:00 and
-    # 21:00 buckets because it appeared to blank the board there; his 18:15
-    # and 18:21 TOS readings then returned 9-10 matches WITH the gate
-    # applied, proving the blackout was our bucket alignment and not the
-    # gate. VOLUME_CHANGE_BARS_AGO now carries the fix, so the workaround is
-    # gone rather than stacked on top of it.
+    # Both Stock Hacker rows evaluate the current (possibly forming) bar.
+    # The verified study is 100 * (price / price[length] - 1).
     if not price_change_gate(
         tapes.get("4h"),
         "volume", VOLUME_CHANGE_MIN_PCT, VOLUME_CHANGE_BARS_AGO,
     ):
         blocked.append("blocked:pricechange:volume:4h")
-    # THE FULL TAPE, developing bar included - deliberately NOT completed_bars,
-    # unlike the volume gate above. The asymmetry is the whole point:
-    #
-    #   volume ACCUMULATES, so a 23-minute-old bucket holding 67k can never
-    #   beat a full bucket's 162k. That comparison is unwinnable and the
-    #   developing bar must go - that was the 2026-08-31 09:23 blackout.
-    #
-    #   close does NOT accumulate. A developing bar's close IS the live price.
-    #   Dropping it removes no unfairness; it deletes the only bar that knows
-    #   the stock moved.
-    #
-    # Applying completed_bars to BOTH gates was the defect. Measured on the
-    # live tape 2026-09-01 09:54 ET, with AAPL +1.49% on 3.1x hourly volume
-    # and seven bullish confirmations while the rest of Mag7 was red:
-    #     with the developing 09:00 bar  07:00 316.69 -> 09:00 320.49  +1.200% PASS
-    #     completed bars only            06:00 315.87 -> 08:00 316.56  +0.220% BLOCK
-    # The entire opening drive lived in the bar the gate refused to read, so
-    # from the bell until 10:00 the gate judged the day on PREMARKET and
-    # blocked every symbol on the board.
     if not price_change_gate(
         tapes.get("1h"),
         "close", CLOSE_CHANGE_MIN_PCT, CLOSE_CHANGE_BARS_AGO, direction,

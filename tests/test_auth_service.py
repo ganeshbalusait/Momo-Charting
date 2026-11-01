@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 
 import pytest
@@ -324,9 +325,10 @@ def test_out_of_band_row_edits_are_bounded_by_the_cache_ttl(auth, monkeypatch):
     Revocations made THROUGH this class (logout, password change, device
     decisions) invalidate immediately, because _connect drops the cache
     whenever its block wrote. An edit made straight to SQLite by another
-    process bypasses that and is therefore invisible for up to
-    IDENTITY_CACHE_SECONDS. That is the accepted cost of taking the database
-    out of the per-request gate; expiring the entry restores the DB read.
+    process bypasses that: it is invisible for up to IDENTITY_CACHE_SECONDS,
+    then the next request still gets the held identity ONCE while a background
+    read refreshes it (2026-10-06: the gate's blocking miss read stalled gated
+    requests 2-9 s), and every request after that refresh sees the edit.
     """
     auth.bootstrap_owner("owner@example.com", "SecurePass123", "Owner")
     _, token = auth.authenticate("owner@example.com", "SecurePass123")
@@ -339,4 +341,48 @@ def test_out_of_band_row_edits_are_bounded_by_the_cache_ttl(auth, monkeypatch):
 
     monkeypatch.setattr("auth_service.IDENTITY_CACHE_SECONDS", 0.0)
 
+    assert auth.user_for_session(token) is not None  # held, refresh started
+    auth._last_identity_refresh_thread.join(timeout=10)
+    assert auth.user_for_session(token) is None
+
+
+def test_an_expired_memo_never_makes_the_request_wait_on_sqlite(auth, monkeypatch):
+    auth.bootstrap_owner("owner@example.com", "SecurePass123", "Owner")
+    _, token = auth.authenticate("owner@example.com", "SecurePass123")
+    assert auth.user_for_session(token) is not None
+    monkeypatch.setattr("auth_service.IDENTITY_CACHE_SECONDS", 0.0)
+
+    calls = []
+    real_connect = auth._connect
+
+    def counting_connect():
+        calls.append(threading.current_thread().name)
+        return real_connect()
+
+    monkeypatch.setattr(auth, "_connect", counting_connect)
+    assert auth.user_for_session(token) is not None
+    auth._last_identity_refresh_thread.join(timeout=10)
+    assert calls and all(name == "auth-identity-refresh" for name in calls)
+
+
+def test_a_logout_during_a_refresh_is_never_undone(auth, monkeypatch):
+    """A background read that started before a logout must not re-store the user."""
+    auth.bootstrap_owner("owner@example.com", "SecurePass123", "Owner")
+    _, token = auth.authenticate("owner@example.com", "SecurePass123")
+    assert auth.user_for_session(token) is not None
+    monkeypatch.setattr("auth_service.IDENTITY_CACHE_SECONDS", 0.0)
+
+    release = threading.Event()
+    real_from_db = auth._user_for_session_from_db
+
+    def slow_from_db(*args):
+        release.wait(10)
+        return real_from_db(*args)
+
+    monkeypatch.setattr(auth, "_user_for_session_from_db", slow_from_db)
+    assert auth.user_for_session(token) is not None   # refresh now parked
+    monkeypatch.setattr(auth, "_user_for_session_from_db", real_from_db)
+    auth.logout(token)
+    release.set()
+    auth._last_identity_refresh_thread.join(timeout=10)
     assert auth.user_for_session(token) is None

@@ -24,6 +24,10 @@ function axisLabelPriority(label) {
   return 400 + Math.max(0, Number(label?.priority) || 0);
 }
 
+// Names a blocked MTF MA level may add to the chip that displaced it.
+const MAX_MERGED_NAMES = 2;
+const MERGED_OVERFLOW_KEY = "merged-overflow";
+
 export function layoutChartAxisLabels(labels, {
   paneHeight,
   padding = 9,
@@ -96,20 +100,41 @@ export function layoutChartAxisLabels(labels, {
       if (!label.mergeWhenBlocked) return;
       const blocker = positioned[blockerIndex];
       const blockerParts = axisLabelParts(blocker);
+      // The LIVE chip names the traded price and nothing may join it: on a
+      // $3.97 ticker (MNKD 2026-09-30) nine MA levels sat within a few cents,
+      // merged into LIVE, and the chip outgrew the phone pane, pushing the
+      // price itself off-screen.
+      if (blockerParts.some(({ key }) => String(key || "") === "live-price")) return;
       const extraParts = axisLabelParts(label)
-        .filter((part) => !blockerParts.some(({ key }) => key === part.key));
+        .filter((part) => !blockerParts.some(({ key, title }) => (
+          key === part.key || (part.title && title === part.title)
+        )));
       if (!extraParts.length) return;
-      const parts = [...blockerParts, ...extraParts];
+      const mergedCount = Number(blocker._axisMergedCount) || 0;
+      const hiddenCount = Number(blocker._axisHiddenCount) || 0;
+      // At most MAX_MERGED_NAMES names ride on one chip; the rest are counted
+      // ("+2") so a crowded cheap ticker cannot build a pane-wide chip.
+      const room = Math.max(0, MAX_MERGED_NAMES - mergedCount);
+      const shown = extraParts.slice(0, room);
+      const nextHidden = hiddenCount + extraParts.length - shown.length;
+      const baseParts = blockerParts.filter(({ key }) => key !== MERGED_OVERFLOW_KEY);
+      const parts = [
+        ...baseParts,
+        ...shown,
+        ...(nextHidden > 0 ? [{ key: MERGED_OVERFLOW_KEY, title: `+${nextHidden}`, color: "#8fa7c5" }] : []),
+      ];
       positioned[blockerIndex] = {
         ...blocker,
         parts,
         title: parts.map(({ title }) => title).filter(Boolean).join(" · "),
+        _axisMergedCount: mergedCount + shown.length,
+        _axisHiddenCount: nextHidden,
       };
     });
 
   return positioned
     .sort((left, right) => left.top - right.top || left._axisOrder - right._axisOrder)
-    .map(({ _axisOrder, _axisPriority, ...label }) => label);
+    .map(({ _axisOrder, _axisPriority, _axisMergedCount, _axisHiddenCount, ...label }) => label);
 }
 
 export function mergePivotAndOiAxisLabels(labels, tolerance = 0.000001) {

@@ -283,8 +283,10 @@ class RotationBook:
                     strong.append(r)
             vol_up = sum(1 for r in priced if unusual_volume(r))
             # The stocks to look at: up and above VWAP, strongest first.
+            # ETFs are never a sector LEADER to trade (they still count in breadth).
             leaders = [{"symbol": r.get("symbol"), "pct": round(_num(r.get("pctChange")), 2), "vol": unusual_volume(r)}
-                       for r in sorted(strong, key=lambda r: -_num(r.get("pctChange")))[:LEADERS]]
+                       for r in sorted((r for r in strong if not r.get("etf")),
+                                       key=lambda r: -_num(r.get("pctChange")))[:LEADERS]]
             rs3, rs3_prev, ret3 = (tuple(rs.get(name) or ()) + (None, None, None))[:3]
             moves_today = [_num(r.get("pctChange")) for r in priced]
             med_today = statistics.median(moves_today) if moves_today else None

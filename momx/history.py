@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import re
 import time
 from datetime import datetime, timedelta
@@ -101,9 +102,12 @@ CELL_TRIGGER_FIELDS = ("color",)
 #: "kept" and "compared" rather than assuming an omission.
 NON_TRIGGER_STORED_FIELDS = ("highLow",)
 
-#: Kept on the arrival snapshot only; ~60% of a row's bytes, changing every
-#: cycle, historically meaningful only at arrival.
-STRIPPED_FIELDS = ("sparkline", "quoteTrend")
+#: Fields once kept on the arrival snapshot only. EMPTY since 2026-10-02:
+#: ``sparkline`` and ``quoteTrend`` are the board's 1D chart and Quote
+#: columns, and stripping them left those two columns blank on every History
+#: row after a ticker's first ("all the column should be in the history tab,
+#: dont miss any thing"). Measured cost: ~1.3 KB on a ~4.5 KB stored row.
+STRIPPED_FIELDS: tuple[str, ...] = ()
 
 #: Scanner-grade detail kept off EVERY snapshot row, arrival included. The
 #: grade recorder's per-row bulk (raw squeeze states, the freshness
@@ -121,16 +125,12 @@ STRIPPED_FIELDS = ("sparkline", "quoteTrend")
 GRADE_STRIPPED_FIELDS = ("sqzRaw", "adx")
 GRADE_STRIPPED_SUBFIELDS = (("m5", "lastCompleted"), ("m5", "pillars"), ("gradeFresh", "timeline"))
 
-#: ...but the Setup cell is worked out in the browser FROM those fields
-#: (2026-10-02, "live setup column has so much information but history it's
-#: not there"): GO / GO+ / OPT read adx["30m"] +DI/-DI, the ADX tag reads
-#: adx["5m"], SQZ-fire and Skittles-break tags read the gradeFresh timeline,
-#: ZS reads m5.pillars.zs. A History row keeps ONLY those pieces:
-#: four numbers per ADX timeframe (not the ~336 B cells), the timeline items
-#: the Setup tags read as ``gradeFresh.setupTimeline`` (a different key, so
-#: the why panel never shows a filtered list as THE timeline), and pillars.zs.
-SETUP_ADX_KEYS = ("plus", "minus", "adx", "prevAdx", "rising")
-_SETUP_TIMELINE_WHAT = re.compile(r"^(SQZ (2h|4h|D|Wk) released|SKIT \S+ bg \S+)$")
+#: ...except the few timeline items the Setup column's tags are built from
+#: (2026-10-10, "scanner history I don't see setup SKT same as scanner"): the
+#: Skittles cross ("SKIT 2h bg green") and squeeze fire ("SQZ 2h released")
+#: lines. Without them History could never show SKIT / SQZ tags. A handful of
+#: short items per row, not the whole timeline.
+KEPT_TIMELINE_ITEM = re.compile(r"^(SKIT \S+ bg \S+|SQZ \S+ released)$")
 
 #: RVOL timeframes scanned for peakRvol. Extra timeframes on a row are
 #: included too; missing ones are simply skipped.
@@ -157,9 +157,29 @@ def _day_file(board_directory: Path, day: str) -> Path:
     return board_directory / f"{day}.json"
 
 
+#: The document this process last WROTE per day file, with the file's
+#: (mtime_ns, size) right after the write (2026-10-16: re-parsing the day file
+#: on every build was ~11% of the worker main process's GIL). Single use: the
+#: recorder mutates what it loads, so a load consumes the entry and only the
+#: next successful write puts one back - a cycle that did not write reads the
+#: file again, exactly as before.
+_WRITTEN: dict = {}
+_WRITTEN_LOCK = threading.Lock()
+
+
 def _load_doc(path: Path) -> dict:
     """A day document, or ``{}``. A torn / truncated / garbage file is
     treated as absent, never raised."""
+    key = os.fspath(path)
+    with _WRITTEN_LOCK:
+        held = _WRITTEN.pop(key, None)
+    if held is not None:
+        try:
+            st = path.stat()
+            if (st.st_mtime_ns, st.st_size) == held[0]:
+                return held[1]
+        except OSError:
+            pass
     try:
         stored = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -211,31 +231,6 @@ def _fingerprint(row: dict) -> dict[str, list]:
     news = row.get("news")
     if isinstance(news, dict):
         fingerprint["news.headline"] = [news.get("headline"), None, None]
-    # Setup-cell events that change no cell above (2026-10-02): a chart
-    # arrow, a daily-line fire, a GO candle or MOMOX A+ appearing must get its
-    # own snapshot, or History never shows the setup the live board showed.
-    # Added only when present, so rows stored before this change (which
-    # carry the same fields) compare equal and get no extra snapshot.
-    signals = row.get("chartSignals")
-    if isinstance(signals, list):
-        arrows = sorted(
-            "|".join(str(s.get(key) or "") for key in ("label", "family", "at"))
-            for s in signals
-            if isinstance(s, dict) and s.get("label") and not s.get("goneAt")
-        )
-        if arrows:
-            fingerprint["setup.chartSignals"] = [arrows, None, None]
-    day_lines = row.get("dayLines")
-    fired = sorted(str(k) for k, v in day_lines.items() if v) if isinstance(day_lines, dict) else []
-    if fired:
-        fingerprint["setup.dayLines"] = [fired, None, None]
-    m5 = row.get("m5")
-    gap_go = m5.get("gapGo") if isinstance(m5, dict) else None
-    if isinstance(gap_go, dict) and gap_go.get("goAt"):
-        fingerprint["setup.goAt"] = [gap_go.get("goAt"), None, None]
-    aplus = row.get("momoxAPlus")
-    if isinstance(aplus, dict) and aplus.get("at"):
-        fingerprint["setup.momoxAPlus"] = [aplus.get("at"), None, None]
     return fingerprint
 
 
@@ -278,39 +273,25 @@ def _archive_row(row: dict, *, strip_bulk: bool) -> dict:
     STRIPPED_FIELDS (change snapshots -- the arrival keeps its sparkline)."""
     dropped = GRADE_STRIPPED_FIELDS + (STRIPPED_FIELDS if strip_bulk else ())
     out = {key: value for key, value in row.items() if key not in dropped}
+    # ...but the DI+ / DI- that decide a STRONG MOM tag (5m and 30m) are kept
+    # (2026-10-10: the Setup column hides plain MOM↑ and keeps the strong one;
+    # without these, History could not tell them apart). ~60 B per row.
+    adx = row.get("adx")
+    if isinstance(adx, dict):
+        slim = {tf: {k: adx[tf].get(k) for k in ("plus", "minus")}
+                for tf in ("5m", "30m") if isinstance(adx.get(tf), dict)}
+        if slim:
+            out["adx"] = slim
     for field, sub in GRADE_STRIPPED_SUBFIELDS:
         inner = out.get(field)
         if isinstance(inner, dict) and sub in inner:
             out[field] = {key: value for key, value in inner.items() if key != sub}
-    _keep_setup_inputs(row, out)
+            if (field, sub) == ("gradeFresh", "timeline") and isinstance(inner.get(sub), list):
+                kept = [e for e in inner[sub]
+                        if isinstance(e, dict) and KEPT_TIMELINE_ITEM.match(str(e.get("what") or ""))]
+                if kept:
+                    out[field][sub] = kept
     return out
-
-
-def _keep_setup_inputs(row: dict, out: dict) -> None:
-    """Put back the slim pieces of the stripped fields the Setup tags read."""
-    adx = row.get("adx")
-    if isinstance(adx, dict):
-        slim = {
-            tf: {key: cell.get(key) for key in SETUP_ADX_KEYS if key in cell}
-            for tf, cell in adx.items()
-            if isinstance(cell, dict)
-        }
-        if slim:
-            out["adx"] = slim
-    fresh = row.get("gradeFresh")
-    timeline = fresh.get("timeline") if isinstance(fresh, dict) else None
-    if isinstance(timeline, list) and isinstance(out.get("gradeFresh"), dict):
-        events = [
-            {"at": item.get("at"), "what": item.get("what")}
-            for item in timeline
-            if isinstance(item, dict) and _SETUP_TIMELINE_WHAT.match(str(item.get("what") or ""))
-        ]
-        if events:
-            out["gradeFresh"] = {**out["gradeFresh"], "setupTimeline": events}
-    m5 = row.get("m5")
-    pillars = m5.get("pillars") if isinstance(m5, dict) else None
-    if isinstance(pillars, dict) and pillars.get("zs") is not None and isinstance(out.get("m5"), dict):
-        out["m5"] = {**out["m5"], "pillars": {"zs": pillars.get("zs")}}
 
 
 def _change_row(row: dict) -> dict:
@@ -502,6 +483,11 @@ def _write_document(
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         temporary.write_text(json.dumps(document), encoding="utf-8")
         os.replace(temporary, path)
+        st = path.stat()
+        with _WRITTEN_LOCK:
+            _WRITTEN[os.fspath(path)] = ((st.st_mtime_ns, st.st_size), document)
+            if len(_WRITTEN) > 64:
+                _WRITTEN.pop(next(iter(_WRITTEN)))
     except OSError:
         return False
     _LAST_WRITE[(os.fspath(directory), str(name))] = now_et
@@ -558,6 +544,74 @@ def list_days(name: str, directory: Path | str = DEFAULT_HISTORY_DIR) -> list[st
     return sorted(stems, reverse=True)
 
 
+#: Keys an archive entry is written with (``_record_board``). A ``"SYM": {"``
+#: match is only an entry when the next key is one of these -- the same
+#: byte pattern also occurs inside rows (ticker ``D`` vs the ``rvol.D`` cell).
+_ENTRY_FIRST_KEYS = (b"firstSeenAt", b"lastSeenAt", b"hits", b"truncated", b"snapshots")
+
+#: (path, mtime_ns, size, symbol) -> entry or None. Answers only, never the
+#: parsed day (30 parsed days is ~1 GB resident). Past days never change, so
+#: a repeat search is instant; today's file re-keys on every write.
+_SYMBOL_ENTRY_CACHE: dict[tuple, Any] = {}
+_SYMBOL_ENTRY_CACHE_MAX = 4096
+
+
+def _symbol_entry(path: Path, symbol: str) -> dict | None:
+    """One ticker's entry from a day file WITHOUT parsing the whole day.
+
+    The ticker search ("Ticker, all days") used to ``json.loads`` every
+    archived day: ~1 GB of JSON for 30 Watchlist days, well past the 20 s
+    proxy timeout, so the search came back EMPTY for tickers that were in
+    the archive (APLD, 2026-10-02). ``json.dumps`` writes pure ASCII, so the
+    entry is located by its key bytes and only that object is decoded. An
+    unexpected layout falls back to the full parse, never to "not found"."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (os.fspath(path), stat.st_mtime_ns, stat.st_size, symbol)
+    if key in _SYMBOL_ENTRY_CACHE:
+        return _SYMBOL_ENTRY_CACHE[key]
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    entry: dict | None = None
+    if data.startswith(b'{"list": ') and b'"rows": {' in data[:400]:
+        needle = json.dumps(symbol).encode("ascii") + b': {"'
+        decoder = json.JSONDecoder()
+        start = data.find(needle)
+        while start != -1:
+            body = start + len(needle) - 2  # at the '{'
+            if data.startswith(_ENTRY_FIRST_KEYS, body + 2):  # in place: a slice copies the rest of the file
+                # The entry object ends at the next top-level symbol key or
+                # the document end; decode a growing window until it parses.
+                window = 1 << 20
+                while True:
+                    chunk = data[body : body + window].decode("ascii", "replace")
+                    try:
+                        candidate, _ = decoder.raw_decode(chunk)
+                        break
+                    except ValueError:
+                        if body + window >= len(data):
+                            candidate = None
+                            break
+                        window *= 4
+                if isinstance(candidate, dict) and isinstance(candidate.get("snapshots"), list):
+                    entry = candidate
+                    break
+            start = data.find(needle, start + 1)
+    else:
+        stored = _load_doc(path)
+        rows = stored.get("rows") if isinstance(stored.get("rows"), dict) else {}
+        found = rows.get(symbol)
+        entry = found if isinstance(found, dict) else None
+    if len(_SYMBOL_ENTRY_CACHE) >= _SYMBOL_ENTRY_CACHE_MAX:
+        _SYMBOL_ENTRY_CACHE.clear()
+    _SYMBOL_ENTRY_CACHE[key] = entry
+    return entry
+
+
 def _snapshot_entries(symbol: str, entry: dict) -> list[dict]:
     """One API row per stored snapshot for one symbol."""
     snapshots = entry.get("snapshots") if isinstance(entry.get("snapshots"), list) else []
@@ -582,6 +636,112 @@ def _snapshot_entries(symbol: str, entry: dict) -> list[dict]:
     return rows
 
 
+# ---------------------------------------------------------------------------
+# Skittles cross times for days archived before the timeline was kept
+# ---------------------------------------------------------------------------
+
+#: Grade-log events live beside the History root (grade_log.EVENTS_DIRNAME).
+GRADE_EVENTS_DIRNAME = "momx_grade_events"
+SKIT_TREND_BGS = frozenset({"cyan", "green", "lime", "magenta", "red", "light_red"})
+_SKIT_CHANGES_CACHE: dict[tuple, dict] = {}
+
+
+def _skit_changes(directory: Path | str, name: str, day: str) -> dict:
+    """{symbol: {tf: (at, bg)}}: the earliest with-trend Skittles change the
+    grade log RECORDED that day (``bgChangedAt`` - written by the same scan
+    diff that writes the live "SKIT <tf> bg <c>" timeline item). Read only;
+    the archive files are never rewritten. A ticker with no recorded change
+    gets nothing - never a guessed time."""
+    path = Path(directory).parent / GRADE_EVENTS_DIRNAME / board_dir(".", name).name / f"{day}.json"
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    key = (os.fspath(path), stat.st_mtime_ns, stat.st_size)
+    cached = _SKIT_CHANGES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    out: dict = {}
+    for event in _load_doc(path).get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        symbol = str(event.get("symbol") or "").upper()
+        cells = event.get("skittles") if isinstance(event.get("skittles"), dict) else {}
+        for tf, cell in cells.items():
+            if not isinstance(cell, dict) or cell.get("bg") not in SKIT_TREND_BGS:
+                continue
+            at = _parse_iso(cell.get("bgChangedAt"))
+            if at is None or at.tzinfo is None or at.date().isoformat() != day:
+                continue
+            known = out.setdefault(symbol, {}).get(tf)
+            if known is None or at < known[0]:
+                out[symbol][tf] = (at, str(cell["bg"]))
+    if len(_SKIT_CHANGES_CACHE) >= 64:
+        _SKIT_CHANGES_CACHE.clear()
+    _SKIT_CHANGES_CACHE[key] = out
+    return out
+
+
+def _with_skit_items(items: list[dict], changes: dict) -> None:
+    """Add the recorded SKIT items a stored row is missing (days archived
+    before 2026-10-12 kept no timeline). Copies the row - never mutates the
+    cached archive entry."""
+    if not changes:
+        return
+    for item in items:
+        found = changes.get(item.get("symbol"))
+        at = _parse_iso(item.get("at"))
+        row = item.get("row")
+        if not found or at is None or at.tzinfo is None or not isinstance(row, dict):
+            continue
+        fresh = row.get("gradeFresh") if isinstance(row.get("gradeFresh"), dict) else {}
+        timeline = fresh.get("timeline") if isinstance(fresh.get("timeline"), list) else []
+        have = {str(e.get("what")) for e in timeline if isinstance(e, dict)}
+        extra = [{"at": when.isoformat(), "what": f"SKIT {tf} bg {bg}"}
+                 for tf, (when, bg) in sorted(found.items())
+                 if when <= at and f"SKIT {tf} bg {bg}" not in have]
+        if extra:
+            item["row"] = {**row, "gradeFresh": {**fresh, "timeline": sorted(
+                [*timeline, *extra], key=lambda e: str(e.get("at")))}}
+
+
+def _with_sqz_items(items: list[dict]) -> None:
+    """Squeeze FIRES for days archived before the timeline kept them
+    (2026-10-11, MRNA 2h 10-09: white 09:41 -> orange 09:47 showed no SQZ tag).
+    Read from the stored squeeze boxes themselves: between two consecutive
+    snapshots of the same ticker the box turned to the fired colour (cyan, bear
+    magenta) or white -> orange (a HIGH squeeze fired) - the same edges the
+    live recorder writes (grade_log). Timed at the snapshot that first shows
+    it; a ticker that arrived already fired has no edge and gets nothing."""
+    by_symbol: dict[str, list[dict]] = {}
+    for item in items:
+        if isinstance(item.get("row"), dict) and item.get("at"):
+            by_symbol.setdefault(str(item.get("symbol")), []).append(item)
+    for group in by_symbol.values():
+        group.sort(key=lambda it: str(it.get("at")))
+        prev: dict = {}
+        fires: list[tuple[str, str]] = []
+        for item in group:
+            row = item["row"]
+            fired_bg = "magenta" if row.get("direction") == "bear" else "cyan"
+            for tf, cell in (row.get("sqz") or {}).items():
+                bg = cell.get("bg") if isinstance(cell, dict) else None
+                before = prev.get(tf)
+                if before is not None and ((bg == fired_bg and before != fired_bg) or (bg == "orange" and before == "white")):
+                    fires.append((str(item["at"]), f"SQZ {tf} released"))
+                if bg is not None:
+                    prev[tf] = bg
+            if not fires:
+                continue
+            fresh = row.get("gradeFresh") if isinstance(row.get("gradeFresh"), dict) else {}
+            timeline = fresh.get("timeline") if isinstance(fresh.get("timeline"), list) else []
+            have = {str(e.get("what")) for e in timeline if isinstance(e, dict)}
+            extra = [{"at": at, "what": what} for at, what in fires if what not in have]
+            if extra:
+                item["row"] = {**row, "gradeFresh": {**fresh, "timeline": sorted(
+                    [*timeline, *extra], key=lambda e: str(e.get("at")))}}
+
+
 def _day_rows(name: str, day: str, directory: Path | str) -> list[dict]:
     stored = _load_doc(_day_file(board_dir(directory, name), day))
     entries = stored.get("rows") if isinstance(stored.get("rows"), dict) else {}
@@ -589,6 +749,8 @@ def _day_rows(name: str, day: str, directory: Path | str) -> list[dict]:
     for symbol, entry in entries.items():
         if isinstance(entry, dict):
             rows.extend(_snapshot_entries(str(symbol).upper(), entry))
+    _with_skit_items(rows, _skit_changes(directory, name, day))
+    _with_sqz_items(rows)
     # Ascending by time: the day reads as the timeline the trader experienced
     # (SNOW 8:01 arrives, SNOW 9:14 strengthens, DG 10:02 arrives).
     rows.sort(key=lambda item: str(item.get("at") or ""))
@@ -732,12 +894,13 @@ def history_response(
         for day in days:  # newest first
             if only_day and day != only_day:
                 continue
-            stored = _load_doc(_day_file(board_dir(directory, name), day))
-            entries = stored.get("rows") if isinstance(stored.get("rows"), dict) else {}
-            entry = entries.get(wanted)
+            entry = _symbol_entry(_day_file(board_dir(directory, name), day), wanted)
             if not isinstance(entry, dict):
                 continue
-            for item in _snapshot_entries(wanted, entry):
+            items = _snapshot_entries(wanted, entry)
+            _with_skit_items(items, _skit_changes(directory, name, day))
+            _with_sqz_items(items)
+            for item in items:
                 item["date"] = day
                 rows.append(item)
         # A single ticker across 30 days is normally small, but a name that

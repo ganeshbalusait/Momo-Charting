@@ -13,10 +13,39 @@ import {
   oiChartTransportFailureNotice,
   OI_CHART_TRANSPORT_FAILURE_GRACE_ATTEMPTS,
   normalizeOiChartPayload,
+  compactOiChartPayload,
   normalizeLightweightChartSeriesData,
   OI_CHART_LIVE_TAPE_MAX_BARS,
   OI_CHART_STUDY_TAPE_MAX_AGE_SECONDS,
 } from "./chartSeriesData.js";
+
+test("a cached research tape opens in a bounded window without changing the cache or prices", () => {
+  const make = (count, step=60) => Array.from({length: count}, (_, i) => ({time: 1700000000+i*step,open:100,high:102,low:99,close:101,volume:i}));
+  const full={symbol:"AAPL",bars:make(10000),fineStudyBars:make(6000,300),studyBars:make(5000,1800),dailyBars:make(2000,86400),mtfSignals:[{time:1700000000,label:"CALL5"}]};
+  const initial=compactOiChartPayload(full);
+  assert.equal(initial.bars.length,900);
+  assert.equal(initial.fineStudyBars.length,2400);
+  assert.equal(initial.dailyBars.length,320);
+  assert.strictEqual(initial.studyBars,initial.bars);
+  assert.strictEqual(initial.bars.at(-1),full.bars.at(-1));
+  assert.strictEqual(initial.mtfSignals,full.mtfSignals);
+  assert.equal(initial.initialStudySeed,false);
+  assert.equal(initial.historyLoading,true);
+  assert.equal(full.bars.length,10000);
+  assert.equal(full.studyBars.length,5000);
+  const higher=compactOiChartPayload(full,true);
+  assert.equal(higher.studyBars.length,1600);
+  assert.equal(higher.initialStudySeed,true);
+  assert.strictEqual(higher.studyBars.at(-1),full.studyBars.at(-1));
+});
+
+test("compact payload handling preserves a real slim seed and rejects false higher-timeframe seeds", () => {
+  const slim={initialSlim:true,bars:[{time:100,close:1}]};
+  assert.strictEqual(compactOiChartPayload(slim),slim);
+  assert.equal(compactOiChartPayload(null),null);
+  const minute=Array.from({length:100},(_,i)=>({time:1700000000+i*60,close:1}));
+  assert.equal(compactOiChartPayload({bars:minute,studyBars:minute},true).initialStudySeed,false);
+});
 
 test("normalizes chart points into strictly ascending unique timestamps", () => {
   assert.deepEqual(
@@ -522,4 +551,57 @@ test("applySeriesData never leaves a phantom point when the last point moves to 
   // of 160: update() would append 220 and leave 160 behind -> must setData.
   assert.equal(applySeriesData(series, [{ time: 100, value: 1 }, { time: 220, value: 3 }]), "setData");
   assert.deepEqual(calls.at(-1), ["setData", 2]);
+});
+
+test("small historical revisions update existing points and append the live tail", async () => {
+  const { applySeriesData, appliedSeriesDataFor } = await import("./chartSeriesData.js");
+  const calls = [];
+  const series = {
+    setData: (data) => calls.push(["setData", data]),
+    update: (point, historical) => calls.push(["update", point, historical === true]),
+  };
+  const original = Array.from({ length: 100 }, (_, i) => ({ time: 100 + i * 60, value: i }));
+  applySeriesData(series, original);
+  calls.length = 0;
+  const next = original.map((p, i) => i === 95 ? { ...p, value: 200, color: "red" } : p);
+  next.push({ time: 6100, value: 100 });
+  assert.equal(applySeriesData(series, next), "update");
+  assert.deepEqual(calls, [["update", next[95], true], ["update", next[100], false]]);
+  assert.equal(appliedSeriesDataFor(series), next);
+  assert.equal(applySeriesData(series, next.map(p => ({ ...p }))), "skip");
+});
+
+test("historical whitespace, timestamp changes, and large corrections retain full replacement", async () => {
+  const { applySeriesData } = await import("./chartSeriesData.js");
+  const original = Array.from({ length: 100 }, (_, i) => ({ time: 100 + i * 60, value: i }));
+  for (const change of [
+    rows => { rows[4] = { time: rows[4].time }; },
+    rows => { rows[4] = { ...rows[4], time: rows[4].time + 1 }; },
+    rows => { for (let i = 0; i < 33; i++) rows[i] = { ...rows[i], value: -1 }; },
+    rows => { rows.push({ time: rows.at(-1).time, value: 100 }); },
+  ]) {
+    const calls = [];
+    const series = { setData: () => calls.push("setData"), update: () => calls.push("update") };
+    applySeriesData(series, original);
+    calls.length = 0;
+    const next = original.map(p => ({ ...p }));
+    change(next);
+    assert.equal(applySeriesData(series, next), "setData");
+    assert.deepEqual(calls, ["setData"]);
+  }
+  const series = { setData() {}, update() { throw new Error("must not insert historical whitespace"); } };
+  const whitespace = original.map((p, i) => i === 4 ? { time: p.time } : p);
+  applySeriesData(series, whitespace);
+  assert.equal(applySeriesData(series, original), "setData");
+});
+
+test("a rejected historical update replaces the full authoritative snapshot", async () => {
+  const { applySeriesData, appliedSeriesDataFor } = await import("./chartSeriesData.js");
+  let data;
+  const series = { setData: rows => { data = rows; }, update: () => { throw new Error("missing point"); } };
+  applySeriesData(series, [{ time: 100, value: 1 }, { time: 160, value: 2 }]);
+  const next = [{ time: 100, value: 9 }, { time: 160, value: 2 }];
+  assert.equal(applySeriesData(series, next), "setData");
+  assert.equal(data, next);
+  assert.equal(appliedSeriesDataFor(series), next);
 });

@@ -80,24 +80,24 @@ class RepositoryRollupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = TradingRepository(db_path=os.path.join(temp_dir, "trades.db"))
             eastern = ZoneInfo(EASTERN_TZ)
-            # Relative to today: a fixed date ages past the retention window
-            # and the rows get pruned before they can be read back.
-            scan_day = datetime.now(eastern).date() - timedelta(days=1)
             frame = pd.DataFrame([{"symbol": "NVDA", "last_price": 200.0}])
+            # Yesterday, not a fixed date: logging prunes rows past the retention window,
+            # so a fixed 2026-07-10 was deleted on write once it aged out.
+            day = (datetime.now(tz=eastern) - timedelta(days=1)).date()
 
             repository.log_scanner_history(
                 frame,
-                scanned_at=datetime(scan_day.year, scan_day.month, scan_day.day, 9, 33, tzinfo=eastern),
+                scanned_at=datetime(day.year, day.month, day.day, 9, 33, tzinfo=eastern),
                 source="MAG7 OI Scanner",
             )
             repository.log_scanner_history(
                 frame.assign(last_price=201.0),
-                scanned_at=datetime(scan_day.year, scan_day.month, scan_day.day, 9, 37, tzinfo=eastern),
+                scanned_at=datetime(day.year, day.month, day.day, 9, 37, tzinfo=eastern),
                 source="MAG7 OI Scanner",
             )
             repository.log_scanner_history(
                 frame.assign(last_price=202.0),
-                scanned_at=datetime(scan_day.year, scan_day.month, scan_day.day, 9, 45, tzinfo=eastern),
+                scanned_at=datetime(day.year, day.month, day.day, 9, 45, tzinfo=eastern),
                 source="MAG7 OI Scanner",
             )
 

@@ -34,7 +34,7 @@ import atexit
 import signal
 import time
 
-from momx import board, fastlane, grade_log, history, momo_alert, movers, query, service
+from momx import board, fastlane, feed, grade_log, history, momo_alert, movers, query, service
 
 PORT = 3010
 
@@ -226,6 +226,43 @@ def _direction(query: dict) -> str:
         return "bull"
 
 
+#: X-AGX-User email -> (checked at, is admin). api_server forwards the session
+#: email on every proxied request; the role is read from the app's user table
+#: READ-ONLY (never AuthService - its constructor writes the schema) and held
+#: ADMIN_CACHE_SECONDS so a 15 s poll never hits the database each time.
+ADMIN_CACHE_SECONDS = 300
+_ADMIN_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def viewer_is_admin(email: object, db_path: object = None) -> bool:
+    """True only for an active admin account. No email / any error -> False."""
+    key = str(email or "").strip().lower()
+    if not key:
+        return False
+    held = _ADMIN_CACHE.get(key)
+    now = time.monotonic()
+    if held is not None and now - held[0] < ADMIN_CACHE_SECONDS:
+        return held[1]
+    result = False
+    try:
+        import sqlite3
+        from pathlib import Path
+        from config import DATABASE_PATH
+        uri = Path(db_path or DATABASE_PATH).resolve().as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+        try:
+            row = connection.execute(
+                "SELECT role FROM app_users WHERE email = ? COLLATE NOCASE AND is_active = 1", (key,)
+            ).fetchone()
+        finally:
+            connection.close()
+        result = bool(row) and str(row[0]) == "admin"
+    except Exception:  # noqa: BLE001 - unknown means not admin
+        result = False
+    _ADMIN_CACHE[key] = (now, result)
+    return result
+
+
 def _momentum(list_name: str | None, direction: str = "bull") -> dict:
     """New-match and RVOL-crossing events since the previous completed build.
 
@@ -326,8 +363,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Leaving the scanner cancels its reads. The departed client
+            # cannot receive a second error reply on this same socket.
+            self.close_connection = True
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -338,18 +380,112 @@ class Handler(BaseHTTPRequestHandler):
         direction = _direction(query)
         try:
             if path == "/api/momx-scanner":
+                service.note_viewed(wanted)
                 self._json(HTTPStatus.OK, service.snapshot(wanted, direction))
+                return
+            if path == "/api/momx-scanner/ai-report":
+                # The shadow AI model's nightly score (2026-10-17) - admin only.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import ai_filter
+                latest = ai_filter.report()
+                latest["perDay"] = [{k: d.get(k) for k in ("day", "aucToDate", "bullToDate", "bearToDate")}
+                                    for d in latest.get("perDay") or []]
+                # AI score vs his REAL paper fills: every closed paper trade, split by
+                # whether the shadow model scored it a pick (>= 0.50) or not.
+                paper = {}
+                try:
+                    from momx import paper_mirror
+                    for m in paper_mirror.current():
+                        split = {"aiPick": [0, 0, 0.0], "notPick": [0, 0, 0.0], "unscored": [0, 0, 0.0]}
+                        for h in m.history(60):
+                            scores = ai_filter.scores_for(h["day"])
+                            for r in h["rows"]:
+                                if r.get("status") != "closed" or r.get("pl") is None:
+                                    continue
+                                p = scores.get(f"{r.get('side')}|{r.get('rule')}|{r.get('symbol')}|{r.get('at')}")
+                                k = "unscored" if p is None else ("aiPick" if p >= 0.5 else "notPick")
+                                split[k][0] += 1
+                                split[k][1] += 1 if r["pl"] > 0 else 0
+                                split[k][2] += float(r["pl"])
+                        paper[m.account] = {k: {"trades": v[0], "wins": v[1], "pl": round(v[2], 2)}
+                                            for k, v in split.items()}
+                except Exception:  # noqa: BLE001 - the report must still answer
+                    paper = {}
+                self._json(HTTPStatus.OK, {"latest": latest, "history": ai_filter.history(), "paper": paper})
+                return
+            if path == "/api/momx-scanner/paper-learning":
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import paper_learning
+                self._json(HTTPStatus.OK, paper_learning.status())
+                return
+            if path == "/api/momx-scanner/paper-mirror":
+                # Alpaca PAPER fills of the Jev BOT trades (2026-10-16) - admin only.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import paper_mirror
+                try:
+                    mirror_days = int(str(query.get("days", ["0"])[0]))
+                except ValueError:
+                    mirror_days = 0
+                out = []
+                for m in paper_mirror.current():
+                    doc = m.status()
+                    if mirror_days > 0:
+                        doc["history"] = m.history(mirror_days)
+                    out.append(doc)
+                self._json(HTTPStatus.OK, {"mirrors": out})
+                return
+            if path == "/api/momx-scanner/bot":
+                # The virtual BOT page (Ganesh 2026-09-28) - ADMIN ONLY, refused
+                # here on the server so a user never receives the trades.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import option_track, trade_news
+                try:
+                    days = int(str(query.get("days", ["5"])[0]))
+                except ValueError:
+                    days = 5
+                # newsJev per trade (2026-10-07): Jev's read of the ticker's news
+                # at entry, for the Bot page's "News trade" book.
+                self._json(HTTPStatus.OK, {
+                    "bull": option_track.history(service.grade_dir(), days),
+                    "bear": option_track.history(service.grade_dir("bear"), days),
+                    "keepDays": option_track.KEEP_DAYS,
+                })
                 return
             if path == "/api/momx-scanner/lists":
                 self._json(HTTPStatus.OK, service.lists())
+                return
+            if path == "/api/momx-scanner/data-source":
+                # The toolbar "TOS" checkbox (2026-09-30): "tos" | "alpaca".
+                self._json(HTTPStatus.OK, {"source": feed.get_data_source()})
                 return
             if path == "/api/momx-scanner/live-seeds":
                 # The LIVE ⚡ seeds (momx/live_bolt.py) for api_server's
                 # per-second layer. Loopback consumer only.
                 self._json(HTTPStatus.OK, {"list": wanted, "seeds": service.live_seeds(wanted)})
                 return
+            if path == "/api/momx-scanner/tos-debug":
+                # Read-only TOS budget/store state (2026-10-01); ?symbols=A,B
+                # narrows the per-symbol ages.
+                raw = (parse_qs(urlparse(self.path).query).get("symbols") or [""])[0]
+                symbols = [s for s in raw.split(",") if s.strip()] or None
+                self._json(HTTPStatus.OK, feed.tos_debug(symbols))
+                return
             if path == "/api/momx-scanner/status":
                 self._json(HTTPStatus.OK, service.status())
+                return
+            if path == "/api/momx-scanner/daybars":
+                # The ticker card's "today 4:00-20:00 ET" chart (momx/daybars.py).
+                from momx.daybars import day_bars
+                self._json(HTTPStatus.OK, day_bars(str(query.get("symbol", [""])[0]),
+                                                   str(query.get("day", [""])[0]) or None))
                 return
             if path == "/api/momx-scanner/momentum":
                 self._json(HTTPStatus.OK, _momentum(wanted, direction))
@@ -512,6 +648,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/momx-scanner/lists/delete":
                 self._json(HTTPStatus.OK, service.delete_list(body.get("list")))
                 return
+            if path == "/api/momx-scanner/ema-timeframe":
+                # Monthly / Weekly / Daily on the 21 / 50 EMA touch lists.
+                self._json(
+                    HTTPStatus.OK,
+                    service.set_ema_timeframe(body.get("length"), body.get("timeframe")),
+                )
+                return
             if path == "/api/momx-scanner/lists/active":
                 self._json(HTTPStatus.OK, service.set_active(body.get("list")))
                 return
@@ -534,6 +677,24 @@ class Handler(BaseHTTPRequestHandler):
                 # Queues the build on the warmer thread and returns at once;
                 # the current generatedAt lets the client detect the new one.
                 self._json(HTTPStatus.OK, service.request_rebuild(body.get("list")))
+                return
+            if path == "/api/momx-scanner/data-source":
+                # The toolbar "TOS" checkbox (2026-09-30). GLOBAL - every
+                # viewer's board changes source - so ADMIN ONLY, refused here
+                # as well as in api_server (same as /bot). The switch drops
+                # the feed caches; the rebuild is queued, never run here.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                try:
+                    source = feed.set_data_source(body.get("source"))
+                except ValueError as exc:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                self._json(HTTPStatus.OK, {
+                    "source": source,
+                    "rebuild": service.request_rebuild(body.get("list")),
+                })
                 return
         except board.UnknownListError as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -603,6 +764,11 @@ def _shutdown_pool_and_exit(signum=None, frame=None):
         board.shutdown_pool()
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from momx import chart_signals
+        chart_signals.shutdown_executor()       # the chart-arrow child too
+    except Exception:  # noqa: BLE001
+        pass
     if signum is not None:
         raise SystemExit(0)
 
@@ -618,6 +784,29 @@ def main() -> int:
     service.start_warmer()
     _threading.Thread(target=_momo_loop, name="momo-eval", daemon=True).start()
     _threading.Thread(target=_movers_loop, name="movers-refresh", daemon=True).start()
+    # Alpaca PAPER orders for the Jev BOT trades (2026-10-16, his "B" -> "Go").
+    # Paper accounts only; off with AGX_MOMX_PAPER_MIRROR=0 or artifacts/paper_mirror_off.
+    try:
+        from pathlib import Path
+        from config import ARTIFACTS_DIR
+        from momx import paper_mirror
+        paper_mirror.start({"bull": service._OPTION_TRACK, "bear": service._BEAR_OPTION_TRACK},
+                           Path(ARTIFACTS_DIR) / "momx_paper_mirror")
+    except Exception as exc:  # noqa: BLE001 - the scanner must start regardless
+        print(f"[paper-mirror] not started: {type(exc).__name__}: {exc}", flush=True)
+    # Shadow AI filter (2026-10-17): scores every Bot trade, retrains nightly
+    # after 16:40 ET in its own low-priority process, grades itself walk-forward.
+    # Places no orders.
+    try:
+        from momx import ai_filter
+        ai_filter.start({"bull": service._OPTION_TRACK, "bear": service._BEAR_OPTION_TRACK})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ai-filter] not started: {type(exc).__name__}: {exc}", flush=True)
+    try:
+        from momx import paper_learning
+        paper_learning.start({"bull": service._OPTION_TRACK, "bear": service._BEAR_OPTION_TRACK})
+    except Exception as exc:
+        print(f"[paper-learning] not started: {type(exc).__name__}: {exc}", flush=True)
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"momx worker on http://127.0.0.1:{PORT}", flush=True)
     try:

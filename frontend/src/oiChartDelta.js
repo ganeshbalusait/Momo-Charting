@@ -8,6 +8,27 @@
 const SERIES_KEYS = new Set(["bars", "studyBars", "fineStudyBars", "dailyBars"]);
 const CONTROL_KEYS = new Set(["delta", "deltaSince"]);
 
+// A live quote can move the last displayed bar far beyond downloaded candle
+// history. It must never advance the watermark used to request missing bars.
+export function chartHistoryBarsThrough(payload) {
+  const last = Number(payload?.bars?.at(-1)?.time || 0);
+  const known = Number(payload?.historyBarsThrough);
+  return Number.isFinite(known) && known > 0 ? Math.min(known, last) : last;
+}
+
+export function updateChartPayloadWithQuote(payload, price, time) {
+  const bars = payload?.bars;
+  const last = bars?.at(-1);
+  if (!last || !(price > 0) || !Number.isFinite(price)
+      || !Number.isFinite(time) || time < Number(last.time)) return payload;
+  const next = Number(last.time) === time
+    ? { ...last, high: Math.max(Number(last.high ?? price), price),
+      low: Math.min(Number(last.low ?? price), price), close: price }
+    : { time, open: price, high: price, low: price, close: price, volume: 0, volumeKnown: false };
+  return { ...payload, historyBarsThrough: chartHistoryBarsThrough(payload),
+    bars: Number(last.time) === time ? [...bars.slice(0, -1), next] : [...bars, next] };
+}
+
 function mergeSeriesTail(baseRows, deltaRows, since) {
   const cut = Number(since) || 0;
   const base = Array.isArray(baseRows) ? baseRows : [];
@@ -28,6 +49,8 @@ export function mergeChartDeltaPayload(base, delta) {
     merged[key] = value;
   }
   merged.bars = mergeSeriesTail(base.bars, delta.bars, since);
+  const delivered = Number(delta.bars?.at(-1)?.time || 0);
+  merged.historyBarsThrough = Math.max(chartHistoryBarsThrough(base), delivered);
   merged.studyBars = mergeSeriesTail(base.studyBars, delta.studyBars, since);
   merged.fineStudyBars = mergeSeriesTail(base.fineStudyBars, delta.fineStudyBars, since);
   const dailyTail = Array.isArray(delta.dailyBars) ? delta.dailyBars : [];
@@ -50,7 +73,7 @@ export function chartDeltaRequestTime(cachedPayload, { forceFullTape = false } =
   if (!cachedPayload || cachedPayload.historyLoading !== false) return 0;
   const bars = Array.isArray(cachedPayload.bars) ? cachedPayload.bars : [];
   if (bars.length < 500) return 0;
-  return Number(bars[bars.length - 1]?.time || 0) || 0;
+  return chartHistoryBarsThrough(cachedPayload);
 }
 
 export function chartDeltaTapeChanged(base, delta) {

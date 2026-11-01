@@ -1327,3 +1327,24 @@ def test_bear_record_and_response_name_their_direction(tmp_path):
     assert record["direction"] == "bear"
     assert set(record["byAdx"]) == {"bearCross", "bearCrossRising", "none"}
     assert set(grade_log_module.build_record(tmp_path)["byAdx"]) == {"bullCross", "bullCrossRising", "none"}
+
+
+def test_high_squeeze_fire_white_to_orange_is_a_release(tmp_path):
+    """MRNA 2h 2026-10-09: white (high squeeze ON) at 09:31 -> orange (high squeeze
+    FIRED) at 09:47 - the Setup column must show SQZ 2h."""
+    log = GradeLog(tmp_path)
+    coiled = full_row(None)
+    coiled["sqz"]["2h"] = {"value": "2", "bg": "white", "fg": "black"}
+    log.apply("Mag7", {"rows": [coiled], "rest": []}, NOW)
+    fired = full_row(None)
+    fired["sqz"]["2h"] = {"value": "*1", "bg": "orange", "fg": "black"}
+    p = {"rows": [fired], "rest": []}
+    log.apply("Mag7", p, NOW + timedelta(seconds=20))
+    assert "SQZ 2h released" in [i["what"] for i in p["rows"][0]["gradeFresh"]["timeline"]]
+    # orange that was already orange (a mid squeeze still ON) is not a new fire
+    again = full_row(None)
+    again["sqz"]["2h"] = {"value": "*1", "bg": "orange", "fg": "black"}
+    p2 = {"rows": [again], "rest": []}
+    log.apply("Mag7", p2, NOW + timedelta(seconds=40))
+    assert [i["what"] for i in p2["rows"][0]["gradeFresh"]["timeline"]].count("SQZ 2h released") == 1
+

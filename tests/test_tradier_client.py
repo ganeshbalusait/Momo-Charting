@@ -35,7 +35,6 @@ class TradierClientTests(unittest.TestCase):
 
     def test_loads_every_expiration_through_fourteen_dte(self) -> None:
         client = TradierClient()
-        client.config.access_token = "test-token"
         today = datetime.now(client._tz).date()
         expirations = [today, today + timedelta(days=7), today + timedelta(days=21)]
 

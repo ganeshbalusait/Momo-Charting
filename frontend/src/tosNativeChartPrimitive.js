@@ -10,6 +10,7 @@ const EMPTY_NATIVE_MODEL = Object.freeze({
   signals: [],
   candleHighlights: [],
   levelSegments: [],
+  wedges: [],
 });
 
 function finiteNumber(value) {
@@ -454,6 +455,12 @@ function normalizeModel(model = {}) {
         const price = finiteNumber(segment?.price);
         return price == null ? [] : [{ ...segment, price }];
       }),
+    // TOS BOOLEAN_WEDGE_UP / _DOWN plots (shared_StochasX_v20263).
+    wedges: (Array.isArray(model.wedges) ? model.wedges : [])
+      .flatMap((wedge) => {
+        const time = finiteNumber(wedge?.time);
+        return time == null ? [] : [{ ...wedge, time }];
+      }),
   };
 }
 
@@ -542,6 +549,7 @@ export function nativeGeometry(model, chart, series) {
   const fills = [];
   const lines = [];
   const candleHighlights = [];
+  const wedges = [];
   const visibleTimeRange = chart.timeScale().getVisibleRange?.();
   const visibleTimeFrom = finiteNumber(visibleTimeRange?.from);
   const visibleTimeTo = finiteNumber(visibleTimeRange?.to);
@@ -727,7 +735,11 @@ export function nativeGeometry(model, chart, series) {
     if (x1 > width) return;
     lines.push({
       x1,
-      x2: Math.max(x1, width - nativeLevelLabelGutter(segment.labelText, LEVEL_LABEL_GUTTER)),
+      // An explicit numeric gutter wins (AutoFib's expansion line runs to the
+      // axis, like TOS, with no chip in front of it).
+      x2: Math.max(x1, width - (Number.isFinite(Number(segment.gutter)) && segment.gutter !== null
+        ? Math.max(0, Number(segment.gutter))
+        : nativeLevelLabelGutter(segment.labelText, LEVEL_LABEL_GUTTER))),
       y1: y,
       y2: y,
       color: segment.color,
@@ -761,6 +773,20 @@ export function nativeGeometry(model, chart, series) {
       fire: highlight.fire === true,
       bullish,
     });
+  });
+
+  // A TOS wedge sits just beyond the bar extreme: WEDGE_UP ("^") above the
+  // high, WEDGE_DOWN ("v") below the low. Size follows the bar spacing.
+  (model.wedges || []).forEach((wedge) => {
+    if (!timeIsNearViewport(wedge.time)) return;
+    const bar = barsByTime.get(Number(wedge.time));
+    const x = xForTime(wedge.time);
+    if (!bar || x == null || !visibleX(x)) return;
+    const above = wedge.position === "above";
+    const y = yForPrice(above ? bar.high : bar.low);
+    if (y == null) return;
+    const half = clamp(barSpacing * 0.42, 3, 7);
+    wedges.push({ x, y, above, half, color: wedge.color || (above ? "#ff3f00" : "#00ff00") });
   });
 
   const stackCounts = new Map();
@@ -812,6 +838,7 @@ export function nativeGeometry(model, chart, series) {
     fills,
     lines,
     candleHighlights,
+    wedges,
     labels,
   };
 }
@@ -921,6 +948,23 @@ class TosSignalRenderer {
       context.textAlign = "center";
       context.textBaseline = "middle";
       const labelTops = nativeSignalLabelTops(this.geometry.labels, mediaSize.height, !this.interactionActive);
+      // Open chevrons, TOS line weight 5 rendered ~2.5px.
+      (this.geometry.wedges || []).forEach((wedge) => {
+        const gap = 4;
+        const tipY = wedge.above ? wedge.y - gap - wedge.half * 1.4 : wedge.y + gap + wedge.half * 1.4;
+        const baseY = wedge.above ? wedge.y - gap : wedge.y + gap;
+        context.save();
+        context.strokeStyle = wedge.color;
+        context.lineWidth = 2.5;
+        context.lineJoin = "miter";
+        context.lineCap = "butt";
+        context.beginPath();
+        context.moveTo(wedge.x - wedge.half, baseY);
+        context.lineTo(wedge.x, tipY);
+        context.lineTo(wedge.x + wedge.half, baseY);
+        context.stroke();
+        context.restore();
+      });
       this.geometry.candleHighlights.forEach((highlight) => {
         const height = Math.max(4, highlight.bottom - highlight.top);
         const left = highlight.x - highlight.width / 2;
@@ -1224,6 +1268,9 @@ export class TosNativeChartPrimitive {
   }
 
   hasActiveAnimation(now = Date.now()) {
+    // The High OI wall flash is a CSS glow on its axis chip (App.jsx), not a
+    // canvas animation: a canvas pulse repainted every chart ~7x a second
+    // forever and slowed chart loading on phones (2026-09-29).
     return !this.interactionActive && (this.hasActiveFlash(now) || this.hasVisibleFire());
   }
 

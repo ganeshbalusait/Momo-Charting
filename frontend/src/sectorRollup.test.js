@@ -8,7 +8,8 @@
 // Most of these tests pin the RANKING and the exclusions, because the naive
 // version of this panel is confidently misleading rather than merely wrong.
 
-import { describe, expect, test } from "vitest";
+import { describe, test } from "node:test";
+import { expect } from "./nodeExpect.js";
 
 import { SECTOR_MOVE_PCT, sectorRollup, sortRows } from "./momxCells.js";
 

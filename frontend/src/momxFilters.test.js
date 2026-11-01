@@ -1015,6 +1015,10 @@ test("his saved settings from before the dropdown come back as ANY, untouched", 
   delete kept.setup;
   delete kept.momentum;
   delete kept.pattern;
+  assert.deepEqual(kept.setupRules, []);
+  assert.equal(kept.setupRulesMode, 'all');
+  delete kept.setupRules;
+  delete kept.setupRulesMode;
   assert.deepEqual(kept, { ...saved, version: MOMX_FILTER_VERSION },
     "every other setting exactly as he saved it");
   // and his board reads as it did: under ANY one passing group is enough
@@ -1516,7 +1520,7 @@ test("membership agrees with filteringGroups for all 64 group states", () => {
 // tuning can never silently empty a strategy board.
 
 function stratRow(symbol, strategy) {
-  const r = row({ symbol, grade: { letter: "A+" }, m5: { state: "fading" } });
+  const r = row({ symbol, grade: { letter: "A+" }, m5: { state: "holding" } });
   r.strategy = strategy;
   return r;
 }
@@ -1549,8 +1553,12 @@ test("a strategy ignores the groups and the Momentum / Pattern gates", () => {
 });
 
 test("strategy values survive coerceFilters; junk still reads as any", () => {
-  for (const setup of ["v2", "v3", "daily2"]) {
+  for (const setup of ["tagZs", "dayLine", "mxaplus", "go"]) {
     assert.equal(coerceFilters({ ...clone(DEFAULT_MOMX_FILTERS), setup }).setup, setup);
+  }
+  // V2 / V3 / Daily 2 left the dropdown 2026-10-10 (his ask): a saved one resets.
+  for (const setup of ["v2", "v3", "daily2"]) {
+    assert.equal(coerceFilters({ ...clone(DEFAULT_MOMX_FILTERS), setup }).setup, "any");
   }
   assert.equal(coerceFilters({ ...clone(DEFAULT_MOMX_FILTERS), setup: "V2" }).setup, "any");
 });
@@ -1589,6 +1597,10 @@ test("strategyTags: V3 over V2, plus the Daily 2 number; nothing for a bare row"
   assert.deepEqual(tags(stratRow("A", { v2: true, v3: false, daily2: null })), ["V2"]);
   assert.deepEqual(tags(stratRow("B", { v2: true, v3: true, daily2: { rank: 2 } })), ["V3", "D2 #2"]);
   assert.deepEqual(tags(stratRow("C", { v2: false, v3: false, daily2: { rank: 1 } })), ["D2 #1"]);
+  // FADING only blocks MX A+ (2026-09-28): a fading V2 keeps its tag + the ⚠.
+  const faded = stratRow("E", { v2: true, v3: false, daily2: null });
+  faded.m5 = { state: "fading" };
+  assert.deepEqual(tags(faded), ["V2", "⚠ fading"]);
   assert.deepEqual(strategyTags(stratRow("D", undefined)), []);
   assert.deepEqual(strategyTags(null), []);
 });
@@ -1625,7 +1637,7 @@ test("strategyTags adds G #n and the plan", () => {
 
 // The chart's CALL2H / CALL4H arrows on the row (2026-09-24, FSLY 09-23 13:00).
 function chartRow(symbol, signals) {
-  const r = row({ symbol, grade: { letter: "A" }, m5: { state: "fading" } });
+  const r = row({ symbol, grade: { letter: "A" }, m5: { state: "holding" } });
   r.chartSignals = signals;
   return r;
 }
@@ -1710,8 +1722,8 @@ test("Options setup: tag first in the Setup cell, and the filter shows only thos
   resetOptLatch();
   const at940 = Date.parse("2026-09-24T09:40:00-04:00");
   const tags = strategyTags(optRow(), at940);
-  assert.equal(tags[0].key, "bolt"); // MomoX ⚡ first, then the OPT tag
-  const tag = tags[1];
+  assert.equal(tags[0].key, "opt"); // OPT no longer lights the ⚡ (2026-09-28: only GO / GO+ / MX A+ do)
+  const tag = tags[0];
   assert.equal(tag.key, "opt");
   assert.equal(tag.text, "OPT 09:40");
   const config = cfg({ setup: "opt" });
@@ -1853,6 +1865,9 @@ test("Hot sector leaders: 🔥#1 tag and filter, #1 before #2", () => {
 // --------------------------------------------------------------------------
 
 import { isBearRow, fiveMinuteCross, adxCyan, strategyRules, STRATEGY_RULES } from "./momxFilters.js";
+import { setMomxSimpleSetup } from "./momxFilters.js";
+// These tests pin the FULL tag set; the Simple Setup column (2026-09-28) has its own tests.
+setMomxSimpleSetup(false);
 
 test("bear OPT reads the bearish cross block, sellers on 30m and extended down", () => {
   const bear = { direction: "bear", grade: { letter: "A+" }, skittles: { "2h": { bg: "magenta" }, "4h": { bg: "red" } },
@@ -1865,12 +1880,14 @@ test("bear OPT reads the bearish cross block, sellers on 30m and extended down",
 });
 
 test("bear GO wants sellers on 30m and reports the negative gap", () => {
-  const t = Math.floor(Date.now() / 1000) - 600;
+  // A fixed session moment: "now - 10 min" failed between 00:00 and 00:10 ET (goAt fell on yesterday).
+  const t = Math.floor(Date.parse("2026-10-02T10:00:00-04:00") / 1000);
+  const now = (t + 600) * 1000;
   const row = { direction: "bear", grade: { letter: "A" }, m5: { gapGo: { gap: -2.5, goAt: t } }, adx: { "30m": { plus: 5, minus: 20 } } };
-  const go = gapAndGo(row);
+  const go = gapAndGo(row, now);
   assert.ok(go && go.gap === -2.5);
-  assert.equal(gapAndGo({ ...row, adx: { "30m": { plus: 20, minus: 5 } } }), null);
-  assert.equal(gapAndGo({ ...row, direction: "bull" }), null);
+  assert.equal(gapAndGo({ ...row, adx: { "30m": { plus: 20, minus: 5 } } }, now), null);
+  assert.equal(gapAndGo({ ...row, direction: "bull" }, now), null);
 });
 
 test("bearish-only RVOL filter on a bear row keeps the selling cells", () => {
@@ -1919,10 +1936,14 @@ test("Best setups are RANKED: GO in a hot/moving sector, then GO, then OPT; 2+ w
   const opt = optRow({ symbol: "OPT1" });
   const config = cfg({ setup: "best" });
   const rows = filterRows([opt, goWarned, goPlain, goHot], config, now);
+  // GOBAD carries 2 warnings (up 12%, fading) and sinks below the clean GOs.
   assert.deepEqual(orderByDaily2(rows, config, now).map((r) => r.symbol), ["HOTGO", "GO1", "GOBAD", "OPT1"]);
   assert.deepEqual(setupWarnings(goWarned), ["up 12%", "fading"]);
   const warn = strategyTags(goWarned, now).find((t) => t.key === "warn");
   assert.equal(warn.text, "⚠ up 12% · fading");
+  // 2+ warnings still sink a GO that is NOT fading
+  const goHeavy = goRow({ symbol: "HEAVY", pctChange: 12, last: 90, m5: { state: "holding", vwap: 95, gapGo: { gap: 3, goAt: GO_AT } } });
+  assert.equal(setupWarnings(goHeavy).length >= 2, true);
   assert.equal(strategyTags(row({ symbol: "PLAIN", pctChange: 12 }), now).find((t) => t.key === "warn"), undefined, "no setup, no warning");
 });
 
@@ -2001,7 +2022,7 @@ test("30m sellers warning and the market-turn tag", () => {
 });
 
 test("MomoX bolt: leads the Setup cell when a setup fired today, flashes while fresh", () => {
-  const row = { symbol: "M", marketTurn: { rank: 1, at: "2026-09-25T11:05:00-04:00", price: 22 } };
+  const row = { symbol: "M", momoxAPlus: { at: "2026-09-25T11:05:00-04:00", price: 22 } };
   const fresh = strategyTags(row, Date.parse("2026-09-25T11:08:00-04:00"));
   assert.equal(fresh[0].text, "⚡");
   assert.equal(fresh[0].fresh, true);
@@ -2009,6 +2030,8 @@ test("MomoX bolt: leads the Setup cell when a setup fired today, flashes while f
   assert.equal(later[0].text, "⚡");
   assert.equal(Boolean(later[0].fresh), false);
   assert.equal(strategyTags({ symbol: "X" }, Date.now()).some((t) => t.key === "bolt"), false);
+  const turn = { symbol: "T", marketTurn: { rank: 1, at: "2026-09-25T11:05:00-04:00", price: 22 } };
+  assert.equal(strategyTags(turn, Date.parse("2026-09-25T11:08:00-04:00")).some((t) => t.key === "bolt"), false, "market turn alone: no bolt");
 });
 
 test("MomoX A+ tag: text, weeklies mark, fresh flash and the setup bolt", () => {
@@ -2028,39 +2051,88 @@ test("MomoX A+ tag names the High OI call wall in its hover text", () => {
   assert.match(tag.title, /High OI call wall 750C \(16,446 OI\)/);
 });
 
-// History (2026-10-02 "same setup it's not showing in history"): a snapshot's
-// Setup tags are worked out at the snapshot's own time, not at Date.now().
-test("History: a snapshot shows the tags the live board showed at that moment", () => {
-  const snapAt = Date.parse("2026-10-01T10:20:00-04:00");
-  const snap = optRow({
-    symbol: "COHR",
-    chartSignals: [{ label: "CALL2H", family: "4x8", timeframe: "2H", at: "2026-10-01T10:00:00-04:00" }],
-  });
-  const then = strategyTags(snap, snapAt, { archive: true }).map((t) => t.text);
-  assert.ok(then.some((t) => /CALL2H/.test(t)), "CALL2H at 10:20: " + then.join(" "));
-  const nextDay = strategyTags(snap, Date.parse("2026-10-02T10:20:00-04:00")).map((t) => t.text);
-  assert.ok(!nextDay.some((t) => /CALL2H/.test(t)), "the same row read the next day has lost it (the bug)");
+test("daily-line tags come from today's bot stamp (2026-09-29)", async () => {
+  const { strategyTags, dayLineAt } = await import("./momxFilters.js");
+  const now = Date.parse("2026-09-28T14:00:00Z");   // 10:00 ET
+  const row = { symbol: "ZS", dayLines: { reclaim: "2026-09-28T09:40:00-04:00", line: "2026-09-28T09:45:00-04:00" } };
+  const keys = strategyTags(row, now).map((t) => t.key);
+  assert.ok(keys.includes("dayline") && keys.includes("dayreclaim"));
+  assert.equal(dayLineAt({ dayLines: { line: "2026-09-25T09:45:00-04:00" } }, "line", now), null);
+  assert.equal(typeof dayLineAt(row, "reclaim", now), "number");
 });
-test("History: evaluating an old snapshot never touches the live OPT latch", () => {
-  resetOptLatch();
-  const today = (hm) => Date.parse("2026-10-02T" + hm + ":00-04:00");
-  assert.equal(earlyOpt(optRow({ symbol: "LIVE" }), today("09:40")).clock, "09:40");
-  // Yesterday's 09:45 snapshot, read from History: no latch write, no day swap.
-  strategyTags(optRow({ symbol: "OLD" }), Date.parse("2026-10-01T09:45:00-04:00"), { archive: true });
-  assert.equal(earlyOpt(optRow({ symbol: "LIVE", m5: { state: "holding" } }), today("11:00")).clock, "09:40", "today's latch kept");
-  assert.equal(earlyOpt(optRow({ symbol: "OLD", m5: { state: "holding" } }), today("11:00")), null, "nothing leaked into today");
+
+test("squeeze momentum tag: cyan on bull, magenta on bear, display only (2026-09-29)", async () => {
+  const { sqzMomentumTag, strategyTags } = await import("./momxFilters.js");
+  const bull = { symbol: "X", m5: { sqzMom: { value: 0.4, prev: 0.3, color: "cyan" } } };
+  assert.equal(sqzMomentumTag(bull).text, "MOM↑");
+  assert.ok(strategyTags(bull, Date.parse("2026-09-28T14:00:00Z")).some((t) => t.key === "sqzmom"));
+  assert.equal(sqzMomentumTag({ m5: { sqzMom: { value: 0.4, color: "purple" } } }), null);
+  const bear = { direction: "bear", symbol: "Y", m5: { sqzMom: { value: -0.4, prev: -0.3, color: "magenta" } } };
+  assert.equal(sqzMomentumTag(bear).text, "MOM↓");
+  assert.equal(sqzMomentumTag({ ...bear, m5: { sqzMom: { value: 0.4, color: "cyan" } } }), null);
 });
-test("History: SQZ fires read the stored setupTimeline", () => {
-  const at = Date.parse("2026-10-01T10:12:00-04:00");
-  const stored = row({
-    symbol: "COHR",
-    gradeFresh: { setupTimeline: [
-      { at: "2026-10-01T10:03:00-04:00", what: "SQZ 2h released" },
-    ] },
-  });
-  assert.deepEqual(sqzFires(stored, at).map((f) => f.tf), ["2h"]);
-  const texts = strategyTags(stored, at, { archive: true }).map((t) => t.text);
-  assert.ok(texts.includes("SQZ 2h 10:03"), texts.join(" | "));
-  // A live row's full timeline still wins when both are present.
-  assert.deepEqual(sqzFires({ ...stored, gradeFresh: { timeline: [], setupTimeline: stored.gradeFresh.setupTimeline } }, at), []);
+
+test("ZS and ABVX tags from the bot's stamp (2026-09-30)", async () => {
+  const { strategyTags } = await import("./momxFilters.js");
+  const now = Date.parse("2026-09-30T14:30:00Z");
+  const row = { symbol: "GOOG", dayLines: { zs: "2026-09-30T09:55:00-04:00", abvx: "2026-09-30T09:39:00-04:00" } };
+  const tags = strategyTags(row, now);
+  assert.ok(tags.some((x) => x.key === "zsrule" && x.text === "ZS↑ 09:55"));
+  assert.ok(tags.some((x) => x.key === "abvx" && x.text === "ABVX↑ 09:39"));
+  assert.ok(!strategyTags({ symbol: "X", dayLines: { zs: "2026-09-29T09:55:00-04:00" } }, now).some((x) => x.key === "zsrule"));
+});
+
+test("SQZ fire tag counts D and Wk too (2026-09-30)", async () => {
+  const { sqzFires } = await import("./momxFilters.js");
+  const now = Date.parse("2026-09-30T11:00:00-04:00");
+  const row = { symbol: "X", gradeFresh: { timeline: [
+    { at: "2026-09-30T09:45:00-04:00", what: "SQZ D released" },
+    { at: "2026-09-30T10:05:00-04:00", what: "SQZ Wk released" },
+  ] } };
+  assert.deepEqual(sqzFires(row, now).map((f) => f.tf + " " + f.clock), ["D 09:45", "Wk 10:05"]);
+});
+
+test("✓ JEV tag shows when the bot's trade here was a Jev TAKE today", async () => {
+  const { strategyTags } = await import("./momxFilters.js");
+  const now = Date.parse("2026-10-05T14:30:00Z");
+  const row = { symbol: "TSLA", dayLines: { jev: "2026-10-05T09:44:10-04:00" }, jevPick: { rule: "mxaplus", p: 0.42 } };
+  const tag = strategyTags(row, now).find((t) => t.key === "jev");
+  assert.ok(tag && tag.text.startsWith("✓ JEV 09:44") && /42%/.test(tag.title));
+  assert.equal(strategyTags({ symbol: "TSLA", dayLines: { jev: "2026-10-02T09:44:10-04:00" } }, now).some((t) => t.key === "jev"), false);
+});
+
+// 2026-10-03 his ask: MOM↑ turns SOLID cyan for the strong call setup = the
+// momentum line cyan AND the ADX background cyan (DI+ > 25 and above DI-) on
+// BOTH 5m and 30m - the two timeframes the scanner carries ADX for.
+test("MOM tag is strong only when momentum AND the 5m+30m ADX background agree", async () => {
+  const { sqzMomentumTag } = await import("./momxFilters.js");
+  const cell = (plus, minus) => ({ plus, minus, adx: 30 });
+  const bull = (adx) => ({ symbol: "X", m5: { sqzMom: { value: 0.4, prev: 0.3, color: "cyan" } }, adx });
+  assert.equal(sqzMomentumTag(bull({ "5m": cell(31, 12), "30m": cell(28, 15) })).strong, true);
+  assert.equal(sqzMomentumTag(bull({ "5m": cell(31, 12), "30m": cell(22, 15) })).strong, false); // 30m DI+ under 25
+  assert.equal(sqzMomentumTag(bull({ "5m": cell(26, 30), "30m": cell(28, 15) })).strong, false); // DI- leads on 5m
+  assert.equal(sqzMomentumTag(bull(null)).strong, false);
+  const bear = { direction: "bear", symbol: "Y", m5: { sqzMom: { value: -0.4, prev: -0.3, color: "magenta" } },
+    adx: { "5m": cell(12, 31), "30m": cell(10, 27) } };
+  assert.equal(sqzMomentumTag(bear).strong, true);
+});
+
+test("FLIP tag: 5m ADX background flip on the closed candle + momentum turning the same way", async () => {
+  const { momFlipTag } = await import("./momxFilters.js");
+  const row = (dir, cross, value, prev) => ({ symbol: "APLD", direction: dir,
+    adx: { "5m": { closedCross: cross, closedCrossAt: 100 } }, m5: { sqzMom: { value, prev, barAt: 100 } } });
+  assert.equal(momFlipTag(row("bear", "bear", 0.66, 0.83)).text, "FLIP↓");   // APLD 10:50: purple, falling
+  assert.equal(momFlipTag(row("bear", "bear", 0.9, 0.83)), null);            // dots still rising
+  assert.equal(momFlipTag(row("bear", "bull", -0.5, -0.4)), null);           // flip the other way
+  assert.equal(momFlipTag(row(undefined, "bull", -0.3, -0.5)).text, "FLIP↑"); // dark blue, rising
+  assert.equal(momFlipTag({ ...row(undefined, "bull", 0.2, 0.1), m5: { sqzMom: { value: 0.2, prev: 0.1, barAt: 400 } } }), null); // different candles
+});
+
+test("MOM tag only from today's 5m candle, like the bot's MOM rule", async () => {
+  const { sqzMomentumTag } = await import("./momxFilters.js");
+  const now = Date.parse("2026-10-07T22:00:00-04:00");
+  const today = Date.parse("2026-10-07T15:55:00-04:00") / 1000;
+  const old = Date.parse("2026-10-05T19:10:00-04:00") / 1000;
+  assert.equal(sqzMomentumTag({ m5: { sqzMom: { value: 0.4, color: "cyan", barAt: today } } }, now).text, "MOM↑");
+  assert.equal(sqzMomentumTag({ m5: { sqzMom: { value: 0.4, color: "cyan", barAt: old } } }, now), null);
 });

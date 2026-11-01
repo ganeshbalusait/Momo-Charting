@@ -205,7 +205,30 @@ export function pinnedRun(columns) {
 // disagree - by falling back to `defaultSort`'s key (keeping ITS direction)
 // when that column is visible, or otherwise the first sortable column left
 // in `visibleColumns`' own order.
+/** "No sort": the board shows the scanner's own row order, no arrow. */
+export const NO_SORT = Object.freeze({ key: null, direction: "none" });
+
+/**
+ * One header click. Same column cycles through its two directions and then
+ * NO SORT (his ask 2026-09-30: "I don't see No sort", for every column);
+ * a new column starts at its natural first direction (A-Z for names,
+ * high-to-low for numbers).
+ */
+export function nextSortState(current, column, firstDirection) {
+  const textual = column && (column.kind === "industry" || column.kind === "symbol");
+  const first = firstDirection === "asc" || firstDirection === "desc"
+    ? firstDirection
+    : textual ? "asc" : "desc";
+  const second = first === "asc" ? "desc" : "asc";
+  if (!column || !current || current.key !== column.key || current.direction === "none") {
+    return { key: column ? column.key : null, direction: first };
+  }
+  if (current.direction === first) return { key: column.key, direction: second };
+  return NO_SORT;
+}
+
 export function effectiveSort(sort, visibleColumns, defaultSort) {
+  if (sort && typeof sort === "object" && sort.direction === "none") return NO_SORT;
   const columns = Array.isArray(visibleColumns) ? visibleColumns : [];
   const visible = new Set(
     columns.filter((column) => column && typeof column.key === "string").map((column) => column.key),

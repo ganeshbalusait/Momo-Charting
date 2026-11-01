@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 
-import { TOS_LINK_GROUPS, chartLinkMessage, tosLinkGroup } from "./tosLinkGroups.js";
+import { TOS_LINK_GROUPS, chartLinkMessage, tosLinkGroup, warmTickerForCharts, sendTickerToCharts, CHART_LINK_EVENT } from "./tosLinkGroups.js";
 
 test("the 9 TOS link colours, Red first", () => {
   assert.equal(TOS_LINK_GROUPS.length, 9);
@@ -34,4 +34,16 @@ test("App.jsx uses the shared colour list, not its own copy", () => {
   assert.doesNotMatch(app, /const TOS_LINK_GROUPS = /);
   // the navigation intent keeps the colour and allows no timeframe for a link
   assert.match(app, /linkGroup = Number\.isInteger\(group\) && group >= 1 && group <= 9 \? group : null/);
+});
+
+test("scanner warm and click messages keep symbol/group ownership and distinct intent", () => {
+  const previous=globalThis.window, events=[];
+  globalThis.window={location:{search:""},dispatchEvent:e=>events.push(e)};
+  try {
+    const warm=warmTickerForCharts(" spy ",2),open=sendTickerToCharts("AAPL",2);
+    assert.equal(warm.intent,"warm");assert.equal(warm.symbol,"SPY");assert.equal(warm.linkGroup,2);
+    assert.equal(open.symbol,"AAPL");assert.equal(open.intent,undefined);
+    assert.ok(events.every(e=>e.type===CHART_LINK_EVENT));
+    assert.equal(warmTickerForCharts("",2),null);
+  } finally {if(previous===undefined)delete globalThis.window;else globalThis.window=previous;}
 });

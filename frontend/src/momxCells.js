@@ -313,6 +313,53 @@ function compareValues(left, right) {
   return leftText.localeCompare(rightText, "en", { sensitivity: "base" });
 }
 
+/**
+ * His TOS "HighLowGraph" column (2h, EXT, length 8) re-evaluated against a
+ * LIVE price, so the board re-sorts between rebuilds the way TOS does.
+ *
+ * ``cell`` is the built H/L cell, which carries the 8-bar window's ``hh`` and
+ * ``ll`` (momx/columns.py high_low_cell). The live price is the forming bar's
+ * close and can extend the window, so hh/ll widen to include it. Same formula
+ * and colour ladder as the backend: (close - mid) / (hh - mid), 0 when the
+ * range is flat; > 0.5 dark_green, > 0 green, < -0.5 dark_red, < 0 red, else
+ * gray. Returns null (keep the built cell) when the inputs are missing.
+ */
+/**
+ * Live %Chg: the backend's own formula (momx/columns.py pct_change) re-run
+ * on the live price, using the base it ships as ``prevClose``. Only for
+ * premarket and regular hours (``sessionOk``): after 16:00 a live
+ * after-hours last is not what the session %Chg measures (LASR -1.37% read
+ * +0.23% when that was tried). Returns null to keep the built value.
+ */
+export function livePctChange(prevClose, last, sessionOk) {
+  const base = Number(prevClose);
+  const price = Number(last);
+  if (!sessionOk || prevClose == null || !Number.isFinite(base) || base <= 0
+      || !Number.isFinite(price) || price <= 0) return null;
+  return (price / base - 1) * 100;
+}
+
+export function liveHighLowCell(cell, last) {
+  if (!cell || typeof cell !== "object") return null;
+  const hh0 = Number(cell.hh);
+  const ll0 = Number(cell.ll);
+  const price = Number(last);
+  if (cell.hh == null || cell.ll == null || !Number.isFinite(hh0) || !Number.isFinite(ll0)
+      || !Number.isFinite(price) || price <= 0) return null;
+  const hh = Math.max(hh0, price);
+  const ll = Math.min(ll0, price);
+  if (hh === ll) return { ...cell, hh, ll, degree: 0, value: 0, bg: "gray", live: true };
+  const mid = (hh + ll) / 2;
+  const degree = (price - mid) / (hh - mid);
+  const bg = degree > 0.5 ? "dark_green" : degree > 0 ? "green" : degree < -0.5 ? "dark_red" : degree < 0 ? "red" : "gray";
+  return { ...cell, hh, ll, degree, value: Math.round(degree * 100) / 100, bg, live: true };
+}
+
+export function highLowSortValue(cell) {
+  const raw = cell?.degree ?? cell?.value;
+  return raw != null && raw !== "" && Number.isFinite(Number(raw)) ? Number(raw) : null;
+}
+
 export function sortRows(rows, key = MOMX_DEFAULT_SORT.key, direction = MOMX_DEFAULT_SORT.direction) {
   if (!Array.isArray(rows)) return [];
   const sortKey = typeof key === "string" && key ? key : MOMX_DEFAULT_SORT.key;
@@ -600,12 +647,38 @@ export function firesOf(row) {
   const seen = new Set();
   const out = [];
   for (const reason of raw) {
+    // "blocked:pricechange:volume:4h" is WHY the row is not a match, not a signal that
+    // fired - it printed on the card as "BLOCKED PRICECHANGE:VOLUME:4H" (NBIS 2026-10-03).
+    if (String(reason || "").trim().toLowerCase().startsWith("blocked")) continue;
     const label = fireLabel(reason);
     if (!label || seen.has(label)) continue;
     seen.add(label);
     out.push(label);
   }
   return out;
+}
+
+const FIRED_TF_WORDS = { D: "daily", Wk: "weekly", W: "weekly", M: "monthly", "2D": "2-day", "3D": "3-day", "4D": "4-day" };
+
+/** MomoX-style "fired 0 min ago on the weekly · 10:25 AM ET" (2026-10-03): the NEWEST
+ *  first-sighting stamp in row.firedAt (momx/service.py _apply_fired_at - when OUR scanner
+ *  first saw that signal). null when the row carries no stamps. */
+export function firedWhen(row, nowMs = Date.now()) {
+  const map = row && typeof row === "object" && row.firedAt && typeof row.firedAt === "object" ? row.firedAt : null;
+  if (!map) return null;
+  let best = null;
+  for (const [reason, iso] of Object.entries(map)) {
+    if (String(reason).toLowerCase().startsWith("blocked")) continue;
+    const at = Date.parse(iso);
+    if (Number.isFinite(at) && (!best || at > best.at)) best = { reason, at };
+  }
+  if (!best) return null;
+  const tf = String(best.reason).split(":").slice(1).join(":");
+  const mins = Math.max(0, Math.floor((nowMs - best.at) / 60000));
+  const ago = mins < 60 ? mins + " min ago" : mins < 1440 ? Math.floor(mins / 60) + "h ago" : Math.floor(mins / 1440) + "d ago";
+  const clock = new Date(best.at).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+  const day = mins >= 1440 ? new Date(best.at).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short" }) + " " : "";
+  return { at: best.at, text: "fired " + ago + (tf ? " on the " + (FIRED_TF_WORDS[tf] || tf) : "") + " · " + day + clock + " ET" };
 }
 
 // The lightning badge is written by a DIFFERENT agent's backend change and may
@@ -851,6 +924,47 @@ export const MOMX_BOARD_CACHE_PREFIX = "momx.board.";
 // a megabyte, but the universe is trader-editable, so the stored row count is
 // capped to keep a giant paste from tripping the ~5MB localStorage quota.
 export const MOMX_BOARD_CACHE_MAX_ROWS = 600;
+// ...and a SIZE budget per list (2026-10-08): rows grew to ~6 KB each, so 400
+// rows made 2.5 MB per list and the two boards filled the phone's ~5 MB
+// storage - every settings save then failed ("Unable to save D settings").
+// The top rows are kept until the copy fits.
+export const MOMX_BOARD_CACHE_MAX_CHARS = 400_000;
+
+function fitBoardEntry(entry) {
+  let json = JSON.stringify(entry);
+  if (json.length <= MOMX_BOARD_CACHE_MAX_CHARS) return json;
+  let low = 1;
+  let high = entry.rows.length - 1;
+  let best = null;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = JSON.stringify({ ...entry, rows: entry.rows.slice(0, middle) });
+    if (candidate.length <= MOMX_BOARD_CACHE_MAX_CHARS) {
+      best = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
+}
+
+/** Remove stored board copies above the size budget (written by older builds). */
+export function pruneOversizedBoardCaches(storage) {
+  const store = resolveStorage(storage);
+  if (!store) return 0;
+  const keys = [];
+  try {
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index);
+      if (key && key.startsWith(MOMX_BOARD_CACHE_PREFIX) && (store.getItem(key) || "").length > MOMX_BOARD_CACHE_MAX_CHARS) keys.push(key);
+    }
+    keys.forEach((key) => store.removeItem(key));
+  } catch {
+    return 0;
+  }
+  return keys.length;
+}
 
 export function momxBoardCacheKey(list) {
   const name = typeof list === "string" && list.trim() !== "" ? list.trim() : "__default__";
@@ -878,6 +992,19 @@ function boardUniverseCount(board, fallback) {
   return fallback;
 }
 
+// These times describe the SAME rows as the board, including when a saved
+// board is displayed during warm-up. Keep every live/storage/view hop intact.
+function boardTimingFields(board) {
+  const out = {};
+  for (const key of ["scanStartedAt", "scanCompletedAt", "dataSource"]) {
+    if (typeof board?.[key] === "string") out[key] = board[key];
+  }
+  if (board?.freshness && typeof board.freshness === "object" && !Array.isArray(board.freshness)) {
+    out.freshness = { ...board.freshness };
+  }
+  return out;
+}
+
 // The slim, storable shape of a board: rows (capped) plus the two figures the
 // toolbar shows for whatever data is on screen. Returns null when the board has
 // NO rows - an empty board is never worth caching, and caching it would let a
@@ -885,10 +1012,11 @@ function boardUniverseCount(board, fallback) {
 export function boardCacheEntry(board) {
   if (!board || typeof board !== "object") return null;
   const rows = Array.isArray(board.rows) ? board.rows : [];
-  if (rows.length === 0) return null;
+  if (rows.length === 0 && boardRest(board).length === 0) return null;
   const capped = rows.length > MOMX_BOARD_CACHE_MAX_ROWS ? rows.slice(0, MOMX_BOARD_CACHE_MAX_ROWS) : rows;
   return {
     rows: capped,
+    ...boardTimingFields(board),
     generatedAt: board.generatedAt === undefined ? null : board.generatedAt,
     // tapeAsOf must survive the cache: without it a reloaded weekend tab
     // showed Friday's matches under a fresh Updated stamp with NO "data as
@@ -911,7 +1039,9 @@ export function writeBoardCache(list, board, storage) {
   const entry = boardCacheEntry(board);
   if (!entry) return false;
   try {
-    store.setItem(momxBoardCacheKey(list), JSON.stringify(entry));
+    const json = fitBoardEntry(entry);
+    if (!json) return false;
+    store.setItem(momxBoardCacheKey(list), json);
     return true;
   } catch {
     return false;
@@ -939,9 +1069,10 @@ export function readBoardCache(list, storage) {
   }
   if (!parsed || typeof parsed !== "object") return null;
   const rows = Array.isArray(parsed.rows) ? parsed.rows : null;
-  if (!rows || rows.length === 0) return null;
+  if (!rows || (rows.length === 0 && boardRest(parsed).length === 0)) return null;
   return {
     rows,
+    ...boardTimingFields(parsed),
     generatedAt: parsed.generatedAt === undefined ? null : parsed.generatedAt,
     // tapeAsOf and rest are WRITTEN by boardCacheEntry, so they must be READ
     // back here too. Until 2026-09-02 this whitelist dropped both, which meant
@@ -986,9 +1117,10 @@ export function decideBoardView(input) {
   const warming = Boolean(options.warming);
 
   const liveRows = liveBoard && Array.isArray(liveBoard.rows) ? liveBoard.rows : [];
-  if (liveRows.length > 0) {
+  if (liveRows.length > 0 || boardRest(liveBoard).length > 0) {
     return {
       rows: liveRows,
+      ...boardTimingFields(liveBoard),
       // The symbols the 50-row cap cut, as cheap PASS-1 records (symbol,
       // industry, % change, verdict) - what "Scan matches only" OFF shows
       // beneath the full rows. Same whitelisting trap as tapeAsOf below:
@@ -1006,9 +1138,10 @@ export function decideBoardView(input) {
   }
 
   const cacheRows = cache && Array.isArray(cache.rows) ? cache.rows : [];
-  if (cacheRows.length > 0) {
+  if (cacheRows.length > 0 || boardRest(cache).length > 0) {
     return {
       rows: cacheRows,
+      ...boardTimingFields(cache),
       rest: boardRest(cache),
       generatedAt: cache.generatedAt === undefined ? null : cache.generatedAt,
       tapeAsOf: cache.tapeAsOf === undefined ? null : cache.tapeAsOf,
@@ -1067,6 +1200,63 @@ export function ageOf(iso, nowMs = Date.now()) {
 //     even if the worker forgot to filter; a MISSING timestamp is trusted
 //     (the worker already applies the window server-side);
 //   - only http(s) urls survive, so a junk url can never become a live link.
+/** Jev's answer -> {label, p, text, tone} for display, or null. */
+// "Jev score" column (his ask 2026-10-02): the highest take chance TypeSafe Jev
+// gave any of today's BOT trades on this ticker (row.jevScore, momx/option_track).
+// 30%+ = a Jev TAKE (✓, green). No bot trade today = no score - Jev only reads
+// the moment a rule fires and the bot buys. TEST, paper only.
+export const JEV_TAKE_CUTOFF = 0.3;
+export function jevScoreCell(row) {
+  // The scanner's own score (row.jevRow, momx/jev_scanner.py - every matched
+  // ticker) comes first; else the best score of today's bot trades here.
+  const scan = row && typeof row === "object" ? row.jevRow : null;
+  const sp = scan && typeof scan === "object" && scan.p !== null && scan.p !== undefined ? Number(scan.p) : NaN;
+  if (Number.isFinite(sp)) {
+    const take = sp >= JEV_TAKE_CUTOFF;
+    const at = typeof scan.at === "string" ? scan.at.slice(11, 16) : "";
+    return { p: sp, take, text: (take ? "✓ " : "") + Math.round(sp * 100) + "%",
+      title: "Jev " + (take ? "would TAKE" : "would skip") + " this ticker now - take chance " + Math.round(sp * 100) + "%"
+        + (at ? " (read at " + at + " ET)" : "") + ". 30% or more = take, and the bot's 'Jev pick' rule buys it (paper). TEST." };
+  }
+  const s = row && typeof row === "object" ? row.jevScore : null;
+  const p = s && typeof s === "object" && s.p !== null && s.p !== undefined ? Number(s.p) : NaN;
+  if (!Number.isFinite(p)) return null;
+  const take = p >= JEV_TAKE_CUTOFF;
+  const n = Number(s.n) || 1;
+  return {
+    p, take, text: (take ? "✓ " : "") + Math.round(p * 100) + "%",
+    title: "Jev " + (take ? "would TAKE" : "would skip") + " - take chance " + Math.round(p * 100) + "%"
+      + (s.rule ? ", best of " + n + " bot trade" + (n === 1 ? "" : "s") + " today (rule: " + s.rule + ")" : "")
+      + ". 30% or more = take. TEST - paper only.",
+  };
+}
+
+export function jevLabel(jev) {
+  if (!jev || typeof jev !== "object") return null;
+  const local = jev.provider === "local-neural";
+  const names = local
+    ? { bullish: "Positive", bearish: "Negative", not_important: jev.offTopic ? "Not relevant" : jev.mixed ? "Mixed / broad" : jev.raw ? "Uncertain" : "Neutral" }
+    : { bullish: "Bullish", bearish: "Bearish", not_important: "Not important" };
+  const name = names[jev.label];
+  if (!name) return null;
+  const p = Number(jev.p);
+  if (local && jev.p != null && (!Number.isFinite(p) || p < 0 || p > 1)) return null;
+  const pct = Number.isFinite(p) && jev.p !== null ? " " + (local && p >= .995 ? "≥99" : Math.round(p * 100)) + "%" : "";
+  // Off-topic / under-70% reads are shown as Not important with the reason
+  // (2026-10-10, momx/news_relevance.py): "Jev: Not important (read Bullish 55% - Jev only 55% sure)".
+  const rawName = names[jev.raw];
+  const why = jev.why ? String(jev.why) : "";
+  const detail = rawName ? " (read " + rawName + pct + (why ? " - " + why : "") + ")" : why ? " (" + why + ")" : "";
+  return { label: jev.label, p: Number.isFinite(p) && jev.p !== null ? p : null,
+    text: (local ? "AI: " : "Jev: ") + name + (rawName ? "" : pct) + detail,
+    ...(local ? {provider: "local-neural", model: jev.model, judgedAt: jev.judgedAt,
+      title: (jev.model === "relevance-filter" ? "Headline relevance filter · " : "Local neural headline sentiment · ") + (jev.model || "financial language model")
+        + (Number.isFinite(Date.parse(jev.judgedAt || "")) ? " · read " + new Date(jev.judgedAt).toLocaleString("en-US", {timeZone: "America/New_York"}) + " ET" : "")
+        + ". Confidence describes the text classification, not the chance of a stock move."} : {}),
+    why, raw: jev.raw || null,
+    tone: jev.label === "bullish" ? "up" : jev.label === "bearish" ? "down" : "flat" };
+}
+
 export function newsOf(row, nowMs = Date.now()) {
   const news = row && typeof row === "object" ? row.news : null;
   if (!news || typeof news !== "object") return null;
@@ -1103,6 +1293,8 @@ export function newsOf(row, nowMs = Date.now()) {
     via: typeof news.via === "string" ? news.via.trim() : "",
     sentiment: typeof news.sentiment === "string" ? news.sentiment.trim() : "",
     summary: typeof news.summary === "string" ? news.summary.trim() : "",
+    // TypeSafe Jev's reading of the headline (news_jev.py, 2026-10-02).
+    jev: jevLabel(news.aiNews || news.jev),
     // The instant itself, for the NEWS view's Time column and its sort. null
     // when the worker shipped no readable stamp - the badge still shows (the
     // window was applied server-side) but there is no time to print.
@@ -1376,7 +1568,10 @@ export function newsColumnCell(row, nowMs = Date.now()) {
   const fresh = news.atMs !== null && nowMs - news.atMs < 3 * 60 * 60 * 1000;
   const aiWord = ai === "up" ? "AI read: good news" : ai === "down" ? "AI read: bad news" : ai ? "AI read: neutral" : "";
   const sentiment = sentimentTone(news.sentiment);
-  const tone = ai || sentiment || "none";
+  // TypeSafe Jev (2026-10-02) sits between the AI catalyst verdict and the
+  // keyword sentiment: it reads every headline, the keyword list only matches words.
+  const jev = news.jev || null;
+  const tone = ai || (jev ? jev.tone : null) || sentiment || "none";
   // The plain word the trader asked for (2026-09-27): the cell goes green or
   // red with the story, and the hover SAYS positive or negative instead of
   // leaving him to decode a sparkle colour. The AI verdict wins; the scraper's
@@ -1385,7 +1580,7 @@ export function newsColumnCell(row, nowMs = Date.now()) {
   // "How do I know what category this news is?" (2026-09-27): when the AI
   // read it, name its category (EARNINGS, UPGRADE, OFFERING...) right there.
   const category = ai && typeof c.category === "string" ? c.category : "";
-  const readBy = ai ? "AI read" + (category ? ": " + category : "") : "keyword read";
+  const readBy = ai ? "AI read" + (category ? ": " + category : "") : jev ? "Jev" : "keyword read";
   const toneLine = toneWord ? toneWord + " news (" + readBy + ")\n" : "";
   const whence = [news.source, news.via && news.via !== news.source ? "via " + news.via : "", news.age]
     .filter(Boolean)
@@ -1400,10 +1595,14 @@ export function newsColumnCell(row, nowMs = Date.now()) {
     category,
     readBy,
     aiJudged: ai !== null,
+    // ▲ / ▼ in the cell (his ask 2026-10-02): Jev's Bullish / Bearish; nothing for Not important.
+    jev,
+    arrow: jev && jev.label === "bullish" ? "▲" : jev && jev.label === "bearish" ? "▼" : "",
     stored: news.stored === true,
     atMs: news.atMs,
     title: toneLine + news.headline + (whence ? " (" + whence + ")" : "")
       + (news.stored ? (news.fresh ? "\nFresh" : "\nStored") + (news.sentiment ? " · " + news.sentiment : "") : "")
+      + (jev ? "\n" + jev.text : "")
       + (aiWord ? "\n" + aiWord + (c.summary ? ": " + c.summary : "") : ""),
   };
 }
@@ -1484,4 +1683,101 @@ export function typedOptionsSentence(reply) {
     out += " Checking the option chain for " + checking.join(", ") + " first.";
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Sector 🔥 by board direction (2026-09-28, "sector why negative is coming in
+// bull, it should be on bear"). The worker's rotation (momx/sectors.py) is a
+// BULL read and latches a HOT sector for the day, so Networking (hot 09:36)
+// kept its 🔥 on the bull board at -2.4%, and the bear board showed the same
+// bull flames.
+//   bull: a 🔥 sector whose median move today is below 0 is left OFF the
+//         bull board (it was shown "cooled" for an hour; he wants it gone).
+//   bear: 🔥 = FALLING sectors - >= 60% of members (4+ priced) down on the day
+//         AND below their 5m VWAP, median <= -0.5% - the "moving now" rule
+//         mirrored; top 3 by that share; leaders = the weakest 5. Shown, not
+//         back-tested (no bear mirror has shown an edge).
+// ---------------------------------------------------------------------------
+export const BEAR_SECTOR_BREADTH = 0.6;
+export const BEAR_SECTOR_MEDIAN = -0.5;
+export const BEAR_SECTOR_MAX = 3;
+
+function finite(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** name -> {down, total, median, leaders} for the bear read, from the rows. */
+export function bearSectorRead(rows) {
+  const groups = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || row.etf) continue;
+    const name = typeof row.industry === "string" ? row.industry.trim() : "";
+    const pct = finite(row.pctChange);
+    if (!name || pct === null || /ETF/.test(name)) continue;
+    const g = groups.get(name) || { name, total: 0, down: 0, moves: [], weak: [] };
+    g.total += 1;
+    g.moves.push(pct);
+    const last = finite(row.last);
+    const vwap = finite(row.m5 && row.m5.vwap);
+    if (pct < 0 && last !== null && vwap !== null && last < vwap) {
+      g.down += 1;
+      g.weak.push({ symbol: row.symbol, pct: Math.round(pct * 100) / 100, vol: false });
+    }
+    groups.set(name, g);
+  }
+  const out = new Map();
+  for (const g of groups.values()) {
+    const sorted = g.moves.slice().sort((a, b) => a - b);
+    const mid = sorted.length ? (sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2) : null;
+    out.set(g.name, {
+      down: g.down, total: g.total, share: g.total ? g.down / g.total : 0, median: mid,
+      leaders: g.weak.sort((a, b) => a.pct - b.pct).slice(0, 5),
+    });
+  }
+  return out;
+}
+
+/**
+ * The SECTORS strip order (his ask 2026-10-01 "sector higher will be top"):
+ * 🔥 hot / 🔸 moving sectors first, then the rest; inside each, the biggest
+ * average move today first - highest on BULL, most negative on BEAR.
+ */
+export function sortSectorsByMove(groups, direction) {
+  const list = Array.isArray(groups) ? groups.slice() : [];
+  const bear = direction === "bear";
+  const move = (g) => {
+    const v = Number(g && g.avg);
+    return Number.isFinite(v) ? (bear ? -v : v) : -Infinity;
+  };
+  return list.sort((a, b) => {
+    const fa = a && (a.hot || a.late) ? 0 : 1;
+    const fb = b && (b.hot || b.late) ? 0 : 1;
+    return fa - fb || move(b) - move(a);
+  });
+}
+
+/** Re-flag sectorRollup groups for the board's direction (see above). */
+export function sectorsForDirection(groups, rows, direction) {
+  const list = Array.isArray(groups) ? groups : [];
+  if (direction !== "bear") {
+    // A 🔥 sector that turned negative today is dropped from the BULL board
+    // entirely (his follow-up 2026-09-28: "still I see in bull").
+    return list.filter((g) => !((g.hot || g.late) && g.today !== null && g.today < 0));
+  }
+  const read = bearSectorRead(rows);
+  const falling = [...read.entries()]
+    .filter(([, r]) => r.total >= 4 && r.share >= BEAR_SECTOR_BREADTH && r.median !== null && r.median <= BEAR_SECTOR_MEDIAN)
+    .sort((a, b) => b[1].share - a[1].share || a[1].median - b[1].median)
+    .slice(0, BEAR_SECTOR_MAX);
+  const fallingNames = new Map(falling);
+  const byName = new Map(list.map((g) => [g.name, g]));
+  const flagged = falling.map(([name, r]) => {
+    const base = byName.get(name) || { name, up: 0, total: r.total, share: 0, avg: r.median, color: industryColor(name), rs3: null, volUp: null, ret3: null };
+    return { ...base, hot: false, late: true, bear: true, leaders: r.leaders, today: Math.round(r.median * 10) / 10,
+      breadthUp: r.down, breadthTotal: r.total };
+  });
+  const rest = list.filter((g) => !fallingNames.has(g.name)).map((g) => ({ ...g, hot: false, late: false }));
+  return flagged.concat(rest);
 }

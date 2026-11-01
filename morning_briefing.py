@@ -45,7 +45,31 @@ def _fmt_pct(value: float) -> str:
     return f"{value:+.1f}%"
 
 
-def market_line(quotes: dict) -> str | None:
+def _session_label(now_et: object = None) -> str:
+    """'premarket' before 09:30 ET. The briefing keeps rebuilding until 09:35, and the
+    archived Oct 2 copy (built 09:31) printed SPY +0.7% / MSTU +10.9% "premarket" - those
+    were 09:31 prices (premarket-only was +0.9% / +6.9%). After the open it says so."""
+    if isinstance(now_et, datetime) and now_et.hour * 60 + now_et.minute >= MARKET_OPEN_MINUTE:
+        return f"at {now_et.strftime('%I:%M').lstrip('0')} {now_et.strftime('%p')} (after the open)"
+    return "premarket"
+
+
+def _names_company(symbol: object, headline: object) -> bool | None:
+    """Does the headline NAME the company (ticker or name - news_names' strict matcher,
+    the same rule as the scanner's News column)? None when the matcher is unavailable.
+    Oct 2: META's "catalyst" was "Would You Let AI Trade Your Money?" - not about Meta -
+    and the briefing still said "signals and news agree"."""
+    sym = str(symbol or "").strip().upper()
+    if not sym or not str(headline or "").strip():
+        return None
+    try:
+        import news_names
+        return bool(news_names.default_names().tickers_in(str(headline), [sym]))
+    except Exception:  # noqa: BLE001 - no matcher = no claim either way
+        return None
+
+
+def market_line(quotes: dict, now_et: object = None) -> str | None:
     """One line on SPY/QQQ so the trader knows which way the tape leans."""
     parts: list[str] = []
     changes: list[float] = []
@@ -64,16 +88,18 @@ def market_line(quotes: dict) -> str | None:
         lean = "tape leans bearish"
     else:
         lean = "tape is flat"
-    return f"{', '.join(parts)} premarket - {lean}."
+    return f"{', '.join(parts)} {_session_label(now_et)} - {lean}."
 
 
-def _catalyst_phrase(catalyst: object) -> str | None:
+def _catalyst_phrase(catalyst: object, symbol: object = None) -> str | None:
     if not isinstance(catalyst, dict):
         return None
     headline = str(catalyst.get("headline") or "").strip()
     if not headline:
         return None
     tag = str(catalyst.get("tag") or "NEWS").strip()
+    if symbol and _names_company(symbol, headline) is False:
+        tag = "related news, not about " + str(symbol).upper() + " - " + tag
     age = catalyst.get("ageMinutes")
     if isinstance(age, (int, float)) and age >= 0:
         hours = int(age // 60)
@@ -108,7 +134,7 @@ def scanner_lines(scanner_payload: object) -> list[str]:
         f"Strongest setup: {lead.get('symbol')} - {_row_signal_phrase(lead)}, "
         f"{str(lead.get('strength') or '').upper()} ({lead.get('score')}){forming}."
     )
-    catalyst = _catalyst_phrase(lead.get("catalyst"))
+    catalyst = _catalyst_phrase(lead.get("catalyst"), lead.get("symbol"))
     lines = [line + (f" Catalyst - {catalyst}" if catalyst else " No fresh catalyst found.")]
     rest = rows[1:]
     if rest:
@@ -146,7 +172,7 @@ def mover_lines(quotes: dict, catalysts: dict | None = None,
         # Marker rather than a structured line object on purpose: `lines` stays
         # a list of plain strings, so nothing that already consumes this payload
         # has to change. The renderer treats an unmatched ** as literal text.
-        catalyst = _catalyst_phrase((catalysts or {}).get(name))
+        catalyst = _catalyst_phrase((catalysts or {}).get(name), name)
         return f"**{name}** {_fmt_pct(change)}" + (f" ({catalyst})" if catalyst else "")
 
     lines: list[str] = []
@@ -164,6 +190,9 @@ def watch_line(scanner_payload: object, quotes: dict) -> str:
     if rows:
         lead = rows[0]
         has_catalyst = isinstance(lead.get("catalyst"), dict) and lead["catalyst"].get("headline")
+        if has_catalyst and _names_company(lead.get("symbol"), lead["catalyst"].get("headline")) is False:
+            return (f"Watch {lead.get('symbol')} at the open - strongest signals; the only news "
+                    "found does not name the company.")
         if has_catalyst:
             return (f"Watch {lead.get('symbol')} at the open - "
                     "signals and news agree.")
@@ -189,7 +218,7 @@ def build_briefing(scanner_payload: object, quotes: dict, now_et: datetime,
     scanner_rows = (scanner_payload or {}).get("rows") if isinstance(scanner_payload, dict) else []
     real_rows = [row for row in (scanner_rows or []) if isinstance(row, dict)]
     scanner_symbols = {str(row.get("symbol") or "").upper() for row in real_rows}
-    market = market_line(quotes or {})
+    market = market_line(quotes or {}, now_et)
     scanner_block = scanner_lines(scanner_payload)
     mover_block = mover_lines(quotes or {}, catalysts, exclude=scanner_symbols)
     watch = watch_line(scanner_payload, quotes or {})

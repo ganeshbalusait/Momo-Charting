@@ -279,7 +279,36 @@ class MomxNewsStore:
         return False
 
 
+def auto_refresh_batch(movers: Any, universe: Any, cursor: int, size: int = 60,
+                       mover_share: int = 30) -> tuple[list[str], int]:
+    """One automatic-refresh batch (2026-10-01, his ask "why we cannot see
+    today's news" - the store only scraped when a button was pressed, and only
+    the first 60 tickers): up to ``mover_share`` of the board's current movers
+    (scan-matched rows, in board order) plus the next tickers of the whole list
+    in rotation from ``cursor``, ``size`` in total, no repeats. Returns the
+    batch and the next cursor. Pure - api_server's loop calls it every cycle."""
+    movers_list = dedupe_symbols(movers)[: max(int(mover_share), 0)]
+    everyone = dedupe_symbols(universe)
+    batch = list(movers_list)
+    seen = set(batch)
+    n = len(everyone)
+    if n == 0:
+        return batch[:size], 0
+    start = int(cursor) % n
+    taken = 0
+    i = start
+    while len(batch) < size and taken < n:
+        sym = everyone[i]
+        if sym not in seen:
+            batch.append(sym)
+            seen.add(sym)
+        taken += 1
+        i = (i + 1) % n
+    return batch[:size], i
+
+
 __all__ = [
+    "auto_refresh_batch",
     "MomxNewsStore",
     "alpaca_credential_pool",
     "build_catalyst_engine",

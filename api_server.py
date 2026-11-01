@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 import base64
 import gzip
 import hashlib
-import inspect
 from io import BytesIO
 import json
 import math
@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -60,10 +61,10 @@ from catalyst_engine import CatalystEngine
 from news_feed_store import MomxNewsStore, build_catalyst_engine, scrape_symbols
 from config import ARTIFACTS_DIR, DATABASE_PATH, EASTERN_TZ, WATCHLIST_PATH, settings
 from data.alpaca_client import AlpacaClient
+from data.index_symbols import is_index
 from data.market_data import create_market_data_client
 from data.schwab_client import SchwabClient
 from data.schwab_rate_limit import GATE as SCHWAB_GATE
-from data.schwab_rate_limit import SchwabUnavailable
 from data.alpaca_overnight import boats_bars_to_frame, fetch_boats_bars
 from data.schwab_otm_activity import (
     build_dashboard_response,
@@ -75,7 +76,9 @@ from data.schwab_otm_activity import (
 )
 from data.tradier_client import TradierClient
 import chart_aggregation
+import chart_profile_store
 import chart_backfill
+from chart_live_history import with_recorded_chart_history
 from database.repository import TradingRepository
 from email_service import send_user_invite
 from execution.alpaca_paper_trader import AlpacaPaperTrader
@@ -387,6 +390,107 @@ CHART_BARS_USE_ALPACA_FALLBACK = False
 # the process, and the only symptom was "the Alpaca SIP backup returned
 # nothing" on a morning when the saved key was perfectly good.
 OWNER_ALPACA_CLIENT_RETRY_SECONDS = 300.0
+
+# ---------------------------------------------------------------------------
+# Working Alpaca data key (2026-10-04, his "check premarket is working ... no guess work")
+# The owner's Settings key ("alpaca_market_data" in the per-user vault) answered 401 on
+# 2026-10-04 while the .env paper3 / paper5 keys answered 200. The premarket 04:00-07:00
+# fill, the overnight (BOATS) candles and the failover bar stream used ONLY the vault key,
+# so a dead Settings key silently emptied all three. Each candidate is now TESTED with one
+# tiny SIP request and the first that answers wins: vault first, then the .env keys in
+# REVERSE config order (the live news socket takes the first .env key - paper3 - and
+# Alpaca allows one data socket per account, so the failover stream lands on another).
+# Verdicts are cached: good 30 min, refused 10 min; a network error is not a verdict.
+# ---------------------------------------------------------------------------
+ALPACA_KEY_GOOD_TTL_SECONDS = 1800.0
+ALPACA_KEY_BAD_TTL_SECONDS = 600.0
+_ALPACA_KEY_VERDICTS: dict[tuple[str, str], tuple[bool, float]] = {}
+_ALPACA_KEY_LOCK = threading.Lock()
+
+
+def _alpaca_data_key_works(key: str, secret: str, *, get=None, now: float | None = None) -> bool | None:
+    """True = Alpaca served SIP bars on this key, False = refused (401/403), None = no answer."""
+    token = (str(key or ""), str(secret or ""))
+    if not token[0] or not token[1]:
+        return False
+    clock = time.monotonic() if now is None else now
+    with _ALPACA_KEY_LOCK:
+        held = _ALPACA_KEY_VERDICTS.get(token)
+    if held is not None:
+        ok, at = held
+        if clock - at < (ALPACA_KEY_GOOD_TTL_SECONDS if ok else ALPACA_KEY_BAD_TTL_SECONDS):
+            return ok
+    status = None
+    try:
+        if get is not None:
+            status = int(get(token))
+        else:
+            start = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT00:00:00Z")
+            request = Request(
+                "https://data.alpaca.markets/v2/stocks/bars?"
+                + urlencode({"symbols": "SPY", "timeframe": "1Day", "limit": 1, "feed": "sip", "start": start}),
+                headers={"APCA-API-KEY-ID": token[0], "APCA-API-SECRET-KEY": token[1]},
+            )
+            try:
+                with urlopen(request, timeout=15) as response:
+                    status = int(response.status)
+            except HTTPError as exc:
+                status = int(exc.code)
+    except Exception:
+        return None                         # no answer is not a verdict - never cached
+    ok = 200 <= status < 300
+    if not ok and status not in (401, 403):
+        return None
+    with _ALPACA_KEY_LOCK:
+        _ALPACA_KEY_VERDICTS[token] = (ok, clock)
+    return ok
+
+
+def _owner_alpaca_key_candidates() -> list[tuple[str, str, str]]:
+    """(label, key, secret): the Settings (vault) key, then every .env Alpaca key in
+    reverse config order. Never raises; secrets are never logged."""
+    out: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(label: str, key: str, secret: str) -> None:
+        if key and secret and (key, secret) not in seen:
+            seen.add((key, secret))
+            out.append((label, key, secret))
+
+    try:
+        connection = sqlite3.connect(str(DATABASE_PATH), timeout=10.0)
+        try:
+            row = connection.execute(
+                "SELECT id FROM app_users WHERE is_active = 1 "
+                "ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at LIMIT 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        if row:
+            vault = auth_service_instance().get_provider_credentials(str(row[0]), "alpaca_market_data")
+            add("settings", str(vault.get("key_id") or "").strip(), str(vault.get("secret_key") or "").strip())
+    except Exception:
+        pass
+    try:
+        for credential in reversed(list(settings.clock_credential_candidates("paper"))):
+            add(str(getattr(credential, "profile_id", "") or "env"),
+                str(credential.key or "").strip(), str(credential.secret or "").strip())
+    except Exception:
+        pass
+    return out
+
+
+def _working_owner_alpaca_key() -> tuple[str, str, str] | None:
+    """(label, key, secret) of the first candidate Alpaca actually serves; None if none.
+    A candidate that could not be tested (network) is used only when no key tested good."""
+    untested = None
+    for label, key, secret in _owner_alpaca_key_candidates():
+        verdict = _alpaca_data_key_works(key, secret)
+        if verdict:
+            return label, key, secret
+        if verdict is None and untested is None:
+            untested = (label, key, secret)
+    return untested
 # How long an EMPTY premarket backfill result stays cached. A good frame is
 # kept for the day; an empty one must expire, or one failed 06:05 attempt
 # serves an empty 04:00-07:00 window until midnight even after the data
@@ -408,6 +512,10 @@ def premarket_backfill_state_of(entry) -> tuple:
     if not entry:
         return ("", "")
     return (str(entry.get("state") or ""), str(entry.get("error") or ""))
+
+
+#: Minute of day (ET) after which today's 04:00-07:00 SIP fill is final.
+PREMARKET_BACKFILL_SETTLED_MINUTE = 7 * 60 + 25
 
 
 def premarket_backfill_cache_entry_is_usable(entry, now: float, hole_still_growing: bool) -> bool:
@@ -433,7 +541,11 @@ def premarket_backfill_cache_entry_is_usable(entry, now: float, hole_still_growi
     return True
 
 
-OI_FINDER_CHART_WARM_LIMIT = 80
+# 140 (was 80) on 2026-10-16: 120 board symbols (Watchlist + the active list,
+# "I want chart pre loaded fast") + 16 permanently-hot must fit, or the two sets
+# evict each other. ~30 MB per resident chart; 80 entries measured 2.5 GB RSS
+# with 34 GB of the 64 GB box free.
+OI_FINDER_CHART_WARM_LIMIT = 140
 # Concurrent background option-chain refreshes. Four keeps the broker busy
 # without letting a burst of symbols starve the request threads.
 OI_FINDER_BACKGROUND_REFRESH_WORKERS = 4
@@ -446,45 +558,6 @@ OI_FINDER_QUICK_ANALYTICS_WORKERS = 6
 OI_FINDER_CHAIN_DISK_CACHE_MAX_AGE_SECONDS = 5 * 24 * 60 * 60
 OI_FINDER_CHAIN_QUOTE_SCHEMA_VERSION = 1
 OI_FINDER_CHART_FULL_REFRESH_DEFER_SECONDS = 0.25
-# Cold-open paint retry (2026-10-10). A ticker clicked on the scanner with no
-# cached tape gets ONE candles-only paint, dispatched together with its deep
-# rebuild - and the deep rebuild's in-flight guard is held from that moment
-# for up to OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS. When that single paint
-# came back empty (Schwab 429 cooldown or a throttled gate slot while the
-# scanner was busy, a slow broker answer), nothing ever painted again: every
-# poll saw "a refresh is in flight" and waited for the deep build, which sits
-# behind other symbols' 40-200s builds on a one-worker lane. That wait was the
-# 3+ minute blank chart. The paint now has its own short guard and retries on
-# the client's polls until the first candles land.
-OI_FINDER_CHART_COLD_PAINT_RETRY_SECONDS = 3.0
-# The 45s deadline clocks a paint that is RUNNING. A paint still waiting in
-# the pool queue is not wedged, it is in line: clocking queue time as a stall
-# (the first cut of this fix did) declared a queued paint dead and enqueued a
-# duplicate at the back of the same queue - harness S9 showed two identical
-# fetches 60ms apart at 59.7s. A queued paint is only given up on after the
-# long cap below, which exists for a pool that has genuinely stopped.
-OI_FINDER_CHART_COLD_PAINT_DEADLINE_SECONDS = 45.0
-OI_FINDER_CHART_PAINT_QUEUED_CAP_SECONDS = 300.0
-# Stale-tape fast paint (2026-10-10). A ticker opened yesterday, on the hot
-# set or warmed by the board prewarm HAS candles - just not today's - so the
-# cold retry above never fired for it, and today's bars waited for the
-# 2-worker FIFO recency pool with a full study replay (minutes under board +
-# warmer load). A tape not current for the session, or whose tail is more
-# than this far behind the clock, gets the same candles-only paint, rate
-# limited to one broker call per OI_FINDER_CHART_REFRESH_SECONDS per symbol.
-OI_FINDER_CHART_PAINT_BEHIND_SECONDS = 120.0
-# Set by _run_chart_paint for the duration of its splice: that worker (off the
-# request thread) also replays the MTF labels on the merged tapes.
-_CHART_PAINT_WORKER = threading.local()
-# Ceiling of the flat-paint backoff (see _chart_paint_flat_backoff).
-OI_FINDER_CHART_PAINT_FLAT_BACKOFF_CAP_SECONDS = 300.0
-# Queued refresh jobs (2026-10-10). The recency/deep deadlines above clock
-# STARTED work. A job still waiting in its pool's queue past the deadline used
-# to be "presumed wedged" and replaced; the replacement went to the back of
-# the queue and the original was dropped at dequeue as superseded - so under
-# a deep enough backlog the symbol's own polls kept replacing its job and it
-# never ran at all. A queued job is now only replaced after this cap.
-OI_FINDER_CHART_REFRESH_QUEUED_CAP_SECONDS = 3600.0
 # The browser polls the dashboard every five seconds, but the full payload
 # includes broker reconciliation and hundreds of historical-trade reads. All
 # user actions explicitly invalidate this cache and the response overlays its
@@ -597,12 +670,11 @@ OPTION_ALLOWED_SETUPS = {
     "EMA + VWAP",
     "EMA + VWAP + Premarket Low Above Candle",
     "EMA + VWAP + Previous Day Low Above Candle",
+    # The scanner's 2H/4H CALL arrow setup (scanner.py). It was never on this list,
+    # so the option bot could not take one even with all ten conditions green
+    # (CRWD in the gate test). His answer 2026-10-03: "Yes" - it should pass.
+    "MTF EMA C/CALL 2H/4H",
 }
-# The scanner tags MTF-only rows with this setup name. The OI scan asks for
-# them (allow_mtf_signal_setup) and gates them on mtf_bullish_signal_pass, so
-# the strategy filter must accept the name too, or every such row is dropped.
-# Kept out of OPTION_ALLOWED_SETUPS so the option-bot entry trigger is unchanged.
-OI_STRATEGY_ALLOWED_SETUPS = OPTION_ALLOWED_SETUPS | {"MTF EMA C/CALL 2H/4H"}
 DEFAULT_OPTION_UNDERLYING_MAP = {
     "AAPU": "AAPL",
     "AMDL": "AMD",
@@ -779,6 +851,33 @@ def _frame_records(frame: pd.DataFrame) -> list[dict]:
         if pd.api.types.is_datetime64_any_dtype(serializable[column]):
             serializable[column] = serializable[column].dt.strftime("%Y-%m-%d %H:%M:%S %Z")
     return [_serialize_value(record) for record in serializable.to_dict("records")]
+
+
+def _json_dict_pieces(payload: dict, *, separators=(",", ":"), default=None,
+                      chunk_rows: int = 1500, allow_nan: bool = True,
+                      yield_chunks: bool = True) -> list[tuple[str, str]]:
+    """``[(key, '"key":<json>'), ...]`` for a dict, encoded so that no single
+    C json.dumps call covers more than ``chunk_rows`` list elements (a long
+    GIL hold), optionally yielding between chunks. Disk writers yield by
+    default; interactive replies rely on Python's normal scheduling between
+    bounded calls rather than explicitly rejoining the background queue.
+    Joining the pieces with the
+    item separator inside braces gives exactly ``json.dumps(payload, ...)``."""
+    item_sep, key_sep = separators
+    pieces: list[tuple[str, str]] = []
+    for key, value in payload.items():
+        if isinstance(value, list) and len(value) > chunk_rows:
+            chunks = []
+            for start in range(0, len(value), chunk_rows):
+                part = json.dumps(value[start:start + chunk_rows], separators=separators, default=default, allow_nan=allow_nan)
+                chunks.append(part[1:-1])
+                if yield_chunks:
+                    time.sleep(0)
+            encoded = "[" + item_sep.join(chunks) + "]"
+        else:
+            encoded = json.dumps(value, separators=separators, default=default, allow_nan=allow_nan)
+        pieces.append((key, json.dumps(key) + key_sep + encoded))
+    return pieces
 
 
 def _serialize_value(value):
@@ -1350,42 +1449,17 @@ class DashboardState:
             max_workers=3,
             thread_name_prefix="oi-finder-paint",
         )
-        # The paint of a chart the trader is LOOKING AT gets its own two
-        # workers (2026-10-10). The pool above also carries background paints
-        # - the mtfSignalsPending Timer wave, board prewarm, warmers - in FIFO
-        # order, so a clicked ticker's ~2s paint queued behind them: harness
-        # S5 5.4s, S9 60s. Only _chart_symbol_is_interactive symbols outside
-        # background_scope land here, so this lane stays short by design.
-        self.oi_finder_chart_interactive_paint_pool = ThreadPoolExecutor(
-            max_workers=2,
-            thread_name_prefix="oi-finder-paint-live",
-        )
-        # Deep (full-history) builds get their own pool. They used to share
-        # the 2-slot pool above, so one 39-79s deep build (measured
+        # Deep (full-history) builds get their own single worker. They used to
+        # share the 2-slot pool above, so one 39-79s deep build (measured
         # 2026-09-22: NKE full 79.16s, HOOD 53.99s, SHOP 48.01s) held HALF the
         # tail capacity for a minute-plus and pushed every tail refresh past its
-        # deadline - the first shove in that day's churn incident.
-        # FOUR workers, not one (2026-10-10). ChartBuildLane still serialises
-        # the builds themselves, so deep concurrency is unchanged; what the
-        # extra workers buy is that waiting jobs wait INSIDE the lane, where
-        # interactive priority re-sorts them and on_wait stamps their guard.
-        # With one worker they waited in the executor's FIFO queue instead,
-        # which knows nothing about priority: the clicked ticker's deep build
-        # sat behind prewarm/Timer builds (main S8: 185s of deep queue).
+        # deadline - the first shove in that day's churn incident. One worker,
+        # because ChartBuildLane already serialises deep builds: this changes
+        # nothing about deep concurrency, it just stops them eating tail slots.
         # Named so a py-spy dump says which kind of build a thread is running.
         self.oi_finder_chart_full_pool = ThreadPoolExecutor(
-            max_workers=4,
+            max_workers=1,
             thread_name_prefix="oi-finder-chart-full",
-        )
-        # ...but only the first four dequeued jobs reach the lane's priority
-        # sort; a fifth background job onward still waits in that executor's
-        # FIFO queue, and the post-restart Timer wave alone is 16+ of them.
-        # So a clicked ticker's deep build is DISPATCHED to its own pair, which
-        # acquires the same ChartBuildLane (still one build at a time) and is
-        # sorted first there (2026-10-10).
-        self.oi_finder_chart_interactive_full_pool = ThreadPoolExecutor(
-            max_workers=2,
-            thread_name_prefix="oi-finder-chart-full-live",
         )
         self.oi_finder_chart_disk_cache_dir = ARTIFACTS_DIR / "oi_chart_cache"
         self.oi_finder_interactive_until = 0.0
@@ -1751,6 +1825,11 @@ class DashboardState:
 
     def _option_profile_for_underlying(self, underlying_symbol: str | None) -> str:
         symbol = self._normalize_option_symbol(underlying_symbol)
+        if self._option_watchlist_source() == "momx":
+            # MomX books: the Mag7 board's names are the paper3 Jev book, the rest paper5.
+            if symbol in self._momx_mag7_board_symbols():
+                return settings.option_account_profile_id("paper")
+            return settings.watchlist_option_account_profile_id("paper")
         if symbol in set(self._mag7_option_underlyings()):
             return settings.option_account_profile_id("paper")
         return settings.watchlist_option_account_profile_id("paper")
@@ -2224,10 +2303,17 @@ class DashboardState:
 
     def _option_watchlist_source(self) -> str:
         source = str(self.option_bot_config.get("watchlistSource") or "option").strip().lower()
+        if source == "momx":
+            return "momx"
         return "mag7" if source in {"mag7", "mag7-watchlist", "mag7_watchlist"} else "option"
 
     def _option_watchlist_source_label(self) -> str:
-        return "MAG7-Watchlist Options" if self._option_watchlist_source() == "mag7" else "Option Watchlist"
+        # "Mag7 + Watchlist Options" - the same words as the account card (his choice 2026-10-03;
+        # was "MAG7-Watchlist Options"). Saved scans may still carry the old label.
+        source = self._option_watchlist_source()
+        if source == "momx":
+            return "MomX Scanner Options"
+        return "Mag7 + Watchlist Options" if source == "mag7" else "Option Watchlist"
 
 
     def _within_watchlist(self, symbols: list[str]) -> list[str]:
@@ -2250,7 +2336,82 @@ class DashboardState:
         if not master:
             return list(symbols or [])
         return [s for s in (symbols or []) if str(s).strip().upper() in master]
+    #: "Use momx scanner only" + "manually I use momx, use same, don't change anything" (his
+    #: orders 2026-10-03): the option auto-bot trades exactly the MATCHES he sees on his MomX
+    #: boards with "Scan matches only" ticked (row.scanPass), no ETFs - two books:
+    #:   paper5 "Watchlist option" = Watchlist board matches that Jev approves ("watchlist
+    #:                               scanner to take position using Jev AI")
+    #:   paper3 "Mag7 OPTION"      = Mag7 board matches that Jev approves ("use scanner Mag7
+    #:                               tickers use Jev to trade")
+    #: Jev approves = row.jevRow.p >= 10% (his Jev BOT cut-off), score under 30 min old.
+    MOMX_OPTION_BOARD_FILE = "Watchlist.json"
+    MOMX_MAG7_BOARD_FILE = "Mag7.json"
+    MOMX_JEV_CUTOFF = 0.10
+    MOMX_JEV_MAX_AGE_SECONDS = 1800
+
+    def _momx_board_rows(self, filename: str) -> list[dict]:
+        """Rows of one MomX board file; [] when missing or over 30 min old - a dead
+        scanner must never leave the bot trading an old list. Never raises."""
+        path = self._board_prewarm_cache_dir() / filename
+        # Parsed once per file version (2026-10-06): Watchlist.json is ~3 MB and
+        # json.loads of it is one ~0.1-0.3 s call holding the GIL; py-spy --gil
+        # caught it re-parsed every ~2-3 s (4.9% of all GIL time) by the option
+        # watchlist readers, stalling chart requests that landed on it.
+        try:
+            info = os.stat(path)
+            version = (info.st_mtime_ns, info.st_size)
+            cache = self.__dict__.setdefault("_momx_board_rows_cache", {})
+            hit = cache.get(str(path))
+            if hit is not None and hit[0] == version:
+                stamp, rows = hit[1], hit[2]
+            else:
+                board = json.loads(Path(path).read_bytes().decode("utf-8"))
+                stamp = datetime.fromisoformat(str(board.get("generatedAt") or "")).timestamp()
+                rows = [row for row in board.get("rows") or [] if isinstance(row, dict)]
+                cache[str(path)] = (version, stamp, rows)
+        except Exception:
+            return []
+        max_age = float(getattr(self, "BOARD_PREWARM_BOARD_MAX_AGE_SECONDS", 1800.0))
+        if time.time() - stamp > max_age:
+            return []
+        return list(rows)
+
+    @staticmethod
+    def _momx_symbol(row: dict) -> str:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        return symbol if symbol and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", symbol) else ""
+
+    def _momx_mag7_board_symbols(self) -> set[str]:
+        """Every ticker on the MomX Mag7 board (matched or not) - routes to paper3."""
+        return {s for s in (self._momx_symbol(r) for r in self._momx_board_rows(self.MOMX_MAG7_BOARD_FILE)) if s}
+
+    def _momx_jev_matches(self, filename: str) -> list[str]:
+        """One board's MATCHES that Jev approves (jevRow.p >= cutoff, fresh), no ETFs."""
+        out = []
+        now = time.time()
+        for row in self._momx_board_rows(filename):
+            symbol = self._momx_symbol(row)
+            jev = row.get("jevRow") if isinstance(row.get("jevRow"), dict) else {}
+            try:
+                p = float(jev.get("p"))
+                age = now - datetime.fromisoformat(str(jev.get("at"))).timestamp()
+            except (TypeError, ValueError):
+                continue
+            if (symbol and row.get("scanPass") and not row.get("etf") and p >= self.MOMX_JEV_CUTOFF
+                    and 0 <= age <= self.MOMX_JEV_MAX_AGE_SECONDS and symbol not in out):
+                out.append(symbol)
+        return out
+
+    def _momx_scanner_option_underlyings(self) -> list[str]:
+        """Jev-approved Watchlist matches (paper5 - Mag7-board names left to paper3), then
+        the Jev-approved Mag7 matches (paper3)."""
+        mag7 = self._momx_mag7_board_symbols()
+        out = [s for s in self._momx_jev_matches(self.MOMX_OPTION_BOARD_FILE) if s not in mag7]
+        return out + [s for s in self._momx_jev_matches(self.MOMX_MAG7_BOARD_FILE) if s not in out]
+
     def _active_option_watchlist(self) -> list[str]:
+        if self._option_watchlist_source() == "momx":
+            return self._momx_scanner_option_underlyings()
         if self._option_watchlist_source() == "mag7":
             return self._mag7_option_underlyings()
         return list(self.option_watchlist)
@@ -4512,6 +4673,137 @@ class DashboardState:
             return None
         return Path(self.oi_finder_chain_disk_cache_dir) / f"{target}.json.gz"
 
+    def option_quotes(self, contracts: list[str]) -> dict:
+        """{contract: {bid, ask, mid, last}} from one batched Schwab /quotes call."""
+        quotes: dict = {}
+        wanted = sorted(set(contracts))
+        if wanted:
+            for client in _schwab_market_clients():
+                missing = [c for c in wanted if c not in quotes]
+                if not missing:
+                    break
+                try:
+                    quotes.update(client.get_quotes(missing) or {})
+                except Exception:  # noqa: BLE001
+                    continue
+        out = {}
+        for contract in contracts:
+            q = quotes.get(contract) or {}
+            bid = self._safe_float(q.get("bid"), -1.0)
+            ask = self._safe_float(q.get("ask"), 0.0)
+            last = self._safe_float(q.get("last_price"), 0.0)
+            # Mid of the LIVE bid / ask only (bid 0 = a near-worthless option, still a
+            # real market). Never the last trade - it can be hours or days old.
+            mid = round((bid + ask) / 2, 4) if ask > 0 and bid >= 0 else None
+            if mid:
+                out[contract] = {"bid": bid, "ask": ask, "mid": mid, "last": last or None}
+        return {"asOf": time.time(), "quotes": out}
+
+    def option_contract_quotes(self, items: list[dict]) -> dict:
+        """Pick + price the bot's option at the SIGNAL (2026-10-08, his ask: "take
+        trade start 9:30 if you see in rules"). The bot used to wait for a fresh
+        chain per ticker, one every 8+ s: at the open 1,700 signals waited a median
+        40-75 min, so entries were priced long after the rule fired. Here, per
+        {symbol, bear, spot}: the strike / expiry come from the chain already held
+        (memory, else disk - NO rebuild is kicked), re-anchored on the LIVE stock
+        price, with the bot's own rules (momx.option_track pick_contract /
+        pick_entry_strike / levels_at_signal); the price is a live Schwab quote of
+        that contract (one batched /quotes call). The chain's old prices are only
+        used to skip strikes with no market."""
+        from momx import option_track as ot
+
+        today = datetime.now(ZoneInfo(EASTERN_TZ)).date()
+        out: list[dict] = []
+        wanted: list[str] = []
+        for item in items[:150]:
+            symbol = str(item.get("symbol") or "").strip().upper()
+            bear = bool(item.get("bear"))
+            spot = self._safe_float(item.get("spot"), 0.0)
+            entry = {"symbol": symbol, "bear": bear, "ok": False}
+            out.append(entry)
+            if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", symbol) or spot <= 0:
+                entry["why"] = "bad request"
+                continue
+            with self.oi_finder_lock:
+                hit = self.oi_finder_chain_cache.get(symbol)
+            payload = hit[1] if hit else None
+            if not payload:
+                try:
+                    payload = self._load_oi_finder_chain_disk_payload(symbol)
+                except Exception:  # noqa: BLE001
+                    payload = None
+            rows = (payload or {}).get("selectedExpiryChainRows") or []
+            fixed = []
+            for row in rows:
+                try:
+                    expiry = datetime.fromisoformat(str(row.get("expiry") or "")[:10]).date()
+                except ValueError:
+                    continue
+                if expiry < today:
+                    continue
+                fixed.append({**row, "days_to_expiration": (expiry - today).days})
+            if not fixed:
+                entry["why"] = "no chain held"
+                continue
+            chain = {**payload, "underlyingPrice": spot, "selectedExpiryChainRows": fixed}
+            pick = ot.pick_contract(chain, bear)
+            if not pick:
+                entry["why"] = "no OTM contract"
+                continue
+            entry.update(pick=pick, z=ot.pick_contract(chain, bear, zero_dte=True),
+                         e=ot.pick_entry_strike(chain, bear, pick["expiry"]), levels=ot.levels_at_signal(chain),
+                         chainAt=(payload or {}).get("scannedAt"))
+            wanted += [x["contract"] for x in (pick, entry["z"]) if x] + ([entry["e"]["eContract"]] if entry["e"] else [])
+        quotes: dict = {}
+        if wanted:
+            for client in _schwab_market_clients():
+                try:
+                    quotes = client.get_quotes(sorted(set(wanted)))
+                except Exception:  # noqa: BLE001
+                    quotes = {}
+                if quotes:
+                    break
+
+        def live(contract):
+            q = quotes.get(str(contract or "").upper()) or {}
+            bid, ask = self._safe_float(q.get("bid"), 0.0), self._safe_float(q.get("ask"), 0.0)
+            px = round((bid + ask) / 2, 4) if bid > 0 and ask > 0 else (
+                self._safe_float(q.get("mark"), 0.0) or self._safe_float(q.get("last_price"), 0.0))
+            return (px if px > 0 else None), q.get("quote_time_ms")
+
+        def bid_ask(contract):
+            q = quotes.get(str(contract or "").upper()) or {}
+            bid, ask = self._safe_float(q.get("bid"), -1.0), self._safe_float(q.get("ask"), 0.0)
+            return (bid if bid >= 0 else None), (ask if ask > 0 else None)
+
+        for entry in out:
+            pick = entry.get("pick")
+            if not pick:
+                continue
+            price, at_ms = live(pick["contract"])
+            if price is None:
+                entry["why"] = "no live quote"
+                continue
+            pick["entry"] = price
+            pick["entryBid"], pick["entryAsk"] = bid_ask(pick["contract"])
+            entry["quoteTimeMs"] = at_ms
+            z = entry.get("z")
+            if z:
+                z["entry"] = live(z["contract"])[0]
+                z["entryBid"], z["entryAsk"] = bid_ask(z["contract"])
+                if not z["entry"]:
+                    entry["z"] = None
+            e = entry.get("e")
+            if e:
+                ep = live(e["eContract"])[0]
+                if ep:
+                    e_bid, e_ask = bid_ask(e["eContract"])
+                    e.update(eEntry=ep, eLast=ep, eBest=ep, eEntryBid=e_bid, eEntryAsk=e_ask)
+                else:
+                    entry["e"] = None
+            entry["ok"] = True
+        return {"asOf": time.time(), "results": out}
+
     @staticmethod
     def _oi_finder_chain_disk_is_servable(
         disk_payload, compact: bool, research_section: str = ""
@@ -6553,7 +6845,7 @@ class DashboardState:
             pd.Series(False, index=strategy_frame.index),
         ).fillna(False)
         approved_mask = (
-            strategy_frame["setup_name"].isin(OI_STRATEGY_ALLOWED_SETUPS)
+            strategy_frame["setup_name"].isin(OPTION_ALLOWED_SETUPS)
             & last_price.ge(float(settings.scanner.min_price))
             & ema_stack.astype(bool)
             & above_vwap.astype(bool)
@@ -7727,7 +8019,7 @@ class DashboardState:
         with self.scan_lock:
             universe = [str(symbol).strip().upper() for symbol in (symbols or self.scanner.settings.default_universe) if str(symbol).strip()]
             label = str(scan_label or "Watchlist").strip() or "Watchlist"
-            is_mag7 = label == "MAG7-Watchlist Options"
+            is_mag7 = label in ("Mag7 + Watchlist Options", "MAG7-Watchlist Options")  # old label on saved scans
             self.client.ensure_streaming(universe + ["SPY"])
             rvol_threshold = (
                 self.scanner.settings.tos_rvol_mag7_num_dev
@@ -9773,6 +10065,8 @@ class DashboardState:
         normalized_watchlist_source = str(raw_watchlist_source or "option").strip().lower().replace("_", "-")
         if normalized_watchlist_source in {"mag7", "mag7-watchlist", "mag7-options", "mag7-watchlist-options"}:
             normalized_watchlist_source = "mag7"
+        elif normalized_watchlist_source in {"momx", "momx-scanner"}:
+            normalized_watchlist_source = "momx"
         else:
             normalized_watchlist_source = "option"
 
@@ -9941,7 +10235,18 @@ class DashboardState:
         without constructing the dashboard."""
         return build_catalyst_engine(settings)
 
-    def _refresh_catalyst_information(self, symbols: list[str] | None = None) -> dict:
+    def _refresh_catalyst_information(self, *args, **kwargs):
+        """Scrape, then drop the shared news reads so the new headlines show at once."""
+        try:
+            return self._refresh_catalyst_information_impl(*args, **kwargs)
+        finally:
+            # Mark the shared reads OLD, never drop them: a dropped answer made the next
+            # poll wait on the convoyed read again (7 s at 20:18 ET after the 2-min
+            # background scrape). Old answers are served at once and re-read behind.
+            for slot in list((self.__dict__.get("_news_read_cache") or {}).values()):
+                slot["at"] = 0.0
+
+    def _refresh_catalyst_information_impl(self, symbols: list[str] | None = None) -> dict:
         scoped_symbols = list(symbols or settings.scanner.default_universe[:40])
         return scrape_symbols(self.catalysts, self.repository, scoped_symbols, settings.news)
 
@@ -9962,26 +10267,145 @@ class DashboardState:
             self.momx_news_store = store
         return store
 
+    #: How long one answer for a board's ticker set is reused (2026-10-05 09:35 ET).
+    #: Every MomX screen polls this every 15 s and each call took the repository's
+    #: process-wide DB lock: py-spy caught 52 of 112 threads queued on it, mostly
+    #: here, which held /api/news-feed 60 s+, the dashboard 7 s and health 4 s at
+    #: the open (the query alone measured 0.04 s). News refreshes every 2 min, so a
+    #: 15 s old answer is still current.
+    MOMX_NEWS_LATEST_TTL_SECONDS = 15.0
+
     def momx_news_latest(self, symbols: list[str]) -> dict:
-        """Stored ticker-tagged headlines for the MomX board. DB only, never scrapes."""
-        return self._momx_news().latest(symbols)
+        """Stored ticker-tagged headlines for the MomX board, reused for
+        MOMX_NEWS_LATEST_TTL_SECONDS per ticker set; concurrent callers for the same
+        set share ONE database read instead of each queuing on the DB lock."""
+        key = tuple(sorted({str(s or "").strip().upper() for s in (symbols or []) if str(s or "").strip()}))
+        guard = self.__dict__.setdefault("_momx_news_cache_guard", threading.Lock())
+        with guard:
+            cache = self.__dict__.setdefault("_momx_news_cache", {})
+            slot = cache.get(key)
+            if slot is None:
+                slot = {"lock": threading.Lock(), "at": 0.0, "payload": None}
+                cache[key] = slot
+                if len(cache) > 64:
+                    for stale in sorted(cache, key=lambda k: cache[k]["at"])[:-64]:
+                        if stale != key:
+                            cache.pop(stale, None)
+        # A finished scrape (refresh button, 2-min auto refresh) makes the answer old
+        # at once: the new headlines must show on the next poll, not 15 s later.
+        store = self.__dict__.get("momx_news_store")
+        generation = None
+        if store is not None:
+            try:
+                with store.lock:
+                    generation = store.state.get("finishedAt")
+            except Exception:  # noqa: BLE001 - a stub store just means "no generation"
+                generation = None
+        fresh = lambda: (
+            slot["payload"] is not None
+            and slot.get("gen") == generation
+            and (time.monotonic() - slot["at"]) < self.MOMX_NEWS_LATEST_TTL_SECONDS
+        )
+        if fresh():
+            return slot["payload"]
+        with slot["lock"]:
+            if fresh():
+                return slot["payload"]
+            payload = self._momx_news_latest_uncached(symbols)
+            slot["payload"] = payload
+            slot["at"] = time.monotonic()
+            slot["gen"] = generation
+            return payload
+
+    def _momx_news_latest_uncached(self, symbols: list[str]) -> dict:
+        """Stored ticker-tagged headlines for the MomX board. DB only, never scrapes.
+        Local neural readings use item["aiNews"]. Unread recent items are
+        queued off the HTTP path; the configured reader owns its cache."""
+        payload = self._momx_news().latest(symbols)
+        try:
+            judge = getattr(self, "momx_jev_judge", None)
+            if judge is None:
+                from news_neural import get_news_judge
+                judge = get_news_judge(ARTIFACTS_DIR)
+                self.momx_jev_judge = judge
+            judge.annotate(payload)
+            payload["newsAi"] = judge.status()
+            payload["jev"] = {"enabled": False} if judge.status().get("provider") == "local-neural" else judge.status()
+        except Exception:  # noqa: BLE001 - Jev never breaks the news list
+            pass
+        live = _NEWS_LIVE.get("ingest") if "_NEWS_LIVE" in globals() else None
+        if live is not None:
+            payload["live"] = live.status()
+        return payload
 
     def momx_news_refresh(self, symbols: list[str]) -> dict:
         """Start ONE background scrape for the board's tickers (capped), or report
         the one already running. Returns at once; the tab polls momx_news_latest."""
         return self._momx_news().refresh(symbols)
 
-    def _recent_catalysts_or_empty(self, limit: int = 200) -> pd.DataFrame:
-        try:
-            return self.repository.get_recent_catalysts(limit=limit)
-        except Exception:
-            return pd.DataFrame()
+    #: How long the news list's two catalyst reads are reused (2026-10-05 19:50 ET).
+    #: py-spy: the read holding the repository's process-wide DB lock sat in
+    #: PyEval_RestoreThread - waiting for the GIL between SQLite steps while chart
+    #: refreshes and the stream history gzip held it - and every other DB user
+    #: (position manager 38 s, daily snapshot 33 s, watchdog 31 s) queued behind it;
+    #: GET /api/news-feed took 10-60 s while the same query is 0.01 s standalone.
+    #: News refreshes every 2 min, so one 30 s answer shared by every poll is current.
+    NEWS_READ_CACHE_SECONDS = 30.0
 
-    def _latest_catalysts_or_empty(self) -> pd.DataFrame:
-        try:
-            return self.repository.get_latest_catalysts_by_symbol()
-        except Exception:
-            return pd.DataFrame()
+    def _cached_news_read(self, key: str, read, force: bool = False) -> pd.DataFrame:
+        guard = self.__dict__.setdefault("_news_read_guard", threading.Lock())
+        with guard:
+            slots = self.__dict__.setdefault("_news_read_cache", {})
+            slot = slots.setdefault(key, {"lock": threading.Lock(), "at": 0.0, "frame": None})
+        fresh = lambda: slot["frame"] is not None and (time.monotonic() - slot["at"]) < self.NEWS_READ_CACHE_SECONDS
+        if fresh() and not force:
+            return slot["frame"].copy()
+        # A forced read (the refresh button just scraped) must show the new rows.
+        if force:
+            with slot["lock"]:
+                try:
+                    slot["frame"] = read()
+                except Exception:
+                    slot["frame"] = slot["frame"] if slot["frame"] is not None else pd.DataFrame()
+                slot["at"] = time.monotonic()
+                return slot["frame"].copy()
+        # Expired but held: answer with the held frame and re-read in the background.
+        # Measured 19:53 ET: with only the 30 s window, the request that landed on the
+        # expiry still paid the convoyed read (25-32 s) and everyone behind it waited.
+        if slot["frame"] is not None:
+            if slot["lock"].acquire(blocking=False):
+                def reread() -> None:
+                    try:
+                        try:
+                            frame = read()
+                        except Exception:
+                            frame = None
+                        if frame is not None:
+                            slot["frame"] = frame
+                            slot["at"] = time.monotonic()
+                    finally:
+                        slot["lock"].release()
+                threading.Thread(target=reread, name=f"news-read-{key}", daemon=True).start()
+            return slot["frame"].copy()
+        with slot["lock"]:
+            if not fresh():
+                try:
+                    frame = read()
+                except Exception:
+                    frame = pd.DataFrame()
+                slot["frame"] = frame
+                slot["at"] = time.monotonic()
+            return slot["frame"].copy()
+
+    def _recent_catalysts_or_empty(self, limit: int = 200, force: bool = False) -> pd.DataFrame:
+        return self._cached_news_read(
+            f"recent:{int(limit)}", lambda: self.repository.get_recent_catalysts(limit=limit), force=force,
+        )
+
+    def _latest_catalysts_or_empty(self, force: bool = False) -> pd.DataFrame:
+        return self._cached_news_read(
+            "latest", lambda: self.repository.get_latest_catalysts_by_symbol(), force=force,
+        )
 
     def _next_catalyst_information_batch(self, symbols: list[str] | None = None) -> list[str]:
         universe = _dedupe_symbol_tokens(symbols or settings.scanner.default_universe)
@@ -10543,13 +10967,69 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             self.forex_factory_us_news_cache = (now, eastern_today, payload)
             return payload
 
-    def load_news(self, symbols: list[str] | None = None) -> dict:
-        refresh = self._refresh_catalyst_information(symbols)
-        self.action_message = refresh["message"]
+    #: GET /api/news-feed never scrapes while the phone waits (2026-10-05): it scraped 10
+    #: sources x 40 tickers synchronously whenever the engine cache had expired - measured
+    #: 75 s for one request at 01:2x ET, holding one of the browser's few connections while
+    #: the chart queued behind it ("charts take 30 sec"). It now returns the STORED rows at
+    #: once and starts ONE background scrape when the last one is older than this.
+    NEWS_FEED_BACKGROUND_REFRESH_SECONDS = 120.0
+
+    def _news_feed_refresh_in_background(self) -> dict:
+        """The last scrape's result (or a placeholder) + one background scrape if stale."""
+        lock = getattr(self, "_news_feed_bg_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._news_feed_bg_lock = lock
+        with lock:
+            last = getattr(self, "_news_feed_last_refresh", None)
+            last_at = float(getattr(self, "_news_feed_last_refresh_at", 0.0) or 0.0)
+            running = bool(getattr(self, "_news_feed_bg_running", False))
+            stale = (time.monotonic() - last_at) >= self.NEWS_FEED_BACKGROUND_REFRESH_SECONDS
+            if stale and not running:
+                self._news_feed_bg_running = True
+
+                def work() -> None:
+                    try:
+                        result = self._refresh_catalyst_information(None)
+                        with lock:
+                            self._news_feed_last_refresh = result
+                            self._news_feed_last_refresh_at = time.monotonic()
+                    except Exception:
+                        pass
+                    finally:
+                        with lock:
+                            self._news_feed_bg_running = False
+
+                threading.Thread(target=work, name="news-feed-refresh", daemon=True).start()
+        if isinstance(last, dict):
+            return last
+        return {"message": "Loading the latest headlines in the background."}
+
+    def load_news(self, symbols: list[str] | None = None, scrape_now: bool = True) -> dict:
+        refresh = (self._refresh_catalyst_information(symbols) if scrape_now
+                   else self._news_feed_refresh_in_background())
+        if scrape_now and not symbols:
+            self._news_feed_last_refresh = refresh
+            self._news_feed_last_refresh_at = time.monotonic()
+        self.action_message = refresh.get("message", "")
+        catalysts = _frame_records(self._recent_catalysts_or_empty(limit=settings.news.feed_rows, force=scrape_now))
+        index = _frame_records(self._latest_catalysts_or_empty(force=scrape_now))
+        # Jev's saved label on each headline (his ask 2026-10-03: "NEWS in chart right
+        # side also with Jev bullish/bearish"). Same rows as the MomX store, same keys
+        # (news_jev.item_key: url, else symbol + headline) - a lookup, no new Jev calls.
+        try:
+            judge = getattr(self, "momx_jev_judge", None)
+            if judge is None:
+                from news_neural import get_news_judge
+                judge = get_news_judge(ARTIFACTS_DIR)
+                self.momx_jev_judge = judge
+            judge.annotate({"feed": [row for row in catalysts + index if isinstance(row, dict)]})
+        except Exception:  # noqa: BLE001 - Jev never breaks the news feed
+            pass
         return {
             "actionMessage": self.action_message,
-            "catalysts": _frame_records(self._recent_catalysts_or_empty(limit=settings.news.feed_rows)),
-            "catalystIndex": _frame_records(self._latest_catalysts_or_empty()),
+            "catalysts": catalysts,
+            "catalystIndex": index,
             "newsFeedMeta": {key: value for key, value in refresh.items() if key != "message"},
         }
 
@@ -10631,6 +11111,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "mtfSignals": visible_signals,
             "mtfSignalStates": mtf_payload["states"],
             "mtfSignalMode": mtf_payload["mode"],
+            "mtfLiveSignalContexts": mtf_payload.get("liveSignalContexts") or [],
             "updatedAt": datetime.now().astimezone().isoformat(),
         }
 
@@ -10658,27 +11139,16 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         return client
 
     def _resolve_owner_alpaca_client(self):
-        """Build the client from the owner's saved key. Separated from the
-        cache so the retry policy above is testable without a database."""
+        """Build the client from the first Alpaca key that Alpaca actually serves
+        (_working_owner_alpaca_key: the Settings key first, then the .env keys).
+        Separated from the cache so the retry policy above is testable."""
         client = None
         try:
-            connection = sqlite3.connect(str(DATABASE_PATH), timeout=10.0)
-            try:
-                row = connection.execute(
-                    "SELECT id FROM app_users WHERE is_active = 1 "
-                    "ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at LIMIT 1"
-                ).fetchone()
-            finally:
-                connection.close()
-            if row:
-                credentials = auth_service_instance().get_provider_credentials(
-                    str(row[0]), "alpaca_market_data",
-                )
-                key = str(credentials.get("key_id") or "").strip()
-                secret = str(credentials.get("secret_key") or "").strip()
-                if key and secret:
-                    from alpaca.data.historical import StockHistoricalDataClient
-                    client = StockHistoricalDataClient(api_key=key, secret_key=secret)
+            picked = _working_owner_alpaca_key()
+            if picked:
+                _label, key, secret = picked
+                from alpaca.data.historical import StockHistoricalDataClient
+                client = StockHistoricalDataClient(api_key=key, secret_key=secret)
         except Exception:
             client = None
         return client
@@ -10789,7 +11259,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 self._premarket_backfill_cache = cache
             key = (str(target).upper(), now_et.date().isoformat(), interval)
             entry = cache.get(key)
-            hole_still_growing = (now_et.hour * 60 + now_et.minute) < 7 * 60 + 10
+            # Keep re-fetching until the free SIP feed has delivered 06:59. It
+            # runs ~15-17 min behind, so a frame frozen at 07:10 ended ~06:53 and
+            # the last minutes before Schwab's 07:00 stayed blank all day
+            # (SPY/NVDA/TSLA 06:52-07:00 on 2026-10-06).
+            hole_still_growing = (
+                (now_et.hour * 60 + now_et.minute) < PREMARKET_BACKFILL_SETTLED_MINUTE
+            )
             if premarket_backfill_cache_entry_is_usable(
                 entry, now=time.monotonic(), hole_still_growing=hole_still_growing
             ):
@@ -11194,6 +11670,32 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             return payload
         if (time.time() - replay_epoch) > 1800.0:
             return payload
+        # Window it like every other serve path (_windowed_ganesh_chart_payload):
+        # signals from the cached tape's first visible bar on. The replay is the
+        # whole 20-year history - 6,209 signals, 1.49 MB of NVDA's 2.0 MB "slim"
+        # first paint on 2026-10-06 (SPY, not a scanner symbol, was 0.5 MB).
+        # The start comes from the CACHED tape, not the served copy, so a delta
+        # poll (whose bars are only the tail) keeps the same set of signals.
+        with self.oi_finder_chart_lock:
+            entry = self.oi_finder_chart_cache.get(target) or {}
+            full_bars = (entry.get("payload") or {}).get("bars") or []
+        try:
+            first_time = int((full_bars[0] or {}).get("time") or 0) if full_bars else 0
+        except (AttributeError, TypeError, ValueError):
+            first_time = 0
+        # Never start after the prior 20:00 ET: projectGaneshSignalsToChart snaps
+        # an overnight cross (a 01:00 CALLM) forward to the day's first candle,
+        # and a scanner CALLM must stay on the chart even on a short cold tape.
+        today_et = datetime.now(ZoneInfo(EASTERN_TZ)).replace(hour=0, minute=0, second=0, microsecond=0)
+        overnight_start = int((today_et - timedelta(hours=4)).timestamp())
+        if first_time > 0:
+            first_time = min(first_time, overnight_start)
+        signals = replayed.get("signals")
+        if first_time > 0 and isinstance(signals, list):
+            replayed = {
+                **replayed,
+                "signals": [row for row in signals if int((row or {}).get("time") or 0) >= first_time],
+            }
         return {**payload, "ganeshHigherTimeframeSignals": replayed}
 
     def trade_review_payload(self) -> dict:
@@ -11481,8 +11983,27 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     # with OI_FINDER_CHART_WARM_LIMIT below - 64 board + 16 permanently-hot
     # must fit inside that LRU or the two sets evict each other, which is
     # what pinned AMZN frozen for 90 minutes on 2026-08-21.
-    BOARD_PREWARM_MAX_SYMBOLS: int = 64
-    BOARD_PREWARM_CYCLE_SECONDS: float = 60.0
+    # 120 (was 64) on 2026-10-16: the active list (Liquid Movers) AND the
+    # Watchlist, 50 rows each, plus Mag7 - inside OI_FINDER_CHART_WARM_LIMIT.
+    BOARD_PREWARM_MAX_SYMBOLS: int = 120
+    # NEW-MATCH FAST PATH (2026-10-01, "I cannot wait for 2 mins"). A symbol
+    # that just entered the scanner matches is the one he is about to click.
+    # Checked every few seconds instead of once a minute, and its ~2s
+    # candles-first paint starts at once on the paint pool. Its FULL build is
+    # left to the 60s cycle: the deep pool is one FIFO worker shared with his
+    # own chart opens, so queueing background full builds there would put his
+    # next click behind them (ChartBuildLane only orders running builds).
+    BOARD_PREWARM_FAST_TICK_SECONDS: float = 5.0
+    # How recently a row must have entered the matches to count as new.
+    BOARD_PREWARM_NEW_MATCH_WINDOW_SECONDS: float = 900.0
+    # Bound a burst (the open can bring many new matches at once). One per
+    # tick is still 12 a minute, and together with the one-paint-in-flight
+    # rule below it leaves 2 of the 3 paint workers free for his own clicks
+    # even when a paint stalls on the broker (40.9s measured, AAPL 08-19).
+    BOARD_PREWARM_MAX_NEW_MATCHES_PER_TICK: int = 1
+    # 45 s x 6 tails (was 60 s x 2, 2026-10-16) = 8 splices a minute: 120
+    # symbols swept once per 15 min, matching BOARD_PREWARM_TOUCH_COOLDOWN_SECONDS.
+    BOARD_PREWARM_CYCLE_SECONDS: float = 45.0
     # Last in line at boot: after the watchlist warmer (45s) and the hot
     # refresher (90s), so restart ordering is unchanged.
     BOARD_PREWARM_BOOT_DELAY_SECONDS: float = 150.0
@@ -11502,28 +12023,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     # then have no idea what is on his screen, so the candidate list must go
     # EMPTY rather than stay frozen on rows he stopped looking at.
     BOARD_PREWARM_BOARD_MAX_AGE_SECONDS: float = 1800.0
-    BOARD_PREWARM_MAX_TAILS_PER_CYCLE: int = 2
+    BOARD_PREWARM_MAX_TAILS_PER_CYCLE: int = 6
     BOARD_PREWARM_MAX_COLD_BUILDS_PER_CYCLE: int = 1
-    # Candles-only paints for cold board symbols the deep-build veto keeps
-    # out (2026-10-10). That veto lets a cold build through at most once per
-    # 900s while anything else builds, so most cold rows never got ANY
-    # candles before the trader clicked them - and a click during a Schwab
-    # 429 cooldown then showed a blank chart for 10-87s (harness S2/S7). A
-    # paint is one 1-minute Schwab call on the background paint pool, so six
-    # a cycle is ~6 calls a minute next to the MomX worker's 716 per board.
-    # Skipped during a gate cooldown and while any interactive paint is in
-    # flight. Memory-only until a deep build lands (no disk save without
-    # history), which is all a click needs.
-    BOARD_PREWARM_MAX_COLD_PAINTS_PER_CYCLE: int = 6
-    # A row the prewarm painted is not re-planned for this long, whatever the
-    # paint produced. Without it the cap picked the same first six eligible
-    # rows every 60s cycle (an empty paint is never stored, and a premarket
-    # tape still "wants" a paint), so rows 7+ never got candles and an
-    # empty-but-listed row cost ~3 Schwab calls a minute forever. Skipped
-    # rows do not use the cap, so it walks down the board. Empty paints also
-    # count toward the strikes ledger (2026-10-10).
-    BOARD_PREWARM_COLD_PAINT_COOLDOWN_SECONDS: float = 600.0
-    BOARD_PREWARM_TAIL_PACE_SECONDS: float = 2.0
+    BOARD_PREWARM_TAIL_PACE_SECONDS: float = 1.5
     # CEILING ON "WARM". Deliberately the same 900s as
     # WARMER_TAPE_LAG_TOLERANCE_SECONDS, and for the same measured reason.
     #
@@ -11688,21 +12190,41 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     #: of its top 20, so nearly every scanner click paid a cold build.
     BOARD_PREWARM_FILE_ORDER: tuple = ("Watchlist", "Mag7", "Movers")
 
-    def _board_prewarm_file_priority(self, path) -> tuple:
-        """Bull lists first (Watchlist, Mag7, Movers), other bull files, then
-        the bear mirrors in the same order; alphabetical within a tier."""
+    def _board_prewarm_active_stem(self) -> str:
+        """The board file stem of the list the scanner is showing (momx's
+        "active" list), e.g. "Liquid_Movers". "" when unknown. 2026-10-16: he
+        scans "Liquid Movers", which sorted after Watchlist/Mag7/Movers and the
+        EMA lists, so the 64 slots ran out first - 30 of the 40 charts he could
+        tap were 1-4 days old and opened on an old tape."""
+        name = getattr(self, "momx_active_list", None)
+        if name is None:
+            try:
+                from momx import board as _momx_board
+                name = _momx_board.active_list()
+            except Exception:
+                name = ""
+        return re.sub(r"[^A-Za-z0-9._-]", "_", str(name or "")).strip("._")
+
+    def _board_prewarm_file_priority(self, path, active: str = "") -> tuple:
+        """The list on the scanner first, then the bull lists (Watchlist, Mag7,
+        Movers), other bull files, then the bear mirrors in the same order (the
+        active list's bear board first among them); alphabetical within a tier."""
         stem = Path(path).stem
         bear = stem.endswith(".bear")
         base = stem[: -len(".bear")] if bear else stem
         order = tuple(getattr(self, "BOARD_PREWARM_FILE_ORDER", ()))
-        rank = order.index(base) if base in order else len(order)
+        if active and base == active:
+            rank = -1
+        else:
+            rank = order.index(base) if base in order else len(order)
         return (bear, rank, stem)
 
     def _board_prewarm_symbols(self, now_epoch: float | None = None) -> list:
         """Every board's top rows, de-duped, board order preserved, capped."""
         try:
+            active = self._board_prewarm_active_stem()
             paths = sorted(self._board_prewarm_cache_dir().glob("*.json"),
-                           key=self._board_prewarm_file_priority)
+                           key=lambda p: self._board_prewarm_file_priority(p, active))
         except OSError:
             return []
         cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_SYMBOLS", 24)))
@@ -11847,10 +12369,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         strikes_ledger = self.__dict__.setdefault("_board_prewarm_strikes", {})
         tail_cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_TAILS_PER_CYCLE", 2)))
         build_cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_COLD_BUILDS_PER_CYCLE", 1)))
-        paint_cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_COLD_PAINTS_PER_CYCLE", 6)))
-        painted = self.__dict__.setdefault("_board_prewarm_painted_at", {})
-        paint_cooldown = float(getattr(self, "BOARD_PREWARM_COLD_PAINT_COOLDOWN_SECONDS", 600.0))
-        resident = getattr(self, "oi_finder_chart_cache", None) or {}
         cooldown = float(getattr(self, "BOARD_PREWARM_TOUCH_COOLDOWN_SECONDS", 900.0))
         strikes = max(1, int(getattr(self, "BOARD_PREWARM_FAILURE_STRIKES", 3)))
         fail_cooldown = float(getattr(self, "BOARD_PREWARM_FAILURE_COOLDOWN_SECONDS", 21600.0))
@@ -11858,10 +12376,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "warm": [],
             "tails": [],
             "cold": [],
-            # Cold symbols to give a candles-only paint (capped). Overlaps
-            # "cold" on purpose: the cycle skips whichever got its deep build
-            # dispatched, since that build paints first anyway.
-            "coldPaints": [],
             "blocked": [],
             "candidates": 0,
             # Observed verdicts, before any cap or cooldown. Sums to
@@ -11892,71 +12406,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             if entry and int(entry[0]) >= strikes and (clock - float(entry[1])) < fail_cooldown:
                 plan["blocked"].append(symbol)
                 continue
-            recently_painted = (
-                symbol in painted and (clock - float(painted[symbol])) < paint_cooldown
-            )
-            if len(plan["coldPaints"]) < paint_cap and not recently_painted:
-                # Already painted and current in memory (the paint does not
-                # write the file, so the stat() verdict stays "cold"): leave
-                # it, or every cycle would re-fetch the same candles.
-                held = resident.get(symbol)
-                if held is None or self._chart_entry_wants_fast_paint(held, now_epoch) is not None:
-                    plan["coldPaints"].append(symbol)
             if len(plan["cold"]) < build_cap:
                 plan["cold"].append(symbol)
         return plan
-
-    def _board_prewarm_dispatch_cold_paints(self, symbols, building=()) -> int:
-        """Submit the candles-only paints the plan chose; returns how many went
-        out. Background pool only, through _claim_chart_paint so a paint the
-        trader's own click already started is never doubled (and a click
-        still preempts one of these that is only queued)."""
-        pool = getattr(self, "oi_finder_chart_paint_pool", None)
-        if pool is None or not symbols:
-            return 0
-        try:
-            # The gate is shared: a paint now is a refusal now, and the
-            # first call after the cooldown should be his, not ours.
-            if SCHWAB_GATE.state().get("coolingDown"):
-                return 0
-        except Exception:
-            return 0
-        sent = 0
-        for symbol in symbols:
-            if symbol in building:
-                continue
-            try:
-                if self._chart_paint_in_flight(interactive_only=True):
-                    break  # a clicked chart is painting: do not compete with it
-                if self._chart_symbol_is_interactive(symbol):
-                    continue  # his request path owns this symbol's paint
-                token = self._claim_chart_paint(
-                    symbol, min_interval=OI_FINDER_CHART_REFRESH_SECONDS, lane="bg",
-                )
-                if token is None:
-                    continue
-                ledger = self.__dict__.setdefault("_board_prewarm_painted_at", {})
-                ledger[symbol] = time.monotonic()
-                self._board_prewarm_trim(ledger, float)
-                pool.submit(self._board_prewarm_run_cold_paint, symbol, token)
-                sent += 1
-            except Exception:
-                continue
-        return sent
-
-    def _board_prewarm_run_cold_paint(self, symbol: str, token) -> int:
-        """The prewarm's paint job: an empty answer that was not a Schwab
-        cooldown refusal is a strike, like a failed cold build."""
-        bars = self._run_chart_paint(symbol, token)
-        if bars:
-            return bars
-        with self.oi_finder_chart_lock:
-            entry = self._chart_paint_guard().get(symbol)
-            refused = bool(entry is not None and len(entry) > 6 and entry[6])
-            superseded = entry is None or entry[0] != token
-        if not refused and not superseded:
-            self._board_prewarm_note_cold_attempt(symbol)
-        return bars
 
     def _board_prewarm_cold_paused(self) -> bool:
         """This loop's OWN cold-build switch: artifacts/prewarm_cold_paused.
@@ -12033,8 +12485,16 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             for other in pending:
                 if self._chart_refresh_in_flight(other, kind="full"):
                     return False
-            last_build = float(getattr(self, "_board_prewarm_last_build_at", 0.0) or 0.0)
-            if self._warmer_should_wait(time.monotonic(), last_build):
+            # Only a chart he is OPENING defers us. The 45s "interactive"
+            # window (_warmer_should_wait) is held open by every poll of every
+            # chart tab, so with his charts open - all session - it allowed
+            # one cold build per WARMER_FORCE_PROGRESS_SECONDS (15 min):
+            # measured 2026-10-01 19:10 ET, 32 cold, 0 built in 6 min.
+            # Polling a warm chart is a splice that never takes the lane; an
+            # open of a cold one is an on-demand build, which still wins here
+            # and in ChartBuildLane, and the in-flight check above keeps this
+            # to one full build on the box at a time.
+            if int(getattr(self, "oi_finder_ondemand_builds", 0) or 0) > 0:
                 return False
         except Exception:
             return False
@@ -12068,10 +12528,8 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "blocked": [],
             "tails": 0,
             "builds": 0,
-            "paints": 0,
             "tailsPlanned": 0,
             "buildsPlanned": 0,
-            "paintsPlanned": 0,
         }
         start = int(getattr(self, "BOARD_PREWARM_START_MINUTE", 3 * 60 + 30))
         end = int(getattr(self, "BOARD_PREWARM_END_MINUTE", 20 * 60))
@@ -12131,7 +12589,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 pass
             time.sleep(pace)
         builds = 0
-        building: set = set()
         for symbol in plan["cold"]:
             if not self._board_prewarm_cold_build_allowed(symbol):
                 continue
@@ -12143,19 +12600,12 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 # call has none of that, and that is what keeper_paused was
                 # created to stop.
                 self._start_oi_finder_chart_refresh(symbol, full_history=True)
-                building.add(symbol)
                 self._board_prewarm_note_cold_attempt(symbol)
                 self._board_prewarm_last_build_at = time.monotonic()
                 builds += 1
                 print(f"[board-prewarm] {symbol} cold build queued", flush=True)
             except Exception:
                 pass
-        # The vetoed rest still get candles (see
-        # BOARD_PREWARM_MAX_COLD_PAINTS_PER_CYCLE). The deep-build veto is
-        # untouched: these are ~2s fetches with no study replay and no lane.
-        paints = self._board_prewarm_dispatch_cold_paints(
-            plan.get("coldPaints") or [], building,
-        )
         # One line per newly blocked symbol, so the NEXT GOOGLE is found in
         # minutes instead of by timestamping wc -l output for twenty.
         announced = status.setdefault("_announced", {})
@@ -12190,10 +12640,8 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "blocked": list(plan["blocked"]),
                 "tailsPlanned": len(plan["tails"]),
                 "buildsPlanned": len(plan["cold"]),
-                "paintsPlanned": len(plan.get("coldPaints") or []),
                 "tails": tails,
                 "builds": builds,
-                "paints": paints,
             }
         )
         return float(getattr(self, "BOARD_PREWARM_CYCLE_SECONDS", 60.0))
@@ -12267,15 +12715,159 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             flush=True,
         )
         time.sleep(float(getattr(self, "BOARD_PREWARM_BOOT_DELAY_SECONDS", 150.0)))
+        tick = max(1.0, float(getattr(self, "BOARD_PREWARM_FAST_TICK_SECONDS", 5.0)))
+        next_cycle = 0.0
         while True:
-            delay = float(getattr(self, "BOARD_PREWARM_CYCLE_SECONDS", 60.0))
+            if time.monotonic() >= next_cycle:
+                delay = float(getattr(self, "BOARD_PREWARM_CYCLE_SECONDS", 60.0))
+                try:
+                    with background_scope(True):
+                        delay = self._momx_board_chart_prewarm_cycle()
+                except Exception:
+                    # A bad cycle must never kill the thread; back off instead.
+                    delay = 120.0
+                next_cycle = time.monotonic() + max(5.0, delay)
+            # New scanner matches every few seconds, between full cycles.
             try:
                 with background_scope(True):
-                    delay = self._momx_board_chart_prewarm_cycle()
+                    self._board_prewarm_new_match_pass()
             except Exception:
-                # A bad cycle must never kill the thread; back off instead.
-                delay = 120.0
-            time.sleep(max(5.0, delay))
+                pass
+            time.sleep(tick)
+
+    def _board_prewarm_new_matches(self, now_epoch: float | None = None) -> list:
+        """Symbols that entered a board's matches within the window, newest
+        first: [(symbol, matchedSince)]. Same read discipline as
+        _board_prewarm_read_file (one short read, never raises)."""
+        clock = time.time() if now_epoch is None else float(now_epoch)
+        window = float(getattr(self, "BOARD_PREWARM_NEW_MATCH_WINDOW_SECONDS", 900.0))
+        max_age = float(getattr(self, "BOARD_PREWARM_BOARD_MAX_AGE_SECONDS", 1800.0))
+        found: dict = {}
+        try:
+            paths = list(self._board_prewarm_cache_dir().glob("*.json"))
+        except OSError:
+            return []
+        # Parse a board only when its file changed. Each one carries full rows
+        # for the whole universe (~370 symbols), and this runs every few
+        # seconds - re-parsing unchanged files would be pure GIL time.
+        parsed = self.__dict__.setdefault("_board_prewarm_new_match_files", {})
+        for path in paths:
+            try:
+                mtime = Path(path).stat().st_mtime
+            except OSError:
+                continue
+            key = str(path)
+            entry = parsed.get(key)
+            if entry is None or entry[0] != mtime:
+                try:
+                    board = json.loads(Path(path).read_bytes().decode("utf-8"))
+                    generated = datetime.fromisoformat(str(board.get("generatedAt") or "")).timestamp()
+                    rows = [
+                        (str(row.get("symbol") or "").strip().upper(), row.get("matchedSince"))
+                        for row in (board.get("rows") or [])
+                        if isinstance(row, dict) and row.get("scanPass")
+                    ]
+                except Exception:
+                    # Torn/locked read (momx rewrites with os.replace): retry
+                    # next tick rather than remember a failure for this mtime.
+                    continue
+                entry = (mtime, generated, rows)
+                parsed[key] = entry
+            _, generated, rows = entry
+            # A dead momx_worker's last board must not keep "new" matches alive.
+            if not generated or (clock - generated) > max_age:
+                continue
+            for symbol, since in rows:
+                if not (symbol and isinstance(since, str)
+                        and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", symbol)):
+                    continue
+                try:
+                    since_epoch = datetime.fromisoformat(since).timestamp()
+                except ValueError:
+                    continue
+                if (clock - since_epoch) > window:
+                    continue
+                if since_epoch > found.get(symbol, (None, -1.0))[1]:
+                    found[symbol] = (since, since_epoch)
+        for stale in [key for key in parsed if key not in {str(p) for p in paths}]:
+            parsed.pop(stale, None)
+        ordered = sorted(found.items(), key=lambda item: -item[1][1])
+        return [(symbol, value[0]) for symbol, value in ordered]
+
+    def _board_prewarm_new_match_pass(self, now_et=None) -> int:
+        """Start each NEW scanner match's chart now. Returns how many started.
+
+        Cold: the ~2s candles-first paint, on the paint pool, at once - a
+        click then opens on today's candles instead of a blank "loading".
+        That paint is all this does for a cold symbol: its full build stays
+        with the 60s cycle, which queues one only when no full build is in
+        flight (the deep pool is one FIFO worker shared with his own opens),
+        and reaches a new Watchlist match first. Behind: the ~4s tail splice.
+        Each (symbol, matchedSince) is started once.
+        """
+        if now_et is None:
+            now_et = datetime.now(ZoneInfo(EASTERN_TZ))
+        minute_of_day = now_et.hour * 60 + now_et.minute
+        start = int(getattr(self, "BOARD_PREWARM_START_MINUTE", 3 * 60 + 30))
+        end = int(getattr(self, "BOARD_PREWARM_END_MINUTE", 20 * 60))
+        if now_et.weekday() >= 5 or not (start <= minute_of_day < end):
+            return 0
+        if self._board_prewarm_is_paused() or self._board_prewarm_cold_paused():
+            return 0
+        now_epoch = now_et.timestamp()
+        handled = self.__dict__.setdefault("_board_prewarm_new_match_seen", {})
+        status = self.__dict__.setdefault("_board_prewarm_status", {})
+        session_start = self._most_recent_session_start(
+            now_et.astimezone(timezone.utc)
+        ).timestamp()
+        cap = max(0, int(getattr(self, "BOARD_PREWARM_MAX_NEW_MATCHES_PER_TICK", 1)))
+        started = 0
+        for symbol, since in self._board_prewarm_new_matches(now_epoch):
+            if started >= cap:
+                break
+            if handled.get(symbol) == since:
+                continue
+            # He already has it open: his own request path owns it.
+            if self._chart_symbol_is_interactive(symbol):
+                handled[symbol] = since
+                continue
+            verdict = self._board_prewarm_classify(symbol, session_start, now_epoch)
+            if verdict == "cold":
+                # ONE background paint in flight at a time, so his clicks
+                # always find a free paint worker. A busy slot leaves this
+                # match unhandled: the next tick tries it again.
+                previous = getattr(self, "_board_prewarm_paint_future", None)
+                if previous is not None and not previous.done():
+                    break
+            handled[symbol] = since
+            self._board_prewarm_trim(handled, str)
+            try:
+                if verdict == "cold":
+                    # Paint only: release=False leaves every in-flight guard
+                    # alone, and a partial payload is never saved to disk, so
+                    # it can neither clear another build's guard nor clobber a
+                    # deep archive. It stays "cold" for the 60s cycle.
+                    self._board_prewarm_paint_future = self.oi_finder_chart_paint_pool.submit(
+                        self._refresh_oi_finder_chart_payload,
+                        symbol, False, False, True,
+                    )
+                elif verdict == "behind":
+                    self._board_prewarm_note_touch(symbol)
+                    self._touch_chart_tail(symbol)
+                else:
+                    continue
+            except Exception:
+                continue
+            started += 1
+            status["newMatchStarts"] = int(status.get("newMatchStarts", 0)) + 1
+            status["lastNewMatch"] = {
+                "symbol": symbol,
+                "matchedSince": since,
+                "action": "paint" if verdict == "cold" else "tail",
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            print(f"[board-prewarm] new match {symbol} ({verdict}) started", flush=True)
+        return started
 
     def _board_prewarm_status_payload(self) -> dict:
         """What /api/health reports.
@@ -12320,7 +12912,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "enabled": str(os.environ.get("AGX_CHART_PREWARM", "1")).strip().lower()
                 not in {"0", "false", "off", "no"},
                 "paused": self._board_prewarm_is_paused(),
-                # Cold builds obey their own marker (prewarm_cold_paused); tails do not.
+                # Cold builds obey the human's marker too; tails do not.
                 "coldBuildsPaused": self._board_prewarm_cold_paused(),
                 "boardAgeSeconds": board_age,
                 # Makes the LRU-pressure hypothesis falsifiable from one curl.
@@ -12867,11 +13459,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
 
         try:
             produced = payload.get("bars") or payload.get("dailyBars")
-            # A build Schwab refused to send (cooldown) proves nothing about
-            # the symbol, and the control quote would be refused by the same
-            # gate - skip the probe rather than spend a call on "None".
-            if payload.get("brokerUnavailableKind"):
-                return payload
             if not produced and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", target):
                 verdict = self._symbol_unknown_to_broker(target)
                 if verdict is True:
@@ -12925,11 +13512,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             schwab_client = schwab_bar_clients[0] if schwab_bar_clients else SchwabClient()
             chart_source = "Schwab/TOS API"
             schwab_chart_error = ""
-            # Set when Schwab refused BEFORE sending (cooldown / our own gate)
-            # on a candles-only build. Opt-in via raise_unavailable so only
-            # these builds see it; everything else keeps the empty-frame
-            # contract (2026-10-10).
-            schwab_refusal = None
             frame = pd.DataFrame()
             # One-minute source bars let the browser form exact 3m/5m/10m/
             # 15m/30m/1h/2h/4h candles from the same Schwab/TOS stream. This
@@ -12956,28 +13538,16 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     # Fetch the gap we actually have to close instead, clamped
                     # to the same 30-day window the deep tape already uses, so
                     # even a 200-hour-old cache costs one bounded request.
-                    days_back = self._chart_recency_lookback_days(target) if fast_start else 30
-                    if skip_studies and _bars_call_accepts_raise_unavailable(schwab_client):
-                        frame = schwab_client.get_chart_bars(
-                            target, timeframe="1Min", days_back=days_back,
-                            raise_unavailable=True,
-                        )
-                    else:
-                        frame = schwab_client.get_chart_bars(
-                            target, timeframe="1Min", days_back=days_back,
-                        )
-                except SchwabUnavailable as exc:
-                    schwab_refusal = exc
-                    schwab_chart_error = str(exc)
-                    self._note_chart_broker_refusal(target, exc)
+                    frame = schwab_client.get_chart_bars(
+                        target,
+                        timeframe="1Min",
+                        days_back=self._chart_recency_lookback_days(target) if fast_start else 30,
+                    )
                 except Exception as exc:
                     schwab_chart_error = str(exc)
             else:
                 schwab_chart_error = "Schwab/TOS is not connected."
-            # The spare profile shares the process-wide gate, so during a
-            # cooldown it is refused too - one more refusal, and on a stalled
-            # network up to 15s more of a paint the trader is waiting on.
-            if schwab_refusal is None and (not isinstance(frame, pd.DataFrame) or frame.empty):
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
                 # Before conceding to Alpaca, try the OTHER configured Schwab
                 # profile. `configured` only proves a credential is present,
                 # not that Schwab accepts it, so a corrupted market-data secret
@@ -13457,6 +14027,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     daily_tail["low"], daily_tail["close"], daily_tail["volume"],
                 )
             ] if daily_tail is not None else []
+            daily_bars = _dedupe_daily_bars(daily_bars)
             # 4H aggregates this tape. Schwab supplies exact 30-minute bars for
             # only its current intraday retention window, so prepend truthful
             # daily OHLC archive points for the older years. This yields full
@@ -13615,6 +14186,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "mtfSourceSessions": int(mtf_sessions),
                 "mtfSignalStates": mtf_payload["states"],
                 "mtfSignalMode": mtf_payload["mode"],
+                # Per-tick live bubbles: the chart repaints each forming
+                # bucket's bubble on every stream trade from these EMAs
+                # (scanner._tos_live_mtf_projection). Never sent before
+                # 2026-10-01, so every live bubble waited for a rebuild.
+                "mtfLiveSignalContexts": mtf_payload.get("liveSignalContexts") or [],
                 "watchlistMtfStates": watchlist_mtf_payload["states"],
                 # The chart's Ganesh D/2D/3D/4D/W/M studies read this key. The
                 # rebuilt backend never emitted it, so those three indicators
@@ -13647,32 +14223,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "premarketGapNote": str(getattr(self, '_premarket_backfill_error', '') or ''),
                 "premarketGapState": str(getattr(self, '_premarket_backfill_state', '') or ''),
                 "historyLoading": not history_complete,
-                # Honest error text (2026-10-10): the Alpaca sentence sent the
-                # trader to Settings for a fallback that is switched OFF, and
-                # a 429 cooldown read exactly like a ticker with no bars.
                 "error": "" if bars else (
                     f"No one-minute candles were returned for {target}. "
-                    + (
-                        f"Schwab/TOS is cooling down ({getattr(schwab_refusal, 'kind', '')}); "
-                        f"retrying in {max(0.0, float(getattr(schwab_refusal, 'retry_after', 0.0) or 0.0)):.0f}s."
-                        if schwab_refusal is not None
-                        else f"Schwab/TOS: {schwab_chart_error or 'no data'}."
-                    )
-                    + (
-                        " Alpaca fallback needs a working key saved in Settings."
-                        if CHART_BARS_USE_ALPACA_FALLBACK and schwab_refusal is None
-                        else ""
-                    )
-                ),
-                # Machine-readable twin of the error above: why a candles-only
-                # build came back empty, and when the broker will answer.
-                "brokerUnavailableKind": (
-                    str(getattr(schwab_refusal, "kind", "") or "")
-                    if schwab_refusal is not None and not bars else ""
-                ),
-                "brokerRetryAfter": (
-                    round(max(0.0, float(getattr(schwab_refusal, "retry_after", 0.0) or 0.0)), 2)
-                    if schwab_refusal is not None and not bars else 0.0
+                    f"Schwab/TOS: {schwab_chart_error or 'no data'}; Alpaca fallback "
+                    "needs a working key saved in Settings."
                 ),
                 "updatedAt": datetime.now().astimezone().isoformat(),
             }
@@ -13710,8 +14264,14 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             age_seconds = max(0.0, time.time() - path.stat().st_mtime)
             if age_seconds > OI_FINDER_CHART_DISK_CACHE_MAX_AGE_SECONDS:
                 return None
-            with gzip.open(path, "rt", encoding="utf-8") as handle:
-                payload = json.load(handle)
+            # One read, one decompress, one C decode. gzip.open("rt") + json.load
+            # reads in small chunks and gives up the GIL on every one; on a busy
+            # server each chunk then queues behind the study threads for its
+            # turn back. Measured 2026-10-06 05:47 ET: first opens of SNOW/HOOD/
+            # HIMS/MU/SMCI spent 2.1-2.5 s in diskload against 0.16 s idle; with
+            # 3 CPU-bound threads running, SNOW streamed in 1.6-2.1 s vs
+            # 0.4-0.9 s this way.
+            payload = json.loads(gzip.decompress(path.read_bytes()))
             if not isinstance(payload, dict) or not payload.get("bars"):
                 return None
             # A payload from before the current schema is missing a tape the
@@ -13751,6 +14311,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         flush=True,
                     )
                     payload = {**payload, "studyBars": folded}
+            # Same heal-on-read for daily candles saved before 2026-10-03,
+            # when a trading day could sit in dailyBars 2-3 times.
+            daily_bars = payload.get("dailyBars")
+            if daily_bars:
+                deduped = _dedupe_daily_bars(daily_bars)
+                if len(deduped) != len(daily_bars):
+                    payload = {**payload, "dailyBars": deduped}
             return {
                 **payload,
                 "payloadSchemaStale": (
@@ -13759,7 +14326,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "diskCached": True,
                 "diskCacheAgeSeconds": round(age_seconds, 2),
             }
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        except (OSError, EOFError, ValueError, TypeError, json.JSONDecodeError):
             return None
 
     def _save_oi_finder_chart_disk_payload(self, symbol: str, payload: dict) -> None:
@@ -13793,6 +14360,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             stamped = {**payload, "payloadSchema": OI_FINDER_CHART_PAYLOAD_SCHEMA}
+            # The gateway serves these files straight from disk, so a saved
+            # copy must already hold one daily candle per trading day.
+            if stamped.get("dailyBars"):
+                stamped["dailyBars"] = _dedupe_daily_bars(stamped["dailyBars"])
             # Encode to bytes, THEN compress. The obvious streaming form
             # (gzip.open("wt") + json.dump) is 2.5-3x slower for identical
             # output: writing to a text-mode file makes json.dump fall back to
@@ -13827,9 +14398,16 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 fingerprints = {}
                 self._oi_finder_chart_disk_fingerprints = fingerprints
             cache_key = str(path)
-            body = dict(stamped)
-            body.pop("updatedAt", None)
-            encoded_body = json.dumps(body, separators=(",", ":"), default=str).encode("utf-8")
+            # Encode ONCE, in small pieces (2026-10-06): this used to run
+            # json.dumps over the whole 4-9 MB payload TWICE per save (once for
+            # the fingerprint, once to write), each a single C call holding the
+            # GIL ~0.2-0.5 s - py-spy put 20% of all GIL time here at 19:18 ET
+            # and chart opens that landed on it took 1-2 s. Pieces are joined
+            # into exactly the bytes json.dumps would produce.
+            pieces = _json_dict_pieces(stamped, separators=(",", ":"), default=str)
+            encoded_body = (
+                "{" + ",".join(piece for key, piece in pieces if key != "updatedAt") + "}"
+            ).encode("utf-8")
             fingerprint = hashlib.blake2b(encoded_body, digest_size=16).digest()
             if (
                 fingerprints.get(cache_key) == fingerprint
@@ -13854,7 +14432,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     return
                 except OSError:
                     pass  # could not touch it; fall through and rewrite
-            encoded = json.dumps(stamped, separators=(",", ":"), default=str).encode("utf-8")
+            encoded = ("{" + ",".join(piece for _, piece in pieces) + "}").encode("utf-8")
             temporary.write_bytes(gzip.compress(encoded, compresslevel=5))
             os.replace(temporary, path)
             fingerprints[cache_key] = fingerprint
@@ -14003,6 +14581,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             }
             payload["mtfSignalStates"] = mtf_payload["states"]
             payload["mtfSignalMode"] = mtf_payload["mode"]
+            payload["mtfLiveSignalContexts"] = mtf_payload.get("liveSignalContexts") or []
             payload["mtfSignalsPending"] = False
             last_good = getattr(self, "_oi_finder_last_good_mtf", None)
             if isinstance(last_good, dict):
@@ -14048,49 +14627,34 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         payload["historyLoading"] = False
         return payload
 
-    def _relabel_painted_chart_payload(self, target: str, payload: dict) -> dict:
-        """Replay the MTF labels on a COPY of a just-stored paint payload and
-        swap it in if the entry still holds that payload (a newer store wins).
-        Returns whichever payload the caller should persist."""
-        relabeled = dict(payload)
-        if not self._refresh_mtf_block_from_payload_tapes(target, relabeled):
-            return payload
-        relabeled["mtfSourceSessions"] = self._fine_tape_session_span(relabeled)
-        with self.oi_finder_chart_lock:
-            entry = self.oi_finder_chart_cache.get(target)
-            if entry is None or entry.get("payload") is not payload:
-                return payload
-            entry["payload"] = relabeled
-            entry.pop("windowed_payload", None)
-        return relabeled
-
     @staticmethod
-    def _splice_chart_minute_bars(old_bars: list, new_bars: list, keep_held: bool = False) -> list:
-        """The held tape before the fetch window + the fetched bars.
+    def _splice_chart_bars(old_bars: list, new_bars: list) -> list:
+        """Splice a recency fetch onto the held tape WITHOUT losing candles the
+        fetch could not carry.
 
-        keep_held (candles-only paints, 2026-10-10): inside the window, merge
-        by timestamp instead of truncating - held bars the fetch did not
-        return survive, and the broker row wins on a collision (the
-        merge_backfill rule). A paint skips the Tradier premarket and Alpaca
-        BOATS overnight backfills, so truncating deleted every backfilled
-        04:00-07:00 and 20:00-04:00 candle inside the paint window - and the
-        history_ready store then saved that damaged tape to disk until the
-        next backfilling pass, minutes later under load, put them back.
-        Recency/full builds backfill themselves, so they keep the plain
-        truncate (a bar their fetch no longer returns is meant to go).
-        """
-        if not old_bars or not new_bars:
-            return list(new_bars or old_bars or [])
+        The splice used to keep only old bars BEFORE the fetch's first bar, then
+        append the fetch. A fetch that skipped the extended-hours backfills (the
+        candles-only tail extend: wake refresh=true and the behind-tape kick) or
+        whose Alpaca backfill came back empty spans yesterday -> now from Schwab
+        alone, and Schwab has nothing 20:00-07:00, so every overnight and
+        premarket candle inside that span was deleted. Seen 2026-10-06 07:05 ET:
+        SPY's tape went 10-05 19:59 -> 10-06 07:00 with zero of today's 00:00-
+        06:59 candles while NVDA/TSLA kept 250-313. Now the fetch wins every
+        minute it HAS, and held minutes it does not have are kept."""
+        if not old_bars:
+            return list(new_bars or [])
+        if not new_bars:
+            return list(old_bars)
         first_new_time = new_bars[0]["time"]
+        fetched = {bar["time"] for bar in new_bars}
+        kept_inside = [
+            bar for bar in old_bars
+            if bar["time"] >= first_new_time and bar["time"] not in fetched
+        ]
         head = [bar for bar in old_bars if bar["time"] < first_new_time]
-        if not keep_held:
+        if not kept_inside:
             return head + list(new_bars)
-        window = {bar["time"]: bar for bar in old_bars if bar["time"] >= first_new_time}
-        if not window:
-            return head + list(new_bars)
-        for bar in new_bars:
-            window[bar["time"]] = bar
-        return head + [window[key] for key in sorted(window)]
+        return head + sorted([*kept_inside, *new_bars], key=lambda bar: bar["time"])
 
     def _refresh_oi_finder_chart_payload(
         self,
@@ -14103,11 +14667,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         # release=False keeps the in-flight guard held across a two-phase
         # refresh (recency pass then deep rebuild); dropping it between the
         # phases would let a second refresh start for the same ticker.
-        # relabel: a paint worker (never the request thread - see
-        # _CHART_PAINT_WORKER) replays the TOS MTF labels from the merged
-        # tapes after the store. A thread flag rather than a keyword so the
-        # many stand-ins for this method keep their signature.
-        relabel = bool(getattr(_CHART_PAINT_WORKER, "relabel", False))
         try:
             build_lane = getattr(self, "oi_finder_chart_build_lane", None)
             if full_history and build_lane is not None:
@@ -14159,7 +14718,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     # be inferred from request latency. One line per tail build.
                     print(
                         f"[build-timing] {target:6s} recency {time.perf_counter() - _recency_started:6.2f}s "
-                        f"bars={len((payload or {}).get('bars') or [])}",
+                        f"bars={len((payload or {}).get('bars') or [])}"
+                        # ET clock (2026-10-06): without it the splice CADENCE
+                        # per symbol could not be read off the log.
+                        f" at={datetime.now(ZoneInfo(EASTERN_TZ)):%H:%M:%S}",
                         flush=True,
                     )
                 if payload.get("mtfSignalsPending") and not skip_studies:
@@ -14168,15 +14730,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     # cache is "ready" so nothing else asks for a deep build).
                     # Queue one deep build so the labels come back on their
                     # own instead of staying pending until a browser deep pull.
-                    # background_scope: this wave is housekeeping, so its
-                    # paint stays on the shared paint pool and never takes an
-                    # interactive-paint worker from a clicked ticker
-                    # (2026-10-10).
-                    def _queue_deep_for_labels() -> None:
-                        with background_scope(True):
-                            self._start_oi_finder_chart_refresh(target, full_history=True)
-
-                    threading.Timer(3.0, _queue_deep_for_labels).start()
+                    threading.Timer(
+                        3.0,
+                        lambda: self._start_oi_finder_chart_refresh(target, full_history=True),
+                    ).start()
             if payload.get("bars"):
                 # Read the cached entry under the lock, then RELEASE it for the
                 # splice. The merge below walks 12,500 live bars and rebuilds a
@@ -14190,8 +14747,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 # every refresh carries the newest bars, so that is correct.
                 with self.oi_finder_chart_lock:
                     cached = self.oi_finder_chart_cache.get(target)
-                # Read BEFORE the carry-forward below clears it.
-                arrived_without_studies = bool(payload.get("studiesPending"))
                 if True:  # splice + staleness run OUTSIDE the lock
                     if not full_history and cached and cached.get("history_ready"):
                         # A recency refresh fetches only ~2 days of bars. Splice
@@ -14202,9 +14757,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         old_bars = previous.get("bars") or []
                         new_bars = payload.get("bars") or []
                         if old_bars and new_bars:
-                            payload["bars"] = self._splice_chart_minute_bars(
-                                old_bars, new_bars, keep_held=arrived_without_studies,
-                            )
+                            payload["bars"] = self._splice_chart_bars(old_bars, new_bars)
                         # Fold the HELD tape before comparing lengths. This
                         # comparison is a ratchet: it keeps whichever tape has
                         # more rows, and a 1-minute tape written by the old
@@ -14246,15 +14799,23 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                             merged_daily = {bar["time"]: bar for bar in old_daily}
                             for bar in payload.get("dailyBars") or []:
                                 merged_daily[bar["time"]] = bar
-                            payload["dailyBars"] = [merged_daily[key] for key in sorted(merged_daily)]
+                            payload["dailyBars"] = _dedupe_daily_bars(
+                                [merged_daily[key] for key in sorted(merged_daily)]
+                            )
                         payload["historyLoading"] = False
                         # A candles-first payload must never erase the signals a
                         # full build already computed for this symbol - carry
                         # them forward and clear the pending flag, because from
                         # the client's point of view the studies ARE there.
                         if payload.get("studiesPending") and (previous.get("mtfSignals") or []):
-                            for key in ("mtfSignals", "mtfSignalStates", "mtfSignalMode",
-                                        "watchlistMtfStates", "ganeshHigherTimeframeSignals"):
+                            for key in ("mtfSignals", "mtfSignalStates", "mtfSignalMode", "mtfLiveSignalContexts",
+                                        "watchlistMtfStates", "ganeshHigherTimeframeSignals",
+                                        # The label STATUS travels with the labels (2026-10-05):
+                                        # without these three a candles-only top-up was saved
+                                        # with mtfSignalsPending=True and no source span, so the
+                                        # next disk load re-ran the whole MTF replay on the
+                                        # request thread - AAPL 28.6 s at 19:14 ET.
+                                        "mtfSignalsByTimeframe", "mtfSignalsPending", "mtfSourceSessions"):
                                 if previous.get(key) is not None:
                                     payload[key] = previous[key]
                             payload["studiesPending"] = False
@@ -14270,40 +14831,16 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     if payload.get("studiesPending"):
                         previous_any = (cached or {}).get("payload") or {}
                         if previous_any.get("mtfSignals") or []:
-                            for key in ("mtfSignals", "mtfSignalStates", "mtfSignalMode",
-                                        "watchlistMtfStates", "ganeshHigherTimeframeSignals"):
+                            for key in ("mtfSignals", "mtfSignalStates", "mtfSignalMode", "mtfLiveSignalContexts",
+                                        "watchlistMtfStates", "ganeshHigherTimeframeSignals",
+                                        # The label STATUS travels with the labels (2026-10-05):
+                                        # without these three a candles-only top-up was saved
+                                        # with mtfSignalsPending=True and no source span, so the
+                                        # next disk load re-ran the whole MTF replay on the
+                                        # request thread - AAPL 28.6 s at 19:14 ET.
+                                        "mtfSignalsByTimeframe", "mtfSignalsPending", "mtfSourceSessions"):
                                 if previous_any.get(key) is not None:
                                     payload[key] = previous_any[key]
-                    # The per-timeframe TOS MTF label block rides along too
-                    # (2026-10-10). Both lists above predate it, so a paint
-                    # spliced onto a history_ready entry stored, and SAVED TO
-                    # DISK, a payload with mtfSignalsByTimeframe=None and
-                    # mtfSignalsPending=True. The next disk load then judged it
-                    # not content-ready, replayed the labels on the request
-                    # thread and queued a full rebuild - every paint path
-                    # poisoned the copy it was meant to freshen. Copied
-                    # whenever the previous payload has the block, signals or
-                    # none: a ticker with zero labels is still a computed one.
-                    #
-                    # But NOT their mtfSourceSessions stamp. The labels were
-                    # computed on the pre-paint tape; carrying the stamp made
-                    # them pass _chart_payload_has_current_mtf_labels on a
-                    # payload whose 1-minute and fine tapes now run into
-                    # today, so the cached branch's one-shot recompute never
-                    # fired and yesterday's CALL5/CALL4H state was served as
-                    # current until a studies pass landed (minutes under
-                    # load). Unstamped, the carried block is shown but judged
-                    # stale; relabel=True (the paint worker) replays it from
-                    # the merged tapes right after the store below.
-                    if arrived_without_studies:
-                        previous_labels = (cached or {}).get("payload") or {}
-                        if isinstance(previous_labels.get("mtfSignalsByTimeframe"), dict):
-                            for key in ("mtfSignalsByTimeframe",
-                                        "mtfSignalsPending", "mtfSignalMode",
-                                        "mtfSignals", "mtfSignalStates"):
-                                if previous_labels.get(key) is not None:
-                                    payload[key] = previous_labels[key]
-                            payload.pop("mtfSourceSessions", None)
                     # The splice replaced the tape this payload was judged on,
                     # so the verdict is re-taken against the merged bars.
                     self._note_chart_market_tape(payload.get("bars"))
@@ -14321,9 +14858,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     old_bars = previous_depth.get("bars") or []
                     new_bars = payload.get("bars") or []
                     if old_bars and new_bars and len(old_bars) > len(new_bars):
-                        payload["bars"] = self._splice_chart_minute_bars(
-                            old_bars, new_bars, keep_held=arrived_without_studies,
-                        )
+                        payload["bars"] = self._splice_chart_bars(old_bars, new_bars)
                     for depth_key in ("studyBars", "fineStudyBars"):
                         old_depth = previous_depth.get(depth_key) or []
                         if len(old_depth) > len(payload.get(depth_key) or []):
@@ -14353,7 +14888,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         merged_daily = {bar["time"]: bar for bar in old_daily}
                         for bar in payload.get("dailyBars") or []:
                             merged_daily[bar["time"]] = bar
-                        payload["dailyBars"] = [merged_daily[key] for key in sorted(merged_daily)]
+                        payload["dailyBars"] = _dedupe_daily_bars(
+                            [merged_daily[key] for key in sorted(merged_daily)]
+                        )
                     old_ganesh = previous_depth.get("ganeshHigherTimeframeSignals") or {}
                     new_ganesh = payload.get("ganeshHigherTimeframeSignals") or {}
                     old_signals = old_ganesh.get("signals") if isinstance(old_ganesh.get("signals"), list) else []
@@ -14411,6 +14948,19 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                             if full_history and not payload.get("historyLoading")
                             else float((cached or {}).get("built_at_epoch") or 0.0)
                         ),
+                        # Wall-clock of the last completed RECENCY splice: it asked the
+                        # broker for the newest bars, so a tape that still does not reach
+                        # the session after it is honestly current - the market has not
+                        # printed (an index overnight). Without it SPX - no overnight bars,
+                        # reloaded from disk with no built_at after every restart - failed
+                        # the check on EVERY request and rebuilt 666 times in ~9 minutes
+                        # (2026-10-05 00:10 ET), holding both chart workers and starving
+                        # every request ("charts take 30 sec").
+                        "recency_at_epoch": (
+                            time.time()
+                            if not full_history and not payload.get("historyLoading")
+                            else float((cached or {}).get("recency_at_epoch") or 0.0)
+                        ),
                     }
                     if len(self.oi_finder_chart_cache) > OI_FINDER_CHART_WARM_LIMIT:
                         oldest = sorted(
@@ -14419,13 +14969,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         )[:-OI_FINDER_CHART_WARM_LIMIT]
                         for key in oldest:
                             self.oi_finder_chart_cache.pop(key, None)
-                if relabel and arrived_without_studies and not payload.get("historyLoading"):
-                    # AFTER the store, so the candles are already served; the
-                    # replay is <1s of the paint worker's time, and the copy
-                    # saved below is then stamped with labels that match its
-                    # tapes. A replay that cannot run (tapes too short) leaves
-                    # the carried, unstamped block for the cached branch.
-                    payload = self._relabel_painted_chart_payload(target, payload)
                 if not payload.get("historyLoading"):
                     # Full builds AND recency splices both persist. When only
                     # full builds saved, an evicted symbol's next serve loaded
@@ -14501,10 +15044,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 max(0.0, time.monotonic() - float(queued_at)) if queued_at is not None else 0.0,
             )
             return
-        # Dequeued: from here the recency/deep deadline clocks this job. Until
-        # now its guard carried the queued cap, so the symbol's own polls
-        # could not replace it while it waited (the 2026-10-10 livelock).
-        self._mark_chart_refresh_started(target, full_history, token)
         counted = bool(full_history)
         if counted:
             with self.oi_finder_chart_lock:
@@ -14538,381 +15077,20 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         getattr(self, "oi_finder_ondemand_builds", 0) or 0
                     ) - 1)
 
-    def _chart_paint_guard(self) -> dict:
-        """symbol -> [token, stamp, finished|None, started, retry_not_before, lane,
-        refusal_kind].
-
-        stamp is the CLAIM time while the paint waits in its pool and is
-        re-stamped to the START time when a worker picks it up, so the
-        deadline clocks running work and never queue wait (see
-        OI_FINDER_CHART_PAINT_QUEUED_CAP_SECONDS). retry_not_before is a
-        monotonic time before which no new paint may be claimed: set when the
-        last paint met a Schwab cooldown, so the retry lands when the
-        cooldown ends instead of on a blind 3s clock. lane is "live" for a
-        paint on the interactive pool, "bg" otherwise. refusal_kind names that
-        cooldown for the warming stub (see _chart_paint_refusal_fields).
-
-        Lazily created: states built with __new__ (tests, stubs) never ran
-        __init__, and every helper here tolerates missing state.
-        """
-        guard = getattr(self, "oi_finder_chart_paint_guard", None)
-        if not isinstance(guard, dict):
-            guard = {}
-            self.oi_finder_chart_paint_guard = guard
-        return guard
-
-    def _claim_chart_paint(self, target: str, min_interval: float = 0.0, lane: str = "bg"):
-        """Claim the candles-only paint for target, or None if one is running
-        or queued, the last one finished too recently (min_interval), or the
-        last one met a Schwab cooldown that has not ended yet.
-
-        One exception to "queued means wait": a "live" claim takes over a
-        "bg" paint that has not STARTED. Otherwise a board-prewarm paint
-        queued behind other background paints would hold the symbol and the
-        trader's click would wait in that same FIFO line - the head-of-line
-        block the interactive pool exists to remove. The displaced job sees
-        its token is gone when dequeued and returns without fetching."""
-        now = time.monotonic()
-        with self.oi_finder_chart_lock:
-            guard = self._chart_paint_guard()
-            entry = guard.get(target)
-            if entry is not None:
-                stamp, finished = float(entry[1]), entry[2]
-                started = bool(entry[3]) if len(entry) > 3 else True
-                retry_not_before = float(entry[4] or 0.0) if len(entry) > 4 else 0.0
-                if finished is None:
-                    limit = (
-                        OI_FINDER_CHART_COLD_PAINT_DEADLINE_SECONDS if started
-                        else OI_FINDER_CHART_PAINT_QUEUED_CAP_SECONDS
-                    )
-                    held_lane = str(entry[5]) if len(entry) > 5 else "bg"
-                    preempt = lane == "live" and held_lane != "live" and not started
-                    if (now - stamp) < limit and not preempt:
-                        return None
-                elif retry_not_before:
-                    # The broker told us when it will answer again; that
-                    # replaces the blind min_interval (both ways - a 1s
-                    # cooldown does not wait 3s, a 15s one does not retry at
-                    # 3s and earn the next strike on the 5/15/60s ladder).
-                    if now < retry_not_before:
-                        return None
-                elif (now - float(finished)) < min_interval:
-                    return None
-            sequence = int(getattr(self, "_chart_paint_token_seq", 0)) + 1
-            self._chart_paint_token_seq = sequence
-            guard[target] = [sequence, now, None, False, 0.0, lane, ""]
-            if len(guard) > 256:
-                for stale in sorted(guard, key=lambda key: guard[key][1])[:-256]:
-                    guard.pop(stale, None)
-            return sequence
-
-    def _chart_paint_in_flight(self, interactive_only: bool = False) -> bool:
-        """Is any paint claimed and not finished (within its deadline/cap)?
-
-        interactive_only narrows it to symbols a client is polling, which is
-        what the board prewarm yields to: a background paint must never be
-        the thing a clicked ticker's paint competes with for Schwab slots.
-        """
-        now = time.monotonic()
-        with self.oi_finder_chart_lock:
-            items = list(self._chart_paint_guard().items())
-        for symbol, entry in items:
-            if entry[2] is not None:
-                continue
-            started = bool(entry[3]) if len(entry) > 3 else True
-            limit = (
-                OI_FINDER_CHART_COLD_PAINT_DEADLINE_SECONDS if started
-                else OI_FINDER_CHART_PAINT_QUEUED_CAP_SECONDS
-            )
-            if (now - float(entry[1])) >= limit:
-                continue
-            if interactive_only and not self._chart_symbol_is_interactive(symbol, now):
-                continue
-            return True
-        return False
-
-    def _chart_paint_refusal_fields(self, target: str) -> dict:
-        """brokerUnavailableKind/brokerRetryAfter for the warming stub while
-        this symbol's last paint is waiting out a Schwab cooldown.
-
-        The build puts the same fields on its own payload, but an EMPTY paint
-        payload is never stored, so nothing the client receives carried them:
-        a 429 blank read exactly like a symbol still warming (2026-10-10).
-        Machine-readable only; the client does not render them yet."""
-        now = time.monotonic()
-        with self.oi_finder_chart_lock:
-            entry = self._chart_paint_guard().get(target)
-            if entry is None or entry[2] is None or len(entry) < 7:
-                return {}
-            retry_not_before = float(entry[4] or 0.0)
-            kind = str(entry[6] or "")
-        if not kind or retry_not_before <= now:
-            return {}
-        return {
-            "brokerUnavailableKind": kind,
-            "brokerRetryAfter": round(retry_not_before - now, 2),
-        }
-
-    def _note_chart_broker_refusal(self, target: str, exc) -> None:
-        """Side channel from the build to _run_chart_paint: an EMPTY paint
-        payload is never stored, so the paint cannot read why it was empty
-        from the cache. Plain dict ops (atomic under the GIL); bounded."""
-        refusals = self.__dict__.setdefault("_chart_broker_refusals", {})
-        refusals[target] = {
-            "kind": str(getattr(exc, "kind", "") or "unavailable"),
-            "retryAfter": max(0.0, float(getattr(exc, "retry_after", 0.0) or 0.0)),
-        }
-        if len(refusals) > 256:
-            for stale in list(refusals)[:-256]:
-                refusals.pop(stale, None)
-
-    def _pop_chart_broker_refusal(self, target: str):
-        refusals = self.__dict__.get("_chart_broker_refusals")
-        if not isinstance(refusals, dict):
-            return None
-        return refusals.pop(target, None)
-
-    def _run_chart_paint(self, target: str, token) -> int:
-        """Candles only, no study replay: fetch + serialize, ~2s. Returns the
-        bar count now cached. Never raises - a failed paint is retried by the
-        next poll, and the deep build queued alongside it still runs."""
-        with self.oi_finder_chart_lock:
-            entry = self._chart_paint_guard().get(target)
-            if entry is None or entry[0] != token:
-                # Superseded while it sat in the queue (its claim passed the
-                # queued cap and a replacement was dispatched). The
-                # replacement is doing this exact fetch; doing it twice is
-                # the S9 duplicate, and a second Schwab call for nothing.
-                return 0
-            # Started NOW: from here the 45s deadline clocks real work.
-            entry[1] = time.monotonic()
-            if len(entry) > 3:
-                entry[3] = True
-        # A refusal recorded by some other candles-only build (the inline
-        # forced extend) is not this paint's answer.
-        self._pop_chart_broker_refusal(target)
-        started = time.perf_counter()
-        bars = 0
-        refusal = None
-        newest_before = newest_after = 0
-        try:
-            with self.oi_finder_chart_lock:
-                entry = self.oi_finder_chart_cache.get(target) or {}
-            newest_before = self._chart_payload_newest_bar_time(entry.get("payload"))
-            _CHART_PAINT_WORKER.relabel = True
-            try:
-                self._refresh_oi_finder_chart_payload(
-                    target, False, release=False, skip_studies=True,
-                )
-            finally:
-                _CHART_PAINT_WORKER.relabel = False
-            with self.oi_finder_chart_lock:
-                entry = self.oi_finder_chart_cache.get(target) or {}
-            bars = len(((entry.get("payload") or {}).get("bars")) or [])
-            newest_after = self._chart_payload_newest_bar_time(entry.get("payload"))
-        except Exception:  # noqa: BLE001 - a failed paint must never break the caller
-            bars = 0
-        finally:
-            refusal = self._pop_chart_broker_refusal(target)
-            if not refusal:
-                # A refused paint says nothing about the tape; its retry is
-                # timed by retry_not_before instead.
-                self._note_chart_paint_progress(target, newest_before, newest_after or newest_before)
-            with self.oi_finder_chart_lock:
-                entry = self._chart_paint_guard().get(target)
-                if entry is not None and entry[0] == token:
-                    finished = time.monotonic()
-                    entry[2] = finished
-                    if refusal and len(entry) > 4:
-                        # Retry the moment the gate opens again, not on the
-                        # blind clock. A small floor so a "throttled" refusal
-                        # with retry_after ~0 cannot turn every poll into a
-                        # claim.
-                        entry[4] = finished + max(0.5, float(refusal.get("retryAfter") or 0.0))
-                        if len(entry) > 6:
-                            entry[6] = str(refusal.get("kind") or "unavailable")
-        # Observability: one line per paint, so a slow/empty paint is visible,
-        # and a 429 blank reads differently from a ticker with no bars.
-        refused = f" refused={refusal.get('kind')}" if refusal else ""
-        print(
-            f"[build-timing] {target:6s} paint  {time.perf_counter() - started:6.2f}s bars={bars}{refused}",
-            flush=True,
-        )
-        return bars
-
-    @staticmethod
-    def _chart_payload_newest_bar_time(payload) -> int:
-        bars = (payload or {}).get("bars") or []
-        try:
-            return int((bars[-1] or {}).get("time") or 0) if bars else 0
-        except (AttributeError, TypeError, ValueError):
-            return 0
-
-    def _chart_paint_executor(self, target: str):
-        """(pool, lane) for a paint: the interactive pair for a chart a client
-        is polling right now (and not from a background chore), the shared
-        background paint pool otherwise. getattr: stub states may carry only
-        the background pool."""
-        if not in_background_request() and self._chart_symbol_is_interactive(target):
-            pool = getattr(self, "oi_finder_chart_interactive_paint_pool", None)
-            if pool is not None:
-                return pool, "live"
-        return getattr(self, "oi_finder_chart_paint_pool", None), "bg"
-
-    def _chart_entry_wants_fast_paint(self, entry, now_epoch: float | None = None):
-        """The min interval a fast paint for this entry is rate limited to, or
-        None when the served tape needs none.
-
-        No bars at all: the cold retry, every OI_FINDER_CHART_COLD_PAINT_
-        RETRY_SECONDS. Bars that do not reach the current session, or whose
-        tail is more than OI_FINDER_CHART_PAINT_BEHIND_SECONDS behind: once
-        per OI_FINDER_CHART_REFRESH_SECONDS. Judged on the DATA, like
-        _chart_entry_tail_is_behind - cached_at says nothing about it.
-        """
-        bars = ((entry or {}).get("payload") or {}).get("bars") or []
-        if not bars:
-            return OI_FINDER_CHART_COLD_PAINT_RETRY_SECONDS
-        clock = time.time() if now_epoch is None else float(now_epoch)
-        try:
-            newest = int((bars[-1] or {}).get("time") or 0)
-        except (AttributeError, TypeError, ValueError):
-            newest = 0
-        behind = (not newest) or (clock - newest) > OI_FINDER_CHART_PAINT_BEHIND_SECONDS
-        if behind and newest and not self._schwab_minute_window_open(clock):
-            # Outside Schwab's 1-minute window (07:00-20:00 ET weekdays) a
-            # paint cannot make a tape current: the market mark below is
-            # advanced by Alpaca BOATS overnight and Tradier premarket bars
-            # the paint never fetches (it skips both backfills). Without this
-            # every watched chart without an overnight print stayed "behind"
-            # from 20:00 to 07:00 and spent a useless Schwab call per 30s
-            # (2026-10-10). Session currency alone decides out there.
-            behind = False
-        if behind and newest:
-            # Behind the CLOCK is not behind the MARKET. After 20:00 and over
-            # a weekend every tape ends minutes-to-days ago, and painting each
-            # watched chart every 30s would buy nothing. The market-wide
-            # high-water mark (_note_chart_market_tape) says where tapes
-            # actually got to; within the threshold of it, this tape is as
-            # current as the market. Unknown (0, just after boot) still paints.
-            market = float(getattr(self, "_chart_market_newest_bar_epoch", 0.0) or 0.0)
-            if market and (market - newest) <= OI_FINDER_CHART_PAINT_BEHIND_SECONDS:
-                behind = False
-        if behind or not self._chart_entry_tape_is_current(entry, clock):
-            # A tape the market HAS moved past, or one that does not reach the
-            # session: one candles-only call per 30s, the same budget the
-            # recency kick already spends on it.
-            return OI_FINDER_CHART_REFRESH_SECONDS
-        return None
-
-    @staticmethod
-    def _schwab_minute_window_open(now_epoch: float) -> bool:
-        """Weekday 07:00-20:00 ET: when Schwab pricehistory can hold a newer
-        1-minute bar than the one a tape already ends on."""
-        try:
-            probe = datetime.fromtimestamp(float(now_epoch), tz=ZoneInfo(EASTERN_TZ))
-        except (TypeError, ValueError, OverflowError, OSError):
-            return True
-        if probe.weekday() >= 5:
-            return False
-        return 7 <= probe.hour < 20
-
-    def _chart_paint_flat_backoff(self, target: str, min_interval: float, entry) -> float:
-        """Stretch a held tape's paint interval while paints stop moving it.
-
-        A halted or illiquid ticker stays "behind" while SPY/QQQ move the
-        market mark, so it was painted every 30s for as long as it was open -
-        each one a Schwab call, a 12,500-bar merge and a multi-MB disk save
-        returning the same bars, on the two-worker pool clicks depend on
-        (2026-10-10). Each paint that did not advance the newest bar doubles
-        the interval (30, 60, 120 ... up to the cap); one that advances it
-        resets. Cold entries (no bars) keep the short click retry.
-        """
-        if not ((entry or {}).get("payload") or {}).get("bars"):
-            return min_interval
-        streak = int((self.__dict__.get("_chart_paint_flat_streak") or {}).get(target) or 0)
-        if streak <= 0:
-            return min_interval
-        return min(
-            float(min_interval) * (2 ** min(streak, 8)),
-            max(float(min_interval), OI_FINDER_CHART_PAINT_FLAT_BACKOFF_CAP_SECONDS),
-        )
-
-    def _note_chart_paint_progress(self, target: str, before: int, after: int) -> None:
-        """Feed _chart_paint_flat_backoff. Only paints onto a held tape count."""
-        ledger = self.__dict__.setdefault("_chart_paint_flat_streak", {})
-        if not before:
-            return
-        if after > before:
-            ledger.pop(target, None)
-            return
-        ledger[target] = int(ledger.get(target) or 0) + 1
-        if len(ledger) > 256:
-            for stale in list(ledger)[:-256]:
-                ledger.pop(stale, None)
-
-    def _kick_interactive_chart_paint(self, target: str, prefetch: bool = False) -> bool:
-        """A client is waiting on a ticker whose served tape has no candles,
-        or not today's: make sure a candles-only paint is running for it,
-        independent of the deep-build and recency guards (both of which can
-        be held for minutes by work queued behind other symbols).
-
-        Generalised 2026-10-10 from the cold-only _retry_cold_chart_paint: a
-        previously opened, hot-set or board ticker has a tape, so the cold
-        retry never fired and today's candles waited for the FIFO recency
-        pool. Prefetches and background chores never dispatch - they are
-        speculative, and a keeper touching 120 symbols must not paint them.
-        """
-        if prefetch or in_background_request():
-            return False
-        with self.oi_finder_chart_lock:
-            entry = self.oi_finder_chart_cache.get(target)
-        min_interval = self._chart_entry_wants_fast_paint(entry)
-        if min_interval is None:
-            return False
-        min_interval = self._chart_paint_flat_backoff(target, min_interval, entry)
-        pool, lane = self._chart_paint_executor(target)
-        if pool is None:
-            return False
-        token = self._claim_chart_paint(target, min_interval=min_interval, lane=lane)
-        if token is None:
-            return False
-        pool.submit(self._run_chart_paint, target, token)
-        return True
-
-    # Old name kept for callers/tests written against the cold-only retry.
-    _retry_cold_chart_paint = _kick_interactive_chart_paint
-
-    @staticmethod
-    def _chart_refresh_entry_live(entry, now: float, deadline: float) -> bool:
-        """Does a recency/deep guard entry still count as in flight?
-
-        [token, stamp, started]. The deadline applies to STARTED jobs only;
-        a job still in its pool's queue gets OI_FINDER_CHART_REFRESH_QUEUED_
-        CAP_SECONDS (see that constant for the livelock it removes). Two-
-        element entries - the pre-2026-10-10 shape, still written by test
-        stubs - count as started, which is the old behaviour exactly.
-        """
-        started = len(entry) < 3 or bool(entry[2])
-        limit = deadline if started else max(deadline, OI_FINDER_CHART_REFRESH_QUEUED_CAP_SECONDS)
-        return (now - float(entry[1])) < limit
-
-    def _mark_chart_refresh_started(self, target: str, full_history: bool, token) -> None:
-        if token is None:
-            return
-        with self.oi_finder_chart_lock:
-            if full_history:
-                guard = getattr(self, "oi_finder_chart_refreshes", None)
-            else:
-                guard = self._chart_recency_refreshes()
-            if not isinstance(guard, dict):
-                return
-            entry = guard.get(target)
-            if entry and entry[0] == token:
-                entry[1] = time.monotonic()
-                if len(entry) > 2:
-                    entry[2] = True
-
     def _start_oi_finder_chart_refresh(self, target: str, full_history: bool) -> None:
+        # A closed index has nothing new to splice (see _index_tape_cannot_advance).
+        # Full rebuilds (broken content) are never skipped.
+        if not full_history and self._index_tape_cannot_advance(target):
+            return
+        # New scanner matches and hot-set warmers can submit faster than the
+        # two tail workers finish. Over 100 FIFO jobs left opened tickers many
+        # minutes behind. Permit two waiting background tails; a requested
+        # chart still enters immediately and has its recorded-minute bridge.
+        if (not full_history and self._chart_refresh_queue_depth(False) >= 2
+                and not self._chart_symbol_is_interactive(target)):
+            self._chart_background_tail_deferrals = int(
+                getattr(self, "_chart_background_tail_deferrals", 0)) + 1
+            return
         now = time.monotonic()
         kind = "full" if full_history else "recency"
         deadline = (
@@ -14930,7 +15108,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             entry = guard.get(target)
             if entry is not None:
                 age = now - float(entry[1])
-                if self._chart_refresh_entry_live(entry, now, deadline):
+                if age < deadline:
                     return
                 # No progress past the deadline: presumed wedged. Only a
                 # restart used to clear this state - NVDA sat un-refreshable
@@ -14954,9 +15132,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             sequence = int(getattr(self, "_chart_refresh_token_seq", 0)) + 1
             self._chart_refresh_token_seq = sequence
             token = (kind, sequence)
-            # started=False until a worker dequeues it (see
-            # _chart_refresh_entry_live).
-            guard[target] = [token, now, False]
+            guard[target] = [token, now]
         # Split dispatch so the fast paint is never stuck behind a slow study
         # build. A full-history refresh runs its ~2s candles-first paint on the
         # priority paint pool, then hands the 9-101s study build to the bounded
@@ -14964,27 +15140,28 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         # study pool. Both pools are bounded, so a burst still queues rather than
         # saturating the GIL.
         if full_history:
-            # Claimed HERE, synchronously, so a request that lands before the
-            # pool picks this job up sees the paint as in flight and does not
-            # dispatch a second one (see _kick_interactive_chart_paint).
-            paint_pool, paint_lane = self._chart_paint_executor(target)
-            paint_token = self._claim_chart_paint(target, lane=paint_lane)
-
             def _paint_then_queue_full() -> None:
-                if paint_token is not None:
-                    self._run_chart_paint(target, paint_token)
-                # Deep builds queue on their OWN pool so a 39-79s full build
-                # cannot occupy half the tail pool (2026-09-22). A clicked
-                # ticker's goes to the interactive deep pair (see __init__).
-                self._chart_refresh_executor(True, interactive=paint_lane == "live").submit(
+                _paint_t0 = time.perf_counter()
+                _paint_bars = 0
+                try:
+                    self._refresh_oi_finder_chart_payload(
+                        target, False, release=False, skip_studies=True,
+                    )
+                    with self.oi_finder_chart_lock:
+                        _entry = self.oi_finder_chart_cache.get(target) or {}
+                    _paint_bars = len(((_entry.get("payload") or {}).get("bars")) or [])
+                except Exception:  # noqa: BLE001 - a failed paint must still queue the full build
+                    pass
+                # Observability: the split dropped the old paint timing line, so
+                # a slow/empty paint was invisible. One line per cold open.
+                print(f"[build-timing] {target:6s} paint  {time.perf_counter() - _paint_t0:6.2f}s bars={_paint_bars}", flush=True)
+                # Deep builds queue on their OWN single-worker pool so a 39-79s
+                # full build cannot occupy half the tail pool (2026-09-22).
+                self._chart_refresh_executor(True).submit(
                     self._run_oi_finder_chart_refresh, target, True, token, True,
                     time.monotonic(),
                 )
-            if paint_lane == "live":
-                # The trader's own click: the interactive pair (see __init__).
-                paint_pool.submit(_paint_then_queue_full)
-            else:
-                self.oi_finder_chart_paint_pool.submit(_paint_then_queue_full)
+            self.oi_finder_chart_paint_pool.submit(_paint_then_queue_full)
         else:
             self.oi_finder_chart_refresh_pool.submit(
                 self._run_oi_finder_chart_refresh, target, False, token,
@@ -15004,6 +15181,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     # 30-minute data with a daily archive prepended, so 1,600 fine bars provide
     # ample 4H context while remaining a small first-paint response.
     OI_CHART_INITIAL_STUDY_BAR_COUNT = 1_600
+    #: 5m candles sent with the FIRST paint (2026-10-09): the chart's 🔥 squeeze
+    #: fires need ~20 buckets of history - 40 h for 2h, 80 h for 4h - and the 900
+    #: one-minute first-paint bars (~1.5 days) missed MRNA's 2h fire at 09:00 that
+    #: TOS showed. ~12 sessions of 5m bars, ~45 KB gzipped.
+    OI_CHART_INITIAL_FINE_BAR_COUNT = 2_400
     OI_CHART_DELTA_OVERLAP_SECONDS = 180.0
     # Chart timeframes (minutes) that get their own TOS MTF label set.
     # Daily and above never carry intraday secondary-aggregation bubbles.
@@ -15126,7 +15308,19 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         while len(memo) > OI_FINDER_MTF_STUDY_MEMO_LIMIT:
             memo.popitem(last=False)
 
-    def _chart_entry_tail_is_behind(self, entry, now_epoch: float | None = None) -> bool:
+    def _with_recorded_chart_history(self, target: str, payload: dict) -> dict:
+        stream = getattr(self, "chart_market_stream", None)
+        if stream is None:
+            return payload
+        try:
+            return with_recorded_chart_history(payload,
+                stream.chart_history(target, since=time.time() - 2 * 86400))
+        except Exception:
+            # A stream restart must not prevent the cached REST tape serving.
+            return payload
+
+    def _chart_entry_tail_is_behind(self, entry, now_epoch: float | None = None,
+                                    max_age_seconds: float | None = None) -> bool:
         """Does the SERVED tape end more than one refresh interval ago?
 
         Judged on the DATA, never on cache bookkeeping. A frozen entry is
@@ -15145,7 +15339,8 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         if not newest:
             return True
         clock = time.time() if now_epoch is None else now_epoch
-        return (clock - newest) > OI_FINDER_CHART_REFRESH_SECONDS
+        limit = OI_FINDER_CHART_REFRESH_SECONDS if max_age_seconds is None else float(max_age_seconds)
+        return (clock - newest) > limit
 
     def _forced_tail_extend_allowed(self, target: str, now: float | None = None) -> bool:
         """One inline forced extend per symbol per refresh interval.
@@ -15167,9 +15362,114 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 stamps.pop(stale, None)
         return True
 
+    #: How long a refresh=true REQUEST waits for its inline tail extend (2026-10-05).
+    #: The phone sends refresh=true on every wake once its newest candle is old, and
+    #: the extend measured 11-25 s under the premarket load (AAPL 11.4 s, ABBV 17.8 /
+    #: 25.1 s at 07:43 ET; 27 slow ABBV wakes since 05:00) while a plain open of the
+    #: same chart took 0.4 s - "charts take 30 sec on the phone". Past this the
+    #: request answers with the cached tape (refreshing=True) and the extend keeps
+    #: running; the client's next poll picks up the spliced candles.
+    FORCED_TAIL_EXTEND_WAIT_SECONDS = 2.5
+
     def _force_chart_tail_extend(self, target: str) -> bool:
+        """Run the inline tail extend, but never hold the request longer than
+        FORCED_TAIL_EXTEND_WAIT_SECONDS. One extend per symbol at a time: a second
+        wake while one is running waits on the same job instead of starting another."""
+        job = self._submit_chart_tail_extend(target)
+        try:
+            return bool(job.result(timeout=self.FORCED_TAIL_EXTEND_WAIT_SECONDS))
+        except FuturesTimeoutError:
+            print(
+                f"[chart-force] {target} tail extend still running after "
+                f"{self.FORCED_TAIL_EXTEND_WAIT_SECONDS:.1f}s; served the cached tape",
+                flush=True,
+            )
+            return False
+
+    def _submit_chart_tail_extend(self, target: str):
+        """Start (or join) the candles-only tail extend for one symbol on the small
+        chart-force pool - NOT the 2-worker study pool, where a requested symbol
+        queues behind the hot-set loop for minutes (2026-10-05: AAOI served its
+        06:41 disk tape 4+ min, COHR/LASR 1-2 h, each with refreshing=True)."""
+        lock = self.__dict__.setdefault("_chart_forced_extend_lock", threading.Lock())
+        with lock:
+            running = self.__dict__.setdefault("_chart_forced_extend_jobs", {})
+            job = running.get(target)
+            if job is None or job.done():
+                pool = self.__dict__.get("_chart_forced_extend_pool")
+                if pool is None:
+                    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chart-force")
+                    self._chart_forced_extend_pool = pool
+                job = pool.submit(self._force_chart_tail_extend_now, target)
+                running[target] = job
+        return job
+
+    _CHART_LABEL_HEAL_KEYS = (
+        "mtfSignals", "mtfSignalsByTimeframe", "mtfSignalStates", "mtfSignalMode",
+        "mtfLiveSignalContexts", "mtfSignalsPending", "mtfSourceSessions",
+    )
+
+    def _submit_chart_label_heal(self, target: str, source_payload: dict):
+        """Recompute a cached payload's MTF labels OFF the request thread.
+
+        The replay was run inline on the first open of a chart whose saved labels
+        were not current. Measured 2026-10-06 05:34 ET just after a restart: CRWD
+        first open 11.2 s (disklabels:10.13), and 2026-10-05 LITE 12.7 s / AAPL
+        28 s - the "well under a second" in the replay's docstring does not hold
+        under load. 22 of 384 saved charts (mostly saved 10-01 under the older
+        engine) would pay it. The request now answers with candles at once and
+        labels marked pending; this job installs the labels into the cache entry
+        and the client's next poll carries them. One worker, its own pool, so it
+        never queues ahead of the wake-refresh tail extends."""
+        lock = self.__dict__.setdefault("_chart_label_heal_lock", threading.Lock())
+        with lock:
+            running = self.__dict__.setdefault("_chart_label_heal_jobs", {})
+            job = running.get(target)
+            if job is not None and not job.done():
+                return job
+            pool = self.__dict__.get("_chart_label_heal_pool")
+            if pool is None:
+                pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chart-labels")
+                self._chart_label_heal_pool = pool
+            job = pool.submit(self._heal_chart_labels_now, target, dict(source_payload))
+            running[target] = job
+        return job
+
+    def _heal_chart_labels_now(self, target: str, healed: dict) -> bool:
+        if not self._refresh_mtf_block_from_payload_tapes(target, healed):
+            return False
+        healed["mtfSourceSessions"] = self._fine_tape_session_span(healed)
+        with self.oi_finder_chart_lock:
+            entry = self.oi_finder_chart_cache.get(target)
+            if not entry:
+                return False
+            current = entry.get("payload") or {}
+            if self._chart_payload_has_current_mtf_labels(current):
+                return False
+            # Merge into whatever the entry holds NOW: a splice may have
+            # replaced the payload while the replay ran, and its newer
+            # candles must survive.
+            merged = dict(current)
+            for key in self._CHART_LABEL_HEAL_KEYS:
+                merged[key] = healed.get(key)
+            entry["payload"] = merged
+            entry.pop("windowed_payload", None)
+        return True
+
+    #: A client GET whose served tape is this far behind kicks a background tail
+    #: extend (see _oi_finder_chart_payload_impl). Hot-set tapes stay within ~1-2 min.
+    BEHIND_TAPE_KICK_SECONDS = 180.0
+
+    @staticmethod
+    def _extended_session_open(now_epoch: float | None = None) -> bool:
+        """Weekdays 04:00-20:00 ET: the hours a stock tape can gain a bar."""
+        clock = time.time() if now_epoch is None else now_epoch
+        probe = datetime.fromtimestamp(clock, tz=timezone.utc).astimezone(ZoneInfo(EASTERN_TZ))
+        return probe.weekday() < 5 and 4 <= probe.hour < 20
+
+    def _force_chart_tail_extend_now(self, target: str) -> bool:
         """Fetch the broker's recent bars and splice them into the SERVED tape,
-        on THIS thread, candles only.
+        candles only.
 
         release=False and no token on purpose: this borrows neither in-flight
         guard, so it can neither be blocked by a queued rebuild nor clear that
@@ -15231,15 +15531,11 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         return True
                 else:
                     entry = refreshes.get(target)
-                    if entry and self._chart_refresh_entry_live(
-                        entry, clock, OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS,
-                    ):
+                    if entry and (clock - float(entry[1])) < OI_FINDER_CHART_REFRESH_DEADLINE_SECONDS:
                         return True
         if kind in (None, "recency"):
             entry = self._chart_recency_refreshes().get(target)
-            if entry and self._chart_refresh_entry_live(
-                entry, clock, OI_FINDER_CHART_RECENCY_DEADLINE_SECONDS,
-            ):
+            if entry and (clock - float(entry[1])) < OI_FINDER_CHART_RECENCY_DEADLINE_SECONDS:
                 return True
         return False
 
@@ -15252,19 +15548,14 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 if entry and entry[0] == token:
                     entry[1] = time.monotonic()
 
-    def _chart_refresh_executor(self, full_history: bool, interactive: bool = False):
+    def _chart_refresh_executor(self, full_history: bool):
         """Which pool a queued build runs on.
 
-        Deep builds have their own pool (see __init__), and a deep build for
-        a ticker the trader just clicked has a separate pair; tails keep the
-        2-worker pool. getattr, not attribute access, because states built
-        with __new__ (tests, stubs) never ran __init__ - the house rule that
-        every helper tolerates missing state.
+        Deep builds have their own single-worker pool (see __init__); tails
+        keep the 2-worker pool. getattr, not attribute access, because states
+        built with __new__ (tests, stubs) never ran __init__ - the house rule
+        that every helper tolerates missing state.
         """
-        if full_history and interactive:
-            pool = getattr(self, "oi_finder_chart_interactive_full_pool", None)
-            if pool is not None:
-                return pool
         if full_history:
             pool = getattr(self, "oi_finder_chart_full_pool", None)
             if pool is not None:
@@ -15364,7 +15655,12 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             )
         return verbose
 
-    def _chart_entry_tape_is_current(self, entry, now_epoch: float | None = None) -> bool:
+    #: How long a recency splice vouches for a STOCK tape (see
+    #: _chart_entry_tape_is_current). Indexes are unbounded before the bell.
+    STOCK_RECENCY_CURRENT_SECONDS: float = 300.0
+
+    def _chart_entry_tape_is_current(self, entry, now_epoch: float | None = None,
+                                     symbol: str | None = None) -> bool:
         """Session-aware readiness for IN-MEMORY cache entries - the rule the
         disk loader learned on 2026-08-19 (SPY served 19:59-yesterday bars all
         morning as "ready"). A premarket-built entry flips to not-ready the
@@ -15381,7 +15677,19 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         session_start = self._most_recent_session_start(
             datetime.fromtimestamp(clock, tz=timezone.utc)
         ).timestamp()
-        if float(entry.get("built_at_epoch") or 0.0) >= session_start:
+        recency_at = float(entry.get("recency_at_epoch") or 0.0)
+        # A recency splice proves "current" for an INDEX for the whole
+        # premarket (it cannot print before 09:30 - 92e0f9e/134dc0d). A STOCK
+        # trades from 04:00, and before 09:30 session_start is still FRIDAY's
+        # open: measured 2026-10-05 07:55 ET, COHR served 06:06 and LASR 05:36
+        # bars (the stream had 07:48 / 07:34) because one early splice made
+        # them "current" until the bell, and no GET ever kicked another. For
+        # stocks the splice only vouches for STOCK_RECENCY_CURRENT_SECONDS.
+        symbol = str(symbol or payload.get("symbol") or entry.get("symbol") or "").upper()
+        if recency_at and not is_index(symbol) and (clock - recency_at) > self.STOCK_RECENCY_CURRENT_SECONDS:
+            recency_at = 0.0
+        checked_at = max(float(entry.get("built_at_epoch") or 0.0), recency_at)
+        if checked_at >= session_start:
             return True
         bars = payload.get("bars") or []
         try:
@@ -15394,20 +15702,31 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             return False
         return newest >= session_start
 
-    def _chart_disk_tape_present(self, target: str) -> bool:
-        """stat()-only: would _load_oi_finder_chart_disk_payload find a file?
-        (Same age ceiling; content is judged by the loader, not here.) False
-        for stub states with no disk cache dir."""
-        if not getattr(self, "oi_finder_chart_disk_cache_dir", None):
+    def _index_tape_cannot_advance(self, target: str, entry=None,
+                                   now_epoch: float | None = None) -> bool:
+        """A cash index (SPX, NDX...) prints ONLY 09:30-16:00 ET on weekdays.
+
+        Outside those hours Schwab has no newer bar to give, so once one splice
+        has made the entry current (see _chart_entry_tape_is_current) every
+        further tail fetch is pure waste. Measured 2026-10-05 04:30-04:50 ET:
+        SPX spliced every 30 s ("in=7523 out=7523 +0", 0.7-5 s each) and every
+        refresh=true request ran an inline Schwab fetch on the request thread
+        for 3.7-17.9 s - while stocks, which do trade premarket, spliced once
+        a cycle. 16:15 leaves the close bar time to land.
+        """
+        if not is_index(target):
             return False
-        try:
-            path = self._oi_finder_chart_disk_path(target)
-            if path is None:
-                return False
-            age = max(0.0, time.time() - path.stat().st_mtime)
-        except (OSError, TypeError, ValueError):
+        clock = time.time() if now_epoch is None else now_epoch
+        probe = datetime.fromtimestamp(clock, tz=timezone.utc).astimezone(ZoneInfo(EASTERN_TZ))
+        minutes = probe.hour * 60 + probe.minute
+        if probe.weekday() < 5 and (9 * 60 + 30) <= minutes < (16 * 60 + 15):
             return False
-        return age <= OI_FINDER_CHART_DISK_CACHE_MAX_AGE_SECONDS
+        if entry is None:
+            with self.oi_finder_chart_lock:
+                entry = self.oi_finder_chart_cache.get(str(target or "").upper())
+        if not entry or not ((entry.get("payload") or {}).get("bars")):
+            return False
+        return self._chart_entry_tape_is_current(entry, clock, symbol=target)
 
     def oi_finder_chart_history_status(self, symbol: str) -> dict:
         """Tiny readiness response so ticker-switch polls do not re-ship tapes."""
@@ -15432,28 +15751,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             and self._chart_entry_tape_is_current(cached)
         )
         has_bars = bool(cached and cached.get("payload", {}).get("bars"))
-        # Not in memory but on disk (2026-10-10): the chart endpoint serves
-        # that file the moment it is asked, and its own load path starts the
-        # right refresh and paint for it. Firing them from here instead cost
-        # a Schwab paint call for candles that were one gunzip away, plus a
-        # recency build whose 2-day store was the "cold historyStatus recency
-        # race" the deep-tape rescue exists to undo. Only a stat() - loading
-        # a ~4MB file on a 450ms readiness poll would be the cost itself.
-        on_disk = not cached and self._chart_disk_tape_present(target)
-        if on_disk:
-            has_bars = True
         # Self-healing: polling must restart a stalled build rather than
         # report a cold cache forever. A content-ready entry whose tape is
         # merely short of the session gets the recency splice, not a full.
-        # No entry at all gets the same full build (paint first) as a cold
-        # chart request, which dedupes against it; it used to get a recency
-        # build WITH studies here, on top of the paint.
-        if not refreshing and not on_disk and (not cached or not history_ready):
+        if not refreshing and (not cached or not history_ready):
             self._start_oi_finder_chart_refresh(
-                target, full_history=(not cached) or not content_ready,
+                target, full_history=bool(cached) and not content_ready,
             )
-            refreshing = True
-        if not on_disk and self._kick_interactive_chart_paint(target):
             refreshing = True
         return {
             "symbol": target,
@@ -15528,6 +15832,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         daily_bars = slim.get("dailyBars")
         if isinstance(daily_bars, list):
             slim["dailyBars"] = daily_bars[-self.OI_CHART_INITIAL_DAILY_BAR_COUNT:]
+        fine = payload.get("fineStudyBars")
+        if isinstance(fine, list) and fine:
+            slim["fineStudyBars"] = fine[-self.OI_CHART_INITIAL_FINE_BAR_COUNT:]
         if include_study_seed:
             slim["studyBars"] = self._fine_chart_study_tail(payload.get("studyBars"))
             slim["initialStudySeed"] = True
@@ -15570,6 +15877,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         the lock wait took, because the chart path measured 3-60s on warm symbols
         while its raw work is ~1.1s and reading the code did not find the wait."""
         started = time.perf_counter()
+        self._chart_step_marks.marks = [("start", started)]
         branch = "?"
         if not prefetch:
             # A live client poll: a fresh open (initial=true) OR the delta
@@ -15618,13 +15926,35 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             return payload
         finally:
             elapsed = time.perf_counter() - started
-            if elapsed > 2.0:
+            # First paints log from 0.5 s (2026-10-06): 0.6-0.9 s first opens
+            # at ~4% GIL load left no trace under the old 2 s bar.
+            if elapsed > (0.5 if initial_paint else 2.0):
                 print(
                     f"[chart-timing] {str(symbol).upper():6s} {elapsed:7.2f}s "
                     f"branch={branch} lockwait={getattr(self, '_last_chart_lock_wait', 0.0):.2f}s "
-                    f"initial={initial_paint} since={int(since_epoch)} refresh={refresh}",
+                    f"initial={initial_paint} since={int(since_epoch)} refresh={refresh}"
+                    f" steps={self._chart_steps_text()}",
                     flush=True,
                 )
+            self._chart_step_marks.marks = None
+
+    #: Per-request step marks for the [chart-timing] line (2026-10-05). Three first
+    #: views took 6-30 s on the server (AAPL 30.4 s 09:16, TSLA 6.2 s 10:33, NVDA
+    #: 27.0 s 11:12) and an hour of py-spy never caught one, so the slow line now
+    #: names the step: "steps=lookup:0.01,window:24.80,..." (seconds per step).
+    _chart_step_marks = threading.local()
+
+    def _chart_steps_text(self) -> str:
+        marks = getattr(self._chart_step_marks, "marks", None) or []
+        parts = []
+        for (_, before), (name, after) in zip(marks, marks[1:]):
+            parts.append(f"{name}:{after - before:.2f}")
+        return ",".join(parts) or "-"
+
+    def _chart_mark(self, step: str) -> None:
+        marks = getattr(self._chart_step_marks, "marks", None)
+        if marks is not None:
+            marks.append((step, time.perf_counter()))
 
     def _oi_finder_chart_payload_impl(
         self,
@@ -15645,6 +15975,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         with self.oi_finder_chart_lock:
             pass
         self._last_chart_lock_wait = time.perf_counter() - _t_lock
+        self._chart_mark("lock")
         if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", target):
             return self._build_oi_finder_chart_payload(target, fast_start=True)
         if not prefetch:
@@ -15655,8 +15986,10 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         with self.oi_finder_chart_lock:
             cached = self.oi_finder_chart_cache.get(target)
             refreshing = self._chart_refresh_in_flight(target)
+        self._chart_mark("lookup")
         if not cached:
             disk_payload = self._load_oi_finder_chart_disk_payload(target)
+            self._chart_mark("diskload")
             if disk_payload is not None:
                 # Staleness is a property of the DATA, not the file. The disk
                 # TTL is five days, so a tape whose newest bar is from a prior
@@ -15665,6 +15998,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 # days-old deep tape, leaving a visible gap and stale 4H/D/W/M
                 # panes. A tape that does not reach the current session is not
                 # ready, so it earns a full rebuild instead.
+                disk_bars = disk_payload.get("bars") or []
+                newest_bar_time = int(disk_bars[-1].get("time") or 0) if disk_bars else 0
+                tape_age_seconds = max(0.0, time.time() - newest_bar_time) if newest_bar_time else float("inf")
                 # The 26h window alone is not enough once a session is under way.
                 # Measured 2026-08-19 at 10:53 ET: SPY's tape ended 19:59 the
                 # previous evening - 14.9h old, comfortably inside the window -
@@ -15673,13 +16009,13 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 # one minute fresh. A tape that does not reach the CURRENT
                 # session is stale however new the window says it looks; the
                 # window still governs overnight and weekend gaps.
-                #
-                # That verdict now lives in _chart_entry_tape_is_current (the
-                # in-memory twin), which _kick_interactive_chart_paint applies
-                # to this entry once it is stored below - so a behind disk
-                # tape gets today's candles from a ~2s paint instead of from
-                # the queued recency pass. The local tape_current computed
-                # here was never read and has been removed (2026-10-10).
+                session_start_epoch = self._most_recent_session_start(
+                    datetime.now(timezone.utc)
+                ).timestamp()
+                tape_current = (
+                    tape_age_seconds <= OI_FINDER_CHART_STALE_TAPE_SECONDS
+                    and newest_bar_time >= session_start_epoch
+                )
                 content_ready = (
                     not bool(disk_payload.get("historyLoading"))
                     # An old-schema payload is complete enough to show, but it
@@ -15694,13 +16030,17 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                     # replace the tape.
                     and self._chart_payload_has_current_mtf_labels(disk_payload)
                 )
+                self._chart_mark("diskchecks")
                 if not self._chart_payload_has_current_mtf_labels(disk_payload):
-                    if self._refresh_mtf_block_from_payload_tapes(target, disk_payload):
-                        # Stamp the sessions the replay just used, as the
-                        # cached branch does; unstamped, the cached branch
-                        # found the same labels "not current" and replayed
-                        # them a second time on the next request (2026-10-10).
-                        disk_payload["mtfSourceSessions"] = self._fine_tape_session_span(disk_payload)
+                    # Off the request thread (see _submit_chart_label_heal):
+                    # candles now, old-engine labels hidden as pending, the
+                    # current labels arrive on the next poll.
+                    self._submit_chart_label_heal(target, disk_payload)
+                    disk_payload["mtfSignals"] = []
+                    disk_payload["mtfSignalsByTimeframe"] = {}
+                    disk_payload["mtfLiveSignalContexts"] = []
+                    disk_payload["mtfSignalsPending"] = True
+                self._chart_mark("disklabels")
                 disk_payload["studySchemaStale"] = not self._chart_payload_has_ready_ganesh_signals(
                     disk_payload,
                 )
@@ -15724,10 +16064,8 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 if not prefetch:
                     self._start_oi_finder_chart_refresh(target, full_history=not content_ready)
                     refreshing = True
-                    # Last night's tape is the normal boot case: paint today's
-                    # candles now rather than after the queued pass.
-                    self._kick_interactive_chart_paint(target, prefetch=prefetch)
         if cached:
+            self._chart_mark("diskstore")
             # Deep-tape rescue: a shallow first store (the cold historyStatus
             # recency race at boot) sits in memory and BLOCKS the disk load,
             # which only ran when no entry existed. The panes then run on a
@@ -15761,7 +16099,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         merged_daily = {bar["time"]: bar for bar in deep_daily}
                         for bar in fresh_daily:
                             merged_daily[bar["time"]] = bar
-                        disk_payload["dailyBars"] = [merged_daily[key] for key in sorted(merged_daily)]
+                        disk_payload["dailyBars"] = _dedupe_daily_bars(
+                            [merged_daily[key] for key in sorted(merged_daily)]
+                        )
                     disk_payload["historyLoading"] = False
                     with self.oi_finder_chart_lock:
                         entry = self.oi_finder_chart_cache.get(target)
@@ -15775,6 +16115,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                         f"over a shallow memory tape",
                         flush=True,
                     )
+            self._chart_mark("rescue")
             # refresh=true is the "this tape is wrong, go get the bars" lever -
             # the frontend sends it when it spots a hole, and every diagnostic
             # probe uses it. It was swallowed twice over: the in-flight guard
@@ -15794,12 +16135,29 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 and not prefetch
                 and not in_background_request()
                 and self._chart_entry_tail_is_behind(cached)
+                and not self._index_tape_cannot_advance(target, cached)
                 and self._forced_tail_extend_allowed(target)
             ):
                 self._force_chart_tail_extend(target)
                 with self.oi_finder_chart_lock:
                     cached = self.oi_finder_chart_cache.get(target) or cached
                     refreshing = self._chart_refresh_in_flight(target)
+            elif (
+                # An ordinary GET on a tape minutes behind: the recency job it
+                # kicks below lands in the study pool behind the hot set, so also
+                # start the cheap extend on the chart-force pool and DON'T wait -
+                # the client's next poll gets the candles. Same rate limit.
+                not prefetch
+                and not in_background_request()
+                and self._extended_session_open()
+                and self._chart_entry_tail_is_behind(
+                    cached, max_age_seconds=self.BEHIND_TAPE_KICK_SECONDS,
+                )
+                and not self._index_tape_cannot_advance(target, cached)
+                and self._forced_tail_extend_allowed(target)
+            ):
+                self._submit_chart_tail_extend(target)
+            self._chart_mark("extend")
             age_seconds = max(0.0, time.monotonic() - float(cached.get("cached_at", 0)))
             content_ready = bool(cached.get("history_ready")) and self._chart_payload_has_ready_ganesh_signals(
                 cached.get("payload"),
@@ -15846,13 +16204,6 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 elif not self._chart_refresh_in_flight(target, kind="recency"):
                     self._start_oi_finder_chart_refresh(target, full_history=False)
                     refreshing = True
-            # The recency pass above is a FIFO job with a study replay; under
-            # hot-set, board and warmer load it waits minutes. A watched tape
-            # that is not today's, or is >2 min behind, also gets the
-            # candles-only paint on its own lane (2026-10-10). Rate limited
-            # per symbol inside; prefetch/background never dispatch.
-            if self._kick_interactive_chart_paint(target, prefetch=prefetch):
-                refreshing = True
             # Window at SERVE time, not just at build time: payloads persisted
             # to disk before the windowing fix still carry the whole
             # multi-year replay (6,000+ signals), and they are served verbatim
@@ -15867,26 +16218,41 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             # stamped current: recompute once from THIS payload's own deep
             # fineStudyBars (MSFT 2026-08-25 lost the cyan CALL4H because a
             # 1-day source built its labels while the payload held 60 days).
+            #
+            # Never while a refresh is in flight (2026-10-05): that refresh recomputes
+            # the labels itself, and the client keeps its current labels while a
+            # payload is studiesPending/mtfSignalsPending. A wake refresh=true splices
+            # candles-only, which left the labels "not current", so the REQUEST thread
+            # re-ran the whole MTF replay - py-spy caught it holding AAPL refresh=true
+            # requests 7-16 s at 07:55 ET.
+            self._chart_mark("kick")
             rescue = cached.get("payload") or {}
             if (
-                not cached.get("mtf_recompute_checked")
+                not refreshing
+                and not cached.get("mtf_recompute_checked")
                 and not self._chart_payload_has_current_mtf_labels(rescue)
                 and self._fine_tape_session_span(rescue) >= TOS_CHART_SESSION_DAYS
             ):
                 cached["mtf_recompute_checked"] = True
-                if self._refresh_mtf_block_from_payload_tapes(target, rescue):
-                    rescue["mtfSourceSessions"] = self._fine_tape_session_span(rescue)
-                    cached.pop("windowed_payload", None)
+                # Same replay, same cost: never on the request thread.
+                self._submit_chart_label_heal(target, rescue)
+            self._chart_mark("labels")
             windowed = self._windowed_payload_for_cache_entry(cached)
+            self._chart_mark("window")
             payload = dict(windowed)
             payload["cacheAgeSeconds"] = round(age_seconds, 2)
             payload["historyLoading"] = not history_ready
             payload["studySchemaStale"] = not self._chart_payload_has_ready_ganesh_signals(payload)
             payload["refreshing"] = refreshing
+            # Scanner leaders already have recorded CHART minutes. Serve those
+            # actual candles now; a queued study/REST job must not leave a hole
+            # between old history and the browser's new last-price candle.
+            payload = self._with_recorded_chart_history(target, payload)
             # Judged per request, not memoized with the windowed copy: a tape
             # that was current when it was built goes stale purely by the
             # clock moving, and a cache entry can outlive several sessions.
             self._apply_chart_tape_staleness(payload)
+            self._chart_mark("stale")
             # Deferred deep pull: return the tapes once, from cache, only when
             # history is complete. Before that it falls through to the normal
             # full/slim return, so it is self-healing if fired early.
@@ -15895,10 +16261,12 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             if since_epoch > 0 and history_ready:
                 return self._delta_chart_payload(payload, since_epoch)
             if initial_paint:
-                return self._slim_initial_chart_payload(
+                slim = self._slim_initial_chart_payload(
                     payload,
                     include_study_seed=include_study_seed,
                 )
+                self._chart_mark("slim")
+                return slim
             return payload
 
         # NEVER build on the request thread. The line below used to call
@@ -15917,19 +16285,17 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         # start background work, exactly as before.
         if not prefetch:
             self._start_oi_finder_chart_refresh(target, full_history=True)
-            # The deep build's guard may already be held (an earlier click, the
-            # board prewarm) with its paint come back empty; without this the
-            # pane waited for that whole queued build.
-            self._kick_interactive_chart_paint(target)
-        return {
+        warming = self._with_recorded_chart_history(target, {
             "symbol": target,
             "bars": [],
             "warming": True,
             "refreshing": True,
             "historyLoading": True,
-            **self._chart_paint_refusal_fields(target),
             "updatedAt": datetime.now().astimezone().isoformat(),
-        }
+        })
+        if initial_paint and warming.get("bars"):
+            return self._slim_initial_chart_payload(warming, include_study_seed=include_study_seed)
+        return warming
 
     def _legacy_blocking_cold_chart_build(self, target, prefetch, initial_paint, include_study_seed):
         """Retained for reference only - the old synchronous cold path."""
@@ -16836,6 +17202,8 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             int((study_bars[-1].get("time") if study_bars else 0) or 0),
             len(study_bars or ()),
             int((daily_bars[-1].get("time") if daily_bars else 0) or 0),
+            # Live minute, as in _ganesh_signal_payload_for_chart.
+            int((bars[-1].get("time") if bars else 0) or 0),
         )
         ganesh_memo = getattr(self, "_mag7_ganesh_memo", None)
         if not isinstance(ganesh_memo, dict):
@@ -16988,6 +17356,12 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             int((study_bars[-1].get("time") if study_bars else 0) or 0),
             len(study_bars or ()),
             int((daily_bars[-1].get("time") if daily_bars else 0) or 0),
+            # The 4H carrier merges the LIVE 1m bars, so the replay must also
+            # re-run when a new live minute lands. Keyed on the study tape
+            # alone it held a forming D-M cross back until the next 30m row
+            # (up to ~30 min behind TOS; 2026-10-01 parity audit). Minute
+            # granularity, not per tick: the replay is ~2s/symbol of CPU.
+            int((bars[-1].get("time") if bars else 0) or 0),
         )
         memo = getattr(self, "_mag7_ganesh_memo", None)
         if not isinstance(memo, dict):
@@ -17089,8 +17463,9 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
         a feedback loop that pinned the endpoint at 30s+ timeouts. One build
         at a time; concurrent polls get the last completed response.
         """
+        cache_seconds = _premarket_scanner_cache_seconds()
         cached_response = getattr(self, "_premarket_scanner_response", None)
-        if cached_response and (time.monotonic() - cached_response[0]) < 4.0:
+        if cached_response and (time.monotonic() - cached_response[0]) < cache_seconds:
             return cached_response[1]
         gate = getattr(self, "_premarket_scanner_build_gate", None)
         if gate is None:
@@ -17106,7 +17481,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             # the single release in finally is the only release -- an early
             # release-then-return here double-released and raised.)
             fresh = getattr(self, "_premarket_scanner_response", None)
-            if fresh and (time.monotonic() - fresh[0]) < 4.0:
+            if fresh and (time.monotonic() - fresh[0]) < cache_seconds:
                 return fresh[1]
             payload = self._premarket_scanner_payload_locked()
             self._premarket_scanner_response = (time.monotonic(), payload)
@@ -19025,7 +19400,7 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             try:
                 mag7_payload = self.scan(
                     symbols=self.mag7_scanner_watchlist,
-                    scan_label="MAG7-Watchlist Options",
+                    scan_label="Mag7 + Watchlist Options",
                     return_payload=False,
                 )
                 batch = self._next_stock_scanner_auto_batch()
@@ -19691,8 +20066,14 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
                 "lastError": self.stock_position_manager_last_error,
             },
             "mag7PremarketPlan": self.mag7_premarket_plan_payload(),
-            "mag7PremarketChartSignals": self.mag7_chart_signals_payload("premarket"),
-            "mag7FiveMinuteChartSignals": self.mag7_chart_signals_payload("regular"),
+            # NOT replayed here (2026-10-06). No screen shows these two tables
+            # since the page cut (c40c774), yet every 60 s dashboard rebuild
+            # replayed the D..M signals for all MAG7 tapes: py-spy at 05:13 ET
+            # put 35% of all GIL time in mag7_chart_signals_payload, and chart
+            # opens that landed on it took 1.3-1.9 s instead of 0.1-0.4 s.
+            # Charts replay their own D..M on build, so nothing else loses.
+            "mag7PremarketChartSignals": self._mag7_chart_signals_snapshot("premarket"),
+            "mag7FiveMinuteChartSignals": self._mag7_chart_signals_snapshot("regular"),
             "stockAutoReadiness": self._stock_auto_playbook(),
             "oiScannerAuto": {
                 "enabled": self.oi_scanner_auto_enabled,
@@ -20803,28 +21184,17 @@ def _schwab_status_payload(user=None, **extra) -> dict:
 
 MARKET_STREAM = SchwabMarketStream(
     client_factory=lambda: SchwabClient("trading"),
-    chart_history_path=ARTIFACTS_DIR / "schwab_stream_chart_history.json.gz",
+    chart_history_path=Path(os.environ.get("AGX_STREAM_HISTORY_PATH") or
+                            ARTIFACTS_DIR / "schwab_stream_chart_history.json.gz"),
 )
 
 
 def _owner_alpaca_stream_credentials():
+    """The failover bar stream's key: the first one Alpaca actually serves (a dead
+    Settings key left the ALPACA lamp red with "auth failed", 2026-10-04)."""
     try:
-        connection = sqlite3.connect(str(DATABASE_PATH), timeout=10.0)
-        try:
-            row = connection.execute(
-                "SELECT id FROM app_users WHERE is_active = 1 "
-                "ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at LIMIT 1"
-            ).fetchone()
-        finally:
-            connection.close()
-        if not row:
-            return None
-        credentials = auth_service_instance().get_provider_credentials(
-            str(row[0]), "alpaca_market_data",
-        )
-        key = str(credentials.get("key_id") or "").strip()
-        secret = str(credentials.get("secret_key") or "").strip()
-        return (key, secret) if key and secret else None
+        picked = _working_owner_alpaca_key()
+        return (picked[1], picked[2]) if picked else None
     except Exception:
         return None
 
@@ -21009,9 +21379,16 @@ def _momx_fastlane_lease(wanted: frozenset) -> None:
 # hands over a seed per symbol (indicator state at the last completed 5m bar);
 # this loop reads the Schwab stream's latest quote every second, builds the
 # forming bar and advances the state - small arithmetic per symbol, no bar
-# fetches. It runs only while a scanner screen is polling (idle 120s -> the
-# stream leases are released and the loop just sleeps).
-_LIVE_BOLT_MAX = 400
+# fetches. It runs ALL SESSION 09:25-16:05 ET on weekdays whether or not a
+# screen is open (2026-09-28: it only ran while a MomX page polled, so the
+# morning's bolts were never recorded); outside that it runs only while a
+# scanner screen is polling (idle 120s -> leases released, the loop sleeps).
+# ETFs are left out, as in every other rule (momx/etf_list.py).
+# 200, not 400 (2026-09-30): Schwab streams at most 300 equities per
+# connection (schwab_stream._MAX_EQUITY_SYMBOLS). 400 bolt leases alone broke
+# the connection and froze every live quote; 200 leaves room for the charts
+# and the scanner fastlane (60). Seeds arrive in board order, best rows first.
+_LIVE_BOLT_MAX = 200
 _LIVE_BOLT_IDLE_SECONDS = 120.0
 _LIVE_BOLT_SEED_REFRESH = 30.0
 _LIVE_BOLT_LOCK = threading.Lock()
@@ -21030,6 +21407,35 @@ def _live_bolt_fetch_seeds() -> dict:
         return {}
 
 
+def _live_bolt_session_open(now: "datetime | None" = None) -> bool:
+    """Weekday 09:25-16:05 ET: the bolt runs without a screen open."""
+    local = (now or datetime.now(ZoneInfo(EASTERN_TZ))).astimezone(ZoneInfo(EASTERN_TZ))
+    minute = local.hour * 60 + local.minute
+    return local.weekday() < 5 and 9 * 60 + 25 <= minute <= 16 * 60 + 5
+
+
+def _live_bolt_premarket_hold(now: "datetime | None" = None) -> bool:
+    """Weekday 07:00-09:25 ET: keep the bolt's stream leases with no screen open.
+
+    Ganesh, 2026-10-06 ("Yes"): the Watchlist must stream premarket whether or
+    not a MomX screen is open. That morning no screen polled from ~08:03, the
+    idle release dropped 145 Watchlist symbols off CHART_EQUITY until 09:25, so
+    their charts had no live minutes and the scanner's stream tail could not
+    verify them. 07:00 is when Schwab starts the current day. Leases only - the
+    bolt itself still steps (and records) only in session or with a screen."""
+    local = (now or datetime.now(ZoneInfo(EASTERN_TZ))).astimezone(ZoneInfo(EASTERN_TZ))
+    minute = local.hour * 60 + local.minute
+    return local.weekday() < 5 and 7 * 60 <= minute < 9 * 60 + 25
+
+
+def _live_bolt_is_etf(symbol: str) -> bool:
+    try:
+        from momx import etf_list as _etf
+        return _etf.is_etf(symbol) is True
+    except Exception:  # noqa: BLE001 - an unknown symbol is not excluded
+        return False
+
+
 def _live_bolt_loop() -> None:
     from momx import live_bolt as _lb
     while True:
@@ -21037,8 +21443,11 @@ def _live_bolt_loop() -> None:
         try:
             now_mono = time.monotonic()
             with _LIVE_BOLT_LOCK:
-                idle = now_mono - _LIVE_BOLT["lastRequest"] > _LIVE_BOLT_IDLE_SECONDS
+                no_screen = (now_mono - _LIVE_BOLT["lastRequest"] > _LIVE_BOLT_IDLE_SECONDS
+                             and not _live_bolt_session_open())
                 leased = _LIVE_BOLT["leased"]
+            hold_only = no_screen and _live_bolt_premarket_hold()
+            idle = no_screen and not hold_only
             if idle:
                 if leased:
                     MARKET_STREAM.release_equities(sorted(leased))
@@ -21052,7 +21461,7 @@ def _live_bolt_loop() -> None:
                     if fetched:
                         _LIVE_BOLT["seeds"] = fetched
             seeds = _LIVE_BOLT["seeds"]
-            wanted = frozenset(sorted(seeds)[:_LIVE_BOLT_MAX])
+            wanted = frozenset([s for s in seeds if not _live_bolt_is_etf(s)][:_LIVE_BOLT_MAX])
             fresh, gone = wanted - leased, leased - wanted
             if fresh:
                 MARKET_STREAM.acquire_equities(sorted(fresh))
@@ -21060,6 +21469,8 @@ def _live_bolt_loop() -> None:
                 MARKET_STREAM.release_equities(sorted(gone))
             with _LIVE_BOLT_LOCK:
                 _LIVE_BOLT["leased"] = wanted
+            if hold_only:
+                continue  # stream kept live premarket; no bolt steps without a screen
             started = time.perf_counter()
             quotes = MARKET_STREAM.latest_equities(sorted(wanted)) if wanted else {}
             book = _LIVE_BOLT["book"]
@@ -21071,6 +21482,76 @@ def _live_bolt_loop() -> None:
             continue
 
 
+# --- MomX news: automatic refresh (2026-10-01) ------------------------------
+# His ask "why can't we see today's news ... yes fix": the 8-source headline
+# store only scraped when someone pressed SCAN / NEWS / Refresh, and then only
+# the first 60 board tickers - a 12:30 story could sit unread all afternoon.
+# Now, every NEWS_AUTO_INTERVAL_SECONDS on weekdays 04:00-20:00 ET, one
+# background scrape of 60: the board's current movers (scan matches, board
+# order) + the next Watchlist tickers in rotation (news_feed_store.
+# auto_refresh_batch). Movers re-read every ~2 min, every ticker ~25 min.
+# The scrape itself is the store's existing one-at-a-time background thread;
+# a cycle that finds one still running just waits for the next.
+NEWS_AUTO_INTERVAL_SECONDS = 120
+NEWS_AUTO_FROM_MIN, NEWS_AUTO_UNTIL_MIN = 4 * 60, 20 * 60
+NEWS_AUTO_LIST = "Watchlist"
+_NEWS_AUTO = {"thread": None, "cursor": 0, "lastRunAt": None, "lastBatch": [], "lastError": None}
+
+
+def _news_auto_loop() -> None:
+    from news_feed_store import auto_refresh_batch
+    import urllib.request as _req
+    while True:
+        try:
+            now = datetime.now(ZoneInfo(EASTERN_TZ))
+            minute = now.hour * 60 + now.minute
+            if now.weekday() < 5 and NEWS_AUTO_FROM_MIN <= minute < NEWS_AUTO_UNTIL_MIN:
+                url = "http://127.0.0.1:3010/api/momx-scanner?list=" + NEWS_AUTO_LIST
+                with _req.urlopen(url, timeout=30) as resp:
+                    board = json.loads(resp.read().decode("utf-8"))
+                movers = [r.get("symbol") for r in (board.get("rows") or []) if isinstance(r, dict)]
+                universe = board.get("universe") or movers
+                _NEWS_AUTO["universe"] = [str(x).upper() for x in universe if x]
+                batch, _NEWS_AUTO["cursor"] = auto_refresh_batch(movers, universe, _NEWS_AUTO["cursor"])
+                if batch:
+                    STATE.momx_news_refresh(batch)
+                    _NEWS_AUTO.update(lastRunAt=now.isoformat(timespec="seconds"), lastBatch=batch, lastError=None)
+        except Exception as exc:  # noqa: BLE001 - news never takes the server down
+            _NEWS_AUTO["lastError"] = f"{type(exc).__name__}: {exc}"
+        time.sleep(NEWS_AUTO_INTERVAL_SECONDS)
+
+
+def _news_auto_start() -> None:
+    if _NEWS_AUTO["thread"] is None or not _NEWS_AUTO["thread"].is_alive():
+        thread = threading.Thread(target=_news_auto_loop, name="momx-news-auto", daemon=True)
+        _NEWS_AUTO["thread"] = thread
+        thread.start()
+
+
+# --- MomX news in near real time (2026-10-02) --------------------------------
+# Measured that day: the median headline reached the app 38 min after it was
+# published, because the rotation above reads each ticker only every ~25 min.
+# news_live.py pushes stories into the same store as they appear: the Alpaca
+# Benzinga websocket (all tickers), PR Newswire / GlobeNewswire RSS every 60 s and
+# SEC EDGAR's latest-filings feed every 30 s. Watchlist tickers only once the loop
+# above has read the Watchlist. Status rides on /api/news-feed/latest as "live".
+_NEWS_LIVE = {"ingest": None}
+
+
+def _news_live_start() -> None:
+    if _NEWS_LIVE["ingest"] is not None:
+        return
+    from news_live import LiveNewsIngest
+    from news_feed_store import alpaca_credential_pool
+    engine = STATE.catalysts
+    ingest = LiveNewsIngest(
+        STATE.repository, engine.score_headline, lambda: alpaca_credential_pool(settings),
+        universe=lambda: _NEWS_AUTO.get("universe") or (), sec_user_agent=engine.sec_user_agent,
+    )
+    _NEWS_LIVE["ingest"] = ingest
+    ingest.start()
+
+
 def _live_bolt_touch() -> None:
     """A screen asked: keep the loop awake, start it on first use."""
     from momx import live_bolt as _lb
@@ -21078,6 +21559,8 @@ def _live_bolt_touch() -> None:
         _LIVE_BOLT["lastRequest"] = time.monotonic()
         if _LIVE_BOLT["book"] is None:
             _LIVE_BOLT["book"] = _lb.LiveBoltBook(ARTIFACTS_DIR)
+            # Today's saved fires are listed at once, not after the first tick.
+            _LIVE_BOLT["book"].load_day(datetime.now(ZoneInfo(EASTERN_TZ)))
         if _LIVE_BOLT["thread"] is None or not _LIVE_BOLT["thread"].is_alive():
             thread = threading.Thread(target=_live_bolt_loop, name="momx-live-bolt", daemon=True)
             _LIVE_BOLT["thread"] = thread
@@ -22011,25 +22494,60 @@ def _oi_auto_alert_plain_error(exc: object, *, kept: bool = False) -> str:
     return plain
 
 
-def _bars_call_accepts_raise_unavailable(client) -> bool:
-    """Does client.get_chart_bars take the opt-in raise_unavailable flag?
-
-    SchwabClient does (2026-10-10); stand-ins injected through
-    _schwab_market_clients or a patched SchwabClient may not, and passing an
-    unknown keyword would turn every paint into a TypeError swallowed as "no
-    bars". Read from the BOUND callable every time, not cached per class: an
-    instance whose get_chart_bars was replaced (patch.object on an instance,
-    a per-instance wrapper) would otherwise inherit the class's answer and
-    fail order-dependently. inspect.signature is microseconds next to the
-    broker call it guards.
-    """
+def _daily_bar_trading_day(time_seconds) -> str | None:
+    """The ET calendar date of a daily candle. A 20:00+ stamp is NOT moved to
+    the next day: some sources stamp a day's FULL candle at 20:00 that same
+    day (SPY 10-02 was lost on 2026-10-08 when it was rolled to Saturday); an
+    overnight stub stamped 20:00 simply loses to the real day on volume. Only
+    a weekend evening stub (Sunday 20:00 = Monday's overnight start) -> None."""
     try:
-        params = inspect.signature(client.get_chart_bars).parameters
-    except (TypeError, ValueError, AttributeError):
-        return False
-    return "raise_unavailable" in params or any(
-        param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
-    )
+        moment = datetime.fromtimestamp(int(time_seconds), ZoneInfo(EASTERN_TZ))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    if moment.hour >= 20 and moment.weekday() >= 5:
+        return None
+    return moment.date().isoformat()
+
+
+def _dedupe_daily_bars(bars) -> list:
+    """One daily candle per trading day (2026-10-03, CRDO "D" squeeze vs TOS).
+
+    dailyBars mixes Schwab's own daily candles (01:00 ET stamps) with candles
+    built from intraday tapes stamped at their session start (00:00, 04:00,
+    07:00, 20:00 the evening before). Merging by timestamp kept one day 2-3
+    times; every daily study then read a shortened window. The fullest copy
+    (most volume) wins, equal volume -> the later stamp. Mirrors
+    frontend/src/dailyBars.js."""
+    by_day: dict[str, dict] = {}
+    for bar in bars or []:
+        if not isinstance(bar, dict):
+            continue
+        day = _daily_bar_trading_day(bar.get("time"))
+        if day is None:
+            continue
+        held = by_day.get(day)
+        volume = float(bar.get("volume") or 0)
+        held_volume = float((held or {}).get("volume") or 0)
+        if held is None or volume > held_volume or (volume == held_volume and int(bar["time"]) > int(held["time"])):
+            by_day[day] = bar
+    return [bar if bar.get("date") == day else {**bar, "date": day} for day, bar in sorted(by_day.items())]
+
+
+def _premarket_scanner_cache_seconds(now_et: datetime | None = None) -> float:
+    """How long a built /api/premarket-scanner response may be reused.
+
+    Inside the scanner's live window (weekdays before 10:00 ET, the same cut-off
+    _premarket_scanner_payload_locked uses for tail refreshes) the table must
+    track fires, so 4s. Outside it nothing in the 06:00-09:30 table can change,
+    yet every browser poll past 4s paid a full rebuild: measured 2026-10-02
+    18:20 ET, one pass = 6.4s and 33% of the api_server GIL in a py-spy sample,
+    while chart refreshes waited behind it. Five minutes = the browser's idle
+    poll interval, so an after-hours tab costs one build per five minutes total.
+    """
+    now = now_et or datetime.now(ZoneInfo(EASTERN_TZ))
+    minute_of_day = now.hour * 60 + now.minute
+    live_window = now.weekday() < 5 and minute_of_day < 10 * 60
+    return 4.0 if live_window else 300.0
 
 
 def _schwab_market_clients():
@@ -22215,6 +22733,14 @@ def _live_chart_quote_rows(symbols: list, user=None) -> list:
 
 
 class ApiHandler(BaseHTTPRequestHandler):
+    def handle_one_request(self) -> None:
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # A canceled keep-alive socket may disconnect before its next
+            # request line, outside any endpoint's response writer.
+            self.close_connection = True
+
     def _request_cookies(self) -> dict:
         header = str(self.headers.get("Cookie", "") or "")
         cookies: dict[str, str] = {}
@@ -22361,7 +22887,24 @@ class ApiHandler(BaseHTTPRequestHandler):
     GZIP_LEVEL = 1
 
     def _json_response_body(self, payload: dict) -> tuple[bytes, str]:
-        body = json.dumps(_serialize_value(payload)).encode("utf-8")
+        def encode(serialized, *, allow_nan):
+            if isinstance(serialized, dict):
+                # Keep bounded chunks so one large tape cannot monopolize the
+                # encoder. Native numeric bars go straight to the C encoder;
+                # dates, numpy and pandas scalars use the existing conversion.
+                pieces = _json_dict_pieces(serialized, separators=(", ", ": "),
+                                          default=_serialize_value, allow_nan=allow_nan,
+                                          yield_chunks=False)
+                return ("{" + ", ".join(piece for _, piece in pieces) + "}").encode("utf-8")
+            return json.dumps(serialized, default=_serialize_value, allow_nan=allow_nan).encode("utf-8")
+
+        try:
+            # Walking/cloning every OHLCV scalar in Python before json.dumps
+            # made replies compete with all scanner threads for the GIL.
+            # Strict floats detect inputs requiring the legacy NA conversion.
+            body = encode(payload, allow_nan=False)
+        except (ValueError, TypeError):
+            body = encode(_serialize_value(payload), allow_nan=True)
         if len(body) < self.GZIP_MIN_BYTES:
             return body, ""
         accepted = str(self.headers.get("Accept-Encoding", "") or "").lower()
@@ -22431,6 +22974,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._dispatch_get()
 
     def _dispatch_get(self) -> None:
+        self._request_started = time.perf_counter()
         try:
             parsed = urlparse(self.path)
             if parsed.path == "/api/auth/status":
@@ -22477,6 +23021,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if not self._api_gate_passed(parsed.path):
                 return
+            self._request_gate_done = time.perf_counter()
             if parsed.path == "/api/user/api-keys":
                 user = self._require_session_user()
                 if user is None:
@@ -22592,6 +23137,22 @@ class ApiHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
+            if parsed.path == "/api/option-quotes":
+                # Live quotes for given option contracts (2026-10-10): the MomX bot
+                # prices every trade's close at 15:50 in ONE batched call instead of
+                # one chain per symbol (10-09: no close recorded for MRNA and many).
+                _oq = [x.strip().upper() for x in str((parse_qs(parsed.query).get("symbols") or [""])[0]).split(",") if x.strip()]
+                self._send_json(HTTPStatus.OK, STATE.option_quotes(_oq[:400]))
+                return
+            if parsed.path == "/api/option-contract-quotes":
+                # The MomX bot's entry at the signal (2026-10-08): q=SYM:C|P:spot,...
+                items = []
+                for part in str((parse_qs(parsed.query).get("q") or [""])[0]).split(","):
+                    bits = part.split(":")
+                    if len(bits) == 3:
+                        items.append({"symbol": bits[0], "bear": bits[1].upper() == "P", "spot": bits[2]})
+                self._send_json(HTTPStatus.OK, STATE.option_contract_quotes(items))
+                return
             if parsed.path == "/api/oi-finder-chain":
                 # Compact chain feed: the frontend expects the same shape as
                 # /api/oi-finder and treats this endpoint as the fast path.
@@ -22617,6 +23178,24 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # a five-second poll would hold the background warmer's 45s
                 # "a human is watching" pause open permanently.
                 self._send_json(HTTPStatus.OK, STATE.premarket_scanner_payload())
+                return
+            if parsed.path == "/api/momx-stream-bars":
+                # The MomX worker's live tail (2026-10-01, "no delay"): the
+                # Schwab CHART_EQUITY minutes held in memory since ``since``
+                # (epoch s), compact rows. The worker polls this every ~15s
+                # asking only for the last few minutes, instead of reading the
+                # 10 MB history file that lands ~4 minutes late.
+                query = parse_qs(parsed.query or "")
+                try:
+                    since = float((query.get("since") or ["0"])[0])
+                except ValueError:
+                    since = 0.0
+                since = max(since, time.time() - 6 * 3600)
+                self._send_json(HTTPStatus.OK, {
+                    "asOf": time.time(),
+                    "since": since,
+                    "bars": MARKET_STREAM.chart_history_since(since),
+                })
                 return
             if parsed.path == "/api/momx-live-quotes":
                 # MomX FASTLANE: real-time quotes for the board's MATCHED
@@ -22654,6 +23233,33 @@ class ApiHandler(BaseHTTPRequestHandler):
                 _live_bolt_touch()
                 full = str((parse_qs(parsed.query or "").get("full") or ["0"])[0]) in {"1", "true", "yes"}
                 self._send_json(HTTPStatus.OK, _live_bolt_payload(full))
+                return
+            if parsed.path == "/api/momx-scanner/rule-record":
+                # The scanner's Record column (2026-10-10, replaces the Jev score,
+                # which tested as a coin flip): each bot rule's win rate and ROI
+                # over the last N trading days. Totals only - no trades, no
+                # tickers - so any signed-in user may read it.
+                try:
+                    _rr_days = max(1, min(30, int(str((parse_qs(parsed.query or "").get("days") or ["10"])[0]))))
+                except ValueError:
+                    _rr_days = 10
+                self._send_json(HTTPStatus.OK, _momx_rule_record(_rr_days))
+                return
+            if parsed.path == "/api/momx-scanner/bot":
+                # Served HERE from the bot's day files (2026-10-08), not proxied:
+                # the worker spends ~60% of its time rebuilding boards at IDLE
+                # priority, and a request thread there got ~1% - the Bot page
+                # timed out after 20 s and showed zeros (10-08 23:14 ET, the
+                # worker took 100-120 s). Read-only files; no board work here.
+                _bot_user = self._session_user()
+                if not (_bot_user and _bot_user.get("isAdmin")):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                try:
+                    _bot_days = int(str((parse_qs(parsed.query or "").get("days") or ["5"])[0]))
+                except ValueError:
+                    _bot_days = 5
+                self._send_momx_bot(_bot_days)
                 return
             if parsed.path.startswith("/api/momx-scanner"):
                 # PROXY to momx_worker.py on :3010. api_server does NOT build
@@ -23085,6 +23691,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     since_epoch = float(query.get("since", ["0"])[0])
                 except (TypeError, ValueError):
                     since_epoch = 0.0
+                _t_route = time.perf_counter()
                 chart_payload = STATE.oi_finder_chart_payload(
                     symbol,
                     initial_paint=initial_paint,
@@ -23094,8 +23701,26 @@ class ApiHandler(BaseHTTPRequestHandler):
                     include_study_seed=include_study_seed,
                     deep_tapes=deep_tapes,
                 )
+                _t_impl = time.perf_counter()
                 chart_payload = STATE.apply_scanner_ganesh_parity(symbol, chart_payload)
+                _t_parity = time.perf_counter()
                 self._send_json(HTTPStatus.OK, chart_payload)
+                _t_sent = time.perf_counter()
+                # The WHOLE request, not just the chart work (2026-10-06):
+                # NVDA took 8.7-9.1 s with no [chart-timing] line, because
+                # that wrapper starts after the session gate and ends before
+                # the reply is encoded and written.
+                _started = getattr(self, "_request_started", _t_route)
+                if _t_sent - _started > (0.5 if initial_paint else 2.0):
+                    _gate = getattr(self, "_request_gate_done", _started)
+                    print(
+                        f"[chart-request] {str(symbol).upper():6s} {_t_sent - _started:6.2f}s "
+                        f"gate:{_gate - _started:.2f} route:{_t_route - _gate:.2f} "
+                        f"chart:{_t_impl - _t_route:.2f} parity:{_t_parity - _t_impl:.2f} "
+                        f"send:{_t_sent - _t_parity:.2f} initial={initial_paint} since={int(since_epoch)}"
+                        f" at={datetime.now(ZoneInfo(EASTERN_TZ)):%H:%M:%S}",
+                        flush=True,
+                    )
                 return
             if parsed.path == "/api/learning-status":
                 self._send_json(HTTPStatus.OK, STATE._learning_status_payload())
@@ -23135,7 +23760,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, STATE.momx_news_latest(symbols))
                 return
             if parsed.path == "/api/news-feed":
-                self._send_json(HTTPStatus.OK, STATE.load_news())
+                # Stored rows at once; any scrape runs in the background (see load_news).
+                self._send_json(HTTPStatus.OK, STATE.load_news(scrape_now=False))
                 return
             if parsed.path == "/api/forex-factory-us-news":
                 query = parse_qs(parsed.query)
@@ -23172,6 +23798,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK, _schwab_status_payload(user=self._session_user())
                 )
+                return
+            if parsed.path == "/api/chart-indicator-profiles":
+                # "Save D for all tickers" shared by his phone and desktop
+                # (chart_profile_store.py), keyed by the signed-in account.
+                user = self._require_session_user()
+                if user is None:
+                    return
+                self._send_json(HTTPStatus.OK, {
+                    "profiles": chart_profile_store.load_profiles(str(user.get("email") or "")),
+                })
                 return
             if parsed.path == "/api/watchlist":
                 self._send_json(HTTPStatus.OK, {"tickers": settings.scanner.default_universe})
@@ -23256,6 +23892,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # momx machinery inside the CPU-saturated chart process. It is
                 # also why POST /rebuild 404'd through the browser while
                 # working against :3010 directly (verify agent, 2026-08-30).
+                if parsed.path == "/api/momx-scanner/data-source":
+                    # The "TOS" checkbox switches the scanner's data source for
+                    # EVERY viewer (2026-09-30) - admin only, like preflight.
+                    # The worker re-checks the forwarded X-AGX-User too.
+                    if self._require_admin_user() is None:
+                        return
                 import urllib.error as _mx_err
                 import urllib.request as _mx_req
                 # Same account forwarding as the GET proxy: the worker keys
@@ -23594,7 +24236,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 else:
                     symbols = []
                 if requested_universe == "mag7":
-                    self._send_json(HTTPStatus.OK, STATE.start_scan_job(STATE.mag7_scanner_watchlist, "MAG7-Watchlist Options"))
+                    self._send_json(HTTPStatus.OK, STATE.start_scan_job(STATE.mag7_scanner_watchlist, "Mag7 + Watchlist Options"))
                     return
                 if symbols:
                     self._send_json(HTTPStatus.OK, STATE.start_scan_job(symbols, "Custom"))
@@ -23862,6 +24504,24 @@ class ApiHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
+            if parsed.path == "/api/client-timing":
+                # Chart load timing measured ON THE TRADER'S DEVICE (frontend chartLoadTiming.js,
+                # 2026-10-05: "charts take 30 sec on the phone" while the server answered in
+                # 0.03-1.1 s). One small line per chart load; capped so it can never grow
+                # without bound or cost the request path anything.
+                try:
+                    target = ARTIFACTS_DIR / "client_chart_timing.jsonl"
+                    if not target.exists() or target.stat().st_size < 5_000_000:
+                        record = {"at": datetime.now(ZoneInfo(EASTERN_TZ)).isoformat(timespec="seconds"),
+                                  **{k: body.get(k) for k in ("symbol", "kind", "marks", "bytes", "candles",
+                                                              "error", "net", "ua", "screen",
+                                                              "visibility", "hiddenDuringLoad")}}
+                        with target.open("a", encoding="utf-8") as handle:
+                            handle.write(json.dumps(record, default=str)[:2000] + chr(10))
+                except Exception:
+                    pass
+                self._send_json(HTTPStatus.OK, {"ok": True})
+                return
             if parsed.path == "/api/news-feed/refresh":
                 # MomX tab: scrape the board's tickers in the background and return at once.
                 symbols = [str(item).strip().upper() for item in body.get("symbols", []) if str(item).strip()]
@@ -24008,6 +24668,19 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # The connected/verifiedAt badge lives on the tested profile.
                 success[section].update(verification)
                 self._send_json(HTTPStatus.OK, success)
+                return
+            if parsed.path == "/api/chart-indicator-profiles":
+                user = self._require_session_user()
+                if user is None:
+                    return
+                try:
+                    chart_profile_store.save_profile(
+                        str(user.get("email") or ""), body.get("key"), body.get("profile"),
+                    )
+                except ValueError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                self._send_json(HTTPStatus.OK, {"ok": True})
                 return
             if parsed.path == "/api/watchlist":
                 if "ticker" in body:
@@ -24196,16 +24869,52 @@ class ApiHandler(BaseHTTPRequestHandler):
             return {}
         return json.loads(raw)
 
-    def _send_json(self, status: HTTPStatus, payload: dict) -> None:
-        response, encoding = self._json_response_body(payload)
-        self.send_response(status.value)
+    def _send_momx_bot(self, days: int) -> None:
+        """The Bot page answer, gzipped once and reused until a bot day file or a
+        news file changes (2026-10-16: 1W took 6-16 s per open - ~27 MB rebuilt,
+        news-stamped, serialised and gzipped every time in this busy process).
+        While today's file is being written, an answer up to 30 s old is reused."""
+        accepted = str(self.headers.get("Accept-Encoding", "") or "").lower()
+        if "gzip" not in accepted or "gzip;q=0" in accepted.replace(" ", ""):
+            self._send_json(HTTPStatus.OK, _momx_bot_payload(days))
+            return
+        version = _momx_bot_version(days)
+        with _MOMX_BOT_LOCK:
+            hit = _MOMX_BOT_RESPONSES.get(days)
+        age = time.time() - hit[1] if hit else None
+        # Same files = same bytes. The news files (Jev's reading is rewritten every
+        # few minutes) only add News marks, so they may lag up to 5 minutes.
+        if hit and (hit[0] == version or age < MOMX_BOT_RESPONSE_MIN_AGE
+                    or (hit[0][0] == version[0] and age < MOMX_BOT_NEWS_MAX_AGE)):
+            body = hit[2]
+        else:
+            raw, encoding = self._json_response_body(_momx_bot_payload(days))
+            body = raw if encoding == "gzip" else gzip.compress(raw, self.GZIP_LEVEL)
+            with _MOMX_BOT_LOCK:
+                _MOMX_BOT_RESPONSES[days] = (version, time.time(), body)
+        self.send_response(HTTPStatus.OK.value)
         self.send_header("Content-Type", "application/json")
-        if encoding:
-            self.send_header("Content-Encoding", encoding)
-        self.send_header("Content-Length", str(len(response)))
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(response)
+        self.wfile.write(body)
+
+    def _send_json(self, status: HTTPStatus, payload: dict) -> None:
+        response, encoding = self._json_response_body(payload)
+        try:
+            self.send_response(status.value)
+            self.send_header("Content-Type", "application/json")
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
+            self.send_header("Content-Length", str(len(response)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(response)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Navigation may cancel a response while its body is being built.
+            # A second 500 reply to that closed socket cannot reach the client.
+            self.close_connection = True
 
 
 QUICK_STRIP_WARM_SYMBOLS = (
@@ -24220,6 +24929,132 @@ QUICK_STRIP_WARM_SYMBOLS = (
     # investigation.
     "COIN", "MARA",
 )
+
+
+_MOMX_BOT_FILES: dict = {}
+_MOMX_BOT_LOCK = threading.Lock()
+
+
+def _momx_bot_history(base: Path, days: int) -> list[dict]:
+    """momx.option_track.history() with each day file parsed once per version:
+    past days never change, so only today's file is re-read on a refresh."""
+    from momx import option_track as ot
+
+    files = list(reversed(ot._day_files(base)[-max(1, min(int(days), ot.KEEP_DAYS)):]))
+    out = []
+    keys = ot.OptionTrackBook.SUMMARY_KEYS
+    for f in files:
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        version = (st.st_mtime_ns, st.st_size)
+        with _MOMX_BOT_LOCK:
+            hit = _MOMX_BOT_FILES.get(str(f))
+        if hit is None or hit[0] != version:
+            try:
+                doc = json.loads(f.read_bytes().decode("utf-8"))
+            except (OSError, ValueError, UnicodeDecodeError):
+                continue
+            trades = [{k: t.get(k) for k in keys if t.get(k) is not None}
+                      for t in doc.get("trades") or [] if isinstance(t, dict)]
+            hit = (version, trades)
+            with _MOMX_BOT_LOCK:
+                _MOMX_BOT_FILES[str(f)] = hit
+        # a fresh copy per request: trade_news.annotate writes newsJev onto it
+        trades = [dict(t) for t in hit[1]]
+        # The shadow AI's score per trade (2026-10-17): the Bot's "AI pick" book.
+        scores = _momx_ai_scores(f.stem)
+        if scores:
+            side = "bear" if Path(base).name == "bear" else "bull"
+            for t in trades:
+                p = scores.get(f"{side}|{t.get('rule')}|{t.get('symbol')}|{t.get('at')}")
+                if p is not None:
+                    t["aiP"] = p
+        out.append({"day": f.stem, "trades": trades})
+    return out
+
+
+def _momx_ai_scores(day: str) -> dict:
+    """momx/ai_filter.py's saved scores for one day ({} when none). Never raises."""
+    try:
+        return json.loads((Path(ARTIFACTS_DIR) / "momx_ai_filter" / "scores" / f"{day}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+_MOMX_RULE_RECORD: dict = {}
+
+
+def _rule_record_side(days_list: list[dict]) -> dict:
+    from momx.rule_record import summarize
+    return summarize(days_list)
+
+
+def _momx_rule_record(days: int) -> dict:
+    """Cached 5 minutes: the totals only move when a trade closes."""
+    hit = _MOMX_RULE_RECORD.get(days)
+    if hit and time.time() - hit[0] < 300:
+        return hit[1]
+    override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+    base = Path(override) if override else Path(ARTIFACTS_DIR)
+    from momx.rule_record import build_record
+    bull = _momx_bot_history(base, days + 7)
+    bear = _momx_bot_history(base / "bear", days + 7)
+    payload = build_record(bull, bear, days)
+    _MOMX_RULE_RECORD[days] = (time.time(), payload)
+    return payload
+
+
+def _momx_bot_payload(days: int) -> dict:
+    from momx import option_track as ot
+
+    override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+    base = Path(override) if override else Path(ARTIFACTS_DIR)
+    return {
+        # News trade filters the recorded "news" rule. Re-judging historical
+        # headlines here blocked every BOT view on a database scan.
+        "bull": _momx_bot_history(base, days),
+        "bear": _momx_bot_history(base / "bear", days),
+        "keepDays": ot.KEEP_DAYS,
+    }
+
+
+_MOMX_BOT_RESPONSES: dict = {}     # days -> (version, built epoch s, gzip bytes)
+MOMX_BOT_RESPONSE_MIN_AGE = 30.0
+MOMX_BOT_NEWS_MAX_AGE = 300.0
+
+
+def _momx_bot_version(days: int) -> tuple:
+    """Everything the Bot answer is made of: the bull / bear day files it reads
+    and the news files trade_news.annotate stamps from. Same tuple = same bytes.
+    (day files, news files) - the caller lets the news half lag a few minutes."""
+    from momx import option_track as ot, trade_news
+
+    override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+    base = Path(override) if override else Path(ARTIFACTS_DIR)
+    n = max(1, min(int(days), ot.KEEP_DAYS))
+    news = [trade_news.jev_path()]
+    try:
+        news += sorted(trade_news.store_dir().glob("*"))
+    except OSError:
+        pass
+    try:   # the AI scores join the "may lag 5 min" half, like the news marks
+        news += sorted((Path(ARTIFACTS_DIR) / "momx_ai_filter" / "scores").glob("*.json"))[-n:]
+    except OSError:
+        pass
+
+    def stamps(paths: list) -> tuple:
+        out = []
+        for f in paths:
+            try:
+                st = f.stat()
+                out.append((str(f), st.st_mtime_ns, st.st_size))
+            except OSError:
+                out.append((str(f), None, None))
+        return tuple(out)
+
+    return stamps(ot._day_files(base)[-n:] + ot._day_files(base / "bear")[-n:]), stamps(news)
 
 
 def _thread_census() -> dict:
@@ -24260,6 +25095,9 @@ class ApiServer(ThreadingHTTPServer):
 def main() -> None:
     global _IS_SERVING_PROCESS
     _IS_SERVING_PROCESS = True
+    # The serving state's minute-history source; import-only test states and
+    # worker processes do not reach into the live account's recorded tape.
+    STATE.chart_market_stream = MARKET_STREAM
     # Chart history is demand-driven. Eagerly rebuilding every quick-strip
     # ticker used to keep one CPU core and the broker busy for minutes after a
     # restart, exactly when traders need the first chart/option panel fastest.
@@ -24287,6 +25125,21 @@ def main() -> None:
             f"request runs as {auto_login_email}. Clear LOCAL_AUTO_LOGIN_EMAIL "
             f"in .env to restore it."
         )
+    # The ⚡ bolt runs the whole session from boot, screen or no screen.
+    try:
+        _live_bolt_touch()
+    except Exception:  # noqa: BLE001 - the live layer never blocks startup
+        pass
+    # MomX headlines refresh themselves (no button needed), 04:00-20:00 ET.
+    try:
+        _news_auto_start()
+    except Exception:  # noqa: BLE001
+        pass
+    # ...and the live feeds push new stories in as they are published.
+    try:
+        _news_live_start()
+    except Exception:  # noqa: BLE001
+        pass
     try:
         server.serve_forever()
     except KeyboardInterrupt:

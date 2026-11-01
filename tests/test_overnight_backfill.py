@@ -86,9 +86,15 @@ def test_fetch_returns_empty_on_http_error():
 # The overnight session that ended most recently: 20:00 ET the previous day
 # through 04:00 ET. Derived from the clock so the test means the same thing on
 # any day it runs.
-NOW = pd.Timestamp.now(tz=ET).floor("5min")
+# Round an instant in UTC so the repeated fall-back hour is unambiguous.
+NOW = pd.Timestamp.now(tz="UTC").floor("5min").tz_convert(ET)
 GAP_END = NOW.normalize() + pd.Timedelta(hours=4)
 if GAP_END > NOW:
+    GAP_END -= pd.Timedelta(days=1)
+# Sessions only end on WEEKDAY mornings (chart_backfill.overnight_windows):
+# Friday 20:00 -> Saturday 04:00 is not a session, so on a weekend the newest
+# real one is Thursday night -> Friday 04:00. Failed every Saturday/Sunday.
+while GAP_END.weekday() >= 5:
     GAP_END -= pd.Timedelta(days=1)
 GAP_START = GAP_END - pd.Timedelta(hours=8)
 

@@ -104,6 +104,7 @@ class _PrewarmStub(unittest.TestCase):
         self.state.oi_finder_interactive_until = 0.0
         self.state.oi_finder_ondemand_builds = 0
         self.state._chart_symbol_last_requested = {}
+        self.state.momx_active_list = ""
 
         self.touched: list[str] = []
         self.built: list[str] = []
@@ -165,6 +166,16 @@ class SymbolSelection(_PrewarmStub):
         # occupy one slot.
         self.assertEqual(self.state._board_prewarm_symbols(), ["CRCL", "TSLA", "NVDA"])
 
+    def test_the_list_on_the_scanner_claims_slots_first(self) -> None:
+        """2026-10-16: the active "Liquid Movers" board sorted after Watchlist,
+        Mag7, Movers and the EMA lists, and the 64 slots ran out before it."""
+        self.state.BOARD_PREWARM_MAX_SYMBOLS = 3
+        self.state.momx_active_list = "Liquid Movers"
+        board_file(self.boards, "Watchlist", ["W1", "W2"])
+        board_file(self.boards, "Mag7", ["M1"])
+        board_file(self.boards, "Liquid_Movers", ["L1", "L2"])
+        self.assertEqual(self.state._board_prewarm_symbols(), ["L1", "L2", "W1"])
+
     def test_the_bull_watchlist_claims_slots_before_bear_and_news_boards(self) -> None:
         """2026-10-01: alphabetical order spent all 64 slots on Daily_news,
         Mag7.bear and Watchlist.bear; 2/50 of his main board were warmed."""
@@ -212,14 +223,19 @@ class TheCaps(_PrewarmStub):
         board_file(self.boards, "Watchlist", [f"S{index}" for index in range(40)])
         self.assertEqual(len(self.state._board_prewarm_symbols()), 5)
 
-    def test_at_most_two_tail_splices_per_cycle(self) -> None:
-        behind = self.session_start() - 3 * 86400
-        symbols = ["AAA", "BBB", "CCC", "DDD"]
+    def test_tail_splices_per_cycle_are_capped(self) -> None:
+        # Pinned clock (2026-10-11): on a Sunday night the real clock put the
+        # files more than OI_FINDER_CHART_DISK_CACHE_MAX_AGE_SECONDS old, so
+        # they read "cold" instead of "behind" and the plan had 0 tails.
+        start = self.session_start()
+        behind = start - 86400
+        cap = DashboardState.BOARD_PREWARM_MAX_TAILS_PER_CYCLE
+        symbols = [f"S{i}" for i in range(cap + 2)]
         for symbol in symbols:
             self.cache_file(symbol, mtime=behind)
-        plan = self.state._board_prewarm_plan(symbols, self.session_start())
-        self.assertEqual(len(plan["tails"]), DashboardState.BOARD_PREWARM_MAX_TAILS_PER_CYCLE)
-        self.assertEqual(plan["tails"], ["AAA", "BBB"])
+        plan = self.state._board_prewarm_plan(symbols, start, now_epoch=start + 3600)
+        self.assertEqual(len(plan["tails"]), cap)
+        self.assertEqual(plan["tails"], symbols[:cap])
 
     def test_at_most_one_cold_build_per_cycle(self) -> None:
         plan = self.state._board_prewarm_plan(["AAA", "BBB", "CCC"], self.session_start())
@@ -448,9 +464,17 @@ class ItYieldsToTheTrader(_PrewarmStub):
         self.state.oi_finder_ondemand_builds = 1
         self.assertFalse(self.state._board_prewarm_cold_build_allowed("CRCL"))
 
-    def test_an_active_interactive_window_defers_the_prewarm(self) -> None:
+    def test_chart_polling_alone_no_longer_defers_the_prewarm(self) -> None:
+        """2026-10-01: every open chart tab's poll held the 45s window, so with
+        his charts open the prewarm built one cold chart per 15 min (32 cold,
+        0 built in 6 min). Measured cost of one background build after
+        hours: warm chart refresh 0.29s -> 0.45s avg, auth 0.10s -> 0.23s."""
         self.state.oi_finder_interactive_until = time.monotonic() + 45
         self.state._board_prewarm_last_build_at = time.monotonic()
+        self.assertTrue(self.state._board_prewarm_cold_build_allowed("CRCL"))
+
+    def test_a_chart_he_is_opening_defers_the_prewarm(self) -> None:
+        self.state.oi_finder_ondemand_builds = 1
         self.assertFalse(self.state._board_prewarm_cold_build_allowed("CRCL"))
 
     def test_a_permanently_busy_app_cannot_starve_it_forever(self) -> None:
@@ -461,21 +485,6 @@ class ItYieldsToTheTrader(_PrewarmStub):
             time.monotonic() - DashboardState.WARMER_FORCE_PROGRESS_SECONDS - 1
         )
         self.assertTrue(self.state._board_prewarm_cold_build_allowed("CRCL"))
-
-    def test_a_busy_box_defers_the_FIRST_build_too(self) -> None:
-        """The forced-progress floor compares time.monotonic() - last_build,
-        and time.monotonic() on this box is machine uptime (614671s). Left at
-        the 0.0 default that difference is ALWAYS > 900, so the very first
-        cycle passed the floor unconditionally and would queue a 45-199s
-        ChartBuildLane-holding build 150s after a restart, mid-session, while
-        he was trading - and the lane does not preempt its holder."""
-        self.state.oi_finder_interactive_until = time.monotonic() + 45
-        # Exactly what _momx_board_chart_prewarm_loop now seeds at start.
-        self.state._board_prewarm_last_build_at = time.monotonic()
-        self.assertFalse(self.state._board_prewarm_cold_build_allowed("CRCL"))
-        # The seed is a real statement about the loop, not just this stub.
-        source = inspect.getsource(DashboardState._momx_board_chart_prewarm_loop)
-        self.assertIn("_board_prewarm_last_build_at = time.monotonic()", source)
 
     def test_the_in_flight_scan_holds_the_chart_lock(self) -> None:
         """Every writer of oi_finder_chart_refreshes holds this lock, and
@@ -511,11 +520,25 @@ class TheClockGate(_PrewarmStub):
 
     def test_the_evening_after_the_close_runs(self) -> None:
         """Until midnight ET: at 19:57 on 2026-10-01 the trader could not try a
-        fix until 03:30 the next day. A 21:00 cycle is open, not 'closed'."""
-        board_file(self.boards, "Watchlist", ["QMCO"])
-        with patch.object(api_server.time, "sleep"):
-            self.state._momx_board_chart_prewarm_cycle(now_et=weekday_at(21, 0))
-        self.assertNotEqual(self.state._board_prewarm_status.get("state"), "closed")
+        fix until 03:30 the next day. A new match at 21:00 still gets its paint."""
+        since = datetime.fromtimestamp(weekday_at(20, 59).timestamp(), timezone.utc)
+        board_file(self.boards, "Watchlist", ["LASR"], rows=[
+            {"symbol": "LASR", "last": 1.0, "pctChange": 0.0, "scanPass": True, "matchedSince": since.isoformat()},
+        ])
+        painted = []
+
+        class Pool:
+            def submit(pool_self, fn, *args):
+                painted.append(args[0])
+
+                class Done:
+                    def done(self):
+                        return True
+                return Done()
+
+        self.state.oi_finder_chart_paint_pool = Pool()
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=weekday_at(21, 0)), 1)
+        self.assertEqual(painted, ["LASR"])
 
     def test_the_weekend_does_nothing(self) -> None:
         board_file(self.boards, "Watchlist", ["QMCO"])
@@ -550,13 +573,18 @@ class TheClockGate(_PrewarmStub):
         """The injected clock must reach the classifier, not just the window
         gate. Same fixture, two clocks, two different answers - which is only
         possible if now_et is honoured all the way down."""
+        # All three times on ONE day: weekday_at() resolves each to the latest
+        # past weekday at that hour, so run on a weekday between 09:45 and 15:00
+        # the 15:00 clock landed on the PREVIOUS day - before the 09:40 cache
+        # stamp - and the test failed every such run (2026-10-18).
+        day = self.clock(15, 0)
         board_file(self.boards, "Watchlist", ["QMCO"])
-        self.cache_file("QMCO", mtime=self.clock(9, 40).timestamp())
+        self.cache_file("QMCO", mtime=day.replace(hour=9, minute=40).timestamp())
         with patch.object(api_server.time, "sleep"):
-            self.state._momx_board_chart_prewarm_cycle(now_et=self.clock(9, 45))
+            self.state._momx_board_chart_prewarm_cycle(now_et=day.replace(hour=9, minute=45))
         self.assertEqual(self.touched, [])  # five minutes old: warm
         with patch.object(api_server.time, "sleep"):
-            self.state._momx_board_chart_prewarm_cycle(now_et=self.clock(15, 0))
+            self.state._momx_board_chart_prewarm_cycle(now_et=day)
         self.assertEqual(self.touched, ["QMCO"])  # five hours old: behind
 
 
@@ -754,139 +782,138 @@ def weekday_at(hour: int, minute: int) -> datetime:
     return probe
 
 
-class ColdBoardRowsGetCandles(_PrewarmStub):
-    """2026-10-10: the deep-build veto lets a cold board row through at most
-    once per 900s while anything else builds, so most cold rows had NO
-    candles when clicked - and a click during a Schwab 429 cooldown showed a
-    blank chart for 10-87s (harness S2/S7). Vetoed cold rows now get a
-    capped, candles-only paint on the background paint pool."""
-
-    class _Pool:
-        def __init__(self) -> None:
-            self.jobs: list = []
-
-        def submit(self, fn, *args, **kwargs):
-            self.jobs.append((fn, args, kwargs))
+class NewMatchFastPath(_PrewarmStub):
+    """2026-10-01: LASR entered the matches while a cold build was running, so
+    the 60s cycle neither noticed it for up to a minute nor started anything
+    until that 45-199s build ended. "I cannot wait for 2 mins." A new match
+    now gets its ~2s candles-first paint within one tick - and ONLY the paint:
+    the full build stays with the cycle, so it never queues ahead of his own
+    chart opens on the single-worker deep pool."""
 
     def setUp(self) -> None:
         super().setUp()
-        import threading
+        self.painted: list = []
 
-        self.state.oi_finder_chart_lock = threading.RLock()
-        self.paint_pool = self._Pool()
-        self.live_pool = self._Pool()
-        self.state.oi_finder_chart_paint_pool = self.paint_pool
-        self.state.oi_finder_chart_interactive_paint_pool = self.live_pool
-        # He touched a chart seconds ago: the deep-build veto is ON.
-        self.state.oi_finder_interactive_until = time.monotonic() + 60.0
-        self.state._board_prewarm_last_build_at = time.monotonic()  # no forced-progress pass
-        api_server.SCHWAB_GATE.reset()
-        self.addCleanup(api_server.SCHWAB_GATE.reset)
-        self.symbols = [f"C{index}" for index in range(10)]
-        board_file(self.boards, "Watchlist", self.symbols)
+        self.paint_done = True
 
-    def cycle(self):
-        with patch.object(api_server.time, "sleep"):
-            return self.state._momx_board_chart_prewarm_cycle(now_et=self.clock())
+        class Future:
+            def done(future_self):
+                return self.paint_done
 
-    def test_vetoed_cold_rows_get_capped_paints_and_no_deep_builds(self) -> None:
-        self.cycle()
-        cap = DashboardState.BOARD_PREWARM_MAX_COLD_PAINTS_PER_CYCLE
-        self.assertEqual(self.built, [], "the deep-build veto is unchanged")
-        self.assertEqual(len(self.paint_pool.jobs), cap)
-        self.assertEqual(self.live_pool.jobs, [], "background work, background pool")
-        self.assertEqual(self.state._board_prewarm_status["paints"], cap)
-        self.assertEqual(
-            [job[1][0] for job in self.paint_pool.jobs], self.symbols[:cap],
-        )
+        class Pool:
+            def submit(pool_self, fn, *args):
+                self.painted.append(args)
+                return Future()
 
-    def test_no_paints_during_a_schwab_gate_cooldown(self) -> None:
-        api_server.SCHWAB_GATE.note_rate_limited(10.0)
-        self.cycle()
-        self.assertEqual(self.paint_pool.jobs, [])
+        self.state.oi_finder_chart_paint_pool = Pool()
 
-    def test_no_paints_while_a_clicked_chart_is_painting(self) -> None:
-        self.state._note_chart_symbol_requested("CLICK")
-        self.state._claim_chart_paint("CLICK", lane="live")
-        self.cycle()
-        self.assertEqual(self.paint_pool.jobs, [])
+    def _match_row(self, symbol, since):
+        return {"symbol": symbol, "last": 1.0, "pctChange": 0.0,
+                "scanPass": True, "matchedSince": since.isoformat()}
 
-    def test_a_painted_current_row_is_not_painted_again(self) -> None:
-        now = self.clock().timestamp()
-        self.state.oi_finder_chart_cache["C0"] = {
-            "cached_at": time.monotonic(),
-            "payload": {"bars": [{"time": int(now) - 60, "open": 1, "high": 1, "low": 1, "close": 1}]},
-            "history_ready": False,
-            "built_at_epoch": 0.0,
-        }
-        self.cycle()
-        painted = [job[1][0] for job in self.paint_pool.jobs]
-        self.assertNotIn("C0", painted)
-        # A second cycle does not re-fetch the rows just dispatched either;
-        # the cap moves on down the board instead.
-        before = len(self.paint_pool.jobs)
-        self.cycle()
-        second = [job[1][0] for job in self.paint_pool.jobs[before:]]
-        self.assertEqual(second, ["C7", "C8", "C9"])
-        self.assertFalse(set(second) & set(painted), "no duplicate per cycle")
+    def _new_match_board(self, *symbols, ago=60.0):
+        since = datetime.fromtimestamp(self.clock().timestamp() - ago, timezone.utc)
+        board_file(self.boards, "Watchlist", list(symbols),
+                   rows=[self._match_row(symbol, since) for symbol in symbols])
 
-    def _finish_paints_empty(self, seconds_ago: float) -> None:
-        """Run every queued prewarm paint against a broker that answers with
-        no bars, then age the paint guard as if they finished seconds_ago."""
-        jobs, self.paint_pool.jobs = self.paint_pool.jobs, []
-        with patch.object(self.state, "_refresh_oi_finder_chart_payload"):
-            for fn, args, kwargs in jobs:
-                fn(*args, **kwargs)
-        for entry in self.state.oi_finder_chart_paint_guard.values():
-            entry[1] -= seconds_ago
-            if entry[2] is not None:
-                entry[2] -= seconds_ago
+    def test_a_new_cold_match_gets_its_paint_at_once_even_behind_a_running_build(self) -> None:
+        self._new_match_board("LASR")
+        self.state._chart_refresh_in_flight = lambda *a, **k: True  # another full build running
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 1)
+        # Paint only: (symbol, full_history=False, release=False, skip_studies=True).
+        self.assertEqual(self.painted, [("LASR", False, False, True)])
+        self.assertEqual(self.built, [])
+        self.assertEqual(self.state._board_prewarm_status["lastNewMatch"]["action"], "paint")
 
-    def test_empty_paints_do_not_starve_the_rows_below_them(self) -> None:
-        # Review 2026-10-10 (scratchpad/review/test_starve.py): C0-C5 painted
-        # empty, finished 31s ago - past the 30s claim interval. The next
-        # cycle used to dispatch C0-C5 AGAIN and C6-C9 never got a paint.
-        self.cycle()
-        self._finish_paints_empty(31.0)
-        self.cycle()
-        second = [job[1][0] for job in self.paint_pool.jobs]
-        self.assertEqual(second, ["C6", "C7", "C8", "C9"])
+    def test_each_match_is_started_once(self) -> None:
+        self._new_match_board("LASR")
+        self.state._board_prewarm_new_match_pass(now_et=self.clock())
+        self.state._board_prewarm_new_match_pass(now_et=self.clock())
+        self.assertEqual(len(self.painted), 1)
 
-    def test_a_stale_held_row_is_not_repainted_every_cycle(self) -> None:
-        # Premarket: rows held with yesterday's tape still "want" a paint.
-        yesterday = int(self.clock().timestamp()) - 20 * 3600
-        for symbol in self.symbols[:6]:
-            self.state.oi_finder_chart_cache[symbol] = {
-                "cached_at": time.monotonic(),
-                "payload": {"bars": [{"time": yesterday, "open": 1, "high": 1, "low": 1, "close": 1}]},
-                "history_ready": False,
-                "built_at_epoch": 0.0,
-            }
-        self.cycle()
-        first = [job[1][0] for job in self.paint_pool.jobs]
-        self._finish_paints_empty(31.0)
-        self.cycle()
-        second = [job[1][0] for job in self.paint_pool.jobs]
-        self.assertFalse(set(first) & set(second))
+    def test_a_behind_match_gets_the_fast_tail_splice(self) -> None:
+        self._new_match_board("LASR")
+        self.cache_file("LASR", mtime=self.fresh(ago=3 * 86400))
+        self.state._board_prewarm_new_match_pass(now_et=self.clock())
+        self.assertEqual(self.touched, ["LASR"])
+        self.assertEqual(self.painted, [])
 
-    def test_empty_prewarm_paints_count_as_strikes(self) -> None:
-        strikes = DashboardState.BOARD_PREWARM_FAILURE_STRIKES
-        self.state.BOARD_PREWARM_COLD_PAINT_COOLDOWN_SECONDS = 0.0
-        for _ in range(strikes):
-            self.cycle()
-            self._finish_paints_empty(31.0)
-        self.cycle()
-        status = self.state._board_prewarm_status
-        self.assertIn("C0", status["blocked"], "an always-empty row stops costing calls")
-        self.assertNotIn("C0", [job[1][0] for job in self.paint_pool.jobs])
+    def test_an_old_match_is_left_to_the_regular_cycle(self) -> None:
+        self._new_match_board("OLDM", ago=2 * 3600)
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        self.assertEqual(self.painted, [])
 
-    def test_a_row_whose_deep_build_went_out_is_not_also_painted(self) -> None:
-        self.state.oi_finder_interactive_until = 0.0  # veto off: one build goes out
-        self.state._board_prewarm_last_build_at = 0.0
-        self.cycle()
-        self.assertEqual(self.built, [("C0", True)])
-        painted = [job[1][0] for job in self.paint_pool.jobs]
-        self.assertNotIn("C0", painted, "its deep build paints first anyway")
+    def test_a_burst_is_taken_one_per_tick(self) -> None:
+        self._new_match_board("AAA", "BBB", "CCC")
+        for _ in range(3):
+            self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 1)
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        self.assertEqual(sorted(args[0] for args in self.painted), ["AAA", "BBB", "CCC"])
+
+    def test_only_one_background_paint_runs_at_a_time(self) -> None:
+        """Three paint workers are shared with his clicks, and a paint can stall
+        on the broker for 40s; a second background paint waits its turn and is
+        retried, never dropped."""
+        self._new_match_board("AAA", "BBB")
+        self.state._board_prewarm_new_match_pass(now_et=self.clock())
+        self.paint_done = False                      # the first paint is still running
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        self.assertEqual(len(self.painted), 1)
+        self.paint_done = True                       # it finished: the next match goes
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 1)
+        self.assertEqual(len(self.painted), 2)
+
+    def test_both_switches_and_the_clock_gate_stop_it(self) -> None:
+        self._new_match_board("LASR")
+        (self.artifacts / "prewarm_cold_paused").write_text("", encoding="utf-8")
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        (self.artifacts / "prewarm_cold_paused").unlink()
+        (self.artifacts / "prewarm_paused").write_text("", encoding="utf-8")
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        (self.artifacts / "prewarm_paused").unlink()
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock(hour=2)), 0)
+        self.assertEqual(self.painted, [])
+
+    def test_a_chart_he_already_has_open_is_left_alone(self) -> None:
+        self._new_match_board("LASR")
+        self.state._chart_symbol_is_interactive = lambda symbol, now=None: symbol == "LASR"
+        self.assertEqual(self.state._board_prewarm_new_match_pass(now_et=self.clock()), 0)
+        self.assertEqual(self.painted, [])
+
+    def test_an_unchanged_board_is_not_reparsed_and_a_torn_read_is_retried(self) -> None:
+        self._new_match_board("LASR")
+        reads = []
+        real = api_server.json.loads
+        with patch.object(api_server.json, "loads", lambda text: reads.append(1) or real(text)):
+            self.state._board_prewarm_new_matches(self.clock().timestamp())
+            self.state._board_prewarm_new_matches(self.clock().timestamp())
+        self.assertEqual(len(reads), 1)
+        # A failed read is not remembered: the next tick tries again.
+        self.state.__dict__.pop("_board_prewarm_new_match_files", None)
+        with patch.object(api_server.json, "loads", side_effect=ValueError("torn")):
+            self.assertEqual(self.state._board_prewarm_new_matches(self.clock().timestamp()), [])
+        self.assertEqual([s for s, _ in self.state._board_prewarm_new_matches(self.clock().timestamp())], ["LASR"])
+
+    def test_the_loop_checks_new_matches_every_tick_and_cycles_once_a_minute(self) -> None:
+        calls = {"cycle": 0, "fast": 0, "sleeps": []}
+        self.state.BOARD_PREWARM_BOOT_DELAY_SECONDS = 0.0
+        self.state._momx_board_chart_prewarm_cycle = lambda: calls.__setitem__("cycle", calls["cycle"] + 1) or 60.0
+        self.state._board_prewarm_new_match_pass = lambda: calls.__setitem__("fast", calls["fast"] + 1) or 0
+
+        class Stop(Exception):
+            pass
+
+        def fake_sleep(seconds):
+            calls["sleeps"].append(seconds)
+            if len(calls["sleeps"]) > 4:  # the boot sleep + four ticks
+                raise Stop()
+
+        with patch.object(api_server.time, "sleep", fake_sleep), patch.dict(os.environ, {"AGX_CHART_PREWARM": "1"}):
+            with self.assertRaises(Stop):
+                self.state._momx_board_chart_prewarm_loop()
+        self.assertEqual(calls["cycle"], 1)        # 60s cycle: once in ~20s of ticks
+        self.assertEqual(calls["fast"], 4)         # new matches: every tick
+        self.assertEqual(calls["sleeps"][1:], [5.0, 5.0, 5.0, 5.0])
 
 
 if __name__ == "__main__":  # pragma: no cover

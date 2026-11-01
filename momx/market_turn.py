@@ -57,7 +57,7 @@ def _num(value: Any) -> float | None:
     return out if out == out else None
 
 
-def spy_turn(bars: list[dict], now: datetime) -> dict | None:
+def spy_turn(bars: list[dict], now: datetime, bear: bool = False) -> dict | None:
     """The turn from completed SPY 5m bars of TODAY, or None.
 
     ``bars``: [{"time": epoch seconds (bar start), "high", "low", "close",
@@ -84,21 +84,24 @@ def spy_turn(bars: list[dict], now: datetime) -> dict | None:
         vwap = pv / vol if vol else None
         if vwap is None:
             continue
-        if minute >= DIP_FROM_MIN and low < vwap:
+        # BEAR mirror (2026-09-28): SPY pops ABOVE VWAP after 09:45, then the
+        # first 5m close back BELOW it is the turn down. Not back-tested.
+        if minute >= DIP_FROM_MIN and (high > vwap if bear else low < vwap):
             dipped = True
-        if dipped and TURN_FROM_MIN <= minute <= TURN_UNTIL_MIN and close > vwap:
+        if dipped and TURN_FROM_MIN <= minute <= TURN_UNTIL_MIN and (close < vwap if bear else close > vwap):
             closed = datetime.fromtimestamp(bar["time"] + 300, ET)
             return {"spyAt": closed.replace(microsecond=0).isoformat(), "spyClose": close, "spyVwap": round(vwap, 4)}
     return None
 
 
-def pick(rows: list[dict], n: int = TOP_N) -> list[dict]:
+def pick(rows: list[dict], n: int = TOP_N, bear: bool = False) -> list[dict]:
     """The strongest names right now by the tested rule, best first."""
     out = []
     for row in rows:
         symbol = row.get("symbol")
         industry = str(row.get("industry") or "")
-        if not isinstance(symbol, str) or any(word in industry for word in EXCLUDED_INDUSTRY_WORDS):
+        if (not isinstance(symbol, str) or row.get("etf")
+                or any(word in industry for word in EXCLUDED_INDUSTRY_WORDS)):  # ETFs never fire a rule (momx/etf_list.py, 2026-09-27 "use only stocks")
             continue
         last, pct = _num(row.get("last")), _num(row.get("pctChange"))
         vwap = _num(_m(row.get("m5")).get("vwap"))
@@ -106,10 +109,13 @@ def pick(rows: list[dict], n: int = TOP_N) -> list[dict]:
         plus, minus, strength = _num(adx.get("plus")), _num(adx.get("minus")), _num(adx.get("adx"))
         if None in (last, pct, vwap, plus, minus, strength):
             continue
-        if last > vwap and pct >= MIN_PCT and plus > minus and strength >= MIN_ADX:
+        if bear:   # the WEAKEST: below VWAP, down >= 1%, 30m sellers
+            if last < vwap and pct <= -MIN_PCT and minus > plus and strength >= MIN_ADX:
+                out.append((-pct, symbol, last))
+        elif last > vwap and pct >= MIN_PCT and plus > minus and strength >= MIN_ADX:
             out.append((pct, symbol, last))
     out.sort(key=lambda item: (-item[0], item[1]))
-    return [{"symbol": s, "pct": round(p, 2), "price": last} for p, s, last in out[:n]]
+    return [{"symbol": s, "pct": round(-p if bear else p, 2), "price": last} for p, s, last in out[:n]]
 
 
 def _default_spy_bars() -> list[dict]:
@@ -134,8 +140,9 @@ def _default_spy_bars() -> list[dict]:
 
 class MarketTurnBook:
     def __init__(self, directory: Path, spy_bars: Callable[[], list] | None = None,
-                 notify: Callable[[str, dict], None] | None = None) -> None:
+                 notify: Callable[[str, dict], None] | None = None, direction: str = "bull") -> None:
         self.directory = Path(directory)
+        self.bear = str(direction or "").strip().lower() == "bear"
         self._spy_bars = spy_bars or _default_spy_bars
         self._notify = notify
         self._lock = threading.Lock()
@@ -154,7 +161,17 @@ class MarketTurnBook:
                 held = self._boards.get(board)
                 if (held is None and local.weekday() < 5
                         and TURN_FROM_MIN <= minute <= TURN_UNTIL_MIN + 10):
-                    turn = spy_turn(self._spy_bars() or [], local)
+                    turn = spy_turn(self._spy_bars() or [], local, self.bear)
+                    # ONE market (2026-09-28): SPY's turn is market-wide, but each
+                    # board re-read SPY's bars on its own. At 10:10 SPY closed only
+                    # 9 cents above VWAP; Movers / Mag7 saw the turn, the Watchlist's
+                    # next read did not and fired at 12:20 instead (ABVX picked 2h
+                    # late). The earliest turn any board saw today is THE turn.
+                    seen = [b for b in self._boards.values() if b.get("spyAt")]
+                    if seen:
+                        first = min(seen, key=lambda b: str(b["spyAt"]))
+                        if turn is None or str(first["spyAt"]) < str(turn["spyAt"]):
+                            turn = {k: first.get(k) for k in ("spyAt", "spyClose", "spyVwap")}
                     if turn is not None:
                         # Seen late (a restart, a stalled worker): record the
                         # turn but pick nothing - names chosen 2 hours after
@@ -162,7 +179,7 @@ class MarketTurnBook:
                         age = local.timestamp() - datetime.fromisoformat(turn["spyAt"]).timestamp()
                         fresh = age <= LATE_SECONDS
                         held = {"at": local.replace(microsecond=0).isoformat(), **turn,
-                                "picks": pick(rows) if fresh else [], "late": not fresh}
+                                "picks": pick(rows, bear=self.bear) if fresh else [], "late": not fresh}
                         self._boards[board] = held
                         self._save()
                         fired = held if fresh else None

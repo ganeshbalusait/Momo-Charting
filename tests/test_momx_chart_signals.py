@@ -63,8 +63,9 @@ def test_book_stamps_rows_and_remembers_first_seen(tmp_path):
     fsly, quiet = p["rows"]
     assert [(s["label"], s["at"][11:16], s["seenAt"][11:16]) for s in fsly["chartSignals"]] == [
         ("CALL2H", "13:00", "13:05"), ("CALL4H", "13:00", "13:05")]
-    assert quiet["chartSignals"] == [], "not graded, not a scan match: never computed"
-    assert ("FSLY",) in [f[0] for f in fake.fetched] and ("QUIET",) not in [f[0] for f in fake.fetched]
+    # 2026-09-29 (CHPT): an ungraded row is computed too, on the slow lane
+    assert [s["label"] for s in quiet["chartSignals"]] == ["CALL2H", "CALL4H"]
+    assert any("FSLY" in f[0] and "QUIET" in f[0] for f in fake.fetched)
     saved = json.loads((tmp_path / "momx_chart_signals" / "2026-09-23.json").read_text(encoding="utf-8"))
     assert saved["signals"]["FSLY"][0]["label"] == "CALL2H"
 
@@ -74,14 +75,22 @@ def test_book_stamps_rows_and_remembers_first_seen(tmp_path):
     assert later["rows"][0]["chartSignals"][0]["seenAt"][11:16] == "13:05"
 
 
-def test_a_repainted_arrow_drops_off_like_on_the_chart(tmp_path):
+def test_a_repainted_arrow_is_kept_and_marked_gone(tmp_path):
+    # 2026-09-28 ABVX: a C2H showed 09:45-11:05 then vanished from the chart.
+    # The scanner keeps it with goneAt instead of forgetting it had been there.
     fake = Fake([sig("CALL2H", "2H", "13:00")])
     book = cs.ChartSignalBook(tmp_path, fetch=fake.fetch, compute=fake.compute, background=False)
     book.apply("Watchlist", board(row("FSLY")), at("13:05"))
     fake.calls = []
     p = board(row("FSLY"))
     book.apply("Watchlist", p, at("13:10"))
-    assert p["rows"][0]["chartSignals"] == []
+    [arrow] = p["rows"][0]["chartSignals"]
+    assert arrow["label"] == "CALL2H" and arrow["seenAt"][11:16] == "13:05" and arrow["goneAt"][11:16] == "13:10"
+    # it comes back -> live again
+    fake.calls = [sig("CALL2H", "2H", "13:00")]
+    p = board(row("FSLY"))
+    book.apply("Watchlist", p, at("13:15"))
+    assert "goneAt" not in p["rows"][0]["chartSignals"][0]
 
 
 def test_deep_tape_is_fetched_once_per_symbol_per_day(tmp_path):
@@ -156,3 +165,48 @@ def test_bear_compact_p2h_p4h_are_kept_only_in_regular_hours():
     got = cs.today_signals(payload, "2026-09-25", "bear")
     assert [(s["label"], s["at"][11:16], s["compact"]) for s in got] == [
         ("PUT2H", "06:00", False), ("P4H", "10:10", True)]
+
+
+def test_slow_lane_every_five_minutes_and_no_etfs(tmp_path):
+    fake = Fake([sig("CALL2H", "2H", "13:00")])
+    book = cs.ChartSignalBook(tmp_path, fetch=fake.fetch, compute=fake.compute, background=False)
+    etf = {**row("QQQ", letter=None), "etf": True}
+    book.apply("Watchlist", board(row("CHPT", letter=None), etf), at("13:05"))
+    first = len(fake.computed)
+    assert first == 1                                     # CHPT only; the ETF is never computed
+    book.apply("Watchlist", board(row("CHPT", letter=None)), at("13:08"))
+    assert len(fake.computed) == first                    # slow lane: not again within 5 min
+    book.apply("Watchlist", board(row("CHPT", letter=None)), at("13:11"))
+    assert len(fake.computed) == first + 1                # 6 min later: recomputed
+
+
+def test_bull_and_bear_books_share_one_compute_per_bar(tmp_path):
+    fake = Fake([sig("CALL2H", "2H", "13:00")])
+    bull = cs.ChartSignalBook(tmp_path / "bull", fetch=fake.fetch, compute=fake.compute, background=False)
+    bear = cs.ChartSignalBook(tmp_path / "bear", fetch=fake.fetch, compute=fake.compute, background=False,
+                              direction="bear")
+    bull.apply("Watchlist", board(row("SHARE", letter=None)), at("13:05"))
+    bear.apply("Watchlist", board(row("SHARE", letter=None)), at("13:05"))
+    assert len(fake.computed) == 1                      # one study run for both books
+    assert sum(1 for f in fake.fetched if f[1]) == 1    # one 20-day fetch for both
+
+
+def test_today_squeezes_matches_the_chart_flame_on_a_forming_bucket():
+    """2026-10-11: the chart's squeeze flame (Cloud_Signal_Squeeze) reaches the
+    scanner row. A tight range for 30+ hours then a wide up-bar releases it."""
+    from datetime import datetime
+    from momx import chart_signals as cs
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    start = int(datetime(2026, 10, 6, 4, 0, tzinfo=et).timestamp())
+    bars = []
+    t = start
+    while t < int(datetime(2026, 10, 9, 9, 0, tzinfo=et).timestamp()):
+        bars.append({"time": t, "open": 100.0, "high": 100.05, "low": 99.95, "close": 100.0 + (0.01 if (t // 300) % 2 else -0.01)})
+        t += 300
+    bars.append({"time": t, "open": 100.0, "high": 106.0, "low": 100.0, "close": 105.5})   # 09:00 5m bar breaks out
+    hourly = cs._hourly(bars)
+    fires = cs.today_squeezes(hourly, [], "2026-10-09", "bull")
+    assert {f["timeframe"] for f in fires} >= {"1h"}
+    assert all(f["at"].startswith("2026-10-09T09:00") or f["at"].startswith("2026-10-09T08:00") for f in fires)
+    assert cs.today_squeezes(hourly, [], "2026-10-09", "bear") == []

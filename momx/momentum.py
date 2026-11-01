@@ -100,6 +100,11 @@ def _pattern(completed: list[Mapping], z: list[float], chart: str, ema20: float 
     return "steady" if steps >= STEADY_MIN_RISES else None
 
 
+def _ema_last(closes: list[float], length: int) -> float | None:
+    series = ema(closes, length) if closes else []
+    return round(series[-1], 4) if series and math.isfinite(series[-1]) else None
+
+
 def _session_vwap(completed: list[Mapping]) -> float | None:
     """VWAP of TODAY's regular session (09:30 ET on), completed 5m bars only.
     Typical price (H+L+C)/3 x volume. None before the open or with no volume."""
@@ -127,6 +132,24 @@ def _last_crosses(completed: list[Mapping], closes: list[float]) -> tuple[int | 
         if up is None and e9[i] > e20[i] and e9[i - 1] <= e20[i - 1]:
             up = _t(completed[i])
         if down is None and e9[i] < e20[i] and e9[i - 1] >= e20[i - 1]:
+            down = _t(completed[i])
+        if up is not None and down is not None:
+            break
+    return up, down
+
+
+def _ema_crosses(completed: list[Mapping], closes: list[float], fast: int, slow: int) -> tuple[int | None, int | None]:
+    """(upAt, downAt) of the newest EMA(fast)/EMA(slow) cross on a completed 5m
+    bar TODAY - the MomoX "4x8 EMA cross (early trend)" buy signal (2026-10-03)."""
+    ef, es = ema(closes, fast), ema(closes, slow)
+    today = _et_date(_t(completed[-1]))
+    up = down = None
+    for i in range(len(completed) - 1, 0, -1):
+        if _et_date(_t(completed[i])) != today:
+            break
+        if up is None and ef[i] > es[i] and ef[i - 1] <= es[i - 1]:
+            up = _t(completed[i])
+        if down is None and ef[i] < es[i] and ef[i - 1] >= es[i - 1]:
             down = _t(completed[i])
         if up is not None and down is not None:
             break
@@ -280,8 +303,11 @@ def _go_confirmation(completed: list[Mapping]) -> dict | None:
     minus = di['minus'][-1] if di else None
     buyers = (plus is not None and minus is not None and math.isfinite(plus)
               and math.isfinite(minus) and plus > minus)
+    sellers = (plus is not None and minus is not None and math.isfinite(plus)
+               and math.isfinite(minus) and minus > plus)
     return {'barAt': _t(completed[-1]), 'macdUp': hist > 0 and hist > prev,
-            'buyers30': bool(buyers)}
+            'macdDown': hist < 0 and hist < prev,
+            'buyers30': bool(buyers), 'sellers30': bool(sellers)}
 
 
 def summarize(bars_5m: Any, rvol_cells: Mapping | None, *, now_epoch: float | None = None,
@@ -373,7 +399,9 @@ def summarize(bars_5m: Any, rvol_cells: Mapping | None, *, now_epoch: float | No
     else:
         state = "quiet"
 
+    from momx.chart_learning import build as chart_context
     return {
+        "chartContext": chart_context(completed, now),
         "trigger": None if trigger is None else round(float(trigger), 4),
         "chart": chart,
         "state": state,
@@ -384,17 +412,25 @@ def summarize(bars_5m: Any, rvol_cells: Mapping | None, *, now_epoch: float | No
         "lastCompleted": {k: last.get(k) for k in ("open", "high", "low", "close", "volume")} | {"time": _t(last)},
         "atr14": None if atr14 is None else round(atr14, 4),
         "ema20": None if ema20 is None else round(ema20, 4),
+        # EMA21 = the 5m chart's yellow line (App.jsx default EMA 9/21/50) - the
+        # virtual bot's exit (Ganesh 2026-09-28: "below VWAP / 21 EMA exit").
+        "ema21": _ema_last(closes, 21),
         # Strategy G rule 4 (momx/strategy.py): above EMA20 AND VWAP, or a
         # recent 9x20 cross up. Both from completed bars, like everything here.
         "vwap": _round_or_none(_session_vwap(completed)),
         "crossUpAt": crosses[0],
         "crossDownAt": crosses[1],
         "gapGo": _gap_go(completed, direction),
-        "goConfirmation": None if bear else _go_confirmation(completed),
+        "goConfirmation": _go_confirmation(completed),
         "todVol": _time_of_day_volume(completed),
+        # His daily-line entry (2026-09-29) - the bot's "dayLine" test rule.
+        "dayLine": _safe_day_line(completed, bear),
+        # The Squeeze Momentum line's colour (display only, 2026-09-29).
+        "sqzMom": _safe_sqz_momentum(completed),
         # Five Pillars inputs: bull pass only (summarize runs twice per row -
         # bull and bear; the card reads the bull m5) - one computation per row.
-        "pillars": None if bear else _pillars(completed),
+        # Bear: only the ZS read (2026-09-28) - the Five Pillars card reads the bull m5.
+        "pillars": _bear_pillars(completed) if bear else _pillars(completed),
         # The LIVE ⚡ seed (momx/live_bolt.py): harvested by service before the
         # board is published, so it never travels to a browser.
         "liveSeed": None if bear else live_bolt.seed_from_bars(completed),
@@ -487,19 +523,246 @@ def _session_levels(bars: list[Mapping]) -> dict:
     return out
 
 
+ZS_CLEAR_PCT = 2.0
+
+
+def _zs_rule(completed: list[Mapping], bear: bool = False) -> dict | None:
+    """His "ZS" entry (2026-09-28), read on the last COMPLETED 5m bar, as the
+    5m chart draws it: close above EMA9, EMA21, EMA50 (first-close seed),
+    the chart VWAP (reset at 00:00 ET, all of today's bars) and the Ichimoku
+    cloud top (9/26/52, spans shifted 26 bars); CLEAR PATH = no level in
+    (close, close * 1.02]: today's high so far (incl. this bar - the chart's
+    dH), premarket high, prior regular-session high, and the floor pivots
+    P / R1 / R2 from the prior session. NOT included (no daily history on this
+    tape): 9eD / 21eD and weekly MA lines, and the High-OI wall. Back-test Sep
+    1-25: no edge (about 0% a trade) - tracked by the virtual bot as a TEST."""
+    if len(completed) < 80:
+        return None
+    last = datetime.fromtimestamp(_t(completed[-1]), ET)
+    if not (9 * 60 + 30 <= last.hour * 60 + last.minute < 16 * 60):
+        return None   # a regular-session read only - saves the work overnight
+    h = [float(b["high"]) for b in completed]
+    l = [float(b["low"]) for b in completed]
+    c = [float(b["close"]) for b in completed]
+    i = len(c) - 1
+    stamps = [datetime.fromtimestamp(_t(b), ET) for b in completed]
+    today = stamps[i].date()
+
+    def ema_last(n: int) -> float:
+        a = 2 / (n + 1)
+        e = c[0]
+        for x in c:
+            e = x * a + e * (1 - a)
+        return e
+
+    cv = cpv = 0.0
+    for b, st in zip(completed, stamps):
+        if st.date() == today:
+            v = max(float(b.get("volume") or 0), 0.0)
+            cv += v
+            cpv += (float(b["high"]) + float(b["low"]) + float(b["close"])) / 3 * v
+    vwap = cpv / cv if cv else c[i]
+
+    def mid(j: int, n: int) -> float | None:
+        if j - n + 1 < 0:
+            return None
+        return (max(h[j - n + 1:j + 1]) + min(l[j - n + 1:j + 1])) / 2
+
+    j = i - 26
+    tk, kj, sb = mid(j, 9), mid(j, 26), mid(j, 52)
+    if tk is None or kj is None or sb is None:
+        return None
+    # BEAR mirror (2026-09-28): BELOW every line and the cloud BOTTOM, a clear
+    # path DOWN. "above" keeps its name = "on the trade's side of every line".
+    cloud_edge = min((tk + kj) / 2, sb) if bear else max((tk + kj) / 2, sb)
+    lines = {"ema9": ema_last(9), "ema21": ema_last(21), "ema50": ema_last(50), "vwap": vwap, "cloud": cloud_edge}
+    above = all((c[i] < v) if bear else (c[i] > v) for v in lines.values())
+    prior: dict = {}
+    for b, st in zip(completed, stamps):
+        m = st.hour * 60 + st.minute
+        if st.date() < today and 9 * 60 + 30 <= m < 16 * 60:
+            prior.setdefault(st.date(), []).append(b)
+    if bear:
+        levels: dict[str, float] = {"dL": min(x for x, st in zip(l, stamps) if st.date() == today)}
+        pm = [x for x, st in zip(l, stamps) if st.date() == today and 4 * 60 <= st.hour * 60 + st.minute < 9 * 60 + 30]
+        if pm:
+            levels["pmL"] = min(pm)
+    else:
+        levels = {"dH": max(x for x, st in zip(h, stamps) if st.date() == today)}
+        pm = [x for x, st in zip(h, stamps) if st.date() == today and 4 * 60 <= st.hour * 60 + st.minute < 9 * 60 + 30]
+        if pm:
+            levels["pmH"] = max(pm)
+    if prior:
+        day = prior[max(prior)]
+        ph, pl, pc = max(float(b["high"]) for b in day), min(float(b["low"]) for b in day), float(day[-1]["close"])
+        pp = (ph + pl + pc) / 3
+        if bear:
+            levels.update(pDL=pl, P=pp, S1=2 * pp - ph, S2=pp - (ph - pl))
+        else:
+            levels.update(pDH=ph, P=pp, R1=2 * pp - pl, R2=pp + (ph - pl))
+    if bear:
+        bottom = c[i] * (1 - ZS_CLEAR_PCT / 100)
+        blockers = sorted(k for k, v in levels.items() if bottom <= v < c[i])
+        blockers050 = sorted(k for k, v in levels.items() if k != "dL" and c[i] - 0.5 <= v < c[i])
+        return {"above": bool(above), "clear2": not blockers, "blockers": blockers,
+                "clear050": not blockers050, "blockers050": blockers050, "barAt": _t(completed[i]),
+                "close": round(c[i], 4), "direction": "bear", **{k: round(v, 4) for k, v in lines.items()}}
+    top = c[i] * (1 + ZS_CLEAR_PCT / 100)
+    blockers = sorted(k for k, v in levels.items() if c[i] < v <= top)
+    # His "ABVX" rule (2026-09-28): no level within +$0.50 - today's own high
+    # left out (at the open it is just the first candle's wick).
+    blockers050 = sorted(k for k, v in levels.items() if k != "dH" and c[i] < v <= c[i] + 0.5)
+    return {"above": bool(above), "clear2": not blockers, "blockers": blockers,
+            "clear050": not blockers050, "blockers050": blockers050, "barAt": _t(completed[i]),
+            "close": round(c[i], 4), **{k: round(v, 4) for k, v in lines.items()}}
+
+
+def _day_line(completed: list[Mapping], bear: bool = False) -> dict | None:
+    """His "daily line" entry (2026-09-29, AMD / GOOGL puts, NVDA / AAPL calls):
+    today's 09:30 open ABOVE the prior regular session's high (bear: BELOW its
+    low), and on the last completed 5m bar the close is on the trade's side of
+    the 21 EMA with VOLUME rising (bar > previous bar and > 1.5x the prior 6
+    bars) or MOMENTUM (MACD 12/26/9 above its signal and rising; bear: below
+    and falling). Read 09:35-11:00 only. dollarVol = average regular-session
+    close x volume of the prior sessions on the tape (the bot ranks the board's
+    top 30 = "mega caps"). Back-test Sep 1-28 (mega caps): CALLS +0.75 / +0.63
+    %/trade at his exit vs +0.13 / +0.30 same-moment random (small n, se
+    0.4-0.7); PUTS no better than random. A TEST, tracked by the bot."""
+    if len(completed) < 60:
+        return None
+    last = datetime.fromtimestamp(_t(completed[-1]), ET)
+    minute = last.hour * 60 + last.minute
+    if not (9 * 60 + 35 <= minute <= 11 * 60):
+        return None
+    today = last.date()
+    sessions: dict = {}
+    for bar in completed:
+        stamp = datetime.fromtimestamp(_t(bar), ET)
+        if 9 * 60 + 30 <= stamp.hour * 60 + stamp.minute < 16 * 60:
+            sessions.setdefault(stamp.date(), []).append(bar)
+    todays = sessions.get(today) or []
+    prior = sorted(d for d in sessions if d < today)
+    if not todays or not prior:
+        return None
+    first = datetime.fromtimestamp(_t(todays[0]), ET)
+    if first.hour * 60 + first.minute != 9 * 60 + 30:
+        return None
+    prev = sessions[prior[-1]]
+    prev_high = max(float(b["high"]) for b in prev)
+    prev_low = min(float(b["low"]) for b in prev)
+    day_open = float(todays[0]["open"])
+    closes = [float(b["close"]) for b in completed]
+    e21 = ema(closes, 21)
+    value, avg = macd(closes, 12, 26, 9)
+    c, vol = closes[-1], [float(b.get("volume") or 0) for b in completed]
+    prior6 = vol[-7:-1]
+    vol_up = vol[-1] > vol[-2] and bool(prior6) and vol[-1] > 1.5 * (sum(prior6) / len(prior6))
+    if bear:
+        bias, side = day_open < prev_low, c < e21[-1]
+        mom = value[-1] < avg[-1] and value[-1] < value[-2]
+    else:
+        bias, side = day_open > prev_high, c > e21[-1]
+        mom = value[-1] > avg[-1] and value[-1] > value[-2]
+    dollar = [sum(float(b["close"]) * float(b.get("volume") or 0) for b in sessions[d]) for d in prior]
+    # The REVERSE case (ZS 09-28, 2026-09-29): opened past yesterday's line
+    # the WRONG way and the first 5m candle closed straight back across it -
+    # bull: open < prev low, 09:30 close > prev low; bear: open > prev high,
+    # 09:30 close < prev high. Back-test Sep 1-28: flips (bull IS -0.11 vs
+    # -0.14 random, OOS +0.55 vs +0.17). The bot's "dayReclaim" TEST rule.
+    # His "$100 and 0.5 price" filter (2026-09-29): open >= $100 and $0.50 of
+    # room to the next daily line (the last 3 prior sessions' open / high /
+    # low / close) from this close - above for calls, below for puts. Back-test
+    # Sep 1-28 with 3-day lines: calls held to the close +0.36 / +0.58%/trade
+    # vs +0.10 / +0.25 same-moment random $100+ stocks (n 209 / 169); puts no
+    # edge. The bot's "dayLine100" TEST rule.
+    lines = [v for d in prior[-3:] for v in (float(sessions[d][0]["open"]), max(float(b["high"]) for b in sessions[d]),
+                                             min(float(b["low"]) for b in sessions[d]), float(sessions[d][-1]["close"]))]
+    clear = not any((c - 0.5 <= v < c) if bear else (c < v <= c + 0.5) for v in lines)
+    first_close = float(todays[0]["close"])
+    reclaim = (day_open > prev_high and first_close < prev_high) if bear else (day_open < prev_low and first_close > prev_low)
+    signal = bool(bias and side and (vol_up or mom))
+    return {"signal": signal, "signal100": bool(signal and day_open >= 100 and clear), "clear050": bool(clear),
+            "reclaim": bool(reclaim), "bias": bool(bias), "side": bool(side),
+            "volUp": bool(vol_up), "mom": bool(mom), "barAt": _t(completed[-1]), "open": round(day_open, 4),
+            "prevHigh": round(prev_high, 4), "prevLow": round(prev_low, 4), "ema21": round(e21[-1], 4),
+            "dollarVol": round(sum(dollar) / len(dollar)), "direction": "bear" if bear else "bull"}
+
+
+def _bear_pillars(completed: list[Mapping]) -> dict | None:
+    try:
+        zs = _zs_rule(completed, bear=True)
+    except Exception:  # noqa: BLE001 - never costs the row
+        return None
+    return {"zs": zs} if zs else None
+
+
 def _pillars(completed: list[Mapping]) -> dict | None:
     try:
         closes = [float(b["close"]) for b in completed]
         up, down = _macd_crosses(completed, closes)
+        up48, down48 = _ema_crosses(completed, closes, 4, 8)
         return {
+            "ema48CrossUpAt": up48,
+            "ema48CrossDownAt": down48,
             "ribbon5m": _ribbon(closes),
             "ribbon30m": _ribbon(_thirty_minute_closes(completed)),
             "macdCrossUpAt": up,
             "macdCrossDownAt": down,
             "stoch": _stochastic(completed),
             **_session_levels(completed),
+            "zs": _zs_rule(completed),
         }
     except Exception:  # noqa: BLE001 - a pillar input never costs the row
+        return None
+
+
+def _sqz_momentum(completed: list[Mapping], length: int = 20) -> dict | None:
+    """The chart's Squeeze Momentum line (App.jsx calculateSqueezeMomentumLowerStudy,
+    shared_SqueezeChain24, length 20) on the last two completed 5m bars:
+    close - avg(Donchian mid, SMA close), smoothed by a least-squares line.
+    DISPLAY ONLY (his ask 2026-09-29) - back-test Sep 1-28: ADX + this line
+    cyan = same-moment random; 89% of ADX signals already had it cyan."""
+    bars = completed[-(3 * length):]
+    if len(bars) < 2 * length:
+        return None
+    n = len(bars)
+    raw: list = [None] * n
+    for i in range(length - 1, n):
+        w = bars[i - length + 1:i + 1]
+        hi = max(float(b["high"]) for b in w)
+        lo = min(float(b["low"]) for b in w)
+        avg = sum(float(b["close"]) for b in w) / length
+        raw[i] = float(bars[i]["close"]) - ((hi + lo) / 2 + avg) / 2
+    sx = length * (length - 1) / 2
+    sx2 = length * (length - 1) * (2 * length - 1) / 6
+    den = length * sx2 - sx ** 2
+    def line_at(i: int) -> float | None:
+        w = raw[i - length + 1:i + 1]
+        if i - length + 1 < 0 or any(v is None for v in w):
+            return None
+        sy = sum(w)
+        sxy = sum(x * v for x, v in enumerate(w))
+        slope = (length * sxy - sx * sy) / den if den else 0.0
+        return slope * (length - 1) + (sy - slope * sx) / length
+    value, prev = line_at(n - 1), line_at(n - 2)
+    if value is None or prev is None:
+        return None
+    rising = value > prev
+    color = ("cyan" if rising else "purple") if value >= 0 else ("darkblue" if rising else "magenta")
+    return {"value": round(value, 4), "prev": round(prev, 4), "color": color, "barAt": _t(bars[-1])}
+
+
+def _safe_sqz_momentum(completed: list[Mapping]) -> dict | None:
+    try:
+        return _sqz_momentum(completed)
+    except Exception:  # noqa: BLE001 - never costs the row
+        return None
+
+
+def _safe_day_line(completed: list[Mapping], bear: bool) -> dict | None:
+    try:
+        return _day_line(completed, bear)
+    except Exception:  # noqa: BLE001 - never costs the row
         return None
 
 

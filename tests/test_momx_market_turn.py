@@ -87,3 +87,39 @@ def test_push_message_is_plain():
     title, body = mt.push_message("Watchlist", {"spyAt": f"{DAY}T11:05:00-04:00",
                                                  "picks": [{"symbol": "BE", "pct": 6.1, "price": 288.0}]})
     assert title == "Market turned up 11:05" and "BE +6.1%" in body and "not a recommendation" in body
+
+
+def test_one_market_turn_for_every_board(tmp_path):
+    # 2026-09-28: Movers / Mag7 saw SPY's turn at 10:10 (9 cents above VWAP);
+    # the Watchlist's own later read of SPY did not, and it fired at 12:20.
+    # The earliest turn any board saw is the turn for all of them.
+    calls = {"n": 0}
+
+    def spy():
+        calls["n"] += 1
+        return spy_day() if calls["n"] == 1 else []       # later reads: SPY data no longer shows it
+    book = mt.MarketTurnBook(tmp_path, spy_bars=spy)
+    movers = {"rows": [row("KOD", 9.0)], "rest": []}
+    book.apply("Movers", movers, t("11:06"))
+    assert movers["marketTurn"]["spyAt"][11:16] == "11:05"
+    watch = {"rows": [row("ABVX", 4.4)], "rest": []}
+    book.apply("Watchlist", watch, t("11:08"))
+    assert watch["marketTurn"]["spyAt"][11:16] == "11:05"
+    assert watch["rows"][0]["marketTurn"]["rank"] == 1
+
+
+
+def test_bear_turn_and_weakest_picks():
+    # SPY pops above VWAP, then the first close back below it is the bear turn
+    up = [bar("09:30", 100.2, 99.5, 99.6, 5000), bar("09:35", 99.8, 99.4, 99.5, 3000),
+          bar("09:40", 99.7, 99.4, 99.6), bar("09:45", 99.9, 99.6, 99.8)]
+    minute = 9 * 60 + 50
+    while minute < 11 * 60:
+        up.append(bar(f"{minute // 60}:{minute % 60:02d}", 100.4, 100.0, 100.2))
+        minute += 5
+    up.append(bar("11:00", 100.1, 99.1, 99.2, 4000))
+    turn = mt.spy_turn(up, t("11:10"), bear=True)
+    assert turn and turn["spyAt"][11:16] == "11:05"
+    weak = mt.pick([row("A", -5.0, last=9.0, vwap=9.8, plus=10, minus=30), row("B", -2.0, last=9.0, vwap=9.8, plus=10, minus=30),
+                    row("UP", 3.0)], bear=True)
+    assert [p["symbol"] for p in weak] == ["A", "B"] and weak[0]["pct"] == -5.0

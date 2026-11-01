@@ -13,6 +13,8 @@ import {
   columnGroupSpans,
   defaultLayout,
   effectiveSort,
+  nextSortState,
+  NO_SORT,
   moveKey,
   moveKeyTo,
   normalizeLayout,
@@ -379,4 +381,22 @@ test("columnGroupSpans: pinned columns get their own spacer cell carrying pinKey
   assert.equal(new Set(spans.map((span) => span.key)).size, spans.length, "span keys stay unique");
   // No pinned list -> unchanged behaviour.
   assert.deepEqual(columnGroupSpans(columns).map((span) => span.span), [4, 2]);
+});
+
+test("header clicks cycle high-to-low, low-to-high, then NO SORT", () => {
+  const hl = { key: "highLow", kind: "bar" };
+  const sym = { key: "symbol", kind: "symbol" };
+  let s = nextSortState(null, hl);
+  assert.deepEqual(s, { key: "highLow", direction: "desc" });
+  s = nextSortState(s, hl);
+  assert.deepEqual(s, { key: "highLow", direction: "asc" });
+  s = nextSortState(s, hl);
+  assert.equal(s, NO_SORT);
+  assert.deepEqual(nextSortState(s, hl), { key: "highLow", direction: "desc" });
+  // Names start A-Z; a different column always starts fresh.
+  assert.deepEqual(nextSortState({ key: "highLow", direction: "asc" }, sym), { key: "symbol", direction: "asc" });
+  assert.deepEqual(nextSortState({ key: "symbol", direction: "asc" }, sym), { key: "symbol", direction: "desc" });
+  assert.equal(nextSortState({ key: "time", direction: "desc" }, { key: "time" }, "asc"), NO_SORT);
+  // NO SORT survives the hidden-column fallback instead of snapping back.
+  assert.equal(effectiveSort(NO_SORT, [hl], { key: "highLow", direction: "desc" }), NO_SORT);
 });

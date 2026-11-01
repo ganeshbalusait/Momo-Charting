@@ -40,7 +40,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 #: Keep this many of each artifact. The journal and secrets are small enough to
 #: keep a week of; the code bundle is large and GitHub is its primary home.
-KEEP = {"trades": 7, "secrets": 7, "code": 3}
+KEEP = {"trades": 7, "secrets": 7, "code": 3, "learning": 7}
 
 #: Files worth more than the machine they sit on. Missing ones are skipped with
 #: a note rather than failing the run - a backup that aborts because one
@@ -54,6 +54,19 @@ SECRET_FILES = [
     #: Drive-only rebuild would otherwise lose every user's saved keys).
     "artifacts/user_credentials.key",
     "artifacts/user_tokens",
+]
+
+#: What the Bot and the AI have learnt (added 2026-10-18, his "do permanent
+#: data store to train the model"): the Bot's trade days and price paths, the
+#: AI's permanent dataset / models / nightly scores, and the Alpaca paper-trade
+#: records. None of it is in git; lost, it takes months of live trading to regrow.
+LEARNING_DIRS = [
+    "artifacts/momx_ai_filter",
+    "artifacts/momx_paper_mirror",
+    "artifacts/momx_option_track",
+    "artifacts/bear/momx_option_track",
+    "artifacts/momx_option_paths",
+    "artifacts/bear/momx_option_paths",
 ]
 
 #: Files OUTSIDE the repo that a rebuilt machine cannot recreate without
@@ -215,6 +228,42 @@ def backup_secrets(out_dir: Path, day: str) -> bool:
     return True
 
 
+def backup_learning(out_dir: Path, day: str) -> bool:
+    """One zip of LEARNING_DIRS, checked before it replaces anything. Never raises."""
+    archive = out_dir / f"learning-{day}.zip"
+    partial = archive.with_name(archive.name + ".partial")
+    written = 0
+    try:
+        with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in LEARNING_DIRS:
+                folder = REPO / name
+                if not folder.is_dir():
+                    log(f"  note: {name} absent, skipped")
+                    continue
+                for child in sorted(folder.rglob("*")):
+                    if child.is_file() and not child.name.endswith((".tmp", ".partial")):
+                        try:
+                            zf.write(child, arcname=child.relative_to(REPO).as_posix())
+                            written += 1
+                        except OSError as exc:      # the app replaced it mid-read: next run has it
+                            log(f"  note: {child.name} skipped ({exc})")
+        with zipfile.ZipFile(partial) as zf:
+            bad = zf.testzip()
+        if bad is not None:
+            raise zipfile.BadZipFile(f"corrupt member {bad}")
+        if not written:
+            partial.unlink(missing_ok=True)
+            log("FAILED learning: nothing to back up")
+            return False
+        os.replace(partial, archive)
+    except Exception as exc:  # noqa: BLE001 - one failed archive must not stop the others
+        partial.unlink(missing_ok=True)
+        log(f"FAILED learning: {type(exc).__name__}: {exc}")
+        return False
+    log(f"learning OK: {archive.name} ({written} files, {archive.stat().st_size/1e6:.0f} MB)")
+    return True
+
+
 def backup_code(out_dir: Path, day: str) -> bool:
     """One file containing every branch and all history - clone it to restore."""
     bundle = out_dir / f"code-{day}.bundle"
@@ -258,6 +307,7 @@ def main() -> int:
         "database": backup_database(out_dir, day),
         "secrets": backup_secrets(out_dir, day),
         "code": backup_code(out_dir, day),
+        "learning": backup_learning(out_dir, day),
     }
     prune(out_dir)
 
@@ -265,7 +315,7 @@ def main() -> int:
     if failed:
         log(f"FINISHED WITH FAILURES: {', '.join(failed)}")
         return 1
-    log("all three backups completed and verified")
+    log("all four backups completed and verified")
     return 0
 
 

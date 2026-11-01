@@ -5,9 +5,43 @@ import {
   chartDeltaRequestTime,
   chartDeltaTapeChanged,
   mergeChartDeltaPayload,
+  chartHistoryBarsThrough,
+  updateChartPayloadWithQuote,
 } from "./oiChartDelta.js";
 
 const bar = (time, close) => ({ time, open: close, high: close, low: close, close, volume: 10 });
+
+test("live quotes cannot skip an hour of missing candle history on the next delta", () => {
+  const bars = Array.from({ length: 600 }, (_, i) => bar(1700000040 + i * 60, 100));
+  const base = {symbol: "TSLA", historyLoading: false, bars};
+  const through = bars.at(-1).time;
+  const liveTime = through + 3600;
+  const quoted = updateChartPayloadWithQuote(base, 110, liveTime);
+  assert.equal(quoted.bars.at(-1).time, liveTime);
+  assert.equal(chartDeltaRequestTime(quoted), through);
+  assert.equal(chartHistoryBarsThrough(quoted), through);
+  assert.equal(quoted.bars.at(-1).volumeKnown, false);
+  const newerQuote = updateChartPayloadWithQuote(quoted, 111, liveTime + 60);
+  assert.equal(chartDeltaRequestTime(newerQuote), through);
+  const recovered = mergeChartDeltaPayload(newerQuote, {
+    delta: true, deltaSince: through,
+    bars: Array.from({length: 62}, (_, i) => bar(through + i * 60, 100 + i / 10)),
+  });
+  assert.equal(recovered.bars.length, 661);
+  assert.equal(new Set(recovered.bars.map(b => b.time)).size, recovered.bars.length);
+  assert.equal(chartDeltaRequestTime(recovered), liveTime + 60);
+});
+
+test("quote updates retain delivered history time and reject older or invalid ticks", () => {
+  const payload = {bars: [bar(600, 100)], historyBarsThrough: 600};
+  assert.equal(updateChartPayloadWithQuote(payload, 99, 540), payload);
+  assert.equal(updateChartPayloadWithQuote(payload, NaN, 660), payload);
+  const next = updateChartPayloadWithQuote(payload, 102, 600);
+  assert.equal(next.bars[0].high, 102);
+  assert.equal(next.bars[0].volume, 10);
+  assert.equal(next.historyBarsThrough, 600);
+  assert.equal(chartHistoryBarsThrough({bars: [bar(600, 100)], historyBarsThrough: 999}), 600);
+});
 
 const basePayload = {
   symbol: "AAPL",

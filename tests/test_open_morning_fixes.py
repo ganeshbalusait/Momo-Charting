@@ -208,3 +208,94 @@ class BellDemotionKickPlanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecencySpliceReadinessTests(unittest.TestCase):
+    """2026-10-05: SPX (no overnight bars) failed readiness on every request after a
+    restart - disk-loaded entry, no built_at - and rebuilt 666 times in ~9 minutes."""
+
+    def setUp(self) -> None:
+        self.state = api_server.STATE
+
+    def test_a_recency_splice_after_the_session_start_is_honestly_current(self) -> None:
+        friday_close = et_epoch(2026, 10, 2, 16, 0)
+        stale = {"payload": {"bars": [{"time": int(friday_close)}]}, "built_at_epoch": 0.0}
+        monday_night = et_epoch(2026, 10, 5, 1, 10)
+        self.assertFalse(self.state._chart_entry_tape_is_current(stale, monday_night))
+        checked = {**stale, "recency_at_epoch": et_epoch(2026, 10, 5, 1, 5)}
+        self.assertTrue(self.state._chart_entry_tape_is_current(checked, monday_night))
+
+    def test_a_splice_from_before_the_open_does_not_cover_the_new_session(self) -> None:
+        friday_close = et_epoch(2026, 10, 2, 16, 0)
+        e = {"payload": {"bars": [{"time": int(friday_close)}]}, "recency_at_epoch": et_epoch(2026, 10, 5, 1, 5)}
+        self.assertFalse(self.state._chart_entry_tape_is_current(e, et_epoch(2026, 10, 5, 9, 31)))
+
+
+class ClosedIndexSpliceTests(unittest.TestCase):
+    """2026-10-05 04:30-04:50 ET: SPX (prints 09:30-16:00 only) re-fetched Schwab every
+    30 s for zero new bars; refresh=true requests blocked 3.7-17.9 s on it."""
+
+    def setUp(self) -> None:
+        self.state = api_server.STATE
+        friday_close = et_epoch(2026, 10, 2, 16, 0)
+        self.current = {"payload": {"bars": [{"time": int(friday_close)}]},
+                        "recency_at_epoch": et_epoch(2026, 10, 5, 4, 0)}
+        self.premarket = et_epoch(2026, 10, 5, 4, 45)
+
+    def test_a_current_index_tape_is_left_alone_before_the_bell(self) -> None:
+        self.assertTrue(self.state._index_tape_cannot_advance("SPX", self.current, self.premarket))
+
+    def test_stocks_keep_splicing_premarket(self) -> None:
+        self.assertFalse(self.state._index_tape_cannot_advance("SPY", self.current, self.premarket))
+
+    def test_the_index_splices_during_regular_hours(self) -> None:
+        self.assertFalse(self.state._index_tape_cannot_advance("SPX", self.current, et_epoch(2026, 10, 5, 9, 31)))
+        self.assertFalse(self.state._index_tape_cannot_advance("SPX", self.current, et_epoch(2026, 10, 5, 16, 10)))
+
+    def test_a_not_yet_current_index_still_gets_its_first_splice(self) -> None:
+        # After a restart the disk entry carries no stamp: one splice must still run.
+        unstamped = {"payload": self.current["payload"]}
+        self.assertFalse(self.state._index_tape_cannot_advance("SPX", unstamped, self.premarket))
+
+    def test_an_empty_index_tape_is_never_skipped(self) -> None:
+        self.assertFalse(self.state._index_tape_cannot_advance("SPX", {"payload": {"bars": []}}, self.premarket))
+
+    def test_weekends_count_as_closed(self) -> None:
+        saturday = et_epoch(2026, 10, 3, 12, 0)
+        entry = {**self.current, "recency_at_epoch": et_epoch(2026, 10, 2, 16, 20)}
+        self.assertTrue(self.state._index_tape_cannot_advance("SPX", entry, saturday))
+
+    def test_the_recency_kick_is_skipped_but_a_full_rebuild_is_not(self) -> None:
+        from unittest.mock import patch
+        with patch.object(self.state, "_index_tape_cannot_advance", return_value=True), \
+                patch.object(self.state, "_chart_recency_refreshes") as recency_guard:
+            self.state._start_oi_finder_chart_refresh("SPX", full_history=False)
+        recency_guard.assert_not_called()
+
+
+class StockPremarketRecencyTests(unittest.TestCase):
+    """2026-10-05 07:55 ET: before 09:30 session_start is Friday's open, so one
+    early splice made COHR/LASR 'current' until the bell - COHR served 06:06
+    and LASR 05:36 while the stream had 07:48 / 07:34. A splice now vouches for
+    a STOCK for STOCK_RECENCY_CURRENT_SECONDS; an index keeps the whole premarket."""
+
+    def setUp(self) -> None:
+        self.state = api_server.STATE
+        self.friday_close = et_epoch(2026, 10, 2, 16, 0)
+
+    def entry(self, symbol, spliced_at):
+        return {"payload": {"symbol": symbol, "bars": [{"time": int(self.friday_close)}]},
+                "recency_at_epoch": spliced_at}
+
+    def test_an_old_premarket_splice_no_longer_keeps_a_stock_current(self) -> None:
+        cohr = self.entry("COHR", et_epoch(2026, 10, 5, 6, 10))
+        self.assertFalse(self.state._chart_entry_tape_is_current(cohr, et_epoch(2026, 10, 5, 7, 55)))
+
+    def test_a_fresh_splice_still_keeps_a_stock_current(self) -> None:
+        cohr = self.entry("COHR", et_epoch(2026, 10, 5, 7, 52))
+        self.assertTrue(self.state._chart_entry_tape_is_current(cohr, et_epoch(2026, 10, 5, 7, 55)))
+
+    def test_an_index_keeps_its_premarket_exemption(self) -> None:
+        spx = self.entry("SPX", et_epoch(2026, 10, 5, 4, 0))
+        self.assertTrue(self.state._chart_entry_tape_is_current(spx, et_epoch(2026, 10, 5, 7, 55)))
+        self.assertTrue(self.state._index_tape_cannot_advance("SPX", spx, et_epoch(2026, 10, 5, 7, 55)))
