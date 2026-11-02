@@ -193,7 +193,6 @@ PAYLOAD_KEYS = {"generatedAt",
     # BEAR scanner (spec 2026-09-24): every payload says which way it faces.
     "direction"}
 ROW_KEYS = {
-    "emaAllGates",
     "symbol", "industry", "last", "pctChange", "prevClose", "scanPass", "scanReasons",
     "rvol", "sqz", "skittles", "highLow", "color", "quoteTrend", "sparkline",
     "badge", "news",

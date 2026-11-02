@@ -1110,13 +1110,6 @@ export function boardRest(board) {
   return rest.filter((row) => row && typeof row === "object" && typeof row.symbol === "string" && row.symbol !== "");
 }
 
-export function scannerWarming(liveBoard, listWarming) {
-  // Board and list metadata are separate requests and can arrive out of order.
-  // A completed board must not inherit an older list's BUILDING flag.
-  if (typeof liveBoard?.rebuildPending === "boolean") return liveBoard.rebuildPending;
-  return typeof liveBoard?.warming === "boolean" ? liveBoard.warming : Boolean(listWarming);
-}
-
 export function decideBoardView(input) {
   const options = input && typeof input === "object" ? input : {};
   const liveBoard = options.liveBoard;
