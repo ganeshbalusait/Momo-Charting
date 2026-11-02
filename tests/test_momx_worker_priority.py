@@ -15,4 +15,5 @@ k.GetPriorityClass.argtypes=[ctypes.c_void_p]
 print(k.GetPriorityClass(k.GetCurrentProcess()))
 '''
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=20, check=True)
-    assert result.stdout.strip() == str(0x4000)  # BELOW_NORMAL, not IDLE (starved the scan)
+    # NORMAL since 2026-11-02 (BELOW_NORMAL capped each lane at ~0.19 core; IDLE starved it).
+    assert result.stdout.strip() == str(0x0020)

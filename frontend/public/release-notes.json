@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-02T18:30:00-05:00",
+      "heading": "Watchlist aims for under a minute per refresh",
+      "items": [
+        "The scanner now gets the same share of the CPU as the chart server instead of leftovers. Windows was also throttling its calculation helpers to about a fifth of a core each; that is switched off.",
+        "News headlines no longer hold up a Watchlist refresh: the board shows the latest headlines it has and fetches newer ones in the background. Only the first refresh after a restart waits for news.",
+        "Charts and the scanner now share the CPU evenly, so with thinkorswim busy a chart may open a little slower than before."
+      ]
+    },
+    {
       "at": "2026-11-02T17:40:00-05:00",
       "heading": "Today's scanner fixes combined with the GitHub version",
       "items": [

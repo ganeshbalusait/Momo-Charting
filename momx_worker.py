@@ -713,31 +713,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _deprioritise() -> None:
-    """Keep HTTP serving responsive; calculation pool initializers set IDLE."""
-    try:
-        import ctypes
+    """Scanner priority: NORMAL, level with api_server, power throttling off.
 
-        # Serving everything at IDLE starved the accept loop under load.
-        # Heavy pool children explicitly lower themselves to IDLE, so they
-        # cannot outrank the chart API when the HTTP parent is BELOW_NORMAL.
-        BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
-        kernel32 = ctypes.windll.kernel32
-        # ctypes defaults every return/arg to 32-bit int. GetCurrentProcess()
-        # returns the 64-bit pseudo-handle (0xFFFFFFFFFFFFFFFF); truncated to
-        # 0xFFFFFFFF it is an INVALID handle, so SetPriorityClass silently
-        # returned 0 (failure, not an exception) and this printed "IDLE" while
-        # the process actually stayed NORMAL - the exact starvation the IDLE
-        # design prevents (verify agent, 2026-08-28). Declare the types so the
-        # real handle survives, and CHECK the return value.
-        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-        kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-        kernel32.SetPriorityClass.restype = ctypes.c_int
-        ok = kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
-        if ok:
-            print("priority: BELOW_NORMAL for serving; calculation children explicitly IDLE", flush=True)
-        else:
-            err = ctypes.get_last_error()
-            print(f"priority: FAILED to set BELOW_NORMAL (GetLastError={err})", flush=True)
+    2026-11-02: BELOW_NORMAL left the Watchlist at 3.5 min (he wants under
+    1 min); IDLE before that starved it outright. The pool children set the
+    same in their initializer. Measurements: momx/worker_priority.py.
+    """
+    try:
+        from momx.worker_priority import set_current_process
+
+        set_current_process()
+        print("priority: NORMAL for serving and calculation children, power throttling off", flush=True)
     except Exception as exc:  # noqa: BLE001 - non-Windows or restricted
         print(f"priority: unchanged ({exc})", flush=True)
 

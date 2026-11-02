@@ -1599,3 +1599,32 @@ def test_a_newly_matching_row_built_in_the_lane_equals_a_full_build(monkeypatch)
     pick = lambda p: {r["symbol"]: {k: v for k, v in r.items() if k != "grade"} for r in p["rows"]}
     assert pick(skipped)["BBB"] == pick(full)["BBB"]
     assert not skipped["errors"]
+
+
+def test_async_news_ships_last_map_and_refreshes_in_background(monkeypatch):
+    """2026-11-02: news must not hold up a Watchlist pass (he wants under 1 min)."""
+    import threading as _threading
+    from momx import board as _board
+    calls = []
+    released = _threading.Event()
+
+    def fake_now(symbols, now=None):
+        calls.append(tuple(symbols))
+        if len(calls) > 1:
+            released.wait(5)
+        return {"AAPL": {"headline": f"v{len(calls)}"}}
+
+    monkeypatch.setattr(_board, "NEWS_ASYNC", True)
+    monkeypatch.setattr(_board, "_NEWS_HELD", {})
+    monkeypatch.setattr(_board, "_NEWS_BUSY", set())
+    monkeypatch.setattr(_board, "_news_map_now", fake_now)
+    # First sight of a symbol set: fetched inline, so the first build has news.
+    assert _board._news_map(["aapl"])["AAPL"]["headline"] == "v1"
+    # Next build: the held map comes back at once while the refresh runs.
+    assert _board._news_map(["AAPL"])["AAPL"]["headline"] == "v1"
+    released.set()
+    for _ in range(100):
+        if not _board._NEWS_BUSY:
+            break
+        _threading.Event().wait(0.02)
+    assert _board._news_map(["AAPL"])["AAPL"]["headline"] == "v2"

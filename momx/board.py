@@ -1125,11 +1125,55 @@ def _news_map(symbols: Sequence[str], now: Any = None) -> dict:
     exists so even an import-time or contract-level failure ships the board
     with no icons rather than no board.
     """
+    if NEWS_ASYNC:
+        return _news_map_async(symbols)
+    return _news_map_now(symbols, now)
+
+
+def _news_map_now(symbols: Sequence[str], now: Any = None) -> dict:
     try:
         fetched = news.fresh_news(symbols, now=now if isinstance(now, datetime) else None)
         return fetched if isinstance(fetched, dict) else {}
     except Exception:  # noqa: BLE001 - news can never break the board
         return {}
+
+
+#: Worker-only (service.start_warmer turns it on): a build ships the last news
+#: map for its symbols and a background thread refreshes it (2026-11-02: the
+#: news step was ~60 s of a 202 s Watchlist pass; he wants the pass under 1
+#: min). A symbol set seen for the first time is fetched inline, so the first
+#: build after a restart still grades with news.
+NEWS_ASYNC = False
+_NEWS_HELD: dict = {}
+_NEWS_BUSY: set = set()
+_NEWS_LOCK = threading.Lock()
+
+
+def _news_map_async(symbols: Sequence[str]) -> dict:
+    key = tuple(sorted({str(s).upper() for s in symbols}))
+    with _NEWS_LOCK:
+        held = _NEWS_HELD.get(key)
+        start = held is not None and key not in _NEWS_BUSY
+        if start:
+            _NEWS_BUSY.add(key)
+    if held is None:
+        fresh = _news_map_now(list(key))
+        with _NEWS_LOCK:
+            _NEWS_HELD[key] = fresh
+            while len(_NEWS_HELD) > 16:
+                _NEWS_HELD.pop(next(iter(_NEWS_HELD)))
+        return fresh
+    if start:
+        def refresh():
+            try:
+                fresh = _news_map_now(list(key))
+                with _NEWS_LOCK:
+                    _NEWS_HELD[key] = fresh
+            finally:
+                with _NEWS_LOCK:
+                    _NEWS_BUSY.discard(key)
+        threading.Thread(target=refresh, name="momx-news-refresh", daemon=True).start()
+    return held
 
 
 def _badge(symbol: Any, row: Mapping[str, Any], earnings_map: Any) -> dict:

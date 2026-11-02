@@ -128,7 +128,7 @@ function Set-ServingPriority {
     # it. 2026-11-02 at the open, two thinkorswim windows + Chrome (Normal) held
     # the CPU at 97% and api_server (BelowNormal) answered /api/health in 30 s:
     # charts did not load. The chart server and gateway serve the trader, so they
-    # run Normal; the MomX scanner stays BelowNormal beneath them. The venv
+    # run Normal; the MomX scanner sets itself Normal too (2026-11-02, momx/worker_priority.py). The venv
     # python.exe is a launcher, so the real interpreter (its child) is set too.
     param($Process)
     if ($null -eq $Process) { return }

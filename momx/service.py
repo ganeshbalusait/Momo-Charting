@@ -1372,6 +1372,8 @@ def start_warmer() -> None:
             return
     _STOP.clear()
     ASYNC_PERSIST = True
+    # News off the build path too (board.NEWS_ASYNC; 2026-11-02, "under 1 min").
+    board.NEWS_ASYNC = True
     # The monthly EMA touch lists read their members from this refresher's
     # cache (momx/ema_touch.py); only the warmer process fetches.
     ema_touch.start_refresher(lambda: board.load_universe(board.WATCHLIST_LIST_NAME))
