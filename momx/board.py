@@ -479,7 +479,6 @@ def _scan_one(args):
     # pass through the floor.
     last = columns.last_price(tapes)
     passed, reasons = scan.scan_symbol(tapes, last)
-    ema_gates = scan.ema_all_gates(tapes, last, reasons)
     # The BEAR scan on the same tapes (spec 2026-09-24): a few EMA/MACD
     # comparisons and one RVOL pass per timeframe - cheap next to build_row.
     bear_passed, bear_reasons = scan.scan_symbol(tapes, last, direction="bear")
@@ -501,9 +500,9 @@ def _scan_one(args):
             except Exception as exc:  # noqa: BLE001 - per-symbol isolation
                 row = None
                 failure = f"{type(exc).__name__}: {exc}"
-            return symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons, ema_gates
+            return symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons
         return (symbol, None, pct, passed, reasons, None, last,
-                bear_passed, bear_reasons, ema_gates)
+                bear_passed, bear_reasons)
     try:
         row = columns.build_row(symbol, tapes, industry)
         failure = None
@@ -523,7 +522,7 @@ def _scan_one(args):
     # again. The daily-only expression remains ONLY for a symbol whose row
     # build raised - the single case where there is no row to read.
     pct = row.get("pctChange") if row is not None else columns.pct_change(daily_bars)
-    return symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons, ema_gates
+    return symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons
 
 
 def _scan_one_guarded(args):
@@ -580,8 +579,7 @@ def _scan_batch(items):
     in recv while the scan stage took 65 s).
     """
     started = time.time()
-    from momx.scan_reuse import run
-    results = [run(item, _scan_one_guarded, _newest_bar_epoch, started) for item in items]
+    results = [_scan_one_guarded(item) for item in items]
     return started, time.time(), results
 
 
@@ -887,7 +885,7 @@ def build_board(
     _timing_scan_start = time.perf_counter()
 
     def _absorb(result):
-        symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons, *extra = result
+        symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons = result
         if failure:
             _record_error(errors, symbol, failure)
         scanned.append(
@@ -901,7 +899,6 @@ def build_board(
                 # The bear verdict rides beside the bull one; bear_view promotes it.
                 "bearPass": bear_passed,
                 "_bearReasons": bear_reasons,
-                "_emaGates": extra[0] if extra else None,
             }
         )
 
@@ -1041,7 +1038,6 @@ def build_board(
             record.get("bearPass", False),
             record.get("_bearReasons"),
         )
-        finished["emaAllGates"] = record.get("_emaGates")
         if row.get("marketDataAt") is not None:
             finished["marketDataAt"] = row["marketDataAt"]
         return finished

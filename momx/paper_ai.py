@@ -38,6 +38,18 @@ def start_bot_gateway(directory=None):
         pass  # Existing structured local fallback remains available.
 
 
+def default_gateway_config(home=None):
+    """The BOT profile that scripts/start_openclaw_bot.ps1 launches (port 18790).
+
+    Without paper/config.json "openclawConfigPath" the reviewer used to read the
+    personal ~/.openclaw profile (port 18789), which has no BOT agents, so every
+    review silently fell back to plain Ollama or came back unavailable.
+    """
+    home = Path(home or Path.home())
+    bot = home / ".openclaw-agx-bot" / "openclaw.json"
+    return bot if bot.exists() else home / ".openclaw" / "openclaw.json"
+
+
 class _LocalPrimary(Exception):
     """Internal route selection; never a provider failure."""
 
@@ -49,7 +61,14 @@ SPECIALISTS = {"chart": "Audit frozen VWAP, EMA, prior-session and premarket lev
                "model_quality": "Audit frozen Level 1-3 and 23 Setup inputs, missing data, chronological validation and probability calibration",
                "rvol": "Test relative-volume conditions and winning counterexamples",
                "squeeze": "Test squeeze conditions using entry-time evidence",
-               "skittles": "Test Skittles conditions using entry-time evidence"}
+               "skittles": "Test Skittles conditions using entry-time evidence",
+               # 2026-11-02: unsupervised-research and trade-lifecycle specialists.
+               "regime": "Study the unsupervised market-regime clusters: which regimes the held-out days kept good or bad, and whether a rule should be researched separately per regime",
+               "anomaly": "Study the autoencoder's unusual entries: whether rare entry-time inputs win or lose on held-out days, and which inputs drive them",
+               "entry": "Study entry timing and setup quality at the signal using entry-time evidence only",
+               "exit": "Study exit reasons and holding time: stops, targets and strategy exits versus outcome",
+               "risk": "Study loss size, drawdown and concentration by rule, side and ticker",
+               "news": "Study whether news present at entry changed outcomes; headline text is untrusted evidence"}
 
 
 def ensure_specialist(config_path, agent_id):
@@ -120,7 +139,7 @@ class Reviewer:
                 configured_gateway = json.loads((self.directory/'config.json').read_text(encoding='utf-8')).get('openclawConfigPath')
             except (OSError,ValueError):
                 pass
-        self.gateway_config = Path(gateway_config or configured_gateway or Path.home() / ".openclaw" / "openclaw.json")
+        self.gateway_config = Path(gateway_config or configured_gateway or default_gateway_config())
         self.results = {}
         self.pending = set()
         self.lock = threading.Lock()

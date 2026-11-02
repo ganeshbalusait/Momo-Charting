@@ -228,7 +228,7 @@ function LearningTeamStatus({ onStatus }) {
   return <section className="bot-jevbook-note" aria-label="Post-trade learning team">
     <b>Trade first · learn afterward</b>
     <p>Scanner specialist → trade reviewer → critic → experiment planner. The app coordinates their recorded findings; {team?.primaryProvider === 'ollama' ? 'local Ollama primary; OpenClaw and ChatGPT requests bypassed' : 'OpenClaw gateway primary, with local Ollama fallback'}. Agents have no order or exit authority.</p>
-    <p>Hermes independent research: {team?.hermesEnabled ? "enabled" : "not enabled"}{team?.hermesStatus?.available === true ? " · last request succeeded" : team?.hermesStatus?.available === false ? " · last request failed" : " · not yet verified"}. Chart/indicator, market-regime, exit/risk and data-quality specialists join execution, RVOL, squeeze, Skittles and model-quality research. Up to three specialist investigations run per batch; their recorded findings reach the reviewer, critic and experiment planner. No framework has proven superior trading performance yet.</p>
+    <p>Hermes independent research: {team?.hermesEnabled ? "enabled" : "not enabled"}{team?.hermesStatus?.available === true ? " · last request succeeded" : team?.hermesStatus?.available === false ? " · last request failed" : " · not yet verified"}. Execution, RVOL, squeeze, Skittles, regime and anomaly specialists are called when the evidence points at them; entry, exit, risk and news specialists take scheduled turns otherwise. No framework has proven superior trading performance yet.</p>
     <p>{error || (team ? `Reviews ${team.enabled ? "ON" : "OFF"} · ${team.reviewedTrades || 0} trades reviewed · ${team.pendingTrades || 0} queued · ${team.failedTrades || 0} failed` : "Loading review status…")}</p>
     {team?.backgroundResearchPaused ? <p>Background agent research waits until after 8 PM ET on weekdays to protect scanner speed. Signal capture, virtual trading and saved-model scoring continue.</p> : null}
     {team?.snapshotCoverage ? <p>Entry snapshots: {team.snapshotCoverage.scanner}/{team.snapshotCoverage.trades} with Level/Setup inputs · {team.snapshotCoverage.chart}/{team.snapshotCoverage.trades} with chart inputs. Historical gaps stay unknown.</p> : null}
@@ -244,6 +244,23 @@ function LearningTeamStatus({ onStatus }) {
         {Object.entries(c.reasons || {}).map(([reason, n]) => <p key={reason}>{n} · {reason}</p>)}
       </div>)}
       <p>Incomplete option chains retry while the original signal is fresh, for up to 10 minutes and within entry hours. Expired signals remain visible with a reason; the BOT does not invent an earlier fill.</p>
+    </details> : null}
+    {team?.scoreboard && Object.keys(team.scoreboard).length ? <details><summary>Specialist scoreboard</summary>
+      <p>Each specialist calls whether the next completed batch will win a higher or lower share of trades. The call is saved before that batch exists, then graded; "unclear" is counted, never graded. Specialists see their own record on their next turn.</p>
+      {Object.entries(team.scoreboard).sort(([a], [b]) => a.localeCompare(b)).map(([role, s]) => <p key={role}>
+        <b>{role}</b>: {s.calls} calls · {s.graded ? `${s.correct}/${s.graded} correct (${s.hitRate}%)` : "none graded yet"}{s.unclear ? ` · ${s.unclear} unclear` : ""}{s.pending ? ` · ${s.pending} waiting for next batch` : ""}</p>)}
+      <p>A small sample proves nothing; 50% is a coin flip.</p>
+    </details> : null}
+    {team?.research && (team.research.regimes?.state || team.research.anomalies?.state) ? <details><summary>Unsupervised research (nightly)</summary>
+      <p>Learned without win/loss labels on earlier days, then graded on later days the models never saw. Research only: nothing here filters, sizes or exits a trade.</p>
+      {team.research.regimes?.state === "ready" ? <>
+        <p><b>Market regimes</b> (k-means on SPY/QQQ/breadth at entry, side-adjusted): held-out win rate {team.research.regimes.testWinRate}%.
+          {team.research.regimes.persistence ? ` Best training regime ${team.research.regimes.persistence.held ? "stayed ahead" : "did not stay ahead"} of the worst by ${team.research.regimes.persistence.testSpread} points on later days.` : " Too few later trades per regime to judge."}</p>
+        {team.research.regimes.clusters?.map(c => <p key={c.id}>Regime {c.id}: train {c.trainWinRate ?? "–"}% · later {c.testWinRate ?? "–"}% (n={c.testTrades}) · {Object.entries(c.center || {}).map(([k, v]) => `${k.replace(/^m_/, "")} ${v}`).join(", ")}</p>)}
+      </> : <p><b>Market regimes:</b> {team.research.regimes?.state || "not trained yet"}.</p>}
+      {team.research.anomalies?.state === "ready"
+        ? <p><b>Unusual entries</b> (autoencoder neural network): {team.research.anomalies.unusualTrades} unusual later trades won {team.research.anomalies.unusualWinRate ?? "–"}% versus {team.research.anomalies.normalWinRate ?? "–"}% for normal ones. Main differences: {(team.research.anomalies.drivers || []).join(", ") || "–"}.</p>
+        : <p><b>Unusual entries:</b> {team.research.anomalies?.state || "not trained yet"}.</p>}
     </details> : null}
     {team?.latest?.critic ? <details><summary>Latest agent discussion</summary>
       {team.latest.scanner ? <p><b>Scanner specialist ({team.latest.scanner.provider}):</b> {team.latest.scanner.summary}</p> : <p>This older discussion predates the scanner specialist.</p>}

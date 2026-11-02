@@ -263,3 +263,12 @@ def test_json_fence_does_not_bypass_validation_or_accept_prose(content):
     from momx.paper_ai import _structured_text
     with pytest.raises((ValueError,TypeError)):
         decision(_structured_text(content))
+
+
+def test_default_gateway_is_the_bot_profile_the_start_script_launches(tmp_path):
+    from momx.paper_ai import default_gateway_config
+    assert default_gateway_config(tmp_path) == tmp_path / '.openclaw' / 'openclaw.json'
+    bot = tmp_path / '.openclaw-agx-bot' / 'openclaw.json'
+    bot.parent.mkdir()
+    bot.write_text('{}')
+    assert default_gateway_config(tmp_path) == bot

@@ -237,10 +237,6 @@ SUPERVISOR_POLL_SECONDS = 30.0
 
 def _state(name: str) -> _ListState:
     """The state for ``name``, created on first sight. Caller must hold no lock."""
-    with _LOCK:
-        existing = _STATES.get(name)
-        if existing is not None:
-            return existing
     # Asked BEFORE the lock: it reads the universe file.
     warm_at_once = name in ALWAYS_WARM_LISTS or _is_active(name)
     with _LOCK:
@@ -294,13 +290,6 @@ def _options_gate(universe: Any, *, request: bool = True) -> tuple[list, dict | 
     return kept, {"listCount": len(symbols), "hidden": hidden, "pending": pending}
 
 
-def _list_options_gate(name, universe, *, request=True):
-    # TOS screenshot scans stocks, with no optionability condition.
-    if ema_touch.parse_name(name):
-        return list(universe or []), None
-    return _options_gate(universe, request=request)
-
-
 def drop_no_options(symbols: Any) -> list[str]:
     """Movers: drop CONFIRMED no-options names before the 40-name cap, so they
     cannot take a slot. Unknown names stay (checked first, held out of the
@@ -340,7 +329,7 @@ def _warming_payload(name: str, reason: str = "") -> dict:
         universe = list(board.load_universe(name))
     except Exception:  # noqa: BLE001
         universe = []
-    universe, gate = _list_options_gate(name, universe, request=False)
+    universe, gate = _options_gate(universe, request=False)
     if reason:
         message = reason
     elif len(universe) > 50:
@@ -651,7 +640,7 @@ def _load_disk(name: str, direction: str = "bull") -> dict | None:
     if not isinstance(raw, dict) or not isinstance(raw.get("rows"), list):
         return None
     payload = dict(raw)
-    if options_only() and not ema_touch.parse_name(name):
+    if options_only():
         try:
             keep = set(_options_gate(payload.get("universe") or [
                 r.get("symbol") for section in ("rows", "rest") for r in (payload.get(section) or [])
@@ -930,30 +919,13 @@ def live_seeds(name: str | None = None) -> dict:
         return out
 
 
-def _apply_ema_scan(payload):
-    """EMA membership is the fourth ALL condition; the ANY group must also pass."""
-    rows = list(payload.get("rows") or []) + list(payload.get("rest") or [])
-    for row in rows:
-        gate = row.get("emaAllGates") or {}
-        row["scanPass"] = gate.get("pass") is True
-        row["scanReasons"] = (["ema-touch:all"] + gate.get("reasons", []) if row["scanPass"] else
-                              ["blocked:ema-all:" + k for k, v in gate.get("checks", {}).items() if not v]
-                              or ["blocked:ema-all:unknown"])
-    ranked = scan.rank_board(rows, None)
-    cut = max(50, sum(bool(row["scanPass"]) for row in ranked))
-    payload["rows"], payload["rest"] = ranked[:cut], ranked[cut:]
-
-
 def _build_once(name: str) -> float:
     """Rebuild ONE named list. Returns how long it took, in seconds."""
     state = _state(name)
     started = time.monotonic()
     scan_started_at = datetime.now(timezone.utc).isoformat()
     try:
-        if ema_touch.enabled() and ema_touch.parse_name(name) and not ema_touch.ready():
-            _release_heavy_gate_early()
-            return SKIPPED_BUILD
-        symbols, gate = _list_options_gate(name, board.load_universe(name))
+        symbols, gate = _options_gate(board.load_universe(name))
         gated_at = time.monotonic()
         # A list that would only re-borrow the SAME shared scan it already
         # published has nothing new to show (2026-10-16: Liquid Movers rebuilt
@@ -978,8 +950,6 @@ def _build_once(name: str) -> float:
             # Liquid Movers' own scan took 0 s.
             _release_heavy_gate_early()
         payload["list"] = name
-        if ema_touch.parse_name(name):
-            _apply_ema_scan(payload)
         if gate is not None:
             payload["optionsGate"] = gate
         # "Use only stocks" (2026-09-27): row["etf"] from the official listing
@@ -1207,9 +1177,6 @@ def _build_claimed(name: str) -> bool:
         _GATE_HELD.held = True
     elapsed = 0.0
     try:
-        with _LOCK:
-            if _STATES.get(name) is not state:
-                return False
         elapsed = _build_once(name)
     finally:
         # ALWAYS released (unless _build_once already let it go after its
@@ -1249,12 +1216,6 @@ PRIORITY_YIELD_MAX_SECONDS = 90.0
 
 
 def _priority_rank(name: str) -> int:
-    # The visible EMA subset needs its first result before the full Watchlist.
-    # Once published it returns to the normal ordering; no repeated preemption.
-    if ema_touch.parse_name(name):
-        state = _STATES.get(name)
-        if (state is None or state.payload is None) and _is_viewed(name):
-            return -1
     if name in LIST_PRIORITY:
         return LIST_PRIORITY.index(name)
     return len(LIST_PRIORITY) if _is_active(name) else len(LIST_PRIORITY) + 1
@@ -1356,10 +1317,6 @@ def _warm_one(name: str) -> None:
     while not _STOP.is_set():
         try:
             with _LOCK:
-                # A timeframe switch retires this exact state. Never let its
-                # old thread start rebuilding a removed list (or its replacement).
-                if _STATES.get(name) is not state:
-                    return
                 due_at = state.due_at
             wait = due_at - time.monotonic()
             if wait > 0:
@@ -1378,8 +1335,7 @@ def _warm_one(name: str) -> None:
 
 def _ensure_threads(names: list[str]) -> None:
     """Give every known list a live warm thread. Idempotent and cheap."""
-    _retire_ema_states(names)
-    for name in sorted(names, key=_priority_rank):
+    for name in names:
         _state(name)  # created outside _LOCK before we take it below
         with _LOCK:
             existing = _THREADS.get(name)
@@ -1393,15 +1349,6 @@ def _ensure_threads(names: list[str]) -> None:
             )
             _THREADS[name] = thread
         thread.start()
-
-
-def _retire_ema_states(names: list[str]) -> None:
-    """Reconcile settings changed by another process, not just this API."""
-    with _LOCK:
-        for old in list(_STATES):
-            if ema_touch.parse_name(old) and old not in names:
-                state = _STATES.pop(old)
-                state.wake.set()
 
 
 def _loop() -> None:
@@ -1530,21 +1477,20 @@ def snapshot(list_name: Any = None, direction: str = "bull") -> dict:
     # nothing exists anywhere; a stale board always beats a blank one.
     if payload is not None:
         if not error:
-            return _with_data_source(name, {**payload, "rebuildPending": False})
+            return _with_data_source(name, payload)
         # Serve the stale in-memory board WITH the error attached rather than
         # replacing a good board with a failure page: a trader would rather see
         # minute-old numbers labelled stale than an empty screen.
         stale = dict(payload)
         stale["errors"] = {**(payload.get("errors") or {}), "_refresh": error}
         stale["stale"] = True
-        stale["rebuildPending"] = False
         return _with_data_source(name, stale)
     # Nothing in memory (this is the post-restart cold path). The last board
     # cached on disk is served instantly, flagged stale, so a restart shows the
     # last tickers in milliseconds instead of "UPDATED never" for minutes.
     disk = _load_disk(name, "bear" if bear else "bull")
     if disk is not None:
-        return _with_data_source(name, {**disk, "rebuildPending": True})
+        return _with_data_source(name, disk)
     warming = _warming_payload(
         name, f"First {name} board build failed: {error}" if error else ""
     )
@@ -1999,7 +1945,6 @@ def set_ema_timeframe(length: Any, timeframe: Any) -> dict:
             board.set_active_list(name)
     except Exception:  # noqa: BLE001 - the switch itself already landed
         pass
-    _retire_ema_states(_known_names())
     start_warmer()
     refresh_now(name)
     return {"ok": True, "list": name, "previous": previous, "active": board.active_list()}

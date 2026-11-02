@@ -848,26 +848,3 @@ def test_price_change_matches_tos_ratio_operation_order_at_boundary():
     assert scan.price_change_gate(bars, "volume", 0.5, 2) is False
     bars[-1]["volume"] = 1006.0
     assert scan.price_change_gate(bars, "volume", 0.5, 2) is True
-
-def test_ema_screenshot_all_requires_any_and_updated_thresholds():
-    tapes = {'4h': [{'volume':1000}, {'volume':900}, {'volume':1011}],
-             '1h': [{'close':100}, {'close':99}, {'close':100.51}]}
-    assert scan.ema_all_gates(tapes, 3, ['macd:D'])['pass']
-    assert not scan.ema_all_gates(tapes, 3, [])['pass']
-    assert scan.ema_all_gates(tapes, 3, ['ema4x8:D'])['pass']
-    assert scan.ema_all_gates(tapes, 3, ['ema9x20:2h'])['pass']
-    assert not scan.ema_all_gates(tapes, 2.99, ['sqzfired:Wk'])['pass']
-    tapes['1h'][-1]['close'] = 100.49
-    assert not scan.ema_all_gates(tapes, 3, ['rvol:D'])['pass']
-    tapes['1h'][-1]['close'] = 100.51
-    tapes['4h'][-1]['volume'] = 1009
-    assert not scan.ema_all_gates(tapes, 3, ['macd:M'])['pass']
-
-
-def test_ema_any_reuses_watchlist_reasons_unchanged(monkeypatch):
-    signals = ['macd:M', 'ema9x20:2h', 'ema4x8:D', 'sqzfired:Wk', 'rvol:5m']
-    monkeypatch.setattr(scan, 'scan_symbol', lambda tapes, last: (False, ['blocked:price'] + signals))
-    result = scan.ema_all_gates({}, 10)
-    assert result['reasons'] == signals
-    assert not result['pass']  # ANY cannot override missing ALL data.
-    assert scan.ema_all_gates({}, 10, ['blocked:price'])['checks']['any'] is False

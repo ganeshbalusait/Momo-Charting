@@ -2,6 +2,13 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-02T17:40:00-05:00",
+      "heading": "Today's scanner fixes combined with the GitHub version",
+      "items": [
+        "The faster-refresh fixes and your list order (Mag7, Watchlist, 21 EMA, 50 EMA) now sit on top of the GitHub version: Friday's scanner behaviour, the Record column changes and the BOT research updates."
+      ]
+    },
+    {
       "at": "2026-11-02T17:20:00-05:00",
       "heading": "Scanner refreshes faster; your list order",
       "items": [
@@ -16,6 +23,34 @@
       "items": [
         "When the scanner was busy rebuilding, the page sometimes got a 'still building' answer with no rows and blanked the Watchlist for a refresh or two. It now keeps showing the last rows it had until fresh ones arrive.",
         "Earlier this afternoon the scanner sat on 'Building this watchlist' for over an hour: a half-finished code update had been left in the live app and crashed its helper processes. That update was rolled back and the scanner restarted."
+      ]
+    },
+    {
+      "at": "2026-11-02T13:58:15.541687-05:00",
+      "heading": "Self-learning research: market regimes, unusual entries, scored specialists",
+      "items": [
+        "Each night the BOT groups trading days into market regimes on its own (no win/loss labels) and checks on later days whether the good regimes stayed good. See BOT > Unsupervised research.",
+        "A small neural network learns what normal entries look like and flags unusual ones; the BOT page shows whether unusual entries won more or less on later days and which inputs made them unusual.",
+        "Six new specialist agents: regime, anomaly, entry, exit, risk and news. Each makes a higher/lower call on the next batch, gets graded, and sees its own record next time (BOT > Specialist scoreboard).",
+        "All of this is paper research only: it never blocks, sizes or exits a trade, and promotion rules are unchanged."
+      ]
+    },
+    {
+      "at": "2026-11-02T13:53:55.454909-05:00",
+      "heading": "OpenClaw and Hermes reviews work again; Record shows real results",
+      "items": [
+        "OpenClaw reviews wrapped in a JSON code block are accepted again (restored after this morning's revert), so BOT reviews stop falling back to plain Ollama or 'unavailable'.",
+        "The BOT reviewer now talks to the BOT OpenClaw gateway that the start script launches, instead of your personal OpenClaw profile.",
+        "Hermes research replies are accepted when Hermes prints start-up lines or wraps its answer in a code block; prose answers are still rejected.",
+        "Record column shows each rule's checked win rate and trade count again, by rule name only (e.g. 'RVOL↑: 58% · n=41') instead of 'Learning' on every row. A validated P(win) still takes priority when one exists."
+      ]
+    },
+    {
+      "at": "2026-11-02T13:43:08.890384-05:00",
+      "heading": "Scanner back to Friday's behaviour",
+      "items": [
+        "Undid the Sunday and Monday scanner changes: Live no longer hides rows by study-candle date, and old unchanged scans are no longer reused, so Watchlist tickers show their full columns again.",
+        "EMA 21/50 lists go back to their earlier rules; the rebuilding and old-data messages return to their earlier wording."
       ]
     },
     {

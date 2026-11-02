@@ -75,7 +75,7 @@ def test_a_list_does_not_rebuild_from_the_same_shared_scan(monkeypatch):
     monkeypatch.setattr(service, "_STATES", {})
     monkeypatch.setattr(service, "_BORROWED_AT", {"Liquid Movers": 123.0})
     monkeypatch.setattr(service.board, "load_universe", lambda name=None, **k: ["A", "B"])
-    monkeypatch.setattr(service, "_options_gate", lambda symbols, **kwargs: (symbols, None))
+    monkeypatch.setattr(service, "_options_gate", lambda symbols: (symbols, None))
     monkeypatch.setattr(service.board, "shared_scan_stamp", lambda symbols: 123.0)
     built = []
     monkeypatch.setattr(service.board, "cached_board", lambda *a, **k: built.append(1) or {})
@@ -93,7 +93,7 @@ def _lender_setup(monkeypatch, borrowed_age, watchlist_building=False, watchlist
     monkeypatch.setattr(service, "_BORROWED_AT", {"Liquid Movers": time.monotonic() - borrowed_age})
     sizes = {"Liquid Movers": ["A", "B"], "Watchlist": ["A", "B", "C"], "Mag7": ["A"]}
     monkeypatch.setattr(service.board, "load_universe", lambda name=None, **k: sizes[name])
-    monkeypatch.setattr(service, "_options_gate", lambda symbols, **kwargs: (symbols, None))
+    monkeypatch.setattr(service, "_options_gate", lambda symbols: (symbols, None))
     monkeypatch.setattr(service.board, "shared_scan_stamp", lambda symbols: None)   # borrowed scan aged out
     built = []
     monkeypatch.setattr(service.board, "cached_board", lambda *a, **k: built.append(1) or {"rows": []})

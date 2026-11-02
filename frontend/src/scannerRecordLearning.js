@@ -25,7 +25,7 @@ export function scannerRecordLearning(row, now = Date.now()) {
     && forecast.symbol === row.symbol && forecast.side === (row.direction === 'bear' ? 'bear' : 'bull')
     && confirmation.level > 0 && confirmation.level === forecast.scannerInputs?.highestLevel
     && types.length >= 3 && keys(types) === keys(forecast.scannerInputs?.setupTypes);
-  return { text: ready ? `P(win) ${Math.round(forecast.probability*100)}%` : 'Learning', lines: [
+  return { ready, text: ready ? `P(win) ${Math.round(forecast.probability*100)}%` : 'Learning', lines: [
     ready ? `Validated win probability recorded at entry ${forecast.scoredAt}, contract ${forecast.contract}. This is an entry forecast, not a continuously repriced option or a guaranteed outcome.`
       : 'Before-fee win probability is learning: no validated entry forecast matches this Level + Setup snapshot yet.',
     stale ? 'Saved study data; current Level cannot be confirmed.'

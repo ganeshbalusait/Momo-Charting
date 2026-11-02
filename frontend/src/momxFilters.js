@@ -2342,7 +2342,9 @@ export function recordCell(row, nowMs = Date.now()) {
     const r = book[rule];
     if (r && r.seen > 0) items.push({ rule, label, ...r });
   };
-  for (const t of tags) add(tagRecordRule(t, row), String(t.text).replace(/\s+\d\d:\d\d.*$/, ""));
+  // The rule's name only: the clock and the timeframe list belong to the
+  // Setup column ("RVOL↑ 15m 30m 4h" -> "RVOL↑"), the record is per rule.
+  for (const t of tags) add(tagRecordRule(t, row), String(t.text).replace(/\s+\d\d:\d\d.*$/, "").replace(/(\s+(\d+(m|h|D)|D|W|Wk|M|Mo))+$/, ""));
   const pattern = row.m5 && row.m5.pattern;
   if (pattern === "explosive") add("explosive", "Explosive");
   if (pattern === "steady") add("steady", "Steady");
