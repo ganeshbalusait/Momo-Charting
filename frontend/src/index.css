@@ -22826,3 +22826,37 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .momx-setup-picker .momx-strategy-tag.is-adx.is-bear { color: #ff00ff; border-color: #ff00ff; }
 .momx-setup-picker .momx-strategy-tag.is-grade-aplus { color: #39ff88; border-color: #39ff88; font-weight: 700; }
 .momx-setup-picker .momx-strategy-tag.is-grade-aplus.is-bear { color: #ff4d6d; border-color: #ff4d6d; }
+
+/* Keep every scanner control inside the view even when the table is wider.
+   The unbroken freshness stamp must not set the flex item's minimum width. */
+.momx-scanner-panel .momx-toolbar-stats {
+  min-width: 0;
+  max-width: 100%;
+}
+.momx-scanner-panel .momx-toolbar-stats > .momx-toggle {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+@container (max-width: 760px) {
+  .momx-scanner-panel .momx-toolbar-stats {
+    flex: 1 1 100%;
+    width: 100%;
+    margin-left: 0;
+  }
+  .momx-scanner-panel .momx-toolbar-stats > .momx-stat {
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+  .momx-scanner-panel .momx-toolbar-stats .momx-stat-value {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .momx-scanner-panel .momx-toolbar-stats .momx-tape-note,
+  .momx-scanner-panel .momx-toolbar-stats .momx-tape-closed,
+  .momx-scanner-panel .momx-toolbar-stats .momx-since {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}

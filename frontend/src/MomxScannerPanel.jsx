@@ -34,6 +34,7 @@ import {
 
 import { etParts, isTradingDay } from "./marketSession.js";
 import { tapeAsOfNote } from "./tapeAsOfNote.js";
+import { matchingScannerRows, currentScannerRows } from "./scannerMatches.js";
 import { scannerFreshness, scannerRowFreshness } from "./scannerFreshness.js";
 import SetupColumnPicker from './SetupColumnPicker.jsx';
 import { scannerRecordLearning } from './scannerRecordLearning.js';
@@ -163,6 +164,7 @@ import {
   jevScoreCell,
   SECTOR_MOVE_PCT,
   decideBoardView,
+  scannerWarming,
   filterByIndustries,
   formatPctChange,
   formatRvol,
@@ -4863,6 +4865,9 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       setBoardList(cacheKey);
       liveGeneratedAtRef.current = payload.generatedAt || null;
       setError("");
+      if (payload.rebuildPending === false) {
+        setListError(previous => previous.startsWith("MomX worker unavailable:") ? "" : previous);
+      }
     } catch (caught) {
       if (!mountedRef.current || controller.signal.aborted || boardRequestKeyRef.current !== requestKey) return;
       // Never blank the board on a failed refresh: the last good rows stay on
@@ -5546,7 +5551,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // board would always fall through to its cached copy (review 2026-09-25).
   const liveBoard = boardList === boardCacheKey(activeList, direction) ? board : null;
   const activeTab = lists.find((item) => item.name === activeList) || null;
-  const rawWarming = Boolean((liveBoard && liveBoard.warming) || (activeTab && activeTab.warming));
+  const rawWarming = scannerWarming(liveBoard, activeTab && activeTab.warming);
 
   // The durable last-good board for the active list. Recomputed when the list
   // changes or when a fresh fetch lands (which may have written a newer copy).
@@ -5729,36 +5734,13 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
 
   const showingCache = boardView.source === "cache";
 
-  // Counted over the WHOLE list: on a busy day more than 50 symbols can pass
-  // and the ones beyond the cap arrive as rest rows - still matches.
-  const matchCount = useMemo(
-    () => allRows.reduce((total, row) => (row && row.scanPass ? total + 1 : total), 0),
-    [allRows],
-  );
-
-  // Three memos, in this order, so a chip click cannot move the chip counts
-  // under the trader's cursor: the counts are taken BEFORE the industry filter.
-  // "Scan matches only" OFF means the whole list (2026-09-02: he unticked it
-  // on the 357-name Watchlist, saw 50 rows and asked where the rest were).
-  const scanRows = useMemo(
-    () => (matchesOnly ? allRows.filter((row) => row && row.scanPass) : allRows),
-    [allRows, matchesOnly],
-  );
-
-  // Which rows carry a headline the popover would actually show. newsOf is
-  // the ONE gate (fresh within 24h, non-blank headline), so the NEWS count on
-  // the button, the filtered board and the newspaper icons in the rows can
-  // never disagree. Read over ALL shipped rows - since 2026-09-02 the worker
-  // attaches news to the rest rows too, and a row that shows the icon but is
-  // missing from the NEWS view would be exactly the count/icon disagreement
-  // this gate exists to prevent.
-  //
-  // Taken from ALL shipped rows, not the scan matches: NEWS is a catalyst
-  // finder, and the momentum scan usually passes a handful of the 50 (6 on
-  // the night this shipped, none of them with news). Filtering news THROUGH
-  // "Scan matches only" would leave the NEWS view empty most of the time. The
-  // matches stay obvious inside it - MomxRow still paints them is-pass-up.
-  const newsRows = useMemo(() => allRows.filter((row) => newsOf(row) !== null), [allRows]);
+  // A refresh or a live quote cannot make an old study candle current.
+  // Reevaluate on every render, including the regular scanner poll.
+  const currentRows = currentScannerRows(allRows);
+  const hiddenOldCount = allRows.filter(Boolean).length - currentRows.length;
+  const matchCount = currentRows.filter(row => row.scanPass === true).length;
+  const scanRows = matchingScannerRows(currentRows, matchesOnly);
+  const newsRows = useMemo(() => scanRows.filter((row) => newsOf(row) !== null), [scanRows]);
   const newsCount = newsRows.length;
   // The rows the ▲ BULLISH / ▼ BEARISH button keeps: the SAME newsOf() gate as
   // the News cell, so the button count and the arrows on screen always agree.
@@ -5772,20 +5754,8 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   );
   const newsToneCount = newsToneRows.length;
 
-  // A picked STRATEGY (V2 / V3 / Daily 2 / G) reads the whole board, not just
-  // the scan matches: its tickers are judged by their own rules, and a Daily 2
-  // or G entry that later drops out of the scan must stay on the day's list.
-  // Seen 2026-09-23: with "Scan matches only" ticked a G #1 was hidden.
-  //
-  // TWO sets, on purpose: `unfilteredRows` is what the board shows with the
-  // FILTERS button OFF (scan matches as ticked); `filterSourceRows` is what the
-  // filter - and every count ABOUT the filter - reads. Deriving the second from
-  // the button state made the panel say "0 of 5 tickers - no ticker has
-  // qualified for V2" while 9 had, whenever FILTERS was still off (smoke test
-  // 2026-09-24): the count read the 5 scan matches, the board the whole list.
-  const strategyPicked = Boolean(strategyOf(filters)) || selectedSetupRules(filters).length > 0;
   const unfilteredRows = newsToneOnly ? newsToneRows : newsOnly ? newsRows : scanRows;
-  const filterSourceRows = newsToneOnly ? newsToneRows : newsOnly ? newsRows : strategyPicked ? allRows : scanRows;
+  const filterSourceRows = unfilteredRows;
 
   // The FILTERS gate. Sits BEFORE the industry chips and the sector rollup on
   // purpose, exactly like the NEWS narrowing above: those two are summaries OF
@@ -6346,7 +6316,9 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // A 355-symbol first build takes MINUTES. That is normal, and this empty
   // state has to read as "building", never as anything resembling a failure.
   let emptyMessage = "The MomX board is empty. Paste a ticker list above and press Set.";
-  if (warming && rows.length === 0) {
+  if (allRows.length > 0 && currentRows.length === 0) {
+    emptyMessage = "No study candles for the current trading date. Previous-date or undated rows are hidden from Live; recorded snapshots remain in History.";
+  } else if (warming && rows.length === 0) {
     emptyMessage =
       "Building this watchlist from live bars. A short list takes about half a minute; a few hundred symbols take several minutes. Rows appear here on their own.";
   } else if (loading && rows.length === 0) {
@@ -6746,7 +6718,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
             newsOnly
               ? "Showing only tickers with news from the last 24 hours. Press again for the whole board."
               : newsCount > 0
-                ? "Show only the " + newsCount + " scanned tickers with news from the last 24 hours (matches or not)"
+                ? "Show only the " + newsCount + " scan matches with news from the last 24 hours"
                 : "No scanned ticker has news from the last 24 hours right now"
           }
         >
@@ -6834,13 +6806,10 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
           />
         ) : null}
 
+        {hiddenOldCount > 0 ? <p className="momx-since" style={{ whiteSpace: "normal" }} role="status">{hiddenOldCount} previous-date or undated rows hidden from Live. Today’s available candles remain visible; overnight starts at 8 PM ET. Recorded snapshots remain in History.</p> : null}
         <div className="momx-toolbar-stats">
           <label className="momx-toggle">
-            <input
-              type="checkbox"
-              checked={matchesOnly}
-              onChange={(event) => setMatchesOnly(event.target.checked)}
-            />
+            <input type="checkbox" checked={matchesOnly} onChange={(event) => setMatchesOnly(event.target.checked)} />
             <span>Scan matches only</span>
           </label>
           {/* No TOS checkbox (2026-10-01, his order): the scanner runs on TOS data
@@ -7155,7 +7124,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       {!error && notice ? <p className="momx-banner is-notice">{notice}</p> : null}
       {warming && rows.length > 0 ? (
         <p className="momx-banner is-notice">
-          <span>Showing the previous scan while a fresh scan is built. These matches are not the new scan results.</span>
+          <span>Rebuilding this list; only rows from the current trading date remain visible. “Scan matches only” filters matches; it does not refresh market data.</span>
         </p>
       ) : null}
       {errorSymbols.length > 0 ? (
@@ -7311,7 +7280,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       <p className="momx-footnote">
         Colours come straight from the thinkScript studies on the server. The scanner re-runs
         continuously; this view checks for a scan every 15 seconds while the tab is open.
-        When markets are closed or study candles are old, saved rows remain for review with their Data timestamp; a new scan does not mean new market data.
+        Previous-date or undated study rows are hidden from Live. Recorded snapshots remain in History; a new scan does not mean new market data.
         {" "}Confirm L1/L2/L3 are rule confirmations, not win probabilities. They require at least three cyan/green RVOL cells to rise versus their previous valid scanner publication; first observations do not match. History uses only earlier loaded snapshots.
         The small number under an RVOL value is how long ago that volume arrived &mdash; 12m is
         happening now, 3h is old news. It brightens under 15 minutes, and pulses when the cell

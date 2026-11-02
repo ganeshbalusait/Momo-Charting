@@ -2,6 +2,63 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-02T02:01:45.052741-05:00",
+      "heading": "Live scanner hides old study rows",
+      "items": [
+        "Live hides previous-trading-date rows such as 10/30, with Scan matches only checked or unchecked. Today’s available candles stay visible even when several minutes old.",
+        "Overnight starts at 8 PM ET and belongs to the following trading date. Undated rows stay hidden; recorded snapshots remain in History."
+      ]
+    },
+    {
+      "at": "2026-11-02T01:58:23.079268-05:00",
+      "heading": "Phone scanner controls stay visible",
+      "items": [
+        "Time and Pop-up cards wrap onto another line when needed instead of being cropped off the phone screen.",
+        "Long source-data timing notes wrap within the toolbar while the scanner table keeps horizontal scrolling."
+      ]
+    },
+    {
+      "at": "2026-11-02T01:55:06.711044-05:00",
+      "heading": "Scan matches only checkbox restored",
+      "items": [
+        "Scan matches only is checked by default. Uncheck it to see the whole selected list; check it again to hide nonmatches.",
+        "News and Filters apply to the rows selected by this checkbox."
+      ]
+    },
+    {
+      "at": "2026-11-02T01:49:34.038282-05:00",
+      "heading": "Scanner shows matching tickers only",
+      "items": [
+        "Nonmatching tickers stay hidden. News and Setup selections narrow the scan matches instead of bringing nonmatching tickers back.",
+        "Removed the switch that displayed the whole list. Saved matches retain their source candle timestamps while rebuilding."
+      ]
+    },
+    {
+      "at": "2026-11-02T01:21:51.717138-05:00",
+      "heading": "EMA lists require TOS ALL plus ANY signals",
+      "items": [
+        "EMA lists require Last >= $3, 4-hour EXT volume up at least 1%, 1-hour EXT close up at least 0.5% versus two bars ago, and candle low <= current EMA <= candle high on the selected chart timeframe.",
+        "Both 21 and 50 EMA lists reuse the Watchlist ANY group unchanged: momentum crosses (MACD, EMA 9/20 or EMA 4/8), squeeze-fire and RVOL. At least one signal must pass, in addition to all EMA-list conditions.",
+        "A visible EMA list gets priority for its first startup build. Completed results clear recovered worker connection errors. Source candle times remain visible; data-provider differences can affect TOS comparisons."
+      ]
+    },
+    {
+      "at": "2026-11-02T00:50:05.011578-05:00",
+      "heading": "Scanner distinguishes rebuilding from old market candles",
+      "items": [
+        "A completed scanner result clears the rebuilding message even if list metadata arrives late.",
+        "Saved results remain labeled while a list rebuilds. The message explains that Scan matches only filters rows; each Data timestamp remains the actual candle time, not the refresh time."
+      ]
+    },
+    {
+      "at": "2026-11-02T00:31:49.697015-05:00",
+      "heading": "EMA timeframe switching stops obsolete scanner builds",
+      "items": [
+        "Switching a 21 or 50 EMA list between Daily, Weekly and Monthly retires the previous timeframe worker, including switches made from another device.",
+        "Obsolete timeframe requests no longer keep retrying or leave an unknown-list error in scanner status. A build waiting its turn is cancelled when its timeframe is retired."
+      ]
+    },
+    {
       "at": "2026-11-01T17:08:08.469058-05:00",
       "heading": "Less repeated scanner work on unchanged old data",
       "items": [

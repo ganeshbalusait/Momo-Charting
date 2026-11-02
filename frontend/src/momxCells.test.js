@@ -1572,3 +1572,11 @@ test("jevLabel explains a hidden read: off-topic or under 70%", async () => {
     "Jev: Not important (read Bullish 55% - Jev only 55% sure)");
   assert.equal(jevLabel({ label: "not_important", p: null, why: "not about HD", offTopic: true }).text, "Jev: Not important (not about HD)");
 });
+
+test('completed board overrides delayed list warming metadata', async () => {
+  const {scannerWarming} = await import('./momxCells.js');
+  assert.equal(scannerWarming({rebuildPending:false,rows:[{symbol:'AAPL'}]},true),false);
+  assert.equal(scannerWarming({rebuildPending:true},false),true);
+  assert.equal(scannerWarming(null,true),true);
+  assert.equal(scannerWarming({},false),false);
+});

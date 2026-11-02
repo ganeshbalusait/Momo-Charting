@@ -1,33 +1,21 @@
 """21 / 50 EMA touch - the two derived MomX lists (2026-10-04).
 
-Ganesh: "Create here 2 watchlist - '21 ema touch monthly' and '50 ema touch
-monthly'. Add [to] 'all of the following' 21 ema touch and 50 ema touch. Keep
-'any of the following' same as 'watchlist 371'." Same day: "can we add one
-more drop down, default Monthly, dropdown we can Daily/Weekly?"
-
-So each list is the Watchlist's tickers that pass ONE extra ALL-gate - the
-EMA touch on the chosen timeframe - and then the ordinary scan (same ALL
-gates, same ANY block) runs on them. Passing the gate IS membership: the
-universe is recomputed from the Watchlist on every read, so a ticker joins
-when it touches and leaves when it stops (nothing here is a saved copy).
+The EMA lists use the four ALL conditions confirmed on 2026-11-02:
+Last >= $3, 4h EXT volume >= 1.0% above two bars ago, 1h EXT close
+>= 0.5% above two bars ago, and current-period EMA candle touch.
+At least one shown MACD, squeeze-fire or RVOL signal must also pass.
+EMA touch determines membership; ALL and ANY determine scanPass.
 
 TIMEFRAME is one setting per EMA length (``artifacts/momx_ema_touch_tf.json``,
 default Monthly) and is part of the list's NAME ("21 EMA Touch Weekly"), so
 History, matched-since stamps and the Jev log never mix timeframes - switching
 is switching to another list.
 
-THE GATE, per timeframe bar ("period"):
-  level   = EMA(n) of the last COMPLETED period's close (TOS ExpAverage)
-  uptrend = that period closed above the EMA, and the EMA rose that period
-  touch   = the current period's low (so far) reached the level
-"Current period" = the newest period any symbol has a bar for, so after the
-close (and over a weekend) Daily shows the last session and Weekly the last
-week, the way a scanner would. Fewer than ``2n`` completed periods = left out
-(the EMA's seed still weighs >2%; APP/VKTX/APLD "touched" an unsettled monthly
-line on 2026-10-04).
-Back-test (artifacts/backtest_leap_ema*.py, 48 stocks 2000-2026, LEAP calls):
-the MONTHLY 50 touch won 60% vs 54% for any day; WEEKLY and DAILY touches were
-no better than any day. Weekly/Daily are here because he asked for them.
+THE GATE matches the supplied TOS custom study:
+  ema = ExpAverage(close, length)
+  scan = low <= ema AND high >= ema
+The current period's close participates in the EMA; no trend condition is
+added. At least 2n historical bars are retained as a data-quality guard.
 
 DATA: Alpaca SIP bars, split-adjusted (monthly matched Yahoo to the cent on
 MSFT/TSLA/BKNG): 1Month since 2015, 1Week ~3 years, 1Day ~14 months. One
@@ -52,6 +40,7 @@ from zoneinfo import ZoneInfo
 
 from config import ARTIFACTS_DIR
 
+FORMULA_VERSION = 2
 LENGTHS = (21, 50)
 #: picker order; name -> (Alpaca timeframe, days of history, period key length)
 TIMEFRAMES: dict[str, tuple[str, int | None, int]] = {
@@ -186,29 +175,24 @@ def ema(values: Sequence[float], length: int) -> list[float]:
 
 
 def touch_state(bars: Sequence[Mapping[str, Any]], length: int, period: str) -> dict | None:
-    """The gate for one symbol, one EMA length, one timeframe.
-
-    ``bars`` are that timeframe's bars (``period`` sortable key, ``low``,
-    ``close``), ascending; ``period`` is the current period. Returns ``None``
-    when the EMA is not settled (fewer than ``2 * length`` completed periods),
-    else ``{"level", "uptrend", "low", "touched", "pass"}``.
-    """
-    completed = [b for b in bars if str(b.get("period")) < period]
-    current = [b for b in bars if str(b.get("period")) == period]
-    if len(completed) < max(2 * length, 2):
+    """Current-period candle straddles its current EMA, as in the TOS study."""
+    import math
+    usable = [b for b in bars if str(b.get("period")) <= period]
+    if len(usable) < max(2 * length + 1, 3) or usable[-1].get("period") != period:
         return None
-    line = ema([float(b["close"]) for b in completed], length)
-    level, before = line[-1], line[-2]
-    uptrend = float(completed[-1]["close"]) > level and level > before
-    low = float(current[-1]["low"]) if current else None
-    touched = low is not None and low <= level
-    return {
-        "level": round(level, 4),
-        "uptrend": bool(uptrend),
-        "low": low,
-        "touched": bool(touched),
-        "pass": bool(uptrend and touched),
-    }
+    try:
+        closes = [float(b["close"]) for b in usable]
+        low, high = float(usable[-1]["low"]), float(usable[-1]["high"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in closes + [low, high]) or low > high:
+        return None
+    line = ema(closes, length)
+    level = line[-1]
+    touched = low <= level <= high
+    return {"level": round(level, 4), "uptrend": bool(closes[-1] > level and level > line[-2]),
+            "low": low, "high": high, "touched": bool(touched), "pass": bool(touched)}
+
 
 
 # ---------------------------------------------------------------------------
@@ -260,9 +244,16 @@ def touchers(symbols: Iterable[str], length: int, tf: str | None = None) -> list
         missing = [s for s in universe if s not in table]
         if missing:
             _WANTED.update(missing)
-        if not _fresh(_CACHE.get("fetchedAt")):
+        if _CACHE.get("formulaVersion") != FORMULA_VERSION or not _fresh(_CACHE.get("fetchedAt")):
             return []
         return [s for s in universe if ((table.get(s) or {}).get(key) or {}).get("pass")]
+
+
+def ready() -> bool:
+    """Whether membership can be evaluated using the current formula."""
+    _reload_from_disk()
+    with _LOCK:
+        return _CACHE.get("formulaVersion") == FORMULA_VERSION and _fresh(_CACHE.get("fetchedAt"))
 
 
 def detail(symbol: str) -> dict:
@@ -312,7 +303,7 @@ def _fetch(symbols: list[str], tf: str, now: datetime) -> dict[str, list[dict]]:
             if ok:
                 for sym, bars in got.items():
                     out[sym] = [
-                        {"period": str(b["t"])[:key_len], "low": b["l"], "close": b["c"]}
+                        {"period": str(b["t"])[:key_len], "low": b["l"], "high": b["h"], "close": b["c"]}
                         for b in bars if b.get("t") and b.get("c") is not None
                     ]
                 break
@@ -339,7 +330,7 @@ def refresh(symbols: Iterable[str] | None = None, now: datetime | None = None) -
                 table[sym][f"{n}:{tf}"] = touch_state(rows, n, latest) if latest else None
         for n in LENGTHS:
             summary[f"{n}:{tf}"] = sum(1 for v in table.values() if (v.get(f"{n}:{tf}") or {}).get("pass"))
-    document = {"fetchedAt": now.isoformat(), "periods": periods, "symbols": table}
+    document = {"formulaVersion": FORMULA_VERSION, "fetchedAt": now.isoformat(), "periods": periods, "symbols": table}
     path = cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

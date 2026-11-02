@@ -14,7 +14,7 @@ def _bars(closes, start_year=2020):
     out = []
     for i, close in enumerate(closes):
         year, month = start_year + i // 12, i % 12 + 1
-        out.append({"period": f"{year:04d}-{month:02d}", "close": close, "low": close})
+        out.append({"period": f"{year:04d}-{month:02d}", "close": close, "low": close, "high": close})
     return out
 
 
@@ -22,35 +22,42 @@ def test_ema_matches_tos_expaverage():
     assert ema_touch.ema([10.0, 20.0, 30.0], 3) == pytest.approx([10.0, 15.0, 22.5])
 
 
-def test_touch_needs_uptrend_and_a_low_at_the_level():
-    bars = _bars([100 + i for i in range(60)])
+@pytest.mark.parametrize("length", [21, 50])
+def test_touch_uses_current_ema_and_both_candle_bounds(length):
+    bars = _bars([100 + i for i in range(120)])
     period = bars[-1]["period"]
-    level = ema_touch.ema([b["close"] for b in bars[:-1]], 21)[-1]
-    bars[-1]["low"] = level - 0.01
-    state = ema_touch.touch_state(bars, 21, period)
-    assert state["uptrend"] and state["touched"] and state["pass"]
-    bars[-1]["low"] = level + 0.01
-    assert ema_touch.touch_state(bars, 21, period)["pass"] is False
+    level = ema_touch.ema([b["close"] for b in bars], length)[-1]
+    bars[-1].update(low=level, high=level)
+    assert ema_touch.touch_state(bars, length, period)["pass"]
+    bars[-1]["high"] = level - .01
+    bars[-1]["low"] = level - 1
+    assert not ema_touch.touch_state(bars, length, period)["pass"]
+    bars[-1].update(low=level + .01, high=level + 1)
+    assert not ema_touch.touch_state(bars, length, period)["pass"]
 
 
-def test_downtrend_touch_does_not_pass():
-    bars = _bars([200 - i for i in range(60)])
-    bars[-1]["low"] = 1.0
+def test_downtrend_touch_still_matches_tos():
+    bars = _bars([200 - i for i in range(120)])
+    bars[-1].update(low=1, high=200)
     state = ema_touch.touch_state(bars, 21, bars[-1]["period"])
-    assert state["touched"] and not state["uptrend"] and not state["pass"]
+    assert state["pass"] and not state["uptrend"]
 
 
-def test_too_little_history_is_no_reading():
-    bars = _bars([100 + i for i in range(60)])  # 59 completed < 2 x 50
+def test_missing_high_or_short_history_is_unknown():
+    bars = _bars([100 + i for i in range(60)])
     assert ema_touch.touch_state(bars, 50, bars[-1]["period"]) is None
+    bars[-1].pop("high")
+    assert ema_touch.touch_state(bars, 21, bars[-1]["period"]) is None
 
 
-def test_current_bar_is_not_part_of_the_level():
+def test_current_close_changes_the_level_and_future_bars_are_excluded():
     bars = _bars([100 + i for i in range(60)])
     period = bars[-1]["period"]
     a = ema_touch.touch_state(bars, 21, period)["level"]
-    bars[-1]["close"] = 10_000.0
-    assert ema_touch.touch_state(bars, 21, period)["level"] == a
+    bars[-1]["close"] += 11
+    assert ema_touch.touch_state(bars, 21, period)["level"] == pytest.approx(a + 1)
+    expected = ema_touch.touch_state(bars, 21, period)
+    assert ema_touch.touch_state(bars + [{"period":"2099-01","close":999}], 21, period) == expected
 
 
 def test_names_round_trip():
@@ -72,6 +79,7 @@ def lists_on(tmp_path, monkeypatch):
     universe.write_text(json.dumps({"lists": {"Watchlist": ["AAA", "BBB", "CCC"]}}))
     yes, no = {"pass": True}, {"pass": False}
     cache.write_text(json.dumps({
+        "formulaVersion": ema_touch.FORMULA_VERSION,
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
         "symbols": {
             "AAA": {"21:Monthly": yes, "50:Monthly": no, "21:Weekly": no, "50:Weekly": yes},

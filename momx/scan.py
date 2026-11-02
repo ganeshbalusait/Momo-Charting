@@ -563,6 +563,22 @@ def rvol_scan(bars: Iterable[Any] | None, num_dev: float = RVOL_NUM_DEV, directi
 # ----------------------------------------------------------------------
 
 
+def ema_all_gates(tapes, last, scan_reasons=None):
+    """EMA-list ALL gates plus the existing Watchlist ANY group unchanged.
+
+    Reuse its reasons so timeframe coverage, thresholds and source formulas
+    cannot diverge between Watchlist and 21/50 EMA lists.
+    """
+    if scan_reasons is None:
+        _, scan_reasons = scan_symbol(tapes, last)
+    reasons = [r for r in scan_reasons if not r.startswith("blocked:")]
+    checks = {"price": price_floor(last),
+              "volume4h": price_change_gate(tapes.get("4h"), "volume", 1.0, 2),
+              "close1h": price_change_gate(tapes.get("1h"), "close", 0.5, 2),
+              "any": bool(reasons)}
+    return {"pass": all(checks.values()), "checks": checks, "reasons": reasons}
+
+
 def scan_symbol(
     row_tapes: Mapping[str, Iterable[Any]] | None,
     last: Any,
