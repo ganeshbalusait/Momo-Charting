@@ -18,7 +18,7 @@
         "OpenClaw reviews wrapped in a JSON code block are accepted again (restored after this morning's revert), so BOT reviews stop falling back to plain Ollama or 'unavailable'.",
         "The BOT reviewer now talks to the BOT OpenClaw gateway that the start script launches, instead of your personal OpenClaw profile.",
         "Hermes research replies are accepted when Hermes prints start-up lines or wraps its answer in a code block; prose answers are still rejected.",
-        "Record column shows each rule's checked win rate and trade count again (e.g. 'RVOL↑: 58% · n=41') instead of 'Learning' on every row. A validated P(win) still takes priority when one exists."
+        "Record column shows each rule's checked win rate and trade count again, by rule name only (e.g. 'RVOL↑: 58% · n=41') instead of 'Learning' on every row. A validated P(win) still takes priority when one exists."
       ]
     },
     {
