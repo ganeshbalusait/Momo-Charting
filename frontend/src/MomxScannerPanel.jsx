@@ -5559,7 +5559,13 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
 
   // The durable last-good board for the active list. Recomputed when the list
   // changes or when a fresh fetch lands (which may have written a newer copy).
-  const cachedBoard = useMemo(() => readCachedBoard(boardCacheKey(activeList, direction)), [activeList, direction]);
+  // boardReceivedAt IS that "fresh fetch lands" signal. Without it the memo held
+  // whatever the cache had at list-switch time: after a worker outage that was
+  // nothing, so a later api_server proxy timeout ("MomX worker unavailable",
+  // warming + zero rows) fell back to that stale empty copy and blanked a
+  // Watchlist the worker still had (2026-11-02).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const cachedBoard = useMemo(() => readCachedBoard(boardCacheKey(activeList, direction)), [activeList, direction, boardReceivedAt]);
 
   // THE decision: show live rows when the fetch returned any; otherwise fall
   // back to the cached rows rather than the empty "Building..." state; only
