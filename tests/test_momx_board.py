@@ -24,6 +24,16 @@ import pytest
 from momx import board, flags, news
 
 
+@pytest.fixture(autouse=True)
+def local_orchestrator_execution(monkeypatch):
+    # These tests validate board contracts against stub feeds, not Windows
+    # process scheduling. Real idle children compete with the live scanner
+    # and are reaped by its watchdog. Priority is covered in its own child
+    # process test; production pool priority is checked against live workers.
+    monkeypatch.setattr(board, '_pool', lambda: None)
+    monkeypatch.setattr(board, '_small_pool', lambda: None)
+
+
 StubResult = namedtuple("StubResult", "bars errors")
 
 

@@ -32,3 +32,13 @@ def test_unrelated_worker_io_error_remains_visible():
     h.wfile.write.side_effect = OSError("unrelated I/O failure")
     with pytest.raises(OSError, match="unrelated I/O"):
         h._json(HTTPStatus.OK, {"rows": []})
+
+
+def test_compact_worker_response_preserves_json_and_gzip_payload():
+    import gzip,json
+    h=handler();h.headers={'Accept-Encoding':'gzip'}
+    payload={'rows':[{'symbol':'AMZN','value':'cyan value'}]*1000}
+    h._json(HTTPStatus.OK,payload)
+    headers=dict(call.args for call in h.send_header.call_args_list)
+    assert headers['Content-Encoding']=='gzip'
+    assert json.loads(gzip.decompress(h.wfile.write.call_args.args[0]))==payload

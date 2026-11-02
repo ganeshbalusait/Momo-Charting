@@ -169,6 +169,8 @@ class _ListState:
 
 
 _LOCK = threading.Lock()
+_DISK_READ_LOCK = threading.Lock()
+_DISK_READ_CACHE = {}
 #: The SUPERVISOR thread. It builds nothing: its only job is to make sure
 #: every known list has a warm thread, including a list pasted long after
 #: startup. Keeps the historic name because status() reports it as ``running``
@@ -624,7 +626,21 @@ def _load_disk(name: str, direction: str = "bull") -> dict | None:
     the caller falls through to the warming stub. NEVER raises.
     """
     try:
-        raw = json.loads(_cache_file(name, direction).read_text(encoding="utf-8"))
+        target = _cache_file(name, direction)
+        stat = target.stat()
+        signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        key = str(target.resolve())
+        with _DISK_READ_LOCK:
+            held = _DISK_READ_CACHE.get(key)
+            if held and held[0] == signature:
+                raw = held[1]
+            else:
+                raw = json.loads(target.read_text(encoding="utf-8"))
+                # Keep only a bounded read cache. Atomic replacements are seen
+                # on the next request; the original candle times never change.
+                if len(_DISK_READ_CACHE) >= 16:
+                    _DISK_READ_CACHE.pop(next(iter(_DISK_READ_CACHE)))
+                _DISK_READ_CACHE[key] = (signature, raw)
     except (OSError, ValueError, TypeError):
         return None
     if not isinstance(raw, dict) or not isinstance(raw.get("rows"), list):
@@ -1393,6 +1409,11 @@ def _loop() -> None:
 def start_warmer() -> None:
     """Start the warmer threads if they are not running. Idempotent."""
     global _THREAD, ASYNC_PERSIST
+    # A snapshot read must not re-read every list or restaff all workers.
+    # The supervisor reconciles list changes when refresh_now wakes it.
+    with _LOCK:
+        if _THREAD is not None and _THREAD.is_alive() and not _STOP.is_set():
+            return
     _STOP.clear()
     ASYNC_PERSIST = True
     # The monthly EMA touch lists read their members from this refresher's

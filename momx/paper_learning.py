@@ -6,13 +6,21 @@ import json
 import math
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from momx import ai_filter
-from momx.paper_ai import Reviewer
+from momx.paper_ai import Reviewer, SPECIALISTS
 
-BATCH_SIZE = 24
+BATCH_SIZE = 8  # Keep frozen chart + scanner evidence within the local model context.
 MAX_PENDING_BATCHES = 64
+
+
+def background_research_allowed(at=None):
+    """Reserve premarket, regular and after-hours scanner capacity on weekdays."""
+    at = at or datetime.now(ai_filter.ET)
+    at = at.astimezone(ai_filter.ET)
+    return at.weekday() >= 5 or not 4 <= at.hour < 20
 
 
 def specialist_task(memory, capture):
@@ -24,6 +32,29 @@ def specialist_task(memory, capture):
         if role:
             return {"role": role, "reason": "Recurring losses in " + p["scope"] + " " + p["side"] + " " + p["rule"]}
     return None
+
+
+def specialist_tasks(job):
+    """Bound the work per batch; rotate data-driven investigations, not parallel model floods."""
+    rows = job.get('evidence', [])
+    tasks = []
+    primary = job.get('specialistTask')
+    if primary:
+        tasks.append(primary)
+    if any(not r.get('scannerInputsAtSignal') or not r.get('chartContextAtSignal') for r in rows):
+        tasks.append({'role':'data_quality', 'reason':'Missing frozen entry snapshots; audit coverage without reconstructing history'})
+    if any(r.get('chartContextAtSignal') for r in rows):
+        tasks.append({'role':'chart', 'reason':'Test frozen indicator and support/resistance context against counterexamples'})
+    if any(r.get('marketAtSignal') for r in rows):
+        tasks.append({'role':'regime', 'reason':'Test entry-time market context across later sessions'})
+    if any(r.get('pnlPerContract', 0) < 0 for r in rows):
+        tasks.append({'role':'exit_risk', 'reason':'Compare recorded loss size and strategy exits, not hindsight peaks'})
+    unique = {t['role']:t for t in tasks}
+    # Deterministic rotation gives every relevant specialist work across batches.
+    extra = [t for role,t in unique.items() if not primary or role != primary['role']]
+    offset = int(hashlib.sha256(str([r.get('key') for r in rows]).encode()).hexdigest()[:8],16) % max(1,len(extra))
+    extra = extra[offset:] + extra[:offset]
+    return ([primary] if primary else []) + extra[:max(0,3-bool(primary))]
 
 
 def trade_first(*args):
@@ -56,6 +87,16 @@ analysis.schema = {"type": "object", "properties": {k: {"type": "string", "minLe
                    "required": ["summary", "hypothesis", "validation"], "additionalProperties": False}
 
 
+def entry_observation(side, trade):
+    """Unsupervised research can use an open entry; never needs an exit label."""
+    scanner = ai_filter.scanner_learning.snapshot(trade, side)
+    if scanner is None:
+        return None
+    return {'key': ai_filter.trade_key(side, trade), 'symbol': trade.get('symbol'),
+            'signalAt': trade.get('at'), 'scannerInputsAtSignal': scanner,
+            'chartContextAtSignal': ai_filter.chart_learning.snapshot(trade)}
+
+
 def evidence(side, trade):
     """Only actual completed virtual outcomes; missing exits never become labels."""
     if trade.get("status") != "closed" or trade.get("badQuote"):
@@ -69,6 +110,7 @@ def evidence(side, trade):
             "rule": trade.get("rule"), "signalAt": trade.get("at"), "entryAt": trade.get("entryAt"),
             "exitAt": trade.get("exitAt"), "entryMid": entry, "exitMid": out,
             "pnlPerContract": round((out-entry)*100, 4), "returnPct": round((out/entry-1)*100, 4),
+            "marketAtSignal": trade.get("market"),
             "momentumAtSignal": trade.get("momentum"), "riskOkAtEntry": trade.get("riskOk"),
             "levelAtSignal": trade.get("levelSignal"),
             "chartContextAtSignal": ai_filter.chart_learning.snapshot(trade),
@@ -92,6 +134,7 @@ class LearningTeam:
         self.error = ""
         self.lab = None
         self.memory = {}
+        self.patterns = {}
         self.memory_error = ""
         self.directory.mkdir(parents=True, exist_ok=True)
         for path in sorted(self.directory.glob("batch-*.json")):
@@ -112,6 +155,13 @@ class LearningTeam:
             if report.get("fingerprint") != self.memory.get("fingerprint"):
                 ai_filter._write_atomic(self.directory / "memory.json", json.dumps(report, allow_nan=False))
                 self.memory = report
+            from momx.pattern_discovery import discover
+            entries = [item for side, book in self.books.items() for trade in book.trades()
+                       if (item := entry_observation(side, trade)) is not None]
+            patterns = discover(rows + entries)
+            if patterns['fingerprint'] != self.patterns.get('fingerprint'):
+                ai_filter._write_atomic(self.directory / 'entry-patterns.json', json.dumps(patterns, allow_nan=False))
+                self.patterns = patterns
             self.memory_error = ""
         except Exception as exc:
             self.memory_error = type(exc).__name__ + ": learning memory unavailable"
@@ -204,6 +254,11 @@ class LearningTeam:
                 job["capture"] = {side: book.capture_status() for side, book in self.books.items() if hasattr(book, "capture_status")}
                 self.save(name, job)
             common += 'Recurring-loss memory (same frozen snapshot for both agents): ' + json.dumps(job["memory"]) + '\n'
+            if 'entryPatterns' not in job:
+                job['entryPatterns'] = self.patterns
+                self.save(name, job)
+            common += ('Unsupervised entry-pattern discovery (descriptive only, not winning groups or probabilities): '
+                       + json.dumps(job['entryPatterns']) + '\n')
             if self.hermes.enabled() and "hermes" not in job:
                 # Blind independent critique: Hermes does not see the other agents' conclusions.
                 job["hermes"] = self.hermes.request(common + 'You are the independent Hermes researcher. '
@@ -236,11 +291,23 @@ class LearningTeam:
                     raise ValueError("Specialist unavailable")
                 job["specialist"] = extra
                 self.save(name, job)
+            # Independent specialist findings are durably checkpointed before the review/critic.
+            findings = job.setdefault("specialists", {})
+            for extra_task in specialist_tasks(job):
+                role = extra_task['role']
+                if task and role == task['role'] or role in findings:
+                    continue
+                agent = self.reviewer.for_agent("bot-specialist-" + role) if hasattr(self.reviewer, "for_agent") else self.reviewer
+                result = ask(agent, common + 'You are a research specialist. Propose one falsifiable experiment. '
+                    'Do not infer causality, generate trades or deploy changes.\n'
+                    + json.dumps({'task':extra_task, 'evidence':job['evidence']}), analysis)
+                findings[role] = result
+                self.save(name, job)
             reviewer = job.get("reviewer")
             if not reviewer:
                 reviewer = ask(self.agents["reviewer"], common + 'You are the trade-review agent. Analyze this completed batch and '
                     'respond to the scanner specialist. Distinguish observations from proposed changes.\n'
-                    + json.dumps({"evidence": job["evidence"], "scannerAgent": specialist, "specialistAgent": job.get("specialist")}), analysis)
+                    + json.dumps({"evidence": job["evidence"], "scannerAgent": specialist, "specialistAgent": job.get("specialist"), "additionalSpecialists": job.get("specialists", {})}), analysis)
                 if not reviewer.get("summary"):
                     raise ValueError("Review agent unavailable")
                 job["reviewer"] = reviewer
@@ -248,7 +315,7 @@ class LearningTeam:
             critic = ask(self.agents["critic"], common + 'You are an independent critic. Challenge the review agent using the SAME evidence. '
                                            'Identify unsupported conclusions and propose a falsifiable experiment. '
                                            'Agreement does not authorize deployment.\n'
-                                           + json.dumps({"evidence": job["evidence"], "scannerAgent": specialist, "specialistAgent": job.get("specialist"), "reviewAgent": reviewer, "independentHermes": job.get("hermes")}), analysis)
+                                           + json.dumps({"evidence": job["evidence"], "scannerAgent": specialist, "specialistAgent": job.get("specialist"), "additionalSpecialists": job.get("specialists", {}), "reviewAgent": reviewer, "independentHermes": job.get("hermes")}), analysis)
             if not critic.get("summary"):
                 raise ValueError("Critic agent unavailable")
             job.update(state="complete", completedAt=self.clock(), critic=critic,
@@ -267,13 +334,20 @@ class LearningTeam:
         latest = max(done, key=lambda j: j["completedAt"], default={})
         return {"enabled": self.reviewer.enabled(), "mode": "post_trade", "entryBlocking": False,
                 "primaryProvider": getattr(self.reviewer, "primary_provider", lambda: "unknown")(),
+                "backgroundResearchPaused": not background_research_allowed(),
+                "agentRoles": ["scanner", "reviewer", "critic", "planner", *SPECIALISTS],
+                "snapshotCoverage": {"trades": sum(len(j['evidence']) for j in jobs),
+                    "scanner": sum(bool(r.get('scannerInputsAtSignal')) for j in jobs for r in j['evidence']),
+                    "chart": sum(bool(r.get('chartContextAtSignal')) for j in jobs for r in j['evidence'])},
                 "reviewedTrades": sum(len(j["evidence"]) for j in done),
                 "pendingTrades": sum(len(j["evidence"]) for j in jobs if j["state"] in ("pending", "running")),
                 "failedTrades": sum(len(j["evidence"]) for j in jobs if j["state"] == "failed"),
                 "tradeStates": {r["key"]: j["state"] for j in jobs for r in j["evidence"]},
-                "latest": {k: latest[k] for k in ("completedAt", "scanner", "specialistTask", "specialist", "reviewer", "critic", "hermes", "disposition") if k in latest},
+                "latest": {k: latest[k] for k in ("completedAt", "scanner", "specialistTask", "specialist", "specialists", "reviewer", "critic", "hermes", "disposition") if k in latest},
                 "hermesEnabled": self.hermes.enabled(),
+                "hermesStatus": self.hermes.status() if hasattr(self.hermes, "status") else None,
                 "error": self.error, "memory": self.memory, "memoryError": self.memory_error,
+                "entryPatterns": self.patterns,
                 "capture": {side: book.capture_status() for side, book in self.books.items() if hasattr(book, "capture_status")},
                 "experiments": self.lab.status() if self.lab else None}
 
@@ -291,7 +365,8 @@ def start(books):
     if _TEAM is not None:
         return _TEAM
     from momx.paper_ai import start_bot_gateway
-    start_bot_gateway()
+    if background_research_allowed():
+        start_bot_gateway()
     from momx.paper_mirror import current
     team = _TEAM = LearningTeam(books, mirrors=current())
     from momx import paper_experiments
@@ -299,7 +374,8 @@ def start(books):
     def discover_loop():
         while True:
             try:
-                start_bot_gateway()
+                if background_research_allowed():
+                    start_bot_gateway()
                 team.discover()
             except Exception as exc:
                 team.error = type(exc).__name__
@@ -312,6 +388,9 @@ def start(books):
     def review_loop():
         while True:
             try:
+                if not background_research_allowed():
+                    time.sleep(30)
+                    continue
                 # Resume an interrupted proposal from a durable completed review.
                 if team.reviewer.enabled():
                     with team.lock:

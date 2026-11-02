@@ -2,6 +2,87 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-02T10:40:00-05:00",
+      "heading": "Scanner RVOL is live again after the open",
+      "items": [
+        "The Watchlist was stuck on 09:25 premarket candles all morning, so every RVOL number was a premarket reading. It now refreshes during the session (10:25 candles at 10:36).",
+        "Cause: closing out Friday's ~8,900 expired virtual BOT options rewrote a large file once per trade and held up every scanner board. Those close-outs are now saved in one batch.",
+        "The scanner's calculation processes now get a fair share of the CPU instead of only leftovers. With thinkorswim open, Mag7 had taken 16 minutes; it now takes about 15 seconds.",
+        "Charts load again while thinkorswim is busy. The chart server ran at a lower priority than thinkorswim and Chrome and could take 30+ seconds to answer; it now runs at normal priority, above the scanner.",
+        "History FIND search works again (it returned an error instead of results). Takes effect at the next scanner restart."
+      ]
+    },
+    {
+      "at": "2026-11-02T09:39:19.445464-05:00",
+      "heading": "Scanner requests stay responsive during data refresh",
+      "items": [
+        "Market-data loading status no longer blocks the board behind candle conversion. While status is busy, the board uses the last known loading count or marks it unknown.",
+        "The scanner HTTP service now gets CPU time above idle; calculation subprocesses explicitly remain idle. A larger request backlog handles the burst of requests when opening the scanner."
+      ]
+    },
+    {
+      "at": "2026-11-02T09:21:40.914539-05:00",
+      "heading": "Setup no longer repeats the Time column",
+      "items": [
+        "Setup omits the source timestamp when the same time already appears in the visible Time column. If Time is hidden or shows a different time, Setup keeps the source timestamp without the Data prefix.",
+        "MOM, SQZ fire, SKIT and chart-signal tags keep their own signal times. Study-age warnings remain in the cell tooltip."
+      ]
+    },
+    {
+      "at": "2026-11-02T09:18:17.073019-05:00",
+      "heading": "Scanner requests avoid repeated EMA-list calculations",
+      "items": [
+        "At startup, concurrent tape requests wait for the initial live-stream result without launching a large archive decode. If the live request fails, the existing saved-history fallback remains available.",
+        "Opening and polling the scanner no longer recalculate every EMA-touch universe just to read a list name or active selection. EMA universe reads still use current conditions, and list edits and timeframe switches are reflected immediately.",
+        "While a rebuild runs, repeated requests reuse the saved board without decoding the same large file again. New board replacements are picked up immediately; original market-data timestamps are preserved.",
+        "Heavy background agent discussions and native gateway autostart wait until after 8 PM ET on weekdays. Scanner signal capture, virtual trading and saved-model scoring remain available."
+      ]
+    },
+    {
+      "at": "2026-11-02T08:54:25.547472-05:00",
+      "heading": "Entry-pattern research and agent reliability",
+      "items": [
+        "Research agents now receive unsupervised groups of similar frozen Level, Setup and chart inputs. The BOT shows sample coverage; these groups are research clues, not win probabilities or automatic trade approvals.",
+        "Hermes research has a bounded timeout and records whether its last local-model request succeeded. Specialist findings are saved for review and testing before any virtual or paper model promotion."
+      ]
+    },
+    {
+      "at": "2026-11-02T08:41:35.443112-05:00",
+      "heading": "Scanner remembers column sorting",
+      "items": [
+        "Your selected sort column and direction return when you leave the scanner and come back or reload. Live, News and History retain their own ordering; bull and bear live sorts are separate.",
+        "Untouched live scanners keep the existing H/L default. Hidden or removed sort columns safely use an available default."
+      ]
+    },
+    {
+      "at": "2026-11-02T08:27:29.499493-05:00",
+      "heading": "Cleaner scanner Time column",
+      "items": [
+        "The Time column shows only the time for today’s study candles, without the Data prefix. Previous-date candles show month/day and time. Source-age warnings remain available separately."
+      ]
+    },
+    {
+      "at": "2026-11-02T08:17:28.469154-05:00",
+      "heading": "Scanner responsiveness and clock updates",
+      "items": [
+        "Scanner startup no longer waits for learning-memory recovery before opening its API.",
+        "Repeated scanner reads now skip worker startup and list-file reconciliation when the background supervisor is already running.",
+        "Live quote updates reuse scan filters instead of rebuilding them every second, and saved board data is read when switching lists rather than on every refresh.",
+        "Premarket polling runs only while the Premarket workspace is visible, so MomX and chart browsing no longer trigger its heavy background analysis.",
+        "Chart grade-history lookups search tape bytes without decoding the whole file. Scanner responses use compact JSON.",
+        "The header ET clock updates independently of dashboard data requests. Candle timestamps and age warnings still reflect the supplied market data."
+      ]
+    },
+    {
+      "at": "2026-11-02T07:53:53.891256-05:00",
+      "heading": "Expanded research team and entry snapshot checks",
+      "items": [
+        "Chart/indicator, market-regime, exit/risk and data-quality specialists join the learning team. Each completed batch runs up to three relevant specialist investigations; findings reach the reviewer, critic and experiment planner.",
+        "Normal and Star #1 signals preserve independent Level/Setup snapshots alongside completed chart context. Missing historical inputs remain unknown; the BOT learning panel reports snapshot coverage.",
+        "Hermes reviews use bounded output and process-tree timeout recovery. The dedicated OpenClaw startup distinguishes a starting process from a running listener and can recover a stalled startup. Research findings require later paper validation before supported changes can be promoted."
+      ]
+    },
+    {
       "at": "2026-11-02T02:01:45.052741-05:00",
       "heading": "Live scanner hides old study rows",
       "items": [

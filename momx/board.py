@@ -553,7 +553,8 @@ def _pool():
             try:
                 from concurrent.futures import ProcessPoolExecutor
 
-                _POOL = [ProcessPoolExecutor(max_workers=1) for _ in range(PARALLEL_WORKERS)]
+                from momx.worker_priority import idle_calculation_worker
+                _POOL = [ProcessPoolExecutor(max_workers=1, initializer=idle_calculation_worker) for _ in range(PARALLEL_WORKERS)]
             except Exception:  # noqa: BLE001 - sequential is always available
                 _POOL = False
         return _POOL or None
@@ -585,7 +586,8 @@ def _small_pool():
             try:
                 from concurrent.futures import ProcessPoolExecutor
 
-                _SMALL_POOL = [ProcessPoolExecutor(max_workers=1) for _ in range(SMALL_LIST_WORKERS)]
+                from momx.worker_priority import idle_calculation_worker
+                _SMALL_POOL = [ProcessPoolExecutor(max_workers=1, initializer=idle_calculation_worker) for _ in range(SMALL_LIST_WORKERS)]
             except Exception:  # noqa: BLE001 - sequential is always available
                 _SMALL_POOL = False
         return _SMALL_POOL or None
@@ -1667,6 +1669,36 @@ def _read_document(path: Any = None) -> dict:
     return _document_from_raw(raw)
 
 
+def _read_list_metadata(path: Any = None) -> dict:
+    """Resolve names without recalculating every derived EMA universe.
+
+    HTTP polling and warmer priority checks only need names and the active
+    selection. Actual universe reads still compute touchers from current data.
+    Read the small settings file each time so edits remain immediately visible.
+    """
+    target = Path(path) if path is not None else universe_path()
+    try:
+        raw = json.loads(target.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        raw = None
+    names = list(LIST_SEEDS)
+    names.extend(name for name in ema_touch.current_lists() if name not in names)
+    requested = ''
+    if isinstance(raw, Mapping) and isinstance(raw.get('lists'), Mapping):
+        for name in raw['lists']:
+            name = str(name or '').strip()
+            if name and name not in names and not ema_touch.is_derived(name):
+                names.append(name)
+        requested = str(raw.get('active') or '').strip()
+    else:
+        symbols = _clean_symbols(raw.get('symbols')) if isinstance(raw, Mapping) else _clean_symbols(raw)
+        if symbols:
+            requested = _migration_target(symbols)
+    active = next((name for name in names if name.lower() == requested.lower()), None)
+    active = active or (DEFAULT_LIST_NAME if DEFAULT_LIST_NAME in names else next(iter(names), DEFAULT_LIST_NAME))
+    return {'active': active, 'lists': dict.fromkeys(names)}
+
+
 def _write_document(document: Mapping[str, Any], path: Any = None) -> None:
     """Write the whole document atomically (temp file + ``os.replace``).
 
@@ -1749,7 +1781,7 @@ def resolve_list_name(
     :class:`UnknownListError` rather than quietly falling back, so a typo
     surfaces as a 400 instead of the wrong board.
     """
-    doc = document if document is not None else _read_document(path)
+    doc = document if document is not None else _read_list_metadata(path)
     lists = doc.get("lists") or {}
     wanted = str(name or "").strip()
     if not wanted:
@@ -1780,7 +1812,7 @@ def _refuse_derived(target: str) -> None:
 
 def list_names(path: Any = None) -> list[str]:
     """Every known list name, in display order (seeded names first)."""
-    return list((_read_document(path).get("lists") or {}).keys())
+    return list((_read_list_metadata(path).get("lists") or {}).keys())
 
 
 def active_list(path: Any = None) -> str:

@@ -38,6 +38,10 @@ from momx import board, fastlane, feed, grade_log, history, momo_alert, movers, 
 
 PORT = 3010
 
+
+class ScannerHTTPServer(ThreadingHTTPServer):
+    request_queue_size = 128
+
 #: Momentum event ledger, keyed by list name. Lives here rather than in
 #: api_server so the diff runs in the process that owns the board snapshots.
 _LEDGERS: dict[str, dict] = {}
@@ -343,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
         Compression is skipped for small bodies and whenever the client did
         not offer gzip, so nothing else on this worker changes behaviour.
         """
-        body = json.dumps(payload).encode("utf-8")
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         encoding = None
         if len(body) >= self.GZIP_MIN_BYTES and "gzip" in (
             self.headers.get("Accept-Encoding") or ""
@@ -546,10 +550,13 @@ class Handler(BaseHTTPRequestHandler):
                     return str(query_args.get(name, [""])[0]).strip()
 
                 date = _one("date")
+                # The function-level `query` is the parsed query string, which
+                # hides the momx.query module here; import it under its own name.
+                from momx import query as query_module
                 try:
                     self._json(
                         HTTPStatus.OK,
-                        query.query(
+                        query_module.query(
                             wanted or board.DEFAULT_LIST_NAME,
                             {
                                 "section": _one("section"),
@@ -563,10 +570,10 @@ class Handler(BaseHTTPRequestHandler):
                             # it, which is what the "this day" scope sends.
                             dates=[date] if date else None,
                             limit=_int_or_zero(query_args.get("limit", ["0"])[0])
-                            or query.MAX_RESULTS,
+                            or query_module.MAX_RESULTS,
                         ),
                     )
-                except query.ConditionError as exc:
+                except query_module.ConditionError as exc:
                     # 400, not an empty result: "nothing matched" and "I could
                     # not understand you" must never look alike in a search.
                     self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -706,26 +713,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _deprioritise() -> None:
-    """Run below normal priority so the chart engine always wins a core.
-
-    The scanner is background work; the charts are what the trader is looking
-    at. On 2026-08-28 the pool took 8 of 12 cores through every build and the
-    app went sluggish at the open. Lower priority means the OS hands momx only
-    the cycles nothing else wants - the build gets slower under load and
-    invisible when the machine is busy, which is exactly the right trade.
-    Child pool workers inherit the class, so this covers them too.
-    """
+    """Keep HTTP serving responsive; calculation pool initializers set IDLE."""
     try:
         import ctypes
 
-        # IDLE, not BELOW_NORMAL. api_server AND the gateway already run at
-        # BELOW_NORMAL, so a BELOW_NORMAL scanner was merely their EQUAL and its
-        # pool children (spawned Normal) actually OUT-ranked them - on
-        # 2026-08-28 the first /api/auth/status behind a build took 23s and the
-        # app hung at "Loading secure workspace". IDLE guarantees the scanner
-        # only ever uses cycles the app does not want, so it can never starve
-        # the thing serving the trader. Pool children inherit this class.
-        IDLE_PRIORITY_CLASS = 0x00000040
+        # Serving everything at IDLE starved the accept loop under load.
+        # Heavy pool children explicitly lower themselves to IDLE, so they
+        # cannot outrank the chart API when the HTTP parent is BELOW_NORMAL.
+        BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
         kernel32 = ctypes.windll.kernel32
         # ctypes defaults every return/arg to 32-bit int. GetCurrentProcess()
         # returns the 64-bit pseudo-handle (0xFFFFFFFFFFFFFFFF); truncated to
@@ -737,12 +732,12 @@ def _deprioritise() -> None:
         kernel32.GetCurrentProcess.restype = ctypes.c_void_p
         kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint]
         kernel32.SetPriorityClass.restype = ctypes.c_int
-        ok = kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), IDLE_PRIORITY_CLASS)
+        ok = kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
         if ok:
-            print("priority: IDLE (never contends with api_server/gateway)", flush=True)
+            print("priority: BELOW_NORMAL for serving; calculation children explicitly IDLE", flush=True)
         else:
             err = ctypes.get_last_error()
-            print(f"priority: FAILED to set IDLE (GetLastError={err})", flush=True)
+            print(f"priority: FAILED to set BELOW_NORMAL (GetLastError={err})", flush=True)
     except Exception as exc:  # noqa: BLE001 - non-Windows or restricted
         print(f"priority: unchanged ({exc})", flush=True)
 
@@ -771,6 +766,19 @@ def _shutdown_pool_and_exit(signum=None, frame=None):
         pass
     if signum is not None:
         raise SystemExit(0)
+
+
+def start_learning_background(books):
+    """Research recovery must never delay binding the scanner API listener."""
+    def run():
+        try:
+            from momx import paper_learning
+            paper_learning.start(books)
+        except Exception as exc:
+            print(f"[paper-learning] not started: {type(exc).__name__}: {exc}", flush=True)
+    worker = _threading.Thread(target=run, name="paper-learning-startup", daemon=True)
+    worker.start()
+    return worker
 
 
 def main() -> int:
@@ -802,12 +810,8 @@ def main() -> int:
         ai_filter.start({"bull": service._OPTION_TRACK, "bear": service._BEAR_OPTION_TRACK})
     except Exception as exc:  # noqa: BLE001
         print(f"[ai-filter] not started: {type(exc).__name__}: {exc}", flush=True)
-    try:
-        from momx import paper_learning
-        paper_learning.start({"bull": service._OPTION_TRACK, "bear": service._BEAR_OPTION_TRACK})
-    except Exception as exc:
-        print(f"[paper-learning] not started: {type(exc).__name__}: {exc}", flush=True)
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    start_learning_background({"bull": service._OPTION_TRACK, "bear": service._BEAR_OPTION_TRACK})
+    server = ScannerHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"momx worker on http://127.0.0.1:{PORT}", flush=True)
     try:
         server.serve_forever()

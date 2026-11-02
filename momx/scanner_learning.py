@@ -1,4 +1,5 @@
 """Frozen scanner inputs for learning. Never reconstruct old levels from outcomes."""
+import copy
 from datetime import datetime
 from collections.abc import Mapping
 
@@ -11,7 +12,7 @@ SCANNER_NUMERIC = ('confirmLevel', 'setupCount', 'rvolIncreasingCount', 'confirm
 
 
 def snapshot(trade, side):
-    value = trade.get('scannerInputs') or trade.get('levelSignal')
+    value = trade.get('scannerInputs') or trade.get('levelSignal') or (trade.get('setup') or {}).get('scannerInputs')
     if side != 'bull' or not isinstance(value, Mapping) or value.get('version') != 1:
         return None
     try:
@@ -27,7 +28,7 @@ def snapshot(trade, side):
     keys = [t.get('key') if isinstance(t, Mapping) else None for t in types]
     if any(k not in SETUP_RULE_KEYS for k in keys) or len(set(keys)) != len(keys) or value.get('setupCount') != len(keys):
         return None
-    return {k: value[k] for k in ('version', 'highestLevel', 'setupTypes', 'setupCount',
+    return {k: copy.deepcopy(value[k]) for k in ('version', 'highestLevel', 'setupTypes', 'setupCount',
             'publicationAt', 'historyReady', 'increasing', 'sqz', 'fire', 'skittles') if k in value}
 
 

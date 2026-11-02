@@ -23,6 +23,8 @@ import pytest
 
 from momx import board, service
 
+_REAL_START_WARMER = service.start_warmer
+
 
 @pytest.fixture(autouse=True)
 def _scratch_universe_path(monkeypatch, tmp_path):
@@ -539,6 +541,30 @@ def test_a_very_old_disk_board_is_still_served_flagged_as_a_previous_session(bui
     assert "previous session" in snap["message"]
 
 
+def test_disk_fallback_reuses_unchanged_json_and_detects_replacement(tmp_path, monkeypatch):
+    from pathlib import Path
+    path = tmp_path / 'board.json'
+    monkeypatch.setattr(service, '_cache_file', lambda *args: path)
+    monkeypatch.setattr(service, 'options_only', lambda: False)
+    path.write_text(json.dumps({'rows':[{'symbol':'FIRST'}], 'generatedAt':'2026-11-02T13:30:00+00:00'}))
+    reads = []
+    original = Path.read_text
+    def counted(target, *args, **kwargs):
+        reads.append(target)
+        return original(target, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', counted)
+    assert service._load_disk('Watchlist')['rows'][0]['symbol'] == 'FIRST'
+    assert service._load_disk('Watchlist')['rows'][0]['symbol'] == 'FIRST'
+    assert reads == [path]
+    replacement = tmp_path / 'new.json'
+    replacement.write_text(json.dumps({'rows':[{'symbol':'NEW'}], 'generatedAt':'2026-11-02T13:35:00+00:00'}))
+    replacement.replace(path)
+    assert service._load_disk('Watchlist')['rows'][0]['symbol'] == 'NEW'
+    assert reads == [path, path]
+    path.unlink()
+    assert service._load_disk('Watchlist') is None
+
+
 def test_a_corrupt_or_missing_cache_file_falls_back_to_the_warming_stub(builder):
     # Missing file: never built, no cache written.
     assert service.snapshot("Mag7")["warming"] is True
@@ -1014,3 +1040,14 @@ def test_ema_build_waits_for_current_formula_cache(monkeypatch):
     assert state.payload is None
     assert service._build_once(name) == service.SKIPPED_BUILD
     assert state.payload is None
+
+
+def test_repeated_warmer_start_returns_before_list_files_or_refresher_work(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(service, '_THREAD', SimpleNamespace(is_alive=lambda: True))
+    monkeypatch.setattr(service, '_STOP', threading.Event())
+    def unexpected(*args, **kwargs):
+        raise AssertionError('Snapshot startup repeated expensive initialization')
+    monkeypatch.setattr(service, '_known_names', unexpected)
+    monkeypatch.setattr(service.ema_touch, 'start_refresher', unexpected)
+    _REAL_START_WARMER()

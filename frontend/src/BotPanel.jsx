@@ -228,8 +228,14 @@ function LearningTeamStatus({ onStatus }) {
   return <section className="bot-jevbook-note" aria-label="Post-trade learning team">
     <b>Trade first · learn afterward</b>
     <p>Scanner specialist → trade reviewer → critic → experiment planner. The app coordinates their recorded findings; {team?.primaryProvider === 'ollama' ? 'local Ollama primary; OpenClaw and ChatGPT requests bypassed' : 'OpenClaw gateway primary, with local Ollama fallback'}. Agents have no order or exit authority.</p>
-    <p>Hermes independent research: {team?.hermesEnabled ? "enabled" : "not enabled"}. Additional execution, RVOL, squeeze or Skittles specialists are created when captured evidence calls for them. No framework has proven superior trading performance yet.</p>
+    <p>Hermes independent research: {team?.hermesEnabled ? "enabled" : "not enabled"}{team?.hermesStatus?.available === true ? " · last request succeeded" : team?.hermesStatus?.available === false ? " · last request failed" : " · not yet verified"}. Chart/indicator, market-regime, exit/risk and data-quality specialists join execution, RVOL, squeeze, Skittles and model-quality research. Up to three specialist investigations run per batch; their recorded findings reach the reviewer, critic and experiment planner. No framework has proven superior trading performance yet.</p>
     <p>{error || (team ? `Reviews ${team.enabled ? "ON" : "OFF"} · ${team.reviewedTrades || 0} trades reviewed · ${team.pendingTrades || 0} queued · ${team.failedTrades || 0} failed` : "Loading review status…")}</p>
+    {team?.backgroundResearchPaused ? <p>Background agent research waits until after 8 PM ET on weekdays to protect scanner speed. Signal capture, virtual trading and saved-model scoring continue.</p> : null}
+    {team?.snapshotCoverage ? <p>Entry snapshots: {team.snapshotCoverage.scanner}/{team.snapshotCoverage.trades} with Level/Setup inputs · {team.snapshotCoverage.chart}/{team.snapshotCoverage.trades} with chart inputs. Historical gaps stay unknown.</p> : null}
+    {team?.entryPatterns ? <details><summary>Unsupervised entry patterns · {team.entryPatterns.observations} observations</summary>
+      <p>{team.entryPatterns.note} {team.entryPatterns.state === 'insufficient_data' ? `At least ${team.entryPatterns.minimum} distinct frozen observations are required.` : 'Agents receive these groups as research evidence; model changes still require later validation.'}</p>
+      {(team.entryPatterns.clusters || []).map(cluster => <p key={cluster.id}>Group {cluster.id}: {cluster.observations} observations · {cluster.commonSetupRules.map(key => SCANNER_SETUP_TYPES.find(([id]) => id === key)?.[1] || key).join(', ') || 'No common Setup rule'}</p>)}
+    </details> : null}
     {team?.error ? <p role="status">{team.error}</p> : null}
     {team?.capture && Object.keys(team.capture).length ? <details><summary>Scanner → BOT capture</summary>
       <p>Rule-qualified signals received by the BOT, including the scanner's secondary rows. This does not count every market opportunity or prove that an unentered signal would have won. News trade and AI pick are views of the shared virtual book.</p>
@@ -242,6 +248,7 @@ function LearningTeamStatus({ onStatus }) {
     {team?.latest?.critic ? <details><summary>Latest agent discussion</summary>
       {team.latest.scanner ? <p><b>Scanner specialist ({team.latest.scanner.provider}):</b> {team.latest.scanner.summary}</p> : <p>This older discussion predates the scanner specialist.</p>}
       {team.latest.specialist ? <p><b>Additional {team.latest.specialistTask?.role} specialist:</b> {team.latest.specialistTask?.reason}. {team.latest.specialist.summary}</p> : null}
+      {Object.entries(team.latest.specialists || {}).map(([role, result]) => <p key={role}><b>{role.replaceAll('_',' ')} specialist ({result.provider}):</b> {result.summary || result.reason || 'Unavailable'}</p>)}
       {team.latest.hermes ? <p><b>Independent Hermes researcher:</b> {team.latest.hermes.summary || team.latest.hermes.reason}</p> : null}
       <p><b>Review agent ({team.latest.reviewer.provider}):</b> {team.latest.reviewer.summary}</p>
       <p><b>Proposed experiment:</b> {team.latest.reviewer.hypothesis}</p>

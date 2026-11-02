@@ -733,6 +733,35 @@ def test_background_saves_are_batched_and_flushed(tmp_path):
     assert "\n" not in path.read_text(encoding="utf-8")                          # compact
 
 
+def test_finished_carries_write_each_past_day_file_once(tmp_path):
+    """11-02: 8,884 Friday expiries each re-read and re-wrote a 6 MB day file under
+    the lock, and every scanner board waited hours behind it."""
+    clock = Clock(MON.timestamp())
+    b = ot.OptionTrackBook(tmp_path, fetch=lambda s: {}, healthy=lambda: True, background=True, clock=clock,
+                           sleep=lambda s: None, quote_fetch=lambda q: None)
+    b._day = "2026-09-28"
+    path = tmp_path / ot.DIRNAME / "2026-09-25.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"trades": [{"rule": "go", "symbol": "A"}, {"rule": "go", "symbol": "B"},
+                                           {"rule": "go", "symbol": "C"}]}), encoding="utf-8")
+    writes = []
+    real_replace = ot.os.replace
+    ot.os.replace = lambda a, z: (writes.append(str(z)), real_replace(a, z))[1]
+    try:
+        for sym, best in (("A", 2.5), ("B", 3.0)):
+            b._finish_carry({"day": "2026-09-25", "rule": "go", "symbol": sym, "holdBest": best,
+                             "holdBestAt": "2026-09-26T10:00:00-04:00"})
+        assert not any(w.endswith("2026-09-25.json") for w in writes)      # queued, not written per carry
+        b._flush()
+    finally:
+        ot.os.replace = real_replace
+    assert sum(w.endswith("2026-09-25.json") for w in writes) == 1
+    trades = {t["symbol"]: t for t in json.loads(path.read_text(encoding="utf-8"))["trades"]}
+    assert trades["A"]["holdDone"] and trades["A"]["holdBest"] == 2.5
+    assert trades["B"]["holdDone"] and trades["B"]["holdBest"] == 3.0
+    assert "holdDone" not in trades["C"]
+
+
 def test_the_1550_quote_pass_closes_every_trade_and_its_side_contracts(tmp_path):
     """10-09: the chain queue never reached MRNA after 15:50 - no close recorded, so
     'held to the close' (+934% on the same-day 200C) was invisible."""

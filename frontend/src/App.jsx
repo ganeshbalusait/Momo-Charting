@@ -1,3 +1,5 @@
+import { premarketPollEnabled } from "./premarketPollPolicy.js";
+import MarketClock from "./MarketClock.jsx";
 import { BaselineSeries, CandlestickSeries, CrosshairMode, HistogramSeries, LineSeries, TickMarkType, TrackingModeExitMode, createChart, createSeriesMarkers } from "lightweight-charts";
 import { fetchWithNetworkRetry } from "./momxNetworkRetry.js";
 import { timingMark, timingStart } from "./chartLoadTiming.js";
@@ -26809,11 +26811,12 @@ function TradingWorkspace({ authUser, onLogout }) {
   // dashboard payload is cached 60s server-side and the scanner's whole point
   // is that a fire shows up here as fast as it shows up on the chart.
   useEffect(() => {
-    if (popoutConfig.mode) return undefined;
+    if (!premarketPollEnabled(activeView, popoutConfig.mode)) return undefined;
     let cancelled = false;
+    const controller = new AbortController();
     const loadPremarketScanner = async () => {
       try {
-        const response = await fetch("/api/premarket-scanner", { cache: "no-store" });
+        const response = await fetch("/api/premarket-scanner", { cache: "no-store", signal: controller.signal });
         if (!response.ok) return;
         const payload = await response.json();
         if (!cancelled && payload && Array.isArray(payload.rows)) setPremarketScanner(payload);
@@ -26834,8 +26837,8 @@ function TradingWorkspace({ authUser, onLogout }) {
       }, premarketScannerPollIntervalMs());
     };
     loadPremarketScanner().then(scheduleNext);
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [popoutConfig.mode]);
+    return () => { cancelled = true; controller.abort(); if (timer) clearTimeout(timer); };
+  }, [activeView, popoutConfig.mode]);
 
   useEffect(() => {
     if (popoutConfig.mode) return undefined;
@@ -29396,7 +29399,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             <span className={`market-open-pill tone-${statusTone(dashboard.status.marketStatus)}`}>
               <i />{`MARKET ${String(dashboard.status.marketStatus || "Closed").toUpperCase()}`}
             </span>
-            <span className="market-clock">{formatTimeLabel(dashboard.status.clockTime || dashboard.status.lastRefresh)}</span>
+            <MarketClock />
             <div className="session-tape" aria-label="Market sessions">
               {[
                 ["CORE", sessionStatus.core],

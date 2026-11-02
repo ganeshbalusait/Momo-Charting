@@ -15,9 +15,14 @@ export function scannerRowFreshness(row, nowMs = Date.now()) {
       || nowMs - (start + 300000) < 600000) return null;
   const clock = rowClock.format(start);
   const date = rowDay.format(start), prefix = date === rowDay.format(nowMs) ? "" : `${rowMonthDay.format(start)} `;
-  return {text: `Data ${prefix}${clock}`, title: `The latest supplied 5m study candle started ${date} ${clock} ET. `
+  return {text: `Data ${prefix}${clock}`, timeText: `${prefix}${clock}`, title: `The latest supplied 5m study candle started ${date} ${clock} ET. `
     + "These study inputs are older; a newer live quote does not refresh momentum studies. "
     + "Quiet trading or delayed/missing candles can cause this. This age alone does not identify a provider delay."};
+}
+
+export function setupSourceTime(warning, visibleTimeText = null) {
+  const text = warning?.timeText || null;
+  return text && text !== visibleTimeText ? text : null;
 }
 
 export function scannerFreshness(board, nowMs = Date.now(), receivedAt = null) {

@@ -352,7 +352,8 @@ def _executor():
             try:
                 from concurrent.futures import ProcessPoolExecutor
                 for _ in range(CHILD_START_ATTEMPTS):
-                    ex = ProcessPoolExecutor(max_workers=1)
+                    from momx.worker_priority import idle_calculation_worker
+                    ex = ProcessPoolExecutor(max_workers=1, initializer=idle_calculation_worker)
                     try:
                         ex.submit(_child_warm).result(timeout=OFFLOAD_TIMEOUT_SECONDS)
                     except Exception:  # noqa: BLE001 - died on start-up: make another

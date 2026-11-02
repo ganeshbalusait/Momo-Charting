@@ -41,7 +41,11 @@ def start_bot_gateway(directory=None):
 class _LocalPrimary(Exception):
     """Internal route selection; never a provider failure."""
 
-SPECIALISTS = {"execution": "Investigate missed signals and quote/fill failures",
+SPECIALISTS = {"chart": "Audit frozen VWAP, EMA, prior-session and premarket levels against losing and winning counterexamples",
+               "regime": "Compare frozen market breadth, SPY and QQQ context across chronological sessions",
+               "exit_risk": "Audit recorded strategy exits, loss size and drawdown without hindsight best-price labels",
+               "data_quality": "Audit missing, stale or mismatched signal snapshots and quote coverage before model training",
+               "execution": "Investigate missed signals and quote/fill failures",
                "model_quality": "Audit frozen Level 1-3 and 23 Setup inputs, missing data, chronological validation and probability calibration",
                "rvol": "Test relative-volume conditions and winning counterexamples",
                "squeeze": "Test squeeze conditions using entry-time evidence",

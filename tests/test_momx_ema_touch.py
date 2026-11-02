@@ -66,6 +66,20 @@ def test_names_round_trip():
     assert ema_touch.parse_name("Watchlist") is None
 
 
+def test_name_resolution_does_not_recalculate_ema_universes(lists_on, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail('Name-only lookup must not calculate EMA touchers')
+    monkeypatch.setattr(ema_touch, 'touchers', forbidden)
+    assert board.resolve_list_name('watchlist', path=lists_on) == 'Watchlist'
+    assert board.active_list(path=lists_on) == board.DEFAULT_LIST_NAME
+    assert '21 EMA Touch Monthly' in board.list_names(lists_on)
+    ema_touch.set_timeframe(21, 'Daily')
+    assert board.resolve_list_name('21 ema touch daily', path=lists_on) == '21 EMA Touch Daily'
+    lists_on.write_text(json.dumps({'active':'Custom', 'lists':{'Custom':['SPY']}}))
+    assert board.active_list(path=lists_on) == 'Custom'
+    assert 'Custom' in board.list_names(lists_on)
+
+
 @pytest.fixture
 def lists_on(tmp_path, monkeypatch):
     monkeypatch.setenv("AGX_MOMX_EMA_LISTS", "1")
