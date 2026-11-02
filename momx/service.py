@@ -218,6 +218,11 @@ def _release_heavy_gate_early() -> None:
         _GATE_HELD.held = False
         _HEAVY_GATE.release()
 
+
+# The gate covers the fetch + scan only: board.build_board calls this the moment
+# its scan finishes, so the next big list starts while this one reads news.
+board.SCAN_DONE_HOOK = _release_heavy_gate_early
+
 #: Set only by _stop_warmer(), which exists for tests. Production never sets
 #: it: the warmer runs until the process exits, and the threads are daemons.
 _STOP = threading.Event()
@@ -1218,7 +1223,7 @@ def _build_claimed(name: str) -> bool:
                 delay = SHARED_SCAN_POLL_SECONDS
             else:
                 delay = _next_delay(elapsed, bool(state.error))
-                if heavy and name in LIST_PRIORITY and not state.error:
+                if heavy and name in FAST_IDLE_LISTS and not state.error:
                     delay = min(delay, PRIORITY_HEAVY_IDLE_SECONDS)
                 if not _is_viewed(name):
                     delay = max(delay, UNVIEWED_MIN_DELAY_SECONDS)
@@ -1230,7 +1235,11 @@ def _build_claimed(name: str) -> bool:
 #: when two big lists are due together, the earlier one in this tuple takes the
 #: one-at-a-time heavy gate first. The active list comes right after these;
 #: everything else after that. Mag7 is small and never waits on the gate.
-LIST_PRIORITY = ("Mag7", "Watchlist")
+#: 2026-11-02 he re-ordered it: "1. Mag7 2. Watchlist 3. 21 ema 4. 50 ema".
+LIST_PRIORITY = ("Mag7", "Watchlist", "21 EMA Touch Monthly", "50 EMA Touch Daily")
+#: Only these get the short idle below; the EMA lists rank ahead of the rest
+#: but do not rebuild back-to-back, so they never crowd out the Watchlist.
+FAST_IDLE_LISTS = ("Mag7", "Watchlist")
 #: The Watchlist (a heavy list in LIST_PRIORITY) idles only this long between
 #: builds (2026-10-16, "under 1 min"): the 15 s+ politeness idle was a quarter
 #: of the target. The scanner runs at IDLE priority, so the chart engine still

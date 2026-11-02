@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-02T17:20:00-05:00",
+      "heading": "Scanner refreshes faster; your list order",
+      "items": [
+        "Scanner priority is now your order: 1. Mag7, 2. Watchlist, 3. 21 EMA, 4. 50 EMA, then the other lists.",
+        "The Watchlist no longer waits behind another list's news download. A list now hands over its turn as soon as its own scan is done, so the next one starts right away.",
+        "Per-ticker news headlines are fetched 8 at a time instead of one by one, so each refresh spends far less time on news."
+      ]
+    },
+    {
       "at": "2026-11-02T16:30:00-05:00",
       "heading": "Scanner rows no longer vanish and come back",
       "items": [

@@ -414,6 +414,13 @@ _POOL_LOCK = threading.Lock()
 #: ~50 s after its scan finished. Separate from the big lanes so a Mag7 build
 #: never queues behind a Watchlist batch.
 SMALL_LIST_WORKERS = 2
+
+#: Called once a build's fetch + scan is done, BEFORE news, grading and the
+#: rest of the board assembly. momx.service sets it to release its heavy gate
+#: (2026-11-02: "50 EMA Touch Daily" held the gate for 90+ s reading Yahoo
+#: RSS one ticker at a time while the Watchlist waited to start its scan; one
+#: Watchlist pass took 27 min). None outside the service; must never raise.
+SCAN_DONE_HOOK = None
 _SMALL_POOL = None
 
 
@@ -949,6 +956,11 @@ def build_board(
         ),
         flush=True,
     )
+    if SCAN_DONE_HOOK is not None:
+        try:
+            SCAN_DONE_HOOK()
+        except Exception:  # noqa: BLE001 - a hook can never cost the board
+            pass
 
     if skipped:
         cached = {

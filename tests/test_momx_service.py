@@ -1051,3 +1051,16 @@ def test_repeated_warmer_start_returns_before_list_files_or_refresher_work(monke
     monkeypatch.setattr(service, '_known_names', unexpected)
     monkeypatch.setattr(service.ema_touch, 'start_refresher', unexpected)
     _REAL_START_WARMER()
+
+
+def test_his_list_order_mag7_watchlist_21ema_50ema(monkeypatch):
+    """2026-11-02 his order: 1 Mag7, 2 Watchlist, 3 21 EMA, 4 50 EMA, then the rest."""
+    from momx import service
+    monkeypatch.setattr(service, "_STATES", {})
+    monkeypatch.setattr(service.board, "active_list", lambda path=None: "Movers")
+    monkeypatch.setattr(service, "_is_viewed", lambda name: False)
+    ranks =[service._priority_rank(n) for n in
+             ("Mag7", "Watchlist", "21 EMA Touch Monthly", "50 EMA Touch Daily", "Movers", "Liquid Movers")]
+    assert ranks == sorted(ranks) and len(set(ranks)) == len(ranks)
+    # Only Mag7 / Watchlist rebuild back-to-back; the EMA lists keep the normal idle.
+    assert "21 EMA Touch Monthly" not in service.FAST_IDLE_LISTS
