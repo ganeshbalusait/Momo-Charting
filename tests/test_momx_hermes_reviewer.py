@@ -49,3 +49,15 @@ class AIAgent:
     assert result.returncode==0,result.stderr
     response=json.loads(json.loads(result.stdout)['response'])
     assert response['summary']=='request survives restart'
+
+
+def test_hermes_accepts_log_lines_and_a_json_fence_but_still_validates(tmp_path):
+    config = tmp_path / "hermes.json"
+    config.write_text(json.dumps({"enabled": True, "python": "python.exe", "root": str(tmp_path), "home": str(tmp_path)}))
+    good = '```json\n{"summary":"ok","hypothesis":"h","validation":"v"}\n```'
+    out = "Hermes starting...\n" + json.dumps({"response": good}) + "\n"
+    result = HermesReviewer(config, lambda *a, **k: SimpleNamespace(stdout=out)).request("research", analysis)
+    assert result["available"] and result["summary"] == "ok"
+    prose = "Here you go:\n" + good
+    result = HermesReviewer(config, lambda *a, **k: SimpleNamespace(stdout=json.dumps({"response": prose}))).request("research", analysis)
+    assert not result["available"]

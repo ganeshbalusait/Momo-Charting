@@ -30,7 +30,20 @@ class HermesReviewer:
                                  input=json.dumps({"prompt": prompt}), capture_output=True, text=True,
                                  encoding="utf-8", timeout=180, check=True,
                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-            envelope = json.loads(result.stdout)
-            return {**parse(envelope["response"]), "provider": "hermes", "model": "ollama/qwen3.5:4b", "available": True}
+            envelope = _envelope(result.stdout)
+            from momx.paper_ai import _structured_text
+            return {**parse(_structured_text(envelope["response"])), "provider": "hermes", "model": "ollama/qwen3.5:4b", "available": True}
         except Exception as exc:
             return {"provider": "hermes", "available": False, "reason": type(exc).__name__ + ": independent review unavailable"}
+
+
+def _envelope(stdout):
+    """The bridge's JSON envelope: its LAST stdout line. Hermes start-up or
+    shutdown can print other lines, which made json.loads fail on a good reply."""
+    for line in reversed((stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            value = json.loads(line)
+            if isinstance(value, dict) and "response" in value:
+                return value
+    raise ValueError("Hermes bridge returned no JSON envelope")

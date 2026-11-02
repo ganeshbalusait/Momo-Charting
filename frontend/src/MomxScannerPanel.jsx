@@ -503,7 +503,10 @@ function jevScoreTd(column, row, className, asOfMs = undefined) {
   const stale = scannerRowFreshness(row, now);
   const ai = stale ? null : aiTags(row, now, 0)[0] || null;
   const learning = scannerRecordLearning(row, now);
-  const label = learning.text;
+  // A validated entry forecast wins; until one exists (it needs 100 forward
+  // trades over 10 days) show the rule's own quote-checked record instead of
+  // "Learning" on every row - the column's job before 2026-11-01.
+  const label = learning.ready || !rec ? learning.text : rec.text;
   const explanation = ai ? ai.title : stale ? "AI score unavailable: study data is old." : "No AI score recorded for this ticker and session.";
   const detail = [...learning.lines, explanation, "Experimental local model score; a calibrated net-profit win probability has not passed validation.", ...(rec?.lines || [])].join("\n");
   const open = event => {
