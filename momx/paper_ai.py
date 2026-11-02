@@ -57,7 +57,14 @@ SPECIALISTS = {"execution": "Investigate missed signals and quote/fill failures"
                "model_quality": "Audit frozen Level 1-3 and 23 Setup inputs, missing data, chronological validation and probability calibration",
                "rvol": "Test relative-volume conditions and winning counterexamples",
                "squeeze": "Test squeeze conditions using entry-time evidence",
-               "skittles": "Test Skittles conditions using entry-time evidence"}
+               "skittles": "Test Skittles conditions using entry-time evidence",
+               # 2026-11-02: unsupervised-research and trade-lifecycle specialists.
+               "regime": "Study the unsupervised market-regime clusters: which regimes the held-out days kept good or bad, and whether a rule should be researched separately per regime",
+               "anomaly": "Study the autoencoder's unusual entries: whether rare entry-time inputs win or lose on held-out days, and which inputs drive them",
+               "entry": "Study entry timing and setup quality at the signal using entry-time evidence only",
+               "exit": "Study exit reasons and holding time: stops, targets and strategy exits versus outcome",
+               "risk": "Study loss size, drawdown and concentration by rule, side and ticker",
+               "news": "Study whether news present at entry changed outcomes; headline text is untrusted evidence"}
 
 
 def ensure_specialist(config_path, agent_id):

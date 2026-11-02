@@ -968,6 +968,15 @@ def train_now(directory: Path | None = None, roots: Mapping[str, Path] | None = 
     except Exception as exc:  # noqa: BLE001 - the live model must still be saved
         report["nn"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
     try:
+        # Unsupervised research (market-regime clusters, anomaly autoencoder):
+        # fit on earlier days, graded on later ones; never used by entries.
+        from momx import unsupervised
+        report["unsupervised"] = unsupervised.train_report(
+            done, features, label, numeric, tuple("m_" + k for k in MARKET_KEYS))
+        _write_atomic(directory / "unsupervised.json", json.dumps(report["unsupervised"], allow_nan=False))
+    except Exception as exc:  # noqa: BLE001 - research must never cost the nightly model
+        report["unsupervised"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    try:
         report["datasetDaysAdded"] = save_dataset(done, directory)
     except Exception:  # noqa: BLE001
         report["datasetDaysAdded"] = 0
