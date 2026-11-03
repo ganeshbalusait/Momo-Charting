@@ -7909,7 +7909,6 @@ function FullChartsAndOiBoard({
       ) : null}
       {dockPanels.includes("sector") ? (
         <SectorHeatmapPanel
-          symbols={dockWatchlistSymbols}
           activeSymbol={symbol}
           onSelect={onLinkedSymbolChange}
           onClose={() => toggleDockPanel("sector")}

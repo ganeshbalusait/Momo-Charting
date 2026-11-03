@@ -1,4 +1,4 @@
-// Sector panel maths: the watchlist as a sector heatmap (trader ask 2026-11-03).
+// Sector panel maths: Robinhood-style sector heatmap (trader ask 2026-11-03).
 // The layout tests matter most: a treemap that overlaps, leaves gaps or spills
 // past the card looks fine in one screenshot and wrong on the next watchlist.
 
@@ -6,142 +6,85 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  OTHER_GROUP,
-  buildSectorGroups,
-  SECTORS,
+  SECTOR_CARDS,
+  SECTOR_SYMBOLS,
+  buildMarketSectorGroups,
   cardHeight,
   formatMarketCap,
   formatSignedPct,
   heatLevel,
   rowCounts,
   rowLayout,
-  sectorFor,
   squarify,
   tileFontSizes,
   tileLabelMode,
   visibleTiles,
 } from "./sectorHeatmap.js";
-import { readFileSync } from "node:fs";
 
-const q = (industry, changePct, marketCap) => ({ industry, changePct, marketCap, lastPrice: 100, change: 1 });
 
-describe("buildSectorGroups", () => {
-  test("groups by industry, biggest card first, Other last", () => {
-    const groups = buildSectorGroups(["NVDA", "MSFT", "ZZZZ", "AMD", "CRM"], {
-      NVDA: q("Semis", 3, 4e12),
-      AMD: q("Semis", 1, 3e11),
-      MSFT: q("Software", 1.9, 3.5e12),
-      CRM: q("Software", -1, 2.5e11),
-      ZZZZ: q(null, 5, 9e12), // no industry -> Other, even when huge
-    }, { groupBy: "industry" });
-    assert.deepEqual(groups.map((group) => group.name), ["Semis", "Software", OTHER_GROUP]);
-    assert.deepEqual(groups[0].tiles.map((tile) => tile.symbol), ["NVDA", "AMD"]);
+describe("market sector cards (Robinhood: each sector's top stocks)", () => {
+  const ROBINHOOD_TECH = ["NVDA", "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "TSM", "META", "AVGO", "SKHY", "MU", "AMD", "ASML", "TCEHY", "PLTR", "CSCO"];
+  const quote = (changePct, extra = {}) => ({ lastPrice: 100, change: changePct, changePct, ...extra });
+
+  test("eleven sector cards, each holding many tickers, no ticker twice", () => {
+    assert.equal(SECTOR_CARDS.length, 11);
+    for (const card of SECTOR_CARDS) {
+      assert.ok(card.leaders.length >= 12, `${card.name} has ${card.leaders.length}`);
+      assert.match(card.etf, /^XL[A-Z]{1,2}$/);
+    }
+    const all = SECTOR_CARDS.flatMap((card) => card.leaders.map((leader) => leader.symbol));
+    assert.deepEqual(all.filter((symbol, index) => all.indexOf(symbol) !== index), []);
+    assert.equal(new Set(SECTOR_SYMBOLS).size, all.length + SECTOR_CARDS.length);
   });
 
-  test("a symbol with no quote yet still gets a grey tile in Other", () => {
-    const [group] = buildSectorGroups(["NEWT"], {});
-    assert.equal(group.name, OTHER_GROUP);
-    assert.equal(group.tiles[0].changePct, null);
-    assert.equal(heatLevel(group.tiles[0].changePct).tone, "none");
-    assert.equal(group.changePct, null);
+  test("the Technology card is the Robinhood screenshot's card", () => {
+    const tech = SECTOR_CARDS.find((card) => card.name === "Technology");
+    assert.deepEqual(tech.leaders.map((leader) => leader.symbol), ROBINHOOD_TECH);
+    assert.equal(tech.etf, "XLK");
   });
 
-  test("the group move is market-cap weighted", () => {
-    const [group] = buildSectorGroups(["BIG", "SMALL"], {
-      BIG: q("Semis", 1, 900),
-      SMALL: q("Semis", 11, 100),
-    });
-    assert.ok(Math.abs(group.changePct - 2) < 1e-9); // (1*900 + 11*100) / 1000
-    assert.equal(group.up, 2);
-    assert.equal(group.down, 0);
+  test("before any quote arrives every card is drawn, with estimated sizes", () => {
+    const groups = buildMarketSectorGroups({});
+    assert.equal(groups[0].name, "Technology");
+    assert.equal(groups[0].tiles.length, 16);
+    assert.equal(groups[0].tiles[0].symbol, "NVDA");
+    assert.ok(groups[0].tiles.every((tile) => tile.estimatedCap && tile.changePct === null));
+    assert.equal(groups[0].changePct, null);
   });
 
-  test("unpriced tiles do not drag the group move toward zero", () => {
-    const [group] = buildSectorGroups(["A", "B"], {
-      A: q("Semis", 2, 100),
-      B: { industry: "Semis", marketCap: 100 },
-    });
-    assert.equal(group.changePct, 2);
+  test("the headline % is the sector ETF's move, not the tiles' average", () => {
+    const [tech] = buildMarketSectorGroups({ XLK: quote(1.25), NVDA: quote(3.17), AAPL: quote(-2.04) });
+    assert.equal(tech.changePct, 1.25);
+    assert.equal(tech.moveSource, "etf");
   });
 
-  test("tile area follows sqrt(cap) so a small name next to a mega-cap stays usable", () => {
-    const [group] = buildSectorGroups(["NVDA", "MU"], { NVDA: q("Semis", 1, 4.4e12), MU: q("Semis", 1, 1.4e11) });
-    const share = group.tiles[1].weight / (group.tiles[0].weight + group.tiles[1].weight);
-    assert.ok(share > 0.12, `MU share ${share}`);       // linear would be ~3%
-    assert.ok(group.tiles[0].weight > group.tiles[1].weight);
+  test("without an ETF quote the headline falls back to the cap-weighted tiles", () => {
+    const [tech] = buildMarketSectorGroups({ NVDA: quote(2, { marketCap: 300 }), AAPL: quote(-1, { marketCap: 100 }) });
+    assert.equal(tech.moveSource, "tiles");
+    assert.ok(Math.abs(tech.changePct - 1.25) < 1e-9); // (2*300 - 1*100) / 400
   });
 
-  test("a missing cap is sized as the group median and flagged as estimated", () => {
-    const [group] = buildSectorGroups(["A", "B", "C", "D"], {
-      A: q("Semis", 1, 100),
-      B: q("Semis", 1, 300),
-      C: q("Semis", 1, 500),
-      D: q("Semis", 1, null),
-    });
-    const d = group.tiles.find((tile) => tile.symbol === "D");
-    assert.equal(d.capWeight, 300);
-    assert.equal(d.weight, Math.sqrt(300));
-    assert.equal(d.estimatedCap, true);
-    assert.equal(group.tiles.find((tile) => tile.symbol === "A").estimatedCap, false);
+  test("a live market cap replaces the built-in estimate", () => {
+    const [tech] = buildMarketSectorGroups({ CSCO: quote(1, { marketCap: 9e12 }), NVDA: quote(1) });
+    assert.equal(tech.tiles[0].symbol, "CSCO");
+    assert.equal(tech.tiles[0].estimatedCap, false);
+    assert.equal(tech.tiles[0].weight, Math.sqrt(9e12));
   });
 
-  test("a group with no caps at all sorts below capped groups instead of above", () => {
-    const groups = buildSectorGroups(["SOXL", "TSLL", "NVTS"], {
-      SOXL: q("ETF-Lev", 6, null),
-      TSLL: q("ETF-Lev", 4, null),
-      NVTS: q("Semis", 2, 2e9),
-    }, { groupBy: "industry" });
-    assert.deepEqual(groups.map((group) => group.name), ["Semis", "ETF-Lev"]);
-    assert.ok(groups[1].tiles.every((tile) => tile.capWeight === 2e9));
+  test("once quotes arrive, a leader with no price is left out instead of drawn grey", () => {
+    const quotes = Object.fromEntries(ROBINHOOD_TECH.filter((symbol) => symbol !== "SKHY").map((symbol) => [symbol, quote(1)]));
+    const [tech] = buildMarketSectorGroups(quotes);
+    assert.equal(tech.tiles.length, 15);
+    assert.ok(!tech.tiles.some((tile) => tile.symbol === "SKHY"));
+    const [kept] = buildMarketSectorGroups(quotes, { hideUnquoted: false });
+    assert.equal(kept.tiles.length, 16);
   });
 
-  test("duplicate and blank watchlist entries are dropped, case-insensitively", () => {
-    const groups = buildSectorGroups(["nvda", "NVDA", " ", "", null, "NVDA "], { NVDA: q("Semis", 1, 1) }, { groupBy: "industry" });
-    const symbols = groups.flatMap((group) => group.tiles.map((tile) => tile.symbol));
-    assert.deepEqual(symbols, ["NVDA"]);
-  });
-});
-
-describe("broad sectors (Robinhood / TOS grouping)", () => {
-  test("sector mode is the default and folds industries into sectors", () => {
-    const groups = buildSectorGroups(["NVDA", "MSFT", "AAPL", "CSCO", "META", "JPM", "SOXL", "SPY"], {
-      NVDA: q("Semis", 3.17, 4.4e12),
-      MSFT: q("Software", 1.9, 3.8e12),
-      AAPL: q("Tech-HW", -2.04, 3.9e12),
-      CSCO: q("Networking", 0.5, 2.5e11),
-      META: q("Interactive Media", 2.76, 1.8e12),
-      JPM: q("Banks", 0.4, 7e11),
-      SOXL: q("ETF-Lev", 9, null),
-      SPY: q("Index ETF", 0.6, null),
-    });
-    assert.deepEqual(groups.map((group) => group.name), ["Technology", "Communication", "Financials", "ETFs"]);
-    assert.deepEqual(groups[0].tiles.map((tile) => tile.symbol).sort(), ["AAPL", "CSCO", "MSFT", "NVDA"]);
-    assert.equal(groups[0].tiles.find((tile) => tile.symbol === "NVDA").industry, "Semis");
-  });
-
-  test("industry mode keeps the trader's own buckets", () => {
-    const groups = buildSectorGroups(["NVDA", "MSFT"], { NVDA: q("Semis", 1, 2), MSFT: q("Software", 1, 1) }, { groupBy: "industry" });
-    assert.deepEqual(groups.map((group) => group.name), ["Semis", "Software"]);
-  });
-
-  test("every hand-map industry label lands in a sector", () => {
-    const source = readFileSync(new URL("../../momx/industries.py", import.meta.url), "utf8");
-    const table = source.slice(source.indexOf("INDUSTRY_SYMBOLS"), source.indexOf("INDUSTRY_MAP"));
-    const labels = [...table.matchAll(/^\s{4}"([^"]+)":\s*\(/gm)].map((match) => match[1]);
-    assert.ok(labels.length > 40, `parsed ${labels.length} labels`);
-    const unplaced = labels.filter((label) => !SECTORS.includes(sectorFor(label)));
-    assert.deepEqual(unplaced, []);
-  });
-
-  test("provider labels are placed exactly or by keyword; blanks are Other", () => {
-    assert.equal(sectorFor("Insurance"), "Financials");
-    assert.equal(sectorFor("Logistics & Transportation"), "Industrials");
-    assert.equal(sectorFor("Specialty Retail"), "Consumer Cyclical");
-    assert.equal(sectorFor("Medical Devices"), "Healthcare");
-    assert.equal(sectorFor(""), null);
-    assert.equal(sectorFor("Zzyzx"), null);
-    const [group] = buildSectorGroups(["ODD"], { ODD: q("Zzyzx", 1, 1) });
-    assert.equal(group.name, OTHER_GROUP);
+  test("tile area follows sqrt(cap), as on the Robinhood card", () => {
+    const [tech] = buildMarketSectorGroups({});
+    const nvda = tech.tiles.find((tile) => tile.symbol === "NVDA");
+    const csco = tech.tiles.find((tile) => tile.symbol === "CSCO");
+    assert.ok(Math.abs(nvda.weight / csco.weight - Math.sqrt(4400 / 250)) < 1e-9);
   });
 });
 

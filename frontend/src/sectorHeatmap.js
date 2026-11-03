@@ -1,94 +1,50 @@
-// Sector heatmap for the watchlist (trader ask, 2026-11-03: the Robinhood
-// "Sectors" card -- one card per industry, tiles sized by market cap, colored by
-// today's move). Everything here is pure so the panel's maths can be tested
-// without a browser: grouping, the cap-weighted group move, color buckets, and
-// the squarified treemap layout.
+// Sector heatmap, Robinhood "Sectors" style (trader ask, 2026-11-03): one card
+// per sector holding that sector's top stocks, tiles sized by market cap,
+// colored by today's move, headline % = the sector ETF. Everything here is pure
+// so the panel's maths can be tested without a browser: the cards, color
+// steps, and the two layouts (Robinhood rows, thinkorswim treemap).
 
-export const OTHER_GROUP = "Other";
-// The move at which a tile reaches its strongest color. Bigger moves do not get
-// "more green", they just stay solid -- the scale is about direction and size
-// at a glance, not a precise reading (the tooltip has that).
 // Read off the Robinhood card: AVGO +3.15% and META +2.76% are both the full
 // green, AAPL -2.04% is already the full orange.
 export const HEAT_CAP_PCT = 2.5;
 export const DOWN_CAP_PCT = 2;
 // Tiles shown in a collapsed card; the rest fold into one "+N" tile. The
-// Robinhood card shows about 16.
+// Robinhood card shows 16.
 export const COLLAPSED_TILE_LIMIT = 16;
 
-// Broad sectors, as Robinhood / thinkorswim show them (trader, 2026-11-03: "I
-// want same as robinhood or tos sector heat map"). Every label in the hand map
-// (momx/industries.py) and the Finnhub/FMP labels the lookup produces map to
-// one of these; the "Industries" switch still shows his own fine-grained
-// buckets. Order here is the fallback order for equal-sized sectors.
-export const SECTORS = [
-  "Technology", "Communication", "Consumer Cyclical", "Consumer Defensive",
-  "Financials", "Healthcare", "Industrials", "Energy", "Utilities",
-  "Materials", "Real Estate", "ETFs",
-];
+// The sector cards, Robinhood-style (trader, 2026-11-03: Robinhood shows "each
+// sector multiple tickers" -- every card is that sector's top stocks, not just
+// the watchlist). Each card: its name, the SPDR sector ETF whose move is the
+// card's headline %, and its ~16 largest names with an approximate market cap
+// in $B. The cap only sizes the tile until the real one arrives from the
+// market-cap cache (momx/industry_lookup.py); tile area is sqrt(cap) anyway,
+// so an estimate a few months stale changes nothing visible.
+//
+// Technology is exactly the card in the trader's Robinhood screenshot, which
+// (unlike GICS) counts GOOGL/GOOG, AMZN and META as tech; the other cards
+// therefore leave those names out so no ticker appears twice.
+export const SECTOR_CARDS = [
+  { name: "Technology", etf: "XLK", leaders: "NVDA:4400 AAPL:3900 MSFT:3800 GOOGL:2200 GOOG:2200 AMZN:2400 TSM:1200 META:1800 AVGO:1600 SKHY:500 MU:140 AMD:310 ASML:300 TCEHY:600 PLTR:420 CSCO:250" },
+  { name: "Financials", etf: "XLF", leaders: "JPM:820 V:680 MA:530 BAC:390 WFC:270 GS:240 MS:230 AXP:220 C:190 SCHW:170 BLK:170 SPGI:160 PGR:150 COF:140 HOOD:110 COIN:90" },
+  { name: "Healthcare", etf: "XLV", leaders: "LLY:900 JNJ:460 ABBV:390 UNH:300 ABT:230 MRK:230 TMO:200 ISRG:190 AMGN:170 BSX:150 PFE:145 GILD:140 SYK:140 DHR:140 VRTX:120 NVO:240" },
+  { name: "Consumer Cyclical", etf: "XLY", leaders: "TSLA:1400 HD:380 MCD:220 BKNG:170 TJX:150 LOW:140 SBUX:100 NKE:95 ABNB:80 ORLY:80 CMG:60 MAR:75 RCL:85 DASH:110 GM:60 F:45" },
+  { name: "Communication", etf: "XLC", leaders: "NFLX:510 TMUS:250 DIS:200 T:190 VZ:170 CMCSA:130 SPOT:130 RBLX:90 TTWO:45 EA:50 CHTR:50 WBD:40 RDDT:40 BIDU:35 LYV:33 TKO:30" },
+  { name: "Industrials", etf: "XLI", leaders: "GE:300 CAT:250 RTX:230 UBER:190 BA:170 HON:130 UNP:140 GEV:170 ETN:140 DE:130 LMT:110 ADP:120 PH:95 UPS:80 WM:90 NOC:85" },
+  { name: "Consumer Defensive", etf: "XLP", leaders: "WMT:830 COST:420 PG:360 KO:300 PM:250 PEP:200 MO:100 MDLZ:80 CL:70 TGT:45 KMB:40 KDP:45 MNST:65 KHC:30 GIS:30 HSY:35" },
+  { name: "Energy", etf: "XLE", leaders: "XOM:490 CVX:270 COP:120 EOG:65 WMB:70 KMI:60 EPD:70 SLB:50 ET:60 MPC:55 PSX:55 OXY:45 VLO:45 BKR:45 HAL:22 FANG:42" },
+  { name: "Utilities", etf: "XLU", leaders: "NEE:160 CEG:110 SO:100 DUK:95 VST:65 AEP:60 SRE:55 D:50 EXC:45 PCG:35 XEL:42 PEG:42 ED:36 ETR:38 WEC:35 NRG:30" },
+  { name: "Real Estate", etf: "XLRE", leaders: "PLD:105 WELL:110 AMT:95 EQIX:80 SPG:60 O:52 DLR:55 PSA:50 CCI:45 CBRE:48 VICI:35 EXR:30 IRM:30 AVB:30 EQR:26 VTR:32" },
+  { name: "Materials", etf: "XLB", leaders: "LIN:220 SHW:85 NEM:90 ECL:75 FCX:60 APD:65 CRH:70 CTVA:42 NUE:32 VMC:37 MLM:35 DD:32 PPG:26 DOW:18 IFF:20 ALB:10" },
+].map((card) => ({
+  ...card,
+  leaders: card.leaders.split(" ").map((pair) => {
+    const [symbol, capB] = pair.split(":");
+    return { symbol, cap: Number(capB) * 1e9 };
+  }),
+}));
 
-const SECTOR_LABELS = {
-  Technology: [
-    "Semis", "Software", "Networking", "Tech-HW", "AI-Infra", "IT Services",
-    "AI - Data Centers", "AI - Networking", "AI - Cloud", "Cybersecurity",
-    "Quantum", "Technology", "Semiconductors", "Communications",
-    "Electrical Equipment & Parts", "Computers",
-  ],
-  Communication: ["Interactive Media", "Entertainment", "Telecom", "Media", "Telecommunication", "Communication Services"],
-  "Consumer Cyclical": [
-    "Apparel", "Retail", "Autos", "E-Commerce", "Travel", "Restaurants", "EV",
-    "Auto-Tech", "Gaming", "Homebuilders", "Automobiles", "Auto Components",
-    "Hotels, Restaurants & Leisure", "Textiles, Apparel & Luxury Goods",
-    "Leisure Products", "Distributors", "Diversified Consumer Services",
-  ],
-  "Consumer Defensive": ["Beverages", "Food", "Consumer", "Tobacco", "Cannabis", "Food Products", "Consumer products"],
-  Financials: ["Banks", "Fintech", "Capital Markets", "Crypto", "Insurance", "Banking", "Financial Services"],
-  Healthcare: ["Biotech", "Pharma", "Healthcare", "Health Care", "Life Sciences Tools & Services", "Biotechnology", "Pharmaceuticals"],
-  Industrials: [
-    "Industrials", "Defense", "Airlines", "Transport", "Space", "Air Mobility",
-    "Drones", "Robotics", "Aerospace & Defense", "Machinery", "Electrical Equipment",
-    "Construction", "Building", "Logistics & Transportation", "Marine", "Road & Rail",
-    "Commercial Services & Supplies", "Professional Services",
-    "Trading Companies & Distributors", "Industrial Conglomerates",
-    "Transportation Infrastructure",
-  ],
-  Energy: ["Oil & Gas", "Uranium", "Energy", "Solar", "Clean Energy", "Nuclear", "Oil & Gas Services"],
-  Utilities: ["Utilities", "AI - Power"],
-  Materials: ["Metals", "Gold", "Chemicals", "Metals & Mining", "Packaging", "Paper & Forest"],
-  "Real Estate": ["Real Estate", "Real Estate Management & Development"],
-  ETFs: ["ETF-Lev", "Commodity ETF", "Index ETF", "ETF", "Fund", "Asset Management", "Exchange Traded Fund"],
-};
-
-const SECTOR_BY_LABEL = new Map(
-  Object.entries(SECTOR_LABELS).flatMap(([sector, labels]) => labels.map((label) => [label.toLowerCase(), sector])),
-);
-
-// Keyword fallback for provider labels not listed above, checked in order.
-const SECTOR_KEYWORDS = [
-  [/etf|fund|trust/, "ETFs"],
-  [/semi|software|tech|cyber|cloud|computer|electronic|internet/, "Technology"],
-  [/bank|financ|insur|capital|credit|crypto|asset|broker/, "Financials"],
-  [/pharma|bio|health|medic|drug|life science/, "Healthcare"],
-  [/oil|gas|energy|solar|coal|uranium|nuclear/, "Energy"],
-  [/utilit|power|electric util/, "Utilities"],
-  [/metal|mining|gold|silver|chemical|steel|material/, "Materials"],
-  [/real estate|reit|propert/, "Real Estate"],
-  [/media|telecom|entertain|communic|broadcast|publish/, "Communication"],
-  [/retail|apparel|auto|restaurant|hotel|leisure|travel|home|consumer cyclical|e-commerce/, "Consumer Cyclical"],
-  [/food|beverage|tobacco|household|grocer|consumer/, "Consumer Defensive"],
-  [/aero|defen|airline|transport|machin|industrial|construct|logistic|rail|marine|building/, "Industrials"],
-];
-
-// The broad sector for an industry label, or null when it cannot be placed.
-export function sectorFor(industry) {
-  const label = String(industry || "").trim();
-  if (!label) return null;
-  const exact = SECTOR_BY_LABEL.get(label.toLowerCase());
-  if (exact) return exact;
-  const lower = label.toLowerCase();
-  const hit = SECTOR_KEYWORDS.find(([pattern]) => pattern.test(lower));
-  return hit ? hit[1] : null;
-}
+// Every symbol the panel needs quoted: all leaders plus the sector ETFs.
+export const SECTOR_SYMBOLS = [...new Set(SECTOR_CARDS.flatMap((card) => [...card.leaders.map((leader) => leader.symbol), card.etf]))];
 
 const finite = (value) => {
   if (value === null || value === undefined || value === "") return null;
@@ -107,77 +63,53 @@ function median(values) {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-// symbols: the watchlist, in order. quotes: { SYMBOL: row } from
-// /api/watchlist-quotes?profile=1 (changePct, lastPrice, change, industry,
-// marketCap). groupBy: "sector" (broad, Robinhood/TOS style; default) or
-// "industry" (the trader's own labels). Returns cards biggest-first with
-// "Other" last.
-export function buildSectorGroups(symbols, quotes = {}, { groupBy = "sector" } = {}) {
-  const seen = new Set();
-  const byName = new Map();
-  for (const raw of Array.isArray(symbols) ? symbols : []) {
-    const symbol = String(raw || "").trim().toUpperCase();
-    if (!symbol || seen.has(symbol)) continue;
-    seen.add(symbol);
-    const quote = quotes?.[symbol] || {};
-    const industry = String(quote.industry || "").trim();
-    const name = (groupBy === "industry" ? industry : sectorFor(industry)) || OTHER_GROUP;
-    if (!byName.has(name)) byName.set(name, []);
-    byName.get(name).push({
-      symbol,
-      industry: industry || null,
-      changePct: finite(quote.changePct),
-      change: finite(quote.change),
-      lastPrice: finite(quote.lastPrice),
-      marketCap: positive(quote.marketCap),
-    });
-  }
-
-  // A tile with no known cap takes its group's median. A group with no caps at
-  // all (leveraged ETFs, mostly) takes the smallest cap on the whole board, so
-  // it is drawn evenly and sorts low instead of pretending to be mega-cap.
-  const allCaps = [...byName.values()].flat().map((tile) => tile.marketCap).filter((cap) => cap !== null);
-  const boardFloor = allCaps.length ? Math.min(...allCaps) : 1;
-
-  const groups = [...byName.entries()].map(([name, members]) => {
-    const groupMedian = median(members.map((tile) => tile.marketCap).filter((cap) => cap !== null));
-    const fallback = groupMedian ?? boardFloor;
-    const tiles = members
-      .map((tile) => {
-        const capWeight = tile.marketCap ?? fallback;
-        // Tile AREA follows the square root of the cap. Linear area made a
-        // $140B name a 3px sliver next to NVDA's $4T -- unreadable and
-        // unclickable. sqrt keeps the order and the "big names dominate" read
-        // (as the Robinhood card does) while every tile stays usable.
-        return { ...tile, capWeight, weight: Math.sqrt(capWeight), estimatedCap: tile.marketCap === null };
+// quotes: { SYMBOL: row } from /api/watchlist-quotes?profile=1 (lastPrice,
+// change, changePct, marketCap). Returns the cards in Robinhood's order.
+//
+// hideUnquoted: once quotes have arrived, a leader the quote feed has no price
+// for (a new listing, an OTC ADR) is left out instead of drawn as a dead grey
+// tile. Before the first response everything is shown, grey.
+export function buildMarketSectorGroups(quotes = {}, { hideUnquoted = true, cards = SECTOR_CARDS } = {}) {
+  const loaded = Object.keys(quotes || {}).length > 0;
+  return cards.map((card) => {
+    const tiles = card.leaders
+      .map(({ symbol, cap }) => {
+        const quote = quotes?.[symbol] || {};
+        const liveCap = positive(quote.marketCap);
+        const capWeight = liveCap ?? cap;
+        return {
+          symbol,
+          changePct: finite(quote.changePct),
+          change: finite(quote.change),
+          lastPrice: finite(quote.lastPrice),
+          marketCap: capWeight,
+          estimatedCap: liveCap === null,
+          capWeight,
+          // Tile AREA follows sqrt(cap), as the Robinhood card visibly does
+          // (MSFT and GOOGL are far closer in size than their caps).
+          weight: Math.sqrt(capWeight),
+        };
       })
+      .filter((tile) => !(hideUnquoted && loaded && tile.lastPrice === null))
       .sort((left, right) => right.weight - left.weight || left.symbol.localeCompare(right.symbol));
+
     const priced = tiles.filter((tile) => tile.changePct !== null);
-    // The group move is TRUE market-cap weighted (not sqrt): it should read
-    // like an index of the group.
     const pricedWeight = priced.reduce((sum, tile) => sum + tile.capWeight, 0);
-    const changePct = pricedWeight > 0
+    const tilesMove = pricedWeight > 0
       ? priced.reduce((sum, tile) => sum + tile.changePct * tile.capWeight, 0) / pricedWeight
       : null;
+    // Headline % = the sector ETF's move today (the whole sector, as Robinhood
+    // shows it); the cap-weighted move of the tiles only if the ETF has no quote.
+    const etfMove = finite(quotes?.[card.etf]?.changePct);
     return {
-      name,
+      name: card.name,
+      etf: card.etf,
       tiles,
-      totalWeight: tiles.reduce((sum, tile) => sum + tile.capWeight, 0),
-      // Sort key: only REAL caps count, so a few capless ETFs sized at the
-      // board floor can never outrank a group of actual companies.
-      knownCap: tiles.reduce((sum, tile) => sum + (tile.marketCap ?? 0), 0),
-      changePct,
+      changePct: etfMove ?? tilesMove,
+      moveSource: etfMove !== null ? "etf" : tilesMove !== null ? "tiles" : "none",
       up: priced.filter((tile) => tile.changePct > 0).length,
       down: priced.filter((tile) => tile.changePct < 0).length,
     };
-  });
-
-  return groups.sort((left, right) => {
-    if (left.name === OTHER_GROUP) return 1;
-    if (right.name === OTHER_GROUP) return -1;
-    return right.knownCap - left.knownCap
-      || right.totalWeight - left.totalWeight
-      || left.name.localeCompare(right.name);
   });
 }
 

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, X } from "lucide-react";
 
 import {
-  buildSectorGroups,
+  SECTOR_SYMBOLS,
+  buildMarketSectorGroups,
   cardHeight,
   formatMarketCap,
   formatSignedPct,
@@ -21,20 +22,15 @@ const STYLES = {
   rh: { label: "Robinhood", short: "RH", gap: 3 },
   tos: { label: "thinkorswim", short: "TOS", gap: 1 },
 };
-const GROUPINGS = {
-  sector: { label: "Sectors", title: "Broad sectors, as Robinhood and thinkorswim group them" },
-  industry: { label: "Industries", title: "Your own industry buckets (Semis, Software, ETF-Lev...)" },
-};
+// One request for every card's leaders plus the sector ETFs.
+const SYMBOL_QUERY = encodeURIComponent(SECTOR_SYMBOLS.join(","));
 
 function readPrefs() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(PREFS_KEY) || "{}");
-    return {
-      style: STYLES[parsed?.style] ? parsed.style : "rh",
-      groupBy: GROUPINGS[parsed?.groupBy] ? parsed.groupBy : "sector",
-    };
+    return { style: STYLES[parsed?.style] ? parsed.style : "rh" };
   } catch {
-    return { style: "rh", groupBy: "sector" };
+    return { style: "rh" };
   }
 }
 
@@ -45,8 +41,7 @@ function tileTitle(tile) {
     tile.lastPrice !== null ? `Last ${tile.lastPrice.toFixed(2)}` : null,
     tile.change !== null ? `Chg ${tile.change > 0 ? "+" : ""}${tile.change.toFixed(2)}` : null,
     `Chg% ${formatSignedPct(tile.changePct)}`,
-    tile.industry ? `Industry ${tile.industry}` : null,
-    `Mkt cap ${tile.estimatedCap ? "unknown (sized as group median)" : formatMarketCap(tile.marketCap)}`,
+    `Mkt cap ${formatMarketCap(tile.marketCap)}${tile.estimatedCap ? " (approx.)" : ""}`,
   ];
   return parts.filter(Boolean).join("\n");
 }
@@ -104,9 +99,14 @@ function SectorCard({ group, gap, style, activeSymbol, expanded, onToggle, onSel
           <ChevronRight size={16} strokeWidth={2.5} aria-hidden="true" />
           {style === "rh" ? null : <small>{group.tiles.length}</small>}
         </button>
-        <span className={`sector-heatmap-card-move is-${groupHeat.tone}`} title={`${group.up} up · ${group.down} down (market-cap weighted move)`}>
+        <span
+          className={`sector-heatmap-card-move is-${groupHeat.tone}`}
+          title={group.moveSource === "etf"
+            ? `${group.etf} (sector ETF) today · ${group.up} up / ${group.down} down below`
+            : `Weighted move of the names below (${group.etf} has no quote yet)`}
+        >
           {groupHeat.tone === "up" ? "▲ " : groupHeat.tone === "down" ? "▼ " : ""}
-          {formatSignedPct(group.changePct).replace(/^[+-]/, "")}
+          {group.changePct === null ? "--" : formatSignedPct(group.changePct).replace(/^[+-]/, "")}
         </span>
       </header>
       <div className="sector-heatmap-tiles" ref={tilesRef} style={{ height }}>
@@ -145,9 +145,8 @@ function SectorCard({ group, gap, style, activeSymbol, expanded, onToggle, onSel
   );
 }
 
-export default function SectorHeatmapPanel({ symbols, activeSymbol, onSelect, onClose }) {
+export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose }) {
   const [quotes, setQuotes] = useState({});
-  const [loaded, setLoaded] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [prefs, setPrefs] = useState(readPrefs);
   const updatePrefs = (patch) => setPrefs((current) => {
@@ -156,22 +155,17 @@ export default function SectorHeatmapPanel({ symbols, activeSymbol, onSelect, on
     return next;
   });
   const styleSpec = STYLES[prefs.style];
-  const symbolKey = symbols.join(",");
-
   useEffect(() => {
-    if (!symbolKey) {
-      setQuotes({});
-      setLoaded(true);
-      return undefined;
-    }
     let cancelled = false;
     const load = async () => {
       try {
-        const response = await fetch(`/api/watchlist-quotes?profile=1&symbols=${encodeURIComponent(symbolKey)}`);
+        const response = await fetch(`/api/watchlist-quotes?profile=1&symbols=${SYMBOL_QUERY}`);
         const payload = await response.json();
         if (cancelled || !response.ok || !Array.isArray(payload?.rows)) return;
+        // Keep the map empty until at least one price arrives, so an all-null
+        // answer (feed down) does not hide every tile as "unquoted".
+        if (!payload.rows.some((row) => row?.lastPrice !== null && row?.lastPrice !== undefined)) return;
         setQuotes(Object.fromEntries(payload.rows.map((row) => [String(row?.symbol || "").toUpperCase(), row])));
-        setLoaded(true);
       } catch {
         // Keep the last map on transient fetch failures.
       }
@@ -182,27 +176,15 @@ export default function SectorHeatmapPanel({ symbols, activeSymbol, onSelect, on
       cancelled = true;
       clearInterval(timer);
     };
-  }, [symbolKey]);
+  }, []);
 
-  // symbolKey, not symbols: the parent rebuilds the array on every render.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const groups = useMemo(
-    () => buildSectorGroups(symbolKey ? symbolKey.split(",") : [], quotes, { groupBy: prefs.groupBy }),
-    [symbolKey, quotes, prefs.groupBy],
-  );
+  const groups = useMemo(() => buildMarketSectorGroups(quotes), [quotes]);
 
   return (
     <section className={`charts-oi-chain-dock-panel sector-heatmap-panel is-style-${prefs.style}`} aria-label="Sector panel">
       <header>
-        <b>SECTOR</b>
-        <small>{groups.length} · {symbols.length}</small>
-        <span className="sector-heatmap-switch" role="group" aria-label="Group tiles by">
-          {Object.entries(GROUPINGS).map(([key, spec]) => (
-            <button key={key} type="button" aria-pressed={prefs.groupBy === key} title={spec.title} onClick={() => updatePrefs({ groupBy: key })}>
-              {spec.label}
-            </button>
-          ))}
-        </span>
+        <b>SECTORS</b>
+        <small>{groups.length} sectors · top stocks</small>
         <span className="sector-heatmap-switch" role="group" aria-label="Heatmap style">
           {Object.entries(STYLES).map(([key, spec]) => (
             <button key={key} type="button" aria-pressed={prefs.style === key} title={`${spec.label} look`} onClick={() => updatePrefs({ style: key })}>
@@ -213,24 +195,18 @@ export default function SectorHeatmapPanel({ symbols, activeSymbol, onSelect, on
         <button type="button" onClick={onClose} title="Remove sector panel" aria-label="Remove sector panel"><X size={13} /></button>
       </header>
       <div className="sector-heatmap-body">
-        {!symbols.length ? (
-          <span className="charts-oi-chain-dock-empty">Add tickers to your watchlist to see the sector map.</span>
-        ) : !loaded ? (
-          <span className="charts-oi-chain-dock-empty">Loading sector map…</span>
-        ) : (
-          groups.map((group) => (
-            <SectorCard
-              key={group.name}
-              group={group}
-              gap={styleSpec.gap}
-              style={prefs.style}
-              activeSymbol={activeSymbol}
-              expanded={Boolean(expanded[group.name])}
-              onToggle={() => setExpanded((current) => ({ ...current, [group.name]: !current[group.name] }))}
-              onSelect={onSelect}
-            />
-          ))
-        )}
+        {groups.map((group) => (
+          <SectorCard
+            key={group.name}
+            group={group}
+            gap={styleSpec.gap}
+            style={prefs.style}
+            activeSymbol={activeSymbol}
+            expanded={Boolean(expanded[group.name])}
+            onToggle={() => setExpanded((current) => ({ ...current, [group.name]: !current[group.name] }))}
+            onSelect={onSelect}
+          />
+        ))}
       </div>
     </section>
   );
