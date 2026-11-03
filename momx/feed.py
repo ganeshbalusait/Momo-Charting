@@ -1065,6 +1065,7 @@ def _extend_with_stream(frame: pd.DataFrame, symbol: str, span_minutes: int) -> 
     if checked < STREAM_VERIFY_BUCKETS:
         return frame
     newer = sorted(key for key in buckets if key >= last_rest)
+    truncated = False
     dead = _stream_dead()
     if dead and newer:
         import bisect
@@ -1072,7 +1073,13 @@ def _extend_with_stream(frame: pd.DataFrame, symbol: str, span_minutes: int) -> 
         lo = bisect.bisect_left(dead, newer[0])
         if lo < len(dead):
             first_dead = dead[lo]       # keep only buckets that end before it
-            newer = [key for key in newer if key + span <= first_dead]
+            kept = [key for key in newer if key + span <= first_dead]
+            # Stopped short by a dead minute (an api_server restart's hole):
+            # NOT "kept fresh by the stream". Marking it extended demoted the
+            # symbol's REST refetch for TOS_STREAMED_REFETCH_SECONDS, so Mag7
+            # sat on the 10:10 bar until ~10:42 (2026-11-03).
+            truncated = len(kept) < len(newer)
+            newer = kept
     if not newer:
         return frame
     tz = frame["timestamp"].iloc[-1].tzinfo
@@ -1083,7 +1090,8 @@ def _extend_with_stream(frame: pd.DataFrame, symbol: str, span_minutes: int) -> 
         "volume": [buckets[key][4] for key in newer], "feed": STREAM_FEED_MARK,
     })
     body = frame.iloc[:-1] if newer[0] == last_rest else frame
-    _STREAM_EXTENDED[(symbol, int(span_minutes))] = _wall_clock()
+    if not truncated:
+        _STREAM_EXTENDED[(symbol, int(span_minutes))] = _wall_clock()
     return pd.concat([body, tail], ignore_index=True)
 
 

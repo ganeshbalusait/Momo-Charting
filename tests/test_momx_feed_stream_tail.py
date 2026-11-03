@@ -96,9 +96,14 @@ def test_appending_stops_before_a_dead_minute(stream_file):
     frame = rest_frame([(0, vol[0]), (1, vol[1]), (2, vol[2]), (3, vol[3]), (4, 10.0)])
     minutes = [m for m in minutes_for(vol, range(8)) if m["time"] != BASE + 6 * 300 + 120]
     stream_file({"AAA": minutes, "BBB": [m for m in minutes if m["time"] >= BASE + 4 * 300]})
+    feed._STREAM_EXTENDED.pop(("AAA", 5), None)
     out = feed._extend_with_stream(frame, "AAA", 5)
     stamps = [int(t.timestamp()) - BASE for t in out["timestamp"]]
     assert stamps == [0, 300, 600, 900, 1200, 1500]                  # bucket 6 holds the hole
+    # Stopped short by the hole: NOT "kept fresh by the stream", or the
+    # symbol's REST refetch is demoted for 30 min (Mag7 on 10:10 until ~10:42,
+    # 2026-11-03).
+    assert ("AAA", 5) not in feed._STREAM_EXTENDED
 
 
 def test_too_little_overlap_or_no_stream_keeps_the_rest_tape(stream_file):
