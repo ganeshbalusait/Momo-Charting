@@ -1024,6 +1024,28 @@ def _record_overnight_backfill(target, interval, gaps, fill, error: str) -> None
         pass
 
 
+def _with_sector_profiles(rows: list[dict], symbols: list[str]) -> list[dict]:
+    """Watchlist quote rows plus ``industry`` and ``marketCap`` (Sector panel).
+
+    Cache-only: never a provider call on the request path. Missing caps are
+    filled by one budgeted pass on a daemon thread (momx.industry_lookup), so
+    later polls pick them up. Returns new dicts -- the shared 5s quote cache is
+    never mutated. Any failure returns the rows unchanged.
+    """
+    try:
+        from momx import industry_lookup
+
+        profiles = industry_lookup.cached_profiles(symbols)
+        out = [
+            {**row, **profiles.get(str(row.get("symbol") or "").upper(), {"industry": None, "marketCap": None})}
+            for row in rows
+        ]
+        industry_lookup.schedule_market_cap_fill(symbols)
+        return out
+    except Exception:
+        return rows
+
+
 class DashboardState:
     # The warmer used to yield to an active session for only 25s and then
     # build regardless. One full build is CPU-heavy enough to starve request
@@ -23559,6 +23581,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                         if len(cache) > 12:
                             for stale in sorted(cache, key=lambda key: cache[key][0])[:-12]:
                                 cache.pop(stale, None)
+                # Sector heatmap panel (profile=1): add industry + market cap
+                # from the industry cache. Read-only here -- any missing caps
+                # are filled by one small budgeted pass on a daemon thread, so
+                # this 8s poll never waits on Finnhub.
+                if symbols and str(query.get("profile", [""])[0]).strip() in {"1", "true"}:
+                    rows = _with_sector_profiles(rows, symbols)
                 self._send_json(HTTPStatus.OK, {"rows": rows})
                 return
             if parsed.path == "/api/live-chart-quotes":
