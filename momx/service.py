@@ -512,6 +512,7 @@ _BEAR_OPTION_TRACK = option_track.OptionTrackBook(grade_dir("bear"), direction="
 from momx import jev_scanner as _jev_scanner_mod
 _JEV_SCANNER = _jev_scanner_mod.JevScannerBook(grade_dir())
 from momx import ai_filter  # noqa: E402 - the Setup column AI tag (2026-10-17)
+from momx import similar_record  # noqa: E402 - the Record column's overall win % (2026-11-02)
 _BEAR_JEV_SCANNER = _jev_scanner_mod.JevScannerBook(grade_dir("bear"), direction="bear")
 # Jev also reads the other side's chart arrows (PUT2H on a call ticker and the reverse).
 from momx import jev_trade as _jev_trade_mod
@@ -995,6 +996,8 @@ def _build_once(name: str) -> float:
         _OPTION_TRACK.apply(name, payload, stamped_at)
     # The shadow AI's best score per ticker -> the Setup column's AI tag (2026-10-17).
     ai_filter.mark_rows(payload, "bull")
+    # The Record column's overall win %: how similar-looking past trades did (2026-11-02).
+    similar_record.apply(payload, "bull")
     # The BEAR board (spec 2026-09-24): the same rows with the bear verdicts
     # promoted, its own books, its own matched-since, published together with
     # the bull board so a reader never sees one without the other. The bull
@@ -1014,6 +1017,7 @@ def _build_once(name: str) -> float:
         _BEAR_JEV_SCANNER.apply(name, bear, stamped_at)
         _BEAR_OPTION_TRACK.apply(name, bear, stamped_at)
     ai_filter.mark_rows(bear, "bear")
+    similar_record.apply(bear, "bear")
     payload["scanStartedAt"] = scan_started_at
     payload["scanCompletedAt"] = datetime.now(timezone.utc).isoformat()
     bear["scanStartedAt"] = payload["scanStartedAt"]

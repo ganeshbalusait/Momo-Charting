@@ -289,3 +289,15 @@ test("chart squeeze flames show in the Setup column: one pill per candle, one ca
   assert.equal(f.chartSqueezeTags(gone, at("09:31"))[0].text, "🔥2h 09:00 ✕09:20");
   assert.equal(f.filterRows([gone], { setup: "tagChartSqz" }, at("09:31")).length, 0);
 });
+
+test("Record column leads with the OVERALL similar-trades win % and its reliability", async () => {
+  const f = await import("./momxFilters.js");
+  const row = { symbol: "Z", direction: "bull", similarRecord: { winPct: 58, k: 100, base: 42.8, inputs: 16, of: 59,
+    trades: 20000, from: "2026-10-05", through: "2026-10-30", check: { auc: 0.513, days: 3, topFifthWin: 39, allWin: 38.4 } } };
+  const rec = f.recordCell(row);
+  assert.equal(rec.text, "Overall 58%");
+  assert.equal(rec.detail, "100 similar · all 42.8% · unproven");
+  assert.equal(rec.tone, "few");
+  assert.match(rec.title, /no better than a coin flip/);
+  assert.equal(f.recordCell({ symbol: "Q" }), null);
+});

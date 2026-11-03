@@ -2328,8 +2328,42 @@ export function tagRecordRule(tag, row) {
   return null;
 }
 
+/** The OVERALL Record (2026-11-02, "overall win percentage, not each rule"): how
+ * the K most similar past trades did - chart levels, indicators, Level 1-3 and
+ * Setup at entry (momx/similar_record.py). Shown with the all-trades base rate
+ * and its held-out reliability, so a high number is never read as a sure thing. */
+export function overallRecord(row) {
+  const s = row && row.similarRecord;
+  if (!s || !Number.isFinite(s.winPct)) return null;
+  const check = s.check || null;
+  const auc = check && Number.isFinite(check.auc) ? check.auc : null;
+  const reliable = auc !== null && auc >= 0.55;
+  const verdict = auc === null ? "not yet tested on unseen days"
+    : auc < 0.53 ? `held-out test ${auc.toFixed(2)} - no better than a coin flip so far`
+    : auc < 0.55 ? `held-out test ${auc.toFixed(2)} - only slightly better than a coin flip`
+    : `held-out test ${auc.toFixed(2)} - better than chance on unseen days`;
+  const lines = [
+    `OVERALL: ${s.winPct}% of the ${s.k} most similar past trades won (all trades: ${s.base}%).`,
+    `Similar = closest entry-time picture across ${s.inputs} of ${s.of} recorded inputs (RVOL, Skittles, squeeze, ADX, high/low, grade, sector; Level 1-3, Setup and chart levels once recorded).`,
+    `From ${s.trades} recorded virtual trades, ${s.from} to ${s.through}. Reliability: ${verdict}.`,
+    check && check.topFifthWin != null ? `On the ${check.days} newest unseen days, the top fifth of setups won ${check.topFifthWin}% vs ${check.allWin}% for all.` : "",
+  ].filter(Boolean);
+  return { winPct: s.winPct, base: s.base, k: s.k, reliable, lines };
+}
+
 /** {best, lines} for the Record cell, or null when nothing on the row has a record. */
 export function recordCell(row, nowMs = Date.now()) {
+  const overall = overallRecord(row);
+  const perRule = recordCellPerRule(row, nowMs);
+  if (!overall) return perRule;
+  const text = `Overall ${overall.winPct}%`;
+  const detail = `${overall.k} similar · all ${overall.base}%${overall.reliable ? "" : " · unproven"}`;
+  const lines = [...overall.lines, ...(perRule && perRule.lines ? ["", "PER RULE:", ...perRule.lines] : [])];
+  return { ...(perRule || {}), text, detail, overall, lines, title: lines.join("\n"),
+    tone: !overall.reliable ? "few" : overall.winPct > overall.base ? "ok" : "bad", best: null };
+}
+
+function recordCellPerRule(row, nowMs = Date.now()) {
   if (!row || !RULE_RECORD) return null;
   if (RULE_RECORD.version !== 2) return { text: "History pending", tone: "few", lines: ["Waiting for quote-checked history. Older unchecked totals are not displayed."], title: "History not verified", detail: "No verified totals yet" };
   if (Number(RULE_RECORD.asOf) * 1000 > nowMs + 1000) return { text: "History unavailable", tone: "few", lines: ["Today's record cannot be used as evidence for an earlier scanner snapshot."], title: "No record saved as of this snapshot", detail: "No future results" };

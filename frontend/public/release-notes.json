@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-02T21:15:00-05:00",
+      "heading": "Record column: one overall win %",
+      "items": [
+        "The Record column now leads with one overall win %: of the 100 past trades whose picture looked most like this row (RVOL, Skittles, squeeze, ADX, high/low, grade, sector), how many won. The all-trades rate sits beside it. Tap for the per-rule figures.",
+        "It is marked \"unproven\": tested on the 3 newest days it had not seen, it was no better than a coin flip for calls and only slightly better for puts. Treat it as context, not a signal.",
+        "Level 1-3, Setup tags and chart levels only started being saved with trades today, so they join the overall % automatically as those trades build up."
+      ]
+    },
+    {
       "at": "2026-11-02T20:00:00-05:00",
       "heading": "AI agents run 24/7; five new agents; Record shows every win %",
       "items": [
