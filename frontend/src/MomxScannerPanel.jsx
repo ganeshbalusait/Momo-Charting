@@ -189,6 +189,7 @@ import {
   optionsGateNote,
   typedOptionsSentence,
 } from "./momxCells.js";
+import { spreadCell, spreadMapFrom, spreadSortValue } from "./momxSpread.js";
 import {
   MOMX_HISTORY_DEFAULT_SORT,
   MOMX_HISTORY_RETENTION_DAYS,
@@ -412,6 +413,11 @@ const MOMX_COLUMNS = [
   // so saved column layouts keep it where it was.
   { key: "jev", label: "Record", kind: "jev", sortable: true },
   { key: "event", label: "Event", kind: "event", sortable: true },
+  // Spread (2026-11-03, his ask "which tickers have wide option spread - mid
+  // won't fill"): median bid/ask spread of the contracts he trades, as % of
+  // mid, coloured Tight / OK / Wide / Avoid. Read by option_spreads.py on the
+  // server; blank until a ticker has a reading. Hover = $ spread + advice.
+  { key: "spread", label: "Spread", kind: "spread", sortable: true },
 
   // CHART / 1D: the day's shape, as its own column.
   { key: "sparkline", label: "1D", group: "CHART", kind: "chart", sortable: false },
@@ -495,6 +501,21 @@ const AUTO_CARDS_SEEN_KEY = "momx-auto-cards-seen-v1";
 // and the History rows can read it; the panel refreshes it and passes each
 // live row its own entry as a prop, so the row memo still holds.
 let EARNINGS_BY_SYMBOL = new Map();
+// SYMBOL -> option spread reading (/api/option-spreads, momxSpread.js). Same
+// arrangement as the earnings map: module-level for the sort, passed to each
+// live row as a prop so the row memo still holds.
+let SPREAD_BY_SYMBOL = new Map();
+
+function spreadTd(column, entry, className) {
+  const cell = spreadCell(entry);
+  const tone = cell ? " is-" + cell.cls.toLowerCase() + (cell.stale ? " is-stale" : "") : "";
+  return (
+    <td key={column.key} data-col={column.key} className={className + " momx-spreadcol" + tone}
+      title={cell ? cell.title : "No option spread reading yet (read 10:00-15:30 ET)."}>
+      {cell ? cell.text : ""}
+    </td>
+  );
+}
 
 // The Jev score cell (2026-10-02), shared by the live board and the History table.
 function jevScoreTd(column, row, className, asOfMs = undefined) {
@@ -876,6 +897,9 @@ function columnSortValue(row, column, newsMode) {
   if (column.kind === "event") {
     const e = EARNINGS_BY_SYMBOL.get(row.symbol);
     return e ? -e.daysUntil : null;
+  }
+  if (column.kind === "spread") {
+    return spreadSortValue(SPREAD_BY_SYMBOL.get(row.symbol));
   }
   if (column.kind === "jev") {
     const rec = recordCell(row);
@@ -2645,7 +2669,7 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefi
   return null;
 }
 
-const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, bolt, sourceWarning }) {
+const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, spread, bolt, sourceWarning }) {
   const passed = Boolean(row && row.scanPass);
   // Use the same session change as the scanner, filters and sorting. A live
   // after-hours last is not the regular-session close used by this percentage;
@@ -2688,6 +2712,9 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
         }
         if (column.kind === "jev") {
           return jevScoreTd(column, row, "momx-cell");
+        }
+        if (column.kind === "spread") {
+          return spreadTd(column, spread, "momx-cell");
         }
         if (column.kind === "news" || column.kind === "event") {
           return newsEventCell(column, row, earnings, "momx-cell", undefined,
@@ -3056,6 +3083,9 @@ const MomxHistoryRow = memo(function MomxHistoryRow({ entry, newsTime, onOpenSna
         }
         if (column.kind === "jev") {
           return jevScoreTd(column, row, base, Number(entry.atMs) || undefined);
+        }
+        if (column.kind === "spread") {
+          return spreadTd(column, SPREAD_BY_SYMBOL.get(row.symbol), base);
         }
         if (column.kind === "news" || column.kind === "event") {
           // News age as of the snapshot, like the badge; Event = today's calendar.
@@ -4523,6 +4553,41 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       clearInterval(timer);
     };
   }, []);
+  // Spread column: the server's book, every 5 minutes (it reads a ticker at
+  // most every 90 min, so this is plenty). An entry whose reading has not
+  // changed keeps its OBJECT so only rows with a new reading re-render; a
+  // failed or empty fetch keeps the last map.
+  const [spreadMap, setSpreadMap] = useState(SPREAD_BY_SYMBOL);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch("/api/option-spreads")
+        .then((response) => (response.ok ? response.json() : null))
+        .then((payload) => {
+          if (!alive || !payload) return;
+          const fresh = spreadMapFrom(payload);
+          if (fresh.size === 0 && SPREAD_BY_SYMBOL.size > 0) return;
+          let changed = fresh.size !== SPREAD_BY_SYMBOL.size;
+          const next = new Map();
+          fresh.forEach((entry, symbol) => {
+            const prev = SPREAD_BY_SYMBOL.get(symbol);
+            const same = prev && prev.asOf === entry.asOf && prev.pct === entry.pct && prev.class === entry.class;
+            if (!same) changed = true;
+            next.set(symbol, same ? prev : entry);
+          });
+          if (!changed) return;
+          SPREAD_BY_SYMBOL = next;
+          setSpreadMap(next);
+        })
+        .catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, 5 * 60 * 1000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
   // The clock the age buckets read. Bumped by the momentum poll (not by a
   // dedicated timer) so a chip's fade and a row's NEW flash expire even when
   // the payload itself stops changing.
@@ -5962,7 +6027,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     return ranks.size ? out.map((row) => (row && ranks.has(row.symbol) ? { ...row, bestRank: ranks.get(row.symbol) } : row)) : out;
   }, [
     allRows, baseRows, selectedIndustries, sort.key, sort.direction, focusSymbol, boltView, liveBolts, liveHl, hlSort,
-    newsOnly, filtersActive, filters, earningsMap, liveQuotesBySymbol, bear,
+    newsOnly, filtersActive, filters, earningsMap, spreadMap, liveQuotesBySymbol, bear,
   ]);
 
   // Lease the actual top rows the trader sees after H/L sorting/filtering,
@@ -7302,6 +7367,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                     newsTime={newsOnly}
                     starred={starredSymbols.has(row && row.symbol)}
                     earnings={earningsMap.get(row && row.symbol) || null}
+                    spread={spreadMap.get(row && row.symbol) || null}
                     bolt={bear || scannerRowFreshness(row, rowClockMs) ? null : liveBolts[row && row.symbol] || null}
                   />
                 );

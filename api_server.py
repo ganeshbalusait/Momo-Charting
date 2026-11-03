@@ -83,6 +83,7 @@ from database.repository import TradingRepository
 from email_service import send_user_invite
 from execution.alpaca_paper_trader import AlpacaPaperTrader
 from indicators import ema
+import option_spreads
 from learning_engine import TradingLearningAgent
 from premarket_scanner import (
     PREMARKET_SCAN_SYMBOLS,
@@ -11476,6 +11477,122 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             name="momx-board-prewarm",
             daemon=True,
         ).start()
+        # Sixth: the MomX board's Spread column (option_spreads.py). One small
+        # chain per watchlist ticker, 10:00-15:30 ET, 20 s apart, yielding to
+        # the trader exactly like the warmers above.
+        if option_spreads.enabled():
+            threading.Thread(
+                target=self._option_spread_sweep_loop,
+                name="option-spread-sweep",
+                daemon=True,
+            ).start()
+
+    # ------------------------------------------------------------------
+    # Option spread per watchlist ticker (MomX board Spread column)
+    # ------------------------------------------------------------------
+
+    def _option_spread_book(self) -> "option_spreads.SpreadBook":
+        book = getattr(self, "_option_spread_book_obj", None)
+        if book is None:
+            book = self._option_spread_book_obj = option_spreads.SpreadBook()
+        return book
+
+    def _option_spread_status(self) -> "option_spreads.SweepStatus":
+        status = getattr(self, "_option_spread_status_obj", None)
+        if status is None:
+            status = self._option_spread_status_obj = option_spreads.SweepStatus()
+        return status
+
+    @staticmethod
+    def _option_spread_watchlist() -> list[str]:
+        """The master watchlist as the board names it - NOT through
+        _normalize_option_watchlist, whose underlying map would read an ETF's
+        parent chain and print that spread on the ETF's row."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for raw in settings.scanner.default_universe or []:
+            symbol = str(raw or "").strip().upper()
+            if symbol and symbol not in seen:
+                seen.add(symbol)
+                out.append(symbol)
+        return out
+
+    def _option_spread_chain(self, symbol: str) -> tuple[dict, str]:
+        """ONE small chain: strikeCount 6, 0-50 DTE. Schwab profiles first
+        (the same walk the OI Finder does), Tradier only as the fallback."""
+        now = datetime.now(ZoneInfo(EASTERN_TZ))
+        errors: list[str] = []
+        for client in _schwab_market_clients():
+            try:
+                chain = client.get_option_chain(
+                    symbol,
+                    contract_type="ALL",
+                    strike_count=option_spreads.CHAIN_STRIKE_COUNT,
+                    from_date=now,
+                    to_date=now + timedelta(days=option_spreads.CHAIN_WINDOW_DAYS),
+                )
+            except Exception as exc:  # noqa: BLE001
+                if self._option_spread_blocked(exc):
+                    raise
+                errors.append(f"Schwab: {exc}")
+                continue
+            if chain and (chain.get("callExpDateMap") or chain.get("putExpDateMap")):
+                return chain, "Schwab"
+            errors.append("Schwab: empty chain")
+        try:
+            tradier = _house_tradier_client()
+            if getattr(tradier, "configured", False):
+                chain = tradier.get_option_chain_range(
+                    symbol,
+                    contract_type="ALL",
+                    strike_count=option_spreads.CHAIN_STRIKE_COUNT,
+                    max_days_to_expiration=option_spreads.CHAIN_WINDOW_DAYS,
+                )
+                if chain and (chain.get("callExpDateMap") or chain.get("putExpDateMap")):
+                    return chain, "Tradier"
+                errors.append("Tradier: empty chain")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Tradier: {exc}")
+        raise RuntimeError("; ".join(errors) or "no option chain provider configured")
+
+    @staticmethod
+    def _option_spread_blocked(exc: BaseException) -> bool:
+        """Schwab is refusing us (Akamai block or a 429 cooldown): back off
+        instead of walking the rest of the watchlist into the wall."""
+        return getattr(exc, "kind", "") in {"blocked", "rate_limit"}
+
+    def _option_spread_sweep_loop(self) -> None:
+        book = self._option_spread_book()
+        status = self._option_spread_status()
+        last_build = [time.monotonic()]
+
+        def should_wait() -> bool:
+            return self._warmer_should_wait(time.monotonic(), last_build[0])
+
+        while True:
+            try:
+                requested = option_spreads.sweep_once(
+                    book,
+                    symbols=self._option_spread_watchlist,
+                    fetch=self._option_spread_chain,
+                    should_wait=should_wait,
+                    paused=self._warmer_is_paused,
+                    status=status,
+                    blocked=self._option_spread_blocked,
+                )
+                if requested:
+                    last_build[0] = time.monotonic()
+            except Exception as exc:  # noqa: BLE001 - the sweep must never die
+                status.state, status.message = "Error", f"{type(exc).__name__}: {exc}"
+            time.sleep(option_spreads.IDLE_SECONDS)
+
+    def option_spreads_payload(self) -> dict:
+        """Spread per master-watchlist ticker. Reads the book only - never
+        fetches a chain, so the board's poll costs nothing."""
+        payload = self._option_spread_book().payload(self._option_spread_watchlist())
+        payload["sweep"] = self._option_spread_status().as_dict()
+        payload["generatedAt"] = datetime.now(ZoneInfo(EASTERN_TZ)).replace(microsecond=0).isoformat()
+        return payload
 
     def _morning_briefing_loop(self) -> None:
         """Rebuild the morning briefing every 5 minutes, 05:30-09:35 ET.
@@ -23767,6 +23884,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 force = str(query.get("force", [""])[0]).strip().lower() in {"1", "true", "yes"}
                 self._send_json(HTTPStatus.OK, STATE.forex_factory_us_news_payload(force=force))
+                return
+            if parsed.path == "/api/option-spreads":
+                self._send_json(HTTPStatus.OK, STATE.option_spreads_payload())
                 return
             if parsed.path == "/api/earnings-calendar":
                 query = parse_qs(parsed.query)

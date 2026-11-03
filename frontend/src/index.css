@@ -21941,6 +21941,24 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
   font-size: 11px;
 }
 
+/* Spread column (2026-11-03): median option bid/ask spread as % of mid.
+   Tight green, OK plain, Wide amber, Avoid red - the two he must act on are
+   the loud ones. A reading from an earlier session is dimmed. */
+.momx-scanner-panel td.momx-spreadcol {
+  white-space: nowrap;
+  font-family: var(--momx-num-font);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  text-align: right;
+  color: #8b95a7;
+  cursor: help;
+}
+.momx-scanner-panel td.momx-spreadcol.is-tight { color: #4ade80; }
+.momx-scanner-panel td.momx-spreadcol.is-ok { color: #cbd5e1; }
+.momx-scanner-panel td.momx-spreadcol.is-wide { color: #fbbf24; font-weight: 700; }
+.momx-scanner-panel td.momx-spreadcol.is-avoid { color: #f87171; font-weight: 800; }
+.momx-scanner-panel td.momx-spreadcol.is-stale { opacity: 0.55; font-style: italic; }
+
 /* Frozen Industry (2026-09-25, his phone: "Industry, Symbol and Time frozen,
    not Setup"). pinnedRun() leads with Industry when it sits right before
    Symbol; Symbol then pins at the second slot instead of left: 0. */
