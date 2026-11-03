@@ -9,8 +9,83 @@ export const OTHER_GROUP = "Other";
 // "more green", they just stay solid -- the scale is about direction and size
 // at a glance, not a precise reading (the tooltip has that).
 export const HEAT_CAP_PCT = 3;
-// Tiles shown in a collapsed card; the rest fold into one "+N" tile.
-export const COLLAPSED_TILE_LIMIT = 14;
+// Tiles shown in a collapsed card; the rest fold into one "+N" tile. The
+// Robinhood card shows about 16.
+export const COLLAPSED_TILE_LIMIT = 16;
+
+// Broad sectors, as Robinhood / thinkorswim show them (trader, 2026-11-03: "I
+// want same as robinhood or tos sector heat map"). Every label in the hand map
+// (momx/industries.py) and the Finnhub/FMP labels the lookup produces map to
+// one of these; the "Industries" switch still shows his own fine-grained
+// buckets. Order here is the fallback order for equal-sized sectors.
+export const SECTORS = [
+  "Technology", "Communication", "Consumer Cyclical", "Consumer Defensive",
+  "Financials", "Healthcare", "Industrials", "Energy", "Utilities",
+  "Materials", "Real Estate", "ETFs",
+];
+
+const SECTOR_LABELS = {
+  Technology: [
+    "Semis", "Software", "Networking", "Tech-HW", "AI-Infra", "IT Services",
+    "AI - Data Centers", "AI - Networking", "AI - Cloud", "Cybersecurity",
+    "Quantum", "Technology", "Semiconductors", "Communications",
+    "Electrical Equipment & Parts", "Computers",
+  ],
+  Communication: ["Interactive Media", "Entertainment", "Telecom", "Media", "Telecommunication", "Communication Services"],
+  "Consumer Cyclical": [
+    "Apparel", "Retail", "Autos", "E-Commerce", "Travel", "Restaurants", "EV",
+    "Auto-Tech", "Gaming", "Homebuilders", "Automobiles", "Auto Components",
+    "Hotels, Restaurants & Leisure", "Textiles, Apparel & Luxury Goods",
+    "Leisure Products", "Distributors", "Diversified Consumer Services",
+  ],
+  "Consumer Defensive": ["Beverages", "Food", "Consumer", "Tobacco", "Cannabis", "Food Products", "Consumer products"],
+  Financials: ["Banks", "Fintech", "Capital Markets", "Crypto", "Insurance", "Banking", "Financial Services"],
+  Healthcare: ["Biotech", "Pharma", "Healthcare", "Health Care", "Life Sciences Tools & Services", "Biotechnology", "Pharmaceuticals"],
+  Industrials: [
+    "Industrials", "Defense", "Airlines", "Transport", "Space", "Air Mobility",
+    "Drones", "Robotics", "Aerospace & Defense", "Machinery", "Electrical Equipment",
+    "Construction", "Building", "Logistics & Transportation", "Marine", "Road & Rail",
+    "Commercial Services & Supplies", "Professional Services",
+    "Trading Companies & Distributors", "Industrial Conglomerates",
+    "Transportation Infrastructure",
+  ],
+  Energy: ["Oil & Gas", "Uranium", "Energy", "Solar", "Clean Energy", "Nuclear", "Oil & Gas Services"],
+  Utilities: ["Utilities", "AI - Power"],
+  Materials: ["Metals", "Gold", "Chemicals", "Metals & Mining", "Packaging", "Paper & Forest"],
+  "Real Estate": ["Real Estate", "Real Estate Management & Development"],
+  ETFs: ["ETF-Lev", "Commodity ETF", "Index ETF", "ETF", "Fund", "Asset Management", "Exchange Traded Fund"],
+};
+
+const SECTOR_BY_LABEL = new Map(
+  Object.entries(SECTOR_LABELS).flatMap(([sector, labels]) => labels.map((label) => [label.toLowerCase(), sector])),
+);
+
+// Keyword fallback for provider labels not listed above, checked in order.
+const SECTOR_KEYWORDS = [
+  [/etf|fund|trust/, "ETFs"],
+  [/semi|software|tech|cyber|cloud|computer|electronic|internet/, "Technology"],
+  [/bank|financ|insur|capital|credit|crypto|asset|broker/, "Financials"],
+  [/pharma|bio|health|medic|drug|life science/, "Healthcare"],
+  [/oil|gas|energy|solar|coal|uranium|nuclear/, "Energy"],
+  [/utilit|power|electric util/, "Utilities"],
+  [/metal|mining|gold|silver|chemical|steel|material/, "Materials"],
+  [/real estate|reit|propert/, "Real Estate"],
+  [/media|telecom|entertain|communic|broadcast|publish/, "Communication"],
+  [/retail|apparel|auto|restaurant|hotel|leisure|travel|home|consumer cyclical|e-commerce/, "Consumer Cyclical"],
+  [/food|beverage|tobacco|household|grocer|consumer/, "Consumer Defensive"],
+  [/aero|defen|airline|transport|machin|industrial|construct|logistic|rail|marine|building/, "Industrials"],
+];
+
+// The broad sector for an industry label, or null when it cannot be placed.
+export function sectorFor(industry) {
+  const label = String(industry || "").trim();
+  if (!label) return null;
+  const exact = SECTOR_BY_LABEL.get(label.toLowerCase());
+  if (exact) return exact;
+  const lower = label.toLowerCase();
+  const hit = SECTOR_KEYWORDS.find(([pattern]) => pattern.test(lower));
+  return hit ? hit[1] : null;
+}
 
 const finite = (value) => {
   if (value === null || value === undefined || value === "") return null;
@@ -31,8 +106,10 @@ function median(values) {
 
 // symbols: the watchlist, in order. quotes: { SYMBOL: row } from
 // /api/watchlist-quotes?profile=1 (changePct, lastPrice, change, industry,
-// marketCap). Returns cards biggest-first with "Other" last.
-export function buildSectorGroups(symbols, quotes = {}) {
+// marketCap). groupBy: "sector" (broad, Robinhood/TOS style; default) or
+// "industry" (the trader's own labels). Returns cards biggest-first with
+// "Other" last.
+export function buildSectorGroups(symbols, quotes = {}, { groupBy = "sector" } = {}) {
   const seen = new Set();
   const byName = new Map();
   for (const raw of Array.isArray(symbols) ? symbols : []) {
@@ -40,10 +117,12 @@ export function buildSectorGroups(symbols, quotes = {}) {
     if (!symbol || seen.has(symbol)) continue;
     seen.add(symbol);
     const quote = quotes?.[symbol] || {};
-    const name = String(quote.industry || "").trim() || OTHER_GROUP;
+    const industry = String(quote.industry || "").trim();
+    const name = (groupBy === "industry" ? industry : sectorFor(industry)) || OTHER_GROUP;
     if (!byName.has(name)) byName.set(name, []);
     byName.get(name).push({
       symbol,
+      industry: industry || null,
       changePct: finite(quote.changePct),
       change: finite(quote.change),
       lastPrice: finite(quote.lastPrice),
@@ -217,13 +296,23 @@ export function squarify(items, rect) {
   return out;
 }
 
-// Card height for `count` tiles at `width` px: enough area that an average
-// tile can show its ticker, within sane bounds for the narrow dock column.
+// Card height for `count` tiles at `width` px. Two floors: enough area per
+// tile that an average one can print its ticker (narrow dock column), and a
+// Robinhood-like shape so a wide card is a block, not a one-row strip.
 export function cardHeight(count, width, expanded = false) {
   const tiles = Math.max(1, Number(count) || 1);
   const span = Math.max(120, Number(width) || 0);
-  const wanted = Math.ceil((tiles * 3200) / span);
-  return Math.max(60, Math.min(expanded ? 640 : 230, wanted));
+  const byArea = Math.ceil((tiles * 4200) / span);
+  const aspect = tiles >= 10 ? 0.45 : tiles >= 6 ? 0.38 : tiles >= 3 ? 0.3 : tiles === 2 ? 0.24 : 0.18;
+  const byShape = Math.round(span * aspect);
+  return Math.max(72, Math.min(expanded ? 720 : 340, Math.max(byArea, byShape)));
+}
+
+// Font sizes (px) for a tile: big tiles get big bold tickers, as on the
+// Robinhood card, small ones shrink down to a readable floor.
+export function tileFontSizes(width, height) {
+  const symbol = Math.round(Math.max(9, Math.min(20, width / 4.2, height / 2.6)));
+  return { symbol, pct: Math.max(8, Math.round(symbol * 0.85)) };
 }
 
 // What a tile of this pixel size has room to print.

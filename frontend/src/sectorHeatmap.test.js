@@ -8,14 +8,18 @@ import assert from "node:assert/strict";
 import {
   OTHER_GROUP,
   buildSectorGroups,
+  SECTORS,
   cardHeight,
   formatMarketCap,
   formatSignedPct,
   heatLevel,
+  sectorFor,
   squarify,
+  tileFontSizes,
   tileLabelMode,
   visibleTiles,
 } from "./sectorHeatmap.js";
+import { readFileSync } from "node:fs";
 
 const q = (industry, changePct, marketCap) => ({ industry, changePct, marketCap, lastPrice: 100, change: 1 });
 
@@ -27,7 +31,7 @@ describe("buildSectorGroups", () => {
       MSFT: q("Software", 1.9, 3.5e12),
       CRM: q("Software", -1, 2.5e11),
       ZZZZ: q(null, 5, 9e12), // no industry -> Other, even when huge
-    });
+    }, { groupBy: "industry" });
     assert.deepEqual(groups.map((group) => group.name), ["Semis", "Software", OTHER_GROUP]);
     assert.deepEqual(groups[0].tiles.map((tile) => tile.symbol), ["NVDA", "AMD"]);
   });
@@ -84,15 +88,58 @@ describe("buildSectorGroups", () => {
       SOXL: q("ETF-Lev", 6, null),
       TSLL: q("ETF-Lev", 4, null),
       NVTS: q("Semis", 2, 2e9),
-    });
+    }, { groupBy: "industry" });
     assert.deepEqual(groups.map((group) => group.name), ["Semis", "ETF-Lev"]);
     assert.ok(groups[1].tiles.every((tile) => tile.capWeight === 2e9));
   });
 
   test("duplicate and blank watchlist entries are dropped, case-insensitively", () => {
-    const groups = buildSectorGroups(["nvda", "NVDA", " ", "", null, "NVDA "], { NVDA: q("Semis", 1, 1) });
+    const groups = buildSectorGroups(["nvda", "NVDA", " ", "", null, "NVDA "], { NVDA: q("Semis", 1, 1) }, { groupBy: "industry" });
     const symbols = groups.flatMap((group) => group.tiles.map((tile) => tile.symbol));
     assert.deepEqual(symbols, ["NVDA"]);
+  });
+});
+
+describe("broad sectors (Robinhood / TOS grouping)", () => {
+  test("sector mode is the default and folds industries into sectors", () => {
+    const groups = buildSectorGroups(["NVDA", "MSFT", "AAPL", "CSCO", "META", "JPM", "SOXL", "SPY"], {
+      NVDA: q("Semis", 3.17, 4.4e12),
+      MSFT: q("Software", 1.9, 3.8e12),
+      AAPL: q("Tech-HW", -2.04, 3.9e12),
+      CSCO: q("Networking", 0.5, 2.5e11),
+      META: q("Interactive Media", 2.76, 1.8e12),
+      JPM: q("Banks", 0.4, 7e11),
+      SOXL: q("ETF-Lev", 9, null),
+      SPY: q("Index ETF", 0.6, null),
+    });
+    assert.deepEqual(groups.map((group) => group.name), ["Technology", "Communication", "Financials", "ETFs"]);
+    assert.deepEqual(groups[0].tiles.map((tile) => tile.symbol).sort(), ["AAPL", "CSCO", "MSFT", "NVDA"]);
+    assert.equal(groups[0].tiles.find((tile) => tile.symbol === "NVDA").industry, "Semis");
+  });
+
+  test("industry mode keeps the trader's own buckets", () => {
+    const groups = buildSectorGroups(["NVDA", "MSFT"], { NVDA: q("Semis", 1, 2), MSFT: q("Software", 1, 1) }, { groupBy: "industry" });
+    assert.deepEqual(groups.map((group) => group.name), ["Semis", "Software"]);
+  });
+
+  test("every hand-map industry label lands in a sector", () => {
+    const source = readFileSync(new URL("../../momx/industries.py", import.meta.url), "utf8");
+    const table = source.slice(source.indexOf("INDUSTRY_SYMBOLS"), source.indexOf("INDUSTRY_MAP"));
+    const labels = [...table.matchAll(/^\s{4}"([^"]+)":\s*\(/gm)].map((match) => match[1]);
+    assert.ok(labels.length > 40, `parsed ${labels.length} labels`);
+    const unplaced = labels.filter((label) => !SECTORS.includes(sectorFor(label)));
+    assert.deepEqual(unplaced, []);
+  });
+
+  test("provider labels are placed exactly or by keyword; blanks are Other", () => {
+    assert.equal(sectorFor("Insurance"), "Financials");
+    assert.equal(sectorFor("Logistics & Transportation"), "Industrials");
+    assert.equal(sectorFor("Specialty Retail"), "Consumer Cyclical");
+    assert.equal(sectorFor("Medical Devices"), "Healthcare");
+    assert.equal(sectorFor(""), null);
+    assert.equal(sectorFor("Zzyzx"), null);
+    const [group] = buildSectorGroups(["ODD"], { ODD: q("Zzyzx", 1, 1) });
+    assert.equal(group.name, OTHER_GROUP);
   });
 });
 
@@ -191,10 +238,23 @@ describe("squarify", () => {
 
 describe("sizing and labels", () => {
   test("card height grows with tile count and stays within bounds", () => {
-    assert.equal(cardHeight(1, 300), 60);
+    assert.equal(cardHeight(1, 300), 72);
     assert.ok(cardHeight(14, 300) > cardHeight(6, 300));
-    assert.equal(cardHeight(200, 300), 230);
-    assert.equal(cardHeight(200, 300, true), 640);
+    assert.equal(cardHeight(200, 300), 340);
+    assert.equal(cardHeight(200, 300, true), 720);
+  });
+
+  test("a wide card keeps a block shape instead of a one-row strip", () => {
+    assert.ok(cardHeight(16, 600) >= 600 * 0.45);
+    assert.ok(cardHeight(4, 600) >= 600 * 0.3);
+    assert.ok(cardHeight(16, 1900) <= 340);
+  });
+
+  test("big tiles get big tickers, small ones a readable floor", () => {
+    assert.equal(tileFontSizes(260, 310).symbol, 20);
+    assert.equal(tileFontSizes(30, 16).symbol, 9);
+    const mid = tileFontSizes(80, 50);
+    assert.ok(mid.symbol > 9 && mid.symbol < 20 && mid.pct < mid.symbol);
   });
 
   test("small tiles drop the % first, then the ticker", () => {

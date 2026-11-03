@@ -8,12 +8,34 @@ import {
   formatSignedPct,
   heatLevel,
   squarify,
+  tileFontSizes,
   tileLabelMode,
   visibleTiles,
 } from "./sectorHeatmap";
 
 const POLL_MS = 8000;
-const TILE_GAP = 2;
+const PREFS_KEY = "sectorHeatmapPrefs";
+// Robinhood: light rounded cards, 3px gutters. TOS: dark, tight 1px grid.
+const STYLES = {
+  rh: { label: "Robinhood", short: "RH", gap: 3 },
+  tos: { label: "thinkorswim", short: "TOS", gap: 1 },
+};
+const GROUPINGS = {
+  sector: { label: "Sectors", title: "Broad sectors, as Robinhood and thinkorswim group them" },
+  industry: { label: "Industries", title: "Your own industry buckets (Semis, Software, ETF-Lev...)" },
+};
+
+function readPrefs() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(PREFS_KEY) || "{}");
+    return {
+      style: STYLES[parsed?.style] ? parsed.style : "rh",
+      groupBy: GROUPINGS[parsed?.groupBy] ? parsed.groupBy : "sector",
+    };
+  } catch {
+    return { style: "rh", groupBy: "sector" };
+  }
+}
 
 function tileTitle(tile) {
   if (tile.more) return `${tile.more} more - open the full card`;
@@ -22,15 +44,37 @@ function tileTitle(tile) {
     tile.lastPrice !== null ? `Last ${tile.lastPrice.toFixed(2)}` : null,
     tile.change !== null ? `Chg ${tile.change > 0 ? "+" : ""}${tile.change.toFixed(2)}` : null,
     `Chg% ${formatSignedPct(tile.changePct)}`,
+    tile.industry ? `Industry ${tile.industry}` : null,
     `Mkt cap ${tile.estimatedCap ? "unknown (sized as group median)" : formatMarketCap(tile.marketCap)}`,
   ];
   return parts.filter(Boolean).join("\n");
 }
 
-function SectorCard({ group, width, activeSymbol, expanded, onToggle, onSelect }) {
+// Width of an element, kept current with ResizeObserver.
+function useElementWidth() {
+  const ref = useRef(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return undefined;
+    const measure = () => {
+      const next = Math.floor(element.clientWidth);
+      setWidth((current) => (current !== next ? next : current));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, width];
+}
+
+function SectorCard({ group, gap, activeSymbol, expanded, onToggle, onSelect }) {
+  const [tilesRef, width] = useElementWidth();
   const tiles = visibleTiles(group.tiles, expanded);
   const height = cardHeight(tiles.length, width, expanded);
-  const layout = squarify(tiles, { x: 0, y: 0, width, height });
+  const layout = width > 0 ? squarify(tiles, { x: 0, y: 0, width, height }) : [];
   const groupHeat = heatLevel(group.changePct);
   const canExpand = group.tiles.length > tiles.length || expanded;
 
@@ -45,7 +89,7 @@ function SectorCard({ group, width, activeSymbol, expanded, onToggle, onSelect }
           title={canExpand ? (expanded ? "Show the biggest names only" : "Show every name in this group") : `${group.tiles.length} names`}
         >
           <b>{group.name}</b>
-          <ChevronRight size={12} aria-hidden="true" />
+          <ChevronRight size={16} strokeWidth={2.5} aria-hidden="true" />
           <small>{group.tiles.length}</small>
         </button>
         <span className={`sector-heatmap-card-move is-${groupHeat.tone}`} title={`${group.up} up · ${group.down} down (market-cap weighted move)`}>
@@ -53,10 +97,13 @@ function SectorCard({ group, width, activeSymbol, expanded, onToggle, onSelect }
           {formatSignedPct(group.changePct).replace(/^[+-]/, "")}
         </span>
       </header>
-      <div className="sector-heatmap-tiles" style={{ height }}>
+      <div className="sector-heatmap-tiles" ref={tilesRef} style={{ height }}>
         {layout.map(({ item, x, y, width: tileWidth, height: tileHeight }) => {
           const heat = heatLevel(item.changePct);
-          const mode = tileLabelMode(tileWidth - TILE_GAP, tileHeight - TILE_GAP);
+          const innerWidth = Math.max(0, tileWidth - gap);
+          const innerHeight = Math.max(0, tileHeight - gap);
+          const mode = tileLabelMode(innerWidth, innerHeight);
+          const fonts = tileFontSizes(innerWidth, innerHeight);
           const active = !item.more && item.symbol === activeSymbol;
           return (
             <button
@@ -69,15 +116,15 @@ function SectorCard({ group, width, activeSymbol, expanded, onToggle, onSelect }
               style={{
                 left: `${(x / width) * 100}%`,
                 top: y,
-                width: `calc(${(tileWidth / width) * 100}% - ${TILE_GAP}px)`,
-                height: Math.max(0, tileHeight - TILE_GAP),
+                width: `calc(${(tileWidth / width) * 100}% - ${gap}px)`,
+                height: innerHeight,
               }}
               title={tileTitle(item)}
               aria-label={item.more ? `${item.more} more in ${group.name}` : `${item.symbol} ${formatSignedPct(item.changePct)}`}
               onClick={() => (item.more ? onToggle() : onSelect?.(item.symbol))}
             >
-              {mode !== "none" ? <b>{item.symbol}</b> : null}
-              {mode === "full" && !item.more ? <span>{formatSignedPct(item.changePct)}</span> : null}
+              {mode !== "none" ? <b style={{ fontSize: fonts.symbol }}>{item.symbol}</b> : null}
+              {mode === "full" && !item.more ? <span style={{ fontSize: fonts.pct }}>{formatSignedPct(item.changePct)}</span> : null}
             </button>
           );
         })}
@@ -90,8 +137,13 @@ export default function SectorHeatmapPanel({ symbols, activeSymbol, onSelect, on
   const [quotes, setQuotes] = useState({});
   const [loaded, setLoaded] = useState(false);
   const [expanded, setExpanded] = useState({});
-  const [width, setWidth] = useState(0);
-  const bodyRef = useRef(null);
+  const [prefs, setPrefs] = useState(readPrefs);
+  const updatePrefs = (patch) => setPrefs((current) => {
+    const next = { ...current, ...patch };
+    try { window.localStorage.setItem(PREFS_KEY, JSON.stringify(next)); } catch { /* storage can be disabled */ }
+    return next;
+  });
+  const styleSpec = STYLES[prefs.style];
   const symbolKey = symbols.join(",");
 
   useEffect(() => {
@@ -120,52 +172,52 @@ export default function SectorHeatmapPanel({ symbols, activeSymbol, onSelect, on
     };
   }, [symbolKey]);
 
-  useEffect(() => {
-    const element = bodyRef.current;
-    if (!element) return undefined;
-    const measure = () => {
-      // Card margin (2 x 6px) + padding (2 x 8px) + border (2 x 1px) come off
-      // the tile area. Only the aspect ratio depends on this (tiles are
-      // positioned in %), so a small mismatch cannot spill past the card.
-      const next = Math.max(0, Math.floor(element.clientWidth - 30));
-      setWidth((current) => (Math.abs(current - next) >= 1 ? next : current));
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-
   // symbolKey, not symbols: the parent rebuilds the array on every render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const groups = useMemo(() => buildSectorGroups(symbolKey ? symbolKey.split(",") : [], quotes), [symbolKey, quotes]);
+  const groups = useMemo(
+    () => buildSectorGroups(symbolKey ? symbolKey.split(",") : [], quotes, { groupBy: prefs.groupBy }),
+    [symbolKey, quotes, prefs.groupBy],
+  );
 
   return (
-    <section className="charts-oi-chain-dock-panel sector-heatmap-panel" aria-label="Sector panel">
+    <section className={`charts-oi-chain-dock-panel sector-heatmap-panel is-style-${prefs.style}`} aria-label="Sector panel">
       <header>
         <b>SECTOR</b>
-        <small>{groups.length} groups · {symbols.length}</small>
+        <small>{groups.length} · {symbols.length}</small>
+        <span className="sector-heatmap-switch" role="group" aria-label="Group tiles by">
+          {Object.entries(GROUPINGS).map(([key, spec]) => (
+            <button key={key} type="button" aria-pressed={prefs.groupBy === key} title={spec.title} onClick={() => updatePrefs({ groupBy: key })}>
+              {spec.label}
+            </button>
+          ))}
+        </span>
+        <span className="sector-heatmap-switch" role="group" aria-label="Heatmap style">
+          {Object.entries(STYLES).map(([key, spec]) => (
+            <button key={key} type="button" aria-pressed={prefs.style === key} title={`${spec.label} look`} onClick={() => updatePrefs({ style: key })}>
+              {spec.short}
+            </button>
+          ))}
+        </span>
         <button type="button" onClick={onClose} title="Remove sector panel" aria-label="Remove sector panel"><X size={13} /></button>
       </header>
-      <div className="sector-heatmap-body" ref={bodyRef}>
+      <div className="sector-heatmap-body">
         {!symbols.length ? (
           <span className="charts-oi-chain-dock-empty">Add tickers to your watchlist to see the sector map.</span>
         ) : !loaded ? (
           <span className="charts-oi-chain-dock-empty">Loading sector map…</span>
-        ) : width > 0 ? (
+        ) : (
           groups.map((group) => (
             <SectorCard
               key={group.name}
               group={group}
-              width={width}
+              gap={styleSpec.gap}
               activeSymbol={activeSymbol}
               expanded={Boolean(expanded[group.name])}
               onToggle={() => setExpanded((current) => ({ ...current, [group.name]: !current[group.name] }))}
               onSelect={onSelect}
             />
           ))
-        ) : null}
+        )}
       </div>
     </section>
   );

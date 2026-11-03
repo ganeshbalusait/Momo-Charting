@@ -1584,38 +1584,78 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
 .charts-oi-chain-dock-news a,.charts-oi-chain-dock-news b { color: #d5e9f4; font-size: .62rem; font-weight: 700; line-height: 1.3; text-decoration: none; }
 .charts-oi-chain-dock-news a:hover { color: #7fe6ff; text-decoration: underline; }
 .charts-oi-chain-dock-empty { padding: 0 10px 8px; color: #7c7c8a; font-size: .58rem; }
-/* Sector panel: the watchlist as a sector heatmap, one card per industry.
-   Tiles are sized by market cap; color = today's move in 4 steps, solid at 3%. */
-.sector-heatmap-body { display: grid; gap: 6px; max-height: 380px; overflow-y: auto; overflow-x: hidden; padding: 0 0 8px; }
-.sector-heatmap-card { margin: 0 6px; padding: 6px 8px 8px; border: 1px solid rgba(92, 92, 103, .32); border-radius: 8px; background: #151518; }
-.sector-heatmap-card > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 6px; }
-.sector-heatmap-card-title { display: inline-flex; min-width: 0; align-items: center; gap: 3px; padding: 0; border: 0; background: transparent; color: #e7e7ea; cursor: pointer; }
+/* Sector panel: the watchlist as a sector heatmap, one card per sector.
+   Two looks, picked in the panel header: Robinhood (light rounded cards,
+   bright green / orange tiles, bold black text) and thinkorswim (dark tight
+   grid, green / red intensity, white text). Tile area = sqrt(market cap);
+   color = today's move in 4 steps, solid at 3%. */
+.sector-heatmap-panel > header .sector-heatmap-switch { display: inline-flex; overflow: hidden; border: 1px solid rgba(92, 92, 103, .45); border-radius: 5px; }
+.sector-heatmap-panel > header .sector-heatmap-switch button { width: auto; height: 18px; margin: 0; padding: 0 6px; border-radius: 0; color: #8b8b97; font-size: .52rem; font-weight: 800; letter-spacing: .02em; }
+.sector-heatmap-panel > header .sector-heatmap-switch button[aria-pressed="true"] { background: rgba(72, 168, 202, .24); color: #e7f7ff; }
+.sector-heatmap-panel > header .sector-heatmap-switch:first-of-type { margin-left: auto; }
+.sector-heatmap-panel > header > button:last-child { margin-left: 0; }
+/* Narrow dock: one card per row. Wide (fullscreen chain, big screen): cards
+   sit side by side, each at least 480px, like Robinhood's card row. */
+.sector-heatmap-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr)); align-items: start; gap: 10px; max-height: 460px; overflow-y: auto; overflow-x: hidden; padding: 2px 6px 10px; }
+.charts-oi-tos-chain.is-fullscreen .sector-heatmap-body { max-height: 70vh; }
+.sector-heatmap-card { min-width: 0; margin: 0; padding: 12px 8px 8px; border: 1px solid; border-radius: 14px; }
+.sector-heatmap-card > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 2px 10px; }
+.sector-heatmap-card-title { display: inline-flex; min-width: 0; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .sector-heatmap-card-title:disabled { cursor: default; }
-.sector-heatmap-card-title b { overflow: hidden; font-size: .66rem; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
-.sector-heatmap-card-title svg { flex: none; color: #7c7c8a; transition: transform .15s ease; }
+.sector-heatmap-card-title b { overflow: hidden; font-size: 15px; font-weight: 800; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
+.sector-heatmap-card-title svg { flex: none; opacity: .55; transition: transform .15s ease; }
 .sector-heatmap-card-title.is-open svg { transform: rotate(90deg); }
-.sector-heatmap-card-title small { color: #6c6c78; font-size: .55rem; }
-.sector-heatmap-card-title:not(:disabled):hover b { color: #9ddff1; }
-.sector-heatmap-card-move { flex: none; color: #9a9aa6; font-size: .66rem; font-weight: 800; font-variant-numeric: tabular-nums; }
-.sector-heatmap-card-move.is-up { color: #4fe0a4; }
-.sector-heatmap-card-move.is-down { color: #ff8a6a; }
+.sector-heatmap-card-title small { font-size: 11px; font-weight: 600; opacity: .5; }
+.sector-heatmap-card-move { flex: none; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .sector-heatmap-tiles { position: relative; width: 100%; }
-.sector-heatmap-tile { position: absolute; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; overflow: hidden; padding: 0 2px; border: 0; border-radius: 4px; background: #1d1d22; color: #6c6c78; cursor: pointer; font-variant-numeric: tabular-nums; line-height: 1.15; transition: background-color .4s ease, filter .12s ease; }
-.sector-heatmap-tile b { max-width: 100%; overflow: hidden; font-size: .62rem; font-weight: 800; text-overflow: clip; white-space: nowrap; }
-.sector-heatmap-tile span { font-size: .58rem; white-space: nowrap; }
-.sector-heatmap-tile:hover { filter: brightness(1.18); }
-.sector-heatmap-tile:focus-visible { outline: 2px solid #7fe6ff; outline-offset: -2px; }
-.sector-heatmap-tile.is-active { box-shadow: inset 0 0 0 2px #f2f2f4; }
-.sector-heatmap-tile.is-flat { background: #2a2a31; color: #c9c9d2; }
-.sector-heatmap-tile.is-more { background: #232329; color: #9a9aa6; }
-.sector-heatmap-tile.is-up.is-level-1 { background: #1d3a2a; color: #bfe9cf; }
-.sector-heatmap-tile.is-up.is-level-2 { background: #22603d; color: #e0f8ea; }
-.sector-heatmap-tile.is-up.is-level-3 { background: #2b9150; color: #f4fff8; }
-.sector-heatmap-tile.is-up.is-level-4 { background: #3fc463; color: #062110; }
-.sector-heatmap-tile.is-down.is-level-1 { background: #3d2621; color: #f2cbbf; }
-.sector-heatmap-tile.is-down.is-level-2 { background: #6e3526; color: #ffe3d9; }
-.sector-heatmap-tile.is-down.is-level-3 { background: #ad4c2d; color: #fff4ef; }
-.sector-heatmap-tile.is-down.is-level-4 { background: #ec7c4c; color: #2a0d03; }
+.sector-heatmap-tile { position: absolute; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; overflow: hidden; padding: 0 2px; border: 0; cursor: pointer; font-variant-numeric: tabular-nums; line-height: 1.1; transition: background-color .4s ease, filter .12s ease; }
+.sector-heatmap-tile b { max-width: 100%; overflow: hidden; font-weight: 800; letter-spacing: .01em; text-overflow: clip; white-space: nowrap; }
+.sector-heatmap-tile span { font-weight: 500; white-space: nowrap; }
+.sector-heatmap-tile:focus-visible { outline: 2px solid #2f8cff; outline-offset: -2px; }
+
+/* Robinhood */
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card { border-color: #e3e3e3; background: #ffffff; color: #111111; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card-title:not(:disabled):hover b { text-decoration: underline; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card-move { color: #6b6b6b; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card-move.is-up { color: #3fae2a; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card-move.is-down { color: #e8642c; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile { border-radius: 4px; background: #f2f2f2; color: #9a9a9a; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile:hover { filter: brightness(.94); }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-active { box-shadow: inset 0 0 0 2px #111111; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-flat { background: #ececec; color: #111111; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-more { background: #f4f4f4; color: #555555; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up,
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down { color: #111111; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-1 { background: #daf2d4; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-2 { background: #a3e397; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-3 { background: #7bd66b; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-4 { background: #5ac53b; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-1 { background: #fcdccc; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-2 { background: #f8bb9c; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-3 { background: #f3a07a; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-4 { background: #ee8a5a; }
+
+/* thinkorswim */
+.sector-heatmap-panel.is-style-tos .sector-heatmap-card { border-color: #2a2a30; border-radius: 6px; background: #0b0b0d; color: #e9e9ee; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-card-title:not(:disabled):hover b { color: #9ddff1; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-card-move { color: #a0a0aa; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-card-move.is-up { color: #2fd35f; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-card-move.is-down { color: #ff4a4a; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile { border-radius: 0; background: #1a1a1f; color: #6c6c78; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile:hover { filter: brightness(1.22); }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-active { box-shadow: inset 0 0 0 2px #ffffff; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-flat { background: #303036; color: #e9e9ee; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-more { background: #24242a; color: #a0a0aa; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up,
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down { color: #ffffff; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-1 { background: #133d22; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-2 { background: #176b33; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-3 { background: #1c9a43; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-4 { background: #22c653; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-1 { background: #4a1717; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-2 { background: #7b1c1c; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-3 { background: #ad2222; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-4 { background: #dc2a2a; }
 .tos-sync-tag { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; color: var(--tos-link-text, #171400) !important; border: 1px solid var(--tos-link-color, #f5d000); border-radius: 2px; background: var(--tos-link-color, #f5d000); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18), 0 0 8px color-mix(in srgb, var(--tos-link-color, #f5d000) 34%, transparent); font-size: .62rem !important; font-weight: 950; line-height: 1; letter-spacing: 0; }
 .tos-sync-picker { display: inline-grid; flex: 0 0 auto; }
 .tos-sync-picker select { width: 27px; min-width: 27px; height: 20px; padding: 0 2px; overflow: hidden; color: var(--tos-link-text, #171400); border: 1px solid var(--tos-link-color, #f5d000); border-radius: 2px; outline: none; background: var(--tos-link-color, #f5d000); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .2), 0 0 8px color-mix(in srgb, var(--tos-link-color, #f5d000) 32%, transparent); font-size: .62rem; font-weight: 950; line-height: 1; cursor: pointer; }
@@ -12894,10 +12934,12 @@ button.avatar {
    compact th/td metrics from re-padding it. */
 .app-shell.charts-workstation .charts-oi-chain-dock-watchlist th { padding: 0; }
 .app-shell.charts-workstation .charts-oi-chain-dock-watchlist td { height: auto; padding: 3px 8px; font-size: 10px; line-height: 15px; }
-.app-shell.charts-workstation .sector-heatmap-card-title b,
-.app-shell.charts-workstation .sector-heatmap-card-move { font-size: 11px; }
-.app-shell.charts-workstation .sector-heatmap-tile b { font-size: 10px; }
-.app-shell.charts-workstation .sector-heatmap-tile span { font-size: 9px; }
+/* The workstation forces its terminal font on the whole chain dock; the
+   Robinhood look needs a clean sans-serif like the real card. */
+.app-shell.charts-workstation .sector-heatmap-panel.is-style-rh .sector-heatmap-card,
+.app-shell.charts-workstation .sector-heatmap-panel.is-style-rh .sector-heatmap-card * {
+  font-family: Inter, "Helvetica Neue", Arial, system-ui, sans-serif !important;
+}
 .app-shell.charts-workstation .charts-oi-expiry-row {
   min-height: 26px;
   padding: 4px 8px;
