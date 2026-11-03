@@ -16,10 +16,18 @@ BATCH_SIZE = 8  # Keep frozen chart + scanner evidence within the local model co
 MAX_PENDING_BATCHES = 64
 
 
-#: Between batches during the weekday 04:00-20:00 ET session. The agents used to
-#: stop entirely in those hours; 2026-11-02 he asked for them to run 24/7, so they
-#: run all day but paced, leaving the scanner the CPU it needs.
+#: Between batches during the weekday 04:00-20:00 ET session (outside the
+#: quiet window below). 2026-11-02 he asked for the agents to run 24/7.
 SESSION_BATCH_GAP_SECONDS = 300
+
+#: Weekday QUIET WINDOW for the agents, ET: no new batch starts from 06:30 to
+#: 17:00. 2026-11-03 08:45 ET the local model took 3.8 cores of this laptop's
+#: 2 performance cores; the app server starved (health 58 s, login hung, scanner
+#: board 2.5 min). His order: scanner first, charts second, everything else
+#: after - so the agents run evenings, nights and weekends only. 06:30 (not
+#: 07:00) so a batch already running (~20 min) is finished before 07:00.
+QUIET_START_MINUTE = 6 * 60 + 30
+QUIET_END_MINUTE = 17 * 60
 
 
 def in_scanner_session(at=None):
@@ -28,9 +36,16 @@ def in_scanner_session(at=None):
     return at.weekday() < 5 and 4 <= at.hour < 20
 
 
+def in_quiet_window(at=None):
+    """Weekday 06:30-17:00 ET: the scanner and charts own the CPU."""
+    at = (at or datetime.now(ai_filter.ET)).astimezone(ai_filter.ET)
+    minute = at.hour * 60 + at.minute
+    return at.weekday() < 5 and QUIET_START_MINUTE <= minute < QUIET_END_MINUTE
+
+
 def background_research_allowed(at=None):
-    """Agents run 24/7 (2026-11-02). Pacing in session: research_gap_seconds."""
-    return True
+    """Agents may start a batch: always, except the weekday quiet window."""
+    return not in_quiet_window(at)
 
 
 def research_gap_seconds(at=None):
@@ -456,7 +471,8 @@ class LearningTeam:
         latest = max(done, key=lambda j: j["completedAt"], default={})
         return {"enabled": self.reviewer.enabled(), "mode": "post_trade", "entryBlocking": False,
                 "primaryProvider": getattr(self.reviewer, "primary_provider", lambda: "unknown")(),
-                "backgroundResearchPaused": False, "sessionPacingSeconds": research_gap_seconds(),
+                "backgroundResearchPaused": in_quiet_window(), "quietWindow": "06:30-17:00 ET weekdays",
+                "sessionPacingSeconds": research_gap_seconds(),
                 "agentRoles": ["scanner", "reviewer", "critic", "planner", *SPECIALISTS],
                 "snapshotCoverage": {"trades": sum(len(j['evidence']) for j in jobs),
                     "scanner": sum(bool(r.get('scannerInputsAtSignal')) for j in jobs for r in j['evidence']),

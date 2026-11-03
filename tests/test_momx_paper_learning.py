@@ -31,8 +31,12 @@ def test_agents_run_around_the_clock_but_pace_the_trading_day():
     from momx.paper_learning import background_research_allowed, research_gap_seconds, SESSION_BATCH_GAP_SECONDS
     def at(stamp):
         return datetime.fromisoformat(stamp)
-    for stamp in ('2026-11-02T03:59:00-05:00', '2026-11-02T10:00:00-05:00', '2026-11-01T10:00:00-05:00'):
-        assert background_research_allowed(at(stamp))
+    # 2026-11-03: weekday quiet window 06:30-17:00 ET - scanner and charts first.
+    for stamp in ('2026-11-02T03:59:00-05:00', '2026-11-02T06:29:00-05:00', '2026-11-02T17:00:00-05:00',
+                  '2026-11-02T23:00:00-05:00', '2026-11-01T10:00:00-05:00'):
+        assert background_research_allowed(at(stamp)), stamp
+    for stamp in ('2026-11-02T06:30:00-05:00', '2026-11-02T09:30:00-05:00', '2026-11-02T16:59:00-05:00'):
+        assert not background_research_allowed(at(stamp)), stamp
     assert research_gap_seconds(at('2026-11-02T03:59:00-05:00')) == 0
     assert research_gap_seconds(at('2026-11-02T04:00:00-05:00')) == SESSION_BATCH_GAP_SECONDS
     assert research_gap_seconds(at('2026-11-02T19:59:00-05:00')) == SESSION_BATCH_GAP_SECONDS

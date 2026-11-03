@@ -2,6 +2,13 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-03T09:00:00-05:00",
+      "heading": "AI agents stay off during the trading day",
+      "items": [
+        "This morning the AI agents' model took most of the laptop's processor, so the app would not load and the scanner lagged. The agents now run only on weekday evenings, nights and weekends; from 6:30 AM to 5 PM ET they stay off so the scanner and charts get the whole processor. Nothing about trading or the scanner's rules changed."
+      ]
+    },
+    {
       "at": "2026-11-03T08:00:00-05:00",
       "heading": "Record column reads \"AI - 62%\"",
       "items": [
