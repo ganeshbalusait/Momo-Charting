@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from config import ARTIFACTS_DIR, settings
-from momx import buckets, columns, ema_touch, feed, flags, grade, news, scan
+from momx import buckets, columns, ema_touch, feed, flags, grade, live_rvol, news, scan
 from momx.industries import industry_for
 from momx.industry_lookup import resolve as resolve_industries
 
@@ -292,6 +292,32 @@ def frame_to_bars(frame: Any) -> list[dict]:
     return bars
 
 
+def splice_fresh_tail(coarse: list[dict], from_five: list[dict]) -> list[dict]:
+    """The 30-minute tape with its END taken from the (fresher) 5-minute tape.
+
+    2026-11-03 11:04 ET: the 5m tape is stream-extended to the forming bar,
+    but the 30m tape (paced REST, its own stream check) still ended at 10:30,
+    so 1h/2h/4h scored the FINISHED 10:00-11:00 hour (NVTS 1h 3.0, 2h 3.2)
+    while TOS was already on the 6-minute-old 11:00 bar (blank). The 30m
+    buckets folded from the 5m tape replace the coarse tape's last (forming)
+    bucket when they hold at least as much volume, and every newer bucket is
+    appended - the long history still comes from the 30m tape.
+    """
+    if not coarse or not from_five:
+        return coarse
+    last = coarse[-1]
+    try:
+        last_time = int(last["time"])
+    except (KeyError, TypeError, ValueError):
+        return coarse
+    newer = [bar for bar in from_five if int(bar.get("time") or 0) > last_time]
+    same = next((bar for bar in from_five if int(bar.get("time") or 0) == last_time), None)
+    head = coarse
+    if same is not None and float(same.get("volume") or 0) >= float(last.get("volume") or 0):
+        head = coarse[:-1] + [same]
+    return head + newer if newer else head
+
+
 def build_tapes(
     five_minute: Any,
     thirty_minute: Any,
@@ -320,6 +346,7 @@ def build_tapes(
         tapes[key] = buckets.aggregate_intraday(
             fine, minutes, two_hour_anchor=two_hour_anchor
         )
+    coarse = splice_fresh_tail(coarse, tapes.get("30m") or [])
     for key, minutes in INTRADAY_FROM_30M.items():
         tapes[key] = buckets.aggregate_intraday(
             coarse, minutes, two_hour_anchor=two_hour_anchor
@@ -414,6 +441,13 @@ _POOL_LOCK = threading.Lock()
 #: ~50 s after its scan finished. Separate from the big lanes so a Mag7 build
 #: never queues behind a Watchlist batch.
 SMALL_LIST_WORKERS = 2
+
+#: Called once a build's fetch + scan is done, BEFORE news, grading and the
+#: rest of the board assembly. momx.service sets it to release its heavy gate
+#: (2026-11-02: "50 EMA Touch Daily" held the gate for 90+ s reading Yahoo
+#: RSS one ticker at a time while the Watchlist waited to start its scan; one
+#: Watchlist pass took 27 min). None outside the service; must never raise.
+SCAN_DONE_HOOK = None
 _SMALL_POOL = None
 
 
@@ -552,7 +586,8 @@ def _pool():
             try:
                 from concurrent.futures import ProcessPoolExecutor
 
-                _POOL = [ProcessPoolExecutor(max_workers=1) for _ in range(PARALLEL_WORKERS)]
+                from momx.worker_priority import idle_calculation_worker
+                _POOL = [ProcessPoolExecutor(max_workers=1, initializer=idle_calculation_worker) for _ in range(PARALLEL_WORKERS)]
             except Exception:  # noqa: BLE001 - sequential is always available
                 _POOL = False
         return _POOL or None
@@ -583,7 +618,8 @@ def _small_pool():
             try:
                 from concurrent.futures import ProcessPoolExecutor
 
-                _SMALL_POOL = [ProcessPoolExecutor(max_workers=1) for _ in range(SMALL_LIST_WORKERS)]
+                from momx.worker_priority import idle_calculation_worker
+                _SMALL_POOL = [ProcessPoolExecutor(max_workers=1, initializer=idle_calculation_worker) for _ in range(SMALL_LIST_WORKERS)]
             except Exception:  # noqa: BLE001 - sequential is always available
                 _SMALL_POOL = False
         return _SMALL_POOL or None
@@ -944,6 +980,11 @@ def build_board(
         ),
         flush=True,
     )
+    if SCAN_DONE_HOOK is not None:
+        try:
+            SCAN_DONE_HOOK()
+        except Exception:  # noqa: BLE001 - a hook can never cost the board
+            pass
 
     if skipped:
         cached = {
@@ -999,6 +1040,13 @@ def build_board(
         stamp = _newest_bar_epoch(five.get(record["symbol"]))
         if row is not None and stamp is not None:
             row["marketDataAt"] = stamp
+        # Live-RVOL bases leave the row here, before it is lent, contracted or
+        # archived; one per-symbol store serves every list (2026-11-03).
+        if row is not None and row.get("_lb"):
+            try:
+                live_rvol.remember(record["symbol"], row.pop("_lb"))
+            except Exception:  # noqa: BLE001 - a live overlay never costs the board
+                row.pop("_lb", None)
 
     if borrowed:
         fresh = {record["symbol"]: record for record in scanned}
@@ -1111,11 +1159,55 @@ def _news_map(symbols: Sequence[str], now: Any = None) -> dict:
     exists so even an import-time or contract-level failure ships the board
     with no icons rather than no board.
     """
+    if NEWS_ASYNC:
+        return _news_map_async(symbols)
+    return _news_map_now(symbols, now)
+
+
+def _news_map_now(symbols: Sequence[str], now: Any = None) -> dict:
     try:
         fetched = news.fresh_news(symbols, now=now if isinstance(now, datetime) else None)
         return fetched if isinstance(fetched, dict) else {}
     except Exception:  # noqa: BLE001 - news can never break the board
         return {}
+
+
+#: Worker-only (service.start_warmer turns it on): a build ships the last news
+#: map for its symbols and a background thread refreshes it (2026-11-02: the
+#: news step was ~60 s of a 202 s Watchlist pass; he wants the pass under 1
+#: min). A symbol set seen for the first time is fetched inline, so the first
+#: build after a restart still grades with news.
+NEWS_ASYNC = False
+_NEWS_HELD: dict = {}
+_NEWS_BUSY: set = set()
+_NEWS_LOCK = threading.Lock()
+
+
+def _news_map_async(symbols: Sequence[str]) -> dict:
+    key = tuple(sorted({str(s).upper() for s in symbols}))
+    with _NEWS_LOCK:
+        held = _NEWS_HELD.get(key)
+        start = held is not None and key not in _NEWS_BUSY
+        if start:
+            _NEWS_BUSY.add(key)
+    if held is None:
+        fresh = _news_map_now(list(key))
+        with _NEWS_LOCK:
+            _NEWS_HELD[key] = fresh
+            while len(_NEWS_HELD) > 16:
+                _NEWS_HELD.pop(next(iter(_NEWS_HELD)))
+        return fresh
+    if start:
+        def refresh():
+            try:
+                fresh = _news_map_now(list(key))
+                with _NEWS_LOCK:
+                    _NEWS_HELD[key] = fresh
+            finally:
+                with _NEWS_LOCK:
+                    _NEWS_BUSY.discard(key)
+        threading.Thread(target=refresh, name="momx-news-refresh", daemon=True).start()
+    return held
 
 
 def _badge(symbol: Any, row: Mapping[str, Any], earnings_map: Any) -> dict:
@@ -1663,6 +1755,36 @@ def _read_document(path: Any = None) -> dict:
     return _document_from_raw(raw)
 
 
+def _read_list_metadata(path: Any = None) -> dict:
+    """Resolve names without recalculating every derived EMA universe.
+
+    HTTP polling and warmer priority checks only need names and the active
+    selection. Actual universe reads still compute touchers from current data.
+    Read the small settings file each time so edits remain immediately visible.
+    """
+    target = Path(path) if path is not None else universe_path()
+    try:
+        raw = json.loads(target.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        raw = None
+    names = list(LIST_SEEDS)
+    names.extend(name for name in ema_touch.current_lists() if name not in names)
+    requested = ''
+    if isinstance(raw, Mapping) and isinstance(raw.get('lists'), Mapping):
+        for name in raw['lists']:
+            name = str(name or '').strip()
+            if name and name not in names and not ema_touch.is_derived(name):
+                names.append(name)
+        requested = str(raw.get('active') or '').strip()
+    else:
+        symbols = _clean_symbols(raw.get('symbols')) if isinstance(raw, Mapping) else _clean_symbols(raw)
+        if symbols:
+            requested = _migration_target(symbols)
+    active = next((name for name in names if name.lower() == requested.lower()), None)
+    active = active or (DEFAULT_LIST_NAME if DEFAULT_LIST_NAME in names else next(iter(names), DEFAULT_LIST_NAME))
+    return {'active': active, 'lists': dict.fromkeys(names)}
+
+
 def _write_document(document: Mapping[str, Any], path: Any = None) -> None:
     """Write the whole document atomically (temp file + ``os.replace``).
 
@@ -1745,7 +1867,7 @@ def resolve_list_name(
     :class:`UnknownListError` rather than quietly falling back, so a typo
     surfaces as a 400 instead of the wrong board.
     """
-    doc = document if document is not None else _read_document(path)
+    doc = document if document is not None else _read_list_metadata(path)
     lists = doc.get("lists") or {}
     wanted = str(name or "").strip()
     if not wanted:
@@ -1776,7 +1898,7 @@ def _refuse_derived(target: str) -> None:
 
 def list_names(path: Any = None) -> list[str]:
     """Every known list name, in display order (seeded names first)."""
-    return list((_read_document(path).get("lists") or {}).keys())
+    return list((_read_list_metadata(path).get("lists") or {}).keys())
 
 
 def active_list(path: Any = None) -> str:

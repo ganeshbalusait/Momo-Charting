@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  chainCapturedToday,
+  chainIsCurrent,
   etMinutesSinceMidnight,
   expiryLabel,
   parseStrikeQuery,
@@ -385,4 +387,33 @@ test("wallReach: garbage in, null out - never throws", () => {
     wallReach({ walls: { calls: [{ strike: "x" }], puts: [] }, spot: 72 }),
     null,
   );
+});
+
+// AMZN card 2026-11-03: the server tags EVERY cached chain "stale" once it is
+// 15 seconds old, so a chain captured two minutes ago never counted and the
+// card drew no levels for a minute. Judge by the capture time instead.
+test("chainIsCurrent: a stale-tagged chain captured minutes ago is current", () => {
+  const now = Date.parse("2026-11-03T18:16:00Z");
+  assert.equal(chainIsCurrent({ stale: true, scannedAt: "2026-11-03T12:14:00-06:00" }, now), true);
+  assert.equal(chainIsCurrent({ stale: false }, now), true);
+});
+
+test("chainIsCurrent: yesterday's chain or an unknown age is not current", () => {
+  const now = Date.parse("2026-11-03T18:16:00Z");
+  // CRWV 2026-09-03: yesterday's walls must never pass as today's
+  assert.equal(chainIsCurrent({ stale: true, scannedAt: "2026-11-02T15:00:00-06:00" }, now), false);
+  assert.equal(chainIsCurrent({ stale: true, scannedAt: "2026-11-03T11:59:00-06:00" }, now), false);
+  assert.equal(chainIsCurrent({ stale: true }, now), false);
+  assert.equal(chainIsCurrent(null, now), false);
+});
+
+// OI only changes overnight, so a chain from earlier TODAY still has today's
+// walls; the card draws it at once (with its age) instead of waiting a minute.
+test("chainCapturedToday: same ET day yes, yesterday or unknown no", () => {
+  const now = Date.parse("2026-11-03T18:54:00Z"); // 13:54 ET
+  assert.equal(chainCapturedToday({ scannedAt: "2026-11-03T11:43:19-06:00" }, now), true);
+  assert.equal(chainCapturedToday({ scannedAt: "2026-11-03T04:30:00-05:00" }, now), true);
+  assert.equal(chainCapturedToday({ scannedAt: "2026-11-02T19:59:00-05:00" }, now), false);
+  assert.equal(chainCapturedToday({}, now), false);
+  assert.equal(chainCapturedToday(null, now), false);
 });

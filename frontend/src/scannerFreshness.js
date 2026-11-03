@@ -15,9 +15,14 @@ export function scannerRowFreshness(row, nowMs = Date.now()) {
       || nowMs - (start + 300000) < 600000) return null;
   const clock = rowClock.format(start);
   const date = rowDay.format(start), prefix = date === rowDay.format(nowMs) ? "" : `${rowMonthDay.format(start)} `;
-  return {text: `Data ${prefix}${clock}`, title: `The latest supplied 5m study candle started ${date} ${clock} ET. `
+  return {text: `Data ${prefix}${clock}`, timeText: `${prefix}${clock}`, title: `The latest supplied 5m study candle started ${date} ${clock} ET. `
     + "These study inputs are older; a newer live quote does not refresh momentum studies. "
     + "Quiet trading or delayed/missing candles can cause this. This age alone does not identify a provider delay."};
+}
+
+export function setupSourceTime(warning, visibleTimeText = null) {
+  const text = warning?.timeText || null;
+  return text && text !== visibleTimeText ? text : null;
 }
 
 export function scannerFreshness(board, nowMs = Date.now(), receivedAt = null) {
@@ -44,8 +49,9 @@ export function scannerFreshness(board, nowMs = Date.now(), receivedAt = null) {
   };
   return {
     tone: note.tone,
-    text: (windowKnown ? windowText : `Data ${clockTime(newest)} ET · ${newestAge}m old`)
-      + (Number.isFinite(oldestAge) && oldestAge > newestAge ? ` · oldest start ${oldestAge}m ago` : ""),
+    // "oldest start Nm ago" left the strip 2026-11-03: he asked what it meant
+    // three times. The history span stays in the tooltip (Source bars: ...).
+    text: windowKnown ? windowText : `Data ${clockTime(newest)} ET · ${newestAge}m old`,
     title: `Source bars: ${clock(f.oldestDataAt || newest)} to ${clock(newest)}. `
       + `Scan started: ${clock(f.scanStartedAt || board?.generatedAt)}. Completed: ${clock(f.scanCompletedAt || board?.generatedAt)}. `
       + `API served: ${clock(f.servedAt)}. Browser received: ${clock(board?.source === "cache" ? null : receivedAt)}. `

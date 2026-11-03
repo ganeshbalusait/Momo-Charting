@@ -169,6 +169,8 @@ class _ListState:
 
 
 _LOCK = threading.Lock()
+_DISK_READ_LOCK = threading.Lock()
+_DISK_READ_CACHE = {}
 #: The SUPERVISOR thread. It builds nothing: its only job is to make sure
 #: every known list has a warm thread, including a list pasted long after
 #: startup. Keeps the historic name because status() reports it as ``running``
@@ -215,6 +217,11 @@ def _release_heavy_gate_early() -> None:
     if getattr(_GATE_HELD, "held", False):
         _GATE_HELD.held = False
         _HEAVY_GATE.release()
+
+
+# The gate covers the fetch + scan only: board.build_board calls this the moment
+# its scan finishes, so the next big list starts while this one reads news.
+board.SCAN_DONE_HOOK = _release_heavy_gate_early
 
 #: Set only by _stop_warmer(), which exists for tests. Production never sets
 #: it: the warmer runs until the process exits, and the threads are daemons.
@@ -505,6 +512,7 @@ _BEAR_OPTION_TRACK = option_track.OptionTrackBook(grade_dir("bear"), direction="
 from momx import jev_scanner as _jev_scanner_mod
 _JEV_SCANNER = _jev_scanner_mod.JevScannerBook(grade_dir())
 from momx import ai_filter  # noqa: E402 - the Setup column AI tag (2026-10-17)
+from momx import similar_record  # noqa: E402 - the Record column's overall win % (2026-11-02)
 _BEAR_JEV_SCANNER = _jev_scanner_mod.JevScannerBook(grade_dir("bear"), direction="bear")
 # Jev also reads the other side's chart arrows (PUT2H on a call ticker and the reverse).
 from momx import jev_trade as _jev_trade_mod
@@ -613,7 +621,21 @@ def _load_disk(name: str, direction: str = "bull") -> dict | None:
     the caller falls through to the warming stub. NEVER raises.
     """
     try:
-        raw = json.loads(_cache_file(name, direction).read_text(encoding="utf-8"))
+        target = _cache_file(name, direction)
+        stat = target.stat()
+        signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        key = str(target.resolve())
+        with _DISK_READ_LOCK:
+            held = _DISK_READ_CACHE.get(key)
+            if held and held[0] == signature:
+                raw = held[1]
+            else:
+                raw = json.loads(target.read_text(encoding="utf-8"))
+                # Keep only a bounded read cache. Atomic replacements are seen
+                # on the next request; the original candle times never change.
+                if len(_DISK_READ_CACHE) >= 16:
+                    _DISK_READ_CACHE.pop(next(iter(_DISK_READ_CACHE)))
+                _DISK_READ_CACHE[key] = (signature, raw)
     except (OSError, ValueError, TypeError):
         return None
     if not isinstance(raw, dict) or not isinstance(raw.get("rows"), list):
@@ -974,6 +996,8 @@ def _build_once(name: str) -> float:
         _OPTION_TRACK.apply(name, payload, stamped_at)
     # The shadow AI's best score per ticker -> the Setup column's AI tag (2026-10-17).
     ai_filter.mark_rows(payload, "bull")
+    # The Record column's overall win %: how similar-looking past trades did (2026-11-02).
+    similar_record.apply(payload, "bull")
     # The BEAR board (spec 2026-09-24): the same rows with the bear verdicts
     # promoted, its own books, its own matched-since, published together with
     # the bull board so a reader never sees one without the other. The bull
@@ -993,6 +1017,7 @@ def _build_once(name: str) -> float:
         _BEAR_JEV_SCANNER.apply(name, bear, stamped_at)
         _BEAR_OPTION_TRACK.apply(name, bear, stamped_at)
     ai_filter.mark_rows(bear, "bear")
+    similar_record.apply(bear, "bear")
     payload["scanStartedAt"] = scan_started_at
     payload["scanCompletedAt"] = datetime.now(timezone.utc).isoformat()
     bear["scanStartedAt"] = payload["scanStartedAt"]
@@ -1169,7 +1194,7 @@ def _build_claimed(name: str) -> bool:
                 delay = SHARED_SCAN_POLL_SECONDS
             else:
                 delay = _next_delay(elapsed, bool(state.error))
-                if heavy and name in LIST_PRIORITY and not state.error:
+                if heavy and name in FAST_IDLE_LISTS and not state.error:
                     delay = min(delay, PRIORITY_HEAVY_IDLE_SECONDS)
                 if not _is_viewed(name):
                     delay = max(delay, UNVIEWED_MIN_DELAY_SECONDS)
@@ -1181,7 +1206,11 @@ def _build_claimed(name: str) -> bool:
 #: when two big lists are due together, the earlier one in this tuple takes the
 #: one-at-a-time heavy gate first. The active list comes right after these;
 #: everything else after that. Mag7 is small and never waits on the gate.
-LIST_PRIORITY = ("Mag7", "Watchlist")
+#: 2026-11-02 he re-ordered it: "1. Mag7 2. Watchlist 3. 21 ema 4. 50 ema".
+LIST_PRIORITY = ("Mag7", "Watchlist", "21 EMA Touch Monthly", "50 EMA Touch Daily")
+#: Only these get the short idle below; the EMA lists rank ahead of the rest
+#: but do not rebuild back-to-back, so they never crowd out the Watchlist.
+FAST_IDLE_LISTS = ("Mag7", "Watchlist")
 #: The Watchlist (a heavy list in LIST_PRIORITY) idles only this long between
 #: builds (2026-10-16, "under 1 min"): the 15 s+ politeness idle was a quarter
 #: of the target. The scanner runs at IDLE priority, so the chart engine still
@@ -1340,8 +1369,15 @@ def _loop() -> None:
 def start_warmer() -> None:
     """Start the warmer threads if they are not running. Idempotent."""
     global _THREAD, ASYNC_PERSIST
+    # A snapshot read must not re-read every list or restaff all workers.
+    # The supervisor reconciles list changes when refresh_now wakes it.
+    with _LOCK:
+        if _THREAD is not None and _THREAD.is_alive() and not _STOP.is_set():
+            return
     _STOP.clear()
     ASYNC_PERSIST = True
+    # News off the build path too (board.NEWS_ASYNC; 2026-11-02, "under 1 min").
+    board.NEWS_ASYNC = True
     # The monthly EMA touch lists read their members from this refresher's
     # cache (momx/ema_touch.py); only the warmer process fetches.
     ema_touch.start_refresher(lambda: board.load_universe(board.WATCHLIST_LIST_NAME))

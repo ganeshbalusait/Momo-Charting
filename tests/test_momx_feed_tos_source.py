@@ -353,6 +353,17 @@ def test_tos_status_counts_symbols_with_all_three_tapes(tos):
     assert feed.tos_status(["A"])["oldestSeconds"] is None
 
 
+def test_status_does_not_wait_for_background_cache_lock(tos, monkeypatch):
+    monkeypatch.setattr(feed, '_TOS_STATUS_CACHE', {})
+    known = feed.tos_status(['A'])
+    with feed._CACHE_LOCK:
+        held = feed.tos_status(['A'])
+        unknown = feed.tos_status(['UNSEEN'])
+    assert held == {**known, 'refreshing': True}
+    assert unknown['refreshing'] and unknown['loaded'] is None and unknown['pending'] is None
+    assert 'refreshing' not in feed.tos_status(['A'])
+
+
 def test_board_payload_carries_the_source_without_mutating_the_board(tos, monkeypatch):
     board = {"universe": ["A"], "rows": []}
     out = service._with_data_source("Watchlist", board)

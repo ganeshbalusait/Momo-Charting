@@ -1452,30 +1452,40 @@ def _tape_symbol_entries(path: Path, symbol: str) -> list[dict]:
     and decode just that object. A torn line fails to decode and is skipped;
     a decode that runs past its own line is rejected.
     """
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
-    key = json.dumps(symbol)
-    needle = key + ':{"t":'
+    import mmap
+    key = json.dumps(symbol).encode('utf-8')
+    needle = key + b':{"t":'
     decoder = json.JSONDecoder()
     found: list[dict] = []
-    pos = 0
-    while True:
-        index = text.find(needle, pos)
-        if index < 0:
-            break
-        start = index + len(key) + 1
-        line_end = text.find("\n", start)
-        if line_end < 0:
-            line_end = len(text)
-        try:
-            entry, end = decoder.raw_decode(text, start)
-        except ValueError:
-            entry, end = None, line_end + 1
-        if isinstance(entry, dict) and end <= line_end:
-            found.append(entry)
-        pos = line_end  # a symbol appears once per sample line
+    try:
+        with Path(path).open('rb') as stream:
+            if not os.fstat(stream.fileno()).st_size:
+                return []
+            # Search bytes without decoding/copying the whole multi-megabyte tape.
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as text:
+                pos = 0
+                while True:
+                    index = text.find(needle, pos)
+                    if index < 0:
+                        break
+                    start = index + len(key) + 1
+                    line_end = text.find(b"\n", start)
+                    if line_end < 0:
+                        line_end = len(text)
+                    stop = min(start + 512, line_end)
+                    while stop > start:
+                        try:
+                            entry, _ = decoder.raw_decode(text[start:stop].decode('utf-8'))
+                            if isinstance(entry, dict):
+                                found.append(entry)
+                            break
+                        except (ValueError, UnicodeDecodeError):
+                            if stop == line_end:
+                                break  # A torn entry cannot consume the next sample.
+                            stop = min(line_end, start + 2 * (stop-start))
+                    pos = line_end
+    except (OSError, ValueError):
+        return []
     return found
 
 

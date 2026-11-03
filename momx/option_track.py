@@ -831,7 +831,12 @@ def setup_snapshot(row: Mapping, at=None) -> dict:
     setup, not just the rule name. Compact numbers only; never raises."""
     out: dict = {}
     try:
-        from momx import chart_learning
+        from momx import chart_learning, scanner_learning
+        signal_at = (at or datetime.now(ET)).replace(microsecond=0).isoformat()
+        scanner = scanner_learning.snapshot({"at": signal_at, "scannerInputs": row.get("scannerInputs")}, "bull")
+        if scanner:
+            out["scannerInputs"] = scanner
+        out["captureVersion"] = 1
         context = _m(row.get("m5")).get("chartContext")
         if isinstance(context, dict):
             candidate = {"at": (at or datetime.now(ET)).isoformat(), "symbol": row.get("symbol"),
@@ -866,6 +871,9 @@ def setup_snapshot(row: Mapping, at=None) -> dict:
         out["reasons"] = len(row.get("scanReasons") or [])
     except Exception:  # noqa: BLE001 - a snapshot must never cost a trade
         pass
+    out["capture"] = {"scanner": "captured" if out.get("scannerInputs") else "missing_or_invalid",
+                      "chart": "captured" if out.get("chartContext") else "missing_or_stale",
+                      "at": (at or datetime.now(ET)).replace(microsecond=0).isoformat()}
     return {k: v for k, v in out.items() if v is not None}
 
 
@@ -970,6 +978,7 @@ class OptionTrackBook:
         self._saved_day_at = self._saved_carry_at = 0.0
         self._fast_thread: threading.Thread | None = None
         self._urgent: queue.Queue = queue.Queue()   # symbols with a NEW (pending) trade - priced first
+        self._finished: dict[str, list[dict]] = {}  # past day -> carries finished, not yet written
         self._queued: set[str] = set()
         self._urgent_set: set[str] = set()
         self._thread: threading.Thread | None = None
@@ -1109,6 +1118,8 @@ class OptionTrackBook:
                 self._write_day()
             if self._dirty_carry and (not due_only or now - self._saved_carry_at >= SAVE_EVERY_SECONDS):
                 self._write_carry()
+            elif self._finished and not due_only:
+                self._write_finished()
 
     def _bear_sector_trades(self, board: str, rows: list, local: datetime, have: set, need: set) -> None:
         """Bear sectorHot / sectorMove (caller holds the lock)."""
@@ -1156,6 +1167,7 @@ class OptionTrackBook:
 
     def _write_carry(self) -> None:
         self._dirty_carry, self._saved_carry_at = False, self._clock()
+        self._write_finished()       # day files first: a carry never leaves before its holdDone lands
         path = self._carry_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1167,23 +1179,40 @@ class OptionTrackBook:
 
     def _finish_carry(self, c: dict) -> None:
         """Write the final holdBest back into the trade's own day file."""
-        path = self._path(c["day"])
         if c["day"] == self._day:
             for t in self._trades:
                 if t.get("rule") == c["rule"] and t.get("symbol") == c["symbol"]:
                     t.update(holdBest=c["holdBest"], holdBestAt=c.get("holdBestAt"), holdDone=True)
             self._save()
             return
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-            for t in doc.get("trades") or []:
-                if t.get("rule") == c["rule"] and t.get("symbol") == c["symbol"]:
-                    t.update(holdBest=c["holdBest"], holdBestAt=c.get("holdBestAt"), holdDone=True)
-            tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            tmp.write_text(json.dumps(doc, indent=1), encoding="utf-8")
-            os.replace(tmp, path)
-        except (OSError, ValueError, UnicodeDecodeError):
-            pass
+        # Past day: queued, written by _write_finished with the next carry save.
+        # One read+write of a 6 MB day file PER carry held the lock for hours on
+        # Mon 2026-11-02 (8,884 Friday expiries) and froze every scanner board.
+        with self._lock:
+            self._finished.setdefault(c["day"], []).append(
+                {"rule": c["rule"], "symbol": c["symbol"], "holdBest": c["holdBest"],
+                 "holdBestAt": c.get("holdBestAt")})
+            if not self._background:
+                self._write_finished()
+
+    def _write_finished(self) -> None:
+        """Write queued holdDone updates: each past day file read and written once."""
+        with self._lock:
+            pending, self._finished = self._finished, {}
+        for day, done in pending.items():
+            by_key = {(d["rule"], d["symbol"]): d for d in done}
+            path = self._path(day)
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                for t in doc.get("trades") or []:
+                    d = by_key.get((t.get("rule"), t.get("symbol")))
+                    if d:
+                        t.update(holdBest=d["holdBest"], holdBestAt=d.get("holdBestAt"), holdDone=True)
+                tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                tmp.write_text(json.dumps(doc, separators=(",", ":")), encoding="utf-8")
+                os.replace(tmp, path)
+            except (OSError, ValueError, UnicodeDecodeError):
+                pass
 
     def trades(self) -> list[dict]:
         with self._lock:

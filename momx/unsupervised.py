@@ -127,10 +127,13 @@ def _rows(done: Mapping[str, list], features, label) -> list[tuple[str, dict, in
     out = []
     for day in sorted(done):
         for side, trade in done[day]:
-            y = label(trade)
+            if "_features" in trade:     # a dataset row / compacted trade: its stored entry-time inputs
+                y, feats = trade.get("_win"), trade["_features"] or {}
+            else:
+                y, feats = label(trade), features(trade, side)
             if y is None:
                 continue
-            out.append((day, features(trade, side), int(y)))
+            out.append((day, feats, int(y)))
     return out
 
 

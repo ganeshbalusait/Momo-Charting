@@ -3,12 +3,49 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 
 from momx import ai_filter
 
+#: Measured 2026-11-02 on the laptop: a good Hermes run took 134 s, 128 s of it
+#: Hermes importing its own framework (the answer itself ~6 s); a cold model
+#: load adds ~50 s. 180 s reported nearly every run "unavailable". Research
+#: only - never on the entry/exit path - so a longer wait costs nothing.
+HERMES_TIMEOUT_SECONDS = 420
+
+
+def run_bounded(*args, **kwargs):
+    """Kill the Hermes re-exec descendants too; inherited pipes cannot extend the deadline."""
+    timeout = kwargs.pop('timeout')
+    check = kwargs.pop('check', False)
+    value = kwargs.pop('input', None)
+    kwargs.pop('capture_output', None)
+    with subprocess.Popen(*args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs) as child:
+        try:
+            out, err = child.communicate(value, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                if os.name == 'nt':
+                    subprocess.run(['taskkill', '/PID', str(child.pid), '/T', '/F'],
+                        capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            finally:
+                if child.poll() is None:
+                    child.kill()
+            # Do not wait forever for a descendant retaining stdout/stderr.
+            try:
+                child.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+            raise subprocess.TimeoutExpired('Hermes research', timeout) from None
+        if check and child.returncode:
+            raise subprocess.CalledProcessError(child.returncode, 'Hermes research')
+        return subprocess.CompletedProcess(args[0], child.returncode, out, err)
+
 
 class HermesReviewer:
-    def __init__(self, config_path=None, runner=subprocess.run):
+    def __init__(self, config_path=None, runner=run_bounded):
         self.config_path = Path(config_path or ai_filter._dir() / "paper" / "hermes.json")
         self.runner = runner
 
@@ -17,6 +54,20 @@ class HermesReviewer:
             return json.loads(self.config_path.read_text()).get("enabled") is True
         except (OSError, ValueError, AttributeError):
             return False
+
+    def status(self):
+        try:
+            return json.loads(self.config_path.with_name('hermes-status.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {"available": None, "reason": "Not checked in this runtime"}
+
+    def _record(self, result):
+        try:
+            ai_filter._write_atomic(self.config_path.with_name('hermes-status.json'), json.dumps({
+                k:result[k] for k in ('provider','available','reason') if k in result} | {'checkedAt':time.time()}))
+        except OSError:
+            pass
+        return result
 
     def request(self, prompt, parse):
         try:
@@ -28,13 +79,13 @@ class HermesReviewer:
                    "HERMES_API_TIMEOUT": "150", "PYTHONIOENCODING": "utf-8"}
             result = self.runner([config["python"], str(bridge)], cwd=config["root"], env=env,
                                  input=json.dumps({"prompt": prompt}), capture_output=True, text=True,
-                                 encoding="utf-8", timeout=180, check=True,
+                                 encoding="utf-8", timeout=HERMES_TIMEOUT_SECONDS, check=True,
                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             envelope = _envelope(result.stdout)
             from momx.paper_ai import _structured_text
-            return {**parse(_structured_text(envelope["response"])), "provider": "hermes", "model": "ollama/qwen3.5:4b", "available": True}
+            return self._record({**parse(_structured_text(envelope["response"])), "provider": "hermes", "model": "ollama/qwen3.5:4b", "available": True})
         except Exception as exc:
-            return {"provider": "hermes", "available": False, "reason": type(exc).__name__ + ": independent review unavailable"}
+            return self._record({"provider": "hermes", "available": False, "reason": type(exc).__name__ + ": independent review unavailable"})
 
 
 def _envelope(stdout):

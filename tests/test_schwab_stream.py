@@ -370,3 +370,14 @@ def test_chart_history_save_reencodes_only_changed_symbols(tmp_path) -> None:
     assert [bar["close"] for bar in written["symbols"]["AAPL"]] == [2.0, 3.0]
     full = {key: stream.chart_history(key) for key in ("META", "AAPL")}
     assert written["symbols"] == full
+
+
+def test_chart_history_keeps_only_the_recent_days(tmp_path):
+    # 2026-11-03: 2.66M bars back to August were re-encoded on every save and
+    # the stream thread queued behind the writer (candles 6+ min late).
+    stream = SchwabMarketStream(chart_history_path=tmp_path / "h.json.gz", chart_history_flush_seconds=1e9,
+                                chart_history_max_age_seconds=2 * 86400)
+    day = 86400
+    for t in (1_785_000_000, 1_785_000_000 + day // 2, 1_785_000_000 + 3 * day):
+        stream._record_chart_bar("META", {"time": t, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 5})
+    assert [bar["time"] for bar in stream.chart_history("META")] == [1_785_000_000 + 3 * day]

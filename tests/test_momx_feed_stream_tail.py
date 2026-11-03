@@ -96,9 +96,14 @@ def test_appending_stops_before_a_dead_minute(stream_file):
     frame = rest_frame([(0, vol[0]), (1, vol[1]), (2, vol[2]), (3, vol[3]), (4, 10.0)])
     minutes = [m for m in minutes_for(vol, range(8)) if m["time"] != BASE + 6 * 300 + 120]
     stream_file({"AAA": minutes, "BBB": [m for m in minutes if m["time"] >= BASE + 4 * 300]})
+    feed._STREAM_EXTENDED.pop(("AAA", 5), None)
     out = feed._extend_with_stream(frame, "AAA", 5)
     stamps = [int(t.timestamp()) - BASE for t in out["timestamp"]]
     assert stamps == [0, 300, 600, 900, 1200, 1500]                  # bucket 6 holds the hole
+    # Stopped short by the hole: NOT "kept fresh by the stream", or the
+    # symbol's REST refetch is demoted for 30 min (Mag7 on 10:10 until ~10:42,
+    # 2026-11-03).
+    assert ("AAA", 5) not in feed._STREAM_EXTENDED
 
 
 def test_too_little_overlap_or_no_stream_keeps_the_rest_tape(stream_file):
@@ -136,6 +141,47 @@ def test_premarket_fill_is_skipped_before_sip_can_serve_and_on_weekends(monkeypa
     assert feed._premarket_fill(["AAPL"], feed.TIMEFRAME_5M, early) == {}
     saturday = datetime(2026, 10, 3, 9, 0, tzinfo=ET)
     assert feed._premarket_fill(["AAPL"], feed.TIMEFRAME_5M, saturday) == {}
+
+
+def test_concurrent_cold_live_poll_does_not_parse_history_archive(monkeypatch):
+    import io
+    import threading
+    started, release = threading.Event(), threading.Event()
+    calls, result = [], []
+    def slow_live(request, timeout=0):
+        calls.append(request.full_url)
+        started.set()
+        assert release.wait(3)
+        return io.BytesIO(json.dumps({'bars':{'AAA':[[time.time(),1,2,.5,1.5,100]]}}).encode())
+    monkeypatch.setattr('urllib.request.urlopen', slow_live)
+    monkeypatch.setattr(feed, 'STREAM_LIVE_ENABLED', True)
+    monkeypatch.setattr(feed, '_STREAM_LIVE', {'at':0.,'ok_at':0.,'max_t':0.,'bars':{},'dead':[]})
+    monkeypatch.setattr(feed, '_STREAM_LIVE_FETCHING', threading.Event())
+    monkeypatch.setattr(feed, '_stream_minutes_from_file', lambda symbol: pytest.fail('Unexpected archive decode'))
+    worker = threading.Thread(target=lambda: result.append(feed._stream_minutes('AAA')))
+    worker.start()
+    try:
+        assert started.wait(3)
+        assert feed._stream_minutes('BBB') == []
+        assert len(calls) == 1
+    finally:
+        release.set()
+        worker.join(3)
+    assert not worker.is_alive() and result[0][0]['volume'] == 100
+    assert not feed._STREAM_LIVE_FETCHING.is_set()
+
+
+def test_failed_live_poll_clears_inflight_and_keeps_file_fallback(monkeypatch):
+    import threading
+    monkeypatch.setattr(feed, '_STREAM_LIVE', {'at':0.,'ok_at':0.,'max_t':0.,'bars':{},'dead':[]})
+    monkeypatch.setattr(feed, '_STREAM_LIVE_FETCHING', threading.Event())
+    monkeypatch.setattr(feed, 'STREAM_LIVE_ENABLED', True)
+    def unavailable(*args, **kwargs):
+        raise OSError('Synthetic offline endpoint')
+    monkeypatch.setattr('urllib.request.urlopen', unavailable)
+    monkeypatch.setattr(feed, '_stream_minutes_from_file', lambda symbol: [{'time':BASE}])
+    assert feed._stream_minutes('AAA') == [{'time':BASE}]
+    assert not feed._STREAM_LIVE_FETCHING.is_set()
 
 
 def test_live_stream_poll_merges_minutes_and_is_preferred(monkeypatch):

@@ -247,7 +247,9 @@ test("Record column keeps matching histories separate instead of choosing the be
   try {
     const row = { symbol: "X", direction: "bear", dayLines: { line: "2026-10-09T09:45:00-04:00" }, m5: { pattern: "explosive" } };
     const rec = f.recordCell(row, at);
-    assert.equal(rec.text, "2 rule histories");
+    // Every rule shows its own win % (2026-11-02), still never pooled.
+    assert.equal(rec.text, "LINE↓ 71.1% · Explosive 100%");
+    assert.equal(rec.detail, "n=45 · n=3 · limited");
     assert.equal(rec.best, null);
     assert.match(rec.lines.join(" | "), /32 wins \/ 13 losses/);
     assert.match(rec.lines.join(" | "), /LIMITED EVIDENCE/);
@@ -286,4 +288,16 @@ test("chart squeeze flames show in the Setup column: one pill per candle, one ca
   const gone = { ...row, chartSqueeze: [{ timeframe: "2h", at: "2026-10-09T09:00:00-04:00", seenAt: "2026-10-09T09:05:00-04:00", goneAt: "2026-10-09T09:20:00-04:00" }] };
   assert.equal(f.chartSqueezeTags(gone, at("09:31"))[0].text, "🔥2h 09:00 ✕09:20");
   assert.equal(f.filterRows([gone], { setup: "tagChartSqz" }, at("09:31")).length, 0);
+});
+
+test("Record column leads with the OVERALL similar-trades win % and its reliability", async () => {
+  const f = await import("./momxFilters.js");
+  const row = { symbol: "Z", direction: "bull", similarRecord: { winPct: 58, k: 100, base: 42.8, inputs: 16, of: 59,
+    trades: 20000, from: "2026-10-05", through: "2026-10-30", check: { auc: 0.513, days: 3, topFifthWin: 39, allWin: 38.4 } } };
+  const rec = f.recordCell(row);
+  assert.equal(rec.text, "AI - 58%");
+  assert.equal(rec.detail, "100 similar · all 42.8% · unproven");
+  assert.equal(rec.tone, "few");
+  assert.match(rec.title, /no better than a coin flip/);
+  assert.equal(f.recordCell({ symbol: "Q" }), null);
 });

@@ -67,3 +67,27 @@ def test_bear_does_not_invent_mirrored_levels(tmp_path,monkeypatch):
     monkeypatch.setattr(ot,'fired',lambda *a:[]);monkeypatch.setattr(ot,'live_today',lambda *a:True)
     book.apply('W',{'rows':[row(2)]},NOW)
     assert not any(t['rule'].startswith('level') for t in book.trades())
+
+
+def test_signal_snapshot_is_frozen_for_normal_and_star_entries(tmp_path, monkeypatch):
+    from momx.scanner_learning import snapshot
+    source=row(2)
+    context={'version':1,'publicationAt':NOW.isoformat(),'highestLevel':0,'historyReady':False,
+             'setupTypes':[{'key':'tagRvol'}],'setupCount':1,'increasing':[]}
+    source['m5']['chartContext']={'version':1,'timeframe':'5m','barAt':int(NOW.timestamp())-300,
+        'availableAt':int(NOW.timestamp()),'capturedAt':int(NOW.timestamp()),'referencePrice':100,'levels':{'ema21':99}}
+    book=ot.OptionTrackBook(tmp_path,fetch=lambda s:None,background=False,healthy=lambda:False)
+    book._levels=SimpleNamespace(evaluate=lambda *a:{},contexts={'X':context},status={'state':'ready'})
+    monkeypatch.setattr(ot,'fired',lambda *a:['go'])
+    monkeypatch.setattr(ot,'live_today',lambda *a:True)
+    monkeypatch.setattr(ot,'star_one',lambda *a:'X')
+    book.apply('W',{'rows':[source]},NOW)
+    trades=[t for t in book.trades() if t['rule'] in ('go','star1')]
+    assert {t['rule'] for t in trades}=={'go','star1'}
+    context['setupTypes'][0]['key']='tagSqz'
+    source['m5']['chartContext']['levels']['ema21']=500
+    for t in trades:
+        assert snapshot(t,'bull')['setupTypes']==[{'key':'tagRvol'}]
+        assert t['setup']['chartContext']['levels']['ema21']==99
+        changed=snapshot(t,'bull');changed['setupTypes'].clear()
+        assert snapshot(t,'bull')['setupCount']==1

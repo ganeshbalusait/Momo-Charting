@@ -13,6 +13,37 @@ def closed(**over):
             "status": "closed", "entry": 1.1, "exitPrice": .8, **over}
 
 
+def test_unsupervised_entries_do_not_need_or_include_future_outcomes():
+    from momx.paper_learning import entry_observation
+    trade = closed(status='open', exitPrice=None, scannerInputs={
+        'version': 1, 'highestLevel': 1, 'setupTypes': [{'key': 'go'}], 'setupCount': 1,
+        'publicationAt': '2026-10-30T10:00:00-04:00', 'historyReady': True})
+    row = entry_observation('bull', trade)
+    assert row['scannerInputsAtSignal']['highestLevel'] == 1
+    assert not {'status', 'exitPrice', 'pnlPerContract', 'entryMid'} & row.keys()
+    trade['scannerInputs']['publicationAt'] = '2026-10-30T10:05:00-04:00'
+    assert entry_observation('bull', trade) is None
+
+
+def test_agents_run_around_the_clock_but_pace_the_trading_day():
+    """2026-11-02: 24/7, one batch per SESSION_BATCH_GAP_SECONDS in 04:00-20:00 ET weekdays."""
+    from datetime import datetime
+    from momx.paper_learning import background_research_allowed, research_gap_seconds, SESSION_BATCH_GAP_SECONDS
+    def at(stamp):
+        return datetime.fromisoformat(stamp)
+    # 2026-11-03: weekday quiet window 06:30-17:00 ET - scanner and charts first.
+    for stamp in ('2026-11-02T03:59:00-05:00', '2026-11-02T06:29:00-05:00', '2026-11-02T17:00:00-05:00',
+                  '2026-11-02T23:00:00-05:00', '2026-11-01T10:00:00-05:00'):
+        assert background_research_allowed(at(stamp)), stamp
+    for stamp in ('2026-11-02T06:30:00-05:00', '2026-11-02T09:30:00-05:00', '2026-11-02T16:59:00-05:00'):
+        assert not background_research_allowed(at(stamp)), stamp
+    assert research_gap_seconds(at('2026-11-02T03:59:00-05:00')) == 0
+    assert research_gap_seconds(at('2026-11-02T04:00:00-05:00')) == SESSION_BATCH_GAP_SECONDS
+    assert research_gap_seconds(at('2026-11-02T19:59:00-05:00')) == SESSION_BATCH_GAP_SECONDS
+    assert research_gap_seconds(at('2026-11-02T20:00:00-05:00')) == 0
+    assert research_gap_seconds(at('2026-11-01T10:00:00-05:00')) == 0
+
+
 class Agents:
     def __init__(self):
         self.prompts = []
@@ -80,16 +111,21 @@ def test_agents_exchange_evidence_and_persist_without_changing_trades_or_models(
     assert list(team.status()["tradeStates"].values()) == ["pending"]
     assert not agents.prompts  # discovery cannot call providers
     assert team.run_once()
-    assert len(agents.prompts) == 4 and "reviewAgent" in agents.prompts[-1]
+    assert len(agents.prompts) == 6 and "reviewAgent" in agents.prompts[-1]
     assert team.status()['latest']['specialistTask']['role'] == 'model_quality'
-    assert "scannerAgent" in agents.prompts[1] and "scannerAgent" in agents.prompts[2]
+    assert "scannerAgent" in agents.prompts[1] and "additionalSpecialists" in agents.prompts[-1]
+    assert set(team.status()["latest"]["specialists"]) == {"data_quality", "exit_risk"}
     assert "never transmit" not in "".join(agents.prompts) and "999" not in "".join(agents.prompts)
     assert team.status()["reviewedTrades"] == 1 and not team.status()["entryBlocking"]
     assert list(team.status()["tradeStates"].values()) == ["complete"]
     assert row["exitPrice"] == .8 and not (tmp_path / "model.json").exists()
+    patterns = json.loads((tmp_path / 'entry-patterns.json').read_text())
+    assert patterns['state'] == 'insufficient_data'
+    assert 'Unsupervised entry-pattern discovery' in agents.prompts[-1]
+    assert team.status()['entryPatterns'] == patterns
     restarted = LearningTeam({"bull": Book([row])}, tmp_path, agents)
     restarted.discover()
-    assert not restarted.run_once() and len(agents.prompts) == 4
+    assert not restarted.run_once() and len(agents.prompts) == 6
 
 
 def test_failed_critic_retries_without_repeating_reviewer_then_reports_failure(tmp_path):
@@ -106,7 +142,7 @@ def test_failed_critic_retries_without_repeating_reviewer_then_reports_failure(t
     for _ in range(2):
         now[0] += 61
         team.run_once()
-    assert len(agents.prompts) == 3
+    assert len(agents.prompts) == 5
     assert team.status()["failedTrades"] == 1 and team.status()["reviewedTrades"] == 0
 
 
@@ -130,7 +166,7 @@ def test_specialist_is_created_for_a_recorded_need_and_findings_reach_critic(tmp
     job = next(iter(team.jobs.values()))
     assert job["specialistTask"]["role"] == "execution"
     assert job["specialist"]["summary"]
-    assert len(agents.prompts) == 4 and "specialistAgent" in agents.prompts[-1]
+    assert len(agents.prompts) == 6 and "specialistAgent" in agents.prompts[-1]
 
 
 def test_hermes_failure_is_visible_and_does_not_block_openclaw_discussion(tmp_path):
@@ -161,3 +197,18 @@ def test_isolated_learning_directory_does_not_enable_production_hermes(tmp_path,
     assert team.hermes.config_path==isolated.parent/'hermes.json'
     assert team.hermes.enabled() is False
     assert json.loads((production/'paper/hermes.json').read_text())['enabled'] is True
+
+
+def test_specialist_selection_uses_frozen_chart_market_and_loss_evidence_and_is_bounded():
+    from momx.paper_learning import specialist_tasks
+    from momx.paper_ai import SPECIALISTS
+    assert {'chart','regime','exit_risk','data_quality'} <= set(SPECIALISTS)
+    job={'specialistTask':{'role':'execution'},'evidence':[{'key':'x','chartContextAtSignal':{'version':1},'marketAtSignal':{'breadth':.4},'pnlPerContract':-20}]}
+    tasks=specialist_tasks(job)
+    assert len(tasks)==3 and len({t['role'] for t in tasks})==3
+    assert tasks[0]['role']=='execution' and tasks==specialist_tasks(job)
+    roles=set()
+    for i in range(50):
+        job['evidence'][0]['key']=str(i)
+        roles.update(t['role'] for t in specialist_tasks(job))
+    assert {'chart','regime','exit_risk','data_quality','execution'} <= roles

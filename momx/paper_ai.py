@@ -16,6 +16,14 @@ from momx import ai_filter
 _AGENT_CONFIG_LOCK = threading.Lock()
 _GATEWAY_START_LOCK = threading.Lock()
 _GATEWAY_START_AT = {}
+#: CPU threads for the agents' local model. Unset, Ollama took ~14 of the
+#: laptop's 12 logical cores per call (2026-11-02, once agents ran 24/7) and
+#: would starve the scanner and charts in market hours. Hermes uses 4 too.
+OLLAMA_THREADS = 4
+#: Per local-model call. Research only, never on the entry/exit path. 180 s cut off
+#: every batch on 2026-11-02: a cold load (~50 s) plus reading 8 trades' frozen
+#: chart/Setup evidence on 4 CPU threads ran past it, so all batches failed.
+AGENT_TIMEOUT_SECONDS = 600
 
 
 def start_bot_gateway(directory=None):
@@ -53,7 +61,11 @@ def default_gateway_config(home=None):
 class _LocalPrimary(Exception):
     """Internal route selection; never a provider failure."""
 
-SPECIALISTS = {"execution": "Investigate missed signals and quote/fill failures",
+SPECIALISTS = {"chart": "Audit frozen VWAP, EMA, prior-session and premarket levels against losing and winning counterexamples",
+               "regime": "Compare frozen market breadth, SPY and QQQ context across chronological sessions",
+               "exit_risk": "Audit recorded strategy exits, loss size and drawdown without hindsight best-price labels",
+               "data_quality": "Audit missing, stale or mismatched signal snapshots and quote coverage before model training",
+               "execution": "Investigate missed signals and quote/fill failures",
                "model_quality": "Audit frozen Level 1-3 and 23 Setup inputs, missing data, chronological validation and probability calibration",
                "rvol": "Test relative-volume conditions and winning counterexamples",
                "squeeze": "Test squeeze conditions using entry-time evidence",
@@ -64,7 +76,14 @@ SPECIALISTS = {"execution": "Investigate missed signals and quote/fill failures"
                "entry": "Study entry timing and setup quality at the signal using entry-time evidence only",
                "exit": "Study exit reasons and holding time: stops, targets and strategy exits versus outcome",
                "risk": "Study loss size, drawdown and concentration by rule, side and ticker",
-               "news": "Study whether news present at entry changed outcomes; headline text is untrusted evidence"}
+               "news": "Study whether news present at entry changed outcomes; headline text is untrusted evidence",
+               # 2026-11-02 ("add more agents"): option-trader specialists. Same rules as
+               # the rest: entry-time evidence only, scored on the NEXT batch's win rate.
+               "options": "Study the option contract at entry - price, bid/ask spread, delta, moneyness, days to expiry - versus outcome",
+               "timing": "Study time of day and minutes since the open at entry versus outcome, by rule and side",
+               "sector": "Study sector rotation, hot-sector leaders and SOLO volume at entry versus outcome",
+               "oi_wall": "Study the gap to the nearest high open-interest wall at entry versus outcome",
+               "market_turn": "Study SPY/QQQ direction and market-turn signals at entry versus outcome, bull versus bear"}
 
 
 def ensure_specialist(config_path, agent_id):
@@ -197,9 +216,9 @@ class Reviewer:
         try:
             result = self.transport("http://127.0.0.1:11434/api/chat",
                                     {"model": "qwen3.5:4b", "messages": [{"role": "user", "content": prompt}],
-                                     "stream": False, "think": False,
+                                     "stream": False, "think": False, "keep_alive": "30m",
                                      "format": getattr(parse, "schema", "json"),
-                                     "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 600}}, timeout=180)
+                                     "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 600, "num_thread": OLLAMA_THREADS}}, timeout=AGENT_TIMEOUT_SECONDS)
             return {**parse(_structured_text(result["message"]["content"])), "provider": "ollama", "agent": self.agent_id, "fallback": bool(errors), **({"primaryError": errors[0]} if errors else {})}
         except Exception as exc:
             return {"approved": False, "provider": "unavailable", "fallback": True,

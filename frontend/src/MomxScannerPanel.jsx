@@ -1,3 +1,4 @@
+import { readScannerSort, writeScannerSort } from "./scannerSortPreferences.js";
 import { Fragment, createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { TOS_LINK_GROUPS, sendTickerToCharts, warmTickerForCharts, tosLinkGroup } from "./tosLinkGroups.js";
@@ -34,7 +35,8 @@ import {
 
 import { etParts, isTradingDay } from "./marketSession.js";
 import { tapeAsOfNote } from "./tapeAsOfNote.js";
-import { scannerFreshness, scannerRowFreshness } from "./scannerFreshness.js";
+import { scannerFreshness, scannerRowFreshness, setupSourceTime } from "./scannerFreshness.js";
+import { MOMX_LIVE_RVOL_ENDPOINT, MOMX_LIVE_RVOL_MAX_AGE_MS, MOMX_LIVE_RVOL_MS, MOMX_LIVE_RVOL_TIMEOUT_MS, liveRvolCell, reuseLiveCells } from "./momxLiveRvol.js";
 import SetupColumnPicker from './SetupColumnPicker.jsx';
 import { scannerRecordLearning } from './scannerRecordLearning.js';
 import { createRvolObservationTracker, observeConfirmationBoard, observeConfirmationHistory, scannerConfirmation, confirmationDescription } from "./scannerConfirmation.js";
@@ -124,6 +126,7 @@ import {
   defaultLayout,
   effectiveSort,
   nextSortState,
+  NO_SORT,
   readStoredLayout,
   writeStoredLayout,
 } from "./momxColumnLayout.js";
@@ -293,7 +296,6 @@ const MOMX_LIVE_QUOTES_ENDPOINT = "/api/momx-live-quotes";
 // momentum of every name, for the sort) every tenth poll.
 const MOMX_LIVE_BOLTS_ENDPOINT = "/api/momx-live-bolts";
 const BOLT_VIEW_KEY = "momx-bolt-view";
-const HL_SORT_KEY = "momx-hl-bolt-sort";
 const MOMX_LIVE_QUOTES_MS = 2500;
 const MOMX_LIVE_QUOTES_IDLE_MS = 30000;
 const EMPTY_OBJECT = Object.freeze({});
@@ -2538,7 +2540,7 @@ function MomxTagExplain() {
 // asOfMs (History, 2026-10-10): judge every time-based tag - SKIT, SQZ, RVOL,
 // chart arrows - as of the SNAPSHOT, not now; by evening a Date.now() check
 // failed them all and History showed a bare "A". No flashing in History.
-function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefined, dataWarning = null) {
+function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefined, dataWarning = null, visibleTimeText = null) {
   if (column.kind === "setup") {
     const text = setupText(row);
     const parts = setupParts(text);
@@ -2550,7 +2552,8 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefi
       ? "5m: " + chartLabel(m5.chart, row && row.direction === "bear" ? "bear" : "bull") + " · trigger " +
         (typeof m5.trigger === "number" && Number.isFinite(m5.trigger) ? "$" + m5.trigger.toFixed(2) : "–")
       : "";
-    const hover = [since, chartPart].filter(Boolean).join(" · ") || undefined;
+    const hover = [since, chartPart, dataWarning?.title].filter(Boolean).join(" · ") || undefined;
+    const sourceTimeText = setupSourceTime(dataWarning, visibleTimeText);
     const evaluatedAt = asOfMs ?? Date.now();
     const tags = (asOfMs
       ? strategyTags(row, evaluatedAt).map((tag) => (tag.fresh ? { ...tag, fresh: false } : tag))
@@ -2577,10 +2580,10 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefi
         className={`${base} momx-setup is-${setupTone(row)} mom-${momentumTone(row)}`}
         title={hover}
       >
-        {dataWarning ? (
+        {sourceTimeText ? (
           <span className="momx-strategy-tag is-data-age" data-testid="momx-row-data-age"
-            title={dataWarning.title} onClick={event => explainTag(event, dataWarning, row)}>
-            {dataWarning.text}
+            title={dataWarning.title} onClick={event => explainTag(event, { ...dataWarning, text: sourceTimeText }, row)}>
+            {sourceTimeText}
           </span>
         ) : null}
         {confirmation.level > 0 ? (
@@ -2645,7 +2648,7 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefi
   return null;
 }
 
-const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, bolt, sourceWarning }) {
+const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, bolt, sourceWarning, liveRvol }) {
   const passed = Boolean(row && row.scanPass);
   // Use the same session change as the scanner, filters and sorting. A live
   // after-hours last is not the regular-session close used by this percentage;
@@ -2684,7 +2687,8 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
       {(columns || MOMX_COLUMNS).map((column) => {
         if (column.kind === "setup" || column.kind === "fresh") {
           return gradeCell(column, row, onOpenGrade, "momx-cell", undefined,
-            sourceWarning ? scannerRowFreshness(row) : null);
+            sourceWarning ? scannerRowFreshness(row) : null,
+            !newsTime && (columns || []).some(c => c.kind === "matchedSince") ? sourceWarning : null);
         }
         if (column.kind === "jev") {
           return jevScoreTd(column, row, "momx-cell");
@@ -2921,7 +2925,7 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
           );
         }
 
-        const cell = cellFor(row, column);
+        const cell = liveRvolCell(cellFor(row, column), column, liveRvol);
         // A cell his script painted whose reason arrived in the last 15
         // minutes - for RVOL the volume, for Skittles the bar the cross fired
         // in. Measured on his own board: ~5 RVOL cells at a time, and for
@@ -3540,11 +3544,13 @@ const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, on
   // Sort state lives here, beside the table it drives. Default: time
   // ascending - the day is a timeline of arrivals and that is the whole point
   // of the page; any other column is one click away.
-  const [rawHistorySort, setHistorySort] = useState(MOMX_HISTORY_DEFAULT_SORT);
+  const [rawHistorySort, setHistorySort] = useState(() => readScannerSort("history", MOMX_HISTORY_COLUMNS.map(c => c.key), MOMX_HISTORY_DEFAULT_SORT));
   const onHistorySort = (column) => {
     if (!column || !column.sortable) return;
     // Same three-state cycle as the live board, ending in NO SORT (timeline order).
-    setHistorySort((current) => nextSortState(current, column, column.key === "time" ? "asc" : "desc"));
+    const next = nextSortState(rawHistorySort, column, column.key === "time" ? "asc" : "desc");
+    writeScannerSort("history", next);
+    setHistorySort(next);
   };
   // Same hidden-sort-column fix as the live board: the saved sort key can
   // point at a column just hidden from the History layout. ONE effective sort
@@ -4201,13 +4207,6 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     setBoltViewState(value);
     try { window.localStorage.setItem(BOLT_VIEW_KEY, value); } catch { /* session only */ }
   }, []);
-  const [hlSort, setHlSortState] = useState(() => {
-    try { return window.localStorage.getItem(HL_SORT_KEY) === "1"; } catch { return false; }
-  });
-  const setHlSort = useCallback((on) => {
-    setHlSortState(Boolean(on));
-    try { window.localStorage.setItem(HL_SORT_KEY, on ? "1" : "0"); } catch { /* session only */ }
-  }, []);
   // {symbol: {on, now, opacity, families, firedAt, hlMomentum}} - identities
   // reused per symbol when unchanged, so only rows whose ⚡ changed re-render.
   const [liveBolts, setLiveBolts] = useState(EMPTY_OBJECT);
@@ -4412,17 +4411,16 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   // high on top), per the trader (2026-08-28, "keep high/low sort by default").
   // MOMX_DEFAULT_SORT stays the generic sortRows fallback (%chg); this is only
   // the panel's initial view, and clicking any header still re-sorts.
-  const [liveSort, setLiveSort] = useState(() => (readStoredDirection() === "bear" ? MOMX_BEAR_DEFAULT_SORT : MOMX_LIVE_DEFAULT_SORT));
-  // Flipping BULL <-> BEAR re-seats the H/L sort for that side (lows first on
-  // the bear board); a header click after that still wins until the next flip.
+  const [liveSort, setLiveSort] = useState(() => readScannerSort("live:" + direction, [...MOMX_LIVE_COLUMN_BY_KEY.keys()], bear ? MOMX_BEAR_DEFAULT_SORT : MOMX_LIVE_DEFAULT_SORT));
+  // Each side restores its own chosen column; untouched boards default to H/L.
   useEffect(() => {
-    setLiveSort(bear ? MOMX_BEAR_DEFAULT_SORT : MOMX_LIVE_DEFAULT_SORT);
-  }, [bear]);
+    setLiveSort(readScannerSort("live:" + direction, [...MOMX_LIVE_COLUMN_BY_KEY.keys()], bear ? MOMX_BEAR_DEFAULT_SORT : MOMX_LIVE_DEFAULT_SORT));
+  }, [bear, direction]);
   // The NEWS view keeps its OWN order - newest headline first - so pressing
   // NEWS does not disturb whatever he sorted the live board by, and unpressing
   // it gives that order straight back. Header clicks write to whichever one is
   // showing.
-  const [newsSort, setNewsSort] = useState(MOMX_NEWS_DEFAULT_SORT);
+  const [newsSort, setNewsSort] = useState(() => readScannerSort("news", [...MOMX_LIVE_COLUMN_BY_KEY.keys()], MOMX_NEWS_DEFAULT_SORT));
   const rawSort = newsOnly ? newsSort : liveSort;
   const setSort = newsOnly ? setNewsSort : setLiveSort;
   const sortDefault = newsOnly ? MOMX_NEWS_DEFAULT_SORT : (bear ? MOMX_BEAR_DEFAULT_SORT : MOMX_LIVE_DEFAULT_SORT);
@@ -5553,7 +5551,13 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
 
   // The durable last-good board for the active list. Recomputed when the list
   // changes or when a fresh fetch lands (which may have written a newer copy).
-  const cachedBoard = useMemo(() => readCachedBoard(boardCacheKey(activeList, direction)), [activeList, direction, board]);
+  // boardReceivedAt IS that "fresh fetch lands" signal. Without it the memo held
+  // whatever the cache had at list-switch time: after a worker outage that was
+  // nothing, so a later api_server proxy timeout ("MomX worker unavailable",
+  // warming + zero rows) fell back to that stale empty copy and blanked a
+  // Watchlist the worker still had (2026-11-02).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const cachedBoard = useMemo(() => readCachedBoard(boardCacheKey(activeList, direction)), [activeList, direction, boardReceivedAt]);
 
   // THE decision: show live rows when the fetch returned any; otherwise fall
   // back to the cached rows rather than the empty "Building..." state; only
@@ -5941,11 +5945,12 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     };
     // H/L ⚡ sort (ScannerX3): who sits at the top of an hour that actually
     // went somewhere - position in the last hour x the hour's size vs usual.
-    const ordered = !bear && hlSort
-      ? [...withLive].sort((a, b) => hlValue(b) - hlValue(a))
-      : unsorted
-        ? withLive // NO SORT: the scanner's own order
-        : sortRows(index, sort.key, sort.direction).map((entry) => entry.row);
+    // 2026-11-03 his rule: "Default H/L sort if no column sort". A clicked
+    // column always wins; with NO column sorted the bull board is in H/L⚡
+    // order (the bear board and the NEWS view keep the scanner's own order).
+    const ordered = unsorted
+      ? (!bear && !newsOnly ? [...withLive].sort((a, b) => hlValue(b) - hlValue(a)) : withLive)
+      : sortRows(index, sort.key, sort.direction).map((entry) => entry.row);
     // Skittles "push to top" is applied LAST and is a stable partition, not a
     // re-sort: his column sort still decides the order inside each half, so
     // clicking a header does what it always did. Only while the filter is
@@ -5961,7 +5966,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     const ranks = bestSetupRanks(allRows);
     return ranks.size ? out.map((row) => (row && ranks.has(row.symbol) ? { ...row, bestRank: ranks.get(row.symbol) } : row)) : out;
   }, [
-    allRows, baseRows, selectedIndustries, sort.key, sort.direction, focusSymbol, boltView, liveBolts, liveHl, hlSort,
+    allRows, baseRows, selectedIndustries, sort.key, sort.direction, focusSymbol, boltView, liveBolts, liveHl,
     newsOnly, filtersActive, filters, earningsMap, liveQuotesBySymbol, bear,
   ]);
 
@@ -5971,6 +5976,54 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   useEffect(() => {
     liveSymbolsRef.current = visibleRows.slice(0, 60).map(row => row?.symbol).filter(Boolean).join(",");
   }, [visibleRows]);
+
+  // LIVE RVOL (2026-11-03, "real time same as TOS"): the forming bar's RVOL
+  // for the rows ON SCREEN, rescored from the Schwab stream every 5 s by the
+  // worker. DISPLAY ONLY - it is handed to each row and changes what the RVOL
+  // cells show; filters, Confirm, alerts and sorting keep the board values.
+  const [liveRvol, setLiveRvol] = useState(null);
+  useEffect(() => {
+    if (embedded) return undefined;
+    let cancelled = false;
+    let inFlight = false;
+    let staleTimer = 0;
+    const poll = async () => {
+      if (cancelled || inFlight) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const symbols = liveSymbolsRef.current;
+      if (!symbols) return;
+      inFlight = true;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), MOMX_LIVE_RVOL_TIMEOUT_MS);
+      try {
+        const res = await fetch(MOMX_LIVE_RVOL_ENDPOINT + "?symbols=" + encodeURIComponent(symbols),
+          { credentials: "include", cache: "no-store", signal: controller.signal });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setLiveRvol((held) => {
+          const cells = reuseLiveCells(held && held.cells, (data && data.cells) || {});
+          return held && cells === held.cells ? held : { cells };
+        });
+        // A live number older than MAX_AGE is dropped so the board shows,
+        // never a frozen "live" value (re-armed on every good poll).
+        window.clearTimeout(staleTimer);
+        staleTimer = window.setTimeout(() => { if (!cancelled) setLiveRvol(null); }, MOMX_LIVE_RVOL_MAX_AGE_MS);
+      } catch {
+        /* worker/stream down or timed out: the stale timer clears the overlay */
+      } finally {
+        window.clearTimeout(timeout);
+        inFlight = false;
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, MOMX_LIVE_RVOL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.clearTimeout(staleTimer);
+    };
+  }, [embedded]);
 
   // Clock for the matchedSince row decorations, read ONCE per render (not
   // state, not a ticker): the 15s board poll re-renders this component anyway,
@@ -5989,8 +6042,19 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   const onSort = useCallback((column) => {
     if (!column.sortable) return;
     // desc -> asc -> NO SORT (names: asc -> desc -> no sort); momxColumnLayout.
-    setSort((current) => nextSortState(current, column));
-  }, [setSort]);
+    const next = nextSortState(rawSort, column);
+    writeScannerSort(newsOnly ? "news" : "live:" + direction, next);
+    setSort(next);
+  }, [setSort, rawSort, newsOnly, direction]);
+
+  // The H/L⚡ box is "no column sort" (H/L⚡ is the default order then):
+  // ticking it clears the column sort; unticking restores the board default.
+  const hlSort = !bear && !newsOnly && sort.direction === "none";
+  const setHlSort = useCallback((on) => {
+    const next = on ? NO_SORT : (bear ? MOMX_BEAR_DEFAULT_SORT : MOMX_LIVE_DEFAULT_SORT);
+    writeScannerSort("live:" + direction, next);
+    setLiveSort(next);
+  }, [bear, direction]);
 
   const onToggleIndustry = useCallback((name) => {
     setSelectedIndustries((current) => {
@@ -7284,7 +7348,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                 const matched = matchedSinceLabel(row && row.matchedSince, rowClockMs);
                 return (
                   <MomxRow
-                    sourceWarning={scannerRowFreshness(row, rowClockMs)?.text || ""}
+                    sourceWarning={scannerRowFreshness(row, rowClockMs)?.timeText || ""}
                     liveLast={liveLastBySymbol[row && row.symbol]}
                     key={(row && row.symbol) || "row-" + rowIndex}
                     row={row}
@@ -7303,6 +7367,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                     starred={starredSymbols.has(row && row.symbol)}
                     earnings={earningsMap.get(row && row.symbol) || null}
                     bolt={bear || scannerRowFreshness(row, rowClockMs) ? null : liveBolts[row && row.symbol] || null}
+                    liveRvol={(liveRvol && liveRvol.cells[row && row.symbol]) || null}
                   />
                 );
               })

@@ -392,6 +392,9 @@ RSS_CACHE_TTL_SECONDS = 900.0
 #: path and must never be what makes a build slow.
 RSS_TIMEOUT_SECONDS = 6.0
 
+#: Feeds fetched at once per build (the whole per-build batch is 24).
+RSS_FETCH_WORKERS = 8
+
 RSS_ENV = "MOMX_NEWS_RSS"
 
 #: "10 Information Technology Stocks Whale Activity", "3 Founder Backed Growth
@@ -481,8 +484,7 @@ def _rss_backfill(missing, cutoff, get) -> dict:
         ordered = fetch[start:] + fetch[:start]
         taken = ordered[:RSS_BACKFILL_PER_BUILD]
         _RSS_CURSOR = (_RSS_CURSOR + len(taken)) % max(len(fetch), 1)
-        for symbol in taken:
-            entry = None
+        def _one(symbol):
             try:
                 response = get(
                     YAHOO_RSS_URL.format(symbol=symbol),
@@ -490,9 +492,21 @@ def _rss_backfill(missing, cutoff, get) -> dict:
                     timeout=RSS_TIMEOUT_SECONDS,
                 )
                 if getattr(response, "status_code", 0) == 200:
-                    entry = _parse_rss(response.text, cutoff)
+                    return _parse_rss(response.text, cutoff)
             except Exception:  # noqa: BLE001 - news can never break the board
-                entry = None
+                pass
+            return None
+
+        # Concurrent (2026-11-02): one at a time, 24 feeds cost up to 24 x 6 s
+        # of a board build. Results are applied below on this thread, in order.
+        if len(taken) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=min(RSS_FETCH_WORKERS, len(taken)),
+                                    thread_name_prefix="momx-rss") as pool:
+                entries = list(pool.map(_one, taken))
+        else:
+            entries = [_one(symbol) for symbol in taken]
+        for symbol, entry in zip(taken, entries):
             # Remember the MISS too, so a symbol with genuinely no news does not
             # burn a slot on every build.
             _RSS_CACHE[symbol] = (stamp, entry)

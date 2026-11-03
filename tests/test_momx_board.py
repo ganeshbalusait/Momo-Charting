@@ -24,6 +24,16 @@ import pytest
 from momx import board, flags, news
 
 
+@pytest.fixture(autouse=True)
+def local_orchestrator_execution(monkeypatch):
+    # These tests validate board contracts against stub feeds, not Windows
+    # process scheduling. Real idle children compete with the live scanner
+    # and are reaped by its watchdog. Priority is covered in its own child
+    # process test; production pool priority is checked against live workers.
+    monkeypatch.setattr(board, '_pool', lambda: None)
+    monkeypatch.setattr(board, '_small_pool', lambda: None)
+
+
 StubResult = namedtuple("StubResult", "bars errors")
 
 
@@ -691,6 +701,28 @@ def test_build_tapes_emits_every_contract_timeframe_key():
     assert len(tapes["5m"]) > len(tapes["15m"]) > len(tapes["30m"])
     assert len(tapes["1h"]) > len(tapes["2h"]) > len(tapes["4h"])
     assert len(tapes["D"]) > len(tapes["2D"]) > len(tapes["Wk"]) > len(tapes["M"])
+
+
+def test_hourly_tapes_use_the_fresher_five_minute_tail():
+    # 2026-11-03: the 30m tape ended at 10:30 while the 5m tape reached the
+    # forming 11:00 bar, so 1h scored the finished 10:00 hour; TOS was on 11:00.
+    fine = _intraday_bars(24, minutes=5)                      # 2 hours of 5m bars
+    coarse = _intraday_bars(2, minutes=30)                    # only the first hour
+    tapes = board.build_tapes(fine, coarse, [])
+    last_five = max(b["timestamp"] for b in fine)
+    assert tapes["30m"][-1]["time"] <= last_five
+    assert tapes["1h"][-1]["time"] > coarse[-1]["timestamp"]  # the newer hour exists
+    assert tapes["1h"][-1]["volume"] == sum(b["volume"] for b in fine if b["timestamp"] >= tapes["1h"][-1]["time"])
+
+
+def test_splice_keeps_a_fuller_rest_bucket_and_long_history():
+    coarse = [{"time": t, "open": 1, "high": 1, "low": 1, "close": 1, "volume": v} for t, v in ((0, 5.0), (1800, 900.0))]
+    thin = [{"time": 1800, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 100.0}]
+    assert board.splice_fresh_tail(coarse, thin) == coarse     # REST bucket holds more: kept
+    fuller = [{"time": 1800, "open": 1, "high": 2, "low": 1, "close": 2, "volume": 950.0},
+              {"time": 3600, "open": 2, "high": 2, "low": 2, "close": 2, "volume": 50.0}]
+    out = board.splice_fresh_tail(coarse, fuller)
+    assert [b["time"] for b in out] == [0, 1800, 3600] and out[1]["volume"] == 950.0 and out[0] is coarse[0]
 
 
 def test_intraday_folds_sum_volume_and_keep_first_open_last_close():
@@ -1589,3 +1621,32 @@ def test_a_newly_matching_row_built_in_the_lane_equals_a_full_build(monkeypatch)
     pick = lambda p: {r["symbol"]: {k: v for k, v in r.items() if k != "grade"} for r in p["rows"]}
     assert pick(skipped)["BBB"] == pick(full)["BBB"]
     assert not skipped["errors"]
+
+
+def test_async_news_ships_last_map_and_refreshes_in_background(monkeypatch):
+    """2026-11-02: news must not hold up a Watchlist pass (he wants under 1 min)."""
+    import threading as _threading
+    from momx import board as _board
+    calls = []
+    released = _threading.Event()
+
+    def fake_now(symbols, now=None):
+        calls.append(tuple(symbols))
+        if len(calls) > 1:
+            released.wait(5)
+        return {"AAPL": {"headline": f"v{len(calls)}"}}
+
+    monkeypatch.setattr(_board, "NEWS_ASYNC", True)
+    monkeypatch.setattr(_board, "_NEWS_HELD", {})
+    monkeypatch.setattr(_board, "_NEWS_BUSY", set())
+    monkeypatch.setattr(_board, "_news_map_now", fake_now)
+    # First sight of a symbol set: fetched inline, so the first build has news.
+    assert _board._news_map(["aapl"])["AAPL"]["headline"] == "v1"
+    # Next build: the held map comes back at once while the refresh runs.
+    assert _board._news_map(["AAPL"])["AAPL"]["headline"] == "v1"
+    released.set()
+    for _ in range(100):
+        if not _board._NEWS_BUSY:
+            break
+        _threading.Event().wait(0.02)
+    assert _board._news_map(["AAPL"])["AAPL"]["headline"] == "v2"

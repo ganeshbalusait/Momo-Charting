@@ -261,7 +261,7 @@ class ExperimentLab:
                       'All three bounded families are compared on actual Paper 3 fills using older training days only. '
                       'Your priority breaks exact training-score ties only. The later historical segment checks the selected candidate once; '
                       'fresh future paper fills decide promotion.\n'
-                      + json.dumps({**{k: batch.get(k) for k in ("scanner", "specialist", "reviewer", "critic", "hermes")},
+                      + json.dumps({**{k: batch.get(k) for k in ("scanner", "specialist", "specialists", "reviewer", "critic", "hermes")},
                                     "previousExperiments": self.feedback(), "recurringLossMemory": batch.get("memory", {})}))
             proposed = self.reviewer.request(prompt, plan)
             if proposed.get("kind") not in GRIDS:

@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 import subprocess
-from momx.hermes_reviewer import HermesReviewer
+from momx.hermes_reviewer import HermesReviewer, HERMES_TIMEOUT_SECONDS
 from momx.paper_learning import analysis
 
 
@@ -12,7 +12,7 @@ def test_hermes_is_explicitly_enabled_and_uses_bounded_stdin_transport(tmp_path)
     config.write_text(json.dumps({"enabled": True, "python": "python.exe", "root": str(tmp_path), "home": str(tmp_path)}))
     def run(args, **kwargs):
         assert isinstance(args, list) and "shell" not in kwargs
-        assert kwargs["timeout"] == 180 and json.loads(kwargs["input"])["prompt"] == "research"
+        assert kwargs["timeout"] == HERMES_TIMEOUT_SECONDS and json.loads(kwargs["input"])["prompt"] == "research"
         return SimpleNamespace(stdout=json.dumps({"response": '{"summary":"ok","hypothesis":"test","validation":"unseen data"}'}))
     r.runner = run
     assert r.enabled() and r.request("research", analysis)["available"]
@@ -49,6 +49,31 @@ class AIAgent:
     assert result.returncode==0,result.stderr
     response=json.loads(json.loads(result.stdout)['response'])
     assert response['summary']=='request survives restart'
+
+
+def test_native_timeout_runner_terminates_process_and_keeps_output_private():
+    import sys,time
+    from momx.hermes_reviewer import run_bounded
+    start=time.monotonic()
+    try:
+        run_bounded([sys.executable,'-c','import time; print("private",flush=True); time.sleep(30)'],
+            input='',capture_output=True,text=True,encoding='utf-8',timeout=.1,check=True,
+            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    except subprocess.TimeoutExpired as exc:
+        assert exc.output is None and 'private' not in str(exc)
+    else:
+        raise AssertionError('A stalled Hermes process must time out')
+    assert time.monotonic()-start < 15
+
+
+def test_hermes_accepts_complete_json_fence_and_records_actual_availability(tmp_path):
+    config=tmp_path/'hermes.json'
+    config.write_text(json.dumps({'enabled':True,'python':'python','root':str(tmp_path),'home':str(tmp_path)}))
+    def run(*args,**kwargs):
+        return SimpleNamespace(stdout=json.dumps({'response':'```json\n{"summary":"native","hypothesis":"test","validation":"future trades"}\n```'}))
+    reviewer=HermesReviewer(config,run)
+    assert reviewer.request('test',analysis)['available'] is True
+    assert reviewer.status()['available'] is True
 
 
 def test_hermes_accepts_log_lines_and_a_json_fence_but_still_validates(tmp_path):

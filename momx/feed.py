@@ -839,13 +839,15 @@ def stream_history_path():
 # Live minutes straight from api_server's memory (2026-10-01, "no delay").
 STREAM_LIVE_ENABLED = True
 STREAM_LIVE_URL = "http://127.0.0.1:3002/api/momx-stream-bars"
-STREAM_LIVE_POLL_SECONDS = 15.0
+#: 15 -> 5 s on 2026-11-03: the LIVE RVOL (momx.live_rvol) rescores the forming
+#: bar from these minutes, so their age is the RVOL's age.
+STREAM_LIVE_POLL_SECONDS = 5.0
 #: How long one good poll vouches for the live feed. Was 4 polls (60 s): on a
 #: busy worker one slow poll made every tapes thread fall back to re-parsing the
 #: 17 MB stream-history file on each 30-60 s save (3.6% of the worker's CPU,
 #: py-spy 2026-10-09 16:45 ET) although the endpoint answered in 0.14 s.
 STREAM_LIVE_TRUST_SECONDS = 300.0
-STREAM_LIVE_WINDOW_SECONDS = 3 * 3600
+STREAM_LIVE_WINDOW_SECONDS = int(4.5 * 3600)   # covers a whole 4h bucket (live RVOL), was 3h
 _STREAM_LIVE: dict = {"at": 0.0, "ok_at": 0.0, "max_t": 0.0, "bars": {}, "dead": []}
 
 
@@ -861,19 +863,27 @@ def _dead_minutes(minute_sets) -> list:
     first -= first % 60
     return [t for t in range(first, last, 60) if t not in seen]
 _STREAM_LIVE_LOCK = threading.Lock()
+_STREAM_LIVE_FETCHING = threading.Event()
 
 
 def _stream_live_refresh() -> bool:
     """Poll the endpoint at most every STREAM_LIVE_POLL_SECONDS; merge rows
     by minute (the forming minute is re-sent and replaced). False if down."""
-    import urllib.request
-
     now_mono = _monotonic()
     with _STREAM_LIVE_LOCK:
-        if now_mono - _STREAM_LIVE["at"] < STREAM_LIVE_POLL_SECONDS:
+        if _STREAM_LIVE_FETCHING.is_set() or now_mono - _STREAM_LIVE["at"] < STREAM_LIVE_POLL_SECONDS:
             return now_mono - _STREAM_LIVE["ok_at"] < STREAM_LIVE_TRUST_SECONDS and _STREAM_LIVE["ok_at"] > 0
         _STREAM_LIVE["at"] = now_mono
         since = (_STREAM_LIVE["max_t"] - 180) if _STREAM_LIVE["max_t"] else time.time() - STREAM_LIVE_WINDOW_SECONDS
+        _STREAM_LIVE_FETCHING.set()
+    try:
+        return _stream_live_fetch(since, now_mono)
+    finally:
+        _STREAM_LIVE_FETCHING.clear()
+
+
+def _stream_live_fetch(since, now_mono):
+    import urllib.request
     try:
         request = urllib.request.Request(f"{STREAM_LIVE_URL}?since={int(since)}",
                                          headers={"X-AGX-Background": "1"})
@@ -916,6 +926,12 @@ def _stream_minutes(symbol: str) -> list:
         with _STREAM_LIVE_LOCK:
             minutes = _STREAM_LIVE["bars"].get(symbol)
             return [minutes[t] for t in sorted(minutes)] if minutes else []
+    if STREAM_LIVE_ENABLED and _STREAM_LIVE_FETCHING.is_set():
+        # A cold poll is not a failed live feed. Other tape threads keep
+        # their REST candles rather than parsing the entire archive while
+        # that first response is still arriving. Genuine failure still falls
+        # through to the archive after the bounded request completes.
+        return []
     return _stream_minutes_from_file(symbol)
 
 
@@ -1051,6 +1067,7 @@ def _extend_with_stream(frame: pd.DataFrame, symbol: str, span_minutes: int) -> 
     if checked < STREAM_VERIFY_BUCKETS:
         return frame
     newer = sorted(key for key in buckets if key >= last_rest)
+    truncated = False
     dead = _stream_dead()
     if dead and newer:
         import bisect
@@ -1058,7 +1075,13 @@ def _extend_with_stream(frame: pd.DataFrame, symbol: str, span_minutes: int) -> 
         lo = bisect.bisect_left(dead, newer[0])
         if lo < len(dead):
             first_dead = dead[lo]       # keep only buckets that end before it
-            newer = [key for key in newer if key + span <= first_dead]
+            kept = [key for key in newer if key + span <= first_dead]
+            # Stopped short by a dead minute (an api_server restart's hole):
+            # NOT "kept fresh by the stream". Marking it extended demoted the
+            # symbol's REST refetch for TOS_STREAMED_REFETCH_SECONDS, so Mag7
+            # sat on the 10:10 bar until ~10:42 (2026-11-03).
+            truncated = len(kept) < len(newer)
+            newer = kept
     if not newer:
         return frame
     tz = frame["timestamp"].iloc[-1].tzinfo
@@ -1069,7 +1092,8 @@ def _extend_with_stream(frame: pd.DataFrame, symbol: str, span_minutes: int) -> 
         "volume": [buckets[key][4] for key in newer], "feed": STREAM_FEED_MARK,
     })
     body = frame.iloc[:-1] if newer[0] == last_rest else frame
-    _STREAM_EXTENDED[(symbol, int(span_minutes))] = _wall_clock()
+    if not truncated:
+        _STREAM_EXTENDED[(symbol, int(span_minutes))] = _wall_clock()
     return pd.concat([body, tail], ignore_index=True)
 
 
@@ -1211,6 +1235,9 @@ def tos_debug(symbols: Iterable[str] | None = None) -> dict:
             "spentLast60s": spent, "demand": demand, "kinds": kinds}
 
 
+_TOS_STATUS_CACHE = {}
+
+
 def tos_status(symbols: Iterable[str]) -> dict:
     """How much of ``symbols`` TOS mode has loaded: a symbol is loaded once it
     holds a 5m, a 30m AND a daily tape. ``oldestSeconds`` is the age of the
@@ -1219,23 +1246,36 @@ def tos_status(symbols: Iterable[str]) -> dict:
     wall = _wall_clock()
     loaded = 0
     oldest: float | None = None
-    with _CACHE_LOCK:
+    key = tuple(wanted)
+    if not _CACHE_LOCK.acquire(timeout=.02):
+        return {**_TOS_STATUS_CACHE.get(key, {'source': get_data_source(),
+                    'total': len(wanted), 'loaded': None, 'pending': None, 'oldestSeconds': None}),
+                'refreshing': True}
+    try:
         stores = [_STORE.get(kind) for kind in ("5m", "30m", "daily")]
-        for symbol in wanted:
-            if not all(store is not None and symbol in store.tapes
-                       and not store.tapes[symbol].empty for store in stores):
-                continue
-            loaded += 1
-            for store in stores[:2]:
-                age = wall - store.fetched_at.get(symbol, store.full_built_at)
-                oldest = age if oldest is None else max(oldest, age)
-    return {
+        snapshot = [(tuple(store.tapes.get(symbol) if store is not None else None for store in stores),
+                     tuple(store.fetched_at.get(symbol, store.full_built_at) if store is not None else wall
+                           for store in stores[:2])) for symbol in wanted]
+    finally:
+        _CACHE_LOCK.release()
+    for frames, fetched in snapshot:
+        if not all(frame is not None and not frame.empty for frame in frames):
+            continue
+        loaded += 1
+        for stamp in fetched:
+            age = wall - stamp
+            oldest = age if oldest is None else max(oldest, age)
+    result = {
         "source": get_data_source(),
         "total": len(wanted),
         "loaded": loaded,
         "pending": len(wanted) - loaded,
         "oldestSeconds": None if oldest is None else max(0, int(round(oldest))),
     }
+    if len(_TOS_STATUS_CACHE) >= 32:
+        _TOS_STATUS_CACHE.pop(next(iter(_TOS_STATUS_CACHE)), None)
+    _TOS_STATUS_CACHE[key] = result
+    return dict(result)
 
 
 def _cache_get(key: tuple) -> pd.DataFrame | None:
@@ -2281,13 +2321,17 @@ def _tos_refresh_once(now=None) -> int:
         _schwab_volume_map(asked, info["timeframe"], now, bars_out=candles,
                            starts={symbol: info["start"] for symbol in asked})
         made += len(asked)
+        # Frame conversion is CPU work, not a shared-state update. Keeping it
+        # inside _CACHE_LOCK made board status and tape reads wait behind it.
+        converted = {symbol: _schwab_frame(candles[symbol], info['timeframe'])
+                     for symbol in asked if candles.get(symbol)}
         with _CACHE_LOCK:
             if _STORE.get(kind) is not store:       # source switched meanwhile
                 continue
             for symbol in asked:
                 got = candles.get(symbol)
                 if got:
-                    frame = _schwab_frame(got, info["timeframe"])
+                    frame = converted[symbol]
                     store.tapes[symbol] = frame
                     store.fetched_at[symbol] = wall
                     store.empty_at.pop(symbol, None)

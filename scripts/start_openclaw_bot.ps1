@@ -6,9 +6,23 @@ if (-not (Test-Path -LiteralPath $configPath)) { throw 'BOT OpenClaw profile is 
 $existing = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
     $_.CommandLine -match 'node_modules[\\/]+openclaw[\\/].*\bgateway\b.*--port\s+18790(?:\s|$)'
 })
-if ($existing.Count) { Write-Output 'BOT OpenClaw gateway is already starting or running.'; exit 0 }
-$runtimeRoot = Join-Path $env:LOCALAPPDATA 'OpenClaw\runtime'
-$nodeRuntime = Get-ChildItem -LiteralPath $runtimeRoot -Directory | Sort-Object Name -Descending |
+if ($existing.Count) {
+    $listener = @(Get-NetTCPConnection -State Listen -LocalPort 18790 -ErrorAction SilentlyContinue)
+    if ($listener.Count) { Write-Output 'BOT OpenClaw listener is running; agent readiness is checked by requests.'; exit 0 }
+    $expired = @($existing | Where-Object { $_.CreationDate -lt (Get-Date).AddMinutes(-20) })
+    if ($expired.Count -ne $existing.Count) { Write-Output 'BOT OpenClaw is still starting; listener not ready.'; exit 0 }
+    # Recover only this dedicated BOT gateway, never unrelated OpenClaw sessions.
+    $expired | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }
+    Write-Output 'Restarting dedicated BOT gateway after a stalled 20-minute startup.'
+}
+# OpenClaw was installed from inside the Codex app, and Windows redirected its
+# %LOCALAPPDATA% writes into Codex's package LocalCache (2026-11-02: the plain
+# path did not exist, so every start outside Codex failed). Look in both.
+$runtimeRoots = @(
+    (Join-Path $env:LOCALAPPDATA 'OpenClaw\runtime'),
+    (Join-Path $env:LOCALAPPDATA 'Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\OpenClaw\runtime')
+) | Where-Object { Test-Path -LiteralPath $_ }
+$nodeRuntime = $runtimeRoots | ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory } | Sort-Object Name -Descending |
     ForEach-Object { Join-Path $_.FullName 'node.exe' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $nodeRuntime) { throw 'Installed OpenClaw Node runtime is unavailable.' }
 $entry = Join-Path $env:APPDATA 'npm\node_modules\openclaw\dist\index.js'

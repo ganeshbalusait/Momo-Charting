@@ -119,7 +119,23 @@ function Start-Backend {
         -RedirectStandardOutput (Join-Path $artifacts "api_server.out.log") `
         -RedirectStandardError (Join-Path $artifacts "api_server.err.log") `
         -PassThru
+    Set-ServingPriority $script:backendProcess
     Write-WatchdogLog "Started backend (pipeline) on port 3002."
+}
+
+function Set-ServingPriority {
+    # Task Scheduler runs this watchdog at BelowNormal and every child inherits
+    # it. 2026-11-02 at the open, two thinkorswim windows + Chrome (Normal) held
+    # the CPU at 97% and api_server (BelowNormal) answered /api/health in 30 s:
+    # charts did not load. The chart server and gateway serve the trader, so they
+    # run Normal; the MomX scanner sets itself Normal too (2026-11-02, momx/worker_priority.py). The venv
+    # python.exe is a launcher, so the real interpreter (its child) is set too.
+    param($Process)
+    if ($null -eq $Process) { return }
+    try { $Process.PriorityClass = "Normal" } catch {}
+    Start-Sleep -Seconds 2
+    Get-CimInstance Win32_Process -Filter "ParentProcessId=$($Process.Id)" -ErrorAction SilentlyContinue |
+        ForEach-Object { try { (Get-Process -Id $_.ProcessId -ErrorAction Stop).PriorityClass = "Normal" } catch {} }
 }
 
 function Get-MomxWorkerProcesses {
@@ -184,6 +200,7 @@ function Start-Gateway {
         -RedirectStandardOutput (Join-Path $artifacts "gateway.out.log") `
         -RedirectStandardError (Join-Path $artifacts "gateway.err.log") `
         -PassThru
+    Set-ServingPriority $script:gatewayProcess
     Write-WatchdogLog "Started gateway on port 3001 -> pipeline :3002."
 }
 

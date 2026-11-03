@@ -44,7 +44,7 @@ test('old row study windows are visible even when a live quote is newer',()=>{
 test('freshness distinguishes newest and oldest source bars from scan, API and browser times',()=>{
  const b={generatedAt:at,tapeAsOf:at,freshness:{newestDataAt:at,oldestDataAt:'2026-10-29T09:45:00-04:00',servedAt:'2026-10-29T10:59:50-04:00',providerNote:'Rate-paced TOS'}};
  const f=scannerFreshness(b,now,'2026-10-29T10:59:51-04:00');
- assert.match(f.text,/60m old.*oldest start 75m/);assert.match(f.title,/API served:.*10:59:50.*Browser received:.*10:59:51/);
+ assert.match(f.text,/60m old/);assert.doesNotMatch(f.text,/oldest/);assert.match(f.title,/Source bars:.*09:45/);assert.match(f.title,/API served:.*10:59:50.*Browser received:.*10:59:51/);
  assert.equal(scannerFreshness({},now),null);
 });
 
@@ -62,7 +62,7 @@ test('07:25 is displayed as a five-minute window ending at 07:30, not five minut
 test('forming, midnight and stale row windows retain their real times',()=>{
  const b={freshness:{newestDataAt:'2026-10-30T23:55:00-04:00',oldestDataAt:'2026-10-30T23:40:00-04:00',barTimestampRole:'start',barIntervalSeconds:300}};
  const f=scannerFreshness(b,Date.parse('2026-10-30T23:57:00-04:00'));
- assert.match(f.text,/23:55–00:00 ET/);assert.match(f.text,/oldest start 17m ago/);
+ assert.match(f.text,/23:55–00:00 ET/);assert.doesNotMatch(f.text,/oldest/);
  assert.doesNotMatch(f.text,/window ended/);
 });
 

@@ -1348,3 +1348,13 @@ def test_high_squeeze_fire_white_to_orange_is_a_release(tmp_path):
     log.apply("Mag7", p2, NOW + timedelta(seconds=40))
     assert [i["what"] for i in p2["rows"][0]["gradeFresh"]["timeline"]].count("SQZ 2h released") == 1
 
+
+
+def test_symbol_tape_reader_handles_large_nested_unicode_entries_and_torn_lines(tmp_path):
+    from momx.grade_log import _tape_symbol_entries
+    entry={'t':'09:35','nested':{'text':'cyan 🟢 ' * 400},'letter':'A+'}
+    good=json.dumps({'AMZN':entry,'REGN':{'t':'09:35'}},separators=(',',':'),ensure_ascii=False)
+    path=tmp_path/'large.jsonl'
+    path.write_text(good+'\n'+ '{"AMZN":{"t":"torn"'+'\n'+good+'\n',encoding='utf-8')
+    assert _tape_symbol_entries(path,'AMZN')==[entry,entry]
+    assert _tape_symbol_entries(path,'UNKNOWN')==[]

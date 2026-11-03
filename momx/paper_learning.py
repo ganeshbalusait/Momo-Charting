@@ -6,13 +6,51 @@ import json
 import math
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from momx import ai_filter
-from momx.paper_ai import Reviewer
+from momx.paper_ai import Reviewer, SPECIALISTS
 
-BATCH_SIZE = 24
+BATCH_SIZE = 8  # Keep frozen chart + scanner evidence within the local model context.
 MAX_PENDING_BATCHES = 64
+
+
+#: Between batches during the weekday 04:00-20:00 ET session (outside the
+#: quiet window below). 2026-11-02 he asked for the agents to run 24/7.
+SESSION_BATCH_GAP_SECONDS = 300
+
+#: Weekday QUIET WINDOW for the agents, ET: no new batch starts from 06:30 to
+#: 17:00. 2026-11-03 08:45 ET the local model took 3.8 cores of this laptop's
+#: 2 performance cores; the app server starved (health 58 s, login hung, scanner
+#: board 2.5 min). His order: scanner first, charts second, everything else
+#: after - so the agents run evenings, nights and weekends only. 06:30 (not
+#: 07:00) so a batch already running (~20 min) is finished before 07:00.
+QUIET_START_MINUTE = 6 * 60 + 30
+QUIET_END_MINUTE = 17 * 60
+
+
+def in_scanner_session(at=None):
+    """Weekday 04:00-20:00 ET: the scanner's busy hours."""
+    at = (at or datetime.now(ai_filter.ET)).astimezone(ai_filter.ET)
+    return at.weekday() < 5 and 4 <= at.hour < 20
+
+
+def in_quiet_window(at=None):
+    """Weekday 06:30-17:00 ET: the scanner and charts own the CPU."""
+    at = (at or datetime.now(ai_filter.ET)).astimezone(ai_filter.ET)
+    minute = at.hour * 60 + at.minute
+    return at.weekday() < 5 and QUIET_START_MINUTE <= minute < QUIET_END_MINUTE
+
+
+def background_research_allowed(at=None):
+    """Agents may start a batch: always, except the weekday quiet window."""
+    return not in_quiet_window(at)
+
+
+def research_gap_seconds(at=None):
+    """Seconds to wait after a completed batch: paced in session, none overnight."""
+    return SESSION_BATCH_GAP_SECONDS if in_scanner_session(at) else 0
 
 
 def specialist_task(memory, capture):
@@ -26,9 +64,32 @@ def specialist_task(memory, capture):
     return None
 
 
+def specialist_tasks(job):
+    """Bound the work per batch; rotate data-driven investigations, not parallel model floods."""
+    rows = job.get('evidence', [])
+    tasks = []
+    primary = job.get('specialistTask')
+    if primary:
+        tasks.append(primary)
+    if any(not r.get('scannerInputsAtSignal') or not r.get('chartContextAtSignal') for r in rows):
+        tasks.append({'role':'data_quality', 'reason':'Missing frozen entry snapshots; audit coverage without reconstructing history'})
+    if any(r.get('chartContextAtSignal') for r in rows):
+        tasks.append({'role':'chart', 'reason':'Test frozen indicator and support/resistance context against counterexamples'})
+    if any(r.get('marketAtSignal') for r in rows):
+        tasks.append({'role':'regime', 'reason':'Test entry-time market context across later sessions'})
+    if any(r.get('pnlPerContract', 0) < 0 for r in rows):
+        tasks.append({'role':'exit_risk', 'reason':'Compare recorded loss size and strategy exits, not hindsight peaks'})
+    unique = {t['role']:t for t in tasks}
+    # Deterministic rotation gives every relevant specialist work across batches.
+    extra = [t for role,t in unique.items() if not primary or role != primary['role']]
+    offset = int(hashlib.sha256(str([r.get('key') for r in rows]).encode()).hexdigest()[:8],16) % max(1,len(extra))
+    extra = extra[offset:] + extra[:offset]
+    return ([primary] if primary else []) + extra[:max(0,3-bool(primary))]
+
+
 #: Specialists that review a batch when no recorded need routes one: each gets
 #: regular turns, so every one builds a scored track record.
-ROTATION = ("entry", "exit", "risk", "news")
+ROTATION = ("entry", "exit", "risk", "news", "options", "timing", "sector", "oi_wall", "market_turn")
 #: Held-out win-rate gap (percentage points) worth a dedicated research turn.
 RESEARCH_GAP = 10.0
 
@@ -121,6 +182,16 @@ analysis.schema = {"type": "object", "properties": {k: {"type": "string", "minLe
                    "required": ["summary", "hypothesis", "validation"], "additionalProperties": False}
 
 
+def entry_observation(side, trade):
+    """Unsupervised research can use an open entry; never needs an exit label."""
+    scanner = ai_filter.scanner_learning.snapshot(trade, side)
+    if scanner is None:
+        return None
+    return {'key': ai_filter.trade_key(side, trade), 'symbol': trade.get('symbol'),
+            'signalAt': trade.get('at'), 'scannerInputsAtSignal': scanner,
+            'chartContextAtSignal': ai_filter.chart_learning.snapshot(trade)}
+
+
 def specialist_analysis(text):
     """analysis() plus a checkable call on the next batch's win rate."""
     out = analysis(text)
@@ -149,6 +220,7 @@ def evidence(side, trade):
             "rule": trade.get("rule"), "signalAt": trade.get("at"), "entryAt": trade.get("entryAt"),
             "exitAt": trade.get("exitAt"), "entryMid": entry, "exitMid": out,
             "pnlPerContract": round((out-entry)*100, 4), "returnPct": round((out/entry-1)*100, 4),
+            "marketAtSignal": trade.get("market"),
             "momentumAtSignal": trade.get("momentum"), "riskOkAtEntry": trade.get("riskOk"),
             "levelAtSignal": trade.get("levelSignal"),
             "chartContextAtSignal": ai_filter.chart_learning.snapshot(trade),
@@ -172,6 +244,7 @@ class LearningTeam:
         self.error = ""
         self.lab = None
         self.memory = {}
+        self.patterns = {}
         self.memory_error = ""
         self.directory.mkdir(parents=True, exist_ok=True)
         for path in sorted(self.directory.glob("batch-*.json")):
@@ -192,6 +265,13 @@ class LearningTeam:
             if report.get("fingerprint") != self.memory.get("fingerprint"):
                 ai_filter._write_atomic(self.directory / "memory.json", json.dumps(report, allow_nan=False))
                 self.memory = report
+            from momx.pattern_discovery import discover
+            entries = [item for side, book in self.books.items() for trade in book.trades()
+                       if (item := entry_observation(side, trade)) is not None]
+            patterns = discover(rows + entries)
+            if patterns['fingerprint'] != self.patterns.get('fingerprint'):
+                ai_filter._write_atomic(self.directory / 'entry-patterns.json', json.dumps(patterns, allow_nan=False))
+                self.patterns = patterns
             self.memory_error = ""
         except Exception as exc:
             self.memory_error = type(exc).__name__ + ": learning memory unavailable"
@@ -298,6 +378,11 @@ class LearningTeam:
                 job["capture"] = {side: book.capture_status() for side, book in self.books.items() if hasattr(book, "capture_status")}
                 self.save(name, job)
             common += 'Recurring-loss memory (same frozen snapshot for both agents): ' + json.dumps(job["memory"]) + '\n'
+            if 'entryPatterns' not in job:
+                job['entryPatterns'] = self.patterns
+                self.save(name, job)
+            common += ('Unsupervised entry-pattern discovery (descriptive only, not winning groups or probabilities): '
+                       + json.dumps(job['entryPatterns']) + '\n')
             if self.hermes.enabled() and "hermes" not in job:
                 # Blind independent critique: Hermes does not see the other agents' conclusions.
                 job["hermes"] = self.hermes.request(common + 'You are the independent Hermes researcher. '
@@ -343,11 +428,23 @@ class LearningTeam:
                     raise ValueError("Specialist unavailable")
                 job["specialist"] = extra
                 self.save(name, job)
+            # Independent specialist findings are durably checkpointed before the review/critic.
+            findings = job.setdefault("specialists", {})
+            for extra_task in specialist_tasks(job):
+                role = extra_task['role']
+                if task and role == task['role'] or role in findings:
+                    continue
+                agent = self.reviewer.for_agent("bot-specialist-" + role) if hasattr(self.reviewer, "for_agent") else self.reviewer
+                result = ask(agent, common + 'You are a research specialist. Propose one falsifiable experiment. '
+                    'Do not infer causality, generate trades or deploy changes.\n'
+                    + json.dumps({'task':extra_task, 'evidence':job['evidence']}), analysis)
+                findings[role] = result
+                self.save(name, job)
             reviewer = job.get("reviewer")
             if not reviewer:
                 reviewer = ask(self.agents["reviewer"], common + 'You are the trade-review agent. Analyze this completed batch and '
                     'respond to the scanner specialist. Distinguish observations from proposed changes.\n'
-                    + json.dumps({"evidence": job["evidence"], "scannerAgent": specialist, "specialistAgent": job.get("specialist")}), analysis)
+                    + json.dumps({"evidence": job["evidence"], "scannerAgent": specialist, "specialistAgent": job.get("specialist"), "additionalSpecialists": job.get("specialists", {})}), analysis)
                 if not reviewer.get("summary"):
                     raise ValueError("Review agent unavailable")
                 job["reviewer"] = reviewer
@@ -355,7 +452,7 @@ class LearningTeam:
             critic = ask(self.agents["critic"], common + 'You are an independent critic. Challenge the review agent using the SAME evidence. '
                                            'Identify unsupported conclusions and propose a falsifiable experiment. '
                                            'Agreement does not authorize deployment.\n'
-                                           + json.dumps({"evidence": job["evidence"], "scannerAgent": specialist, "specialistAgent": job.get("specialist"), "reviewAgent": reviewer, "independentHermes": job.get("hermes")}), analysis)
+                                           + json.dumps({"evidence": job["evidence"], "scannerAgent": specialist, "specialistAgent": job.get("specialist"), "additionalSpecialists": job.get("specialists", {}), "reviewAgent": reviewer, "independentHermes": job.get("hermes")}), analysis)
             if not critic.get("summary"):
                 raise ValueError("Critic agent unavailable")
             job.update(state="complete", completedAt=self.clock(), critic=critic,
@@ -363,7 +460,7 @@ class LearningTeam:
             job.pop("error", None)
         except Exception as exc:
             job.update(state="failed" if job["attempts"] >= 3 else "pending", retryAt=self.clock()+60,
-                       error=type(exc).__name__)
+                       error=(type(exc).__name__ + ": " + str(exc))[:200])
         self.save(name, job)
         return True
 
@@ -374,14 +471,22 @@ class LearningTeam:
         latest = max(done, key=lambda j: j["completedAt"], default={})
         return {"enabled": self.reviewer.enabled(), "mode": "post_trade", "entryBlocking": False,
                 "primaryProvider": getattr(self.reviewer, "primary_provider", lambda: "unknown")(),
+                "backgroundResearchPaused": in_quiet_window(), "quietWindow": "06:30-17:00 ET weekdays",
+                "sessionPacingSeconds": research_gap_seconds(),
+                "agentRoles": ["scanner", "reviewer", "critic", "planner", *SPECIALISTS],
+                "snapshotCoverage": {"trades": sum(len(j['evidence']) for j in jobs),
+                    "scanner": sum(bool(r.get('scannerInputsAtSignal')) for j in jobs for r in j['evidence']),
+                    "chart": sum(bool(r.get('chartContextAtSignal')) for j in jobs for r in j['evidence'])},
                 "reviewedTrades": sum(len(j["evidence"]) for j in done),
                 "pendingTrades": sum(len(j["evidence"]) for j in jobs if j["state"] in ("pending", "running")),
                 "failedTrades": sum(len(j["evidence"]) for j in jobs if j["state"] == "failed"),
                 "tradeStates": {r["key"]: j["state"] for j in jobs for r in j["evidence"]},
-                "latest": {k: latest[k] for k in ("completedAt", "scanner", "specialistTask", "specialist", "reviewer", "critic", "hermes", "disposition") if k in latest},
+                "latest": {k: latest[k] for k in ("completedAt", "scanner", "specialistTask", "specialist", "specialists", "reviewer", "critic", "hermes", "disposition") if k in latest},
                 "hermesEnabled": self.hermes.enabled(),
+                "hermesStatus": self.hermes.status() if hasattr(self.hermes, "status") else None,
                 "scoreboard": scoreboard(jobs), "research": self.research(),
                 "error": self.error, "memory": self.memory, "memoryError": self.memory_error,
+                "entryPatterns": self.patterns,
                 "capture": {side: book.capture_status() for side, book in self.books.items() if hasattr(book, "capture_status")},
                 "experiments": self.lab.status() if self.lab else None}
 
@@ -399,7 +504,8 @@ def start(books):
     if _TEAM is not None:
         return _TEAM
     from momx.paper_ai import start_bot_gateway
-    start_bot_gateway()
+    if background_research_allowed():
+        start_bot_gateway()
     from momx.paper_mirror import current
     team = _TEAM = LearningTeam(books, mirrors=current())
     from momx import paper_experiments
@@ -407,7 +513,8 @@ def start(books):
     def discover_loop():
         while True:
             try:
-                start_bot_gateway()
+                if background_research_allowed():
+                    start_bot_gateway()
                 team.discover()
             except Exception as exc:
                 team.error = type(exc).__name__
@@ -420,6 +527,9 @@ def start(books):
     def review_loop():
         while True:
             try:
+                if not background_research_allowed():
+                    time.sleep(30)
+                    continue
                 # Resume an interrupted proposal from a durable completed review.
                 if team.reviewer.enabled():
                     with team.lock:
@@ -428,6 +538,9 @@ def start(books):
                         name, job = max(done, key=lambda item: item[1].get("completedAt", 0))
                         team.lab.propose(name, job)
                 if team.run_once():
+                    gap = research_gap_seconds()
+                    if gap:
+                        time.sleep(gap)
                     continue
             except Exception as exc:
                 team.error = type(exc).__name__

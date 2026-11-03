@@ -425,6 +425,25 @@ def rvol_cell(
     selling = high - close
     is_bullish = buying >= selling
 
+    background, foreground = rvol_colors(rel_vol, is_bullish)
+    out = cell(_ts_round(rel_vol, 1), background, foreground)
+    out["pace"] = _pace_zscore(volumes, length, elapsed)
+    # AT THE CEILING the z-score stops discriminating: 30x normal and 100x
+    # normal both read 7.0. Carry the plain multiple so the tooltip can say
+    # what the number no longer can. Only when saturated - see the note on
+    # RVOL_CEILING - so this stays a handful of floats per build.
+    if abs(rel_vol) >= RVOL_CEILING - RVOL_CEILING_MARGIN:
+        try:
+            multiple = rvol_ratio(volumes, length)[-1]
+        except Exception:  # noqa: BLE001 - a tooltip must never cost a cell
+            multiple = float("nan")
+        if math.isfinite(multiple) and multiple > 0:
+            out["xAvg"] = _ts_round(multiple, 1)
+    return out
+
+
+def rvol_colors(rel_vol: float, is_bullish: bool) -> tuple[str, str]:
+    """(background, text colour) of his RVOL column for a raw relVol."""
     if is_bullish:
         if rel_vol >= 3:
             background = "cyan"
@@ -466,21 +485,42 @@ def rvol_cell(
             foreground = "dark_red"
         else:
             foreground = "black"
+    return background, foreground
 
-    out = cell(_ts_round(rel_vol, 1), background, foreground)
-    out["pace"] = _pace_zscore(volumes, length, elapsed)
-    # AT THE CEILING the z-score stops discriminating: 30x normal and 100x
-    # normal both read 7.0. Carry the plain multiple so the tooltip can say
-    # what the number no longer can. Only when saturated - see the note on
-    # RVOL_CEILING - so this stays a handful of floats per build.
-    if abs(rel_vol) >= RVOL_CEILING - RVOL_CEILING_MARGIN:
-        try:
-            multiple = rvol_ratio(volumes, length)[-1]
-        except Exception:  # noqa: BLE001 - a tooltip must never cost a cell
-            multiple = float("nan")
-        if math.isfinite(multiple) and multiple > 0:
-            out["xAvg"] = _ts_round(multiple, 1)
-    return out
+
+#: How many bucket rollovers a live base can absorb before the next board
+#: build replaces it (the oldest volumes of the window it carries).
+RVOL_LIVE_ROLLOVERS = 8   # rows reused between full refreshes keep an older base
+
+
+def rvol_live_base(bars: Any, length: int = RVOL_LENGTH) -> list | None:
+    """[t0, s, q, v0, *oldest] - what the LIVE RVOL needs to rescore the forming bar.
+
+    2026-11-03: the board's RVOL was ~3 minutes old by the time he saw it (a
+    Watchlist build takes ~2.5 min) while TOS rescored the forming bar every
+    tick. Only the forming bar changes between builds, so the build keeps the
+    previous ``length-1`` bars' sum ``s`` and sum of squares ``q``, the forming
+    bucket's volume ``v0`` as this build counted it (the stream must reproduce
+    at least that much before its count is trusted), and the window's oldest
+    volumes (for bucket rollovers); momx.live_rvol rescores the forming bucket
+    from the Schwab stream with the same formula.
+    """
+    rows = _rows(bars)
+    if len(rows) < length:
+        return None
+    rows = rows[-length:]
+    _, _, _, volumes = _ohlcv(rows)
+    prior = volumes[:-1]
+    if not all(math.isfinite(v) for v in prior):
+        return None
+    try:
+        t0 = int(rows[-1].get("time"))
+    except (TypeError, ValueError):
+        return None
+    v0 = volumes[-1] if math.isfinite(volumes[-1]) else 0.0
+    oldest = volumes[:RVOL_LIVE_ROLLOVERS]
+    return [t0, float(sum(prior)), float(sum(v * v for v in prior)), float(v0), *[float(v) for v in oldest]]
+
 
 
 # ---------------------------------------------------------------------------
@@ -1395,6 +1435,7 @@ def build_row(symbol: str, tapes: Any, industry: str | None = None) -> dict:
     last = last_price(tapes)
 
     rvol: dict[str, dict] = {}
+    live_bases: dict[str, list] = {}
     for key in RVOL_TIMEFRAMES:
         rows = _tape(tapes, key)
         if len(rows) < RVOL_MIN_BARS:
@@ -1421,6 +1462,10 @@ def build_row(symbol: str, tapes: Any, industry: str | None = None) -> dict:
         came = _volume_midpoint_time(tapes, rows, key)
         if came > 0:
             rvol[key]["barAt"] = came
+        if key != "D":
+            base = rvol_live_base(rows)
+            if base is not None:
+                live_bases[key] = base
 
     squeeze: dict[str, dict] = {}
     for key in SQUEEZE_TIMEFRAMES:
@@ -1501,6 +1546,9 @@ def build_row(symbol: str, tapes: Any, industry: str | None = None) -> dict:
         "pctChange": pct_change(_tape(tapes, "D"), intraday, last),
         "prevClose": pct_base(_tape(tapes, "D"), intraday),
         "rvol": rvol,
+        # Private: harvested into momx.live_rvol by board.build_board right
+        # after the scan; _contract_row never copies it to the wire.
+        "_lb": live_bases,
         "sqz": squeeze,
         "sqzFast": sqz_fast,
         "skittles": skittles,

@@ -23,6 +23,8 @@ import pytest
 
 from momx import board, service
 
+_REAL_START_WARMER = service.start_warmer
+
 
 @pytest.fixture(autouse=True)
 def _scratch_universe_path(monkeypatch, tmp_path):
@@ -539,6 +541,30 @@ def test_a_very_old_disk_board_is_still_served_flagged_as_a_previous_session(bui
     assert "previous session" in snap["message"]
 
 
+def test_disk_fallback_reuses_unchanged_json_and_detects_replacement(tmp_path, monkeypatch):
+    from pathlib import Path
+    path = tmp_path / 'board.json'
+    monkeypatch.setattr(service, '_cache_file', lambda *args: path)
+    monkeypatch.setattr(service, 'options_only', lambda: False)
+    path.write_text(json.dumps({'rows':[{'symbol':'FIRST'}], 'generatedAt':'2026-11-02T13:30:00+00:00'}))
+    reads = []
+    original = Path.read_text
+    def counted(target, *args, **kwargs):
+        reads.append(target)
+        return original(target, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', counted)
+    assert service._load_disk('Watchlist')['rows'][0]['symbol'] == 'FIRST'
+    assert service._load_disk('Watchlist')['rows'][0]['symbol'] == 'FIRST'
+    assert reads == [path]
+    replacement = tmp_path / 'new.json'
+    replacement.write_text(json.dumps({'rows':[{'symbol':'NEW'}], 'generatedAt':'2026-11-02T13:35:00+00:00'}))
+    replacement.replace(path)
+    assert service._load_disk('Watchlist')['rows'][0]['symbol'] == 'NEW'
+    assert reads == [path, path]
+    path.unlink()
+    assert service._load_disk('Watchlist') is None
+
+
 def test_a_corrupt_or_missing_cache_file_falls_back_to_the_warming_stub(builder):
     # Missing file: never built, no cache written.
     assert service.snapshot("Mag7")["warming"] is True
@@ -920,3 +946,27 @@ def test_watchlist_takes_the_heavy_gate_before_the_active_list(monkeypatch):
     t0 = service.time.monotonic()
     service._yield_to_higher_priority("Watchlist")
     assert service.time.monotonic() - t0 < 0.1          # Watchlist never waits on it
+
+
+def test_repeated_warmer_start_returns_before_list_files_or_refresher_work(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(service, '_THREAD', SimpleNamespace(is_alive=lambda: True))
+    monkeypatch.setattr(service, '_STOP', threading.Event())
+    def unexpected(*args, **kwargs):
+        raise AssertionError('Snapshot startup repeated expensive initialization')
+    monkeypatch.setattr(service, '_known_names', unexpected)
+    monkeypatch.setattr(service.ema_touch, 'start_refresher', unexpected)
+    _REAL_START_WARMER()
+
+
+def test_his_list_order_mag7_watchlist_21ema_50ema(monkeypatch):
+    """2026-11-02 his order: 1 Mag7, 2 Watchlist, 3 21 EMA, 4 50 EMA, then the rest."""
+    from momx import service
+    monkeypatch.setattr(service, "_STATES", {})
+    monkeypatch.setattr(service.board, "active_list", lambda path=None: "Movers")
+    monkeypatch.setattr(service, "_is_viewed", lambda name: False)
+    ranks =[service._priority_rank(n) for n in
+             ("Mag7", "Watchlist", "21 EMA Touch Monthly", "50 EMA Touch Daily", "Movers", "Liquid Movers")]
+    assert ranks == sorted(ranks) and len(set(ranks)) == len(ranks)
+    # Only Mag7 / Watchlist rebuild back-to-back; the EMA lists keep the normal idle.
+    assert "21 EMA Touch Monthly" not in service.FAST_IDLE_LISTS
