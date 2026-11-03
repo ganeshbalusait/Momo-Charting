@@ -801,6 +801,9 @@ def test_build_row_payload_keys_match_the_contract():
         "m5Bear",
         # 30m / 1h squeezes for MX A+ (2026-09-28).
         "sqzFast",
+        # Live-RVOL bases (2026-11-03): PRIVATE, harvested by build_board and
+        # never shipped (see the contract test below).
+        "_lb",
     }
 
 
@@ -945,7 +948,9 @@ def test_contract_row_carries_every_field_build_row_produces():
     # m5Bear is the one builder field that ships under another name: the bear
     # verdict block (spec 2026-09-24). Pin that it really is carried there.
     assert shipped["bear"]["m5"] is built["m5Bear"]
-    missing = sorted(set(built) - set(shipped) - {"m5Bear"})
+    # _lb (live-RVOL bases) is private on purpose: build_board harvests it.
+    assert "_lb" not in shipped
+    missing = sorted(set(built) - set(shipped) - {"m5Bear", "_lb"})
     assert missing == [], f"build_row produces {missing}, which _contract_row drops"
 
 

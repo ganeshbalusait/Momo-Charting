@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from config import ARTIFACTS_DIR, settings
-from momx import buckets, columns, ema_touch, feed, flags, grade, news, scan
+from momx import buckets, columns, ema_touch, feed, flags, grade, live_rvol, news, scan
 from momx.industries import industry_for
 from momx.industry_lookup import resolve as resolve_industries
 
@@ -1040,6 +1040,13 @@ def build_board(
         stamp = _newest_bar_epoch(five.get(record["symbol"]))
         if row is not None and stamp is not None:
             row["marketDataAt"] = stamp
+        # Live-RVOL bases leave the row here, before it is lent, contracted or
+        # archived; one per-symbol store serves every list (2026-11-03).
+        if row is not None and row.get("_lb"):
+            try:
+                live_rvol.remember(record["symbol"], row.pop("_lb"))
+            except Exception:  # noqa: BLE001 - a live overlay never costs the board
+                row.pop("_lb", None)
 
     if borrowed:
         fresh = {record["symbol"]: record for record in scanned}

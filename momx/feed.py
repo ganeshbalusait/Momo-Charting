@@ -839,13 +839,15 @@ def stream_history_path():
 # Live minutes straight from api_server's memory (2026-10-01, "no delay").
 STREAM_LIVE_ENABLED = True
 STREAM_LIVE_URL = "http://127.0.0.1:3002/api/momx-stream-bars"
-STREAM_LIVE_POLL_SECONDS = 15.0
+#: 15 -> 5 s on 2026-11-03: the LIVE RVOL (momx.live_rvol) rescores the forming
+#: bar from these minutes, so their age is the RVOL's age.
+STREAM_LIVE_POLL_SECONDS = 5.0
 #: How long one good poll vouches for the live feed. Was 4 polls (60 s): on a
 #: busy worker one slow poll made every tapes thread fall back to re-parsing the
 #: 17 MB stream-history file on each 30-60 s save (3.6% of the worker's CPU,
 #: py-spy 2026-10-09 16:45 ET) although the endpoint answered in 0.14 s.
 STREAM_LIVE_TRUST_SECONDS = 300.0
-STREAM_LIVE_WINDOW_SECONDS = 3 * 3600
+STREAM_LIVE_WINDOW_SECONDS = int(4.5 * 3600)   # covers a whole 4h bucket (live RVOL), was 3h
 _STREAM_LIVE: dict = {"at": 0.0, "ok_at": 0.0, "max_t": 0.0, "bars": {}, "dead": []}
 
 

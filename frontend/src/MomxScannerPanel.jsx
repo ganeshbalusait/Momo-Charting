@@ -36,6 +36,7 @@ import {
 import { etParts, isTradingDay } from "./marketSession.js";
 import { tapeAsOfNote } from "./tapeAsOfNote.js";
 import { scannerFreshness, scannerRowFreshness, setupSourceTime } from "./scannerFreshness.js";
+import { MOMX_LIVE_RVOL_ENDPOINT, MOMX_LIVE_RVOL_MAX_AGE_MS, MOMX_LIVE_RVOL_MS, MOMX_LIVE_RVOL_TIMEOUT_MS, liveRvolCell, reuseLiveCells } from "./momxLiveRvol.js";
 import SetupColumnPicker from './SetupColumnPicker.jsx';
 import { scannerRecordLearning } from './scannerRecordLearning.js';
 import { createRvolObservationTracker, observeConfirmationBoard, observeConfirmationHistory, scannerConfirmation, confirmationDescription } from "./scannerConfirmation.js";
@@ -2647,7 +2648,7 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefi
   return null;
 }
 
-const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, bolt, sourceWarning }) {
+const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, bolt, sourceWarning, liveRvol }) {
   const passed = Boolean(row && row.scanPass);
   // Use the same session change as the scanner, filters and sorting. A live
   // after-hours last is not the regular-session close used by this percentage;
@@ -2924,7 +2925,7 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
           );
         }
 
-        const cell = cellFor(row, column);
+        const cell = liveRvolCell(cellFor(row, column), column, liveRvol);
         // A cell his script painted whose reason arrived in the last 15
         // minutes - for RVOL the volume, for Skittles the bar the cross fired
         // in. Measured on his own board: ~5 RVOL cells at a time, and for
@@ -5976,6 +5977,54 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     liveSymbolsRef.current = visibleRows.slice(0, 60).map(row => row?.symbol).filter(Boolean).join(",");
   }, [visibleRows]);
 
+  // LIVE RVOL (2026-11-03, "real time same as TOS"): the forming bar's RVOL
+  // for the rows ON SCREEN, rescored from the Schwab stream every 5 s by the
+  // worker. DISPLAY ONLY - it is handed to each row and changes what the RVOL
+  // cells show; filters, Confirm, alerts and sorting keep the board values.
+  const [liveRvol, setLiveRvol] = useState(null);
+  useEffect(() => {
+    if (embedded) return undefined;
+    let cancelled = false;
+    let inFlight = false;
+    let staleTimer = 0;
+    const poll = async () => {
+      if (cancelled || inFlight) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const symbols = liveSymbolsRef.current;
+      if (!symbols) return;
+      inFlight = true;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), MOMX_LIVE_RVOL_TIMEOUT_MS);
+      try {
+        const res = await fetch(MOMX_LIVE_RVOL_ENDPOINT + "?symbols=" + encodeURIComponent(symbols),
+          { credentials: "include", cache: "no-store", signal: controller.signal });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setLiveRvol((held) => {
+          const cells = reuseLiveCells(held && held.cells, (data && data.cells) || {});
+          return held && cells === held.cells ? held : { cells };
+        });
+        // A live number older than MAX_AGE is dropped so the board shows,
+        // never a frozen "live" value (re-armed on every good poll).
+        window.clearTimeout(staleTimer);
+        staleTimer = window.setTimeout(() => { if (!cancelled) setLiveRvol(null); }, MOMX_LIVE_RVOL_MAX_AGE_MS);
+      } catch {
+        /* worker/stream down or timed out: the stale timer clears the overlay */
+      } finally {
+        window.clearTimeout(timeout);
+        inFlight = false;
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, MOMX_LIVE_RVOL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.clearTimeout(staleTimer);
+    };
+  }, [embedded]);
+
   // Clock for the matchedSince row decorations, read ONCE per render (not
   // state, not a ticker): the 15s board poll re-renders this component anyway,
   // which is cadence enough for a 15-minute NEW window to expire, and a plain
@@ -7318,6 +7367,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                     starred={starredSymbols.has(row && row.symbol)}
                     earnings={earningsMap.get(row && row.symbol) || null}
                     bolt={bear || scannerRowFreshness(row, rowClockMs) ? null : liveBolts[row && row.symbol] || null}
+                    liveRvol={(liveRvol && liveRvol.cells[row && row.symbol]) || null}
                   />
                 );
               })

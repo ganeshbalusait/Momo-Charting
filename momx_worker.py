@@ -34,7 +34,7 @@ import atexit
 import signal
 import time
 
-from momx import board, fastlane, feed, grade_log, history, momo_alert, movers, query, service
+from momx import board, fastlane, feed, grade_log, history, live_rvol, momo_alert, movers, query, service
 
 PORT = 3010
 
@@ -469,6 +469,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/momx-scanner/data-source":
                 # The toolbar "TOS" checkbox (2026-09-30): "tos" | "alpaca".
                 self._json(HTTPStatus.OK, {"source": feed.get_data_source()})
+                return
+            if path == "/api/momx-scanner/live-rvol":
+                # The forming bar's RVOL rescored from the Schwab stream every
+                # few seconds (momx/live_rvol.py, 2026-11-03): the board itself
+                # is ~2.5 min old by the time a Watchlist build lands.
+                symbols = str(query.get("symbols", [""])[0]).split(",")
+                self._json(HTTPStatus.OK, live_rvol.compute(symbols))
                 return
             if path == "/api/momx-scanner/live-seeds":
                 # The LIVE ⚡ seeds (momx/live_bolt.py) for api_server's
