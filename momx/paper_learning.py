@@ -445,7 +445,7 @@ class LearningTeam:
             job.pop("error", None)
         except Exception as exc:
             job.update(state="failed" if job["attempts"] >= 3 else "pending", retryAt=self.clock()+60,
-                       error=type(exc).__name__)
+                       error=(type(exc).__name__ + ": " + str(exc))[:200])
         self.save(name, job)
         return True
 

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from momx import ai_filter
+from momx import ai_filter, paper_ai
 from momx.paper_ai import Reviewer, decision
 
 
@@ -106,7 +106,8 @@ def test_advisory_fallback_uses_required_analysis_schema(tmp_path):
     def transport(url, body, headers=None, timeout=0):
         if "18789" in url: raise TimeoutError()
         assert body["format"]["required"] == ["summary", "hypothesis", "validation"]
-        assert body["think"] is False and timeout == 180
+        assert body["think"] is False and timeout == paper_ai.AGENT_TIMEOUT_SECONDS
+        assert body["options"]["num_thread"] == paper_ai.OLLAMA_THREADS and body["keep_alive"] == "30m"
         return {"message":{"content":'{"summary":"mixed outcomes","hypothesis":"test spreads","validation":"future paired fills"}'}}
     result = reviewer(tmp_path,transport).request("Research only",analysis)
     assert result["provider"] == "ollama" and result["validation"]

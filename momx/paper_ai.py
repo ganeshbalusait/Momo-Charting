@@ -16,6 +16,14 @@ from momx import ai_filter
 _AGENT_CONFIG_LOCK = threading.Lock()
 _GATEWAY_START_LOCK = threading.Lock()
 _GATEWAY_START_AT = {}
+#: CPU threads for the agents' local model. Unset, Ollama took ~14 of the
+#: laptop's 12 logical cores per call (2026-11-02, once agents ran 24/7) and
+#: would starve the scanner and charts in market hours. Hermes uses 4 too.
+OLLAMA_THREADS = 4
+#: Per local-model call. Research only, never on the entry/exit path. 180 s cut off
+#: every batch on 2026-11-02: a cold load (~50 s) plus reading 8 trades' frozen
+#: chart/Setup evidence on 4 CPU threads ran past it, so all batches failed.
+AGENT_TIMEOUT_SECONDS = 600
 
 
 def start_bot_gateway(directory=None):
@@ -210,7 +218,7 @@ class Reviewer:
                                     {"model": "qwen3.5:4b", "messages": [{"role": "user", "content": prompt}],
                                      "stream": False, "think": False, "keep_alive": "30m",
                                      "format": getattr(parse, "schema", "json"),
-                                     "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 600}}, timeout=180)
+                                     "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 600, "num_thread": OLLAMA_THREADS}}, timeout=AGENT_TIMEOUT_SECONDS)
             return {**parse(_structured_text(result["message"]["content"])), "provider": "ollama", "agent": self.agent_id, "fallback": bool(errors), **({"primaryError": errors[0]} if errors else {})}
         except Exception as exc:
             return {"approved": False, "provider": "unavailable", "fallback": True,
