@@ -44,6 +44,17 @@ def test_autoencoder_flags_rare_entries_on_held_out_days():
     assert ano["drivers"][0] == "spread"
 
 
+def test_saved_trades_use_their_stored_inputs_not_a_recompute():
+    # The nightly retrain hands over compacted dataset rows ({"_features", "_win"});
+    # recomputing features from those lost every market / setup input (2026-11-02).
+    saved = {day: [(side, {"_features": dict(t), "_win": t["win"]}) for side, t in items]
+             for day, items in _days().items()}
+    blank = lambda t, side: {}
+    report = unsupervised.train_report(saved, blank, lambda t: None, ("spread", "delta", "dte"), ("m_spyPct", "m_breadth"))
+    assert report["regimes"]["state"] == "ready"
+    assert report["anomalies"]["inputs"] == 3 and report["anomalies"]["drivers"][0] == "spread"
+
+
 def test_too_little_history_reports_collecting_not_a_result():
     report = unsupervised.train_report({"2026-09-01": [("bull", {"m_spyPct": 1, "win": 1})]}, feat, lab, ("delta",), ("m_spyPct",))
     assert report["regimes"]["state"] == "collecting" and report["anomalies"]["state"] == "collecting"

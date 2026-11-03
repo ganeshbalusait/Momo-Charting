@@ -81,9 +81,26 @@ HOME_SECRET_GLOBS = [
 ]
 
 
+#: The scheduled task runs under pythonw.exe (no console window popping up at
+#: 00:30 / 14:45 - 2026-11-03, "hide the Google Drive window popup"), where
+#: there is no screen to print to, so every line also goes to this file.
+LOG_FILE = REPO / "artifacts" / "agx-backup.log"
+
+#: Child programs (tasklist, git) must not open their own console windows either.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def log(message: str) -> None:
     stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{stamp}] {message}", flush=True)
+    line = f"[{stamp}] {message}"
+    if sys.stdout is not None:
+        print(line, flush=True)
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
 
 
 #: GOOGLE DRIVE ONLY, by the trader's instruction (2026-08-28: "Don't use one
@@ -144,7 +161,7 @@ def warn_if_not_syncing(out_dir: Path) -> None:
         return  # local staging: main() already warns about that case
     try:
         result = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {process}.exe"],
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW)
         running = f"{process}.exe".lower() in (result.stdout or "").lower()
     except Exception:  # noqa: BLE001 - never fail a backup over a status probe
         return
@@ -269,7 +286,7 @@ def backup_code(out_dir: Path, day: str) -> bool:
     bundle = out_dir / f"code-{day}.bundle"
     result = subprocess.run(
         ["git", "bundle", "create", str(bundle), "--all"],
-        cwd=str(REPO), capture_output=True, text=True,
+        cwd=str(REPO), capture_output=True, text=True, creationflags=NO_WINDOW,
     )
     if result.returncode != 0 or not bundle.exists():
         log(f"FAILED code bundle: {result.stderr.strip()[:200]}")

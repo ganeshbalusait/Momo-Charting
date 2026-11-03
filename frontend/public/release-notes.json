@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-03T01:55:00-05:00",
+      "heading": "No more backup window popping up; unsupervised research reads the full trade picture",
+      "items": [
+        "The Google Drive backup (12:30 AM and 2:45 PM CT) no longer opens a black window on the screen. It runs silently and writes what it did to artifacts/agx-backup.log.",
+        "The unsupervised research on the BOT page (market-mood groups and the 'unusual trade' detector) had been looking at only 4 of its inputs - market direction, setups and levels were missing - so last night's result meant nothing. It now uses every saved input and was re-run on the full history. Still research only: it never filters or sizes a trade."
+      ]
+    },
+    {
       "at": "2026-11-02T21:35:00-05:00",
       "heading": "AI agents finish their reviews without taking over the laptop",
       "items": [
