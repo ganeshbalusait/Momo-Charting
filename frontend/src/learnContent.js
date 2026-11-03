@@ -766,6 +766,7 @@ export const LEARN_GLOSSARY = Object.freeze([
 // be added to the app without this page acknowledging that it exists.
 export const LEARN_ELSEWHERE = Object.freeze([
   { goTo: "Watchlist", goToLabel: "Watchlist", oneLiner: "Your saved tickers, shared by the scanners and the chart." },
+  { goTo: "Sectors", goToLabel: "Sectors", oneLiner: "A heatmap of every sector's top stocks: bigger company, bigger tile; green up, orange down; tap a tile to chart it." },
   { goTo: "News Feed", goToLabel: "News Feed", oneLiner: "Headlines and catalysts for the big names and your watchlist." },
   { goTo: "Earnings Calendar", goToLabel: "Earnings Calendar", oneLiner: "Which of your saved tickers report, and when." },
   { goTo: "Mag7 Scanner", goToLabel: "Mag7 Watchlist", oneLiner: "A dense board of signals and flow for the seven largest names." },

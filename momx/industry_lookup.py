@@ -25,6 +25,7 @@ negative-cached; only real empty answers are).
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import threading
@@ -144,10 +145,25 @@ def _shorten(label: Any) -> str:
     return SHORT_LABELS.get(text, text)
 
 
+def _positive_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 and number == number and number != float("inf") else None
+
+
 def fetch_industry(
-    symbol: str, *, get: Callable[[str, float], Any] | None = None
+    symbol: str,
+    *,
+    get: Callable[[str, float], Any] | None = None,
+    profile: dict | None = None,
 ) -> str | None:
     """One provider lookup. '' = provider answered 'nothing'; None = call failed.
+
+    ``profile``, when given, also receives ``marketCap`` (USD) from the SAME
+    response -- the Sector heatmap sizes its tiles by it, and reading it off the
+    call we already make costs no extra provider request.
 
     The distinction matters for caching: '' is a real answer and is cached so it
     is never refetched; None must NOT be cached, so a transient outage does not
@@ -166,6 +182,10 @@ def fetch_industry(
             )
             if isinstance(data, dict):
                 finnhub_answered = True
+                # Finnhub reports marketCapitalization in millions of USD.
+                cap = _positive_float(data.get("marketCapitalization"))
+                if profile is not None and cap is not None:
+                    profile["marketCap"] = cap * 1_000_000
                 label = _shorten(data.get("finnhubIndustry"))
                 if label:
                     return label
@@ -186,6 +206,9 @@ def fetch_industry(
             rows = data if isinstance(data, list) else [data]
             for row in rows:
                 if isinstance(row, dict):
+                    cap = _positive_float(row.get("marketCap") or row.get("mktCap"))
+                    if profile is not None and cap is not None and "marketCap" not in profile:
+                        profile["marketCap"] = cap
                     label = _shorten(row.get("industry") or row.get("sector"))
                     if label:
                         return label
@@ -233,14 +256,18 @@ def resolve(
 
     fetched_any = False
     for name in missing[: max(0, int(budget))]:
-        label = fetch_industry(name, get=get)
+        profile: dict = {}
+        label = fetch_industry(name, get=get, profile=profile)
         if label is None:
             continue  # transient failure: leave uncached, retry next build
         out[name] = label
+        stamp = _now_stamp()
         with _LOCK:
             cache[name] = {
                 "industry": label,
-                "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "fetchedAt": stamp,
+                "marketCap": profile.get("marketCap"),
+                "marketCapAt": stamp,
             }
         fetched_any = True
 
@@ -251,11 +278,185 @@ def resolve(
     return out
 
 
-def clear_memory_cache() -> None:
-    """Testing hook: forget the in-process cache (the file is untouched)."""
+# ---------------------------------------------------------------------------
+# Market cap for the Sector heatmap (trader ask, 2026-11-03).
+#
+# Same rules as the industry above: the request path only READS the cache;
+# filling it is a small budgeted pass on a daemon thread, started at most once
+# per FILL_MIN_INTERVAL_SECONDS and only while the Sector panel is open (the
+# endpoint passes profile=1). It is not a standing background collector.
+# ---------------------------------------------------------------------------
+
+#: Provider fetches per fill pass. Shares the Finnhub 60/min key with the
+#: earnings calendar and the board's industry resolve, so stay small.
+MARKET_CAP_FETCH_BUDGET = 15
+FILL_MIN_INTERVAL_SECONDS = 60.0
+#: Caps drift; refresh a cached one after a week. Relative tile size is all
+#: that depends on it, so a week-old number is fine.
+MARKET_CAP_MAX_AGE_SECONDS = 7 * 24 * 3600
+
+_FILL_LOCK = threading.Lock()
+_FILL_RUNNING = False
+_LAST_FILL_MONOTONIC: float | None = None
+
+
+def _now_stamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _stamp_age_seconds(stamp: Any) -> float | None:
+    try:
+        parsed = time.strptime(str(stamp), "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return None
+    return time.time() - calendar.timegm(parsed)
+
+
+def _loaded_cache() -> dict[str, dict]:
     global _CACHE
     with _LOCK:
+        if _CACHE is None:
+            _CACHE = _load_cache(cache_path())
+        return _CACHE
+
+
+def _normalise(symbols: Iterable[Any]) -> list[str]:
+    wanted: list[str] = []
+    for item in symbols:
+        name = str(item or "").strip().upper()
+        if name and name not in wanted:
+            wanted.append(name)
+    return wanted
+
+
+def cached_profiles(symbols: Iterable[Any]) -> dict[str, dict]:
+    """``{SYMBOL: {"industry", "marketCap"}}`` from the hand map + cache. No network.
+
+    ``industry`` is None when nothing is known yet (or the provider has none);
+    ``marketCap`` is USD or None.
+    """
+    cache = _loaded_cache()
+    out: dict[str, dict] = {}
+    for name in _normalise(symbols):
+        with _LOCK:
+            entry = cache.get(name)
+        entry = entry if isinstance(entry, dict) else {}
+        industry = industry_for(name) or str(entry.get("industry") or "") or None
+        out[name] = {
+            "industry": industry,
+            "marketCap": _positive_float(entry.get("marketCap")),
+        }
+    return out
+
+
+def _needs_market_cap(entry: Any) -> int:
+    """0 = fresh, 1 = stale (refresh later), 2 = never fetched (fetch first)."""
+    if not isinstance(entry, dict) or "marketCapAt" not in entry:
+        return 2
+    age = _stamp_age_seconds(entry.get("marketCapAt"))
+    if age is None or age > MARKET_CAP_MAX_AGE_SECONDS:
+        return 1
+    return 0
+
+
+def resolve_market_caps(
+    symbols: Iterable[Any],
+    *,
+    budget: int = MARKET_CAP_FETCH_BUDGET,
+    get: Callable[[str, float], Any] | None = None,
+) -> int:
+    """Fetch market cap for up to ``budget`` symbols that lack a fresh one.
+
+    Never-fetched symbols go before stale ones. A provider answer with no cap
+    (ETFs on Finnhub) is cached as None so it is not refetched for a week; a
+    failed call is not cached at all. Returns how many entries were written.
+    """
+    cache = _loaded_cache()
+    ranked: list[tuple[int, int, str]] = []
+    for index, name in enumerate(_normalise(symbols)):
+        with _LOCK:
+            need = _needs_market_cap(cache.get(name))
+        if need:
+            ranked.append((-need, index, name))
+    ranked.sort()
+
+    written = 0
+    for _, _, name in ranked[: max(0, int(budget))]:
+        profile: dict = {}
+        label = fetch_industry(name, get=get, profile=profile)
+        if label is None:
+            continue
+        stamp = _now_stamp()
+        with _LOCK:
+            entry = dict(cache.get(name) or {})
+            if "industry" not in entry:
+                entry["industry"] = label
+                entry["fetchedAt"] = stamp
+            entry["marketCap"] = profile.get("marketCap")
+            entry["marketCapAt"] = stamp
+            cache[name] = entry
+        written += 1
+
+    if written:
+        with _LOCK:
+            snapshot = dict(cache)
+        _save_cache(cache_path(), snapshot)
+    return written
+
+
+def schedule_market_cap_fill(
+    symbols: Iterable[Any],
+    *,
+    start_thread: Callable[[Callable[[], None]], Any] | None = None,
+) -> bool:
+    """Start one budgeted fill pass on a daemon thread if one is due.
+
+    Returns True when a pass was started. Cheap enough to call from every
+    Sector-panel poll: it only checks a timestamp unless work is needed.
+    """
+    global _FILL_RUNNING, _LAST_FILL_MONOTONIC
+    wanted = _normalise(symbols)
+    if not wanted:
+        return False
+    cache = _loaded_cache()
+    with _LOCK:
+        due = any(_needs_market_cap(cache.get(name)) for name in wanted)
+    if not due:
+        return False
+    with _FILL_LOCK:
+        now = time.monotonic()
+        if _FILL_RUNNING:
+            return False
+        if _LAST_FILL_MONOTONIC is not None and now - _LAST_FILL_MONOTONIC < FILL_MIN_INTERVAL_SECONDS:
+            return False
+        _FILL_RUNNING = True
+        _LAST_FILL_MONOTONIC = now
+
+    def run() -> None:
+        global _FILL_RUNNING
+        try:
+            resolve_market_caps(wanted)
+        except Exception:
+            pass  # the panel just keeps its estimated sizes this round
+        finally:
+            with _FILL_LOCK:
+                _FILL_RUNNING = False
+
+    if start_thread is not None:
+        start_thread(run)
+    else:
+        threading.Thread(target=run, name="sector-market-cap-fill", daemon=True).start()
+    return True
+
+
+def clear_memory_cache() -> None:
+    """Testing hook: forget the in-process cache (the file is untouched)."""
+    global _CACHE, _FILL_RUNNING, _LAST_FILL_MONOTONIC
+    with _LOCK:
         _CACHE = None
+    with _FILL_LOCK:
+        _FILL_RUNNING = False
+        _LAST_FILL_MONOTONIC = None
 
 
 __all__ = [
