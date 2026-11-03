@@ -49,8 +49,9 @@ export function scannerFreshness(board, nowMs = Date.now(), receivedAt = null) {
   };
   return {
     tone: note.tone,
-    text: (windowKnown ? windowText : `Data ${clockTime(newest)} ET · ${newestAge}m old`)
-      + (Number.isFinite(oldestAge) && oldestAge > newestAge ? ` · oldest start ${oldestAge}m ago` : ""),
+    // "oldest start Nm ago" left the strip 2026-11-03: he asked what it meant
+    // three times. The history span stays in the tooltip (Source bars: ...).
+    text: windowKnown ? windowText : `Data ${clockTime(newest)} ET · ${newestAge}m old`,
     title: `Source bars: ${clock(f.oldestDataAt || newest)} to ${clock(newest)}. `
       + `Scan started: ${clock(f.scanStartedAt || board?.generatedAt)}. Completed: ${clock(f.scanCompletedAt || board?.generatedAt)}. `
       + `API served: ${clock(f.servedAt)}. Browser received: ${clock(board?.source === "cache" ? null : receivedAt)}. `

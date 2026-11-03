@@ -56,12 +56,30 @@ export function entryScriptFrom(html) {
 // he is arriving fresh and a reload costs him nothing.
 export const RESUME_AFTER_MS = 60 * 1000;
 
-export function decideUpdate({ current, latest, awayMs = 0 }) {
+// Weekday 04:00-20:00 ET: the scanner's session. 2026-11-03 his order: "I
+// don't want blank screen" - four deploys that morning each blanked his open
+// scanner with a self-reload. In these hours a new version is only OFFERED
+// (the update bar); he decides when to reload.
+export function inTradingSession(nowMs = Date.now()) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York", weekday: "short", hour: "numeric", hourCycle: "h23",
+    }).formatToParts(new Date(nowMs));
+    const get = (type) => (parts.find((p) => p.type === type) || {}).value;
+    const hour = Number(get("hour"));
+    return !["Sat", "Sun"].includes(get("weekday")) && hour >= 4 && hour < 20;
+  } catch {
+    return true; // unknown clock: never reload by surprise
+  }
+}
+
+export function decideUpdate({ current, latest, awayMs = 0, session = false }) {
   // Either side unknown means we have learned nothing. An expired Cloudflare
   // Access session answers with a login page that has no module script, and
   // reading that as "a new build" would reload straight back into it.
   if (!current || !latest) return "none";
   if (current === latest) return "none";
+  if (session) return "notify";
   return awayMs >= RESUME_AFTER_MS ? "reload" : "notify";
 }
 
@@ -98,7 +116,21 @@ export async function fetchLatestEntryScript(fetchImpl, url = "/") {
   }
 }
 
-function showUpdateBar(win, onTap) {
+// In session (see inTradingSession): show the bar AND reload by itself the
+// moment the app is out of sight (tab switched, phone locked) - he asked both
+// "I don't want blank screen" and "app should reload itself" (2026-11-03): the
+// reload happens, just never in front of him.
+export function offerUpdate(win, onTap = () => win.location.reload()) {
+  showUpdateBar(win, onTap);
+  const doc = win.document;
+  if (win.__agxReloadOnHide) return;
+  win.__agxReloadOnHide = true;
+  doc.addEventListener("visibilitychange", () => {
+    if (doc.visibilityState === "hidden") win.location.reload();
+  });
+}
+
+export function showUpdateBar(win, onTap) {
   const doc = win.document;
   if (doc.getElementById("agx-update-bar")) return;
   const bar = doc.createElement("button");
@@ -130,7 +162,7 @@ function showUpdateBar(win, onTap) {
 }
 
 export function installUpdateWatch(win, options = {}) {
-  const { intervalMs = 15 * 60 * 1000, now = () => Date.now() } = options;
+  const { intervalMs = 15 * 60 * 1000, now = () => Date.now(), inSession = inTradingSession } = options;
   const doc = win.document;
   const current = currentEntryScript(doc);
   // Nothing to compare against - do not start a timer that can only ever
@@ -143,7 +175,7 @@ export function installUpdateWatch(win, options = {}) {
   const check = async (awayMs) => {
     if (stopped) return;
     const latest = await fetchLatestEntryScript(win.fetch.bind(win));
-    const action = decideUpdate({ current, latest, awayMs });
+    const action = decideUpdate({ current, latest, awayMs, session: inSession(now()) });
     if (action === "reload") {
       // Deliberately NOT marked. This branch fires when he has been away and
       // is coming back - to a chart he left open. Landing him on a release
@@ -153,7 +185,7 @@ export function installUpdateWatch(win, options = {}) {
     } else if (action === "notify") {
       // He chose to update, so taking him to what changed is what he asked
       // for rather than an interruption.
-      showUpdateBar(win, () => {
+      (inSession(now()) ? offerUpdate : showUpdateBar)(win, () => {
         markReleaseNotesOnNextLoad(win.sessionStorage);
         win.location.reload();
       });

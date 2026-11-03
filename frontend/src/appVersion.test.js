@@ -13,6 +13,7 @@ import {
   markReleaseNotesOnNextLoad,
   consumeReleaseNotesMark,
   RESUME_AFTER_MS,
+  inTradingSession,
 } from "./appVersion.js";
 
 const builtHtml = (asset) =>
@@ -110,7 +111,7 @@ test("storage that throws does not take the app down with it", () => {
 // was correct and the caller was not, so only a test that drives the caller
 // could see it.
 
-function harness({ currentSrc = "/assets/a.js", servedSrc = "/assets/b.js" } = {}) {
+function harness({ currentSrc = "/assets/a.js", servedSrc = "/assets/b.js", session = false } = {}) {
   const calls = { reloads: 0, banners: 0 };
   let clock = 1_000_000;
   const listeners = {};
@@ -142,10 +143,14 @@ function harness({ currentSrc = "/assets/a.js", servedSrc = "/assets/b.js" } = {
     }),
   };
 
-  installUpdateWatch(win, { now: () => clock });
+  installUpdateWatch(win, { now: () => clock, inSession: () => session });
 
   return {
     calls,
+    async hide() {
+      doc.visibilityState = "hidden";
+      await listeners.visibilitychange();
+    },
     async leaveFor(ms) {
       doc.visibilityState = "hidden";
       await listeners.visibilitychange();
@@ -175,6 +180,30 @@ test("resuming onto the SAME build does nothing at all", async () => {
   await app.leaveFor(RESUME_AFTER_MS + 1);
   assert.equal(app.calls.reloads, 0);
   assert.equal(app.calls.banners, 0);
+});
+
+test("during the trading session a new build is only OFFERED, never forced (2026-11-03)", async () => {
+  const app = harness({ session: true });
+  await app.leaveFor(RESUME_AFTER_MS + 1);
+  assert.equal(app.calls.reloads, 0, "a self-reload blanks the scanner he is trading from");
+  assert.equal(app.calls.banners, 1);
+});
+
+test("in session the offered update still applies itself the moment the app is hidden", async () => {
+  const app = harness({ session: true });
+  await app.leaveFor(5000);
+  assert.equal(app.calls.reloads, 0);
+  await app.hide();
+  assert.equal(app.calls.reloads, 1, "he asked: reload itself, just not in front of me");
+});
+
+test("inTradingSession is weekday 04:00-20:00 ET", () => {
+  const at = (iso) => inTradingSession(Date.parse(iso));
+  assert.equal(at("2026-11-03T03:59:00-05:00"), false);   // Tue 03:59 ET
+  assert.equal(at("2026-11-03T04:00:00-05:00"), true);
+  assert.equal(at("2026-11-03T19:59:00-05:00"), true);
+  assert.equal(at("2026-11-03T20:00:00-05:00"), false);
+  assert.equal(at("2026-11-07T10:00:00-05:00"), false);   // Saturday
 });
 
 test("resuming twice onto the same new build reloads once, not forever", async () => {

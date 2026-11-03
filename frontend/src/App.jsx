@@ -72,7 +72,7 @@ import LearningCenter from "./LearningCenter.jsx";
 import ReleaseNotesPanel from "./ReleaseNotesPanel.jsx";
 import { parseReleases, readSeen, unreadCount } from "./releaseNotes.js";
 import { candleTimeFor, gradeStepMarkers } from "./gradeMarkers.js";
-import { consumeReleaseNotesMark } from "./appVersion.js";
+import { consumeReleaseNotesMark, inTradingSession, offerUpdate } from "./appVersion.js";
 import { LEARN_CONTENT_VERSION, markLearnSeen, readLearnSeen, shouldAutoOpenLearn } from "./learnFirstVisit.js";
 import { nonJsonResponseError } from "./apiErrorMessage";
 import { setBoundedCacheEntry } from "./boundedCache";
@@ -2364,6 +2364,12 @@ function scannerHistoryMetric(row, key) {
 let lastServerBootId = "";
 let lastAppBuildId = "";
 function reloadOnceForVersion(kind, versionId) {
+  // In session a new build / server restart is OFFERED, never forced: a
+  // self-reload blanks the scanner he is trading from (2026-11-03).
+  if (inTradingSession()) {
+    offerUpdate(window);
+    return;
+  }
   try {
     const reloadKey = `agentic-${kind}-reload-${versionId}`;
     if (window.sessionStorage.getItem(reloadKey)) return;
