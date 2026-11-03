@@ -9,6 +9,7 @@ import {
   SECTOR_CARDS,
   SECTOR_SYMBOLS,
   buildMarketSectorGroups,
+  sortSectorGroups,
   cardHeight,
   formatMarketCap,
   formatSignedPct,
@@ -271,5 +272,26 @@ describe("sizing and labels", () => {
     assert.equal(formatMarketCap(4.2e12), "$4.20T");
     assert.equal(formatMarketCap(250e9), "$250.0B");
     assert.equal(formatMarketCap(null), "--");
+  });
+});
+
+describe("sector card sort (trader, 2026-11-06: sort by high/low)", () => {
+  const g = (name, changePct) => ({ name, changePct });
+  const groups = [g("Technology", 1.1), g("Financials", -0.49), g("Healthcare", null), g("Energy", -0.6), g("Industrials", 1.08)];
+
+  test("default keeps the Robinhood order", () => {
+    assert.deepEqual(sortSectorGroups(groups, "default").map((x) => x.name), groups.map((x) => x.name));
+  });
+
+  test("high puts the best move first, low the worst; no-quote cards go last", () => {
+    assert.deepEqual(sortSectorGroups(groups, "high").map((x) => x.name), ["Technology", "Industrials", "Financials", "Energy", "Healthcare"]);
+    assert.deepEqual(sortSectorGroups(groups, "low").map((x) => x.name), ["Energy", "Financials", "Industrials", "Technology", "Healthcare"]);
+  });
+
+  test("never mutates its input, and survives junk", () => {
+    const copy = groups.map((x) => x.name);
+    sortSectorGroups(groups, "high");
+    assert.deepEqual(groups.map((x) => x.name), copy);
+    assert.deepEqual(sortSectorGroups(null, "high"), []);
   });
 });

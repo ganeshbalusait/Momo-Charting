@@ -11,10 +11,13 @@
 // 2026-08-27: after the fourteen-view cut and the partial restore, the bar
 // names the five primary surfaces, so the sheet carries everything else -
 // the six secondary pages plus Settings, which the trader moved in here.
+// 2026-11-06 (trader): "Alert tab move to more and sector next to options" -
+// Sectors takes the third slot, Alerts moves into the sheet (the More button
+// carries the unseen-alert badge so a new alert is still visible).
 export const BOTTOM_NAV_LABELS = [
   "Charts & OI",
   "Quick Options",
-  "Auto Alert",
+  "Sectors",
   "Premarket Scanner",
   "MomX Scanner",
 ];

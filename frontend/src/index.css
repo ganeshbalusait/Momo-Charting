@@ -1593,13 +1593,22 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
 .sector-heatmap-panel > header .sector-heatmap-switch button { width: auto; height: 18px; margin: 0; padding: 0 6px; border-radius: 0; color: #8b8b97; font-size: .52rem; font-weight: 800; letter-spacing: .02em; }
 .sector-heatmap-panel > header .sector-heatmap-switch button[aria-pressed="true"] { background: rgba(72, 168, 202, .24); color: #e7f7ff; }
 .sector-heatmap-panel > header .sector-heatmap-switch:first-of-type { margin-left: auto; }
+.sector-heatmap-panel > header { flex-wrap: wrap; row-gap: 4px; }
 .sector-heatmap-panel > header > button:last-child { margin-left: 0; }
+/* Sectors page owns its scroll container, like .learn-view / .bot-view: the
+   shell is height:100dvh; overflow:hidden, so without this everything past
+   the first screen was unreachable (trader, 2026-11-06: "unable to scroll
+   down", only 3 sectors on the phone). Exactly one scroller - the panel body
+   inside sets no overflow on the page. */
+.sectors-view { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
 /* Sectors page (sidebar / phone More sheet): same panel, full height. */
 .sector-heatmap-page { display: grid; gap: 10px; padding: 12px 0 24px; }
 .sector-heatmap-page > header { display: flex; align-items: center; gap: 8px; padding: 0 8px; }
 .sector-heatmap-page > header b { color: #b6dff0; font-size: 12px; letter-spacing: .07em; }
 .sector-heatmap-page > header small { color: #7c7c8a; font-size: 11px; }
-.sector-heatmap-page .sector-heatmap-switch { display: inline-flex; overflow: hidden; margin-left: auto; border: 1px solid rgba(92, 92, 103, .45); border-radius: 6px; }
+.sector-heatmap-page > header { flex-wrap: wrap; }
+.sector-heatmap-page .sector-heatmap-switch { display: inline-flex; overflow: hidden; border: 1px solid rgba(92, 92, 103, .45); border-radius: 6px; }
+.sector-heatmap-page .sector-heatmap-switch:first-of-type { margin-left: auto; }
 .sector-heatmap-page .sector-heatmap-switch button { height: 28px; padding: 0 12px; border: 0; background: transparent; color: #8b8b97; font-size: 12px; font-weight: 800; cursor: pointer; }
 .sector-heatmap-page .sector-heatmap-switch button[aria-pressed="true"] { background: rgba(72, 168, 202, .24); color: #e7f7ff; }
 .sector-heatmap-page .sector-heatmap-body { max-height: none; overflow: visible; }

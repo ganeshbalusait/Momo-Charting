@@ -17,6 +17,7 @@ const visibleNavItems = [
   { label: "MomX Scanner" },
   { label: "Learn + Setup" },
   { label: "Watchlist" },
+  { label: "Sectors" },
   { label: "News Feed" },
   { label: "Earnings Calendar" },
   { label: "Mag7 Scanner", displayLabel: "Mag7 Watchlist" },
@@ -28,6 +29,7 @@ const visibleNavItems = [
 test("the sheet offers exactly what the bar does not name", () => {
   const labels = selectOverflowDestinations(visibleNavItems).map((i) => i.label);
   assert.deepEqual(labels, [
+    "Auto Alert",
     "Learn + Setup",
     "Watchlist",
     "News Feed",
@@ -85,4 +87,12 @@ test("renamed destinations show their display label, not the view key", () => {
   assert.equal(overflowDestinationLabel({ label: "OI Level Script TOS", displayLabel: "OI Level Scripts" }), "OI Level Scripts");
   assert.equal(overflowDestinationLabel({ label: "Watchlist" }), "Watchlist");
   assert.equal(overflowDestinationLabel(null), "");
+});
+
+test("Sectors is on the bar and Alerts moved into the sheet (trader, 2026-11-06)", () => {
+  const labels = selectOverflowDestinations(visibleNavItems).map((i) => i.label);
+  assert.deepEqual(BOTTOM_NAV_LABELS.slice(0, 3), ["Charts & OI", "Quick Options", "Sectors"]);
+  assert.ok(!labels.includes("Sectors"));
+  assert.ok(labels.includes("Auto Alert"));
+  assert.equal(overflowDestinationLabel(visibleNavItems.find((i) => i.label === "Auto Alert")), "Alerts");
 });

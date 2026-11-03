@@ -1142,7 +1142,7 @@ function renderStockSetupMatches(row) {
 }
 
 // 2026-08-27, trader's call: the primary bar carries charts, options, alerts,
-// scanner and MomX. Everything else - including Settings - lives behind the
+// scanner and MomX (2026-11-06: Sectors replaced Alerts on the bar). Everything else - including Settings - lives behind the
 // phone's "More" sheet, which is fed automatically by whatever this list holds
 // that BOTTOM_NAV_LABELS does not name.
 const optionNavItems = [
@@ -32214,17 +32214,14 @@ function TradingWorkspace({ authUser, onLogout }) {
           <span>Options</span>
         </button>
         <button
-          className={activeView === "Auto Alert" ? "is-active" : ""}
-          data-testid="mobile-primary-auto-alert"
+          className={activeView === "Sectors" ? "is-active" : ""}
+          data-testid="mobile-primary-sectors"
           type="button"
-          onClick={() => navigateMobileTerminal("Auto Alert")}
-          aria-current={activeView === "Auto Alert" ? "page" : undefined}
+          onClick={() => navigateMobileTerminal("Sectors")}
+          aria-current={activeView === "Sectors" ? "page" : undefined}
         >
-          <span className="mobile-nav-bell">
-            <Bell size={20} />
-            {oiAutoAlertFeed.unseen ? <i className="nav-auto-alert-badge">{oiAutoAlertFeed.unseen > 9 ? "9+" : oiAutoAlertFeed.unseen}</i> : null}
-          </span>
-          <span>Alerts</span>
+          <LayoutGrid size={20} />
+          <span>Sectors</span>
         </button>
         <button
           className={activeView === "Premarket Scanner" ? "is-active" : ""}
@@ -32254,7 +32251,12 @@ function TradingWorkspace({ authUser, onLogout }) {
           aria-expanded={mobileMoreOpen}
           aria-haspopup="menu"
         >
-          <LayoutPanelTop size={20} />
+          {/* Alerts lives in this sheet now, so the unseen-alert count rides
+              on the More button instead of disappearing with the tab. */}
+          <span className="mobile-nav-bell">
+            <LayoutPanelTop size={20} />
+            {oiAutoAlertFeed.unseen ? <i className="nav-auto-alert-badge">{oiAutoAlertFeed.unseen > 9 ? "9+" : oiAutoAlertFeed.unseen}</i> : null}
+          </span>
           <span>More</span>
         </button>
       </nav>

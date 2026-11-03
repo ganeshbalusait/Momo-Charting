@@ -113,6 +113,29 @@ export function buildMarketSectorGroups(quotes = {}, { hideUnquoted = true, card
   });
 }
 
+// Card order (trader, 2026-11-06: "sort by high/low"). "default" keeps the
+// Robinhood order; "high" puts the best sector move first, "low" the worst.
+// Cards with no move yet always go last, in their default order.
+export const SORT_MODES = ["default", "high", "low"];
+
+export function sortSectorGroups(groups, mode = "default") {
+  const list = Array.isArray(groups) ? [...groups] : [];
+  if (mode !== "high" && mode !== "low") return list;
+  const direction = mode === "high" ? -1 : 1;
+  return list
+    .map((group, index) => ({ group, index }))
+    .sort((left, right) => {
+      const a = left.group.changePct;
+      const b = right.group.changePct;
+      if (a === null || b === null || a === undefined || b === undefined) {
+        if ((a ?? null) === null && (b ?? null) === null) return left.index - right.index;
+        return (a ?? null) === null ? 1 : -1;
+      }
+      return (a - b) * direction || left.index - right.index;
+    })
+    .map(({ group }) => group);
+}
+
 // The tiles a card draws: all of them when expanded, otherwise the biggest
 // `limit - 1` plus one "+N" tile. The "+N" tile is never bigger than the
 // median visible tile, so a 200-name "Other" card is not one giant "+186".

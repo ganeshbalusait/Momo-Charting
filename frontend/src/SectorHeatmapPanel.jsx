@@ -3,7 +3,9 @@ import { ChevronRight, X } from "lucide-react";
 
 import {
   SECTOR_SYMBOLS,
+  SORT_MODES,
   buildMarketSectorGroups,
+  sortSectorGroups,
   cardHeight,
   formatMarketCap,
   formatSignedPct,
@@ -18,6 +20,12 @@ import {
 const POLL_MS = 8000;
 const PREFS_KEY = "sectorHeatmapPrefs";
 // Robinhood: light rounded cards, 3px gutters. TOS: dark, tight 1px grid.
+const SORT_LABELS = { default: "Default", high: "High", low: "Low" };
+const SORT_TITLES = {
+  default: "Robinhood order",
+  high: "Best sector move first",
+  low: "Worst sector move first",
+};
 const STYLES = {
   rh: { label: "Robinhood", short: "RH", gap: 3 },
   tos: { label: "thinkorswim", short: "TOS", gap: 1 },
@@ -28,9 +36,12 @@ const SYMBOL_QUERY = encodeURIComponent(SECTOR_SYMBOLS.join(","));
 function readPrefs() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(PREFS_KEY) || "{}");
-    return { style: STYLES[parsed?.style] ? parsed.style : "rh" };
+    return {
+      style: STYLES[parsed?.style] ? parsed.style : "rh",
+      sort: SORT_MODES.includes(parsed?.sort) ? parsed.sort : "default",
+    };
   } catch {
-    return { style: "rh" };
+    return { style: "rh", sort: "default" };
   }
 }
 
@@ -180,7 +191,7 @@ export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose, va
     };
   }, []);
 
-  const groups = useMemo(() => buildMarketSectorGroups(quotes), [quotes]);
+  const groups = useMemo(() => sortSectorGroups(buildMarketSectorGroups(quotes), prefs.sort), [quotes, prefs.sort]);
 
   return (
     <section
@@ -190,6 +201,13 @@ export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose, va
       <header>
         <b>SECTORS</b>
         <small>{groups.length} sectors · top stocks</small>
+        <span className="sector-heatmap-switch" role="group" aria-label="Sort sectors">
+          {SORT_MODES.map((mode) => (
+            <button key={mode} type="button" aria-pressed={prefs.sort === mode} title={SORT_TITLES[mode]} onClick={() => updatePrefs({ sort: mode })}>
+              {SORT_LABELS[mode]}
+            </button>
+          ))}
+        </span>
         <span className="sector-heatmap-switch" role="group" aria-label="Heatmap style">
           {Object.entries(STYLES).map(([key, spec]) => (
             <button key={key} type="button" aria-pressed={prefs.style === key} title={`${spec.label} look`} onClick={() => updatePrefs({ style: key })}>
