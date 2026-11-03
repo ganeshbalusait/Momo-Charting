@@ -25,16 +25,19 @@ def test_unsupervised_entries_do_not_need_or_include_future_outcomes():
     assert entry_observation('bull', trade) is None
 
 
-def test_background_agents_leave_weekday_market_sessions_to_scanner():
+def test_agents_run_around_the_clock_but_pace_the_trading_day():
+    """2026-11-02: 24/7, one batch per SESSION_BATCH_GAP_SECONDS in 04:00-20:00 ET weekdays."""
     from datetime import datetime
-    from momx.paper_learning import background_research_allowed
-    def allowed(stamp):
-        return background_research_allowed(datetime.fromisoformat(stamp))
-    assert allowed('2026-11-02T03:59:00-05:00')
-    assert not allowed('2026-11-02T04:00:00-05:00')
-    assert not allowed('2026-11-02T19:59:00-05:00')
-    assert allowed('2026-11-02T20:00:00-05:00')
-    assert allowed('2026-11-01T10:00:00-05:00')
+    from momx.paper_learning import background_research_allowed, research_gap_seconds, SESSION_BATCH_GAP_SECONDS
+    def at(stamp):
+        return datetime.fromisoformat(stamp)
+    for stamp in ('2026-11-02T03:59:00-05:00', '2026-11-02T10:00:00-05:00', '2026-11-01T10:00:00-05:00'):
+        assert background_research_allowed(at(stamp))
+    assert research_gap_seconds(at('2026-11-02T03:59:00-05:00')) == 0
+    assert research_gap_seconds(at('2026-11-02T04:00:00-05:00')) == SESSION_BATCH_GAP_SECONDS
+    assert research_gap_seconds(at('2026-11-02T19:59:00-05:00')) == SESSION_BATCH_GAP_SECONDS
+    assert research_gap_seconds(at('2026-11-02T20:00:00-05:00')) == 0
+    assert research_gap_seconds(at('2026-11-01T10:00:00-05:00')) == 0
 
 
 class Agents:

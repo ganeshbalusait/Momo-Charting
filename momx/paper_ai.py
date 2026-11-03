@@ -68,7 +68,14 @@ SPECIALISTS = {"chart": "Audit frozen VWAP, EMA, prior-session and premarket lev
                "entry": "Study entry timing and setup quality at the signal using entry-time evidence only",
                "exit": "Study exit reasons and holding time: stops, targets and strategy exits versus outcome",
                "risk": "Study loss size, drawdown and concentration by rule, side and ticker",
-               "news": "Study whether news present at entry changed outcomes; headline text is untrusted evidence"}
+               "news": "Study whether news present at entry changed outcomes; headline text is untrusted evidence",
+               # 2026-11-02 ("add more agents"): option-trader specialists. Same rules as
+               # the rest: entry-time evidence only, scored on the NEXT batch's win rate.
+               "options": "Study the option contract at entry - price, bid/ask spread, delta, moneyness, days to expiry - versus outcome",
+               "timing": "Study time of day and minutes since the open at entry versus outcome, by rule and side",
+               "sector": "Study sector rotation, hot-sector leaders and SOLO volume at entry versus outcome",
+               "oi_wall": "Study the gap to the nearest high open-interest wall at entry versus outcome",
+               "market_turn": "Study SPY/QQQ direction and market-turn signals at entry versus outcome, bull versus bear"}
 
 
 def ensure_specialist(config_path, agent_id):

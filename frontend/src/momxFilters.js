@@ -2369,8 +2369,14 @@ export function recordCell(row, nowMs = Date.now()) {
   }
   const single = items.length === 1 ? items[0] : null;
   const limited = !single || single.n < RECORD_MIN_TRADES || single.coveragePct < 80;
-  const text = single ? (single.n ? `${single.label}: ${single.winRate}% · n=${single.n}` : `${single.label}: no checked exits`) : `${items.length} rule histories`;
-  const detail = single ? `${single.wins}W / ${single.losses}L · ${single.excludedTotal} excluded${limited ? " · limited" : ""}` : "Tap for wins, losses & coverage";
+  // Several rules: every rule's own win % in the cell (2026-11-02, he asked to
+  // SEE the winning percentage; "3 rule histories" hid it behind a tap). Still
+  // one figure per rule - never pooled into a combined probability.
+  const pct = r => (r.n ? `${r.winRate}%` : "–");
+  const text = single ? (single.n ? `${single.label}: ${single.winRate}% · n=${single.n}` : `${single.label}: no checked exits`)
+    : items.map(r => `${r.label} ${pct(r)}`).join(" · ");
+  const detail = single ? `${single.wins}W / ${single.losses}L · ${single.excludedTotal} excluded${limited ? " · limited" : ""}`
+    : items.map(r => `n=${r.n}`).join(" · ") + (items.some(r => r.n < RECORD_MIN_TRADES || r.coveragePct < 80) ? " · limited" : "");
   return { text, detail, items, lines, days: range.days, title: lines.join("\n"),
     tone: limited ? "few" : single.netPnl > 0 ? "ok" : "bad", best: null };
 }

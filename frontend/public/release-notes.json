@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-02T20:00:00-05:00",
+      "heading": "AI agents run 24/7; five new agents; Record shows every win %",
+      "items": [
+        "The AI research agents now run around the clock. During the trading day (4 AM-8 PM ET) they take one batch of trades every 5 minutes so the scanner stays fast; overnight and on weekends they run back-to-back.",
+        "Five new agents study your recorded trades: the option contract (price, spread, delta, days to expiry), time of day, sector, distance to the nearest OI wall, and market turns. Like the others, each is scored on whether its calls come true.",
+        "The scanner Record column now shows the win % of every rule on the row (for example \"GO 58% · RVOL 51%\") instead of \"2 rule histories\". Each figure is that rule's real last-10-day result, never a combined guess."
+      ]
+    },
+    {
       "at": "2026-11-02T19:40:00-05:00",
       "heading": "Hermes, OpenClaw and the nightly AI retrain fixed",
       "items": [

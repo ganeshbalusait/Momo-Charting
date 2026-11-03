@@ -247,7 +247,9 @@ test("Record column keeps matching histories separate instead of choosing the be
   try {
     const row = { symbol: "X", direction: "bear", dayLines: { line: "2026-10-09T09:45:00-04:00" }, m5: { pattern: "explosive" } };
     const rec = f.recordCell(row, at);
-    assert.equal(rec.text, "2 rule histories");
+    // Every rule shows its own win % (2026-11-02), still never pooled.
+    assert.equal(rec.text, "LINE↓ 71.1% · Explosive 100%");
+    assert.equal(rec.detail, "n=45 · n=3 · limited");
     assert.equal(rec.best, null);
     assert.match(rec.lines.join(" | "), /32 wins \/ 13 losses/);
     assert.match(rec.lines.join(" | "), /LIMITED EVIDENCE/);

@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 import subprocess
-from momx.hermes_reviewer import HermesReviewer
+from momx.hermes_reviewer import HermesReviewer, HERMES_TIMEOUT_SECONDS
 from momx.paper_learning import analysis
 
 
@@ -12,7 +12,7 @@ def test_hermes_is_explicitly_enabled_and_uses_bounded_stdin_transport(tmp_path)
     config.write_text(json.dumps({"enabled": True, "python": "python.exe", "root": str(tmp_path), "home": str(tmp_path)}))
     def run(args, **kwargs):
         assert isinstance(args, list) and "shell" not in kwargs
-        assert kwargs["timeout"] == 180 and json.loads(kwargs["input"])["prompt"] == "research"
+        assert kwargs["timeout"] == HERMES_TIMEOUT_SECONDS and json.loads(kwargs["input"])["prompt"] == "research"
         return SimpleNamespace(stdout=json.dumps({"response": '{"summary":"ok","hypothesis":"test","validation":"unseen data"}'}))
     r.runner = run
     assert r.enabled() and r.request("research", analysis)["available"]

@@ -16,11 +16,26 @@ BATCH_SIZE = 8  # Keep frozen chart + scanner evidence within the local model co
 MAX_PENDING_BATCHES = 64
 
 
+#: Between batches during the weekday 04:00-20:00 ET session. The agents used to
+#: stop entirely in those hours; 2026-11-02 he asked for them to run 24/7, so they
+#: run all day but paced, leaving the scanner the CPU it needs.
+SESSION_BATCH_GAP_SECONDS = 300
+
+
+def in_scanner_session(at=None):
+    """Weekday 04:00-20:00 ET: the scanner's busy hours."""
+    at = (at or datetime.now(ai_filter.ET)).astimezone(ai_filter.ET)
+    return at.weekday() < 5 and 4 <= at.hour < 20
+
+
 def background_research_allowed(at=None):
-    """Reserve premarket, regular and after-hours scanner capacity on weekdays."""
-    at = at or datetime.now(ai_filter.ET)
-    at = at.astimezone(ai_filter.ET)
-    return at.weekday() >= 5 or not 4 <= at.hour < 20
+    """Agents run 24/7 (2026-11-02). Pacing in session: research_gap_seconds."""
+    return True
+
+
+def research_gap_seconds(at=None):
+    """Seconds to wait after a completed batch: paced in session, none overnight."""
+    return SESSION_BATCH_GAP_SECONDS if in_scanner_session(at) else 0
 
 
 def specialist_task(memory, capture):
@@ -59,7 +74,7 @@ def specialist_tasks(job):
 
 #: Specialists that review a batch when no recorded need routes one: each gets
 #: regular turns, so every one builds a scored track record.
-ROTATION = ("entry", "exit", "risk", "news")
+ROTATION = ("entry", "exit", "risk", "news", "options", "timing", "sector", "oi_wall", "market_turn")
 #: Held-out win-rate gap (percentage points) worth a dedicated research turn.
 RESEARCH_GAP = 10.0
 
@@ -441,7 +456,7 @@ class LearningTeam:
         latest = max(done, key=lambda j: j["completedAt"], default={})
         return {"enabled": self.reviewer.enabled(), "mode": "post_trade", "entryBlocking": False,
                 "primaryProvider": getattr(self.reviewer, "primary_provider", lambda: "unknown")(),
-                "backgroundResearchPaused": not background_research_allowed(),
+                "backgroundResearchPaused": False, "sessionPacingSeconds": research_gap_seconds(),
                 "agentRoles": ["scanner", "reviewer", "critic", "planner", *SPECIALISTS],
                 "snapshotCoverage": {"trades": sum(len(j['evidence']) for j in jobs),
                     "scanner": sum(bool(r.get('scannerInputsAtSignal')) for j in jobs for r in j['evidence']),
@@ -507,6 +522,9 @@ def start(books):
                         name, job = max(done, key=lambda item: item[1].get("completedAt", 0))
                         team.lab.propose(name, job)
                 if team.run_once():
+                    gap = research_gap_seconds()
+                    if gap:
+                        time.sleep(gap)
                     continue
             except Exception as exc:
                 team.error = type(exc).__name__
