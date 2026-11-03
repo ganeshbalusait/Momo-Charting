@@ -2343,7 +2343,7 @@ export function overallRecord(row) {
     : auc < 0.55 ? `held-out test ${auc.toFixed(2)} - only slightly better than a coin flip`
     : `held-out test ${auc.toFixed(2)} - better than chance on unseen days`;
   const lines = [
-    `OVERALL: ${s.winPct}% of the ${s.k} most similar past trades won (all trades: ${s.base}%).`,
+    `AI: ${s.winPct}% of the ${s.k} most similar past trades won (all trades: ${s.base}%).`,
     `Similar = closest entry-time picture across ${s.inputs} of ${s.of} recorded inputs (RVOL, Skittles, squeeze, ADX, high/low, grade, sector; Level 1-3, Setup and chart levels once recorded).`,
     `From ${s.trades} recorded virtual trades, ${s.from} to ${s.through}. Reliability: ${verdict}.`,
     check && check.topFifthWin != null ? `On the ${check.days} newest unseen days, the top fifth of setups won ${check.topFifthWin}% vs ${check.allWin}% for all.` : "",
@@ -2356,7 +2356,7 @@ export function recordCell(row, nowMs = Date.now()) {
   const overall = overallRecord(row);
   const perRule = recordCellPerRule(row, nowMs);
   if (!overall) return perRule;
-  const text = `Overall ${overall.winPct}%`;
+  const text = `AI ${overall.winPct}%`;
   const detail = `${overall.k} similar · all ${overall.base}%${overall.reliable ? "" : " · unproven"}`;
   const lines = [...overall.lines, ...(perRule && perRule.lines ? ["", "PER RULE:", ...perRule.lines] : [])];
   return { ...(perRule || {}), text, detail, overall, lines, title: lines.join("\n"),
