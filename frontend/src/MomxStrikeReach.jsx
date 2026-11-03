@@ -20,6 +20,7 @@ import { memo, useEffect, useMemo, useState } from "react";
 
 import { formatCompactVolume } from "./highOiContractList.js";
 import {
+  CHAIN_STALE_AFTER_MIN as STALE_AFTER_MIN,
   etMinutesSinceMidnight,
   expiryLabel,
   parseStrikeQuery,
@@ -29,8 +30,6 @@ import {
   upcomingExpiries,
   wallReach,
 } from "./strikeReach.js";
-
-const STALE_AFTER_MIN = 15;
 
 function dollars(value) {
   const number = Number(value);
