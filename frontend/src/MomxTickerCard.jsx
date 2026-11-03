@@ -31,6 +31,7 @@ import MomxStrikeReach from "./MomxStrikeReach.jsx";
 import { buildHighOiContractList, formatCompactVolume } from "./highOiContractList.js";
 import { ageOf, cellStyle, firedWhen, firesOf, formatPctChange, formatRvol, hlBlockStyle, isMutedCell, newsOf } from "./momxCells.js";
 import { dayChartModel } from "./momxDayChart.js";
+import { chainIsCurrent } from "./strikeReach.js";
 
 // ---------------------------------------------------------------------------
 // High-OI walls
@@ -76,10 +77,14 @@ function chainHasRows(payload) {
  *
  *  Same shape as the miss that cached a warming chain as "no walls": asking
  *  whether the data EXISTS instead of whether it is USABLE.
+ *
+ *  "Current" is judged by the chain's capture time, not the flag alone: the
+ *  server tags every copy older than 15 SECONDS stale, so AMZN's two-minute-old
+ *  chain was refused for a full minute and the card drew no levels
+ *  (2026-11-03). chainIsCurrent still refuses yesterday's chain.
  */
 function chainIsUsable(payload) {
-  if (!chainHasRows(payload)) return false;
-  return payload.stale !== true;
+  return chainHasRows(payload) && chainIsCurrent(payload);
 }
 
 async function fetchChainOnce(symbol) {
@@ -328,23 +333,35 @@ function Cell({ label, cell, format }) {
   );
 }
 
+// Last day-bars answer per symbol|day, shared by every card. The worker takes
+// 2-11 s to answer under scan load (measured 2026-11-03), so a card re-opened
+// on the same ticker - or opened on desktop and phone views of one board -
+// paints its chart from here at once and refreshes behind it.
+const dayBarsCache = new Map();
+
 /** Today's 5m closes for the mini chart, from the scanner worker. null until loaded. */
 function useDayBars(symbol, day = "") {
-  const [data, setData] = useState(null);
+  const key = symbol ? symbol + "|" + day : "";
+  const [data, setData] = useState(() => dayBarsCache.get(key) || null);
   useEffect(() => {
     if (!symbol) return undefined;
     let alive = true;
     const url = "/api/momx-scanner/daybars?symbol=" + encodeURIComponent(symbol) + (day ? "&day=" + day : "");
     const load = () => fetch(url, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((j) => { if (alive) setData(j && Array.isArray(j.bars) ? j : null); })
+      .then((j) => {
+        const usable = j && Array.isArray(j.bars) ? j : null;
+        // a failed refresh keeps the chart already drawn rather than blanking it
+        if (usable) dayBarsCache.set(key, usable);
+        if (alive && usable) setData(usable);
+      })
       .catch(() => {});
-    setData(null);
+    setData(dayBarsCache.get(key) || null);
     load();
     // a snapshot's day never changes - load once; today's chart refreshes every minute
     const timer = day ? null : window.setInterval(load, 60000);
     return () => { alive = false; if (timer) window.clearInterval(timer); };
-  }, [symbol, day]);
+  }, [symbol, day, key]);
   return data;
 }
 
