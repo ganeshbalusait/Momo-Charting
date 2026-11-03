@@ -31,7 +31,7 @@ import MomxStrikeReach from "./MomxStrikeReach.jsx";
 import { buildHighOiContractList, formatCompactVolume } from "./highOiContractList.js";
 import { ageOf, cellStyle, firedWhen, firesOf, formatPctChange, formatRvol, hlBlockStyle, isMutedCell, newsOf } from "./momxCells.js";
 import { dayChartModel } from "./momxDayChart.js";
-import { chainIsCurrent } from "./strikeReach.js";
+import { chainCapturedToday, chainIsCurrent } from "./strikeReach.js";
 
 // ---------------------------------------------------------------------------
 // High-OI walls
@@ -81,10 +81,12 @@ function chainHasRows(payload) {
  *  "Current" is judged by the chain's capture time, not the flag alone: the
  *  server tags every copy older than 15 SECONDS stale, so AMZN's two-minute-old
  *  chain was refused for a full minute and the card drew no levels
- *  (2026-11-03). chainIsCurrent still refuses yesterday's chain.
+ *  (2026-11-03). A chain captured earlier TODAY is used too: open interest
+ *  only changes overnight, so its walls are today's, and Strike reach prints
+ *  its age. Yesterday's chain is still refused.
  */
 function chainIsUsable(payload) {
-  return chainHasRows(payload) && chainIsCurrent(payload);
+  return chainHasRows(payload) && (chainIsCurrent(payload) || chainCapturedToday(payload));
 }
 
 async function fetchChainOnce(symbol) {

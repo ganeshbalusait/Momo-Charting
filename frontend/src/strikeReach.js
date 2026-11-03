@@ -342,6 +342,14 @@ export function chainIsCurrent(chain, nowMs = Date.now()) {
   return Number.isFinite(at) && nowMs - at <= CHAIN_STALE_AFTER_MIN * 60000;
 }
 
+/** Was this chain captured today (ET)? Open interest only changes overnight,
+ *  so a chain from earlier today still carries today's walls - it is the
+ *  expected move and spot that age, and the card prints the chain's age. */
+export function chainCapturedToday(chain, nowMs = Date.now()) {
+  const at = Date.parse(String(chain?.scannedAt || ""));
+  return Number.isFinite(at) && todayInNewYork(at) === todayInNewYork(nowMs);
+}
+
 /** Minutes since ET midnight (0-1439), for the 16:00 expiry-day cutoff. */
 export function etMinutesSinceMidnight(nowMs = Date.now()) {
   try {
