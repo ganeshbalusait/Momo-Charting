@@ -145,7 +145,9 @@ function SectorCard({ group, gap, style, activeSymbol, expanded, onToggle, onSel
   );
 }
 
-export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose }) {
+// variant "dock": a panel stacked above the option chain (desktop "+" menu).
+// variant "page": the full Sectors page (phone More sheet, desktop sidebar).
+export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose, variant = "dock" }) {
   const [quotes, setQuotes] = useState({});
   const [expanded, setExpanded] = useState({});
   const [prefs, setPrefs] = useState(readPrefs);
@@ -181,7 +183,10 @@ export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose }) 
   const groups = useMemo(() => buildMarketSectorGroups(quotes), [quotes]);
 
   return (
-    <section className={`charts-oi-chain-dock-panel sector-heatmap-panel is-style-${prefs.style}`} aria-label="Sector panel">
+    <section
+      className={`${variant === "page" ? "sector-heatmap-page" : "charts-oi-chain-dock-panel"} sector-heatmap-panel is-style-${prefs.style}`}
+      aria-label="Sector panel"
+    >
       <header>
         <b>SECTORS</b>
         <small>{groups.length} sectors · top stocks</small>
@@ -192,7 +197,7 @@ export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose }) 
             </button>
           ))}
         </span>
-        <button type="button" onClick={onClose} title="Remove sector panel" aria-label="Remove sector panel"><X size={13} /></button>
+        {onClose ? <button type="button" onClick={onClose} title="Remove sector panel" aria-label="Remove sector panel"><X size={13} /></button> : null}
       </header>
       <div className="sector-heatmap-body">
         {groups.map((group) => (

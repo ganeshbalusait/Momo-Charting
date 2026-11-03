@@ -27,6 +27,7 @@ import {
   HelpCircle,
   KeyRound,
   LayoutDashboard,
+  LayoutGrid,
   LayoutPanelTop,
   Link2,
   LogOut,
@@ -1172,6 +1173,10 @@ const optionNavItems = [
   { label: "Learn + Setup", icon: GraduationCap },
   // Secondary destinations: reachable from the "More" sheet, in this order.
   { label: "Watchlist", icon: Star },
+  // Sectors (2026-11-03, "I don't see the panel in mobile"): the Robinhood-
+  // style sector heatmap as its own page, so the phone reaches it from the
+  // More sheet. It is also a panel in the option chain's + menu on desktop.
+  { label: "Sectors", icon: LayoutGrid },
   { label: "News Feed", icon: Newspaper },
   { label: "Earnings Calendar", icon: CalendarDays },
   { label: "Mag7 Scanner", displayLabel: "Mag7 Watchlist", icon: Trophy },
@@ -1192,6 +1197,7 @@ function viewDescription(view) {
   if (view === "Option Paper Trading") return "Option planning, approvals, and paper execution";
   if (view === "Paper Trading") return "Stock paper positions, automation, and risk controls";
   if (view === "Watchlist") return "Your saved tickers, shared by the scanners and the chart rails";
+  if (view === "Sectors") return "Sector heatmap: each sector's top stocks, sized by market cap, colored by today's move";
   if (view === "News Feed") return "Headlines and catalysts across MAG7 and your watchlist";
   if (view === "Earnings Calendar") return "Upcoming earnings releases for your saved watchlist";
   if (view === "Mag7 Scanner") return "The dense MAG7 board: signals, flow, and review rows per ticker";
@@ -31175,6 +31181,23 @@ function TradingWorkspace({ authUser, onLogout }) {
         {activeView === "Learn + Setup" && (
           <section className="learn-view" data-testid="learn-view">
             <LearningCenter onNavigate={setActiveView} />
+          </section>
+        )}
+
+        {activeView === "Sectors" && (
+          <section className="sectors-view" data-testid="sectors-view">
+            <SectorHeatmapPanel
+              variant="page"
+              activeSymbol={oiFinderSymbol}
+              onSelect={(symbol) => {
+                // Land on the CHART: on a phone Charts & OI may remember its
+                // Options sub-tab, which hides the chart. 5m, like every
+                // other page that opens a ticker (Premarket, Auto Alert): a
+                // chart request without a timeframe or link colour is ignored.
+                setMobileChartSection("chart");
+                openChartSignalChart(symbol, "5m", "sectors");
+              }}
+            />
           </section>
         )}
 

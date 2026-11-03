@@ -1594,6 +1594,18 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
 .sector-heatmap-panel > header .sector-heatmap-switch button[aria-pressed="true"] { background: rgba(72, 168, 202, .24); color: #e7f7ff; }
 .sector-heatmap-panel > header .sector-heatmap-switch:first-of-type { margin-left: auto; }
 .sector-heatmap-panel > header > button:last-child { margin-left: 0; }
+/* Sectors page (sidebar / phone More sheet): same panel, full height. */
+.sector-heatmap-page { display: grid; gap: 10px; padding: 12px 0 24px; }
+.sector-heatmap-page > header { display: flex; align-items: center; gap: 8px; padding: 0 8px; }
+.sector-heatmap-page > header b { color: #b6dff0; font-size: 12px; letter-spacing: .07em; }
+.sector-heatmap-page > header small { color: #7c7c8a; font-size: 11px; }
+.sector-heatmap-page .sector-heatmap-switch { display: inline-flex; overflow: hidden; margin-left: auto; border: 1px solid rgba(92, 92, 103, .45); border-radius: 6px; }
+.sector-heatmap-page .sector-heatmap-switch button { height: 28px; padding: 0 12px; border: 0; background: transparent; color: #8b8b97; font-size: 12px; font-weight: 800; cursor: pointer; }
+.sector-heatmap-page .sector-heatmap-switch button[aria-pressed="true"] { background: rgba(72, 168, 202, .24); color: #e7f7ff; }
+.sector-heatmap-page .sector-heatmap-body { max-height: none; overflow: visible; }
+/* Robinhood's font even where the workstation's terminal font is not forced. */
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card,
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card * { font-family: Inter, "Helvetica Neue", Arial, system-ui, sans-serif; }
 /* Narrow dock: one card per row. Wide (fullscreen chain, big screen): cards
    sit side by side, each at least 480px, like Robinhood's card row. */
 .sector-heatmap-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr)); align-items: start; gap: 10px; max-height: 460px; overflow-y: auto; overflow-x: hidden; padding: 2px 6px 10px; }
