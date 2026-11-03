@@ -1,0 +1,214 @@
+// Sector panel maths: the watchlist as a sector heatmap (trader ask 2026-11-03).
+// The layout tests matter most: a treemap that overlaps, leaves gaps or spills
+// past the card looks fine in one screenshot and wrong on the next watchlist.
+
+import { describe, test } from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  OTHER_GROUP,
+  buildSectorGroups,
+  cardHeight,
+  formatMarketCap,
+  formatSignedPct,
+  heatLevel,
+  squarify,
+  tileLabelMode,
+  visibleTiles,
+} from "./sectorHeatmap.js";
+
+const q = (industry, changePct, marketCap) => ({ industry, changePct, marketCap, lastPrice: 100, change: 1 });
+
+describe("buildSectorGroups", () => {
+  test("groups by industry, biggest card first, Other last", () => {
+    const groups = buildSectorGroups(["NVDA", "MSFT", "ZZZZ", "AMD", "CRM"], {
+      NVDA: q("Semis", 3, 4e12),
+      AMD: q("Semis", 1, 3e11),
+      MSFT: q("Software", 1.9, 3.5e12),
+      CRM: q("Software", -1, 2.5e11),
+      ZZZZ: q(null, 5, 9e12), // no industry -> Other, even when huge
+    });
+    assert.deepEqual(groups.map((group) => group.name), ["Semis", "Software", OTHER_GROUP]);
+    assert.deepEqual(groups[0].tiles.map((tile) => tile.symbol), ["NVDA", "AMD"]);
+  });
+
+  test("a symbol with no quote yet still gets a grey tile in Other", () => {
+    const [group] = buildSectorGroups(["NEWT"], {});
+    assert.equal(group.name, OTHER_GROUP);
+    assert.equal(group.tiles[0].changePct, null);
+    assert.equal(heatLevel(group.tiles[0].changePct).tone, "none");
+    assert.equal(group.changePct, null);
+  });
+
+  test("the group move is market-cap weighted", () => {
+    const [group] = buildSectorGroups(["BIG", "SMALL"], {
+      BIG: q("Semis", 1, 900),
+      SMALL: q("Semis", 11, 100),
+    });
+    assert.ok(Math.abs(group.changePct - 2) < 1e-9); // (1*900 + 11*100) / 1000
+    assert.equal(group.up, 2);
+    assert.equal(group.down, 0);
+  });
+
+  test("unpriced tiles do not drag the group move toward zero", () => {
+    const [group] = buildSectorGroups(["A", "B"], {
+      A: q("Semis", 2, 100),
+      B: { industry: "Semis", marketCap: 100 },
+    });
+    assert.equal(group.changePct, 2);
+  });
+
+  test("tile area follows sqrt(cap) so a small name next to a mega-cap stays usable", () => {
+    const [group] = buildSectorGroups(["NVDA", "MU"], { NVDA: q("Semis", 1, 4.4e12), MU: q("Semis", 1, 1.4e11) });
+    const share = group.tiles[1].weight / (group.tiles[0].weight + group.tiles[1].weight);
+    assert.ok(share > 0.12, `MU share ${share}`);       // linear would be ~3%
+    assert.ok(group.tiles[0].weight > group.tiles[1].weight);
+  });
+
+  test("a missing cap is sized as the group median and flagged as estimated", () => {
+    const [group] = buildSectorGroups(["A", "B", "C", "D"], {
+      A: q("Semis", 1, 100),
+      B: q("Semis", 1, 300),
+      C: q("Semis", 1, 500),
+      D: q("Semis", 1, null),
+    });
+    const d = group.tiles.find((tile) => tile.symbol === "D");
+    assert.equal(d.capWeight, 300);
+    assert.equal(d.weight, Math.sqrt(300));
+    assert.equal(d.estimatedCap, true);
+    assert.equal(group.tiles.find((tile) => tile.symbol === "A").estimatedCap, false);
+  });
+
+  test("a group with no caps at all sorts below capped groups instead of above", () => {
+    const groups = buildSectorGroups(["SOXL", "TSLL", "NVTS"], {
+      SOXL: q("ETF-Lev", 6, null),
+      TSLL: q("ETF-Lev", 4, null),
+      NVTS: q("Semis", 2, 2e9),
+    });
+    assert.deepEqual(groups.map((group) => group.name), ["Semis", "ETF-Lev"]);
+    assert.ok(groups[1].tiles.every((tile) => tile.capWeight === 2e9));
+  });
+
+  test("duplicate and blank watchlist entries are dropped, case-insensitively", () => {
+    const groups = buildSectorGroups(["nvda", "NVDA", " ", "", null, "NVDA "], { NVDA: q("Semis", 1, 1) });
+    const symbols = groups.flatMap((group) => group.tiles.map((tile) => tile.symbol));
+    assert.deepEqual(symbols, ["NVDA"]);
+  });
+});
+
+describe("visibleTiles", () => {
+  const tiles = Array.from({ length: 20 }, (_, index) => ({ symbol: `S${index}`, weight: 100 - index, changePct: 1 }));
+
+  test("collapsed: the biggest 13 plus one +N tile", () => {
+    const shown = visibleTiles(tiles, false, 14);
+    assert.equal(shown.length, 14);
+    assert.equal(shown.at(-1).symbol, "+7");
+    assert.equal(shown.at(-1).more, 7);
+  });
+
+  test("the +N tile is never bigger than the median visible tile", () => {
+    const shown = visibleTiles(tiles, false, 14);
+    const visibleWeights = shown.slice(0, -1).map((tile) => tile.weight).sort((a, b) => a - b);
+    assert.ok(shown.at(-1).weight <= visibleWeights[Math.floor(visibleWeights.length / 2)]);
+  });
+
+  test("expanded or short lists are shown whole", () => {
+    assert.equal(visibleTiles(tiles, true, 14).length, 20);
+    assert.equal(visibleTiles(tiles.slice(0, 5), false, 14).length, 5);
+  });
+});
+
+describe("heatLevel", () => {
+  test("buckets at 0 / ±0.5 / ±1 / ±2 / ±3 and beyond", () => {
+    assert.deepEqual(heatLevel(0), { tone: "flat", level: 0 });
+    assert.deepEqual(heatLevel(0.01), { tone: "flat", level: 0 });
+    assert.deepEqual(heatLevel(0.29), { tone: "up", level: 1 });
+    assert.deepEqual(heatLevel(-0.5), { tone: "down", level: 1 });
+    assert.deepEqual(heatLevel(1.17), { tone: "up", level: 2 });
+    assert.deepEqual(heatLevel(-2.04), { tone: "down", level: 3 });
+    assert.deepEqual(heatLevel(3), { tone: "up", level: 4 });
+    assert.deepEqual(heatLevel(-14), { tone: "down", level: 4 });
+  });
+
+  test("missing or junk values are 'none', not flat", () => {
+    for (const value of [null, undefined, "", "abc", NaN]) assert.equal(heatLevel(value).tone, "none");
+  });
+});
+
+describe("squarify", () => {
+  const rect = { x: 0, y: 0, width: 300, height: 150 };
+  const items = [500, 300, 200, 120, 80, 60, 40, 20, 10, 5, 3].map((weight, index) => ({ symbol: `T${index}`, weight }));
+
+  test("every tile is placed, inside the card, with areas proportional to weight", () => {
+    const layout = squarify(items, rect);
+    assert.equal(layout.length, items.length);
+    const total = items.reduce((sum, item) => sum + item.weight, 0);
+    for (const tile of layout) {
+      assert.ok(tile.x >= -1e-6 && tile.y >= -1e-6, "starts inside");
+      assert.ok(tile.x + tile.width <= rect.width + 1e-6, "ends inside horizontally");
+      assert.ok(tile.y + tile.height <= rect.height + 1e-6, "ends inside vertically");
+      const want = (tile.item.weight / total) * rect.width * rect.height;
+      assert.ok(Math.abs(tile.width * tile.height - want) < 1e-6 * rect.width * rect.height + 1e-6, `${tile.item.symbol} area`);
+    }
+  });
+
+  test("tiles cover the card exactly with no overlaps", () => {
+    const layout = squarify(items, rect);
+    const covered = layout.reduce((sum, tile) => sum + tile.width * tile.height, 0);
+    assert.ok(Math.abs(covered - rect.width * rect.height) < 1e-6);
+    for (let i = 0; i < layout.length; i += 1) {
+      for (let j = i + 1; j < layout.length; j += 1) {
+        const a = layout[i];
+        const b = layout[j];
+        const overlapW = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+        const overlapH = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+        assert.ok(overlapW <= 1e-6 || overlapH <= 1e-6, `${a.item.symbol} overlaps ${b.item.symbol}`);
+      }
+    }
+  });
+
+  test("the biggest tile sits at the top-left", () => {
+    const [first] = squarify(items, rect);
+    assert.equal(first.item.symbol, "T0");
+    assert.equal(first.x, 0);
+    assert.equal(first.y, 0);
+  });
+
+  test("equal weights give reasonably square tiles", () => {
+    const layout = squarify(Array.from({ length: 12 }, (_, index) => ({ symbol: `E${index}`, weight: 1 })), { x: 0, y: 0, width: 400, height: 300 });
+    for (const tile of layout) {
+      const ratio = Math.max(tile.width / tile.height, tile.height / tile.width);
+      assert.ok(ratio < 3, `ratio ${ratio}`);
+    }
+  });
+
+  test("empty input, zero weights and an empty card produce nothing", () => {
+    assert.deepEqual(squarify([], rect), []);
+    assert.deepEqual(squarify([{ weight: 0 }, { weight: -1 }], rect), []);
+    assert.deepEqual(squarify(items, { x: 0, y: 0, width: 0, height: 100 }), []);
+  });
+});
+
+describe("sizing and labels", () => {
+  test("card height grows with tile count and stays within bounds", () => {
+    assert.equal(cardHeight(1, 300), 60);
+    assert.ok(cardHeight(14, 300) > cardHeight(6, 300));
+    assert.equal(cardHeight(200, 300), 230);
+    assert.equal(cardHeight(200, 300, true), 640);
+  });
+
+  test("small tiles drop the % first, then the ticker", () => {
+    assert.equal(tileLabelMode(60, 40), "full");
+    assert.equal(tileLabelMode(40, 20), "symbol");
+    assert.equal(tileLabelMode(20, 12), "none");
+  });
+
+  test("formatting", () => {
+    assert.equal(formatSignedPct(3.171), "+3.17%");
+    assert.equal(formatSignedPct(-2.04), "-2.04%");
+    assert.equal(formatSignedPct(null), "--");
+    assert.equal(formatMarketCap(4.2e12), "$4.20T");
+    assert.equal(formatMarketCap(250e9), "$250.0B");
+    assert.equal(formatMarketCap(null), "--");
+  });
+});

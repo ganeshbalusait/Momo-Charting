@@ -62,6 +62,7 @@ import { flushSync } from "react-dom";
 import AgxMark from "./AgxMark";
 import MomxScannerPanel from "./MomxScannerPanel.jsx";
 import BotPanel from "./BotPanel.jsx";
+import SectorHeatmapPanel from "./SectorHeatmapPanel.jsx";
 import { CHART_LINK_CHANNEL, CHART_LINK_EVENT, TOS_LINK_GROUPS } from "./tosLinkGroups.js";
 import MomoAlertWatcher from "./MomoAlertWatcher.jsx";
 import { gradeUnderwaterNow, gradeWithinCandle, isBullishCallLabel, isBearishPutLabel } from "./momxGrade.js";
@@ -351,6 +352,7 @@ const CHAIN_VIEW_STORAGE_KEY = "chartsOiChainView";
 const CHAIN_DOCK_PANELS = [
   { id: "watchlist", label: "Watchlist" },
   { id: "news", label: "News" },
+  { id: "sector", label: "Sector" },
   { id: "options", label: "Options", locked: true },
 ];
 const readStoredChainDockPanels = () => {
@@ -7857,7 +7859,7 @@ function FullChartsAndOiBoard({
       <button type="button" role="tab" aria-selected={chainView === "highOi"} className={chainView === "highOi" ? "is-active" : ""} onClick={() => setChainView("highOi")}>High OI</button>
     </div>
   );
-  // "+" menu in the chain header: Watchlist and News stack above the chain,
+  // "+" menu in the chain header: Watchlist, News and Sector stack above the chain,
   // Options is the chain itself and is reported as always-on.
   const dockPanelMenu = (
     <details className="charts-oi-chain-add">
@@ -7903,6 +7905,14 @@ function FullChartsAndOiBoard({
           activeSymbol={symbol}
           onSelect={onLinkedSymbolChange}
           onClose={() => toggleDockPanel("watchlist")}
+        />
+      ) : null}
+      {dockPanels.includes("sector") ? (
+        <SectorHeatmapPanel
+          symbols={dockWatchlistSymbols}
+          activeSymbol={symbol}
+          onSelect={onLinkedSymbolChange}
+          onClose={() => toggleDockPanel("sector")}
         />
       ) : null}
       {dockPanels.includes("news") ? (
