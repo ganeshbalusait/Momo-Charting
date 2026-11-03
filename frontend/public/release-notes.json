@@ -2,6 +2,13 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-03T09:20:00-05:00",
+      "heading": "Clicking a column header always sorts by that column",
+      "items": [
+        "With \"H/L⚡ sort\" switched on, clicking Time (or any column) showed the arrow but the rows stayed in H/L order, so Time read 08:25, 08:40, 09:08, 08:20. Clicking a header now switches H/L⚡ sort off, so the board really sorts by the column you clicked. Tick H/L⚡ sort again any time to go back."
+      ]
+    },
+    {
       "at": "2026-11-03T09:00:00-05:00",
       "heading": "AI agents stay off during the trading day",
       "items": [

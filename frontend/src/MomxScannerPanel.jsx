@@ -125,6 +125,7 @@ import {
   defaultLayout,
   effectiveSort,
   nextSortState,
+  NO_SORT,
   readStoredLayout,
   writeStoredLayout,
 } from "./momxColumnLayout.js";
@@ -294,7 +295,6 @@ const MOMX_LIVE_QUOTES_ENDPOINT = "/api/momx-live-quotes";
 // momentum of every name, for the sort) every tenth poll.
 const MOMX_LIVE_BOLTS_ENDPOINT = "/api/momx-live-bolts";
 const BOLT_VIEW_KEY = "momx-bolt-view";
-const HL_SORT_KEY = "momx-hl-bolt-sort";
 const MOMX_LIVE_QUOTES_MS = 2500;
 const MOMX_LIVE_QUOTES_IDLE_MS = 30000;
 const EMPTY_OBJECT = Object.freeze({});
@@ -4206,13 +4206,6 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     setBoltViewState(value);
     try { window.localStorage.setItem(BOLT_VIEW_KEY, value); } catch { /* session only */ }
   }, []);
-  const [hlSort, setHlSortState] = useState(() => {
-    try { return window.localStorage.getItem(HL_SORT_KEY) === "1"; } catch { return false; }
-  });
-  const setHlSort = useCallback((on) => {
-    setHlSortState(Boolean(on));
-    try { window.localStorage.setItem(HL_SORT_KEY, on ? "1" : "0"); } catch { /* session only */ }
-  }, []);
   // {symbol: {on, now, opacity, families, firedAt, hlMomentum}} - identities
   // reused per symbol when unchanged, so only rows whose ⚡ changed re-render.
   const [liveBolts, setLiveBolts] = useState(EMPTY_OBJECT);
@@ -5951,11 +5944,12 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     };
     // H/L ⚡ sort (ScannerX3): who sits at the top of an hour that actually
     // went somewhere - position in the last hour x the hour's size vs usual.
-    const ordered = !bear && hlSort
-      ? [...withLive].sort((a, b) => hlValue(b) - hlValue(a))
-      : unsorted
-        ? withLive // NO SORT: the scanner's own order
-        : sortRows(index, sort.key, sort.direction).map((entry) => entry.row);
+    // 2026-11-03 his rule: "Default H/L sort if no column sort". A clicked
+    // column always wins; with NO column sorted the bull board is in H/L⚡
+    // order (the bear board and the NEWS view keep the scanner's own order).
+    const ordered = unsorted
+      ? (!bear && !newsOnly ? [...withLive].sort((a, b) => hlValue(b) - hlValue(a)) : withLive)
+      : sortRows(index, sort.key, sort.direction).map((entry) => entry.row);
     // Skittles "push to top" is applied LAST and is a stable partition, not a
     // re-sort: his column sort still decides the order inside each half, so
     // clicking a header does what it always did. Only while the filter is
@@ -5971,7 +5965,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     const ranks = bestSetupRanks(allRows);
     return ranks.size ? out.map((row) => (row && ranks.has(row.symbol) ? { ...row, bestRank: ranks.get(row.symbol) } : row)) : out;
   }, [
-    allRows, baseRows, selectedIndustries, sort.key, sort.direction, focusSymbol, boltView, liveBolts, liveHl, hlSort,
+    allRows, baseRows, selectedIndustries, sort.key, sort.direction, focusSymbol, boltView, liveBolts, liveHl,
     newsOnly, filtersActive, filters, earningsMap, liveQuotesBySymbol, bear,
   ]);
 
@@ -6003,6 +5997,15 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     writeScannerSort(newsOnly ? "news" : "live:" + direction, next);
     setSort(next);
   }, [setSort, rawSort, newsOnly, direction]);
+
+  // The H/L⚡ box is "no column sort" (H/L⚡ is the default order then):
+  // ticking it clears the column sort; unticking restores the board default.
+  const hlSort = !bear && !newsOnly && sort.direction === "none";
+  const setHlSort = useCallback((on) => {
+    const next = on ? NO_SORT : (bear ? MOMX_BEAR_DEFAULT_SORT : MOMX_LIVE_DEFAULT_SORT);
+    writeScannerSort("live:" + direction, next);
+    setLiveSort(next);
+  }, [bear, direction]);
 
   const onToggleIndustry = useCallback((name) => {
     setSelectedIndustries((current) => {
