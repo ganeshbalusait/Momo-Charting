@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-03T13:48:00-05:00",
+      "heading": "Option chains keep refreshing all day (levels and charts no longer go stale)",
+      "items": [
+        "Big tickers' option chains (AMZN, NVDA) could stop refreshing for 30 to 70 minutes in the middle of the day. One slow read of six months of option history made every other chain refresh wait in line. That read no longer holds anyone up.",
+        "You'll notice: the ⚡ popup's OI levels, the OI page and the chart walls stay current instead of showing a chain from an hour ago, and popups stop sitting on \"reading the option chain…\".",
+        "Takes effect after the next backend restart."
+      ]
+    },
+    {
       "at": "2026-11-03T13:40:00-05:00",
       "heading": "Ticker popup: OI levels show on every ticker, and the mini chart opens faster",
       "items": [

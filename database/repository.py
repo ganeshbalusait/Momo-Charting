@@ -40,6 +40,25 @@ class TradingRepository:
             finally:
                 connection.close()
 
+    @contextmanager
+    def _read_connect(self) -> Iterator[sqlite3.Connection]:
+        """A read-only connection that does NOT take ``_connection_lock``.
+
+        The database runs in WAL mode, where a reader neither blocks nor waits
+        for the writer, so a long read gains nothing from the write lock - it
+        only makes every other thread wait behind it. 2026-11-03: one 61k-row
+        AMZN history read under that lock stalled all ten OI-finder refresh
+        threads and chains went 30-70 minutes without refreshing. Use this
+        only for SELECTs.
+        """
+        connection = sqlite3.connect(self.db_path, timeout=30.0)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA busy_timeout = 30000")
+            yield connection
+        finally:
+            connection.close()
+
     def initialize(self) -> None:
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
@@ -655,7 +674,8 @@ class TradingRepository:
             return []
         limit_days = max(1, min(int(days or 183), 183))
         cutoff = (datetime.now(self._market_tz).date() - timedelta(days=limit_days)).isoformat()
-        with self._connect() as connection:
+        # Up to ~77k rows for a big name: never under the write lock.
+        with self._read_connect() as connection:
             if target_expiry:
                 rows = connection.execute(
                     """
