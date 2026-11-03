@@ -292,6 +292,32 @@ def frame_to_bars(frame: Any) -> list[dict]:
     return bars
 
 
+def splice_fresh_tail(coarse: list[dict], from_five: list[dict]) -> list[dict]:
+    """The 30-minute tape with its END taken from the (fresher) 5-minute tape.
+
+    2026-11-03 11:04 ET: the 5m tape is stream-extended to the forming bar,
+    but the 30m tape (paced REST, its own stream check) still ended at 10:30,
+    so 1h/2h/4h scored the FINISHED 10:00-11:00 hour (NVTS 1h 3.0, 2h 3.2)
+    while TOS was already on the 6-minute-old 11:00 bar (blank). The 30m
+    buckets folded from the 5m tape replace the coarse tape's last (forming)
+    bucket when they hold at least as much volume, and every newer bucket is
+    appended - the long history still comes from the 30m tape.
+    """
+    if not coarse or not from_five:
+        return coarse
+    last = coarse[-1]
+    try:
+        last_time = int(last["time"])
+    except (KeyError, TypeError, ValueError):
+        return coarse
+    newer = [bar for bar in from_five if int(bar.get("time") or 0) > last_time]
+    same = next((bar for bar in from_five if int(bar.get("time") or 0) == last_time), None)
+    head = coarse
+    if same is not None and float(same.get("volume") or 0) >= float(last.get("volume") or 0):
+        head = coarse[:-1] + [same]
+    return head + newer if newer else head
+
+
 def build_tapes(
     five_minute: Any,
     thirty_minute: Any,
@@ -320,6 +346,7 @@ def build_tapes(
         tapes[key] = buckets.aggregate_intraday(
             fine, minutes, two_hour_anchor=two_hour_anchor
         )
+    coarse = splice_fresh_tail(coarse, tapes.get("30m") or [])
     for key, minutes in INTRADAY_FROM_30M.items():
         tapes[key] = buckets.aggregate_intraday(
             coarse, minutes, two_hour_anchor=two_hour_anchor

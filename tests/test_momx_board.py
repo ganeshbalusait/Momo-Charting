@@ -703,6 +703,28 @@ def test_build_tapes_emits_every_contract_timeframe_key():
     assert len(tapes["D"]) > len(tapes["2D"]) > len(tapes["Wk"]) > len(tapes["M"])
 
 
+def test_hourly_tapes_use_the_fresher_five_minute_tail():
+    # 2026-11-03: the 30m tape ended at 10:30 while the 5m tape reached the
+    # forming 11:00 bar, so 1h scored the finished 10:00 hour; TOS was on 11:00.
+    fine = _intraday_bars(24, minutes=5)                      # 2 hours of 5m bars
+    coarse = _intraday_bars(2, minutes=30)                    # only the first hour
+    tapes = board.build_tapes(fine, coarse, [])
+    last_five = max(b["timestamp"] for b in fine)
+    assert tapes["30m"][-1]["time"] <= last_five
+    assert tapes["1h"][-1]["time"] > coarse[-1]["timestamp"]  # the newer hour exists
+    assert tapes["1h"][-1]["volume"] == sum(b["volume"] for b in fine if b["timestamp"] >= tapes["1h"][-1]["time"])
+
+
+def test_splice_keeps_a_fuller_rest_bucket_and_long_history():
+    coarse = [{"time": t, "open": 1, "high": 1, "low": 1, "close": 1, "volume": v} for t, v in ((0, 5.0), (1800, 900.0))]
+    thin = [{"time": 1800, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 100.0}]
+    assert board.splice_fresh_tail(coarse, thin) == coarse     # REST bucket holds more: kept
+    fuller = [{"time": 1800, "open": 1, "high": 2, "low": 1, "close": 2, "volume": 950.0},
+              {"time": 3600, "open": 2, "high": 2, "low": 2, "close": 2, "volume": 50.0}]
+    out = board.splice_fresh_tail(coarse, fuller)
+    assert [b["time"] for b in out] == [0, 1800, 3600] and out[1]["volume"] == 950.0 and out[0] is coarse[0]
+
+
 def test_intraday_folds_sum_volume_and_keep_first_open_last_close():
     fine = _intraday_bars(6, minutes=5)
     tapes = board.build_tapes(fine, [], [])

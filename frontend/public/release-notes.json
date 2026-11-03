@@ -2,6 +2,13 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-03T11:20:00-05:00",
+      "heading": "RVOL 1h / 2h / 4h now score the current bar, like TOS",
+      "items": [
+        "At 11:06 the scanner's 1h and 2h RVOL were still scoring the finished 10:00-11:00 hour (NVTS 1h 3.0, 2h 3.2) while TOS had moved to the new 11:00 bar (blank). Those columns are built from 30-minute candles that lagged; their newest part now comes from the live 5-minute candles, so 1h/2h/4h always include the bar that is forming now. 4h and D already matched TOS."
+      ]
+    },
+    {
       "at": "2026-11-03T10:40:00-05:00",
       "heading": "Mag7 no longer stuck on old candles after a stream gap",
       "items": [
