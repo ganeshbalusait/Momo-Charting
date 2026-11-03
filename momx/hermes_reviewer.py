@@ -7,6 +7,12 @@ import time
 
 from momx import ai_filter
 
+#: Measured 2026-11-02 on the laptop: a good Hermes run took 134 s, 128 s of it
+#: Hermes importing its own framework (the answer itself ~6 s); a cold model
+#: load adds ~50 s. 180 s reported nearly every run "unavailable". Research
+#: only - never on the entry/exit path - so a longer wait costs nothing.
+HERMES_TIMEOUT_SECONDS = 420
+
 
 def run_bounded(*args, **kwargs):
     """Kill the Hermes re-exec descendants too; inherited pipes cannot extend the deadline."""
@@ -73,7 +79,7 @@ class HermesReviewer:
                    "HERMES_API_TIMEOUT": "150", "PYTHONIOENCODING": "utf-8"}
             result = self.runner([config["python"], str(bridge)], cwd=config["root"], env=env,
                                  input=json.dumps({"prompt": prompt}), capture_output=True, text=True,
-                                 encoding="utf-8", timeout=180, check=True,
+                                 encoding="utf-8", timeout=HERMES_TIMEOUT_SECONDS, check=True,
                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             envelope = _envelope(result.stdout)
             from momx.paper_ai import _structured_text

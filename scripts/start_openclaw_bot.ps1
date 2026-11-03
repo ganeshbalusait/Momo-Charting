@@ -15,8 +15,14 @@ if ($existing.Count) {
     $expired | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }
     Write-Output 'Restarting dedicated BOT gateway after a stalled 20-minute startup.'
 }
-$runtimeRoot = Join-Path $env:LOCALAPPDATA 'OpenClaw\runtime'
-$nodeRuntime = Get-ChildItem -LiteralPath $runtimeRoot -Directory | Sort-Object Name -Descending |
+# OpenClaw was installed from inside the Codex app, and Windows redirected its
+# %LOCALAPPDATA% writes into Codex's package LocalCache (2026-11-02: the plain
+# path did not exist, so every start outside Codex failed). Look in both.
+$runtimeRoots = @(
+    (Join-Path $env:LOCALAPPDATA 'OpenClaw\runtime'),
+    (Join-Path $env:LOCALAPPDATA 'Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\OpenClaw\runtime')
+) | Where-Object { Test-Path -LiteralPath $_ }
+$nodeRuntime = $runtimeRoots | ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory } | Sort-Object Name -Descending |
     ForEach-Object { Join-Path $_.FullName 'node.exe' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $nodeRuntime) { throw 'Installed OpenClaw Node runtime is unavailable.' }
 $entry = Join-Path $env:APPDATA 'npm\node_modules\openclaw\dist\index.js'

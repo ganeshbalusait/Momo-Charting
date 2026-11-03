@@ -491,3 +491,17 @@ def test_a_torn_dataset_file_never_stops_the_nightly_retrain(tmp_path):
     assert "2026-09-30" not in days and "2026-10-02" in days
     rep = ai.train_now(out, roots={"bull": bull}, today="2026-10-20")
     assert "auc" in rep
+
+
+def test_only_one_nightly_retrain_runs_at_a_time(tmp_path):
+    """2026-11-02: four orphaned retrains fought at IDLE and none finished."""
+    import subprocess
+    import sys
+    from momx.ai_filter import _single_retrain_lock
+    held = _single_retrain_lock(tmp_path)
+    assert held is not None
+    probe = ("from pathlib import Path; from momx.ai_filter import _single_retrain_lock; "
+             f"print(_single_retrain_lock(Path(r'{tmp_path}')) is None)")
+    assert subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True).stdout.strip() == "True"
+    held.close()
+    assert subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True).stdout.strip() == "False"

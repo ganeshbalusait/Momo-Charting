@@ -1098,8 +1098,9 @@ class Scorer:
         root = Path(__file__).resolve().parent.parent
         venv = root / ".venv" / "Scripts" / "python.exe"
         exe = str(venv) if venv.exists() else sys.executable
-        # Lowest CPU priority, and no console window popping up on his screen.
-        flags = (subprocess.IDLE_PRIORITY_CLASS | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0
+        # Below-normal CPU priority, and no console window popping up on his screen.
+        # IDLE never finished on the laptop (2026-11-02: four runs, hours each, none done).
+        flags = (subprocess.BELOW_NORMAL_PRIORITY_CLASS | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0
         try:
             res = subprocess.run([exe, "-m", "momx.ai_filter", "--train", "--today", upto, "--dir", str(self.directory)],
                                  cwd=str(root), capture_output=True, text=True, timeout=4 * 3600, creationflags=flags)
@@ -1430,6 +1431,29 @@ def history(directory: Path | None = None, limit: int = 30) -> list[dict]:
     return list(reversed(out))[:limit]
 
 
+def _single_retrain_lock(directory: Path):
+    """An OS file lock held for the life of this retrain process, or None if another
+    retrain holds it. The OS drops it when the process dies, so a crash never wedges it.
+
+    2026-11-02: every worker restart launched a fresh retrain and the old ones kept
+    running as orphans - four at IDLE priority fought each other and none finished
+    (no retrain since 10-30, the unsupervised research never ran).
+    """
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        handle = open(directory / "retrain.lock", "a+b")
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+    except OSError:
+        return None
+
+
 def _main(argv: list[str]) -> int:
     """python -m momx.ai_filter --train [--today YYYY-MM-DD] [--dir PATH] - the nightly retrain."""
     import argparse
@@ -1443,6 +1467,10 @@ def _main(argv: list[str]) -> int:
     if not args.train:
         ap.print_help()
         return 2
+    lock = _single_retrain_lock(Path(args.dir) if args.dir else _dir())
+    if lock is None:
+        print(json.dumps({"skipped": "another retrain is already running"}))
+        return 0
     rep = train_now(Path(args.dir) if args.dir else None, today=args.today, refresh_market=args.refresh_market)
     print(json.dumps({k: rep.get(k) for k in ("trainedAt", "trainDays", "loadedDays", "trainTrades", "auc")}))
     return 0

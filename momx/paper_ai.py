@@ -201,7 +201,7 @@ class Reviewer:
         try:
             result = self.transport("http://127.0.0.1:11434/api/chat",
                                     {"model": "qwen3.5:4b", "messages": [{"role": "user", "content": prompt}],
-                                     "stream": False, "think": False,
+                                     "stream": False, "think": False, "keep_alive": "30m",
                                      "format": getattr(parse, "schema", "json"),
                                      "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 600}}, timeout=180)
             return {**parse(_structured_text(result["message"]["content"])), "provider": "ollama", "agent": self.agent_id, "fallback": bool(errors), **({"primaryError": errors[0]} if errors else {})}
