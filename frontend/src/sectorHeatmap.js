@@ -8,7 +8,10 @@ export const OTHER_GROUP = "Other";
 // The move at which a tile reaches its strongest color. Bigger moves do not get
 // "more green", they just stay solid -- the scale is about direction and size
 // at a glance, not a precise reading (the tooltip has that).
-export const HEAT_CAP_PCT = 3;
+// Read off the Robinhood card: AVGO +3.15% and META +2.76% are both the full
+// green, AAPL -2.04% is already the full orange.
+export const HEAT_CAP_PCT = 2.5;
+export const DOWN_CAP_PCT = 2;
 // Tiles shown in a collapsed card; the rest fold into one "+N" tile. The
 // Robinhood card shows about 16.
 export const COLLAPSED_TILE_LIMIT = 16;
@@ -204,7 +207,12 @@ export function heatLevel(changePct) {
   if (pct === null) return { tone: "none", level: 0 };
   const size = Math.abs(pct);
   if (size < 0.05) return { tone: "flat", level: 0 };
-  const level = size >= HEAT_CAP_PCT ? 4 : size >= 1.5 ? 3 : size >= 0.75 ? 2 : 1;
+  // Five steps, matched to the Robinhood card: GOOGL +0.29% pale, AMZN +1.17%
+  // light, MSFT +1.90% / TSM +2.02% mid, NVDA +3.17% full.
+  // Robinhood's orange saturates sooner than its green (AAPL -2.04% is full
+  // orange while MSFT +1.90% / TSM +2.02% are not yet full green).
+  const full = pct > 0 ? HEAT_CAP_PCT : DOWN_CAP_PCT;
+  const level = size >= full ? 5 : size >= 1.5 ? 4 : size >= 1 ? 3 : size >= 0.5 ? 2 : 1;
   return { tone: pct > 0 ? "up" : "down", level };
 }
 
@@ -296,6 +304,68 @@ export function squarify(items, rect) {
   return out;
 }
 
+// --- Robinhood row layout --------------------------------------------------
+// The Robinhood card is not a squarified treemap: it is full-width ROWS, the
+// biggest names in a tall top row, then shorter rows of smaller names (16 tiles
+// = 5 / 5 / 6), each row sorted biggest-first left to right. Row height follows
+// the row's total weight, tile width the tile's share of its row.
+
+export function rowCounts(count, width) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (!n) return [];
+  const maxPerRow = Math.max(2, Math.min(7, Math.floor((Number(width) || 0) / 50)));
+  const rows = Math.min(n, Math.max(Math.ceil(n / maxPerRow), n <= 5 ? 1 : n <= 10 ? 2 : 3));
+  const base = Math.floor(n / rows);
+  const extra = n % rows;
+  // Later (shorter) rows take the extra tiles: their names are smaller.
+  return Array.from({ length: rows }, (_, index) => base + (index >= rows - extra ? 1 : 0));
+}
+
+export function rowLayout(items, rect, { minRowHeight = 30 } = {}) {
+  const width = Math.max(0, Number(rect?.width) || 0);
+  const height = Math.max(0, Number(rect?.height) || 0);
+  const list = (Array.isArray(items) ? items : [])
+    .filter((item) => Number(item?.weight) > 0)
+    .sort((left, right) => right.weight - left.weight);
+  if (!list.length || width <= 0 || height <= 0) return [];
+  const originX = Number(rect?.x) || 0;
+  const originY = Number(rect?.y) || 0;
+
+  const rows = [];
+  let cursor = 0;
+  for (const size of rowCounts(list.length, width)) {
+    rows.push(list.slice(cursor, cursor + size));
+    cursor += size;
+  }
+  const sums = rows.map((row) => row.reduce((total, item) => total + item.weight, 0));
+  const total = sums.reduce((a, b) => a + b, 0);
+  let heights = sums.map((sum) => (height * sum) / total);
+  // Lift rows below the floor (so the bottom row can still print a ticker)
+  // and take the difference proportionally from the rows above the floor.
+  const floor = Math.min(minRowHeight, height / rows.length);
+  for (let pass = 0; pass < rows.length; pass += 1) {
+    const low = heights.map((h) => h < floor - 1e-9);
+    if (!low.some(Boolean)) break;
+    const fixed = low.filter(Boolean).length * floor;
+    const freeSum = sums.reduce((acc, sum, index) => acc + (low[index] ? 0 : sum), 0);
+    heights = heights.map((h, index) => (low[index] ? floor : ((height - fixed) * sums[index]) / freeSum));
+  }
+
+  const out = [];
+  let y = originY;
+  rows.forEach((row, rowIndex) => {
+    const rowHeight = rowIndex === rows.length - 1 ? originY + height - y : heights[rowIndex];
+    let x = originX;
+    row.forEach((item, index) => {
+      const tileWidth = index === row.length - 1 ? originX + width - x : (width * item.weight) / sums[rowIndex];
+      out.push({ item, x, y, width: tileWidth, height: rowHeight, row: rowIndex });
+      x += tileWidth;
+    });
+    y += rowHeight;
+  });
+  return out;
+}
+
 // Card height for `count` tiles at `width` px. Two floors: enough area per
 // tile that an average one can print its ticker (narrow dock column), and a
 // Robinhood-like shape so a wide card is a block, not a one-row strip.
@@ -303,21 +373,27 @@ export function cardHeight(count, width, expanded = false) {
   const tiles = Math.max(1, Number(count) || 1);
   const span = Math.max(120, Number(width) || 0);
   const byArea = Math.ceil((tiles * 4200) / span);
-  const aspect = tiles >= 10 ? 0.45 : tiles >= 6 ? 0.38 : tiles >= 3 ? 0.3 : tiles === 2 ? 0.24 : 0.18;
+  const aspect = tiles >= 10 ? 0.5 : tiles >= 6 ? 0.38 : tiles >= 3 ? 0.3 : tiles === 2 ? 0.24 : 0.18;
   const byShape = Math.round(span * aspect);
   return Math.max(72, Math.min(expanded ? 720 : 340, Math.max(byArea, byShape)));
 }
 
 // Font sizes (px) for a tile: big tiles get big bold tickers, as on the
 // Robinhood card, small ones shrink down to a readable floor.
-export function tileFontSizes(width, height) {
+export function tileFontSizes(width, height, style = "tos") {
+  if (style === "rh") {
+    // Robinhood: ticker and % the same size, ticker bold, % regular.
+    const symbol = Math.round(Math.max(10, Math.min(18, width / 4.4, height / 3.2)));
+    return { symbol, pct: symbol };
+  }
   const symbol = Math.round(Math.max(9, Math.min(20, width / 4.2, height / 2.6)));
   return { symbol, pct: Math.max(8, Math.round(symbol * 0.85)) };
 }
 
-// What a tile of this pixel size has room to print.
-export function tileLabelMode(width, height) {
-  if (width >= 46 && height >= 34) return "full";
+// What a tile of this pixel size has room to print. Robinhood drops the % on
+// its short bottom row (MU, AMD, ASML... print the ticker only).
+export function tileLabelMode(width, height, style = "tos") {
+  if (width >= 46 && height >= (style === "rh" ? 52 : 34)) return "full";
   if (width >= 30 && height >= 16) return "symbol";
   return "none";
 }

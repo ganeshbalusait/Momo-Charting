@@ -2,12 +2,12 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
-      "at": "2026-11-03T12:41:25-05:00",
+      "at": "2026-11-03T12:51:31-05:00",
       "heading": "New Sector panel: a Robinhood / thinkorswim style sector heatmap of your watchlist",
       "items": [
         "Charts & OI: open the option chain's + menu and pick Sector. Your watchlist shows up as one card per sector (Technology, Communication, Financials, Healthcare, Energy, ETFs...), like the Robinhood Sectors card and the thinkorswim heat map.",
-        "Bigger companies get bigger tiles with bigger tickers. Green means up today and orange-red means down; the color is strongest at a 3% move. Each card's header shows the sector's move, weighted by market cap.",
-        "Two looks, switched in the panel header: RH (white cards, bright green and orange tiles) or TOS (dark grid, green and red). A second switch flips between broad Sectors and your own Industries (Semis, Software, ETF-Lev...). Both choices are remembered.",
+        "RH look matches the Robinhood card: the biggest names in a tall top row, then shorter rows of smaller names, and the bottom row shows tickers only. Green steps up to full at +2.5%; orange is full by -2%. Each card's header shows the sector's move, weighted by market cap.",
+        "Two looks, switched in the panel header: RH (white cards in Robinhood's rows) or TOS (dark thinkorswim-style treemap, green and red). A second switch flips between broad Sectors and your own Industries (Semis, Software, ETF-Lev...). Both choices are remembered.",
         "Click a tile to load that ticker on the chart. The ticker already on the chart is outlined. Click a card's name, or its +N tile, to see every name in that sector. With the option chain full screen, the cards sit side by side.",
         "Tiles update every 8 seconds, like the Watchlist panel. Market caps fill in over the first few minutes of having the panel open; until then a tile is sized like the typical name in its sector. Leveraged ETFs have no market cap, so their tiles are drawn equal."
       ]

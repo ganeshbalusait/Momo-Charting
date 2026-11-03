@@ -13,6 +13,8 @@ import {
   formatMarketCap,
   formatSignedPct,
   heatLevel,
+  rowCounts,
+  rowLayout,
   sectorFor,
   squarify,
   tileFontSizes,
@@ -166,15 +168,19 @@ describe("visibleTiles", () => {
 });
 
 describe("heatLevel", () => {
-  test("buckets at 0 / ±0.5 / ±1 / ±2 / ±3 and beyond", () => {
+  test("five steps, matched to the Robinhood card's tiles", () => {
     assert.deepEqual(heatLevel(0), { tone: "flat", level: 0 });
     assert.deepEqual(heatLevel(0.01), { tone: "flat", level: 0 });
-    assert.deepEqual(heatLevel(0.29), { tone: "up", level: 1 });
-    assert.deepEqual(heatLevel(-0.5), { tone: "down", level: 1 });
-    assert.deepEqual(heatLevel(1.17), { tone: "up", level: 2 });
-    assert.deepEqual(heatLevel(-2.04), { tone: "down", level: 3 });
-    assert.deepEqual(heatLevel(3), { tone: "up", level: 4 });
-    assert.deepEqual(heatLevel(-14), { tone: "down", level: 4 });
+    assert.deepEqual(heatLevel(0.29), { tone: "up", level: 1 });    // GOOGL pale
+    assert.deepEqual(heatLevel(0.6), { tone: "up", level: 2 });     // TCEHY
+    assert.deepEqual(heatLevel(1.17), { tone: "up", level: 3 });    // AMZN light
+    assert.deepEqual(heatLevel(1.9), { tone: "up", level: 4 });     // MSFT mid
+    assert.deepEqual(heatLevel(3.17), { tone: "up", level: 5 });    // NVDA full
+    assert.deepEqual(heatLevel(2.76), { tone: "up", level: 5 });    // META full
+    assert.deepEqual(heatLevel(-2.04), { tone: "down", level: 5 }); // AAPL full orange
+    assert.deepEqual(heatLevel(2.02), { tone: "up", level: 4 });    // TSM not yet full green
+    assert.deepEqual(heatLevel(-1.8), { tone: "down", level: 4 });
+    assert.deepEqual(heatLevel(-14), { tone: "down", level: 5 });
   });
 
   test("missing or junk values are 'none', not flat", () => {
@@ -236,6 +242,50 @@ describe("squarify", () => {
   });
 });
 
+describe("Robinhood row layout", () => {
+  const caps = { NVDA: 4.4, AAPL: 3.9, MSFT: 3.8, GOOGL: 2.2, GOOG: 2.2, AMZN: 2.4, TSM: 1.2, META: 1.8, AVGO: 1.6, SKHY: 0.5, MU: 0.14, AMD: 0.3, ASML: 0.3, TCEHY: 0.6, PLTR: 0.4, CSCO: 0.25 };
+  const items = Object.entries(caps).map(([symbol, cap]) => ({ symbol, weight: Math.sqrt(cap) }));
+  const rect = { x: 0, y: 0, width: 530, height: 280 };
+
+  test("16 tiles make 5 / 5 / 6 rows, as on the Robinhood card", () => {
+    assert.deepEqual(rowCounts(16, 530), [5, 5, 6]);
+    const layout = rowLayout(items, rect);
+    assert.deepEqual([0, 1, 2].map((row) => layout.filter((tile) => tile.row === row).length), [5, 5, 6]);
+  });
+
+  test("the top row holds the biggest names, biggest first, left to right", () => {
+    const top = rowLayout(items, rect).filter((tile) => tile.row === 0);
+    assert.deepEqual(top.map((tile) => tile.item.symbol).slice(0, 3), ["NVDA", "AAPL", "MSFT"]);
+    for (let i = 1; i < top.length; i += 1) assert.ok(top[i].x > top[i - 1].x);
+  });
+
+  test("rows get shorter going down and every row spans the full width", () => {
+    const layout = rowLayout(items, rect);
+    const rowHeights = [0, 1, 2].map((row) => layout.find((tile) => tile.row === row).height);
+    assert.ok(rowHeights[0] > rowHeights[1] && rowHeights[1] > rowHeights[2], rowHeights.join(","));
+    for (const row of [0, 1, 2]) {
+      const tiles = layout.filter((tile) => tile.row === row);
+      const span = tiles.reduce((sum, tile) => sum + tile.width, 0);
+      assert.ok(Math.abs(span - rect.width) < 1e-6);
+    }
+    const covered = layout.reduce((sum, tile) => sum + tile.width * tile.height, 0);
+    assert.ok(Math.abs(covered - rect.width * rect.height) < 1e-6);
+  });
+
+  test("the bottom row is never squashed below the floor", () => {
+    const skewed = [{ symbol: "BIG", weight: 1000 }, ...Array.from({ length: 10 }, (_, i) => ({ symbol: `s${i}`, weight: 1 }))];
+    const layout = rowLayout(skewed, rect, { minRowHeight: 30 });
+    for (const tile of layout) assert.ok(tile.height >= 30 - 1e-6, `${tile.item.symbol} ${tile.height}`);
+  });
+
+  test("few tiles stay on one row; a narrow card uses more rows", () => {
+    assert.deepEqual(rowCounts(4, 600), [4]);
+    assert.deepEqual(rowCounts(16, 330), [5, 5, 6]);
+    assert.deepEqual(rowCounts(30, 330), [6, 6, 6, 6, 6]);
+    assert.deepEqual(rowLayout([], rect), []);
+  });
+});
+
 describe("sizing and labels", () => {
   test("card height grows with tile count and stays within bounds", () => {
     assert.equal(cardHeight(1, 300), 72);
@@ -255,6 +305,14 @@ describe("sizing and labels", () => {
     assert.equal(tileFontSizes(30, 16).symbol, 9);
     const mid = tileFontSizes(80, 50);
     assert.ok(mid.symbol > 9 && mid.symbol < 20 && mid.pct < mid.symbol);
+  });
+
+  test("Robinhood drops the % on its short bottom row; ticker and % share a size", () => {
+    assert.equal(tileLabelMode(90, 45, "rh"), "symbol");
+    assert.equal(tileLabelMode(90, 70, "rh"), "full");
+    const rh = tileFontSizes(130, 160, "rh");
+    assert.equal(rh.symbol, rh.pct);
+    assert.ok(rh.symbol <= 18);
   });
 
   test("small tiles drop the % first, then the ticker", () => {

@@ -1588,7 +1588,7 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
    Two looks, picked in the panel header: Robinhood (light rounded cards,
    bright green / orange tiles, bold black text) and thinkorswim (dark tight
    grid, green / red intensity, white text). Tile area = sqrt(market cap);
-   color = today's move in 4 steps, solid at 3%. */
+   color = today's move in 5 steps, solid at 2.5%. */
 .sector-heatmap-panel > header .sector-heatmap-switch { display: inline-flex; overflow: hidden; border: 1px solid rgba(92, 92, 103, .45); border-radius: 5px; }
 .sector-heatmap-panel > header .sector-heatmap-switch button { width: auto; height: 18px; margin: 0; padding: 0 6px; border-radius: 0; color: #8b8b97; font-size: .52rem; font-weight: 800; letter-spacing: .02em; }
 .sector-heatmap-panel > header .sector-heatmap-switch button[aria-pressed="true"] { background: rgba(72, 168, 202, .24); color: #e7f7ff; }
@@ -1626,14 +1626,27 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
 .sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-more { background: #f4f4f4; color: #555555; }
 .sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up,
 .sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down { color: #111111; }
-.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-1 { background: #daf2d4; }
-.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-2 { background: #a3e397; }
-.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-3 { background: #7bd66b; }
-.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-4 { background: #5ac53b; }
-.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-1 { background: #fcdccc; }
-.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-2 { background: #f8bb9c; }
-.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-3 { background: #f3a07a; }
-.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-4 { background: #ee8a5a; }
+/* Sampled from the Robinhood card: GOOGL/GOOG pale, TCEHY, AMZN, MSFT/TSM, NVDA. */
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-1 { background: #daf2d6; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-2 { background: #c7efc0; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-3 { background: #a2e395; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-4 { background: #7bd66b; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-up.is-level-5 { background: #5ac53b; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-1 { background: #fde3d6; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-2 { background: #fbcdb6; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-3 { background: #f6b291; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-4 { background: #f19a70; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile.is-down.is-level-5 { background: #ee8a5a; }
+/* Robinhood card shape and type: big rounded card, bold header, bold ticker
+   over a regular-weight % of the same size. */
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card { padding: 16px 14px 14px; border-width: 1.5px; border-radius: 22px; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card > header { margin: 0 2px 14px; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card-title b { font-size: 17px; font-weight: 700; letter-spacing: 0; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card-title svg { color: #6f6f6f; opacity: 1; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-card-move { font-size: 17px; font-weight: 500; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile { gap: .45em; border-radius: 3px; line-height: 1; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile b { font-weight: 700; letter-spacing: 0; }
+.sector-heatmap-panel.is-style-rh .sector-heatmap-tile span { font-weight: 400; }
 
 /* thinkorswim */
 .sector-heatmap-panel.is-style-tos .sector-heatmap-card { border-color: #2a2a30; border-radius: 6px; background: #0b0b0d; color: #e9e9ee; }
@@ -1649,13 +1662,15 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up,
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down { color: #ffffff; }
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-1 { background: #133d22; }
-.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-2 { background: #176b33; }
-.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-3 { background: #1c9a43; }
-.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-4 { background: #22c653; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-2 { background: #155a2c; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-3 { background: #187a37; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-4 { background: #1c9a43; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-up.is-level-5 { background: #22c653; }
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-1 { background: #4a1717; }
-.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-2 { background: #7b1c1c; }
-.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-3 { background: #ad2222; }
-.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-4 { background: #dc2a2a; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-2 { background: #651a1a; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-3 { background: #8a1e1e; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-4 { background: #ad2222; }
+.sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-5 { background: #dc2a2a; }
 .tos-sync-tag { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; color: var(--tos-link-text, #171400) !important; border: 1px solid var(--tos-link-color, #f5d000); border-radius: 2px; background: var(--tos-link-color, #f5d000); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18), 0 0 8px color-mix(in srgb, var(--tos-link-color, #f5d000) 34%, transparent); font-size: .62rem !important; font-weight: 950; line-height: 1; letter-spacing: 0; }
 .tos-sync-picker { display: inline-grid; flex: 0 0 auto; }
 .tos-sync-picker select { width: 27px; min-width: 27px; height: 20px; padding: 0 2px; overflow: hidden; color: var(--tos-link-text, #171400); border: 1px solid var(--tos-link-color, #f5d000); border-radius: 2px; outline: none; background: var(--tos-link-color, #f5d000); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .2), 0 0 8px color-mix(in srgb, var(--tos-link-color, #f5d000) 32%, transparent); font-size: .62rem; font-weight: 950; line-height: 1; cursor: pointer; }

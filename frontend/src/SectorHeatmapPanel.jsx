@@ -7,6 +7,7 @@ import {
   formatMarketCap,
   formatSignedPct,
   heatLevel,
+  rowLayout,
   squarify,
   tileFontSizes,
   tileLabelMode,
@@ -70,11 +71,22 @@ function useElementWidth() {
   return [ref, width];
 }
 
-function SectorCard({ group, gap, activeSymbol, expanded, onToggle, onSelect }) {
+function SectorCard({ group, gap, style, activeSymbol, expanded, onToggle, onSelect }) {
   const [tilesRef, width] = useElementWidth();
   const tiles = visibleTiles(group.tiles, expanded);
   const height = cardHeight(tiles.length, width, expanded);
-  const layout = width > 0 ? squarify(tiles, { x: 0, y: 0, width, height }) : [];
+  // RH: Robinhood's full-width rows. TOS: thinkorswim's squarified treemap.
+  const layoutTiles = style === "rh" ? rowLayout : squarify;
+  const layout = width > 0 ? layoutTiles(tiles, { x: 0, y: 0, width, height }) : [];
+  // Robinhood prints every tile in a row at one size: the size that fits the
+  // row's narrowest tile.
+  const rowFont = {};
+  if (style === "rh") {
+    for (const tile of layout) {
+      const size = tileFontSizes(Math.max(0, tile.width - gap), Math.max(0, tile.height - gap), style);
+      if (!rowFont[tile.row] || size.symbol < rowFont[tile.row].symbol) rowFont[tile.row] = size;
+    }
+  }
   const groupHeat = heatLevel(group.changePct);
   const canExpand = group.tiles.length > tiles.length || expanded;
 
@@ -90,7 +102,7 @@ function SectorCard({ group, gap, activeSymbol, expanded, onToggle, onSelect }) 
         >
           <b>{group.name}</b>
           <ChevronRight size={16} strokeWidth={2.5} aria-hidden="true" />
-          <small>{group.tiles.length}</small>
+          {style === "rh" ? null : <small>{group.tiles.length}</small>}
         </button>
         <span className={`sector-heatmap-card-move is-${groupHeat.tone}`} title={`${group.up} up · ${group.down} down (market-cap weighted move)`}>
           {groupHeat.tone === "up" ? "▲ " : groupHeat.tone === "down" ? "▼ " : ""}
@@ -98,12 +110,12 @@ function SectorCard({ group, gap, activeSymbol, expanded, onToggle, onSelect }) 
         </span>
       </header>
       <div className="sector-heatmap-tiles" ref={tilesRef} style={{ height }}>
-        {layout.map(({ item, x, y, width: tileWidth, height: tileHeight }) => {
+        {layout.map(({ item, x, y, width: tileWidth, height: tileHeight, row }) => {
           const heat = heatLevel(item.changePct);
           const innerWidth = Math.max(0, tileWidth - gap);
           const innerHeight = Math.max(0, tileHeight - gap);
-          const mode = tileLabelMode(innerWidth, innerHeight);
-          const fonts = tileFontSizes(innerWidth, innerHeight);
+          const mode = tileLabelMode(innerWidth, innerHeight, style);
+          const fonts = rowFont[row] || tileFontSizes(innerWidth, innerHeight, style);
           const active = !item.more && item.symbol === activeSymbol;
           return (
             <button
@@ -211,6 +223,7 @@ export default function SectorHeatmapPanel({ symbols, activeSymbol, onSelect, on
               key={group.name}
               group={group}
               gap={styleSpec.gap}
+              style={prefs.style}
               activeSymbol={activeSymbol}
               expanded={Boolean(expanded[group.name])}
               onToggle={() => setExpanded((current) => ({ ...current, [group.name]: !current[group.name] }))}
