@@ -53,6 +53,7 @@ class SchwabMarketStream:
         *,
         chart_history_path: str | Path | None = None,
         chart_history_max_bars: int = 12_000,
+        chart_history_max_age_seconds: float = 4 * 86400.0,
         chart_history_flush_seconds: float = 30.0,
     ) -> None:
         self._client_factory = client_factory or (lambda: SchwabClient("trading"))
@@ -85,6 +86,12 @@ class SchwabMarketStream:
         self._latest_chart: dict[str, dict] = {}
         self._chart_history_path = Path(chart_history_path) if chart_history_path else None
         self._chart_history_max_bars = max(100, int(chart_history_max_bars))
+        # 2026-11-03 10:05 ET: the file held 2.66M bars back to 08-10 (242 MB of
+        # JSON) and every save re-encoded every active symbol's full history;
+        # the stream thread queued behind it and candles reached the scanner
+        # 6+ minutes late. Readers use at most 2 days (premarket tail, chart
+        # since=2d, the worker's last few buckets); older bars are dropped.
+        self._chart_history_max_age = max(3600.0, float(chart_history_max_age_seconds))
         self._chart_history_flush_seconds = max(0.0, float(chart_history_flush_seconds))
         self._chart_history_writer: threading.Thread | None = None
         self._chart_history_last_flush = 0.0
@@ -205,6 +212,16 @@ class SchwabMarketStream:
             raw_symbols = payload.get("symbols") if isinstance(payload, dict) else None
             if not isinstance(raw_symbols, dict):
                 return
+            # Age is measured from the newest bar in the FILE, not the wall
+            # clock, so an old file (tests, a long outage) is not emptied.
+            newest = 0
+            for raw_bars in raw_symbols.values():
+                if isinstance(raw_bars, list) and raw_bars and isinstance(raw_bars[-1], dict):
+                    try:
+                        newest = max(newest, int(raw_bars[-1].get("time") or 0))
+                    except (TypeError, ValueError):
+                        pass
+            oldest_kept = newest - self._chart_history_max_age
             for raw_symbol, raw_bars in raw_symbols.items():
                 symbol = str(raw_symbol or "").strip().upper()
                 if not symbol or not isinstance(raw_bars, list):
@@ -217,7 +234,7 @@ class SchwabMarketStream:
                         timestamp = int(raw_bar.get("time") or 0)
                     except (TypeError, ValueError):
                         continue
-                    if timestamp <= 0 or self._number(raw_bar.get("close")) is None:
+                    if timestamp <= 0 or timestamp < oldest_kept or self._number(raw_bar.get("close")) is None:
                         continue
                     ordered[timestamp] = {
                         "time": timestamp,
@@ -266,6 +283,9 @@ class SchwabMarketStream:
             }
             history.move_to_end(timestamp)
             while len(history) > self._chart_history_max_bars:
+                history.popitem(last=False)
+            oldest_kept = timestamp - self._chart_history_max_age
+            while history and next(iter(history)) < oldest_kept:
                 history.popitem(last=False)
             self._chart_history_dirty.add(symbol)
         self._flush_chart_history_if_due()
