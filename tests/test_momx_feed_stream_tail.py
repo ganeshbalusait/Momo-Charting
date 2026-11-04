@@ -306,3 +306,51 @@ def test_one_failed_live_poll_does_not_fall_back_to_the_file(monkeypatch):
     clock["t"] = 990.0 + feed.STREAM_LIVE_TRUST_SECONDS + 1
     monkeypatch.setitem(feed._STREAM_LIVE, "at", 0.0)
     assert feed._stream_live_refresh() is False                    # really down: file fallback
+
+
+def test_overnight_fill_after_2000_asks_for_tonight_not_last_night(monkeypatch):
+    """2026-11-03 23:04 ET: the fill still asked for 11-02 20:00 -> 11-03 04:00, so
+    tonight's 20:00-midnight never arrived and the board sat on its 19:55 bar."""
+    feed._PM_FILL.clear()
+    asked = []
+
+    def fake_batch(batch, *, timeframe, start, end, feed, credentials, get, adjustment):
+        asked.append((start.astimezone(ET), end.astimezone(ET)))
+        return {}
+
+    monkeypatch.setattr(feed, "resolve_credentials", lambda: {"key": "x"})
+    monkeypatch.setattr(feed, "_fetch_batch", fake_batch)
+    monkeypatch.setattr(feed, "_default_get", lambda: None)
+    feed._overnight_fill(["RIOT"], feed.TIMEFRAME_5M, datetime(2026, 11, 3, 23, 4, tzinfo=ET))
+    assert asked[-1][0] == datetime(2026, 11, 3, 20, 0, tzinfo=ET)
+    assert asked[-1][1] <= datetime(2026, 11, 3, 23, 4, tzinfo=ET)
+    # Sunday 20:00 opens the overnight week; Monday 02:00 is still Sunday night
+    feed._overnight_fill(["RIOT"], feed.TIMEFRAME_5M, datetime(2026, 11, 1, 21, 30, tzinfo=ET))
+    assert asked[-1][0] == datetime(2026, 11, 1, 20, 0, tzinfo=ET)
+    feed._overnight_fill(["RIOT"], feed.TIMEFRAME_5M, datetime(2026, 11, 2, 2, 0, tzinfo=ET))
+    assert asked[-1][0] == datetime(2026, 11, 1, 20, 0, tzinfo=ET)
+    feed._PM_FILL.clear()
+
+
+def test_overnight_fill_skips_friday_and_saturday_nights(monkeypatch):
+    monkeypatch.setattr(feed, "resolve_credentials", lambda: (_ for _ in ()).throw(AssertionError("no fetch")))
+    assert feed._overnight_fill(["AAPL"], feed.TIMEFRAME_5M, datetime(2026, 10, 30, 22, 0, tzinfo=ET)) == {}
+    assert feed._overnight_fill(["AAPL"], feed.TIMEFRAME_5M, datetime(2026, 10, 31, 21, 0, tzinfo=ET)) == {}
+
+
+def test_last_nights_finished_fill_does_not_stand_in_for_tonight(monkeypatch):
+    """Monday 02:00 (Sunday night) and Monday 23:00 (Monday night) share a date."""
+    feed._PM_FILL.clear()
+    asked = []
+
+    def fake_batch(batch, *, timeframe, start, end, feed, credentials, get, adjustment):
+        asked.append(start.astimezone(ET))
+        return {}
+
+    monkeypatch.setattr(feed, "resolve_credentials", lambda: {"key": "x"})
+    monkeypatch.setattr(feed, "_fetch_batch", fake_batch)
+    monkeypatch.setattr(feed, "_default_get", lambda: None)
+    feed._overnight_fill(["RIOT"], feed.TIMEFRAME_5M, datetime(2026, 11, 2, 5, 0, tzinfo=ET))   # final
+    feed._overnight_fill(["RIOT"], feed.TIMEFRAME_5M, datetime(2026, 11, 2, 23, 0, tzinfo=ET))
+    assert asked == [datetime(2026, 11, 1, 20, 0, tzinfo=ET), datetime(2026, 11, 2, 20, 0, tzinfo=ET)]
+    feed._PM_FILL.clear()

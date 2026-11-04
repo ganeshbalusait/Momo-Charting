@@ -39,8 +39,13 @@ export function scannerFreshness(board, nowMs = Date.now(), receivedAt = null) {
   });
   const windowEnd = Date.parse(newest) + 300000;
   const endedMinutes = Math.floor(Math.max(0, nowMs - windowEnd) / 60000);
+  // Plain words (2026-11-03, he asked about "window ended 184m ago" twice): a
+  // shut market says so, and the age is shown only when the tape is really
+  // behind (the amber "stale" verdict), not on every normal delay.
+  const span = minutes => minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   const windowText = `5m bar ${clockTime(newest)}–${clockTime(windowEnd)} ET`
-    + (endedMinutes >= 5 ? ` · window ended ${endedMinutes}m ago` : "");
+    + (note.tone === "closed" ? " · market closed"
+      : note.tone === "stale" ? ` · no new bar for ${span(endedMinutes)}` : "");
   const clock = value => {
     const stamp = typeof value === "number" ? value : Date.parse(value);
     return Number.isFinite(stamp) ? new Date(stamp).toLocaleString("en-US", {

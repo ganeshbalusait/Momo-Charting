@@ -1131,24 +1131,35 @@ OVERNIGHT_FILL_ENABLED = True
 
 
 def _overnight_fill(symbols, timeframe: str, now: datetime | None) -> dict:
+    """From 20:00 ET it is the session running NOW (today 20:00 -> tomorrow 04:00);
+    before 20:00 the one that ended at today's 04:00. It used to always be the
+    latter, so 20:00-midnight never filled and the scanner sat on its 19:55 bar
+    under an amber "window ended 184m ago" (2026-11-03 23:04 ET)."""
     if not OVERNIGHT_FILL_ENABLED or not symbols:
         return {}
     current = (now or datetime.now(timezone.utc)).astimezone(EASTERN)
-    close_at = current.replace(hour=4, minute=0, second=0, microsecond=0)
-    open_at = close_at - timedelta(hours=8)          # the previous calendar day's 20:00
-    return _window_fill(symbols, timeframe, now, open_at, close_at, feed=INTRADAY_OVERNIGHT_FEED,
-                        tag="boats-overnight")
+    open_at = current.replace(hour=20, minute=0, second=0, microsecond=0)
+    if current < open_at:
+        open_at -= timedelta(days=1)
+    if open_at.weekday() in (4, 5):                  # Friday and Saturday nights do not trade
+        return {}
+    return _window_fill(symbols, timeframe, now, open_at, open_at + timedelta(hours=8),
+                        feed=INTRADAY_OVERNIGHT_FEED, tag="boats-overnight", weekend_ok=True)
 
 
 def _window_fill(symbols, timeframe: str, now: datetime | None, open_at: datetime, close_at: datetime,
-                 *, feed: str, tag: str) -> dict:
+                 *, feed: str, tag: str, weekend_ok: bool = False) -> dict:
     """Alpaca bars for one ET window [open_at, close_at) that the Schwab tape lacks,
-    cached per (day, timeframe, tag) and final once the window is past the feed's
-    recency delay. Never raises."""
+    cached per (window, timeframe, tag) and final once the window is past the feed's
+    recency delay. Never raises. `weekend_ok`: the caller already decided the window
+    trades (Sunday 20:00 opens the overnight week)."""
     current = (now or datetime.now(timezone.utc)).astimezone(EASTERN)
-    if current.weekday() >= 5 or current < open_at + timedelta(minutes=FEED_RECENT_DELAY_MINUTES[feed]):
+    if (current.weekday() >= 5 and not weekend_ok) \
+            or current < open_at + timedelta(minutes=FEED_RECENT_DELAY_MINUTES[feed]):
         return {}
-    key = (current.date().isoformat(), timeframe, tag)
+    # Keyed by the window, not today's date: Monday 02:00 (Sunday night) and
+    # Monday 23:00 (Monday night) are different windows on the same date.
+    key = (open_at.isoformat(), timeframe, tag)
     wall = _wall_clock()
     with _PM_FILL_LOCK:
         entry = _PM_FILL.setdefault(key, {"at": 0.0, "final": False, "frames": {}})

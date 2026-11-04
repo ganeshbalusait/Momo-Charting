@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-03T23:12:00-05:00",
+      "heading": "Scanner keeps updating after 8 PM ET",
+      "items": [
+        "After 8 PM the scanner stopped at its 7:55 PM bar until midnight, and showed an amber note like 'window ended 184m ago'. It now picks up the overnight bars from 8 PM on (about 16 minutes behind, like before midnight).",
+        "The note next to UPDATED is in plain words: 'market closed' on weekends, and 'no new bar for 1h 30m' only when the data really is behind."
+      ]
+    },
+    {
       "at": "2026-11-03T21:58:00-05:00",
       "heading": "MomX board: new Price and Spread columns",
       "items": [

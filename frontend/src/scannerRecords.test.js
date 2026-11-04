@@ -56,14 +56,17 @@ test('07:25 is displayed as a five-minute window ending at 07:30, not five minut
  assert.match(f.title,/not proof/);
  assert.match(f.title,/window ends.*07:30:00/);
  assert.match(f.title,/Browser received:.*07:30:11/);
- assert.match(scannerFreshness(board,Date.parse('2026-10-30T07:50:00-04:00')).text,/window ended 20m ago/);
+ assert.doesNotMatch(scannerFreshness(board,Date.parse('2026-10-30T07:50:00-04:00')).text,/no new bar|window ended/);
+ assert.match(scannerFreshness(board,Date.parse('2026-10-30T09:00:00-04:00')).text,/· no new bar for 1h 30m$/);
+ const friday={freshness:{newestDataAt:'2026-10-30T19:55:00-04:00',barTimestampRole:'start',barIntervalSeconds:300}};
+ assert.equal(scannerFreshness(friday,Date.parse('2026-10-31T12:00:00-04:00')).text,'5m bar 19:55–20:00 ET · market closed');
 });
 
 test('forming, midnight and stale row windows retain their real times',()=>{
  const b={freshness:{newestDataAt:'2026-10-30T23:55:00-04:00',oldestDataAt:'2026-10-30T23:40:00-04:00',barTimestampRole:'start',barIntervalSeconds:300}};
  const f=scannerFreshness(b,Date.parse('2026-10-30T23:57:00-04:00'));
  assert.match(f.text,/23:55–00:00 ET/);assert.doesNotMatch(f.text,/oldest/);
- assert.doesNotMatch(f.text,/window ended/);
+ assert.doesNotMatch(f.text,/window ended|no new bar/);
 });
 
 
