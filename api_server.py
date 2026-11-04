@@ -23572,6 +23572,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                                 "change": quote.get("change"),
                                 "changePct": quote.get("change_pct"),
                                 "volume": quote.get("volume"),
+                                # Company name for the Sectors page list
+                                # ("NVIDIA CORP"); the page tidies it.
+                                "name": quote.get("description") or None,
                             })
                         # Only cache a response that actually carries prices, so
                         # a transient provider failure cannot pin an empty table

@@ -10,6 +10,12 @@ import {
   SECTOR_SYMBOLS,
   buildMarketSectorGroups,
   sortSectorGroups,
+  buildSectorPage,
+  companyName,
+  filterSectorTiles,
+  sectorPageSymbols,
+  sortSectorRows,
+  PAGE_SORT_MODES,
   cardHeight,
   formatMarketCap,
   formatSignedPct,
@@ -19,7 +25,6 @@ import {
   squarify,
   tileFontSizes,
   tileLabelMode,
-  visibleTiles,
 } from "./sectorHeatmap.js";
 
 
@@ -33,9 +38,11 @@ describe("market sector cards (Robinhood: each sector's top stocks)", () => {
       assert.ok(card.leaders.length >= 12, `${card.name} has ${card.leaders.length}`);
       assert.match(card.etf, /^XL[A-Z]{1,2}$/);
     }
-    const all = SECTOR_CARDS.flatMap((card) => card.leaders.map((leader) => leader.symbol));
+    const leaders = SECTOR_CARDS.flatMap((card) => card.leaders.map((leader) => leader.symbol));
+    const all = SECTOR_CARDS.flatMap((card) => [...card.leaders, ...card.more].map((item) => item.symbol));
     assert.deepEqual(all.filter((symbol, index) => all.indexOf(symbol) !== index), []);
-    assert.equal(new Set(SECTOR_SYMBOLS).size, all.length + SECTOR_CARDS.length);
+    // The grid polls leaders + ETFs only; a sector's extra names wait for its page.
+    assert.equal(new Set(SECTOR_SYMBOLS).size, leaders.length + SECTOR_CARDS.length);
   });
 
   test("the Technology card is the Robinhood screenshot's card", () => {
@@ -72,8 +79,8 @@ describe("market sector cards (Robinhood: each sector's top stocks)", () => {
     assert.equal(tech.tiles[0].weight, Math.sqrt(9e12));
   });
 
-  test("once quotes arrive, a leader with no price is left out instead of drawn grey", () => {
-    const quotes = Object.fromEntries(ROBINHOOD_TECH.filter((symbol) => symbol !== "SKHY").map((symbol) => [symbol, quote(1)]));
+  test("a leader the feed answers with no price is left out instead of drawn grey", () => {
+    const quotes = Object.fromEntries(ROBINHOOD_TECH.map((symbol) => [symbol, symbol === "SKHY" ? { lastPrice: null, changePct: null } : quote(1)]));
     const [tech] = buildMarketSectorGroups(quotes);
     assert.equal(tech.tiles.length, 15);
     assert.ok(!tech.tiles.some((tile) => tile.symbol === "SKHY"));
@@ -86,28 +93,6 @@ describe("market sector cards (Robinhood: each sector's top stocks)", () => {
     const nvda = tech.tiles.find((tile) => tile.symbol === "NVDA");
     const csco = tech.tiles.find((tile) => tile.symbol === "CSCO");
     assert.ok(Math.abs(nvda.weight / csco.weight - Math.sqrt(4400 / 250)) < 1e-9);
-  });
-});
-
-describe("visibleTiles", () => {
-  const tiles = Array.from({ length: 20 }, (_, index) => ({ symbol: `S${index}`, weight: 100 - index, changePct: 1 }));
-
-  test("collapsed: the biggest 13 plus one +N tile", () => {
-    const shown = visibleTiles(tiles, false, 14);
-    assert.equal(shown.length, 14);
-    assert.equal(shown.at(-1).symbol, "+7");
-    assert.equal(shown.at(-1).more, 7);
-  });
-
-  test("the +N tile is never bigger than the median visible tile", () => {
-    const shown = visibleTiles(tiles, false, 14);
-    const visibleWeights = shown.slice(0, -1).map((tile) => tile.weight).sort((a, b) => a - b);
-    assert.ok(shown.at(-1).weight <= visibleWeights[Math.floor(visibleWeights.length / 2)]);
-  });
-
-  test("expanded or short lists are shown whole", () => {
-    assert.equal(visibleTiles(tiles, true, 14).length, 20);
-    assert.equal(visibleTiles(tiles.slice(0, 5), false, 14).length, 5);
   });
 });
 
@@ -293,5 +278,83 @@ describe("sector card sort (trader, 2026-11-06: sort by high/low)", () => {
     sortSectorGroups(groups, "high");
     assert.deepEqual(groups.map((x) => x.name), copy);
     assert.deepEqual(sortSectorGroups(null, "high"), []);
+  });
+});
+
+describe("a sector's own page (trader, 2026-11-06: tap a sector, like Robinhood)", () => {
+  const quote = (changePct, extra = {}) => ({ lastPrice: 50, change: changePct, changePct, ...extra });
+
+  test("the page holds the 16 card names plus the rest of the sector's big names", () => {
+    const page = buildSectorPage("Technology", {});
+    assert.ok(page.tiles.length >= 36, `${page.tiles.length} names`);
+    const symbols = page.tiles.map((tile) => tile.symbol);
+    for (const leader of SECTOR_CARDS[0].leaders) assert.ok(symbols.includes(leader.symbol), leader.symbol);
+    assert.ok(symbols.includes("ORCL") && symbols.includes("CRM"));
+    assert.equal(buildSectorPage("Nope", {}), null);
+  });
+
+  test("every sector has a page with more names than its card", () => {
+    for (const card of SECTOR_CARDS) {
+      const page = buildSectorPage(card.name, {});
+      assert.ok(page.tiles.length > card.leaders.length + 15, `${card.name}: ${page.tiles.length}`);
+      assert.deepEqual(sectorPageSymbols(card.name), card.more.map((item) => item.symbol));
+    }
+  });
+
+  test("names the page has not been quoted for yet stay (grey) instead of vanishing", () => {
+    const page = buildSectorPage("Technology", { NVDA: quote(2), XLK: quote(1.1) });
+    assert.ok(page.tiles.some((tile) => tile.symbol === "ORCL" && tile.changePct === null));
+    assert.equal(page.changePct, 1.1);
+  });
+
+  test("the list sorts by size, best move or worst move; no-quote names last", () => {
+    const tiles = [
+      { symbol: "A", weight: 3, changePct: -1 },
+      { symbol: "B", weight: 9, changePct: 2 },
+      { symbol: "C", weight: 5, changePct: null },
+      { symbol: "D", weight: 1, changePct: 4 },
+    ];
+    assert.deepEqual(PAGE_SORT_MODES, ["size", "high", "low"]);
+    assert.deepEqual(sortSectorRows(tiles, "size").map((t) => t.symbol), ["B", "C", "A", "D"]);
+    assert.deepEqual(sortSectorRows(tiles, "high").map((t) => t.symbol), ["D", "B", "A", "C"]);
+    assert.deepEqual(sortSectorRows(tiles, "low").map((t) => t.symbol), ["A", "B", "D", "C"]);
+    assert.deepEqual(tiles.map((t) => t.symbol), ["A", "B", "C", "D"]); // input untouched
+  });
+});
+
+describe("sector page like Robinhood's: about, sub-group chips, company names", () => {
+  test("every sector has a description and chips that cover its stocks exactly once", () => {
+    for (const card of SECTOR_CARDS) {
+      assert.ok(card.about.length > 30, `${card.name} about`);
+      assert.ok(card.groups.length >= 3, `${card.name} has ${card.groups.length} chips`);
+      const all = [...card.leaders, ...card.more].map((item) => item.symbol).sort();
+      const chipped = card.groups.flatMap((group) => group.symbols).sort();
+      assert.deepEqual(chipped, all, `${card.name} chips`);
+    }
+  });
+
+  test("a chip filters the page's stocks; All shows every one", () => {
+    const page = buildSectorPage("Technology", {});
+    const semis = filterSectorTiles(page, "Semiconductors").map((tile) => tile.symbol);
+    assert.ok(semis.includes("NVDA") && semis.includes("AMD") && !semis.includes("MSFT"));
+    assert.equal(filterSectorTiles(page, "All").length, page.tiles.length);
+    assert.equal(filterSectorTiles(page, "Nope").length, page.tiles.length);
+  });
+
+  test("company names read like Robinhood's list", () => {
+    assert.equal(companyName("NVIDIA CORP"), "NVIDIA");
+    assert.equal(companyName("APPLE INC"), "Apple");
+    assert.equal(companyName("MICROSOFT CORP"), "Microsoft");
+    assert.equal(companyName("ALPHABET INC CL A"), "Alphabet Class A");
+    assert.equal(companyName("JPMORGAN CHASE & CO"), "JPMorgan Chase");
+    assert.equal(companyName("AT&T INC"), "AT&T");
+    assert.equal(companyName(""), null);
+    assert.equal(companyName("NVDA", "NVDA"), null);
+  });
+
+  test("the page carries the name from the quote, or null until it arrives", () => {
+    const page = buildSectorPage("Technology", { NVDA: { lastPrice: 1, changePct: 1, name: "NVIDIA CORP" } });
+    assert.equal(page.tiles.find((tile) => tile.symbol === "NVDA").name, "NVIDIA");
+    assert.equal(page.tiles.find((tile) => tile.symbol === "AAPL").name, null);
   });
 });

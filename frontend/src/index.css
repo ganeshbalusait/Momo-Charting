@@ -1692,6 +1692,54 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-3 { background: #8a1e1e; }
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-4 { background: #ad2222; }
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-5 { background: #dc2a2a; }
+
+/* A sector's own page (tap a card's name), laid out like Robinhood's sector
+   page: round back button, big title, move + ETF, a line about the sector,
+   sub-group chips, "In this list N items", then name / ticker / price rows.
+   Dark in both looks, as Robinhood's own page is; the price color follows
+   the look (RH green/orange, TOS green/red). */
+.sector-page { --sp-up: #5ac53b; --sp-down: #ff6a3d; --sp-text: #f4f4f6; --sp-dim: #9a9aa6; --sp-line: rgba(255, 255, 255, .1);
+  display: grid; gap: 14px; padding: 4px 6px 12px; color: var(--sp-text); font-family: Inter, "Helvetica Neue", Arial, system-ui, sans-serif; }
+.sector-heatmap-panel.is-style-tos .sector-page { --sp-up: #2fd35f; --sp-down: #ff4a4a; }
+.app-shell.charts-workstation .sector-heatmap-panel .sector-page,
+.app-shell.charts-workstation .sector-heatmap-panel .sector-page *:not(.sector-heatmap-tile):not(.sector-heatmap-tile *) { font-family: Inter, "Helvetica Neue", Arial, system-ui, sans-serif !important; }
+.sector-page-back { display: grid; place-items: center; width: 44px; height: 44px; justify-self: start; border: 1px solid rgba(255, 255, 255, .16); border-radius: 50%; background: rgba(255, 255, 255, .06); color: var(--sp-text); cursor: pointer; }
+.sector-page-back:hover { background: rgba(255, 255, 255, .14); }
+.sector-page-head { display: grid; gap: 8px; }
+.sector-page-head h2 { margin: 0; font-size: 34px; font-weight: 600; letter-spacing: -.01em; line-height: 1.1; }
+.sector-page-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 0; color: var(--sp-dim); font-size: 14px; }
+.sector-page-meta .sector-heatmap-card-move { font-size: 16px; font-weight: 700; }
+.sector-page-meta .sector-heatmap-card-move.is-up { color: var(--sp-up); }
+.sector-page-meta .sector-heatmap-card-move.is-down { color: var(--sp-down); }
+.sector-page-about { margin: 0; font-size: 16px; line-height: 1.5; }
+.sector-page-chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: none; }
+.sector-page-chips::-webkit-scrollbar { display: none; }
+.sector-page-chips button { flex: none; padding: 9px 16px; border: 1px solid rgba(255, 255, 255, .18); border-radius: 999px; background: rgba(255, 255, 255, .05); color: var(--sp-text); font-size: 14px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.sector-page-chips button[aria-pressed="true"] { border-color: var(--sp-text); background: var(--sp-text); color: #0b0b0d; }
+.sector-page-listhead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0 10px; border-bottom: 1px solid var(--sp-line); }
+.sector-page-listhead > div { display: grid; gap: 3px; margin-right: auto; }
+.sector-page-listhead b { font-size: 17px; font-weight: 500; }
+.sector-page-listhead small { color: var(--sp-dim); font-size: 13px; }
+.sector-page-listhead .sector-heatmap-switch { display: inline-flex; overflow: hidden; border: 1px solid rgba(255, 255, 255, .18); border-radius: 999px; }
+.sector-page-listhead .sector-heatmap-switch button { height: 30px; margin: 0; padding: 0 12px; border: 0; background: transparent; color: var(--sp-dim); font-size: 12px; font-weight: 700; cursor: pointer; }
+.sector-page-listhead .sector-heatmap-switch button[aria-pressed="true"] { background: rgba(255, 255, 255, .14); color: var(--sp-text); }
+.sector-page-rows { display: grid; margin: 0; padding: 0; list-style: none; }
+.sector-page-rows li + li { border-top: 1px solid var(--sp-line); }
+.sector-page-rows li button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 16px 2px; border: 0; background: transparent; color: var(--sp-text); cursor: pointer; text-align: left; }
+.sector-page-rows li button:hover { background: rgba(255, 255, 255, .04); }
+.sector-page-rows li button.is-active { box-shadow: inset 3px 0 0 var(--sp-text); padding-left: 10px; }
+.sector-page-name { display: grid; gap: 4px; min-width: 0; }
+.sector-page-name b { overflow: hidden; font-size: 17px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.sector-page-name small { color: var(--sp-text); font-size: 14px; opacity: .85; }
+.sector-page-price { display: grid; flex: none; gap: 3px; text-align: right; font-variant-numeric: tabular-nums; }
+.sector-page-price b { font-size: 19px; font-weight: 500; }
+.sector-page-price small { font-size: 13px; opacity: .9; }
+.sector-page-price.is-up { color: var(--sp-up); }
+.sector-page-price.is-down { color: var(--sp-down); }
+.sector-page-price.is-flat,
+.sector-page-price.is-none { color: var(--sp-dim); }
+/* On a sector page the cards stack full width, never side by side. */
+.sector-heatmap-panel.is-sector-open .sector-heatmap-body { grid-template-columns: minmax(0, 1fr); }
 .tos-sync-tag { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; color: var(--tos-link-text, #171400) !important; border: 1px solid var(--tos-link-color, #f5d000); border-radius: 2px; background: var(--tos-link-color, #f5d000); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18), 0 0 8px color-mix(in srgb, var(--tos-link-color, #f5d000) 34%, transparent); font-size: .62rem !important; font-weight: 950; line-height: 1; letter-spacing: 0; }
 .tos-sync-picker { display: inline-grid; flex: 0 0 auto; }
 .tos-sync-picker select { width: 27px; min-width: 27px; height: 20px; padding: 0 2px; overflow: hidden; color: var(--tos-link-text, #171400); border: 1px solid var(--tos-link-color, #f5d000); border-radius: 2px; outline: none; background: var(--tos-link-color, #f5d000); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .2), 0 0 8px color-mix(in srgb, var(--tos-link-color, #f5d000) 32%, transparent); font-size: .62rem; font-weight: 950; line-height: 1; cursor: pointer; }
