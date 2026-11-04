@@ -477,6 +477,15 @@ class Handler(BaseHTTPRequestHandler):
                 symbols = str(query.get("symbols", [""])[0]).split(",")
                 self._json(HTTPStatus.OK, live_rvol.compute(symbols))
                 return
+            if path == "/api/momx-scanner/option-spreads":
+                # The board's Spread column (momx/option_spread.py, 2026-11-03):
+                # option bid/ask width class per ticker, measured from the
+                # chains api_server already saved - no broker call here.
+                from momx import option_spread
+                raw = str(query.get("symbols", [""])[0])
+                symbols = [s for s in raw.split(",") if s.strip()] or None
+                self._json(HTTPStatus.OK, option_spread.book().snapshot(symbols))
+                return
             if path == "/api/momx-scanner/live-seeds":
                 # The LIVE ⚡ seeds (momx/live_bolt.py) for api_server's
                 # per-second layer. Loopback consumer only.
@@ -804,7 +813,13 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"[ai-filter] not started: {type(exc).__name__}: {exc}", flush=True)
     start_learning_background({"bull": service._OPTION_TRACK, "bear": service._BEAR_OPTION_TRACK})
-    server = ScannerHTTPServer(("127.0.0.1", PORT), Handler)
+    # Spread column (2026-11-03): reads saved chain files 10:00-15:30 ET only.
+    try:
+        from momx import option_spread
+        option_spread.start()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[option-spread] not started: {type(exc).__name__}: {exc}", flush=True)
+    server =ScannerHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"momx worker on http://127.0.0.1:{PORT}", flush=True)
     try:
         server.serve_forever()

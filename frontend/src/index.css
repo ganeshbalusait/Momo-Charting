@@ -22940,3 +22940,14 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .momx-setup-picker .momx-strategy-tag.is-adx.is-bear { color: #ff00ff; border-color: #ff00ff; }
 .momx-setup-picker .momx-strategy-tag.is-grade-aplus { color: #39ff88; border-color: #39ff88; font-weight: 700; }
 .momx-setup-picker .momx-strategy-tag.is-grade-aplus.is-bear { color: #ff4d6d; border-color: #ff4d6d; }
+
+/* Price + Spread columns (2026-11-03). Spread = how wide the ticker's options
+   trade: Tight / OK fill at the mid, Wide / Avoid rarely do. Same cyan/magenta
+   family as the Record column; amber marks "price above the mid". */
+.momx-scanner-panel td.momx-pricecol { white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
+.momx-scanner-panel td.momx-spreadcol { white-space: nowrap; cursor: pointer; font-weight: 600; }
+.momx-scanner-panel td.momx-spreadcol.is-tight { color: #00ffff; }
+.momx-scanner-panel td.momx-spreadcol.is-ok { color: #9fd8d8; font-weight: 500; }
+.momx-scanner-panel td.momx-spreadcol.is-wide { color: #ffb84d; }
+.momx-scanner-panel td.momx-spreadcol.is-avoid { color: #ff5c9a; font-weight: 700; }
+.momx-scanner-panel td.momx-spreadcol.is-none { color: var(--momx-muted, #6b7280); font-weight: 400; }

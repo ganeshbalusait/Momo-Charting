@@ -210,6 +210,15 @@ import {
   sortHistoryGroups,
   sortHistoryRows,
 } from "./momxHistory.js";
+import {
+  SPREAD_POLL_MS,
+  SPREAD_URL,
+  currentPrice,
+  formatPrice,
+  spreadCell,
+  spreadMapFrom,
+  spreadSortValue,
+} from "./momxSpread.js";
 
 // MomX Scanner board - the trader's MomoX/MomoScan window, replayed.
 //
@@ -406,6 +415,10 @@ const MOMX_COLUMNS = [
   { key: "setup", label: "Setup", kind: "setup", sortable: true },
   { key: "fresh", label: "Fresh", kind: "fresh", sortable: true },
   { key: "pctChange", label: "% Chg", kind: "pct", sortable: true },
+  // Price + Spread (2026-11-03): the stock's current price, and how wide its
+  // options trade - Tight / OK / Wide / Avoid (momxSpread.js).
+  { key: "price", label: "Price", kind: "price", sortable: true },
+  { key: "spread", label: "Spread", kind: "spread", sortable: true },
   // News + Event, as MomoX prints them (2026-09-25): the headline's age with a
   // ✦ when the AI reader judged it, and the next earnings date.
   { key: "news", label: "News", kind: "news", sortable: true },
@@ -497,6 +510,9 @@ const AUTO_CARDS_SEEN_KEY = "momx-auto-cards-seen-v1";
 // and the History rows can read it; the panel refreshes it and passes each
 // live row its own entry as a prop, so the row memo still holds.
 let EARNINGS_BY_SYMBOL = new Map();
+// SYMBOL -> option spread class (momxSpread.js), module-level for the sort
+// like the earnings map; each live row also gets its own entry as a prop.
+let SPREADS_BY_SYMBOL = new Map();
 
 // The Jev score cell (2026-10-02), shared by the live board and the History table.
 function jevScoreTd(column, row, className, asOfMs = undefined) {
@@ -883,6 +899,8 @@ function columnSortValue(row, column, newsMode) {
     const rec = recordCell(row);
     return rec && rec.best ? rec.best.roi : null;
   }
+  if (column.kind === "price") return currentPrice(null, row);
+  if (column.kind === "spread") return spreadSortValue(SPREADS_BY_SYMBOL.get(row.symbol));
   if (column.kind === "cell") {
     const cell = cellFor(row, column);
     if (!cell || typeof cell !== "object") return null;
@@ -2648,7 +2666,33 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefi
   return null;
 }
 
-const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, bolt, sourceWarning, liveRvol }) {
+// Price / Spread cells, shared by the live board and the History table
+// (History passes no spread: the class is not archived, so it prints "-").
+function priceTd(column, value, className) {
+  return (
+    <td key={column.key} data-col={column.key} className={className + " momx-pricecol"}>
+      {formatPrice(value)}
+    </td>
+  );
+}
+
+// A tap opens the same explain box as a Setup tag - a phone has no hover.
+function spreadTd(column, entry, className, symbol) {
+  const cell = spreadCell(entry);
+  const open = (event) => {
+    event.stopPropagation();
+    window.dispatchEvent(new CustomEvent(MOMX_TAG_EXPLAIN_EVENT, { detail: {
+      text: "Spread · " + (symbol || ""), plain: "", title: cell.title,
+    } }));
+  };
+  return (
+    <td key={column.key} data-col={column.key} className={className + " momx-spreadcol is-" + cell.tone} title={cell.title} onClick={open}>
+      {cell.text}
+    </td>
+  );
+}
+
+const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, liveLast, onNewsToggle, onOpenCard, onOpenGrade, columns, newsTime, starred, earnings, bolt, sourceWarning, liveRvol, spread }) {
   const passed = Boolean(row && row.scanPass);
   // Use the same session change as the scanner, filters and sorting. A live
   // after-hours last is not the regular-session close used by this percentage;
@@ -2693,6 +2737,8 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
         if (column.kind === "jev") {
           return jevScoreTd(column, row, "momx-cell");
         }
+        if (column.kind === "price") return priceTd(column, currentPrice(liveLast, row), "momx-cell");
+        if (column.kind === "spread") return spreadTd(column, spread, "momx-cell", row && row.symbol);
         if (column.kind === "news" || column.kind === "event") {
           return newsEventCell(column, row, earnings, "momx-cell", undefined,
             column.kind === "news" && onNewsToggle ? () => onNewsToggle(row.symbol) : null);
@@ -3061,6 +3107,8 @@ const MomxHistoryRow = memo(function MomxHistoryRow({ entry, newsTime, onOpenSna
         if (column.kind === "jev") {
           return jevScoreTd(column, row, base, Number(entry.atMs) || undefined);
         }
+        if (column.kind === "price") return priceTd(column, currentPrice(null, row), base);
+        if (column.kind === "spread") return spreadTd(column, null, base, row.symbol || entry.symbol);
         if (column.kind === "news" || column.kind === "event") {
           // News age as of the snapshot, like the badge; Event = today's calendar.
           return newsEventCell(column, row, EARNINGS_BY_SYMBOL.get(row.symbol), base, entry.atMs || undefined);
@@ -4521,6 +4569,34 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
       clearInterval(timer);
     };
   }, []);
+  // Spread column: the worker's option spread classes, every 2 minutes while
+  // the tab is visible. A failed fetch keeps the last map; the worker itself
+  // drops classes once their chain is no longer fresh.
+  const [spreadMap, setSpreadMap] = useState(SPREADS_BY_SYMBOL);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      fetch(SPREAD_URL)
+        .then((response) => (response.ok ? response.json() : null))
+        .then((payload) => {
+          if (!alive || !payload) return;
+          const next = spreadMapFrom(payload, SPREADS_BY_SYMBOL);
+          SPREADS_BY_SYMBOL = next;
+          setSpreadMap(next);
+        })
+        .catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, SPREAD_POLL_MS);
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
   // The clock the age buckets read. Bumped by the momentum poll (not by a
   // dedicated timer) so a chip's fade and a row's NEW flash expire even when
   // the payload itself stops changing.
@@ -5967,7 +6043,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     return ranks.size ? out.map((row) => (row && ranks.has(row.symbol) ? { ...row, bestRank: ranks.get(row.symbol) } : row)) : out;
   }, [
     allRows, baseRows, selectedIndustries, sort.key, sort.direction, focusSymbol, boltView, liveBolts, liveHl,
-    newsOnly, filtersActive, filters, earningsMap, liveQuotesBySymbol, bear,
+    newsOnly, filtersActive, filters, earningsMap, spreadMap, liveQuotesBySymbol, bear,
   ]);
 
   // Lease the actual top rows the trader sees after H/L sorting/filtering,
@@ -7350,6 +7426,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
                   <MomxRow
                     sourceWarning={scannerRowFreshness(row, rowClockMs)?.timeText || ""}
                     liveLast={liveLastBySymbol[row && row.symbol]}
+                    spread={spreadMap.get(row && row.symbol)}
                     key={(row && row.symbol) || "row-" + rowIndex}
                     row={row}
                     onNewsToggle={onNewsToggle}
