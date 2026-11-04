@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -59,7 +60,26 @@ class TradingRepository:
         finally:
             connection.close()
 
+    #: A startup step slower than this is printed (api_server.out.log), so a
+    #: slow boot names its own cause instead of needing a profiler.
+    SLOW_INIT_STEP_SECONDS = 2.0
+
+    @contextmanager
+    def _timed_init_step(self, label: str) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = time.perf_counter() - started
+            if elapsed >= self.SLOW_INIT_STEP_SECONDS:
+                print(f"[startup] database: {label} took {elapsed:.1f}s", flush=True)
+
     def initialize(self) -> None:
+        started = time.perf_counter()
+        self._initialize_schema()
+        print(f"[startup] database ready in {time.perf_counter() - started:.1f}s", flush=True)
+
+    def _initialize_schema(self) -> None:
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = NORMAL")
@@ -448,11 +468,14 @@ class TradingRepository:
             self._ensure_column(connection, "scanner_history", "setup_name", "TEXT")
             self._ensure_column(connection, "scanner_history", "raw_json", "TEXT")
             self._ensure_column(connection, "scanner_history", "scan_bucket", "TEXT")
-            connection.execute(
-                "UPDATE scanner_history SET scan_bucket = scanned_at WHERE scan_bucket IS NULL OR TRIM(scan_bucket) = ''"
-            )
-            self._migrate_scanner_history_source(connection)
-            self._migrate_scanner_history_events(connection)
+            with self._timed_init_step("scanner_history scan_bucket backfill"):
+                connection.execute(
+                    "UPDATE scanner_history SET scan_bucket = scanned_at WHERE scan_bucket IS NULL OR TRIM(scan_bucket) = ''"
+                )
+            with self._timed_init_step("scanner_history source migration"):
+                self._migrate_scanner_history_source(connection)
+            with self._timed_init_step("scanner_history events migration"):
+                self._migrate_scanner_history_events(connection)
             connection.execute("DROP INDEX IF EXISTS idx_scanner_history_date_source_symbol")
             connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_scanner_history_event ON scanner_history(scan_date, source, symbol, scan_bucket)"
@@ -472,18 +495,30 @@ class TradingRepository:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_option_chain_daily_prune ON option_chain_daily_snapshots(snapshot_date, symbol, side, strike)"
             )
-            connection.execute(
-                "ANALYZE option_chain_daily_snapshots"
-            )
+            # SAMPLED, not full (2026-11-04). A full ANALYZE reads every row of
+            # this table and its indexes - most of a 2.7 GB database - on EVERY
+            # boot; py-spy caught a restart sitting on this line for minutes.
+            # analysis_limit samples ~1000 rows per index: the planner still
+            # picks idx_option_chain_daily_prune for the prune DELETE (checked
+            # with EXPLAIN QUERY PLAN on a 2M-row copy), at a few MB of reads.
+            connection.execute("PRAGMA analysis_limit = 1000")
+            with self._timed_init_step("ANALYZE option_chain_daily_snapshots (sampled)"):
+                connection.execute(
+                    "ANALYZE option_chain_daily_snapshots"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_option_wall_strength_lookup ON option_wall_strength_snapshots(symbol, bucket_time, side, strike)"
             )
-            self._deduplicate_option_chain_snapshot_expiries(connection)
+            with self._timed_init_step("option expiry de-duplication check"):
+                self._deduplicate_option_chain_snapshot_expiries(connection)
             option_chain_cutoff = (datetime.now(self._market_tz).date() - timedelta(days=183)).isoformat()
-            connection.execute("DELETE FROM option_chain_daily_snapshots WHERE snapshot_date < ?", (option_chain_cutoff,))
+            with self._timed_init_step("prune option chain snapshots older than 183 days"):
+                connection.execute("DELETE FROM option_chain_daily_snapshots WHERE snapshot_date < ?", (option_chain_cutoff,))
             wall_strength_cutoff = int((datetime.now(timezone.utc) - timedelta(days=183)).timestamp())
-            connection.execute("DELETE FROM option_wall_strength_snapshots WHERE bucket_time < ?", (wall_strength_cutoff,))
-            self._prune_trade_journals(connection)
+            with self._timed_init_step("prune wall-strength snapshots older than 183 days"):
+                connection.execute("DELETE FROM option_wall_strength_snapshots WHERE bucket_time < ?", (wall_strength_cutoff,))
+            with self._timed_init_step("prune old trade journals"):
+                self._prune_trade_journals(connection)
 
     def _prune_trade_journals(
         self,
