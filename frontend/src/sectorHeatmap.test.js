@@ -11,6 +11,8 @@ import {
   buildMarketSectorGroups,
   sortSectorGroups,
   buildSectorPage,
+  companyName,
+  filterSectorTiles,
   sectorPageSymbols,
   sortSectorRows,
   PAGE_SORT_MODES,
@@ -317,5 +319,42 @@ describe("a sector's own page (trader, 2026-11-06: tap a sector, like Robinhood)
     assert.deepEqual(sortSectorRows(tiles, "high").map((t) => t.symbol), ["D", "B", "A", "C"]);
     assert.deepEqual(sortSectorRows(tiles, "low").map((t) => t.symbol), ["A", "B", "D", "C"]);
     assert.deepEqual(tiles.map((t) => t.symbol), ["A", "B", "C", "D"]); // input untouched
+  });
+});
+
+describe("sector page like Robinhood's: about, sub-group chips, company names", () => {
+  test("every sector has a description and chips that cover its stocks exactly once", () => {
+    for (const card of SECTOR_CARDS) {
+      assert.ok(card.about.length > 30, `${card.name} about`);
+      assert.ok(card.groups.length >= 3, `${card.name} has ${card.groups.length} chips`);
+      const all = [...card.leaders, ...card.more].map((item) => item.symbol).sort();
+      const chipped = card.groups.flatMap((group) => group.symbols).sort();
+      assert.deepEqual(chipped, all, `${card.name} chips`);
+    }
+  });
+
+  test("a chip filters the page's stocks; All shows every one", () => {
+    const page = buildSectorPage("Technology", {});
+    const semis = filterSectorTiles(page, "Semiconductors").map((tile) => tile.symbol);
+    assert.ok(semis.includes("NVDA") && semis.includes("AMD") && !semis.includes("MSFT"));
+    assert.equal(filterSectorTiles(page, "All").length, page.tiles.length);
+    assert.equal(filterSectorTiles(page, "Nope").length, page.tiles.length);
+  });
+
+  test("company names read like Robinhood's list", () => {
+    assert.equal(companyName("NVIDIA CORP"), "NVIDIA");
+    assert.equal(companyName("APPLE INC"), "Apple");
+    assert.equal(companyName("MICROSOFT CORP"), "Microsoft");
+    assert.equal(companyName("ALPHABET INC CL A"), "Alphabet Class A");
+    assert.equal(companyName("JPMORGAN CHASE & CO"), "JPMorgan Chase");
+    assert.equal(companyName("AT&T INC"), "AT&T");
+    assert.equal(companyName(""), null);
+    assert.equal(companyName("NVDA", "NVDA"), null);
+  });
+
+  test("the page carries the name from the quote, or null until it arrives", () => {
+    const page = buildSectorPage("Technology", { NVDA: { lastPrice: 1, changePct: 1, name: "NVIDIA CORP" } });
+    assert.equal(page.tiles.find((tile) => tile.symbol === "NVDA").name, "NVIDIA");
+    assert.equal(page.tiles.find((tile) => tile.symbol === "AAPL").name, null);
   });
 });

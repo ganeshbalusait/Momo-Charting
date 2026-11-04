@@ -7,6 +7,7 @@ import {
   SORT_MODES,
   buildMarketSectorGroups,
   buildSectorPage,
+  filterSectorTiles,
   sectorPageSymbols,
   sortSectorGroups,
   sortSectorRows,
@@ -49,9 +50,10 @@ function readPrefs() {
       style: STYLES[parsed?.style] ? parsed.style : "rh",
       sort: SORT_MODES.includes(parsed?.sort) ? parsed.sort : "default",
       pageSort: PAGE_SORT_MODES.includes(parsed?.pageSort) ? parsed.pageSort : "size",
+      pageView: parsed?.pageView === "map" ? "map" : "list",
     };
   } catch {
-    return { style: "rh", sort: "default", pageSort: "size" };
+    return { style: "rh", sort: "default", pageSort: "size", pageView: "list" };
   }
 }
 
@@ -173,42 +175,57 @@ function SectorCard({ group, gap, style, activeSymbol, onOpen, onSelect }) {
   );
 }
 
-// A sector's own page, like tapping a sector on Robinhood: the sector's move,
-// a bigger heatmap of all its big names, and a sortable list of them.
-function SectorPage({ group, gap, style, activeSymbol, sort, onSort, onBack, onSelect }) {
+// A sector's own page, laid out like Robinhood's (trader's screenshot,
+// 2026-11-06): title, move, a line about the sector, sub-group chips, then
+// "In this list" with every stock - name, ticker, price in green/orange.
+// The heatmap of the same stocks is one tap away on the Map tab.
+function SectorPage({ group, gap, style, activeSymbol, sort, onSort, view, onView, onBack, onSelect }) {
+  const [chip, setChip] = useState("All");
   const move = moveLabel(group.changePct);
-  const rows = sortSectorRows(group.tiles, sort);
+  const shown = filterSectorTiles(group, chip);
+  const rows = sortSectorRows(shown, sort);
+  const chips = ["All", ...group.subgroups.map((item) => item.label)];
   return (
     <div className="sector-page">
-      <button type="button" className="sector-page-back" onClick={onBack}>
-        <ChevronLeft size={18} strokeWidth={2.5} aria-hidden="true" />
-        <span>All sectors</span>
+      <button type="button" className="sector-page-back" onClick={onBack} aria-label="Back to all sectors">
+        <ChevronLeft size={22} strokeWidth={2.5} aria-hidden="true" />
       </button>
-      <article className="sector-heatmap-card">
-        <header className="sector-page-head">
-          <div>
-            <h2>{group.name}</h2>
-            <small>
-              {group.moveSource === "etf" ? `${group.etf} today` : "Weighted move today"}
-              {" · "}{group.up} up · {group.down} down · {group.tiles.length} stocks
-            </small>
-          </div>
+      <header className="sector-page-head">
+        <h2>{group.name}</h2>
+        <p className="sector-page-meta">
           <span className={`sector-heatmap-card-move is-${move.heat.tone}`}>{move.text}</span>
-        </header>
-        <SectorTiles tiles={group.tiles} gap={gap} style={style} activeSymbol={activeSymbol} onSelect={onSelect} label={group.name} large />
-      </article>
-      <article className="sector-heatmap-card sector-page-list">
-        <header>
-          <b>Stocks</b>
-          <span className="sector-heatmap-switch" role="group" aria-label="Sort stocks">
-            {PAGE_SORT_MODES.map((mode) => (
-              <button key={mode} type="button" aria-pressed={sort === mode} title={PAGE_SORT_TITLES[mode]} onClick={() => onSort(mode)}>
-                {PAGE_SORT_LABELS[mode]}
-              </button>
-            ))}
-          </span>
-        </header>
-        <ul>
+          <span>{group.moveSource === "etf" ? `${group.etf} today` : "today"} · {group.up} up · {group.down} down</span>
+        </p>
+        {group.about ? <p className="sector-page-about">{group.about}</p> : null}
+      </header>
+      <div className="sector-page-chips" role="group" aria-label={`${group.name} sub-groups`}>
+        {chips.map((label) => (
+          <button key={label} type="button" aria-pressed={chip === label} onClick={() => setChip(label)}>{label}</button>
+        ))}
+      </div>
+      <div className="sector-page-listhead">
+        <div>
+          <b>In this list</b>
+          <small>{shown.length} items</small>
+        </div>
+        <span className="sector-heatmap-switch" role="group" aria-label="Sort stocks">
+          {PAGE_SORT_MODES.map((mode) => (
+            <button key={mode} type="button" aria-pressed={sort === mode} title={PAGE_SORT_TITLES[mode]} onClick={() => onSort(mode)}>
+              {PAGE_SORT_LABELS[mode]}
+            </button>
+          ))}
+        </span>
+        <span className="sector-heatmap-switch" role="group" aria-label="List or heatmap">
+          <button type="button" aria-pressed={view === "list"} onClick={() => onView("list")}>List</button>
+          <button type="button" aria-pressed={view === "map"} onClick={() => onView("map")}>Map</button>
+        </span>
+      </div>
+      {view === "map" ? (
+        <article className="sector-heatmap-card">
+          <SectorTiles tiles={rows} gap={gap} style={style} activeSymbol={activeSymbol} onSelect={onSelect} label={group.name} large />
+        </article>
+      ) : (
+        <ul className="sector-page-rows">
           {rows.map((row) => {
             const heat = heatLevel(row.changePct);
             return (
@@ -219,17 +236,20 @@ function SectorPage({ group, gap, style, activeSymbol, sort, onSort, onBack, onS
                   onClick={() => onSelect?.(row.symbol)}
                   title={tileTitle(row)}
                 >
-                  <b>{row.symbol}</b>
-                  <small>{formatMarketCap(row.marketCap)}{row.estimatedCap ? "*" : ""}</small>
-                  <span className="sector-page-last">{row.lastPrice !== null ? `$${row.lastPrice.toFixed(2)}` : "--"}</span>
-                  <span className={`sector-page-chg is-${heat.tone}`}>{formatSignedPct(row.changePct)}</span>
+                  <span className="sector-page-name">
+                    <b>{row.name || row.symbol}</b>
+                    {row.name ? <small>{row.symbol}</small> : null}
+                  </span>
+                  <span className={`sector-page-price is-${heat.tone}`}>
+                    <b>{row.lastPrice !== null ? `$${row.lastPrice.toFixed(2)}` : "--"}</b>
+                    <small>{formatSignedPct(row.changePct)}</small>
+                  </span>
                 </button>
               </li>
             );
           })}
         </ul>
-        <p className="sector-page-note">* approximate market cap until the live figure arrives</p>
-      </article>
+      )}
     </div>
   );
 }
@@ -346,12 +366,15 @@ export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose, va
       <div className="sector-heatmap-body">
         {page ? (
           <SectorPage
+            key={page.name}
             group={page}
             gap={styleSpec.gap}
             style={prefs.style}
             activeSymbol={activeSymbol}
             sort={prefs.pageSort}
             onSort={(mode) => updatePrefs({ pageSort: mode })}
+            view={prefs.pageView}
+            onView={(mode) => updatePrefs({ pageView: mode })}
             onBack={closePage}
             onSelect={onSelect}
           />
