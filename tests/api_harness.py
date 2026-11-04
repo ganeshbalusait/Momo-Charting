@@ -58,7 +58,7 @@ def seed_auto_login_user() -> dict | None:
     return {"email": email}
 
 
-def seed_user(email: str, role: str = "member", password: str = TEST_PASSWORD) -> str:
+def seed_user(email: str, role: str = "user", password: str = TEST_PASSWORD) -> str:
     """Create a scratch-database user (ignored if it already exists)."""
     try:
         api_server.auth_service_instance()._create_user_record(
