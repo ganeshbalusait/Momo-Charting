@@ -2,6 +2,16 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-04T04:27:29-05:00",
+      "heading": "New research tool: Monthly Picks, a once-a-month 20-stock portfolio with a back-test against SPY (not on screen yet)",
+      "items": [
+        "Our own version of the 'AI picks 20 stocks, rebalanced monthly' idea. On the last trading day of each month it ranks the S&P 500 on 12-month and 6-month momentum, how close each stock is to its 52-week high, its 50/200-day trend, how steady it moves, and how strong its sector is, then holds the top 20 at equal weight.",
+        "A stock already held stays in while it still ranks in the top 40, so it does not churn the list every month. Every add and every drop comes with a plain-English reason (for example 'Rank fell to #57; weakest: 12-month momentum -8%').",
+        "Run scripts/monthly_picks.py on the trading PC. It downloads up to 10 years of daily bars from your Schwab or Alpaca connection and writes artifacts/monthly_picks/report.md. The report shows the picks next to SPY and next to an equal-weight basket of the whole S&P 500, plus a year-by-year table and this month's 20 picks.",
+        "This is the back-test step only. It does not appear in the app and it places no trades. It also does not use valuation, earnings or analyst data yet."
+      ]
+    },
+    {
       "at": "2026-11-03T13:03:10-05:00",
       "heading": "New Sectors panel: Robinhood-style sector heatmap with each sector's top stocks",
       "items": [

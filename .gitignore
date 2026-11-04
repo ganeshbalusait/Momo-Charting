@@ -95,6 +95,7 @@ artifacts/*.log.err
 artifacts/scanner_watchdog.lock
 artifacts/db-backup-*/
 artifacts/oi_chain_cache/
+artifacts/monthly_picks/daily_bars.pkl
 artifacts/schwab_stream_history/
 artifacts/schwab_stream_chart_history.json.gz
 artifacts/watchlist.backup-*.txt
