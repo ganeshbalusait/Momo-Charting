@@ -132,3 +132,17 @@ def _no_real_alpaca_keys_in_tests(monkeypatch):
     if module is not None and hasattr(module, "_owner_alpaca_key_candidates"):
         monkeypatch.setattr(module, "_owner_alpaca_key_candidates", lambda: [])
     yield
+
+
+@pytest.fixture(autouse=True)
+def _guard_coverage_tests(request):
+    """The coverage tests written 2026-11-04 (tests/test_cov_*.py) run under the
+    live guards for every test, not just inside a harness: no connection may
+    leave the PC or reach the live servers, and no live file may change. See
+    tests/live_guard.py. Older suites keep their own fakes and are not wrapped."""
+    if not request.node.path.name.startswith("test_cov_"):
+        yield
+        return
+    from live_guard import network_guard, write_guard
+    with network_guard(), write_guard():
+        yield

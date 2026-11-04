@@ -25,6 +25,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { OI_CHART_APPLIED_GRID_STORAGE_KEY, chartGridStamp, readChartGridMeta } from "../../frontend/src/chartWorkspaceState.js";
+import { LEARN_CONTENT_VERSION } from "../../frontend/src/learnFirstVisit.js";
 
 export const BASE_URL = process.env.E2E_BASE_URL || "http://127.0.0.1:5173";
 export const DESKTOP = { width: 1440, height: 900 };
@@ -34,6 +35,8 @@ const FRONTEND_DIR = fileURLToPath(new URL("../../frontend/", import.meta.url));
 const LOCK_PATH = path.join(tmpdir(), "agx-e2e-browser.lock");
 const LOCK_WAIT_MS = Number(process.env.E2E_LOCK_WAIT_MS || 15 * 60 * 1000);
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+// Reads that spend money on every call (Claude/Gemini). A spec must fake them.
+const PAID_READS = /^\/api\/ai\//;
 
 // playwright lives in frontend/node_modules, which is not an ancestor of this
 // file, so a bare import cannot see it. Resolve it against frontend/ and take
@@ -146,26 +149,46 @@ after(async () => {
  * fakeWrites  {"POST /api/path": reply | (write) => reply}, reply = {status, json}
  * allowWrites ["POST /api/path"] - read-only POSTs that may reach the server
  *             (searches, batched reads). Never a route that changes anything.
+ * fakeReads   {"GET /api/path": reply | (read) => reply} - answer a read with a
+ *             fixture instead of the live server (deterministic states, and
+ *             every read that would spend an AI call). Reads to /api/ai/ are
+ *             refused unless faked here.
+ * path        what to open instead of "/" ("/?popout=chart&symbol=SPY&timeframe=5m")
+ * touch       a touch screen; on by default for PHONE
  */
-export async function openApp({ view, viewport = DESKTOP, storage = {}, fakeWrites = {}, allowWrites = [] } = {}) {
+export async function openApp({
+  view, viewport = DESKTOP, storage = {}, fakeWrites = {}, allowWrites = [], fakeReads = {}, path = "/", touch,
+} = {}) {
   const browser = await sharedBrowser();
-  const seeded = { agxLearnSeen: "1", ...(view ? { agenticActiveView: view } : {}), ...(await gridAlreadyApplied(view)), ...storage };
-  const context = await browser.newContext({ viewport });
+  const seeded = {
+    agxLearnSeen: String(LEARN_CONTENT_VERSION), ...(view ? { agenticActiveView: view } : {}), ...(await gridAlreadyApplied(view)), ...storage,
+  };
+  const hasTouch = touch ?? viewport === PHONE;
+  const context = await browser.newContext({ viewport, hasTouch, isMobile: hasTouch && viewport.width < 800 });
   const writes = [];
+  const reads = [];
+  const answer = async (route, fake, request) => {
+    const reply = typeof fake === "function" ? await fake(request) : fake;
+    return route.fulfill({ status: reply.status || 200, contentType: "application/json", body: JSON.stringify(reply.json ?? {}) });
+  };
   await context.route(/\/api\//, async (route) => {
     const request = route.request();
     const method = request.method();
-    if (READ_METHODS.has(method)) return route.continue();
     const url = new URL(request.url());
+    const key = `${method} ${url.pathname}`;
+    if (READ_METHODS.has(method)) {
+      const read = { method, path: url.pathname, search: url.search };
+      reads.push(read);
+      if (fakeReads[key]) return answer(route, fakeReads[key], read);
+      if (PAID_READS.test(url.pathname)) {
+        return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Blocked by the end-to-end harness: AI calls cost money - fake this read." }) });
+      }
+      return route.continue();
+    }
     const write = { method, path: url.pathname, search: url.search, body: request.postData() || "" };
     writes.push(write);
-    const key = `${method} ${url.pathname}`;
     if (allowWrites.includes(key)) return route.continue();
-    const fake = fakeWrites[key];
-    if (fake) {
-      const reply = typeof fake === "function" ? await fake(write) : fake;
-      return route.fulfill({ status: reply.status || 200, contentType: "application/json", body: JSON.stringify(reply.json ?? {}) });
-    }
+    if (fakeWrites[key]) return answer(route, fakeWrites[key], write);
     return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Blocked by the end-to-end harness: writes are not sent." }) });
   });
   const page = await context.newPage();
@@ -180,9 +203,9 @@ export async function openApp({ view, viewport = DESKTOP, storage = {}, fakeWrit
       try { window.localStorage.setItem(key, value); } catch { /* blocked storage */ }
     }
   }, seeded);
-  await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  await page.goto(new URL(path, BASE_URL).href, { waitUntil: "domcontentloaded", timeout: 60_000 });
   return {
-    context, page, writes, pageErrors, consoleErrors,
+    context, page, writes, reads, pageErrors, consoleErrors,
     async close() {
       await context.close().catch(() => {});
     },

@@ -31,9 +31,11 @@ def test_route_round_trip(monkeypatch):
         status, body = api.post("/api/route", {"field": "value"})
     assert status == 200 and body["field"] == "value"
 ```
-- `tests/conftest.py` already points the database, scanner archives, grade tape and stream history at a scratch folder. Never point a test at the live `database/trades.db` or `artifacts/`.
+- Scanner worker routes: `tests/worker_harness.py` `running_worker(tmp_path, monkeypatch)` serves the real `momx_worker.Handler` with scratch lists, boards, history, grade tape and Momo Alert files; `worker.seed_board(list, payload)` stores a finished board; `worker.as_admin(monkeypatch)` gives admin headers. Through the proxy: `with running_worker(...) as worker, running_api(worker_port=worker.port) as api:`.
+- Both harnesses run under `tests/live_guard.py`: any connection that leaves the PC, or reaches the live :3001/:3002/:3010/:5173, is refused, and any write under `artifacts/`, `database/` or the live `.env` raises. A `ConnectionRefusedError` or `PermissionError` from a guard means the test forgot a fake or a scratch path. Fix the test, never the guard.
+- `tests/conftest.py` points the database, scanner archives, grade tape and stream history at a scratch folder; `running_api()` also moves `.env`, credential health, chart profiles, earnings imports, the Momo Alert files, the scanner lists and the industry cache to a scratch folder.
 - Fake everything that leaves the PC: Schwab, Alpaca, the broker, AI calls, news sites, ntfy. Monkeypatch the function the route calls, not the HTTP library.
-- A tunnel visitor is `headers={"X-AGX-Request-Origin": "relayed"}`. With no stamp, a loopback request counts as this PC and auto-logs in.
+- A tunnel visitor is `headers=RELAYED` (from api_harness). With no stamp, a loopback request counts as this PC and auto-logs in as the owner. The client keeps cookies, so sign-in flows carry their session; `api.last_headers` has the response headers. `seed_user(email, role)` adds a scratch user.
 - Assert on what the screen reads (status code, JSON fields), plus the side effect (registry, saved row) where there is one.
 
 **End to end.**
@@ -50,6 +52,8 @@ e2eTest("what the trader does and sees", async () => {
 ```
 - `view` is the left-rail page key (`agenticActiveView`). The harness also marks the saved chart grid as applied, so a fresh test browser is not steered to Charts & OI.
 - Read-only by design: every non-GET `/api` request is stopped in the browser and recorded in `app.writes`. Answer a save/start flow with `fakeWrites`, then assert the request (`app.writes`) and the screen that follows. `allowWrites` is only for read-only POSTs (searches, batched reads).
+- `fakeReads: {"GET /api/path": {json}}` answers a read with a fixture: use it for states the live server rarely shows (an error, an empty board, a non-admin user) and for every `/api/ai/` read, which the harness refuses otherwise because each one costs an AI call. `app.reads` lists the reads made.
+- `path: "/?popout=chart&symbol=SPY&timeframe=5m"` opens a pop-out window; `viewport: PHONE` turns on touch (`touch: false` to turn it off).
 - Never let a spec reach a route that places or cancels orders, starts a Schwab login, or changes settings.
 - Use real selectors from App.jsx (class, `data-testid`, `aria-label`). Never loosen one to `body` to make a test pass. Wait for state (`:enabled`, text) instead of sleeping.
 - Cover desktop (default) and `viewport: PHONE`. Assert `app.pageErrors` is empty. On phone, check nothing is cut off (`overflowsSideways`, bounding boxes).
