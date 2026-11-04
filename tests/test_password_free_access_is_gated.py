@@ -113,7 +113,7 @@ def test_only_a_house_caller_can_reach_the_env_write() -> None:
     assert "HOUSE" in branch
 
 
-@pytest.mark.parametrize("path", ["/api/schwab/token", "/api/schwab/oauth/start"])
+@pytest.mark.parametrize("path", ["/api/schwab/token", "/api/schwab/oauth/start", "/api/schwab/oauth/start-both"])
 def test_an_oauth_flow_cannot_land_a_token_on_the_house_file(path: str) -> None:
     """A user's OAuth must write THEIR token file, never the shared one.
 

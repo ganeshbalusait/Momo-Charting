@@ -6431,6 +6431,8 @@ button {
   font-weight: 800;
 }
 .schwab-settings-actions .schwab-save-button { border-color: #9b681b; background: #9a620e; color: #fff4d1; }
+/* "Renew both" (2026-11-04): the weekly job, so it is the first and loudest button. */
+.schwab-settings-actions .schwab-renew-button { border-color: #0e7490; background: #0e5f73; color: #e0f7ff; }
 .schwab-test-actions { padding-top: 2px; }
 .schwab-settings-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .schwab-settings-message { border-left: 3px solid #d59a2f; background: #171712; color: #c9c0a4; padding: 9px 11px; font-size: 11px; }

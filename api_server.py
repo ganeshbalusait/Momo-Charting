@@ -132,7 +132,14 @@ from ganesh_higher_timeframe_signals import (
     SOURCE_AGGREGATION_MINUTES as GANESH_SOURCE_AGGREGATION_MINUTES,
     build_ganesh_higher_timeframe_signal_payload,
 )
-from schwab_oauth_callback import callback_listener_status, start_callback_listener
+from schwab_oauth_callback import (
+    callback_listener_status,
+    certificate_trusted,
+    forget_pending,
+    register_pending,
+    renewal_result_for,
+    start_callback_listener_safely,
+)
 
 
 # An expiry whose expected move is below this fraction of the NEXT expiry's
@@ -21126,6 +21133,9 @@ def _schwab_status_payload(user=None, **extra) -> dict:
         if client is None:
             return unconfigured_status()
         status = client.connection_status()
+        # The last login the PC's callback finished for THIS caller's token
+        # file ("Renew both" progress); never another user's.
+        status["renewalResult"] = renewal_result_for(client)
         # Presence is not health. connection_status says the credential is
         # there and locally unexpired; this says whether the provider actually
         # took it last time we called.
@@ -21189,6 +21199,8 @@ def _schwab_status_payload(user=None, **extra) -> dict:
         "schwabStream": MARKET_STREAM.status(),
         "marketDataProvider": settings.market_data_provider,
         "callbackListening": callback_listener_status(),
+        # "Renew both": is the redirect page trusted (no Chrome warning)?
+        "callbackCertTrusted": certificate_trusted(),
         # What the WIRE to Schwab is actually doing, as opposed to what our
         # credentials entitle us to. Process-wide rather than per profile,
         # because Akamai bans the address, not the app key - both Schwab apps
@@ -24593,13 +24605,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                     )
                     return
                 token = oauth_client.exchange_authorization_response(received_url)
+                forget_pending(received_url)   # finished by hand: the listener stops waiting
                 self._send_json(
                     HTTPStatus.OK,
                     _schwab_status_payload(
                         user=actor,
                         status="connected",
-                        hasAccessToken=bool(token.get("access_token")),
-                        hasRefreshToken=bool(token.get("refresh_token")),
+                        hasAccessToken=bool(token.get("hasAccessToken")),
+                        hasRefreshToken=bool(token.get("hasRefreshToken")),
                     ),
                 )
                 return
@@ -24656,18 +24669,61 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # the house client, so a user with no saved keys is told to save
                 # them rather than starting a flow that would end by overwriting
                 # the owner's token.
-                client = _schwab_oauth_client(actor, str(query.get("profile", ["market_data"])[0]))
+                profile = "trading" if str(query.get("profile", ["market_data"])[0]).strip().lower() == "trading" else "market_data"
+                client = _schwab_oauth_client(actor, profile)
                 if client is None or not client.config.client_id or not client.config.client_secret:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Save the Schwab app key and secret first."})
                     return
                 authorization_url = client.begin_authorization()
-                start_callback_listener()
+                # The listener finishes the login with THIS client (the right
+                # app key and token file); it used to always use Market Data.
+                # Only for a browser on this PC: Schwab's redirect can only land
+                # here, so a login started through the tunnel is pasted instead -
+                # never one someone else could get the owner to finish.
+                listening = False
+                if self._is_local_request():
+                    register_pending(client, authorization_url, profile)
+                    listening = start_callback_listener_safely()
                 self._send_json(
                     HTTPStatus.OK,
                     {
                         "authorizationUrl": authorization_url,
                         "redirectUri": client.config.redirect_uri,
-                        "callbackListening": callback_listener_status(),
+                        "callbackListening": listening,
+                        "manualCallbackRequired": not listening,
+                        "tokenManager": "schwab-py",
+                    },
+                )
+                return
+            if parsed.path == "/api/schwab/oauth/start-both":
+                # "Renew both" (2026-11-04): one click starts the Market Data
+                # login and queues Accounts & Trading behind it; the listener's
+                # success page walks the browser from the first to the second.
+                actor = self._require_session_user()
+                if actor is None:
+                    return
+                flows = []
+                for profile in ("market_data", "trading"):
+                    client = _schwab_oauth_client(actor, profile)
+                    if client is not None and client.config.client_id and client.config.client_secret:
+                        flows.append((profile, client))
+                if not flows:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Save the Schwab app key and secret first."})
+                    return
+                urls = [(profile, client, client.begin_authorization()) for profile, client in flows]
+                listening = False
+                if self._is_local_request():   # see /oauth/start: the redirect only reaches this PC
+                    for index, (profile, client, url) in enumerate(urls):
+                        following = urls[index + 1][2] if index + 1 < len(urls) else None
+                        register_pending(client, url, profile, next_url=following)
+                    listening = start_callback_listener_safely()
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "authorizationUrl": urls[0][2],
+                        "profiles": [profile for profile, _client, _url in urls],
+                        "callbackListening": listening,
+                        "manualCallbackRequired": not listening,
                         "tokenManager": "schwab-py",
                     },
                 )

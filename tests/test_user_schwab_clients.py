@@ -265,7 +265,7 @@ def test_reads_may_fall_back_to_the_house_client_but_oauth_may_not() -> None:
     write the user's freshly-minted token over the HOUSE token file, handing
     the server their Schwab identity and logging the owner out.
     """
-    for route in ("/api/schwab/oauth/start", "/api/schwab/token"):
+    for route in ("/api/schwab/oauth/start", "/api/schwab/oauth/start-both", "/api/schwab/token"):
         handler = _handler(route)
         assert "_schwab_oauth_client" in handler, f"{route} must use the non-falling-back client"
         assert "_schwab_client_for_profile(" not in handler, (

@@ -75,6 +75,7 @@ import ReleaseNotesPanel from "./ReleaseNotesPanel.jsx";
 import { parseReleases, readSeen, unreadCount } from "./releaseNotes.js";
 import { candleTimeFor, gradeStepMarkers } from "./gradeMarkers.js";
 import { consumeReleaseNotesMark, inTradingSession, offerUpdate } from "./appVersion.js";
+import { SCHWAB_RENEW_GIVE_UP_MS, SCHWAB_RENEW_MANUAL, SCHWAB_RENEW_POLL_MS, SCHWAB_RENEW_TIMED_OUT, renewalBaseline, renewalProgress } from "./schwabRenewal.js";
 import { LEARN_CONTENT_VERSION, markLearnSeen, readLearnSeen, shouldAutoOpenLearn } from "./learnFirstVisit.js";
 import { nonJsonResponseError } from "./apiErrorMessage";
 import { setBoundedCacheEntry } from "./boundedCache";
@@ -26248,6 +26249,9 @@ function TradingWorkspace({ authUser, onLogout }) {
   const [schwabClientId, setSchwabClientId] = useState("");
   const [schwabClientSecret, setSchwabClientSecret] = useState("");
   const [schwabMarketCallbackUrl, setSchwabMarketCallbackUrl] = useState("");
+  // Which "Renew both" progress loop is current; a new click retires the old one.
+  const schwabRenewRunRef = useRef(0);
+  useEffect(() => () => { schwabRenewRunRef.current += 1; }, []);
   const [schwabTradingClientId, setSchwabTradingClientId] = useState("");
   const [schwabTradingClientSecret, setSchwabTradingClientSecret] = useState("");
   const [schwabTradingCallbackUrl, setSchwabTradingCallbackUrl] = useState("");
@@ -27568,6 +27572,7 @@ function TradingWorkspace({ authUser, onLogout }) {
   };
 
   const saveSchwabSettings = async () => {
+    schwabRenewRunRef.current += 1; // any other Schwab action ends a running renewal's messages
     setSubmitting("schwab-settings");
     setSchwabMessage("");
     try {
@@ -27802,7 +27807,70 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
   };
 
+  // "Renew both" (2026-11-04): one Schwab login window for both apps; the
+  // PC's callback finishes each login, and this follows the 7-day expiry
+  // stamps moving so the message line walks step 1 -> step 2 -> done.
+  const renewSchwabBoth = async () => {
+    const authWindow = window.open("about:blank", "schwab-oauth-renew", "width=900,height=760");
+    const run = schwabRenewRunRef.current + 1;
+    schwabRenewRunRef.current = run;
+    setSubmitting("schwab-renew");
+    setSchwabMessage("");
+    let renewal = null;
+    try {
+      // The "before" stamps are read fresh, not from whatever this page last
+      // loaded: a stale or missing one would show "renewed" at once.
+      const before = await readJsonResponse(await fetch("/api/schwab/status"));
+      const response = await fetch("/api/schwab/oauth/start-both", { method: "POST" });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || "Unable to start the Schwab renewal.");
+      if (schwabRenewRunRef.current !== run) return;
+      const profiles = payload.profiles || ["market_data"];
+      renewal = { profiles, baseline: renewalBaseline(before, profiles), startedAt: new Date().toISOString() };
+      setSchwabStatus((current) => ({ ...current, callbackListening: payload.callbackListening }));
+      setSchwabMessage(payload.manualCallbackRequired ? SCHWAB_RENEW_MANUAL : renewalProgress(renewal, before).text);
+      if (authWindow) {
+        authWindow.opener = null;
+        authWindow.location.href = payload.authorizationUrl;
+      } else {
+        window.location.href = payload.authorizationUrl;
+      }
+      if (payload.manualCallbackRequired) renewal = null;
+    } catch (requestError) {
+      if (authWindow) authWindow.close();
+      setSchwabMessage(requestError instanceof Error ? requestError.message : "Unable to start the Schwab renewal.");
+    } finally {
+      setSubmitting("");
+    }
+    const deadline = Date.now() + SCHWAB_RENEW_GIVE_UP_MS;
+    while (renewal && Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, SCHWAB_RENEW_POLL_MS));
+      if (schwabRenewRunRef.current !== run) return;
+      try {
+        const response = await fetch("/api/schwab/status");
+        const status = await readJsonResponse(response);
+        if (schwabRenewRunRef.current !== run) return;
+        if (response.status === 401) {
+          setSchwabMessage("You were signed out of AGX, so the renewal stopped waiting. Sign in and check the expiry above.");
+          return;
+        }
+        if (!response.ok) continue;
+        setSchwabStatus((current) => mergeSchwabStatus(current, status));
+        const progress = renewalProgress(renewal, status);
+        const expiry = status.marketData?.refreshTokenExpiresAt;
+        setSchwabMessage(progress.finished && !progress.failed && expiry
+          ? `${progress.text} Next renewal by ${formatDateTime(expiry)}.`
+          : progress.text);
+        if (progress.finished) return;
+      } catch {
+        // one missed poll is fine; the next one catches up
+      }
+    }
+    if (renewal && schwabRenewRunRef.current === run) setSchwabMessage(SCHWAB_RENEW_TIMED_OUT);
+  };
+
   const startSchwabAuthentication = async (profile = "market_data") => {
+    schwabRenewRunRef.current += 1;
     const isTrading = profile === "trading";
     const profileLabel = isTrading ? "Accounts & Trading" : "Market Data";
     const pendingKey = isTrading ? "schwab-auth-trading" : "schwab-auth-market";
@@ -27838,6 +27906,7 @@ function TradingWorkspace({ authUser, onLogout }) {
   };
 
   const completeSchwabAuthentication = async (profile = "market_data") => {
+    schwabRenewRunRef.current += 1;
     const isTrading = profile === "trading";
     const profileLabel = isTrading ? "Accounts & Trading" : "Market Data";
     const receivedUrl = String(isTrading ? schwabTradingCallbackUrl : schwabMarketCallbackUrl).trim();
@@ -27867,6 +27936,7 @@ function TradingWorkspace({ authUser, onLogout }) {
   };
 
   const testSchwabConnection = async (profile = "market_data") => {
+    schwabRenewRunRef.current += 1;
     const isTrading = profile === "trading";
     setSubmitting(isTrading ? "schwab-test-trading" : "schwab-test-market");
     setSchwabMessage("");
@@ -32091,10 +32161,16 @@ function TradingWorkspace({ authUser, onLogout }) {
                     <label>OPTIONAL ACCOUNTS &amp; TRADING APP SECRET<input autoComplete="new-password" placeholder={schwabStatus.trading?.credentialsConfigured ? "Leave blank to keep configured secret" : "Optional Accounts & Trading Production secret"} type="password" value={schwabTradingClientSecret} onChange={(event) => setSchwabTradingClientSecret(event.target.value)} /></label>
                   </div>
                   <div className="schwab-settings-actions">
+                    <button className="schwab-renew-button" disabled={submitting === "schwab-renew" || !schwabStatus.marketData?.credentialsConfigured} onClick={renewSchwabBoth} title="One Schwab login renews Market Data and then Accounts & Trading - nothing to paste" type="button"><RefreshCw size={14} />{submitting === "schwab-renew" ? "Starting..." : schwabStatus.trading?.credentialsConfigured ? "Renew both" : "Renew Market Data"}</button>
                     <button className="schwab-save-button" disabled={submitting === "schwab-settings"} onClick={saveSchwabSettings} type="button">{submitting === "schwab-settings" ? "Saving..." : "Save keys"}</button>
                     <button disabled={submitting === "schwab-auth-market" || !schwabStatus.marketData?.credentialsConfigured} onClick={() => startSchwabAuthentication("market_data")} type="button"><ExternalLink size={14} />{submitting === "schwab-auth-market" ? "Starting..." : "Authenticate Market Data"}</button>
                     <button disabled={submitting === "schwab-auth-trading" || !schwabStatus.trading?.credentialsConfigured} onClick={() => startSchwabAuthentication("trading")} type="button"><ExternalLink size={14} />{submitting === "schwab-auth-trading" ? "Starting..." : "Authenticate Optional Trading"}</button>
                   </div>
+                  {schwabStatus.callbackCertTrusted === false ? (
+                    <div className="schwab-callback-note">
+                      First time on this PC: after the Schwab login Chrome may say <strong>"Your connection is not private"</strong>. Click <strong>Advanced</strong>, then <strong>Continue to 127.0.0.1</strong> - the login still finishes by itself. Renew from this PC: the login comes back to this computer.
+                    </div>
+                  ) : null}
                   <div className="schwab-settings-actions schwab-test-actions">
                     <button disabled={submitting.startsWith("schwab-test") || !schwabStatus.marketData?.credentialsConfigured} onClick={() => testSchwabConnection("market_data")} type="button">{submitting === "schwab-test-market" ? "Testing Market Data..." : "Test Market Data"}</button>
                     <button disabled={submitting.startsWith("schwab-test") || !schwabStatus.trading?.credentialsConfigured} onClick={() => testSchwabConnection("trading")} type="button">{submitting === "schwab-test-trading" ? "Testing Trading..." : "Test Optional Accounts & Trading"}</button>
