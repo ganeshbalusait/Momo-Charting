@@ -555,6 +555,21 @@ def test_background_refresher_refreshes_the_stalest_tapes_without_a_build(tos):
     assert feed._tos_refresh_once() == 0                      # Alpaca mode: never runs
 
 
+def test_the_refresher_drops_the_served_copy_instead_of_caching_the_plain_tape(tos):
+    """Readiness audit 2026-11-04: the refresher put the plain Schwab tape (no
+    overnight/premarket fill, no stream tail) in the 55 s served-copy cache, so
+    ~8% of rows per build lost last night and 04:00-07:00. The next build must
+    serve the store tape through _tos_serve, without a new Schwab read."""
+    clock, client = tos
+    feed.fetch_30m(["A", "B", "C"], now=NOW)
+    clock.advance(feed.TOS_MIN_REFETCH_SECONDS + 61)
+    assert feed._tos_refresh_once() == 3
+    assert not [key for key in feed._CACHE if key[-1] in {"A", "B", "C"}]
+    calls = len(client.calls)
+    out = feed.fetch_30m(["A", "B", "C"], now=NOW)
+    assert set(out.bars) == {"A", "B", "C"} and out.errors == {}
+    assert len(client.calls) == calls                         # no extra Schwab read
+
 def test_a_long_sleep_then_a_small_list_does_not_prune_the_tos_store(tos):
     """2026-10-05: a 4h20m PC sleep, then a ~10-symbol Mag7/Movers build,
     dropped 359 of 369 tapes as 'idle' and the paced budget spent ~10 min

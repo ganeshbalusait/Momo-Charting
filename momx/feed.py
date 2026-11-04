@@ -1165,7 +1165,11 @@ def _window_fill(symbols, timeframe: str, now: datetime | None, open_at: datetim
         entry = _PM_FILL.setdefault(key, {"at": 0.0, "final": False, "frames": {}})
         stale = not entry["final"] and wall - entry["at"] >= PREMARKET_FILL_REFRESH_SECONDS
         missing = [s for s in symbols if s not in entry["frames"]]
-        want = list(symbols) if stale else missing
+        # A due refresh re-reads EVERY symbol the window holds, not only this
+        # caller's: Mag7 calls every ~20 s and took nearly every refresh, so
+        # Watchlist-only names kept a premarket cut off at 05:15-06:40 all day
+        # (readiness audit 2026-11-04, offline replay of the real function).
+        want = sorted(set(entry["frames"]) | set(symbols)) if stale else missing
         if not want:
             return {s: entry["frames"][s] for s in symbols if s in entry["frames"]}
         if stale:
@@ -1193,7 +1197,8 @@ def _window_fill(symbols, timeframe: str, now: datetime | None, open_at: datetim
         entry = _PM_FILL[key]
         for symbol in want:
             entry["frames"][symbol] = got.get(symbol, _empty_frame())
-        entry["final"] = current >= close_at + timedelta(minutes=FEED_RECENT_DELAY_MINUTES[feed] + 5)
+        if stale:   # only a full refresh may end the window - not a one-new-symbol read
+            entry["final"] = current >= close_at + timedelta(minutes=FEED_RECENT_DELAY_MINUTES[feed] + 5)
         if len(_PM_FILL) > 8:
             for old in sorted(_PM_FILL)[:-4]:
                 _PM_FILL.pop(old, None)
@@ -2348,10 +2353,15 @@ def _tos_refresh_once(now=None) -> int:
                     store.empty_at.pop(symbol, None)
                 else:
                     store.empty_at[symbol] = wall
-        for symbol in asked:
-            got = candles.get(symbol)
-            if got:
-                _cache_put(info["cache_key"](symbol), store.tapes.get(symbol))
+        # Drop the served copy rather than replace it with the plain Schwab tape:
+        # that copy had no overnight/premarket fill and no stream tail, and for
+        # 55 s ~8% of rows per build lost last night and 04:00-07:00 (audit
+        # 2026-11-04). The next build serves the fresh store tape through
+        # _tos_serve, which adds them back; fetched_at keeps it from re-reading.
+        with _CACHE_LOCK:
+            for symbol in asked:
+                if candles.get(symbol):
+                    _CACHE.pop(info["cache_key"](symbol), None)
         if candles:
             _persist_tos_store(kind, store)
     return made

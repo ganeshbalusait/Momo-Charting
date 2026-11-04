@@ -354,3 +354,37 @@ def test_last_nights_finished_fill_does_not_stand_in_for_tonight(monkeypatch):
     feed._overnight_fill(["RIOT"], feed.TIMEFRAME_5M, datetime(2026, 11, 2, 23, 0, tzinfo=ET))
     assert asked == [datetime(2026, 11, 1, 20, 0, tzinfo=ET), datetime(2026, 11, 2, 20, 0, tzinfo=ET)]
     feed._PM_FILL.clear()
+
+
+def test_a_due_fill_refresh_covers_every_list_and_only_a_full_one_ends_the_window(monkeypatch):
+    """Readiness audit 2026-11-04: Mag7 (every ~20 s) took nearly every due
+    refresh and re-read only ITS symbols, and a one-new-symbol read after the
+    window marked it final - Watchlist-only names kept a cut-off premarket."""
+    from datetime import timedelta
+    feed._PM_FILL.clear()
+    asked = []
+    wall = [50_000.0]
+
+    def fake_batch(batch, *, timeframe, start, end, feed, credentials, get, adjustment):
+        asked.append(sorted(batch))
+        return {}
+
+    monkeypatch.setattr(feed, "resolve_credentials", lambda: {"key": "x"})
+    monkeypatch.setattr(feed, "_fetch_batch", fake_batch)
+    monkeypatch.setattr(feed, "_default_get", lambda: None)
+    monkeypatch.setattr(feed, "_wall_clock", lambda: wall[0])
+    night = datetime(2026, 11, 4, 1, 0, tzinfo=ET)
+    feed._overnight_fill(["AAPL"], feed.TIMEFRAME_5M, night)                       # Mag7 opens it
+    feed._overnight_fill(["RIOT"], feed.TIMEFRAME_5M, night)                       # Watchlist: new name only
+    wall[0] += feed.PREMARKET_FILL_REFRESH_SECONDS
+    feed._overnight_fill(["AAPL"], feed.TIMEFRAME_5M, night + timedelta(minutes=5))  # Mag7 takes the refresh
+    assert asked == [["AAPL"], ["RIOT"], ["AAPL", "RIOT"]]
+    late = datetime(2026, 11, 4, 4, 30, tzinfo=ET)                                # window + delay passed
+    wall[0] += 10
+    feed._overnight_fill(["NEW"], feed.TIMEFRAME_5M, late)                         # one new name: not final
+    wall[0] += feed.PREMARKET_FILL_REFRESH_SECONDS
+    feed._overnight_fill(["AAPL"], feed.TIMEFRAME_5M, late)                        # full refresh: final
+    wall[0] += feed.PREMARKET_FILL_REFRESH_SECONDS
+    feed._overnight_fill(["AAPL"], feed.TIMEFRAME_5M, late)                        # final: no read
+    assert asked[3:] == [["NEW"], ["AAPL", "NEW", "RIOT"]]
+    feed._PM_FILL.clear()
