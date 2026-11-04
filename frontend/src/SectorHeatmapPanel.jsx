@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 
 import {
   SECTOR_SYMBOLS,
+  PAGE_SORT_MODES,
   SORT_MODES,
   buildMarketSectorGroups,
+  buildSectorPage,
+  sectorPageSymbols,
   sortSectorGroups,
+  sortSectorRows,
   cardHeight,
   formatMarketCap,
   formatSignedPct,
@@ -14,7 +18,6 @@ import {
   squarify,
   tileFontSizes,
   tileLabelMode,
-  visibleTiles,
 } from "./sectorHeatmap";
 
 const POLL_MS = 8000;
@@ -25,6 +28,12 @@ const SORT_TITLES = {
   default: "Robinhood order",
   high: "Best sector move first",
   low: "Worst sector move first",
+};
+const PAGE_SORT_LABELS = { size: "Size", high: "High", low: "Low" };
+const PAGE_SORT_TITLES = {
+  size: "Biggest company first",
+  high: "Best move first",
+  low: "Worst move first",
 };
 const STYLES = {
   rh: { label: "Robinhood", short: "RH", gap: 3 },
@@ -39,14 +48,14 @@ function readPrefs() {
     return {
       style: STYLES[parsed?.style] ? parsed.style : "rh",
       sort: SORT_MODES.includes(parsed?.sort) ? parsed.sort : "default",
+      pageSort: PAGE_SORT_MODES.includes(parsed?.pageSort) ? parsed.pageSort : "size",
     };
   } catch {
-    return { style: "rh", sort: "default" };
+    return { style: "rh", sort: "default", pageSort: "size" };
   }
 }
 
 function tileTitle(tile) {
-  if (tile.more) return `${tile.more} more - open the full card`;
   const parts = [
     tile.symbol,
     tile.lastPrice !== null ? `Last ${tile.lastPrice.toFixed(2)}` : null,
@@ -77,11 +86,17 @@ function useElementWidth() {
   return [ref, width];
 }
 
-function SectorCard({ group, gap, style, activeSymbol, expanded, onToggle, onSelect }) {
+function moveLabel(changePct) {
+  const heat = heatLevel(changePct);
+  const arrow = heat.tone === "up" ? "▲ " : heat.tone === "down" ? "▼ " : "";
+  return { heat, text: `${arrow}${changePct === null ? "--" : formatSignedPct(changePct).replace(/^[+-]/, "")}` };
+}
+
+// The heatmap itself: RH = Robinhood's full-width rows, TOS = thinkorswim's
+// squarified treemap. Used by the cards and by a sector's own page.
+function SectorTiles({ tiles, gap, style, activeSymbol, onSelect, large = false, label }) {
   const [tilesRef, width] = useElementWidth();
-  const tiles = visibleTiles(group.tiles, expanded);
-  const height = cardHeight(tiles.length, width, expanded);
-  // RH: Robinhood's full-width rows. TOS: thinkorswim's squarified treemap.
+  const height = cardHeight(tiles.length, width, large);
   const layoutTiles = style === "rh" ? rowLayout : squarify;
   const layout = width > 0 ? layoutTiles(tiles, { x: 0, y: 0, width, height }) : [];
   // Robinhood prints every tile in a row at one size: the size that fits the
@@ -93,66 +108,129 @@ function SectorCard({ group, gap, style, activeSymbol, expanded, onToggle, onSel
       if (!rowFont[tile.row] || size.symbol < rowFont[tile.row].symbol) rowFont[tile.row] = size;
     }
   }
-  const groupHeat = heatLevel(group.changePct);
-  const canExpand = group.tiles.length > tiles.length || expanded;
+  return (
+    <div className="sector-heatmap-tiles" ref={tilesRef} style={{ height }}>
+      {layout.map(({ item, x, y, width: tileWidth, height: tileHeight, row }) => {
+        const heat = heatLevel(item.changePct);
+        const innerWidth = Math.max(0, tileWidth - gap);
+        const innerHeight = Math.max(0, tileHeight - gap);
+        const mode = tileLabelMode(innerWidth, innerHeight, style);
+        const fonts = rowFont[row] || tileFontSizes(innerWidth, innerHeight, style);
+        const active = item.symbol === activeSymbol;
+        return (
+          <button
+            type="button"
+            key={item.symbol}
+            className={`sector-heatmap-tile is-${heat.tone} is-level-${heat.level}${active ? " is-active" : ""}`}
+            // Horizontal position in % of the tile area, so the layout fits the
+            // card exactly even if the measured width is a pixel or two off;
+            // the measured width only sets the aspect ratio.
+            style={{
+              left: `${(x / width) * 100}%`,
+              top: y,
+              width: `calc(${(tileWidth / width) * 100}% - ${gap}px)`,
+              height: innerHeight,
+            }}
+            title={tileTitle(item)}
+            aria-label={`${item.symbol} ${formatSignedPct(item.changePct)}${label ? ` in ${label}` : ""}`}
+            onClick={() => onSelect?.(item.symbol)}
+          >
+            {mode !== "none" ? <b style={{ fontSize: fonts.symbol }}>{item.symbol}</b> : null}
+            {mode === "full" ? <span style={{ fontSize: fonts.pct }}>{formatSignedPct(item.changePct)}</span> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
+function SectorCard({ group, gap, style, activeSymbol, onOpen, onSelect }) {
+  const move = moveLabel(group.changePct);
   return (
     <article className="sector-heatmap-card">
       <header>
         <button
           type="button"
-          className={`sector-heatmap-card-title${expanded ? " is-open" : ""}`}
-          onClick={canExpand ? onToggle : undefined}
-          disabled={!canExpand}
-          title={canExpand ? (expanded ? "Show the biggest names only" : "Show every name in this group") : `${group.tiles.length} names`}
+          className="sector-heatmap-card-title"
+          onClick={() => onOpen(group.name)}
+          title={`Open ${group.name}: every big name in the sector, sortable`}
         >
           <b>{group.name}</b>
           <ChevronRight size={16} strokeWidth={2.5} aria-hidden="true" />
           {style === "rh" ? null : <small>{group.tiles.length}</small>}
         </button>
         <span
-          className={`sector-heatmap-card-move is-${groupHeat.tone}`}
+          className={`sector-heatmap-card-move is-${move.heat.tone}`}
           title={group.moveSource === "etf"
             ? `${group.etf} (sector ETF) today · ${group.up} up / ${group.down} down below`
             : `Weighted move of the names below (${group.etf} has no quote yet)`}
         >
-          {groupHeat.tone === "up" ? "▲ " : groupHeat.tone === "down" ? "▼ " : ""}
-          {group.changePct === null ? "--" : formatSignedPct(group.changePct).replace(/^[+-]/, "")}
+          {move.text}
         </span>
       </header>
-      <div className="sector-heatmap-tiles" ref={tilesRef} style={{ height }}>
-        {layout.map(({ item, x, y, width: tileWidth, height: tileHeight, row }) => {
-          const heat = heatLevel(item.changePct);
-          const innerWidth = Math.max(0, tileWidth - gap);
-          const innerHeight = Math.max(0, tileHeight - gap);
-          const mode = tileLabelMode(innerWidth, innerHeight, style);
-          const fonts = rowFont[row] || tileFontSizes(innerWidth, innerHeight, style);
-          const active = !item.more && item.symbol === activeSymbol;
-          return (
-            <button
-              type="button"
-              key={item.symbol}
-              className={`sector-heatmap-tile is-${item.more ? "more" : heat.tone} is-level-${heat.level}${active ? " is-active" : ""}`}
-              // Horizontal position in % of the tile area, so the layout fits the
-              // card exactly even if the measured width is a pixel or two off;
-              // the measured width only sets the aspect ratio.
-              style={{
-                left: `${(x / width) * 100}%`,
-                top: y,
-                width: `calc(${(tileWidth / width) * 100}% - ${gap}px)`,
-                height: innerHeight,
-              }}
-              title={tileTitle(item)}
-              aria-label={item.more ? `${item.more} more in ${group.name}` : `${item.symbol} ${formatSignedPct(item.changePct)}`}
-              onClick={() => (item.more ? onToggle() : onSelect?.(item.symbol))}
-            >
-              {mode !== "none" ? <b style={{ fontSize: fonts.symbol }}>{item.symbol}</b> : null}
-              {mode === "full" && !item.more ? <span style={{ fontSize: fonts.pct }}>{formatSignedPct(item.changePct)}</span> : null}
-            </button>
-          );
-        })}
-      </div>
+      <SectorTiles tiles={group.tiles} gap={gap} style={style} activeSymbol={activeSymbol} onSelect={onSelect} label={group.name} />
     </article>
+  );
+}
+
+// A sector's own page, like tapping a sector on Robinhood: the sector's move,
+// a bigger heatmap of all its big names, and a sortable list of them.
+function SectorPage({ group, gap, style, activeSymbol, sort, onSort, onBack, onSelect }) {
+  const move = moveLabel(group.changePct);
+  const rows = sortSectorRows(group.tiles, sort);
+  return (
+    <div className="sector-page">
+      <button type="button" className="sector-page-back" onClick={onBack}>
+        <ChevronLeft size={18} strokeWidth={2.5} aria-hidden="true" />
+        <span>All sectors</span>
+      </button>
+      <article className="sector-heatmap-card">
+        <header className="sector-page-head">
+          <div>
+            <h2>{group.name}</h2>
+            <small>
+              {group.moveSource === "etf" ? `${group.etf} today` : "Weighted move today"}
+              {" · "}{group.up} up · {group.down} down · {group.tiles.length} stocks
+            </small>
+          </div>
+          <span className={`sector-heatmap-card-move is-${move.heat.tone}`}>{move.text}</span>
+        </header>
+        <SectorTiles tiles={group.tiles} gap={gap} style={style} activeSymbol={activeSymbol} onSelect={onSelect} label={group.name} large />
+      </article>
+      <article className="sector-heatmap-card sector-page-list">
+        <header>
+          <b>Stocks</b>
+          <span className="sector-heatmap-switch" role="group" aria-label="Sort stocks">
+            {PAGE_SORT_MODES.map((mode) => (
+              <button key={mode} type="button" aria-pressed={sort === mode} title={PAGE_SORT_TITLES[mode]} onClick={() => onSort(mode)}>
+                {PAGE_SORT_LABELS[mode]}
+              </button>
+            ))}
+          </span>
+        </header>
+        <ul>
+          {rows.map((row) => {
+            const heat = heatLevel(row.changePct);
+            return (
+              <li key={row.symbol}>
+                <button
+                  type="button"
+                  className={row.symbol === activeSymbol ? "is-active" : ""}
+                  onClick={() => onSelect?.(row.symbol)}
+                  title={tileTitle(row)}
+                >
+                  <b>{row.symbol}</b>
+                  <small>{formatMarketCap(row.marketCap)}{row.estimatedCap ? "*" : ""}</small>
+                  <span className="sector-page-last">{row.lastPrice !== null ? `$${row.lastPrice.toFixed(2)}` : "--"}</span>
+                  <span className={`sector-page-chg is-${heat.tone}`}>{formatSignedPct(row.changePct)}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <p className="sector-page-note">* approximate market cap until the live figure arrives</p>
+      </article>
+    </div>
   );
 }
 
@@ -160,8 +238,10 @@ function SectorCard({ group, gap, style, activeSymbol, expanded, onToggle, onSel
 // variant "page": the full Sectors page (phone More sheet, desktop sidebar).
 export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose, variant = "dock" }) {
   const [quotes, setQuotes] = useState({});
-  const [expanded, setExpanded] = useState({});
+  const [pageQuotes, setPageQuotes] = useState({});
+  const [openSector, setOpenSector] = useState(null);
   const [prefs, setPrefs] = useState(readPrefs);
+  const rootRef = useRef(null);
   const updatePrefs = (patch) => setPrefs((current) => {
     const next = { ...current, ...patch };
     try { window.localStorage.setItem(PREFS_KEY, JSON.stringify(next)); } catch { /* storage can be disabled */ }
@@ -191,23 +271,69 @@ export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose, va
     };
   }, []);
 
+  // A sector's page needs its extra names quoted too - only while it is open,
+  // so the grid's polling cost does not change.
+  useEffect(() => {
+    if (!openSector) {
+      setPageQuotes({});
+      return undefined;
+    }
+    const symbols = sectorPageSymbols(openSector);
+    if (!symbols.length) return undefined;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await fetch(`/api/watchlist-quotes?profile=1&symbols=${encodeURIComponent(symbols.join(","))}`);
+        const payload = await response.json();
+        if (cancelled || !response.ok || !Array.isArray(payload?.rows)) return;
+        if (!payload.rows.some((row) => row?.lastPrice !== null && row?.lastPrice !== undefined)) return;
+        setPageQuotes(Object.fromEntries(payload.rows.map((row) => [String(row?.symbol || "").toUpperCase(), row])));
+      } catch {
+        // Keep the last map on transient fetch failures.
+      }
+    };
+    load();
+    const timer = setInterval(load, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [openSector]);
+
+  // Opening or leaving a sector starts at its top, wherever the panel lives
+  // (the Sectors page scroller, or the dock panel's own body).
+  const scrollToTop = () => {
+    const root = rootRef.current;
+    if (!root) return;
+    root.closest(".sectors-view")?.scrollTo({ top: 0 });
+    const body = root.querySelector(".sector-heatmap-body");
+    if (body) body.scrollTop = 0;
+  };
+  const openPage = (name) => { setOpenSector(name); window.requestAnimationFrame(scrollToTop); };
+  const closePage = () => { setOpenSector(null); window.requestAnimationFrame(scrollToTop); };
+
   const groups = useMemo(() => sortSectorGroups(buildMarketSectorGroups(quotes), prefs.sort), [quotes, prefs.sort]);
+  const page = useMemo(
+    () => (openSector ? buildSectorPage(openSector, { ...quotes, ...pageQuotes }) : null),
+    [openSector, quotes, pageQuotes],
+  );
 
   return (
     <section
-      className={`${variant === "page" ? "sector-heatmap-page" : "charts-oi-chain-dock-panel"} sector-heatmap-panel is-style-${prefs.style}`}
+      ref={rootRef}
+      className={`${variant === "page" ? "sector-heatmap-page" : "charts-oi-chain-dock-panel"} sector-heatmap-panel is-style-${prefs.style}${page ? " is-sector-open" : ""}`}
       aria-label="Sector panel"
     >
       <header>
         <b>SECTORS</b>
         <small>{groups.length} sectors · top stocks</small>
-        <span className="sector-heatmap-switch" role="group" aria-label="Sort sectors">
+        {page ? null : <span className="sector-heatmap-switch" role="group" aria-label="Sort sectors">
           {SORT_MODES.map((mode) => (
             <button key={mode} type="button" aria-pressed={prefs.sort === mode} title={SORT_TITLES[mode]} onClick={() => updatePrefs({ sort: mode })}>
               {SORT_LABELS[mode]}
             </button>
           ))}
-        </span>
+        </span>}
         <span className="sector-heatmap-switch" role="group" aria-label="Heatmap style">
           {Object.entries(STYLES).map(([key, spec]) => (
             <button key={key} type="button" aria-pressed={prefs.style === key} title={`${spec.label} look`} onClick={() => updatePrefs({ style: key })}>
@@ -218,15 +344,25 @@ export default function SectorHeatmapPanel({ activeSymbol, onSelect, onClose, va
         {onClose ? <button type="button" onClick={onClose} title="Remove sector panel" aria-label="Remove sector panel"><X size={13} /></button> : null}
       </header>
       <div className="sector-heatmap-body">
-        {groups.map((group) => (
+        {page ? (
+          <SectorPage
+            group={page}
+            gap={styleSpec.gap}
+            style={prefs.style}
+            activeSymbol={activeSymbol}
+            sort={prefs.pageSort}
+            onSort={(mode) => updatePrefs({ pageSort: mode })}
+            onBack={closePage}
+            onSelect={onSelect}
+          />
+        ) : groups.map((group) => (
           <SectorCard
             key={group.name}
             group={group}
             gap={styleSpec.gap}
             style={prefs.style}
             activeSymbol={activeSymbol}
-            expanded={Boolean(expanded[group.name])}
-            onToggle={() => setExpanded((current) => ({ ...current, [group.name]: !current[group.name] }))}
+            onOpen={openPage}
             onSelect={onSelect}
           />
         ))}

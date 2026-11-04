@@ -1692,6 +1692,37 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-3 { background: #8a1e1e; }
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-4 { background: #ad2222; }
 .sector-heatmap-panel.is-style-tos .sector-heatmap-tile.is-down.is-level-5 { background: #dc2a2a; }
+
+/* A sector's own page (tap a card's name), like Robinhood's sector page:
+   back link, big title + move, the large heatmap, then the stock list. */
+.sector-page { display: grid; gap: 10px; }
+.sector-page-back { display: inline-flex; align-items: center; gap: 2px; justify-self: start; margin: 0 2px; padding: 6px 8px 6px 2px; border: 0; background: transparent; color: #9ddff1; font-size: 13px; font-weight: 700; cursor: pointer; }
+.sector-page-back:hover { color: #e7f7ff; }
+.sector-page-head { align-items: flex-start !important; }
+.sector-page-head h2 { margin: 0 0 4px; font-size: 24px; font-weight: 800; line-height: 1.1; }
+.sector-page-head small { font-size: 12px; opacity: .6; }
+.sector-page-head .sector-heatmap-card-move { font-size: 20px; }
+.sector-page-list > header b { font-size: 16px; font-weight: 800; }
+.sector-page-list ul { display: grid; margin: 0; padding: 0; list-style: none; }
+.sector-page-list li + li { border-top: 1px solid var(--sector-line, rgba(127, 127, 127, .18)); }
+.sector-page-list li button { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "sym last chg" "cap last chg"; align-items: center; column-gap: 12px; width: 100%; padding: 9px 4px; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; text-align: left; }
+.sector-page-list li button:hover { background: rgba(127, 127, 127, .1); }
+.sector-page-list li button.is-active { box-shadow: inset 3px 0 0 currentColor; }
+.sector-page-list li b { grid-area: sym; font-size: 15px; font-weight: 800; }
+.sector-page-list li small { grid-area: cap; font-size: 11px; opacity: .55; }
+.sector-page-last { grid-area: last; font-size: 14px; font-variant-numeric: tabular-nums; }
+.sector-page-chg { grid-area: chg; min-width: 76px; padding: 5px 8px; border-radius: 6px; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.sector-page-note { margin: 8px 4px 0; font-size: 11px; opacity: .5; }
+.sector-heatmap-panel.is-style-rh .sector-page-chg.is-up { background: #e3f6df; color: #2f8f1d; }
+.sector-heatmap-panel.is-style-rh .sector-page-chg.is-down { background: #fde7dc; color: #c4501f; }
+.sector-heatmap-panel.is-style-rh .sector-page-chg.is-flat,
+.sector-heatmap-panel.is-style-rh .sector-page-chg.is-none { background: #f0f0f0; color: #6b6b6b; }
+.sector-heatmap-panel.is-style-tos .sector-page-chg.is-up { background: rgba(34, 198, 83, .16); color: #2fd35f; }
+.sector-heatmap-panel.is-style-tos .sector-page-chg.is-down { background: rgba(220, 42, 42, .18); color: #ff5a5a; }
+.sector-heatmap-panel.is-style-tos .sector-page-chg.is-flat,
+.sector-heatmap-panel.is-style-tos .sector-page-chg.is-none { background: #24242a; color: #a0a0aa; }
+/* On a sector page the cards stack full width, never side by side. */
+.sector-heatmap-panel.is-sector-open .sector-heatmap-body { grid-template-columns: minmax(0, 1fr); }
 .tos-sync-tag { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; color: var(--tos-link-text, #171400) !important; border: 1px solid var(--tos-link-color, #f5d000); border-radius: 2px; background: var(--tos-link-color, #f5d000); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18), 0 0 8px color-mix(in srgb, var(--tos-link-color, #f5d000) 34%, transparent); font-size: .62rem !important; font-weight: 950; line-height: 1; letter-spacing: 0; }
 .tos-sync-picker { display: inline-grid; flex: 0 0 auto; }
 .tos-sync-picker select { width: 27px; min-width: 27px; height: 20px; padding: 0 2px; overflow: hidden; color: var(--tos-link-text, #171400); border: 1px solid var(--tos-link-color, #f5d000); border-radius: 2px; outline: none; background: var(--tos-link-color, #f5d000); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .2), 0 0 8px color-mix(in srgb, var(--tos-link-color, #f5d000) 32%, transparent); font-size: .62rem; font-weight: 950; line-height: 1; cursor: pointer; }
