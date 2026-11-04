@@ -182,10 +182,15 @@ def fetch_industry(
             )
             if isinstance(data, dict):
                 finnhub_answered = True
-                # Finnhub reports marketCapitalization in millions of USD.
+                # Finnhub reports marketCapitalization in millions of the
+                # company's OWN currency (SK Hynix in KRW, TSMC in TWD). Only a
+                # USD figure can size a tile next to US names; anything else is
+                # dropped and the panel keeps its built-in estimate.
                 cap = _positive_float(data.get("marketCapitalization"))
-                if profile is not None and cap is not None:
+                currency = str(data.get("currency") or "").strip().upper()
+                if profile is not None and cap is not None and currency == "USD":
                     profile["marketCap"] = cap * 1_000_000
+                    profile["marketCapCurrency"] = "USD"
                 label = _shorten(data.get("finnhubIndustry"))
                 if label:
                     return label
@@ -207,8 +212,10 @@ def fetch_industry(
             for row in rows:
                 if isinstance(row, dict):
                     cap = _positive_float(row.get("marketCap") or row.get("mktCap"))
-                    if profile is not None and cap is not None and "marketCap" not in profile:
+                    currency = str(row.get("currency") or "").strip().upper()
+                    if profile is not None and cap is not None and currency == "USD" and "marketCap" not in profile:
                         profile["marketCap"] = cap
+                        profile["marketCapCurrency"] = "USD"
                     label = _shorten(row.get("industry") or row.get("sector"))
                     if label:
                         return label
@@ -267,6 +274,7 @@ def resolve(
                 "industry": label,
                 "fetchedAt": stamp,
                 "marketCap": profile.get("marketCap"),
+                "marketCapCurrency": profile.get("marketCapCurrency"),
                 "marketCapAt": stamp,
             }
         fetched_any = True
@@ -342,9 +350,13 @@ def cached_profiles(symbols: Iterable[Any]) -> dict[str, dict]:
             entry = cache.get(name)
         entry = entry if isinstance(entry, dict) else {}
         industry = industry_for(name) or str(entry.get("industry") or "") or None
+        # A cap is served only if it was stored as USD. Entries from before
+        # the currency check (2026-11-04) carry no currency and may be in KRW
+        # or TWD; they are hidden here and refetched by the fill pass.
+        usd = entry.get("marketCapCurrency") == "USD"
         out[name] = {
             "industry": industry,
-            "marketCap": _positive_float(entry.get("marketCap")),
+            "marketCap": _positive_float(entry.get("marketCap")) if usd else None,
         }
     return out
 
@@ -353,6 +365,8 @@ def _needs_market_cap(entry: Any) -> int:
     """0 = fresh, 1 = stale (refresh later), 2 = never fetched (fetch first)."""
     if not isinstance(entry, dict) or "marketCapAt" not in entry:
         return 2
+    if "marketCapCurrency" not in entry:
+        return 1  # stored before the currency check: refetch (after new names)
     age = _stamp_age_seconds(entry.get("marketCapAt"))
     if age is None or age > MARKET_CAP_MAX_AGE_SECONDS:
         return 1
@@ -393,6 +407,7 @@ def resolve_market_caps(
                 entry["industry"] = label
                 entry["fetchedAt"] = stamp
             entry["marketCap"] = profile.get("marketCap")
+            entry["marketCapCurrency"] = profile.get("marketCapCurrency")
             entry["marketCapAt"] = stamp
             cache[name] = entry
         written += 1

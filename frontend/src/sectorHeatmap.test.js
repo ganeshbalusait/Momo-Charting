@@ -11,6 +11,7 @@ import {
   buildMarketSectorGroups,
   sortSectorGroups,
   buildSectorPage,
+  plausibleCap,
   companyName,
   filterSectorTiles,
   sectorPageSymbols,
@@ -67,16 +68,17 @@ describe("market sector cards (Robinhood: each sector's top stocks)", () => {
   });
 
   test("without an ETF quote the headline falls back to the cap-weighted tiles", () => {
-    const [tech] = buildMarketSectorGroups({ NVDA: quote(2, { marketCap: 300 }), AAPL: quote(-1, { marketCap: 100 }) });
+    const [tech] = buildMarketSectorGroups({ NVDA: quote(2, { marketCap: 4.2e12 }), AAPL: quote(-1, { marketCap: 1.4e12 }) });
     assert.equal(tech.moveSource, "tiles");
-    assert.ok(Math.abs(tech.changePct - 1.25) < 1e-9); // (2*300 - 1*100) / 400
+    assert.ok(Math.abs(tech.changePct - 1.25) < 1e-9); // (2*4.2T - 1*1.4T) / 5.6T
   });
 
   test("a live market cap replaces the built-in estimate", () => {
-    const [tech] = buildMarketSectorGroups({ CSCO: quote(1, { marketCap: 9e12 }), NVDA: quote(1) });
-    assert.equal(tech.tiles[0].symbol, "CSCO");
-    assert.equal(tech.tiles[0].estimatedCap, false);
-    assert.equal(tech.tiles[0].weight, Math.sqrt(9e12));
+    const [tech] = buildMarketSectorGroups({ CSCO: quote(1, { marketCap: 600e9 }), NVDA: quote(1) });
+    const csco = tech.tiles.find((tile) => tile.symbol === "CSCO");
+    assert.equal(csco.capWeight, 600e9);
+    assert.equal(csco.estimatedCap, false);
+    assert.equal(csco.weight, Math.sqrt(600e9));
   });
 
   test("a leader the feed answers with no price is left out instead of drawn grey", () => {
@@ -356,5 +358,24 @@ describe("sector page like Robinhood's: about, sub-group chips, company names", 
     const page = buildSectorPage("Technology", { NVDA: { lastPrice: 1, changePct: 1, name: "NVIDIA CORP" } });
     assert.equal(page.tiles.find((tile) => tile.symbol === "NVDA").name, "NVIDIA");
     assert.equal(page.tiles.find((tile) => tile.symbol === "AAPL").name, null);
+  });
+});
+
+describe("live market caps are sanity-checked (trader, 2026-11-04: SKHY filled the Technology card)", () => {
+  test("a cap within 4x of the estimate is used; a currency mix-up is ignored", () => {
+    assert.equal(plausibleCap(3.2e12, 4.4e12), 3.2e12);
+    assert.equal(plausibleCap(1.3e14, 5e11), null);   // SK Hynix in won read as dollars
+    assert.equal(plausibleCap(1e9, 5e11), null);      // absurdly small
+    assert.equal(plausibleCap(null, 5e11), null);
+  });
+
+  test("a bogus live cap cannot blow up a tile", () => {
+    const [tech] = buildMarketSectorGroups({ SKHY: { lastPrice: 1, changePct: -0.08, marketCap: 1.3e14 }, NVDA: { lastPrice: 1, changePct: 2, marketCap: 4.5e12 } });
+    const skhy = tech.tiles.find((tile) => tile.symbol === "SKHY");
+    const nvda = tech.tiles.find((tile) => tile.symbol === "NVDA");
+    assert.equal(skhy.capWeight, 500e9);       // fell back to the built-in estimate
+    assert.equal(skhy.estimatedCap, true);
+    assert.equal(nvda.capWeight, 4.5e12);      // a sane live cap is used
+    assert.equal(tech.tiles[0].symbol, "NVDA");
   });
 });
