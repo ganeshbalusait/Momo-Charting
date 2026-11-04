@@ -75,6 +75,20 @@ function median(values) {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
+// A live market cap is only trusted when it is within 4x of the built-in
+// estimate. Finnhub reports foreign companies in their HOME currency (SK Hynix
+// in won, TSMC in Taiwan dollars, Tencent in HK dollars), and read as USD that
+// made SKHY fill the whole Technology card while NVDA, AAPL and MSFT became
+// slivers (trader, 2026-11-04). The estimates are close enough that a real cap
+// is never 4x away; a currency mix-up is always 7x-1400x away.
+export const CAP_TRUST_RATIO = 4;
+export function plausibleCap(liveCap, estimate) {
+  if (liveCap === null || liveCap === undefined) return null;
+  if (!(estimate > 0)) return liveCap;
+  const ratio = liveCap / estimate;
+  return ratio <= CAP_TRUST_RATIO && ratio >= 1 / CAP_TRUST_RATIO ? liveCap : null;
+}
+
 // quotes: { SYMBOL: row } from /api/watchlist-quotes?profile=1 (lastPrice,
 // change, changePct, marketCap).
 //
@@ -85,7 +99,7 @@ function buildGroup(card, members, quotes, { hideUnquoted = true } = {}) {
   const tiles = members
     .map(({ symbol, cap }) => {
       const quote = quotes?.[symbol] || {};
-      const liveCap = positive(quote.marketCap);
+      const liveCap = plausibleCap(positive(quote.marketCap), cap);
       const capWeight = liveCap ?? cap;
       return {
         symbol,

@@ -45,7 +45,7 @@ def _write_cache(entries):
 
 
 def test_finnhub_cap_is_converted_from_millions_and_cached():
-    get = _finnhub({"NVDA": {"finnhubIndustry": "Semiconductors", "marketCapitalization": 4_200_000}})
+    get = _finnhub({"NVDA": {"finnhubIndustry": "Semiconductors", "currency": "USD", "marketCapitalization": 4_200_000}})
     assert industry_lookup.resolve_market_caps(["NVDA"], get=get) == 1
     profile = industry_lookup.cached_profiles(["NVDA"])["NVDA"]
     assert profile["marketCap"] == pytest.approx(4.2e12)
@@ -56,7 +56,7 @@ def test_finnhub_cap_is_converted_from_millions_and_cached():
 
 
 def test_fresh_cap_is_not_refetched():
-    get = _finnhub({"ZZZQ": {"finnhubIndustry": "Banking", "marketCapitalization": 10}})
+    get = _finnhub({"ZZZQ": {"finnhubIndustry": "Banking", "currency": "USD", "marketCapitalization": 10}})
     industry_lookup.resolve_market_caps(["ZZZQ"], get=get)
     industry_lookup.clear_memory_cache()  # and it survives a fresh process
     assert industry_lookup.resolve_market_caps(["ZZZQ"], get=get) == 0
@@ -76,7 +76,7 @@ def test_provider_answer_with_no_cap_is_cached_but_a_failure_is_not():
 def test_old_cache_entries_without_a_cap_still_load_and_get_one():
     _write_cache({"ABCD": {"industry": "Banks", "fetchedAt": "2026-08-28T00:00:00Z"}})
     assert industry_lookup.cached_profiles(["ABCD"])["ABCD"] == {"industry": "Banks", "marketCap": None}
-    get = _finnhub({"ABCD": {"finnhubIndustry": "Insurance", "marketCapitalization": 5}})
+    get = _finnhub({"ABCD": {"finnhubIndustry": "Insurance", "currency": "USD", "marketCapitalization": 5}})
     industry_lookup.resolve_market_caps(["ABCD"], get=get)
     profile = industry_lookup.cached_profiles(["ABCD"])["ABCD"]
     assert profile["industry"] == "Banks"            # the cached industry is not overwritten
@@ -87,7 +87,7 @@ def test_stale_caps_refresh_after_never_fetched_ones():
     _write_cache({
         "OLD": {"industry": "Banks", "marketCap": 1.0, "marketCapAt": "2020-01-01T00:00:00Z"},
     })
-    get = _finnhub({"OLD": {"marketCapitalization": 2}, "NEW": {"marketCapitalization": 3}})
+    get = _finnhub({"OLD": {"currency": "USD", "marketCapitalization": 2}, "NEW": {"currency": "USD", "marketCapitalization": 3}})
     industry_lookup.resolve_market_caps(["OLD", "NEW"], budget=1, get=get)
     assert len(get.calls) == 1 and "symbol=NEW" in get.calls[0]
     industry_lookup.resolve_market_caps(["OLD", "NEW"], budget=1, get=get)
@@ -101,7 +101,7 @@ def test_budget_caps_provider_calls_per_pass():
 
 
 def test_resolve_also_stores_the_cap_it_already_received():
-    get = _finnhub({"ZZZQ": {"finnhubIndustry": "Banking", "marketCapitalization": 12}})
+    get = _finnhub({"ZZZQ": {"finnhubIndustry": "Banking", "currency": "USD", "marketCapitalization": 12}})
     industry_lookup.resolve(["ZZZQ"], get=get)
     assert industry_lookup.cached_profiles(["ZZZQ"])["ZZZQ"]["marketCap"] == pytest.approx(12e6)
     assert industry_lookup.resolve_market_caps(["ZZZQ"], get=get) == 0
@@ -125,14 +125,14 @@ def test_fill_is_rate_limited_and_skipped_when_nothing_is_missing(monkeypatch):
     assert len(started) == 1
 
     industry_lookup.clear_memory_cache()
-    _write_cache({"BBB": {"industry": "Banks", "marketCap": 1.0, "marketCapAt": industry_lookup._now_stamp()}})
+    _write_cache({"BBB": {"industry": "Banks", "marketCap": 1.0, "marketCapCurrency": "USD", "marketCapAt": industry_lookup._now_stamp()}})
     assert industry_lookup.schedule_market_cap_fill(["BBB"], start_thread=started.append) is False
 
 
 def test_watchlist_rows_get_profiles_without_mutating_the_quote_cache(monkeypatch):
     import api_server
 
-    _write_cache({"ZZZQ": {"industry": "Banks", "marketCap": 9e9, "marketCapAt": industry_lookup._now_stamp()}})
+    _write_cache({"ZZZQ": {"industry": "Banks", "marketCap": 9e9, "marketCapCurrency": "USD", "marketCapAt": industry_lookup._now_stamp()}})
     monkeypatch.setattr(industry_lookup, "schedule_market_cap_fill", lambda symbols: False)
     cached_rows = [
         {"symbol": "NVDA", "lastPrice": 1.0, "changePct": 3.1},
@@ -156,3 +156,20 @@ def test_watchlist_rows_survive_a_profile_failure(monkeypatch):
     monkeypatch.setattr(industry_lookup, "cached_profiles", boom)
     rows = [{"symbol": "NVDA", "lastPrice": 1.0}]
     assert api_server._with_sector_profiles(rows, ["NVDA"]) is rows
+
+
+def test_a_cap_in_a_foreign_currency_is_not_stored_as_usd():
+    # SK Hynix on Finnhub: ~130 trillion KRW, reported in millions of KRW.
+    get = _finnhub({"SKHY": {"finnhubIndustry": "Semiconductors", "currency": "KRW", "marketCapitalization": 130_000_000}})
+    assert industry_lookup.resolve_market_caps(["SKHY"], get=get) == 1
+    assert industry_lookup.cached_profiles(["SKHY"])["SKHY"]["marketCap"] is None
+    # ...and it is a real answer, so it is not refetched every pass.
+    assert industry_lookup.resolve_market_caps(["SKHY"], get=get) == 0
+
+
+def test_caps_saved_before_the_currency_check_are_hidden_and_refetched():
+    _write_cache({"SKHY": {"industry": "Semis", "marketCap": 1.3e14, "marketCapAt": industry_lookup._now_stamp()}})
+    assert industry_lookup.cached_profiles(["SKHY"])["SKHY"]["marketCap"] is None
+    get = _finnhub({"SKHY": {"currency": "USD", "marketCapitalization": 95_000}})
+    assert industry_lookup.resolve_market_caps(["SKHY"], get=get) == 1
+    assert industry_lookup.cached_profiles(["SKHY"])["SKHY"]["marketCap"] == pytest.approx(95e9)
