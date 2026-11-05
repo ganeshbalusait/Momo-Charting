@@ -185,6 +185,23 @@ def ema(values: Sequence[float], length: int) -> list[float]:
     return out
 
 
+def _drop_placeholder_lead(bars: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Skip the flat bars Alpaca serves before a SPAC/new listing traded.
+
+    2026-11-04: OUST had 39 months at a flat $253.90 (low == close, same close
+    month after month) before trading began in 2020-09; BBAI, DJT and GRAB the
+    same. They seeded the EMA with a price that never traded. Only a LEADING
+    run of two or more such bars is dropped; a flat bar later on is kept.
+    """
+    k = 0
+    while (k + 1 < len(bars)
+           and float(bars[k]["close"]) == float(bars[k + 1]["close"])
+           and float(bars[k]["low"]) == float(bars[k]["close"])):
+        k += 1
+    # k is the LAST bar of the flat run (its next bar differs), so drop it too.
+    return list(bars[k + 1:]) if k >= 1 else list(bars)
+
+
 def touch_state(bars: Sequence[Mapping[str, Any]], length: int, period: str) -> dict | None:
     """The gate for one symbol, one EMA length, one timeframe.
 
@@ -193,7 +210,7 @@ def touch_state(bars: Sequence[Mapping[str, Any]], length: int, period: str) -> 
     when the EMA is not settled (fewer than ``2 * length`` completed periods),
     else ``{"level", "uptrend", "low", "touched", "pass"}``.
     """
-    completed = [b for b in bars if str(b.get("period")) < period]
+    completed = _drop_placeholder_lead([b for b in bars if str(b.get("period")) < period])
     current = [b for b in bars if str(b.get("period")) == period]
     if len(completed) < max(2 * length, 2):
         return None

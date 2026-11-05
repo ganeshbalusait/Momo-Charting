@@ -1,0 +1,190 @@
+<title>21 / 50 EMA Swing Test</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; a verdict band, then one ranked table per chart timeframe, switched by hold + instrument */
+:root {
+  --bg: #f5f7f7; --panel: #ffffff; --fg: #17201f; --muted: #5b6866; --line: #d9e0df;
+  --accent: #0f6e74; --yes: #17803d; --yes-bg: #e3f4e8; --no: #a3342b; --no-bg: #f8e6e4;
+  --base: #6b5a1e;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1514; --panel: #161e1d; --fg: #e3ebea; --muted: #93a3a0; --line: #2a3634;
+  --accent: #4fb8be; --yes: #5fd387; --yes-bg: #173222; --no: #f08a80; --no-bg: #3a1c19; --base: #d8c27a; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f1514; --panel: #161e1d; --fg: #e3ebea; --muted: #93a3a0; --line: #2a3634;
+  --accent: #4fb8be; --yes: #5fd387; --yes-bg: #173222; --no: #f08a80; --no-bg: #3a1c19; --base: #d8c27a; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.55 var(--sans); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px; }
+h1 { font-size: 1.9rem; line-height: 1.2; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-size: 1.25rem; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 68ch; }
+.lede { color: var(--muted); display: grid; gap: 8px; }
+.eyebrow { font: 500 0.75rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.verdict { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: grid; gap: 14px; }
+.verdict ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.controls { display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: center; position: sticky; top: env(safe-area-inset-top, 0px);
+  background: var(--bg); padding-block: 10px; z-index: 5; border-bottom: 1px solid var(--line); }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.seg span { font: 500 0.75rem var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-right: 4px; }
+.seg button { font: 500 0.9rem var(--sans); color: var(--fg); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+section { display: grid; gap: 10px; }
+.tablebox { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; min-width: 860px; font-variant-numeric: tabular-nums; }
+th, td { padding: 9px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font: 500 0.72rem var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); vertical-align: bottom; }
+th:first-child, td:first-child { text-align: left; }
+td { font-family: var(--mono); font-size: 0.86rem; }
+td.name { font-family: var(--sans); font-size: 0.95rem; font-weight: 600; white-space: normal; min-width: 170px; }
+td.name small { display: block; font-weight: 400; color: var(--muted); font-size: 0.8rem; }
+tr.base td { color: var(--base); background: color-mix(in srgb, var(--base) 7%, transparent); }
+tr:last-child td { border-bottom: 0; }
+.pill { display: inline-block; font: 700 0.95rem var(--sans); letter-spacing: 0.04em; padding: 3px 12px; border-radius: 999px; }
+.pill.yes { color: var(--yes); background: var(--yes-bg); }
+.pill.no { color: var(--no); background: var(--no-bg); }
+.up { color: var(--yes); } .down { color: var(--no); }
+.notes { display: grid; gap: 8px; color: var(--muted); font-size: 0.9rem; }
+.notes h2 { color: var(--fg); }
+.notes ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 75ch; }
+</style>
+
+<div class="wrap">
+  <header class="lede">
+    <div class="eyebrow">Back-test · <span id="meta"></span></div>
+    <h1>Do the 21 and 50 EMA setups beat buying on a random day?</h1>
+    <p>Every setup was traded on the watchlist stocks since 2005. Rules were judged on 2005–2018 and then checked on 2019–2026, which nothing was tuned on. A setup gets <b>YES</b> only if it won at least 2 points more often than a random day <b>and</b> had a higher middle result, in <b>both</b> periods.</p>
+  </header>
+
+  <div class="verdict" id="verdict"></div>
+
+  <div class="controls">
+    <div class="seg" id="holdSeg"><span>Hold</span></div>
+    <div class="seg" id="instSeg"><span>Trade</span></div>
+  </div>
+
+  <div id="tables" style="display:grid;gap:28px"></div>
+
+  <div class="notes">
+    <h2>How to read this, and what it can't tell you</h2>
+    <ul>
+      <li><b>Win %</b> is the share of trades that made money. <b>Median</b> is the middle trade. <b>Worst 10%</b> is the result that only one trade in ten did worse than.</li>
+      <li>Each cell shows <b>2005–18 / 2019–26</b>. The random-day row (gold) is the bar to beat.</li>
+      <li><b>Plain</b> means sell after the hold. <b>With stop/target</b> means sell on a daily close under the 50 EMA, or at 2× the risk above entry, or at the end of the hold. The YES/NO verdict uses the plain hold so setup and random day are measured the same way.</li>
+      <li><b>Biggest dip</b> is the median worst point during a trade (stock price); this stands in for drawdown.</li>
+      <li>Calls are <b>modelled</b> with Black-Scholes, not real quotes: 45 days to expiry (60 for the 40-day hold), volatility from the last 60 days held fixed, bought at the ask and sold at the bid (about 8% round trip). Real spreads on small caps are often wider.</li>
+      <li>Only tickers still listed today are included, because Yahoo has no data for delisted names. That makes every row, the random day included, look a little better than reality.</li>
+      <li>Trades on different stocks on the same days move together, so a few points of win % can still be luck. That is why a setup needs to pass in both periods.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+const DATA = /*DATA*/null;
+const LABELS = {
+  touch21: ["Pullback to 21 EMA", "uptrend, low tags the 21, closes above"],
+  touch50: ["Pullback to 50 EMA", "uptrend, low tags the 50, closes above"],
+  bounce21: ["Bounce off 21 EMA", "after a 21 touch, next bar closes above its high"],
+  bounce50: ["Bounce off 50 EMA", "after a 50 touch, next bar closes above its high"],
+  cross: ["21 crosses above 50", "bullish EMA cross"],
+  reclaim: ["Reclaim the 50 EMA", "close back above the 50 after being below"],
+  "M50 intramonth": ["Monthly 50 touch, during the month", "daily low reaches last month's monthly 50; uptrend"],
+  "M21 intramonth": ["Monthly 21 touch, during the month", "daily low reaches last month's monthly 21; uptrend"],
+};
+const TFS = ["Daily", "Weekly", "Monthly"];
+let hold = "20", inst = "stock";
+try { hold = localStorage.getItem("ema-hold") || hold; inst = localStorage.getItem("ema-inst") || inst; } catch (e) {}
+
+const pct = (v, d = 0) => v == null ? "–" : (v * 100).toFixed(d) + "%";
+const sgn = (v, d = 1) => v == null ? "–" : (v > 0 ? "+" : "") + (v * 100).toFixed(d) + "%";
+const instName = k => k === "stock" ? "Stock" : `Call Δ0.${k.replace("call", "")}`;
+
+function cell(tr, te, fmt, base) {
+  const cls = (v, b) => (b == null || v == null) ? "" : (v > b ? "up" : "down");
+  return `<td><span class="${cls(tr, base && base[0])}">${fmt(tr)}</span> / <span class="${cls(te, base && base[1])}">${fmt(te)}</span></td>`;
+}
+
+function row(name, sub, tr, te, mtr, mte, verdict, base) {
+  const g = (o, k) => o ? o[k] : null;
+  const pill = verdict == null ? "<td>bar to beat</td>" :
+    `<td><span class="pill ${verdict ? "yes" : "no"}">${verdict ? "YES" : "NO"}</span></td>`;
+  return `<tr${verdict == null ? ' class="base"' : ""}>
+    <td class="name">${name}<small>${sub}</small></td>${pill}
+    <td>${g(tr, "n") ?? "–"} / ${g(te, "n") ?? "–"}</td>
+    ${cell(g(tr, "win"), g(te, "win"), v => pct(v), base && [g(base[0], "win"), g(base[1], "win")])}
+    ${cell(g(tr, "median"), g(te, "median"), v => sgn(v), base && [g(base[0], "median"), g(base[1], "median")])}
+    ${cell(g(tr, "avg"), g(te, "avg"), v => sgn(v), null)}
+    ${cell(g(tr, "worst10"), g(te, "worst10"), v => sgn(v, 0), null)}
+    ${cell(g(tr, "loseHalf"), g(te, "loseHalf"), v => pct(v), null)}
+    <td>${mtr ? pct(mtr.win) + " · " + sgn(mtr.median) : "–"} / ${mte ? pct(mte.win) + " · " + sgn(mte.median) : "–"}</td>
+    <td>${tr && tr.medianDip != null ? sgn(tr.medianDip) + " / " + sgn(te && te.medianDip) : "–"}</td>
+  </tr>`;
+}
+
+function render() {
+  const base = DATA.baseline.any[hold];
+  const bt = [base.train[inst], base.test[inst]];
+  const up = DATA.baseline.uptrend[hold];
+  let html = "";
+  for (const tf of TFS) {
+    const setups = DATA.setups[tf] || {};
+    const rows = Object.entries(setups).map(([k, v]) => {
+      const h = v[hold]; if (!h) return null;
+      const tr = h.train[inst].plain, te = h.test[inst].plain;
+      const edge = (te && bt[1]) ? (te.win - bt[1].win) : -1;
+      return { k, h, tr, te, edge };
+    }).filter(Boolean).sort((a, b) => (b.h.beatsRandom[inst] - a.h.beatsRandom[inst]) || (b.edge - a.edge));
+    html += `<section><h2>${tf} chart · ${instName(inst)} · ${hold}-day hold</h2>
+      <div class="tablebox"><table>
+      <thead><tr><th>Setup</th><th>Beats random?</th><th>Trades</th><th>Win %</th><th>Median</th><th>Average</th><th>Worst 10%</th><th>Lose &gt; half</th><th>With stop/target<br>win · median</th><th>Biggest dip<br>(stock)</th></tr></thead><tbody>
+      ${row("Random day", "buy any day, same hold", bt[0], bt[1], null, null, null, null)}
+      ${row("Random uptrend day", "any day the daily chart is in an uptrend", up.train[inst], up.test[inst], null, null, null, null)}
+      ${rows.map(r => row(LABELS[r.k][0], LABELS[r.k][1], r.tr, r.te,
+          r.h.train[inst].managed, r.h.test[inst].managed, r.h.beatsRandom[inst], [bt[0], bt[1]])).join("")}
+      </tbody></table></div></section>`;
+  }
+  document.getElementById("tables").innerHTML = html;
+  for (const b of document.querySelectorAll(".seg button")) b.setAttribute("aria-pressed", String(b.dataset.v === (b.dataset.k === "hold" ? hold : inst)));
+}
+
+function verdict() {
+  const passes = [];
+  for (const tf of TFS) for (const [k, v] of Object.entries(DATA.setups[tf] || {}))
+    for (const h of DATA.holds) for (const i of ["stock", ...DATA.deltas.map(d => "call" + Math.round(d * 100))])
+      if (v[String(h)] && v[String(h)].beatsRandom[i]) passes.push({ tf, k, h, i });
+  const box = document.getElementById("verdict");
+  if (!passes.length) {
+    box.innerHTML = `<div class="eyebrow">Verdict</div><h2><span class="pill no">NO</span> No 21/50 EMA setup beat a random day in both periods.</h2><p>Nothing passed, for any hold, for the stock or for the calls.</p>`;
+    return;
+  }
+  const by = {};
+  for (const p of passes) (by[`${p.tf}|${p.k}`] ||= []).push(p);
+  box.innerHTML = `<div class="eyebrow">Verdict</div><h2>${Object.keys(by).length} setup${Object.keys(by).length > 1 ? "s" : ""} passed somewhere; everything else is <span class="pill no">NO</span></h2><ul>` +
+    Object.entries(by).map(([key, ps]) => {
+      const [tf, k] = key.split("|");
+      return `<li><span class="pill yes">YES</span> <b>${tf}: ${LABELS[k][0]}</b>, for ${ps.map(p => `${instName(p.i)} ${p.h}d`).join(", ")}</li>`;
+    }).join("") + `</ul><p>A setup that passes at one hold only is weaker evidence than one that passes at several.</p>`;
+}
+
+function controls() {
+  const hs = document.getElementById("holdSeg"), is = document.getElementById("instSeg");
+  for (const h of DATA.holds) hs.insertAdjacentHTML("beforeend", `<button type="button" id="hold-${h}" data-k="hold" data-v="${h}">${h} days</button>`);
+  for (const i of ["stock", ...DATA.deltas.map(d => "call" + Math.round(d * 100))]) is.insertAdjacentHTML("beforeend", `<button type="button" id="inst-${i}" data-k="inst" data-v="${i}">${instName(i)}</button>`);
+  document.querySelector(".controls").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.k === "hold") hold = b.dataset.v; else inst = b.dataset.v;
+    try { localStorage.setItem("ema-hold", hold); localStorage.setItem("ema-inst", inst); } catch (err) {}
+    render();
+  });
+}
+
+document.getElementById("meta").textContent = `${DATA.stocks} stocks · run ${DATA.generated.slice(0, 16).replace("T", " ")} ET`;
+verdict(); controls(); render();
+</script>

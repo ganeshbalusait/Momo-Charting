@@ -53,6 +53,29 @@ def test_current_bar_is_not_part_of_the_level():
     assert ema_touch.touch_state(bars, 21, period)["level"] == a
 
 
+def test_flat_placeholder_months_before_a_spac_listing_are_ignored():
+    # OUST 2026-11-04: Alpaca served 39 flat $253.90 months (the SPAC shell)
+    # before trading began in 2020-09; the monthly 50 EMA came out $37.53
+    # instead of ~$29. The flat lead-in is not price history.
+    real = [20.0 + i * 0.1 for i in range(80)]
+    placeholder = [{"period": f"p{i:03d}", "close": 253.9, "low": 253.9} for i in range(39)]
+    bars = placeholder + [{"period": f"r{i:03d}", "close": c, "low": c} for i, c in enumerate(real)]
+    period = bars[-1]["period"]
+    assert ema_touch.touch_state(bars, 50, period) is None   # 79 real months < 2 x 50
+    got = ema_touch.touch_state(bars, 21, period)["level"]
+    want = ema_touch.ema(real[:-1], 21)[-1]
+    assert got == pytest.approx(want, abs=1e-4)
+
+
+def test_a_flat_month_in_the_middle_is_kept():
+    closes = [100 + i for i in range(60)]
+    bars = _bars(closes)
+    bars[30]["close"] = bars[31]["close"] = bars[30]["low"] = bars[31]["low"] = 130.0
+    period = bars[-1]["period"]
+    want = ema_touch.ema([b["close"] for b in bars[:-1]], 21)[-1]
+    assert ema_touch.touch_state(bars, 21, period)["level"] == pytest.approx(want, abs=1e-4)
+
+
 def test_names_round_trip():
     assert ema_touch.parse_name("21 ema touch weekly") == (21, "Weekly")
     assert ema_touch.parse_name("50 EMA Touch Daily") == (50, "Daily")
