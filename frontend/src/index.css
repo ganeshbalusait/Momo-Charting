@@ -22747,6 +22747,7 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .bot-truth h4 { margin: 0 0 4px; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--bot-dim); }
 .bot-truth-account { display: grid; gap: 8px; min-width: 0; padding-top: 6px; border-top: 1px solid var(--bot-line); }
 .bot-truth-headline { margin: 0; font-size: 14px; font-weight: 600; }
+.bot-truth-new { margin: 0; font-size: 13px; color: #a7f3d0; }
 .bot-truth-missed { margin: 0; font-size: 12.5px; color: var(--bot-dim); overflow-wrap: anywhere; }
 .bot-truth .bot-kpi.bot-truth-gap .bot-kpi-value { font-size: 15px; line-height: 1.25; }
 .bot-truth details summary { cursor: pointer; font-size: 13px; }

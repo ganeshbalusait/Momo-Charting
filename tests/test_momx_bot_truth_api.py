@@ -80,3 +80,17 @@ def test_no_paper_files_is_unavailable_not_an_error(grade):
         status, body = api.get("/api/momx-scanner/bot-truth?days=abc", headers=ADMIN)
     assert status == 200
     assert body["available"] is False and body["days"] == 30
+
+
+def test_new_order_rules_come_back_apart(grade):
+    seed(grade)
+    path = grade / "momx_paper_mirror" / "paper3" / f"{DAY}.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["rows"]["bull|rvol|ZETA|" + AT]["exec"] = 2
+    write(path, doc)
+    with running_api() as api:
+        status, body = api.get("/api/momx-scanner/bot-truth?days=60", headers=ADMIN)
+    assert status == 200
+    acct = body["accounts"]["paper3"]
+    assert acct["orders"] == 2
+    assert (acct["newRules"]["orders"], acct["newRules"]["filled"], acct["newRules"]["missed"]) == (1, 1, 0)

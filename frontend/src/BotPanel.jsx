@@ -6,7 +6,7 @@ import { paperMetrics, paperTotals, reviewLabel, paperTime } from "./paperBotMet
 import { BOT_LEVEL_OPTIONS, BOT_LEVEL_HELP, filterBotLevel } from "./botLevels.js";
 import { SCANNER_SETUP_TYPES } from "./scannerSetupTypes.js";
 import { loadPaperHistory } from "./paperBotHistory.js";
-import { truthAccountLabel, truthGapLabel, truthHeadline, truthMoney, truthPct } from "./botTruth.js";
+import { truthAccountLabel, truthGapLabel, truthHeadline, truthMoney, truthNewRulesLine, truthPct } from "./botTruth.js";
 import { Bot, RefreshCw, X } from "lucide-react";
 import { BOT_RULE_HELP, BOT_RULE_LABELS, BOT_RULE_ORDER, botRuleLabel, BOT_TEST_RULES, botContractLabel, botDailyLog, botEntryStrikeLabel, botNewsBook, botAiBook, isEarlyDayLine, setBotFills, setBotExit, setBotContract, BOT_EXIT_LABELS, BOT_CONTRACT_LABELS, botExitMatrix, botRiskOk, botRiskRoi, botMomentumMatrix, botPeriodMatrix, botReport, formatBotDollars, formatBotPct, nextBotSort, sortBotRows } from "./momxBot.js";
 
@@ -635,6 +635,7 @@ function TruthCheckCard() {
                 <div key={account} className="bot-truth-account">
                   <h4>{truthAccountLabel(account)}</h4>
                   <p className="bot-truth-headline">{truthHeadline(a)}</p>
+                  {truthNewRulesLine(a) ? <p className="bot-truth-new" role="status">{truthNewRulesLine(a)}</p> : null}
                   <section className="bot-kpis" aria-label={`${truthAccountLabel(account)} truth totals`}>
                     <Kpi label="Orders filled" value={a.fillRatePct == null ? "-" : Math.round(a.fillRatePct) + "%"} sub={`${a.filled} filled · ${a.missed} never filled · ${a.open} open`} />
                     <Kpi label="BOT says" value={truthPct(a.matched?.botRoi)} sub={`${truthMoney(a.matched?.botPnl)} on the ${a.matched?.n || 0} filled trades`} />

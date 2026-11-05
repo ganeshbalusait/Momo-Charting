@@ -32,3 +32,13 @@ test("formatters", () => {
   assert.equal(truthMoney(1075.5), "+$1,076");
   assert.equal(truthAccountLabel("paper5"), "Paper 5");
 });
+
+test("new order rules line: hidden before any v2 order, then fill rate and ROI", async () => {
+  const { truthNewRulesLine } = await import("./botTruth.js");
+  assert.equal(truthNewRulesLine({ orders: 3 }), "");
+  assert.equal(truthNewRulesLine({ newRules: { orders: 0 } }), "");
+  assert.equal(truthNewRulesLine({ newRules: { orders: 4, filled: 3, missed: 1, matched: { n: 2, botRoi: 12, paperRoi: 8.5 } } }),
+    "Since the new order rules: filled 3 of 4 (75%) · BOT +12.0% vs paper +8.5% on 2 closed.");
+  assert.equal(truthNewRulesLine({ newRules: { orders: 2, filled: 0, missed: 0, matched: { n: 0 } } }),
+    "Since the new order rules: 2 orders, none finished yet.");
+});

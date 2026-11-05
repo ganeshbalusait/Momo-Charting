@@ -162,7 +162,8 @@ def test_promoted_policy_controls_paper5_entry_without_network_and_preserves_mid
     lab=pe.ExperimentLab({},directory=tmp_path/"lab",roots={})
     lab.policy={"id":"candidate","spec":{"kind":"spread_ceiling","value":.1}}
     lab.last_observed = lab.clock()
-    trade=_trade(entryBid=.5,entryAsk=1.9)
+    # Order quote spread 11.7%: over the candidate's 10% ceiling; mid still $1.20.
+    trade=_trade(entryBid=.5,entryAsk=1.9,lastBid=1.13,lastAsk=1.27)
     client=FakeClient()
     mirror=PaperMirror({"bull":MirrorBook([trade])},tmp_path/"paper5",account="paper5",jev_cut=None,
                        client_factory=lambda:client,off=lambda:False,ai_policy=lab.decision)

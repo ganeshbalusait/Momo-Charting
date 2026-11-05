@@ -89,6 +89,25 @@ def entry_open(now: datetime) -> bool:
     return any(h1 * 60 + m1 <= m < h2 * 60 + m2 for h1, m1, h2, m2 in ENTRY_WINDOWS)
 LIVE = ("buying", "open", "selling", "exit_due")
 
+# Order rules v2 (2026-11-04/05). The BOT truth check found paper filled only
+# 1 in 3 mid orders and missed the BOT's winners: orders went out ~4 min late
+# at a stale mid, sat 2 min, were cancelled and never re-priced. His rule
+# (2026-11-05): "dont think about spready just take the trade, if setup is
+# good" / "dont miss any trade" - replaces his 2026-10-16 "use only mid order".
+# So: first try at the live mid; unfilled after BUY_TTL_SECONDS, re-sent at the
+# live ASK (a marketable limit) so it fills. No spread filter on entries.
+EXEC_VERSION = 2
+#: An unfilled mid buy is re-sent at the live ask up to this many times.
+BUY_REPRICES = 2
+
+
+def spread_share(bid: Any, ask: Any) -> float | None:
+    """(ask - bid) / mid, or None for an unusable quote."""
+    b, a = _num(bid), _num(ask)
+    if b is None or a is None or a <= 0 or b < 0 or a < b:
+        return None
+    return (a - b) / ((a + b) / 2)
+
 
 def _num(v: Any) -> float | None:
     try:
@@ -133,10 +152,18 @@ def eligible(t: Mapping, now_ts: float, jev_cut: float | None = JEV_CUT) -> bool
 
 def entry_limit(t: Mapping, now_ts: float) -> float | None:
     """The mid to buy at, from the Bot's own live quote; None when stale."""
+    q = bot_quote(t, now_ts)
+    return _mid(*q) if q else None
+
+
+def bot_quote(t: Mapping, now_ts: float) -> tuple[Any, Any] | None:
+    """The Bot's own last (bid, ask) while fresh; None when stale or missing."""
     seen = _ts(t.get("lastAt"))
     if seen is None or not 0 <= now_ts - seen <= QUOTE_FRESH_SECONDS:
         return None
-    return _mid(t.get("lastBid"), t.get("lastAsk"))
+    if _mid(t.get("lastBid"), t.get("lastAsk")) is None:
+        return None
+    return t.get("lastBid"), t.get("lastAsk")
 
 
 def size_for(price: float | None) -> int | None:
@@ -249,6 +276,51 @@ class PaperMirror:
         except OSError:
             pass
 
+    def _live_quote(self, contract: str, now_ts: float, cache: dict | None = None) -> tuple[Any, Any] | None:
+        """A fresh broker (bid, ask) for one contract right now, or None.
+        The Bot re-prices one ticker every 8+ s, so its own quote can be
+        minutes old; the order uses the live quote whenever it can."""
+        if not self._quotes_fetch or not contract:
+            return None
+        if cache is not None and contract in cache:
+            return cache[contract]
+        found = None
+        try:
+            doc = self._quotes_fetch([contract]) or {}
+            seen = _num(doc.get("asOf"))
+            if seen is not None and -5 <= now_ts - seen <= QUOTE_FRESH_SECONDS:
+                q = (doc.get("quotes") or {}).get(contract) or {}
+                if _mid(q.get("bid"), q.get("ask")) is not None:
+                    found = (q.get("bid"), q.get("ask"))
+        except Exception:  # noqa: BLE001 - fall back to the Bot's own quote
+            found = None
+        if cache is not None:
+            cache[contract] = found
+        return found
+
+    def _reprice_buy(self, client, key: str, row: dict, bot: Mapping, now_ts: float, stamp: str) -> bool:
+        """Re-send a cancelled, unfilled buy at the live ASK so it fills (his
+        "dont miss any trade", 2026-11-05). False = give up (missed)."""
+        tries = int(row.get("buyTries") or 0)
+        if row.get("exec") != EXEC_VERSION or tries >= BUY_REPRICES:
+            return False
+        t = (bot.get(key) or ("", {}))[1]
+        if t and not eligible(t, now_ts, self.jev_cut):
+            return False                      # the Bot already left, or the signal went stale
+        q = self._live_quote(row.get("contract"), now_ts) or (bot_quote(t, now_ts) if t else None)
+        limit = round(float(q[1]), 2) if q and _mid(*q) is not None else None
+        if limit is None or limit <= 0:
+            row["note"] = "No fresh quote to re-send at the ask; not filled at the mid"
+            return False
+        cid = self._cid(key, "b", tries + 1)
+        row.setdefault("buyHistory", []).append({"limit": row.get("buyLimit"), "at": row.get("buyAt"), "id": row.get("buyId")})
+        row.update(buyId=cid, buyLimit=limit, buyAt=stamp, buyTries=tries + 1, note=f"Re-sent at the ask ${limit:.2f} (try {tries + 1})")
+        try:
+            client.submit_option_limit_order(row["contract"], int(row.get("qty") or 1), limit, cid, "buy_to_open")
+        except Exception as exc:  # noqa: BLE001 - outcome unknown: reconcile by client id
+            row["note"] = f"Awaiting broker reconciliation: {exc}"[:200]
+        return True
+
     def _cid(self, key: str, leg: str, attempt: int = 0) -> str:
         return f"mxp-{leg}{attempt}-{hashlib.sha1((self.account + key).encode()).hexdigest()[:16]}"
 
@@ -297,7 +369,7 @@ class PaperMirror:
             try:
                 changed |= self._reconcile_expired(client, now)
                 if trading_now:
-                    changed |= self._follow(client, now_ts, stamp)
+                    changed |= self._follow(client, now_ts, stamp, bot)
                     changed |= self._manage(client, bot, now, now_ts, stamp)
                     changed |= self._entries(client, bot, now, now_ts, stamp)
                 self._error = ""
@@ -364,17 +436,18 @@ class PaperMirror:
         pl = sum((float(f["price"]) - buy) * float(f["qty"]) * 100 for f in fills) if complete else None
         row.update(status="closed", closedAt=stamp, pl=round(pl, 2) if pl is not None else None)
 
-    def _follow(self, client, now_ts: float, stamp: str) -> bool:
+    def _follow(self, client, now_ts: float, stamp: str, bot: Mapping | None = None) -> bool:
         changed = False
-        for row in self._rows.values():
+        for key, row in self._rows.items():
             try:
-                changed |= self._follow_row(client, row, now_ts, stamp)
+                changed |= self._follow_row(client, row, now_ts, stamp, key=key, bot=bot)
             except Exception as exc:
                 row["note"] = f"Awaiting broker reconciliation: {exc}"[:200]
                 changed = True
         return changed
 
-    def _follow_row(self, client, row: dict, now_ts: float, stamp: str) -> bool:
+    def _follow_row(self, client, row: dict, now_ts: float, stamp: str, key: str | None = None,
+                    bot: Mapping | None = None) -> bool:
         changed = False
         if row.get("status") == "buying":
             status, price, _, filled = self._state(client, row["buyId"])
@@ -392,8 +465,11 @@ class PaperMirror:
                 except Exception:
                     pass
                 changed = True
+            elif status in ("canceled", "expired") and key and self._reprice_buy(client, key, row, bot or {}, now_ts, stamp):
+                changed = True
             elif status in ("canceled", "expired", "rejected"):
-                row.update(status="missed", note=f"buy {status or 'unfilled'} (not filled at the mid)")
+                note = row.get("note") if row.get("exec") == EXEC_VERSION and row.get("note") else None
+                row.update(status="missed", note=note or f"buy {status or 'unfilled'} (not filled at the mid)")
                 changed = True
         elif row.get("status") == "selling":
             status, price, _, filled = self._state(client, row["sellId"])
@@ -526,6 +602,7 @@ class PaperMirror:
         entries = sum(1 for r in self._rows.values() if r.get("buyId") and not r.get("carried"))
         held = {r.get("symbol") for r in self._rows.values() if r.get("status") in LIVE}
         changed = False
+        quote_cache: dict = {}
         for key, (side, t) in sorted(bot.items(), key=lambda kv: str(kv[1][1].get("at") or "")):
             if live >= MAX_OPEN or entries >= MAX_ENTRIES_PER_DAY:
                 break
@@ -534,14 +611,21 @@ class PaperMirror:
                 continue
             if key in self._rows or t.get("symbol") in held or not eligible(t, now_ts, self.jev_cut):
                 continue
-            limit = entry_limit(t, now_ts)
+            # A live broker quote first (the Bot's own can be minutes old), else
+            # the Bot's quote while it is fresh (v2, 2026-11-04).
+            live_q = self._live_quote(t.get("contract"), now_ts, quote_cache)
+            q = live_q or bot_quote(t, now_ts)
+            if not q:
+                continue
+            bid, ask = q
+            limit = _mid(bid, ask)
             qty = size_for(limit)
             if not qty:
                 continue
             # Research must see the same fresh quote and time as this order,
             # not the earlier virtual signal entry or a future broker fill.
-            policy_trade = {**t, "entry": limit, "entryBid": t.get("lastBid"),
-                            "entryAsk": t.get("lastAsk"), "entryAt": stamp}
+            policy_trade = {**t, "entry": limit, "entryBid": bid,
+                            "entryAsk": ask, "entryAt": stamp}
             ai_decision = None
             if self._ai_policy is not None:
                 try:
@@ -557,7 +641,9 @@ class PaperMirror:
             cid = self._cid(key, "b")
             row = {"side": side, "rule": t.get("rule"), "symbol": t.get("symbol"), "at": t.get("at"),
                    "contract": t.get("contract"), "qty": qty, "jevP": t.get("jevP"), "botEntry": t.get("entry"),
-                   "buyLimit": limit, "buyId": cid, "buyAt": stamp, "status": "buying"}
+                   "buyLimit": limit, "buyId": cid, "buyAt": stamp, "status": "buying",
+                   "exec": EXEC_VERSION, "buyTries": 0, "spreadAtOrder": spread_share(bid, ask),
+                   "quoteVia": "live" if live_q else "bot"}
             from momx.paper_experiments import inputs
             row["entryInputs"] = inputs(policy_trade)
             from momx.chart_learning import snapshot as chart_snapshot
@@ -618,7 +704,8 @@ class PaperMirror:
                 "ai": dict(self._ai_status),
                 "rules": {"book": self.book,
                           "picked": {side: sorted(r) for side, r in (self.rules or {}).items()},
-                          "orders": "limit at mid",
+                          "orders": f"buy: limit at the live mid; unfilled after {BUY_TTL_SECONDS:.0f} s, re-sent at the ask "
+                                    f"(up to {BUY_REPRICES} times); sell: limit at mid",
                           "sizing": f"up to ${MULTI_UP_TO:.2f}: {MIN_MULTI}+ contracts (as many as fit in ${BUDGET:.0f}); "
                                     f"over ${MULTI_UP_TO:.2f} to ${MAX_PRICE:.2f}: 1 contract; over ${MAX_PRICE:.2f}: skip",
                           "entryTimes": "new buys 9:30-11:00 AM and 1:00-3:30 PM ET (midday skipped)",

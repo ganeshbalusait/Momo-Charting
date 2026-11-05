@@ -67,63 +67,73 @@ def _bot_pnl(t, qty):
     return (exit_ - entry) * 100 * qty, entry * 100 * qty, (exit_ - entry) / entry * 100
 
 
+def _stats(rows: list[dict], bot: dict[tuple, dict]) -> dict:
+    a = {"orders": 0, "filled": 0, "missed": 0, "open": 0, "unmatched": 0}
+    bot_pnl = bot_cost = paper_pnl = paper_cost = missed_pnl = 0.0
+    matched = 0
+    biggest = []
+    rules = defaultdict(lambda: {"orders": 0, "missed": 0, "filled": 0, "bp": 0.0, "bc": 0.0, "pp": 0.0, "pc": 0.0})
+    for r in rows:
+        status = r.get("status")
+        qty = r.get("qty") if _num(r.get("qty")) and r.get("qty") > 0 else 1
+        side = r.get("side") or "bull"
+        t = bot.get((side, r.get("rule"), r.get("symbol"), r.get("at")))
+        scored = _bot_pnl(t, qty)
+        rule = rules[(side, r.get("rule"))]
+        a["orders"] += 1
+        rule["orders"] += 1
+        filled = _num(r.get("buyFill"))
+        if status == "missed":
+            a["missed"] += 1
+            rule["missed"] += 1
+        elif filled:
+            a["filled"] += 1
+            rule["filled"] += 1
+        if status in LIVE:
+            a["open"] += 1
+        if scored is None:
+            a["unmatched"] += 1
+            continue
+        pnl, cost, pct = scored
+        if status == "missed":
+            missed_pnl += pnl
+            biggest.append({"day": str(r.get("at", ""))[:10], "symbol": r.get("symbol"), "side": side,
+                            "rule": r.get("rule"), "botEntry": round(cost / 100 / qty, 4),
+                            "limit": r.get("buyLimit"), "botPct": round(pct, 1)})
+        elif status == "closed" and filled and _num(r.get("pl")):
+            matched += 1
+            fill_cost = r["buyFill"] * 100 * qty
+            bot_pnl += pnl
+            bot_cost += cost
+            paper_pnl += r["pl"]
+            paper_cost += fill_cost
+            rule["bp"] += pnl
+            rule["bc"] += cost
+            rule["pp"] += r["pl"]
+            rule["pc"] += fill_cost
+    a["fillRatePct"] = _pct(a["filled"], a["filled"] + a["missed"])
+    a["matched"] = {"n": matched, "botPnl": round(bot_pnl, 2), "botRoi": _pct(bot_pnl, bot_cost),
+                    "paperPnl": round(paper_pnl, 2), "paperRoi": _pct(paper_pnl, paper_cost)}
+    a["missedBotPnl"] = round(missed_pnl, 2)
+    a["biggestMissed"] = sorted(biggest, key=lambda b: -b["botPct"])[:BIGGEST]
+    a["byRule"] = sorted(
+        ({"side": s, "rule": ru, "orders": v["orders"], "missed": v["missed"],
+          "fillRatePct": _pct(v["filled"], v["filled"] + v["missed"]),
+          "botRoi": _pct(v["bp"], v["bc"]), "paperRoi": _pct(v["pp"], v["pc"])}
+         for (s, ru), v in rules.items()),
+        key=lambda x: (-x["orders"], x["side"], str(x["rule"])))
+    return a
+
+
 def compare(paper: dict[str, list[dict]], bot: dict[tuple, dict]) -> dict:
     accounts = {}
     for account, rows in paper.items():
-        a = {"orders": 0, "filled": 0, "missed": 0, "open": 0, "unmatched": 0}
-        bot_pnl = bot_cost = paper_pnl = paper_cost = missed_pnl = 0.0
-        matched = 0
-        biggest = []
-        rules = defaultdict(lambda: {"orders": 0, "missed": 0, "filled": 0, "bp": 0.0, "bc": 0.0, "pp": 0.0, "pc": 0.0})
-        for r in rows:
-            status = r.get("status")
-            qty = r.get("qty") if _num(r.get("qty")) and r.get("qty") > 0 else 1
-            side = r.get("side") or "bull"
-            t = bot.get((side, r.get("rule"), r.get("symbol"), r.get("at")))
-            scored = _bot_pnl(t, qty)
-            rule = rules[(side, r.get("rule"))]
-            a["orders"] += 1
-            rule["orders"] += 1
-            filled = _num(r.get("buyFill"))
-            if status == "missed":
-                a["missed"] += 1
-                rule["missed"] += 1
-            elif filled:
-                a["filled"] += 1
-                rule["filled"] += 1
-            if status in LIVE:
-                a["open"] += 1
-            if scored is None:
-                a["unmatched"] += 1
-                continue
-            pnl, cost, pct = scored
-            if status == "missed":
-                missed_pnl += pnl
-                biggest.append({"day": str(r.get("at", ""))[:10], "symbol": r.get("symbol"), "side": side,
-                                "rule": r.get("rule"), "botEntry": round(cost / 100 / qty, 4),
-                                "limit": r.get("buyLimit"), "botPct": round(pct, 1)})
-            elif status == "closed" and filled and _num(r.get("pl")):
-                matched += 1
-                fill_cost = r["buyFill"] * 100 * qty
-                bot_pnl += pnl
-                bot_cost += cost
-                paper_pnl += r["pl"]
-                paper_cost += fill_cost
-                rule["bp"] += pnl
-                rule["bc"] += cost
-                rule["pp"] += r["pl"]
-                rule["pc"] += fill_cost
-        a["fillRatePct"] = _pct(a["filled"], a["filled"] + a["missed"])
-        a["matched"] = {"n": matched, "botPnl": round(bot_pnl, 2), "botRoi": _pct(bot_pnl, bot_cost),
-                        "paperPnl": round(paper_pnl, 2), "paperRoi": _pct(paper_pnl, paper_cost)}
-        a["missedBotPnl"] = round(missed_pnl, 2)
-        a["biggestMissed"] = sorted(biggest, key=lambda b: -b["botPct"])[:BIGGEST]
-        a["byRule"] = sorted(
-            ({"side": s, "rule": ru, "orders": v["orders"], "missed": v["missed"],
-              "fillRatePct": _pct(v["filled"], v["filled"] + v["missed"]),
-              "botRoi": _pct(v["bp"], v["bc"]), "paperRoi": _pct(v["pp"], v["pc"])}
-             for (s, ru), v in rules.items()),
-            key=lambda x: (-x["orders"], x["side"], str(x["rule"])))
+        a = _stats(rows, bot)
+        # Order rules v2 (2026-11-05): live-quote mid, then re-sent at the ask so
+        # trades are not missed. Shown apart so the change can be judged on its own.
+        newer = [r for r in rows if isinstance(r.get("exec"), int) and r["exec"] >= 2]
+        if newer:
+            a["newRules"] = _stats(newer, bot)
         accounts[account] = a
     return {"accounts": accounts}
 

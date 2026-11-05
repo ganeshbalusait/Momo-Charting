@@ -914,3 +914,27 @@ def test_retired_jev_scanner_pick_does_not_create_a_virtual_entry(tmp_path):
     b.apply('Watchlist',{'rows':[row]},MON)
     assert not any(t['rule']=='jev' for t in b.trades())
     assert any(t['rule']=='go' for t in b.trades())
+
+
+def test_new_entry_carries_its_bid_ask_for_the_paper_mirror(tmp_path):
+    """2026-11-04 truth check: the paper mirror buys at the mid of lastBid/lastAsk.
+    A new entry set lastAt but not the bid/ask, so the mirror waited for the
+    ticker's next re-price (median 230 s). Both entry paths now carry them."""
+    quotes = lambda q: {"results": [{"symbol": "X", "ok": True, "chainAt": "2026-09-28T09:40:00-04:00",
+                                     "pick": {"contract": "X_C101.0_1002", "strike": 101.0, "expiry": "2026-10-02",
+                                              "delta": 0.4, "spot": 100.0, "entry": 1.2,
+                                              "entryBid": 1.15, "entryAsk": 1.25},
+                                     "z": None, "e": None, "levels": {}}]}
+    fast = ot.OptionTrackBook(tmp_path / "fast", direction="bull", fetch=lambda s: None, healthy=lambda: True,
+                              background=False, clock=Clock(MON.timestamp()), sleep=lambda s: None, jev=FakeJev(),
+                              quote_fetch=quotes)
+    fast.apply("Watchlist", {"rows": [go_row()]}, MON)
+    t = fast.trades()[0]
+    assert (t["entryVia"], t["lastBid"], t["lastAsk"]) == ("quote", 1.15, 1.25)
+    slow = ot.OptionTrackBook(tmp_path / "slow", direction="bull", fetch=lambda s: chain(), healthy=lambda: True,
+                              background=False, clock=Clock(MON.timestamp()), sleep=lambda s: None, jev=FakeJev(),
+                              quote_fetch=lambda q: {"results": [{"symbol": "X", "ok": False}]})
+    slow.apply("Watchlist", {"rows": [go_row()]}, MON)
+    t = slow.trades()[0]
+    assert t["status"] == "open" and "entryVia" not in t
+    assert (t["lastBid"], t["lastAsk"]) == (t["entryBid"], t["entryAsk"]) and t["lastBid"] is not None

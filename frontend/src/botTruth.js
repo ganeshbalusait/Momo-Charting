@@ -36,3 +36,15 @@ export function truthGapLabel(botRoi, paperRoi) {
   if (Math.abs(gap) < 1) return "BOT matches paper";
   return gap > 0 ? `BOT looks ${gap.toFixed(1)} pts better than real` : `BOT looks ${Math.abs(gap).toFixed(1)} pts worse than real`;
 }
+
+/** The order rules v2 line (2026-11-05): live-quote mid, then re-sent at the ask
+ * so trades are not missed. Empty until the first v2 order exists. */
+export function truthNewRulesLine(acct) {
+  const n = acct && acct.newRules;
+  if (!n || !n.orders) return "";
+  const decided = (n.filled || 0) + (n.missed || 0);
+  const fill = decided ? `filled ${n.filled} of ${decided} (${Math.round((n.filled / decided) * 100)}%)` : `${n.orders} orders, none finished yet`;
+  const m = n.matched || {};
+  const roi = m.n ? ` · BOT ${truthPct(m.botRoi)} vs paper ${truthPct(m.paperRoi)} on ${m.n} closed` : "";
+  return `Since the new order rules: ${fill}${roi}.`;
+}

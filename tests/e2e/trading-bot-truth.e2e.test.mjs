@@ -70,3 +70,20 @@ e2eTest("phone width: the Truth check fits with no sideways scroll", async () =>
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+e2eTest("after the new order rules start, the card shows their own fill rate", async () => {
+  const truth = structuredClone(TRUTH);
+  truth.accounts.paper3.newRules = { orders: 4, filled: 3, missed: 1, open: 0, matched: { n: 2, botRoi: 12, paperRoi: 8.5 } };
+  await withApp({ view: "Bot", fakeReads: canned(truth) }, async (app) => {
+    const line = app.page.locator(`${CARD} .bot-truth-new`);
+    await line.waitFor({ timeout: 60_000 });
+    assert.equal((await line.innerText()).trim(),
+      "Since the new order rules: filled 3 of 4 (75%) · BOT +12.0% vs paper +8.5% on 2 closed.");
+    assert.deepEqual(app.writes, []);
+    assert.deepEqual(app.pageErrors, []);
+  });
+  await withApp({ view: "Bot", fakeReads: canned(TRUTH) }, async (app) => {
+    await app.page.locator(`${CARD} .bot-truth-headline`).waitFor({ timeout: 60_000 });
+    assert.equal(await app.page.locator(`${CARD} .bot-truth-new`).count(), 0);
+  });
+});

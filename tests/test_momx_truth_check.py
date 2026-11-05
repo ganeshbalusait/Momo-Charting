@@ -121,3 +121,20 @@ def test_build_survives_a_broken_file(tmp_path):
     bad.parent.mkdir(parents=True)
     bad.write_text("{not json", encoding="utf-8")
     assert tc.build(tmp_path, days=30, today="2026-11-04")["available"] is False
+
+
+def test_new_order_rules_are_reported_apart():
+    rows = [paper("missed", symbol="OLD"),
+            paper("closed", symbol="NEW", exec=2, buyFill=1.0, pl=30.0),
+            paper("missed", symbol="NEW2", exec=2)]
+    lookup = {("bull", "rvol", s, AT): bot(symbol=s) for s in ("OLD", "NEW", "NEW2")}
+    acct = tc.compare({"paper3": rows}, lookup)["accounts"]["paper3"]
+    assert (acct["orders"], acct["filled"], acct["missed"]) == (3, 1, 2)
+    new = acct["newRules"]
+    assert (new["orders"], new["filled"], new["missed"], new["fillRatePct"]) == (2, 1, 1, 50.0)
+    assert new["matched"]["paperRoi"] == 10.0
+
+
+def test_no_new_rules_section_before_any_v2_order():
+    acct = tc.compare({"paper3": [paper("missed")]}, {})["accounts"]["paper3"]
+    assert "newRules" not in acct

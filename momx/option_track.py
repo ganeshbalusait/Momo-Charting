@@ -1685,7 +1685,11 @@ class OptionTrackBook:
                     t.pop("why", None)
                     t.update(status="open", entryAt=stamp, best=pick["entry"], bestAt=stamp, worst=pick["entry"],
                              worstAt=stamp, last=pick["entry"], lastAt=stamp, pricedAtTs=now, entryVia="quote",
-                             chainAt=res.get("chainAt"))
+                             chainAt=res.get("chainAt"),
+                             # The paper mirror buys at the mid of lastBid/lastAsk. Without
+                             # them it waited for this ticker's next re-price (one ticker
+                             # per 8+ s): median 230 s late, 2026-11-04 truth check.
+                             lastBid=pick.get("entryBid"), lastAsk=pick.get("entryAsk"))
                     self._jev_ask(t)
                     e = res.get("e")
                     t.update(dict(e) if isinstance(e, Mapping) else {"eStatus": "none"})
@@ -1871,7 +1875,7 @@ class OptionTrackBook:
                             t.pop("why", None)
                             t.update(status="open", entryAt=stamp, best=pick["entry"], bestAt=stamp,
                                      worst=pick["entry"], worstAt=stamp, last=pick["entry"], lastAt=stamp,
-                                     pricedAtTs=now)
+                                     pricedAtTs=now, lastBid=pick.get("entryBid"), lastAsk=pick.get("entryAsk"))
                             self._note_path(t, pick["entry"], stamp)
                             self._jev_ask(t)
                             e = pick_entry_strike(chain, self.bear, pick["expiry"])

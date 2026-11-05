@@ -47,7 +47,7 @@ def _trade(**kw):
     t = {"rule": "call2h", "symbol": "AAPL", "at": (NOW - timedelta(minutes=2)).isoformat(),
          "entryAt": (NOW - timedelta(minutes=2)).isoformat(), "contract": "AAPL261023C00250000",
          "status": "open", "entry": 1.20, "jevP": 0.25,
-         "lastAt": (NOW - timedelta(seconds=20)).isoformat(), "lastBid": 1.10, "lastAsk": 1.30}
+         "lastAt": (NOW - timedelta(seconds=20)).isoformat(), "lastBid": 1.15, "lastAsk": 1.25}   # 8% spread (v2 skips >15%)
     t.update(kw)
     return t
 
@@ -115,7 +115,7 @@ def test_research_snapshot_uses_order_quote_and_is_saved_before_fill(tmp_path):
     m=pm.PaperMirror({"bull":Book([_trade(entry=.5,entryBid=.4,entryAsk=.6)])},tmp_path,
                      client_factory=lambda:c,off=lambda:False,ai_policy=policy)
     m.tick(NOW)
-    assert seen[0]["entry"] == 1.2 and seen[0]["entryBid"] == 1.1 and seen[0]["entryAsk"] == 1.3
+    assert seen[0]["entry"] == 1.2 and seen[0]["entryBid"] == 1.15 and seen[0]["entryAsk"] == 1.25
     row=m.status()["rows"][0]
     assert row["entryInputs"]["premium"] == 1.2 and row["entryInputs"]["minute"] == 600
     assert row["status"] == "buying" and row.get("buyFill") is None
@@ -467,3 +467,136 @@ def test_retired_jev_rule_cannot_open_a_new_paper_position(tmp_path):
         mirror.tick(NOW)
         assert not client.calls
         assert not pm.eligible(_trade(rule='jev',jevP=.99),NOW.timestamp(),None)
+
+
+# ---- order rules v2 (2026-11-04/05: "Fix all", then "dont miss any trade") ----
+
+CONTRACT = "AAPL261023C00250000"
+
+
+class Quotes:
+    """A live broker quote feed (the /api/option-quotes shape) the test can move."""
+    def __init__(self, bid, ask):
+        self.bid, self.ask, self.asof, self.asked = bid, ask, NOW.timestamp(), []
+
+    def __call__(self, contracts):
+        self.asked.append(list(contracts))
+        return {"asOf": self.asof, "quotes": {c: {"bid": self.bid, "ask": self.ask} for c in contracts}}
+
+    def move(self, bid, ask, at):
+        self.bid, self.ask, self.asof = bid, ask, at.timestamp()
+
+
+def _mirror_q(tmp_path, trades, client, quotes):
+    return pm.PaperMirror({"bull": Book(trades)}, tmp_path, client_factory=lambda: client, off=lambda: False,
+                          quotes_fetch=quotes)
+
+
+def test_wide_spread_is_still_bought_and_its_spread_recorded(tmp_path):
+    # His "dont think about spready just take the trade" (2026-11-05): no spread filter.
+    c = FakeClient()
+    m = _mirror(tmp_path, [_trade(lastBid=1.0, lastAsk=1.4)], c)          # 33% of the mid
+    m.tick(NOW)
+    assert c.calls == [("limit", CONTRACT, 3, 1.2, "buy_to_open")]
+    row = m.status()["rows"][0]
+    assert row["exec"] == pm.EXEC_VERSION and round(row["spreadAtOrder"], 3) == 0.333
+
+
+def test_spread_share_edges():
+    assert round(pm.spread_share(1.15, 1.25), 4) == 0.0833
+    assert pm.spread_share(None, 1) is None and pm.spread_share(2, 1) is None
+
+
+def test_live_quote_is_used_before_the_bots_older_quote(tmp_path):
+    c = FakeClient()
+    q = Quotes(1.35, 1.45)
+    m = _mirror_q(tmp_path, [_trade()], c, q)                               # Bot's own quote: mid 1.20
+    m.tick(NOW)
+    assert c.calls[0][3] == 1.4 and q.asked == [[CONTRACT]]
+    row = m.status()["rows"][0]
+    assert row["quoteVia"] == "live" and row["exec"] == pm.EXEC_VERSION and row["buyTries"] == 0
+
+
+def test_stale_live_quote_falls_back_to_the_bots_fresh_quote(tmp_path):
+    c = FakeClient()
+    q = Quotes(1.35, 1.45)
+    q.asof = NOW.timestamp() - pm.QUOTE_FRESH_SECONDS - 30
+    m = _mirror_q(tmp_path, [_trade()], c, q)
+    m.tick(NOW)
+    assert c.calls[0][3] == 1.2 and m.status()["rows"][0]["quoteVia"] == "bot"
+
+
+def test_unfilled_mid_buy_is_resent_at_the_ask_twice_then_missed(tmp_path):
+    c = FakeClient(fill=False)
+    q = Quotes(1.16, 1.24)                                                  # mid 1.20
+    m = _mirror_q(tmp_path, [_trade()], c, q)
+    m.tick(NOW)
+    t1 = NOW + timedelta(seconds=pm.BUY_TTL_SECONDS + 5)
+    q.move(1.30, 1.40, t1)                                                  # the call ran
+    m.tick(t1)
+    t2 = t1 + timedelta(seconds=pm.BUY_TTL_SECONDS + 5)
+    q.move(1.45, 1.55, t2)
+    m.tick(t2)
+    buys = [call[3] for call in c.calls if call[4] == "buy_to_open"]
+    assert buys == [1.2, 1.4, 1.55]                                         # mid, then the ask, the ask
+    row = m.status()["rows"][0]
+    assert row["status"] == "buying" and row["buyTries"] == 2 and len(row["buyHistory"]) == 2
+    assert "ask $1.55" in row["note"]
+    assert len({h["id"] for h in row["buyHistory"]} | {row["buyId"]}) == 3      # a new order id each time
+    m.tick(t2 + timedelta(seconds=pm.BUY_TTL_SECONDS + 5))
+    assert m.status()["rows"][0]["status"] == "missed" and len(c.calls) == 3
+
+
+def test_an_ask_resend_that_fills_opens_the_position(tmp_path):
+    c = FakeClient(fill=False)
+    q = Quotes(1.16, 1.24)
+    m = _mirror_q(tmp_path, [_trade()], c, q)
+    m.tick(NOW)
+    c.fill = True
+    t1 = NOW + timedelta(seconds=pm.BUY_TTL_SECONDS + 5)
+    q.move(1.30, 1.40, t1)
+    m.tick(t1)
+    m.tick(t1 + timedelta(seconds=10))
+    row = m.status()["rows"][0]
+    assert row["status"] == "open" and row["buyFill"] == 1.4 and row["buyTries"] == 1
+
+
+def test_no_fresh_quote_means_no_resend(tmp_path):
+    c = FakeClient(fill=False)
+    q = Quotes(1.16, 1.24)
+    m = _mirror_q(tmp_path, [_trade()], c, q)
+    m.tick(NOW)
+    t1 = NOW + timedelta(seconds=pm.BUY_TTL_SECONDS + 5)
+    q.asof = t1.timestamp() - pm.QUOTE_FRESH_SECONDS - 30                    # live feed stale; Bot quote stale too
+    m.tick(t1)
+    row = m.status()["rows"][0]
+    assert row["status"] == "missed" and "No fresh quote" in row["note"] and len(c.calls) == 1
+
+
+def test_no_resend_once_the_bot_trade_is_no_longer_eligible(tmp_path):
+    c = FakeClient(fill=False)
+    q = Quotes(1.16, 1.24)
+    trades = [_trade()]
+    m = _mirror_q(tmp_path, trades, c, q)
+    m.tick(NOW)
+    trades[0].update(exitPrice=1.0, exitBid=0.95, exitAsk=1.05)            # the Bot already sold
+    t1 = NOW + timedelta(seconds=pm.BUY_TTL_SECONDS + 5)
+    q.move(1.17, 1.25, t1)
+    m.tick(t1)
+    assert m.status()["rows"][0]["status"] == "missed" and len(c.calls) == 1
+
+
+def test_legacy_rows_without_exec_are_never_resent(tmp_path):
+    c = FakeClient(fill=False)
+    q = Quotes(1.16, 1.24)
+    m = _mirror_q(tmp_path, [_trade()], c, q)
+    m._day = NOW.date().isoformat()
+    key = pm.trade_key("bull", _trade())
+    cid = m._cid(key, "b")
+    c.submit_option_limit_order(CONTRACT, 3, 1.2, cid, "buy_to_open")
+    m._rows = {key: {"side": "bull", "rule": "call2h", "symbol": "AAPL", "at": _trade()["at"], "contract": CONTRACT,
+                     "qty": 3, "buyLimit": 1.2, "buyId": cid, "buyAt": NOW.isoformat(), "status": "buying"}}
+    t1 = NOW + timedelta(seconds=pm.BUY_TTL_SECONDS + 5)
+    q.move(1.17, 1.25, t1)
+    m.tick(t1)
+    assert m.status()["rows"][0]["status"] == "missed" and len(c.calls) == 1
