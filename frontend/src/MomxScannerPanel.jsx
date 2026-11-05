@@ -2,7 +2,7 @@ import { readScannerSort, writeScannerSort } from "./scannerSortPreferences.js";
 import { Fragment, createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { TOS_LINK_GROUPS, sendTickerToCharts, warmTickerForCharts, tosLinkGroup } from "./tosLinkGroups.js";
-import { createScannerRequestScope } from "./scannerRequestScope.js";
+import { createScannerRequestScope, isAbortError } from "./scannerRequestScope.js";
 import { readScannerBoard } from "./scannerBoardRead.js";
 import { createLiveRowProjector, liveQuote } from "./scannerLiveRows.js";
 
@@ -4840,6 +4840,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
   const loadLists = useCallback(async () => {
     if (listsInFlightRef.current) return;
     listsInFlightRef.current = true;
+    let aborted = false;
     try {
       const response = await fetch(MOMX_LISTS_ENDPOINT, { cache: "no-store" });
       if (!response.ok) throw new Error("lists unavailable");
@@ -4867,14 +4868,20 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
         }
         return items.length > 0 ? items[0].name : null;
       });
-    } catch {
+    } catch (err) {
       // KEEP the tabs. A worker restart, a request aborted while switching
       // panels, or a momentary network blip must not delete the only
       // navigation on the page. He hit this repeatedly on 2026-09-01 because
       // the scanner worker was restarted many times that day.
+      aborted = isAbortError(err);
     } finally {
       listsInFlightRef.current = false;
     }
+    // 2026-11-04: a remount (React mounts twice in development) aborted the
+    // first read while the guard above dropped the remount's own call, so
+    // the list picker stayed missing until the next 15 s poll. Still mounted
+    // after an abort means that call was lost: make it now.
+    if (aborted && mountedRef.current) loadLists();
   }, []);
 
   useEffect(() => {
@@ -5163,6 +5170,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     if (momentumInFlightRef.current) return;
     momentumInFlightRef.current = true;
     let events = EMPTY_ROWS;
+    let aborted = false;
     try {
       const url = (activeList
         ? MOMX_MOMENTUM_ENDPOINT + "?list=" + encodeURIComponent(activeList)
@@ -5174,11 +5182,14 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
           events = payload.events;
         }
       }
-    } catch {
+    } catch (err) {
       /* silent: an unwired endpoint is a normal state, not an error */
+      // A read cut off by a remount is not "no events": keep the chips on
+      // screen; the next poll asks again.
+      aborted = isAbortError(err);
     } finally {
       momentumInFlightRef.current = false;
-      if (mountedRef.current) {
+      if (mountedRef.current && !aborted) {
         setMomentumEvents(events);
         // Advance the age clock only while something on screen can still age;
         // a permanently-empty feed then never re-renders the panel.

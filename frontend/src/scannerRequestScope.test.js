@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createScannerRequestScope } from "./scannerRequestScope.js";
+import { createScannerRequestScope, isAbortError } from "./scannerRequestScope.js";
 
 test("leaving scanner cancels every read, including a body whose headers already arrived", async () => {
   const calls=[];
@@ -45,4 +45,25 @@ test("fallback signal composition works where AbortSignal.any is unavailable", a
     const scope=createScannerRequestScope(async (url,options)=>signal=options.signal);
     await scope.fetch('/board',{signal:caller.signal});scope.abortReads();assert.equal(signal.aborted,true);
   } finally {AbortSignal.any=original;}
+});
+
+test("a read cut off by a remount is an abort the caller can retry after resume", async () => {
+  // 2026-11-04: React mounts the scanner twice in development. The first
+  // lists read was aborted by the teardown, the in-flight guard swallowed
+  // the second, and the list picker stayed missing for a whole 15 s poll.
+  const scope=createScannerRequestScope((url,options)=>new Promise((resolve,reject)=>{
+    if(options.signal.aborted) return reject(options.signal.reason);
+    options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});
+    setTimeout(()=>resolve({ok:true,url}),5);
+  }));
+  const first=scope.fetch('/lists');
+  scope.abortReads();
+  scope.resume();
+  let error=null;
+  try{await first;}catch(e){error=e;}
+  assert.equal(isAbortError(error),true);
+  assert.equal((await scope.fetch('/lists')).ok,true);
+  assert.equal(isAbortError(new Error('lists unavailable')),false);
+  assert.equal(isAbortError(null),false);
+  assert.equal(isAbortError(new DOMException('closed','AbortError')),true);
 });

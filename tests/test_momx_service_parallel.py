@@ -337,3 +337,51 @@ def test_fetch_5m_bars_never_asks_for_the_schwab_volume_correction(monkeypatch):
     monkeypatch.setattr(service.feed, "fetch_5m", fake)
     service._fetch_5m_bars(["AAA"])
     assert seen["schwab_volume"] is False
+
+
+# ---------------------------------------------------------------------------
+# a list that goes away stops building (2026-11-04)
+# ---------------------------------------------------------------------------
+
+def test_a_list_that_disappears_stops_building(monkeypatch):
+    """2026-11-04 22:55 ET: both EMA lists were switched to Daily, but the old
+    "21 EMA Touch Monthly" and "21 EMA Touch Weekly" threads kept building
+    names that no longer existed -- UnknownListError every 15 s, forever, and
+    that error was what status() reported for the whole scanner."""
+    sizes = {"Mag7": 10, "21 EMA Touch Monthly": 5}
+    rec = install(monkeypatch, sizes=sizes, durations={})
+    service.start_warmer()
+    deadline = time.monotonic() + 3.0
+    while rec.builds("21 EMA Touch Monthly") < 1 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert rec.builds("21 EMA Touch Monthly") >= 1
+    del sizes["21 EMA Touch Monthly"]          # the timeframe switch renamed it
+    time.sleep(0.4)
+    before = rec.builds("21 EMA Touch Monthly")
+    time.sleep(0.5)
+    assert rec.builds("21 EMA Touch Monthly") == before, "a vanished list kept building"
+    assert "21 EMA Touch Monthly" not in service._STATES
+    assert [d["name"] for d in service.status()["lists"]] == ["Mag7"]
+    assert rec.builds("Mag7") >= 3
+
+
+def test_an_unreadable_list_file_does_not_retire_lists(monkeypatch):
+    rec = install(monkeypatch, sizes={"Mag7": 10, "Watchlist": 20}, durations={})
+    service.start_warmer()
+    time.sleep(0.2)
+
+    def broken(*a, **k):
+        raise OSError("universe file locked")
+
+    monkeypatch.setattr(board, "list_names", broken)
+    time.sleep(0.3)
+    before = rec.builds("Watchlist")
+    time.sleep(0.3)
+    assert rec.builds("Watchlist") > before
+
+
+def test_ema_lists_keep_their_priority_on_any_timeframe():
+    rank = service._priority_rank
+    assert rank("21 EMA Touch Daily") == rank("21 EMA Touch Monthly") == rank("21 EMA Touch Weekly") == 2
+    assert rank("50 EMA Touch Monthly") == rank("50 EMA Touch Daily") == 3
+    assert rank("Watchlist") == 1

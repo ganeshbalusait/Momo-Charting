@@ -1220,6 +1220,12 @@ PRIORITY_YIELD_MAX_SECONDS = 90.0
 
 
 def _priority_rank(name: str) -> int:
+    # The EMA lists carry their timeframe in the name ("21 EMA Touch Daily"),
+    # so they keep their slot whichever of Monthly / Weekly / Daily is chosen.
+    # Until 2026-11-04 a switch to Daily dropped the 21 list to the back.
+    parsed = ema_touch.parse_name(name)
+    if parsed is not None:
+        name = ema_touch.list_name(parsed[0], "Monthly" if parsed[0] == 21 else "Daily")
     if name in LIST_PRIORITY:
         return LIST_PRIORITY.index(name)
     return len(LIST_PRIORITY) if _is_active(name) else len(LIST_PRIORITY) + 1
@@ -1309,6 +1315,24 @@ def _warm_due_lists(names: list[str]) -> list[str]:
     return built
 
 
+def _still_listed(name: str) -> bool:
+    """Is ``name`` still a list? True when the list file cannot be read, so a
+    locked or half-written file never retires a live list. Never raises."""
+    try:
+        return name in board.list_names()
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _retire(name: str) -> None:
+    """Forget a list that no longer exists (deleted, renamed, or an EMA list
+    whose timeframe was switched). Its warm thread ends after this."""
+    with _LOCK:
+        _STATES.pop(name, None)
+        if _THREADS.get(name) is threading.current_thread():
+            _THREADS.pop(name, None)
+
+
 def _warm_one(name: str) -> None:
     """One list's own warm loop: sleep until due, build, repeat. Never dies.
 
@@ -1327,6 +1351,12 @@ def _warm_one(name: str) -> None:
                 state.wake.wait(min(wait, MAX_SLEEP_SECONDS))
                 state.wake.clear()
                 continue
+            if not _still_listed(name):
+                # 2026-11-04: the old "21 EMA Touch Monthly" thread kept
+                # building after the switch to Daily -- UnknownListError
+                # every 15 s, reported as the whole scanner's error.
+                _retire(name)
+                return
             if not _build_claimed(name):
                 # Someone else is on it; wait briefly rather than spin.
                 state.wake.wait(MIN_SLEEP_SECONDS)

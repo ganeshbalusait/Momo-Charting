@@ -2,6 +2,16 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-04T23:10:00-05:00",
+      "heading": "Scanner: switching an EMA list to Weekly or Daily no longer leaves a scanner error behind",
+      "items": [
+        "After you switched the 21 EMA Touch list from Monthly to Weekly to Daily, the scanner kept trying to rebuild the old Monthly and Weekly lists every 15 seconds and failing each time. The scanner's status showed 'Unknown list 21 EMA Touch Monthly' even though every list on screen was fine.",
+        "The old list now stops as soon as you switch, so the scanner spends no time on lists you are not using.",
+        "The 21 and 50 EMA Touch lists keep their place in the rebuild order (right after Mag7 and Watchlist) on whichever timeframe you pick. Before, a 21 list on Daily dropped to the back of the queue.",
+        "The list picker (Mag7 ▾) now shows as soon as the scanner opens. Before, it could be missing for the first 15 seconds."
+      ]
+    },
+    {
       "at": "2026-11-04T23:55:00-05:00",
       "heading": "BOT page: new Truth check shows what your paper account really got next to what the BOT claims",
       "items": [

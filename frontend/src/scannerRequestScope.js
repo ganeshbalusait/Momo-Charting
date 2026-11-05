@@ -29,3 +29,10 @@ export function createScannerRequestScope(fetchImpl = (...args) => globalThis.fe
     },
   };
 }
+
+// True for a read that was cancelled (the scanner unmounting, a remount, or a
+// caller's deadline) rather than one that failed. A loader whose in-flight
+// guard dropped a call while the cancelled read was settling retries on this.
+export function isAbortError(error) {
+  return Boolean(error) && error.name === "AbortError";
+}

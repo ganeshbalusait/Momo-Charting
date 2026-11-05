@@ -30,7 +30,7 @@ e2eTest("the picker marks Mag7 and Watchlist built-in, with no Rename or Delete 
     assert.deepEqual(await picker.locator(".momx-picker-name").allInnerTexts(), ["Mag7", "Watchlist", "Swing"]);
     for (const name of ["Mag7", "Watchlist"]) {
       const li = item(picker, name);
-      assert.equal((await li.locator(".momx-picker-builtin").innerText()).trim(), "built-in");
+      assert.equal((await li.locator(".momx-picker-builtin").textContent()).trim(), "built-in");
       assert.equal(await li.getByRole("button", { name: "Rename" }).count(), 0);
       assert.equal(await li.getByRole("button", { name: /^Delete/ }).count(), 0);
     }
