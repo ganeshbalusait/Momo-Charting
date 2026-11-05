@@ -8,11 +8,17 @@ export const SCANNER_SETUP_TYPES = Object.freeze([
   ['chartShort','C2H / C4H'],['tagWarn','Warning'],['tagExplosive','Explosive'],['tagSteady','Steady'],
 ]);
 
+// Confirm L1/L2/L3 (his ask 2026-11-05): filter choices only. Like A+, they
+// are NOT Setup types, so a level never counts toward its own 3+ types.
+export const CONFIRM_LEVEL_CHOICES = Object.freeze([['confirmL1', 'Confirm L1+'], ['confirmL2', 'Confirm L2+'], ['confirmL3', 'Confirm L3']]);
+export const confirmChoiceLevel = key => ({ confirmL1: 1, confirmL2: 2, confirmL3: 3 })[key] || 0;
+
 // Grade selection is a display filter, not an additional BOT Setup type.
-export const SCANNER_SETUP_CHOICES = Object.freeze([['aPlus', 'A+'], ...SCANNER_SETUP_TYPES]);
+export const SCANNER_SETUP_CHOICES = Object.freeze([['aPlus', 'A+'], ...CONFIRM_LEVEL_CHOICES, ...SCANNER_SETUP_TYPES]);
 
 export function scannerSetupLabel(key, direction = 'bull') {
   if (key === 'aPlus') return 'A+';
+  if (confirmChoiceLevel(key)) return CONFIRM_LEVEL_CHOICES.find(([value]) => value === key)[1] + (direction === 'bear' ? ' (bull only)' : '');
   const arrow = direction === 'bear' ? '↓' : '↑';
   const labels = { tagBolt: '⚡ Setup fired today', tagStar1: '⭐1', tagSector: '🔥 / 🔸 SECTOR',
     dayLine: 'LINE' + arrow, dayLine100: '$LINE' + arrow, dayReclaim: 'RECLAIM' + arrow,
@@ -29,6 +35,9 @@ export function scannerSetupLabel(key, direction = 'bull') {
 
 export function scannerSetupBadge(key, direction = 'bull') {
   const bear = direction === 'bear';
+  const level = confirmChoiceLevel(key);
+  if (level) return { text: scannerSetupLabel(key, direction), tag: 'confirmation',
+    className: `momx-strategy-tag is-confirmation is-level-${level}` };
   const tags = { aPlus: 'grade-aplus', tagBolt: 'bolt', go: 'go', goRvolMacd: 'go-rvol-macd', mxaplus: 'mxaplus',
     tagStar1: 'rank', tagSector: 'sector', dayLine: 'dayline', dayLine100: 'dayline100', dayReclaim: 'dayreclaim',
     tagZs: 'zsrule', tagAbvx: 'abvx', tagMomStrong: bear ? 'sqzmom-bear' : 'sqzmom',

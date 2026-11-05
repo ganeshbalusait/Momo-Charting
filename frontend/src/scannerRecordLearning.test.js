@@ -17,7 +17,8 @@ test('Record explains changing confirmations and stale inputs without manufactur
   const row = {symbol:'REGN',marketDataAt:new Date(now).toISOString(),
     rvol:Object.fromEntries(['5m','15m','30m'].map(tf=>[tf,{value:2,bg:'cyan',fg:'black'}])),
     _rvolObservation:{at:now,day:'2026-10-30',current:{'5m':2,'15m':2,'30m':2},increasing:['5m','15m','30m']}};
-  assert.match(scannerRecordLearning(row,now).lines[1], /Current confirmation: Level 1\./);
+  // Only 1 Setup type (RVOL): every level needs 3+ since 2026-11-05.
+  assert.match(scannerRecordLearning(row,now).lines[1], /Current confirmation: no confirmed level\. 1 distinct Setup types: RVOL\./);
   assert.match(scannerRecordLearning({...row,marketDataAt:new Date(now-3600000).toISOString()},now).lines.join(' '), /Saved study data/);
 });
 

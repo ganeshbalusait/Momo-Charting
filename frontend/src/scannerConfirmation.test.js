@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRvolObservationTracker, scannerConfirmation, observeConfirmationBoard, observeConfirmationHistory } from './scannerConfirmation.js';
+import { createRvolObservationTracker, scannerConfirmation as confirmRaw, observeConfirmationBoard, observeConfirmationHistory, confirmationDescription } from './scannerConfirmation.js';
+
+// Most tests are about RVOL/SQZ/Skittles; they hand in 3 Setup types so the
+// 3+ Setup-type gate (his rule 2026-11-05) is met. The gate has its own tests.
+const THREE=[{key:'tagMomStrong',text:'MOM'},{key:'tagRvol',text:'RVOL'},{key:'tagSkit',text:'SKIT'}];
+const scannerConfirmation=(r,at,tags,types=THREE)=>confirmRaw(r,at,tags,types);
 
 const T=Date.parse('2026-10-30T14:00:00Z');
 function row(values=[1,1,1],symbol='AMZN') {
@@ -79,25 +84,56 @@ test('timeframe bounds and rounded values reuse source color semantics',()=>{
   assert.equal(scannerConfirmation(c,T+15000).level,0);
 });
 
-test('highest precedence: SQZ cyan OR all blank, AND active fire, AND Skittles box',()=>{
+test('L2 = ONE of 2h/4h/D SQZ cyan, blank or fired; L3 adds a Skittles box 2h-M',()=>{
   let r=risen();assert.equal(scannerConfirmation(r,T+15000).level,3);
   r.skittles={M:{value:52,bg:'black',fg:'green'}};
   assert.equal(scannerConfirmation(r,T+15000).level,2);
   r.skittles={'1h':{bg:'green'},'2h':{bg:'dark_green'}};
   assert.equal(scannerConfirmation(r,T+15000).level,3);
-  r.sqz['D']={value:5,bg:'orange'};
-  assert.equal(scannerConfirmation(r,T+15000).level,1,'one blank among populated non-cyan is insufficient');
+  // No fire: one blank 2h-D cell is enough on its own now.
+  r.gradeFresh.timeline=[];r.sqz['D']={value:5,bg:'orange'};
+  assert.equal(scannerConfirmation(r,T+15000).level,3,'one blank cell among orange is enough');
+  for(const tf of ['2h','4h','D'])r.sqz[tf]={value:5,bg:'orange'};
+  assert.equal(scannerConfirmation(r,T+15000).level,1,'all orange 2h-D and no fire');
   r.sqz['4h']={value:2,bg:'cyan'};
   assert.equal(scannerConfirmation(r,T+15000).level,3,'one cyan is sufficient');
-  r.gradeFresh.timeline=[];assert.equal(scannerConfirmation(r,T+15000).level,1);
+  r.sqz['4h']={value:2,bg:'orange'};
+  r.gradeFresh.timeline=[{what:'SQZ 2h released',at:new Date(T-60000).toISOString()}];
+  assert.equal(scannerConfirmation(r,T+15000).level,3,'a 2h fire alone is sufficient (OR, not AND)');
+});
+
+test('Weekly SQZ is not part of the 2h-D check',()=>{
+  const r=risen();
+  for(const tf of ['2h','4h','D'])r.sqz[tf]={value:5,bg:'orange'};
+  r.sqz.Wk={value:3,bg:'cyan'};
+  r.gradeFresh.timeline=[{what:'SQZ Wk released',at:new Date(T-60000).toISOString()}];
+  assert.equal(scannerConfirmation(r,T+15000).level,1);
+});
+
+test('every level needs 3+ Setup types; fewer shows no Confirm tag',()=>{
+  const r=risen();
+  assert.equal(confirmRaw(r,T+15000,undefined,THREE.slice(0,2)).level,0,'2 types = no level');
+  assert.equal(confirmRaw(r,T+15000,undefined,[]).level,0);
+  const ok=confirmRaw(r,T+15000,undefined,THREE);
+  assert.equal(ok.level,3);assert.equal(ok.setupCount,3);
+  for(const tf of ['2h','4h','D'])r.sqz[tf]={value:5,bg:'orange'};r.gradeFresh.timeline=[];
+  assert.equal(confirmRaw(r,T+15000,undefined,THREE.slice(0,2)).level,0,'L1 also needs 3 types');
+  assert.equal(confirmRaw(r,T+15000,undefined,THREE).level,1);
+  assert.match(confirmationDescription(ok),/Setup types 3\/3 required/);
+});
+
+test('without passed types the real Setup counter runs (fixture has fewer than 3)',()=>{
+  assert.equal(confirmRaw(risen(),T+15000).level,0);
 });
 
 test('missing/null SQZ is unknown, not blank; fire must be active at evaluation time',()=>{
   for(const cell of [undefined,{value:null,bg:'black'},{value:'-',bg:null}]) {
-    const r=risen();r.sqz.Wk=cell;assert.equal(scannerConfirmation(r,T+15000).level,1);
+    const r=risen();r.gradeFresh.timeline=[];r.sqz={'2h':cell,'4h':cell,D:cell};
+    assert.equal(scannerConfirmation(r,T+15000).level,1);
   }
   for(const at of [T+30000,T-86400000]) {
-    const r=risen();r.gradeFresh.timeline[0].at=new Date(at).toISOString();
+    const r=risen();for(const tf of ['2h','4h','D'])r.sqz[tf]={value:5,bg:'orange'};
+    r.gradeFresh.timeline[0].at=new Date(at).toISOString();
     assert.equal(scannerConfirmation(r,T+15000).level,1);
   }
 });
@@ -129,4 +165,25 @@ test('stale or future source data never becomes the next valid baseline',()=>{
   assert.equal(t.observe({...row([9,9,9]),marketDataAt:new Date(T+60000).toISOString()},T+15000,'live'),null);
   assert.equal(t.observe({...row([9,9,9]),marketDataAt:new Date(T-1200000).toISOString()},T+15000,'live'),null);
   assert.equal(scannerConfirmation(attach(t,row([2,2,2]),T+30000),T+30000).level,3);
+});
+
+test('Setup filter has Confirm L1+/L2+/L3; they filter by level and never count as Setup types',async()=>{
+  const {SCANNER_SETUP_CHOICES,SCANNER_SETUP_TYPES,scannerSetupBadge}=await import('./scannerSetupOptions.js');
+  const {setupRulesPass}=await import('./momxFilters.js');
+  const {scannerSetupTypes}=await import('./scannerSetupTypes.js');
+  const keys=SCANNER_SETUP_CHOICES.map(([k])=>k);
+  for(const k of ['confirmL1','confirmL2','confirmL3']){
+    assert.ok(keys.includes(k));assert.ok(!SCANNER_SETUP_TYPES.some(([t])=>t===k));
+  }
+  assert.equal(scannerSetupBadge('confirmL2').className,'momx-strategy-tag is-confirmation is-level-2');
+  assert.equal(scannerSetupBadge('confirmL1','bear').text,'Confirm L1+ (bull only)');
+  // A real row with 3 real Setup types (RVOL, Explosive, Star 1).
+  const r=risen({...row([2,2,2]),bestRank:1,grade:{letter:'A'},m5:{pattern:'explosive'}});
+  assert.ok(scannerSetupTypes(r,T+15000).length>=3);
+  const pass=k=>setupRulesPass(r,{setupRules:[k]},T+15000);
+  assert.deepEqual([pass('confirmL1'),pass('confirmL2'),pass('confirmL3')],[true,true,true]);
+  r.skittles={};
+  assert.deepEqual([pass('confirmL1'),pass('confirmL2'),pass('confirmL3')],[true,true,false],'L2 row: L1+ and L2+ tick, L3 does not');
+  const flat=risen();
+  assert.equal(setupRulesPass(flat,{setupRules:['confirmL1']},T+15000),false,'under 3 Setup types never passes');
 });

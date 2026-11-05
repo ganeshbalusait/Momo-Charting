@@ -16,7 +16,7 @@ const row = () => ({ symbol: 'AMZN', direction: 'bull',
 
 test('A+ selects the exact displayed grade, composes with tags, and persists without changing BOT types', () => {
   assert.equal(SCANNER_SETUP_TYPES.length, 23);
-  assert.equal(SCANNER_SETUP_CHOICES.length, 24);
+  assert.equal(SCANNER_SETUP_CHOICES.length, 27, 'A+ + Confirm L1+/L2+/L3 + the 23 types');
   assert.equal(scannerSetupBadge('aPlus').text, 'A+');
   for (const direction of ['bull', 'bear']) {
     const rows = [

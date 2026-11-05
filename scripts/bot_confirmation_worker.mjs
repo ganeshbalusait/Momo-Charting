@@ -19,8 +19,8 @@ for await (const line of lines) {
         if (typeof symbol !== 'string' || seen.has(symbol)) continue;
         seen.add(symbol);
         const observation = tracker.observe(row, at, request.board);
-        const confirmation = scannerConfirmation({ ...row, _rvolObservation: observation }, at);
         const types = scannerSetupTypes(row, at);
+        const confirmation = scannerConfirmation({ ...row, _rvolObservation: observation }, at, undefined, types);
         if (observation) contexts[symbol] = { version: 1, highestLevel: confirmation.level,
           setupTypes: types, setupCount: types.length, publicationAt: request.publicationAt,
           historyReady: Object.keys(observation.before).length > 0,

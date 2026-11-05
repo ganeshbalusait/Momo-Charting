@@ -7468,7 +7468,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
         Colours come straight from the thinkScript studies on the server. The scanner re-runs
         continuously; this view checks for a scan every 15 seconds while the tab is open.
         When markets are closed or study candles are old, saved rows remain for review with their Data timestamp; a new scan does not mean new market data.
-        {" "}Confirm L1/L2/L3 are rule confirmations, not win probabilities. They require at least three cyan/green RVOL cells to rise versus their previous valid scanner publication; first observations do not match. History uses only earlier loaded snapshots.
+        {" "}Confirm L1/L2/L3 are rule confirmations, not win probabilities. Every level needs 3+ Setup types and at least three cyan/green RVOL cells (5m-D) rising versus their previous valid scanner publication; first observations do not match. L2 adds one of 2h/4h/D SQZ cyan, blank or fired today; L3 adds one or more cyan/green Skittles boxes 2h-M. History uses only earlier loaded snapshots.
         The small number under an RVOL value is how long ago that volume arrived &mdash; 12m is
         happening now, 3h is old news. It brightens under 15 minutes, and pulses when the cell
         is also coloured.

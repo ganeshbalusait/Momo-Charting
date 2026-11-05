@@ -5,6 +5,7 @@ Every feature, with its unit, integration and end-to-end test files (see the
 
 | Feature | Unit | Integration | End to end |
 |---|---|---|---|
+| Scanner + BOT: Confirm L1/L2/L3 (3+ Setup types on every level; L2 = one of 2h/4h/D SQZ cyan, blank or fired; L3 + Skittles box 2h-M); Confirm choices in Setup ▾ | `frontend/src/scannerConfirmation.test.js`, `frontend/src/scannerSetupSelection.test.js`, `frontend/src/scannerRecordLearning.test.js` | `tests/test_momx_bot_levels.py` (real Node level worker) | `tests/e2e/scanner-confirm-levels.e2e.test.mjs` |
 | BOT: Truth check (BOT vs real paper fills) and $0-bid exits count as $0 | `tests/test_momx_truth_check.py`, `tests/test_momx_rule_record.py`, `frontend/src/botTruth.test.js`, `frontend/src/momxBot.test.js` | `tests/test_momx_bot_truth_api.py` | `tests/e2e/trading-bot-truth.e2e.test.mjs` |
 | Scanner: 21 / 50 EMA Touch lists (Monthly/Weekly/Daily), SPAC flat-lead fix; EMA swing back-test engine | `tests/test_momx_ema_touch.py`, `tests/test_backtest_ema_swing.py` | `tests/test_momx_ema_touch_placeholder_api.py`, `tests/test_cov_scanner-board_ema_touch_api.py` | `tests/e2e/scanner-board-lists.e2e.test.mjs` (EMA chart dropdown) |
 | Scanner: switching an EMA list's timeframe retires the old list's builds; EMA lists keep their rebuild priority on any timeframe | `tests/test_momx_service_parallel.py` (vanished list, unreadable file, priority) | `tests/test_momx_ema_timeframe_switch_api.py` | `tests/e2e/scanner-board-lists.e2e.test.mjs` (EMA chart dropdown) |

@@ -1,5 +1,6 @@
 import { rvolNotLiveReason, bearSectorRead, BEAR_SECTOR_BREADTH, BEAR_SECTOR_MEDIAN, BEAR_SECTOR_MAX } from "./momxCells.js";
-import { SCANNER_SETUP_CHOICES } from './scannerSetupOptions.js';
+import { SCANNER_SETUP_CHOICES, confirmChoiceLevel } from './scannerSetupOptions.js';
+import { scannerConfirmation } from './scannerConfirmation.js';
 import { hasSetupGrade } from './momxGrade.js';
 
 // The MomX FILTERS panel: a second gate that runs on top of the scan result.
@@ -997,6 +998,8 @@ export function setupRulesPass(row, config, nowMs = Date.now()) {
   const rules = selectedSetupRules(config);
   const matches = key => {
     if (key === 'aPlus') return row?.grade?.letter === 'A+';
+    // Confirm L1+ / L2+ / L3: the level the Setup column shows, or higher.
+    if (confirmChoiceLevel(key)) return scannerConfirmation(row, nowMs).level >= confirmChoiceLevel(key);
     if ((key === 'tagExplosive' || key === 'tagSteady') && !hasSetupGrade(row)) return false;
     return strategyPasses(row, { setup: key }, nowMs);
   };

@@ -5,8 +5,8 @@ import { scannerRowFreshness } from './scannerFreshness.js';
 // Current rule confirmations are descriptive inputs, never probability labels.
 export function scannerRecordLearning(row, now = Date.now()) {
   const stale = scannerRowFreshness(row, now);
-  const confirmation = scannerConfirmation(row, now);
   const types = scannerSetupTypes(row, now);
+  const confirmation = scannerConfirmation(row, now, undefined, types);
   const counts = row?.recordLearning;
   const forecast = row?.recordProbability;
   const predicted = Date.parse(forecast?.scoredAt || ''), validatedAt = Date.parse(forecast?.validatedAt || '');

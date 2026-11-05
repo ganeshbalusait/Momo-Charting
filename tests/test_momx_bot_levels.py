@@ -91,3 +91,34 @@ def test_signal_snapshot_is_frozen_for_normal_and_star_entries(tmp_path, monkeyp
         assert t['setup']['chartContext']['levels']['ema21']==99
         changed=snapshot(t,'bull');changed['setupTypes'].clear()
         assert snapshot(t,'bull')['setupCount']==1
+
+
+@pytest.mark.skipif(not shutil.which('node'),reason='Node required for production shared-rule integration')
+def test_worker_uses_his_2026_11_05_level_rules(monkeypatch):
+    """L2 = one of 2h/4h/D SQZ cyan, blank OR fired (Weekly ignored); L3 adds a
+    Skittles box 2h-M; every level needs 3+ Setup types. Real Node worker."""
+    monkeypatch.setenv('AGX_BOT_LEVEL_STRATEGIES','1');engine=LevelEvaluator()
+    def variant(symbol,value,sqz,fire,skit):
+        r=row(value);r['symbol']=symbol;r['bestRank']=1  # ⭐1 = a third Setup type
+        r['sqz']={tf:{'value':5,'bg':'orange','fg':'black'} for tf in ('2h','4h','D')}
+        r['sqz'].update(sqz)
+        r['gradeFresh']['timeline']=[{'what':f'SQZ {fire} released','at':(NOW-timedelta(minutes=1)).isoformat()}] if fire else []
+        if not skit: r['skittles']={'M':{'value':52,'bg':'black','fg':'green'}}
+        return r
+    cases={'ORNG':({},None,True),'WKONLY':({'Wk':{'value':3,'bg':'cyan','fg':'black'}},'Wk',True),
+           'FIRE2H':({},'2h',True),'BLANKD':({'D':{'value':'-','bg':'black','fg':'black'}},None,True),
+           'NOSKIT':({'4h':{'value':2,'bg':'cyan','fg':'black'}},None,False)}
+    def call(value,seconds):
+        at=NOW+timedelta(seconds=seconds)
+        rows=[variant(s,value,*c) for s,c in cases.items()]
+        return engine.evaluate('Watchlist',{'generatedAt':at.isoformat(),'rows':rows},at)
+    try:
+        assert call(1,0)=={}
+        got=call(2,15)
+        levels={s:engine.contexts[s]['highestLevel'] for s in cases}
+        assert levels=={'ORNG':1,'WKONLY':1,'FIRE2H':3,'BLANKD':3,'NOSKIT':2}, levels
+        for s,level in levels.items():
+            ctx=engine.contexts[s]
+            assert ctx['setupCount']>=3, (s,ctx['setupCount'])
+            assert got[s]['highestLevel']==level
+    finally:engine.close()
