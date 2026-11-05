@@ -6,6 +6,7 @@ import { paperMetrics, paperTotals, reviewLabel, paperTime } from "./paperBotMet
 import { BOT_LEVEL_OPTIONS, BOT_LEVEL_HELP, filterBotLevel } from "./botLevels.js";
 import { SCANNER_SETUP_TYPES } from "./scannerSetupTypes.js";
 import { loadPaperHistory } from "./paperBotHistory.js";
+import { EXPERIMENT_DECISION_URL, awaitingLines } from "./botExperiment.js";
 import { truthAccountLabel, truthGapLabel, truthHeadline, truthMoney, truthNewRulesLine, truthPct } from "./botTruth.js";
 import { Bot, RefreshCw, X } from "lucide-react";
 import { BOT_RULE_HELP, BOT_RULE_LABELS, BOT_RULE_ORDER, botRuleLabel, BOT_TEST_RULES, botContractLabel, botDailyLog, botEntryStrikeLabel, botNewsBook, botAiBook, isEarlyDayLine, setBotFills, setBotExit, setBotContract, BOT_EXIT_LABELS, BOT_CONTRACT_LABELS, botExitMatrix, botRiskOk, botRiskRoi, botMomentumMatrix, botPeriodMatrix, botReport, formatBotDollars, formatBotPct, nextBotSort, sortBotRows } from "./momxBot.js";
@@ -163,12 +164,47 @@ function PaperTable({ rows, showDay, account, team }) {
   );
 }
 
+// Approve / Reject for a Paper 5 rule waiting for sign-off (2026-11-05). Only
+// shows when the server is in sign-off mode and a rule is waiting.
+function ExperimentApproval({ awaiting }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const lines = awaitingLines(awaiting);
+  if (!lines) return null;
+  const send = (decision) => {
+    if (!window.confirm(decision === "approve" ? "Switch this rule on for Paper 5?" : "Reject this rule? Paper 5 keeps its current rules.")) return;
+    setBusy(true);
+    setMessage("");
+    fetch(EXPERIMENT_DECISION_URL, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: awaiting.id, decision }) })
+      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => setMessage(ok ? (decision === "approve" ? "Approved: Paper 5 uses this rule from its next entry." : "Rejected: Paper 5 keeps its current rules.") : (d?.error || "Could not save your decision")))
+      .catch(() => setMessage("Could not reach the scanner worker; try again"))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <section className="bot-experiment-approval" aria-label="Paper 5 rule waiting for approval">
+      <p><b>{lines.title}</b></p>
+      <p>{lines.rule}.</p>
+      <p>{lines.test}</p>
+      <p>{lines.stats}</p>
+      <p className="bot-hint">{lines.note}</p>
+      <div className="bot-seg" role="group" aria-label="Approve or reject the Paper 5 rule">
+        <button type="button" disabled={busy} onClick={() => send("approve")}>Approve</button>
+        <button type="button" disabled={busy} onClick={() => send("reject")}>Reject</button>
+      </div>
+      {message ? <p role="status">{message}</p> : null}
+    </section>
+  );
+}
+
 function ExperimentStatus({ lab }) {
   if (!lab) return <p>Experiment runner status unavailable.</p>;
   const e = lab.latest;
   const forward = e?.evaluation;
   const validation = e?.screen?.validation;
-  const phases = { forward: "Future paper evaluation", active: "Active on Paper 5", rejected: "Rejected", rolled_back: "Rolled back" };
+  const phases = { forward: "Future paper evaluation", awaiting_approval: "Waiting for your OK", active: "Active on Paper 5", rejected: "Rejected", rolled_back: "Rolled back" };
+  const check = e?.statsCheck;
   const spec = e?.screen?.spec;
   const describe = s => s?.kind === "spread_ceiling" ? `Entry spread no wider than ${Math.round(s.value * 100)}% of premium`
     : s?.kind === "premium_floor" ? `Option premium at least ${PAPER_MONEY(s.value)}`
@@ -183,6 +219,8 @@ function ExperimentStatus({ lab }) {
     <p>Monitoring: {lab.monitorHealthy ? "current" : "waiting for a successful check"}. {!lab.busy && !lab.registeredActiveId && e?.state !== "forward" && lab.nextProposalAt ? `Next research eligible: ${new Date(lab.nextProposalAt * 1000).toLocaleString("en-US", { timeZone: "America/New_York" })} ET.` : ""}</p>
     {lab.error ? <p role="status">{lab.error}</p> : null}
     <p>{lab.busy ? "Planner and historical evaluation running…" : e ? `${phases[e.state] || e.state} · ${e.reason}` : "Waiting for a completed agent discussion to propose an experiment."}</p>
+    {check ? <p className="bot-experiment-check" role="status"><b>Statistics check:</b> {check.passed ? "passed" : "not passed"} · {check.reason}{e?.approvedBy ? ` · switched on by ${e.approvedBy}` : ""}</p> : null}
+    <ExperimentApproval awaiting={lab.awaiting} />
     {e ? <details><summary>Experiment evidence · {e.id}</summary>
       <p><b>Planner:</b> {e.proposal?.reason} ({e.proposal?.provider || "unknown provider"})</p>
       <p><b>Candidate:</b> {rule}. Frozen after {e.frozenAfterDay}; later outcomes cannot change its entry decisions.</p>
@@ -201,7 +239,7 @@ function ExperimentStatus({ lab }) {
         <p>Daily-close drawdown: baseline {PAPER_MONEY(forward.baselineDrawdown)} · candidate {PAPER_MONEY(forward.candidateDrawdown)}. Avoided losses {forward.avoidedLosses}; missed winners {forward.missedWinners}.</p>
         {Number.isFinite(forward.baselineWinRate) && Number.isFinite(forward.candidateWinRate) ? <p>Before-fee win rate: baseline {(forward.baselineWinRate * 100).toFixed(1)}% ({forward.baselineWins} wins / {forward.baselineLosses} losses / {forward.baselineFlat} flat) · candidate {(forward.candidateWinRate * 100).toFixed(1)}% ({forward.candidateWins} wins / {forward.candidateLosses} losses / {forward.candidateFlat} flat). Total losing-trade losses: baseline {PAPER_MONEY(forward.baselineLossTotal)} · candidate {PAPER_MONEY(forward.candidateLossTotal)}. Measured outcomes before fees, not predicted probabilities.</p> : null}
       </> : null}
-      <p>Promotion requires 10 future entry days, at least 100 closed fills, complete closed-fill evidence, 95% recorded decision coverage, at least half the opportunities retained, a higher net win rate and smaller total losing-trade losses, positive net and stressed results, improved P/L and no worse daily-close drawdown. The lower confidence bound of daily improvement must be positive.</p>
+      <p>Promotion requires 10 future entry days, at least 100 closed fills, complete closed-fill evidence, 95% recorded decision coverage, at least half the opportunities retained, a higher net win rate and smaller total losing-trade losses, positive net and stressed results, improved P/L and no worse daily-close drawdown. The lower confidence bound of daily improvement must be positive. Then the statistics check: the daily gain must stay above zero after counting every rule the planner has tried, so a lucky rule cannot switch on. A rule that passes both switches on automatically.</p>
       <p>Fees are excluded. Stress testing applies an extra 1% of entry premium. Unused capital stays cash. Future comparisons use Paper 3 fills; Paper 5 fills may differ. Candidate monitoring can revert Paper 5 to baseline after five entry days, or $500 of candidate closed losses in a day. Existing positions keep their exit rules.</p>
       <p>Supported experiments: entry spread, premium floor, opening-time exclusion. Agents cannot execute generated code or change live-money trading.</p>
       {lab.experiments?.map(x => <p key={x.id}>{x.id} · {phases[x.state] || x.state} · {x.reason}</p>)}

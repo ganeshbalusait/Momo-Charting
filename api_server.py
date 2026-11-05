@@ -23949,7 +23949,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # momx machinery inside the CPU-saturated chart process. It is
                 # also why POST /rebuild 404'd through the browser while
                 # working against :3010 directly (verify agent, 2026-08-30).
-                if parsed.path == "/api/momx-scanner/data-source":
+                if parsed.path in ("/api/momx-scanner/data-source", "/api/momx-scanner/paper-experiment-decision"):
+                    # Also the Paper 5 rule Approve / Reject (2026-11-05) - admin only.
                     # The "TOS" checkbox switches the scanner's data source for
                     # EVERY viewer (2026-09-30) - admin only, like preflight.
                     # The worker re-checks the forwarded X-AGX-User too.

@@ -696,6 +696,23 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/momx-scanner/movers/refresh":
                 self._json(HTTPStatus.OK, _movers_refresh())
                 return
+            if path == "/api/momx-scanner/paper-experiment-decision":
+                # His Approve / Reject for a Paper 5 rule that passed the
+                # forward test and the statistics check (2026-11-05). Used only
+                # in sign-off mode (paper_experiments.APPROVAL_REQUIRED); by his
+                # choice rules switch on automatically. Admin only, re-checked here.
+                who = self.headers.get("X-AGX-User")
+                if not viewer_is_admin(who):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                decision = body.get("decision")
+                if decision not in ("approve", "reject") or not isinstance(body.get("id"), str):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "Send id and decision: approve or reject"})
+                    return
+                from momx import paper_experiments
+                result = paper_experiments.decide(body["id"], decision == "approve", str(who or ""))
+                self._json(HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT, result)
+                return
             if path == "/api/momx-scanner/rebuild":
                 # Queues the build on the warmer thread and returns at once;
                 # the current generatedAt lets the client detect the new one.

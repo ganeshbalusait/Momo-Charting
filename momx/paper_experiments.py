@@ -130,6 +130,38 @@ def qualified(report):
             and report["candidateDrawdown"] <= report["baselineDrawdown"])
 
 
+#: One-sided false-positive budget for promoting ANY rule, shared across every
+#: rule the planner has tried (2026-11-05, his "Yes, add the check": the
+#: research report warned that auto-promoting the best of many tries is how
+#: a lucky rule goes live). Bonferroni: each try gets ALPHA / tries.
+ALPHA = 0.05
+#: His "Approve all trade without human" (2026-11-05): a rule that passes the
+#: forward test AND the statistics check switches on by itself. True puts it
+#: in "awaiting_approval" for the BOT page Approve / Reject box instead.
+APPROVAL_REQUIRED = False
+
+
+def stats_check(report, trials):
+    """Is the daily improvement still above zero after paying for every rule tried?
+
+    Lower bound = mean - z * sd / sqrt(days), with z for a one-sided
+    ALPHA / trials. Returns the numbers the BOT page shows him."""
+    daily = report.get("daily") or {}
+    differences = [v[1] - v[0] for v in daily.values()]
+    trials = max(1, int(trials or 1))
+    z = statistics.NormalDist().inv_cdf(1 - ALPHA / trials)
+    if len(differences) < 2:
+        return {"passed": False, "trials": trials, "z": round(z, 3), "days": len(differences), "lower": None,
+                "reason": "Fewer than two outcome days"}
+    mean = statistics.mean(differences)
+    lower = mean - z * statistics.stdev(differences) / math.sqrt(len(differences))
+    passed = lower > 0
+    return {"passed": passed, "trials": trials, "z": round(z, 3), "days": len(differences),
+            "meanDaily": round(mean, 2), "lower": round(lower, 2),
+            "reason": (f"Still better than baseline after counting all {trials} rules tried" if passed
+                       else f"Not clearly better once all {trials} rules tried are counted (could be luck)")}
+
+
 def fill_result(row):
     sells, buy = row.get("sells") or [], row.get("buyFill")
     if row.get("status") != "closed" or not finite(buy) or buy <= 0 or not sells:
@@ -197,9 +229,9 @@ class ExperimentLab:
             if not isinstance(loaded, dict) or not isinstance(loaded.get("experiments"), list) or not isinstance(loaded.get("execution", {}), dict):
                 raise ValueError("Invalid experiment state")
             for e in loaded["experiments"]:
-                if not isinstance(e, dict) or not e.get("id") or e.get("state") not in ("forward", "active", "rejected", "rolled_back"):
+                if not isinstance(e, dict) or not e.get("id") or e.get("state") not in ("forward", "awaiting_approval", "active", "rejected", "rolled_back"):
                     raise ValueError("Invalid experiment")
-                if e["state"] in ("forward", "active"):
+                if e["state"] in ("forward", "awaiting_approval", "active"):
                     accepts(e.get("screen", {}).get("spec", {}), {})
                     if not isinstance(e.get("decisions"), dict) or not when(e.get("frozenAfterDay", "")+"T00:00:00-04:00") or not finite(e.get("createdAt")):
                         raise ValueError("Invalid experiment evidence")
@@ -220,12 +252,39 @@ class ExperimentLab:
     def save(self):
         ai_filter._write_atomic(self.directory/"state.json", json.dumps(self.state, allow_nan=False))
 
+    def trials(self):
+        """Every rule the planner has ever put to a test (kept list is capped at 30)."""
+        return max(int(self.state.get("trials") or 0), len(self.state["experiments"]), 1)
+
+    def decide(self, experiment_id, approve, who="", clock=None):
+        """His Approve / Reject on a rule waiting for his OK. Only a rule in
+        awaiting_approval can be switched on; nothing else changes state."""
+        now = (clock or self.clock)()
+        with self.lock:
+            e = next((x for x in self.state["experiments"] if x.get("id") == experiment_id), None)
+            if e is None:
+                return {"ok": False, "error": "No such experiment"}
+            if e.get("state") != "awaiting_approval":
+                return {"ok": False, "error": "This experiment is not waiting for approval"}
+            if approve:
+                if self.state.get("active"):
+                    return {"ok": False, "error": "Another rule is already active on Paper 5"}
+                day = datetime.fromtimestamp(now, ai_filter.ET).date().isoformat()
+                e.update(state="active", promotedAt=now, monitorAfterDay=day, approvedBy=who, approvedAt=now,
+                         reason="Approved by you; Paper 5 uses this deterministic entry rule")
+                self.state["active"] = e["id"]
+            else:
+                e.update(state="rejected", rejectedBy=who, rejectedAt=now, reason="Rejected by you; Paper 5 stays on baseline rules")
+            self.save()
+            self.refresh_policy()
+        return {"ok": True, "experiment": {k: e.get(k) for k in ("id", "state", "reason")}}
+
     def refresh_policy(self):
         active = next((e for e in self.state["experiments"] if e["id"] == self.state.get("active") and e["state"] == "active"), None)
         self.policy = {"id": active["id"], "spec": active["screen"]["spec"]} if active else None
         self.observation_policies = tuple({"id": e["id"], "spec": dict(e["screen"]["spec"]),
                                           "createdAt": e["createdAt"], "frozenAfterDay": e["frozenAfterDay"]}
-                                         for e in self.state["experiments"] if e["state"] in ("forward", "active"))
+                                         for e in self.state["experiments"] if e["state"] in ("forward", "awaiting_approval", "active"))
 
     def propose(self, batch_id, batch):
         """Called on the research worker, never on scanner or order threads."""
@@ -233,7 +292,7 @@ class ExperimentLab:
         from momx.paper_research import VERSION, dataset, screen_fills
         with self.lock:
             revision_due = self.state.get("researchVersion", 0) < VERSION
-            if self.busy or (now < self.state.get("nextProposalAt", 0) and not revision_due) or self.state.get("active") or any(e["state"] == "forward" for e in self.state["experiments"]):
+            if self.busy or (now < self.state.get("nextProposalAt", 0) and not revision_due) or self.state.get("active") or any(e["state"] in ("forward", "awaiting_approval") for e in self.state["experiments"]):
                 return False
             self.busy = True
             self.state["researchVersion"] = VERSION
@@ -273,6 +332,8 @@ class ExperimentLab:
                           "reason": result["reason"], "evaluation": None, "inputsVersion": "order_quote_v1"}
             with self.lock:
                 self.state["experiments"].append(experiment)
+                # Count every try, including ones later dropped from the 30 kept.
+                self.state["trials"] = max(int(self.state.get("trials") or 0), len(self.state["experiments"]) - 1) + 1
                 self.state["experiments"] = self.state["experiments"][-30:]
                 self.state["nextProposalAt"] = now+86400  # daily research; only one forward candidate at a time
                 self.save()
@@ -399,8 +460,21 @@ class ExperimentLab:
             return
         if e["state"] == "forward":
             if qualified(report):
-                e.update(state="active", promotedAt=self.clock(), monitorAfterDay=today.date().isoformat(), reason="Passed fixed forward evaluation; Paper 5 uses this deterministic entry rule")
-                self.state["active"] = e["id"]
+                # 2026-11-05: no automatic switch-on. A rule that passes the
+                # forward window must also pass the multiple-testing check, then
+                # waits for Ganesh's Approve on the BOT page.
+                check = stats_check(report, self.trials())
+                e["statsCheck"] = check
+                if check["passed"] and not APPROVAL_REQUIRED:
+                    e.update(state="active", promotedAt=self.clock(), monitorAfterDay=today.date().isoformat(),
+                             approvedBy="automatic (statistics check)",
+                             reason="Passed the forward test and the statistics check; Paper 5 uses this rule automatically")
+                    self.state["active"] = e["id"]
+                elif check["passed"]:
+                    e.update(state="awaiting_approval", awaitingAt=self.clock(),
+                             reason="Passed the forward test and the statistics check; waiting for your OK. Paper 5 stays on baseline rules until you approve.")
+                else:
+                    e.update(state="rejected", reason="Passed the forward test but not the statistics check: " + check["reason"])
             else:
                 e.update(state="rejected", reason="Fixed forward evaluation did not meet all promotion requirements")
         else:
@@ -459,6 +533,9 @@ class ExperimentLab:
                     "registeredActiveId": self.state.get("active"), "monitorHealthy": self.monitor_healthy(),
                     "lastObservedAt": self.last_observed, "error": self.monitor_error or self.error,
                     "nextProposalAt": self.state.get("nextProposalAt"),
+                    "trials": self.trials(),
+                    "awaiting": next(({k: e.get(k) for k in ("id", "screen", "statsCheck", "evaluation", "awaitingAt", "reason")}
+                                      for e in self.state["experiments"] if e.get("state") == "awaiting_approval"), None),
                     "recentDecisions": list(self.execution.values())[-20:],
                     "latest": {k: v for k, v in latest.items() if k not in ("decisions", "cohort")} if latest else None,
                     "experiments": [{k: e.get(k) for k in ("id", "state", "reason", "createdAt")} for e in self.state["experiments"]]}
@@ -472,6 +549,13 @@ class ExperimentLab:
 
 
 _LAB = None
+
+
+def decide(experiment_id, approve, who=""):
+    """The worker route's entry point: his Approve / Reject (2026-11-05)."""
+    if _LAB is None:
+        return {"ok": False, "error": "Experiment runner not started"}
+    return _LAB.decide(experiment_id, approve, who)
 
 
 def paper5_policy(side, trade, now):

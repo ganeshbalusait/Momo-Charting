@@ -2,6 +2,16 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-05T01:40:00-05:00",
+      "heading": "BOT page: Paper 5 rules must pass a statistics check before they switch on",
+      "items": [
+        "The nightly AI planner tries a new Paper 5 rule each day. Before, a rule that did well in its 10-day paper test switched on by itself, even if it was just the lucky one out of many tries.",
+        "Now it must also pass a statistics check that counts every rule the planner has tried. The more rules tried, the higher the bar, so a lucky rule stays off.",
+        "As you asked, a rule that passes both still switches on automatically, with no click needed. The BOT page shows 'Statistics check: passed / not passed' and who switched it on.",
+        "An Approve / Reject box is ready if you ever want to sign off on rules yourself. It stays hidden unless that mode is turned on. Live money is not affected; this is Paper 5 paper trading only."
+      ]
+    },
+    {
       "at": "2026-11-05T02:10:00-05:00",
       "heading": "Paper 3 / Paper 5: orders go out within seconds and no longer miss the trade",
       "items": [

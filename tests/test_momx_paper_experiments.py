@@ -84,7 +84,10 @@ def test_fixed_future_window_promotes_and_survives_restart(tmp_path):
     lab.evaluate(e, rows[:90], datetime(2026, 11, 20, 18, tzinfo=ET))
     assert e["state"] == "forward" and lab.state["active"] is None
     lab.evaluate(e, rows, datetime(2026, 11, 20, 18, tzinfo=ET))
+    # 2026-11-05: switches on by itself only after the statistics check passes.
+    assert e["statsCheck"]["passed"] is True
     assert e["state"] == "active" and lab.state["active"] == "candidate"
+    assert e["approvedBy"] == "automatic (statistics check)"
     assert e["evaluation"]["avoidedLosses"] == 50 and e["evaluation"]["missedWinners"] == 0
     restored = pe.ExperimentLab({}, directory=tmp_path, roots={})
     assert restored.decision("bull", {"entry": 1, "entryBid": .5, "entryAsk": 1.5}, 1)["approved"] is True
@@ -258,3 +261,73 @@ def test_malformed_saved_state_cannot_enable_candidate(tmp_path, state):
     (tmp_path/"state.json").write_text(json.dumps(state))
     lab = pe.ExperimentLab({},directory=tmp_path,roots={})
     assert lab.policy is None and lab.status()["error"]
+
+
+# --- 2026-11-05: statistics check + his approval before Paper 5 switches a rule on ---
+
+def test_stats_check_pays_for_every_rule_tried():
+    noisy = {"daily": {f"2026-11-{d:02}": [0.0, v] for d, v in
+                       zip(range(2, 12), [60, -20, 80, -10, 70, 5, 90, -30, 40, 20])}}
+    one = pe.stats_check(noisy, 1)
+    many = pe.stats_check(noisy, 30)
+    assert one["passed"] is True and one["trials"] == 1
+    # Same evidence, but 30 rules tried: the bar rises and luck is no longer ruled out.
+    assert many["passed"] is False and many["z"] > one["z"] and many["lower"] < one["lower"]
+    assert "could be luck" in many["reason"]
+    assert pe.stats_check({"daily": {"2026-11-02": [0, 50]}}, 1)["passed"] is False
+
+
+def test_qualified_rule_that_fails_the_stats_check_is_rejected_not_switched_on(tmp_path):
+    rows, decisions = cohort()
+    e = experiment(); e["decisions"] = decisions
+    lab = pe.ExperimentLab({}, directory=tmp_path, roots={})
+    lab.state["experiments"] = [e]
+    lab.state["trials"] = 30
+    real = pe.stats_check
+    pe_stats = lambda report, trials: {**real(report, trials), "passed": False, "reason": "forced"}
+    try:
+        pe.stats_check = pe_stats
+        lab.evaluate(e, rows, datetime(2026, 11, 20, 18, tzinfo=ET))
+    finally:
+        pe.stats_check = real
+    assert e["state"] == "rejected" and lab.state["active"] is None
+    assert "statistics check" in e["reason"]
+
+
+def test_awaiting_rule_never_controls_paper5_and_blocks_new_proposals(tmp_path, monkeypatch):
+    # The optional sign-off mode (APPROVAL_REQUIRED = True).
+    monkeypatch.setattr(pe, "APPROVAL_REQUIRED", True)
+    rows, decisions = cohort()
+    e = experiment(); e["decisions"] = decisions
+    lab = pe.ExperimentLab({}, directory=tmp_path, roots={})
+    lab.state["experiments"] = [e]
+    lab.evaluate(e, rows, datetime(2026, 11, 20, 18, tzinfo=ET))
+    assert e["state"] == "awaiting_approval"
+    lab.last_observed = lab.clock()
+    # Baseline entry policy while waiting: a wide-spread trade is still taken.
+    assert lab.decision("bull", {"entry": 1, "entryBid": .5, "entryAsk": 1.5}, 1)["approved"] is True
+    assert lab.status()["awaiting"]["id"] == "candidate"
+    assert lab.status()["awaiting"]["statsCheck"]["passed"] is True
+    assert lab.propose("batch", {}) is False                 # no new research while he decides
+    restored = pe.ExperimentLab({}, directory=tmp_path, roots={})
+    assert restored.state["experiments"][0]["state"] == "awaiting_approval"
+
+
+def test_decide_only_changes_a_waiting_rule(tmp_path):
+    lab = pe.ExperimentLab({}, directory=tmp_path, roots={})
+    e = experiment(); e["state"] = "awaiting_approval"
+    other = {**experiment(), "id": "old", "state": "rejected"}
+    lab.state["experiments"] = [other, e]
+    assert lab.decide("missing", True) == {"ok": False, "error": "No such experiment"}
+    assert lab.decide("old", True)["ok"] is False and other["state"] == "rejected"
+    assert lab.decide("candidate", False, "owner")["ok"] is True
+    assert e["state"] == "rejected" and e["rejectedBy"] == "owner" and lab.state["active"] is None
+    assert lab.decide("candidate", True)["ok"] is False            # already decided
+
+
+def test_trials_count_survives_the_30_kept_experiments():
+    lab = pe.ExperimentLab.__new__(pe.ExperimentLab)
+    lab.state = {"experiments": [{}] * 30, "trials": 45}
+    assert lab.trials() == 45
+    lab.state = {"experiments": [{}] * 3}
+    assert lab.trials() == 3
