@@ -75,7 +75,7 @@ import ReleaseNotesPanel from "./ReleaseNotesPanel.jsx";
 import { parseReleases, readSeen, unreadCount } from "./releaseNotes.js";
 import { candleTimeFor, gradeStepMarkers } from "./gradeMarkers.js";
 import { consumeReleaseNotesMark, inTradingSession, offerUpdate } from "./appVersion.js";
-import { SCHWAB_RENEW_GIVE_UP_MS, SCHWAB_RENEW_MANUAL, SCHWAB_RENEW_POLL_MS, SCHWAB_RENEW_TIMED_OUT, renewalBaseline, renewalProgress } from "./schwabRenewal.js";
+import { SCHWAB_RENEW_GIVE_UP_MS, SCHWAB_RENEW_POLL_MS, SCHWAB_RENEW_TIMED_OUT, manualRenewal, manualRenewalAfter, manualRenewalNext, manualRenewalText, renewalBaseline, renewalProgress } from "./schwabRenewal.js";
 import { LEARN_CONTENT_VERSION, markLearnSeen, readLearnSeen, shouldAutoOpenLearn } from "./learnFirstVisit.js";
 import { nonJsonResponseError } from "./apiErrorMessage";
 import { setBoundedCacheEntry } from "./boundedCache";
@@ -26256,6 +26256,8 @@ function TradingWorkspace({ authUser, onLogout }) {
   const [schwabTradingClientSecret, setSchwabTradingClientSecret] = useState("");
   const [schwabTradingCallbackUrl, setSchwabTradingCallbackUrl] = useState("");
   const [schwabMessage, setSchwabMessage] = useState("");
+  // Renewing by pasting (app.agxtrade.com): which login is next, and its link.
+  const [schwabManualRenewal, setSchwabManualRenewal] = useState(null);
   const [apiKeySummary, setApiKeySummary] = useState({});
   const [alpacaKeyId, setAlpacaKeyId] = useState("");
   const [alpacaSecretKey, setAlpacaSecretKey] = useState("");
@@ -27816,6 +27818,7 @@ function TradingWorkspace({ authUser, onLogout }) {
     schwabRenewRunRef.current = run;
     setSubmitting("schwab-renew");
     setSchwabMessage("");
+    setSchwabManualRenewal(null);
     let renewal = null;
     try {
       // The "before" stamps are read fresh, not from whatever this page last
@@ -27828,7 +27831,9 @@ function TradingWorkspace({ authUser, onLogout }) {
       const profiles = payload.profiles || ["market_data"];
       renewal = { profiles, baseline: renewalBaseline(before, profiles), startedAt: new Date().toISOString() };
       setSchwabStatus((current) => ({ ...current, callbackListening: payload.callbackListening }));
-      setSchwabMessage(payload.manualCallbackRequired ? SCHWAB_RENEW_MANUAL : renewalProgress(renewal, before).text);
+      const manual = payload.manualCallbackRequired ? manualRenewal(payload) : null;
+      setSchwabManualRenewal(manual);
+      setSchwabMessage(manual ? manualRenewalText(manual) : renewalProgress(renewal, before).text);
       if (authWindow) {
         authWindow.opener = null;
         authWindow.location.href = payload.authorizationUrl;
@@ -27874,6 +27879,7 @@ function TradingWorkspace({ authUser, onLogout }) {
     const isTrading = profile === "trading";
     const profileLabel = isTrading ? "Accounts & Trading" : "Market Data";
     const pendingKey = isTrading ? "schwab-auth-trading" : "schwab-auth-market";
+    setSchwabManualRenewal(null);
     const authWindow = window.open(
       "about:blank",
       isTrading ? "schwab-oauth-trading" : "schwab-oauth-market-data",
@@ -27905,6 +27911,30 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
   };
 
+  // Paste flow, any step: (re)open the Schwab login that is next. A click, so
+  // no popup blocker; the link is the one Renew both began for that login.
+  const openSchwabManualLogin = () => {
+    const next = manualRenewalNext(schwabManualRenewal);
+    const url = next && schwabManualRenewal.urls[next];
+    if (!url) {
+      if (next) startSchwabAuthentication(next);
+      return;
+    }
+    // Its own window per login: step 1's window may still sit on the
+    // 127.0.0.1 page, and a window on another site cannot be steered from here.
+    const authWindow = window.open("about:blank", `schwab-oauth-paste-${next}`, "width=900,height=760");
+    if (authWindow) {
+      try {
+        authWindow.opener = null;
+      } catch {
+        // already on another site: nothing to cut
+      }
+      authWindow.location.href = url;
+    } else {
+      window.location.href = url;
+    }
+  };
+
   const completeSchwabAuthentication = async (profile = "market_data") => {
     schwabRenewRunRef.current += 1;
     const isTrading = profile === "trading";
@@ -27927,7 +27957,9 @@ function TradingWorkspace({ authUser, onLogout }) {
       if (isTrading) setSchwabTradingCallbackUrl("");
       else setSchwabMarketCallbackUrl("");
       await loadSchwabStatus();
-      setSchwabMessage(`Schwab ${profileLabel} token created. Run Test ${profileLabel}.`);
+      const manual = schwabManualRenewal && schwabManualRenewal.profiles.includes(profile) ? manualRenewalAfter(schwabManualRenewal, profile) : null;
+      setSchwabManualRenewal(manual && manualRenewalNext(manual) ? manual : null);
+      setSchwabMessage(manual ? manualRenewalText(manual) : `Schwab ${profileLabel} token created. Run Test ${profileLabel}.`);
     } catch (requestError) {
       setSchwabMessage(requestError instanceof Error ? requestError.message : `Unable to finish Schwab ${profileLabel} authentication.`);
     } finally {
@@ -32137,14 +32169,14 @@ function TradingWorkspace({ authUser, onLogout }) {
                   <div className="schwab-key-summary">
                     <div className="schwab-app-status">
                       <span>Market Data:</span>
-                      <b className={schwabStatus.marketData?.credentialsConfigured ? "is-configured" : ""}>{schwabStatus.marketData?.clientIdMasked || "not configured"}</b>
+                      <b className={`schwab-app-key${schwabStatus.marketData?.credentialsConfigured ? " is-configured" : ""}`} title="Your saved app key - check it matches developer.schwab.com">{schwabStatus.marketData?.clientId || schwabStatus.marketData?.clientIdMasked || "not configured"}</b>
                       <span className={`schwab-connection-state ${schwabConnectionTone(schwabStatus.marketData)}`}>{formatSchwabConnectionStatus(schwabStatus.marketData)}</span>
                       <SchwabExpiryBadge status={schwabStatus.marketData} />
                       <span className="schwab-expiry-date">{schwabStatus.marketData?.refreshTokenExpiresAt ? `re-authenticate by ${formatDateTime(schwabStatus.marketData.refreshTokenExpiresAt)}` : "authenticate after saving keys"}</span>
                     </div>
                     <div className="schwab-app-status">
                       <span>Accounts &amp; Trading (optional):</span>
-                      <b className={schwabStatus.trading?.credentialsConfigured ? "is-configured" : ""}>{schwabStatus.trading?.clientIdMasked || "not configured"}</b>
+                      <b className={`schwab-app-key${schwabStatus.trading?.credentialsConfigured ? " is-configured" : ""}`} title="Your saved app key - check it matches developer.schwab.com">{schwabStatus.trading?.clientId || schwabStatus.trading?.clientIdMasked || "not configured"}</b>
                       <span className={`schwab-connection-state ${schwabConnectionTone(schwabStatus.trading)}`}>{formatSchwabConnectionStatus(schwabStatus.trading)}</span>
                       <SchwabExpiryBadge status={schwabStatus.trading} />
                       <span className="schwab-expiry-date">{schwabStatus.trading?.refreshTokenExpiresAt ? `re-authenticate by ${formatDateTime(schwabStatus.trading.refreshTokenExpiresAt)}` : "optional · authenticate after saving keys"}</span>
@@ -32206,6 +32238,11 @@ function TradingWorkspace({ authUser, onLogout }) {
                     </div>
                   </div>
                   {schwabMessage ? <div className="schwab-settings-message">{schwabMessage}</div> : null}
+                  {schwabManualRenewal && manualRenewalNext(schwabManualRenewal) ? (
+                    <div className="schwab-settings-actions schwab-manual-renew-actions">
+                      <button className="schwab-manual-renew-open" onClick={openSchwabManualLogin} type="button"><ExternalLink size={14} />Open {manualRenewalNext(schwabManualRenewal) === "trading" ? "Accounts & Trading" : "Market Data"} login</button>
+                    </div>
+                  ) : null}
                   {schwabStatusError ? <div className="schwab-settings-message">{schwabStatusError}</div> : null}
                   <small className="schwab-settings-footnote">OAuth tokens are encrypted per user and refreshed by schwab-py. Accounts &amp; Trading is optional for each user and is used only for authorization and streaming; live order routing remains disabled.</small>
                 </div>

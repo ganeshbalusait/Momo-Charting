@@ -6296,6 +6296,7 @@ button {
 .schwab-key-summary b { border-radius: 5px; background: #29241d; color: #d9b76d; padding: 4px 7px; }
 .schwab-key-summary b.is-configured { background: #123922; color: #59dc8c; }
 .schwab-app-status { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.schwab-app-key { overflow-wrap: anywhere; user-select: all; }
 .schwab-connection-state {
   border: 1px solid #694326;
   border-radius: 999px;

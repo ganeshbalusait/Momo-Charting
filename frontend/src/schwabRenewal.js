@@ -10,9 +10,43 @@ const LABELS = { market_data: "Market Data", trading: "Accounts & Trading" };
 const KEYS = { market_data: "marketData", trading: "trading" };
 
 export const SCHWAB_RENEW_TIMED_OUT = "Nothing came back from Schwab, so the renewal stopped waiting. Click the renew button to try again.";
-export const SCHWAB_RENEW_MANUAL = "This browser is not on the PC, so the login cannot finish by itself: Schwab sends it back to the PC. "
-  + "After the Schwab login, copy the page's full address-bar URL into the Market Data callback field below and click Complete; "
-  + "then click Authenticate Optional Trading and do the same for the Trading field.";
+// Renewing by pasting (app.agxtrade.com, any computer - 2026-11-04): one
+// Renew both click begins both logins; Settings walks Market Data then
+// Accounts & Trading, each finished by pasting its address into its own box.
+const BOX = { market_data: "Market Data callback URL", trading: "Optional Accounts & Trading callback URL" };
+const COMPLETE = { market_data: "Complete Market Data OAuth", trading: "Complete Optional Trading OAuth" };
+
+export function manualRenewal(payload) {
+  const profiles = (payload && payload.profiles && payload.profiles.length ? payload.profiles : ["market_data"]).slice();
+  const urls = { ...((payload && payload.authorizationUrls) || {}) };
+  if (!urls[profiles[0]] && payload && payload.authorizationUrl) urls[profiles[0]] = payload.authorizationUrl;
+  return { profiles, urls, done: [] };
+}
+
+export function manualRenewalNext(manual) {
+  return manual ? manual.profiles.find((profile) => !manual.done.includes(profile)) || null : null;
+}
+
+// After a pasted login finished: the flow one step on, or the same flow when
+// that profile was not part of it.
+export function manualRenewalAfter(manual, profile) {
+  if (!manual || !manual.profiles.includes(profile) || manual.done.includes(profile)) return manual;
+  return { ...manual, done: [...manual.done, profile] };
+}
+
+export function manualRenewalText(manual) {
+  if (!manual) return "";
+  const next = manualRenewalNext(manual);
+  const total = manual.profiles.length;
+  if (!next) return total > 1 ? "✓ Both Schwab logins renewed." : `✓ Schwab ${LABELS[manual.profiles[0]]} renewed.`;
+  const lead = manual.done.length ? "" : "This browser is not on the PC, so the login cannot finish by itself - you paste it. ";
+  const step = total > 1 ? `Step ${manual.done.length + 1} of ${total}: ` : "";
+  const finished = manual.done.length ? `✓ ${manual.done.map((profile) => LABELS[profile]).join(" and ")} renewed. ` : "";
+  const open = manual.done.length ? `click Open ${LABELS[next]} login and sign in to Schwab` : "sign in to Schwab in the new window";
+  return `${lead}${finished}${step}${open}. It ends on a page that will not load - copy that page's whole address `
+    + `(https://127.0.0.1/?code=...), paste it into the ${BOX[next]} box below and click ${COMPLETE[next]}. `
+    + "Do it straight away: the address works for only about 30 seconds.";
+}
 
 // A re-login moves the 7-day expiry; the 30-minute access refresh does not.
 const loginStamp = (status, profile) => {

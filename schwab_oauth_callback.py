@@ -128,6 +128,35 @@ def _page(body: str, refresh_to: str | None = None) -> str:
 
 
 _TRY_AGAIN = "<p>Close this tab and click <b>Renew both</b> in AGX Settings again.</p>"
+_PASTE_INSTEAD = (
+    "<p>Renewing from app.agxtrade.com? Copy this page's whole address from the top of the window, "
+    "paste it into the matching callback URL box in AGX Settings and click Complete - right away, "
+    "it works for only about 30 seconds.</p>"
+)
+
+
+def pasted_login_problem(received_url: str, profile: str, expected_state: str | None, other_state: str | None) -> str | None:
+    """Why a pasted Schwab redirect cannot finish this profile's login, in the
+    trader's words - or None when it belongs to the login this profile is
+    waiting on. Checked before the code goes to Schwab, so a paste into the
+    wrong box or from an older attempt says so instead of "mismatching_state"."""
+    label = PROFILE_LABELS.get(profile, profile)
+    other_label = PROFILE_LABELS["market_data" if profile == "trading" else "trading"]
+    query = parse_qs(urlparse(str(received_url or "").strip()).query)
+    state = query.get("state", [""])[0]
+    if not query.get("code", [""])[0] or not state:
+        return ("This is not a Schwab sign-in address. After signing in, copy the whole address of the page "
+                "Schwab sends you to - it starts with https://127.0.0.1/?code=")
+    if expected_state is None:
+        if other_state is not None and state == other_state:
+            return f"This address is from the {other_label} sign-in. Paste it into the {other_label} callback URL box instead."
+        return f"No {label} sign-in is waiting. Click Renew both, sign in to Schwab, then paste the new address here."
+    if state == expected_state:
+        return None
+    if other_state is not None and state == other_state:
+        return f"This address is from the {other_label} sign-in. Paste it into the {other_label} callback URL box instead."
+    return (f"This address is from an older {label} sign-in. Only the newest one works: "
+            "click Renew both again and paste the address it gives you.")
 
 
 def handle_callback(path: str) -> tuple[int, str, bool]:
@@ -166,7 +195,7 @@ def handle_callback(path: str) -> tuple[int, str, bool]:
         # replayed URL, a login that timed out): never exchange it.
         return 400, _page(
             "<h1>This Schwab login is not the one AGX is waiting for</h1>"
-            "<p>It may be from an older tab or it timed out.</p>" + _TRY_AGAIN
+            "<p>It may be from an older tab or it timed out.</p>" + _PASTE_INSTEAD + _TRY_AGAIN
         ), False
     scope = scope_of(client)
     label = escape(PROFILE_LABELS.get(profile, profile))

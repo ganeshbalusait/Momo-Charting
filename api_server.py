@@ -136,6 +136,7 @@ from schwab_oauth_callback import (
     callback_listener_status,
     certificate_trusted,
     forget_pending,
+    pasted_login_problem,
     register_pending,
     renewal_result_for,
     start_callback_listener_safely,
@@ -21133,6 +21134,9 @@ def _schwab_status_payload(user=None, **extra) -> dict:
         if client is None:
             return unconfigured_status()
         status = client.connection_status()
+        # The caller's OWN app key in full, so they can check it against
+        # developer.schwab.com (2026-11-04). The secret is never sent.
+        status["clientId"] = str(getattr(getattr(client, "config", None), "client_id", "") or "")
         # The last login the PC's callback finished for THIS caller's token
         # file ("Renew both" progress); never another user's.
         status["renewalResult"] = renewal_result_for(client)
@@ -24610,16 +24614,34 @@ class ApiHandler(BaseHTTPRequestHandler):
                         {"error": "Use the Re-authenticate button so the local callback can securely complete Schwab OAuth."},
                     )
                     return
-                oauth_client = _schwab_oauth_client(
-                    actor, str(body.get("profile", "market_data") or "market_data")
-                )
+                profile = "trading" if str(body.get("profile") or "").strip().lower() == "trading" else "market_data"
+                oauth_client = _schwab_oauth_client(actor, profile)
                 if oauth_client is None:
                     self._send_json(
                         HTTPStatus.BAD_REQUEST,
                         {"error": "Save your Schwab app key and secret first."},
                     )
                     return
-                token = oauth_client.exchange_authorization_response(received_url)
+                # Pasting is how a renewal from app.agxtrade.com finishes
+                # (2026-11-04): say which box or which attempt an address
+                # belongs to instead of Schwab's "mismatching_state".
+                if callable(getattr(oauth_client, "pending_state", None)):
+                    other = _schwab_oauth_client(actor, "market_data" if profile == "trading" else "trading")
+                    other_state = other.pending_state() if callable(getattr(other, "pending_state", None)) else None
+                    problem = pasted_login_problem(received_url, profile, oauth_client.pending_state(), other_state)
+                    if problem:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": problem})
+                        return
+                try:
+                    token = oauth_client.exchange_authorization_response(received_url)
+                except Exception as exc:  # noqa: BLE001 - shown to the person renewing
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": f"Schwab did not accept this address ({safe_provider_message(str(exc))}). "
+                                  "Each address works once and for only about 30 seconds: click Renew both again "
+                                  "and paste the new address right away."},
+                    )
+                    return
                 forget_pending(received_url)   # finished by hand: the listener stops waiting
                 self._send_json(
                     HTTPStatus.OK,
@@ -24736,6 +24758,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     {
                         "authorizationUrl": urls[0][2],
+                        # Every login's link: pasting from another computer
+                        # opens the second one from Settings, step 2.
+                        "authorizationUrls": {profile: url for profile, _client, url in urls},
                         "profiles": [profile for profile, _client, _url in urls],
                         "callbackListening": listening,
                         "manualCallbackRequired": not listening,

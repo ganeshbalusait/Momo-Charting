@@ -196,6 +196,12 @@ class SchwabClient:
             type(self)._pending_auth_contexts[self._auth_key] = context
             return context.authorization_url
 
+    def pending_state(self) -> str | None:
+        """The OAuth state of the login this token file is waiting on, or None."""
+        with self._auth_lock:
+            context = type(self)._pending_auth_contexts.get(self._auth_key)
+        return getattr(context, "state", None) if context is not None else None
+
     def exchange_authorization_response(self, received_url: str) -> dict:
         """Exchange a loopback OAuth callback through schwab-py.
 
