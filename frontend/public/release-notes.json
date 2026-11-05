@@ -2,6 +2,17 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-04T23:55:00-05:00",
+      "heading": "BOT page: new Truth check shows what your paper account really got next to what the BOT claims",
+      "items": [
+        "A new Truth check card at the top of the BOT page puts the BOT's numbers next to your real Alpaca paper orders on the same signals, for the last 30 days.",
+        "It shows how many of your mid-price orders actually filled. Since Oct 19, Paper 3 filled 105 of 317 and Paper 5 filled 22 of 75. Most never filled.",
+        "On the trades that did fill, it shows what the BOT says against what the paper account got: Paper 3 BOT -6.3% vs paper -10.7%, Paper 5 BOT +27.9% vs paper +11.6%.",
+        "It lists the BOT's biggest wins your paper account never got, for example AAPL 11-04 +232%, where the $3.15 limit order did not fill. Open 'By rule' to see the same split for each rule.",
+        "An option with a $0 bid at the exit now counts as $0 on the BOT page and in the scanner's Record column, because nobody would buy it. Before, a few penny options showed as +100% winners."
+      ]
+    },
+    {
       "at": "2026-11-04T20:43:00-05:00",
       "heading": "Scanner: 21 / 50 EMA Touch lists fixed for former SPACs (OUST, BBAI, DJT, GRAB)",
       "items": [

@@ -22740,6 +22740,17 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .bot-status.is-bad-quote { background: #3a2a0a; color: #fbbf24; }
 
 /* Scanner Setup tag: "✓ JEV" - Jev would take the bot's trade (2026-10-02 test) */
+/* BOT truth check (2026-11-04): BOT mid trades vs real paper fills */
+.bot-truth { margin: 10px 0; padding: 12px 14px; border: 1px solid rgba(251, 191, 36, 0.45); border-radius: 10px;
+  background: rgba(251, 191, 36, 0.06); display: grid; gap: 8px; min-width: 0; }
+.bot-truth h3 { margin: 0; font-size: 15px; color: #fbbf24; }
+.bot-truth h4 { margin: 0 0 4px; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--bot-dim); }
+.bot-truth-account { display: grid; gap: 8px; min-width: 0; padding-top: 6px; border-top: 1px solid var(--bot-line); }
+.bot-truth-headline { margin: 0; font-size: 14px; font-weight: 600; }
+.bot-truth-missed { margin: 0; font-size: 12.5px; color: var(--bot-dim); overflow-wrap: anywhere; }
+.bot-truth .bot-kpi.bot-truth-gap .bot-kpi-value { font-size: 15px; line-height: 1.25; }
+.bot-truth details summary { cursor: pointer; font-size: 13px; }
+
 :is(.momx-scanner-panel, .momx-setup-picker) .momx-strategy-tag.is-jev { color: #34d399; border-color: rgba(52, 211, 153, 0.6); background: rgba(52, 211, 153, 0.12); font-weight: 800; }
 
 /* Scanner "Jev" score column (2026-10-02) */

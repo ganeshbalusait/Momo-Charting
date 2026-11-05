@@ -6,6 +6,7 @@ import { paperMetrics, paperTotals, reviewLabel, paperTime } from "./paperBotMet
 import { BOT_LEVEL_OPTIONS, BOT_LEVEL_HELP, filterBotLevel } from "./botLevels.js";
 import { SCANNER_SETUP_TYPES } from "./scannerSetupTypes.js";
 import { loadPaperHistory } from "./paperBotHistory.js";
+import { truthAccountLabel, truthGapLabel, truthHeadline, truthMoney, truthPct } from "./botTruth.js";
 import { Bot, RefreshCw, X } from "lucide-react";
 import { BOT_RULE_HELP, BOT_RULE_LABELS, BOT_RULE_ORDER, botRuleLabel, BOT_TEST_RULES, botContractLabel, botDailyLog, botEntryStrikeLabel, botNewsBook, botAiBook, isEarlyDayLine, setBotFills, setBotExit, setBotContract, BOT_EXIT_LABELS, BOT_CONTRACT_LABELS, botExitMatrix, botRiskOk, botRiskRoi, botMomentumMatrix, botPeriodMatrix, botReport, formatBotDollars, formatBotPct, nextBotSort, sortBotRows } from "./momxBot.js";
 
@@ -605,6 +606,69 @@ function AiModelCard() {
   );
 }
 
+// Truth check (2026-11-04, his "BOT trading ... not sure is correct"): the BOT's
+// virtual mid trades next to what the real Alpaca paper account got on the same
+// signals. Read-only: GET /api/momx-scanner/bot-truth (momx/truth_check.py).
+function TruthCheckCard() {
+  const [doc, setDoc] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () => fetch("/api/momx-scanner/bot-truth?days=30", { credentials: "include", cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => { if (alive) { setDoc(d); setFailed(false); } })
+      .catch(() => { if (alive) setFailed(true); });
+    load();
+    const id = window.setInterval(load, 60000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, []);
+  const accounts = Object.entries(doc?.accounts || {}).filter(([, a]) => a && a.orders);
+  return (
+    <section className="bot-truth" aria-label="Truth check">
+      <h3>Truth check · BOT vs your real paper fills</h3>
+      {failed && !doc ? <p className="bot-hint" role="status">Truth check unavailable right now.</p>
+        : !doc ? <p className="bot-hint" role="status">Loading the truth check…</p>
+          : !accounts.length ? <p className="bot-hint" role="status">No paper orders yet.</p>
+            : <>
+              <p className="bot-hint">Last 30 days{doc.from ? ` (${doc.from} to ${doc.through})` : ""}. The BOT counts every signal as bought at the mid. Your paper account sends the same signals as real mid-price limit orders.</p>
+              {accounts.map(([account, a]) => (
+                <div key={account} className="bot-truth-account">
+                  <h4>{truthAccountLabel(account)}</h4>
+                  <p className="bot-truth-headline">{truthHeadline(a)}</p>
+                  <section className="bot-kpis" aria-label={`${truthAccountLabel(account)} truth totals`}>
+                    <Kpi label="Orders filled" value={a.fillRatePct == null ? "-" : Math.round(a.fillRatePct) + "%"} sub={`${a.filled} filled · ${a.missed} never filled · ${a.open} open`} />
+                    <Kpi label="BOT says" value={truthPct(a.matched?.botRoi)} sub={`${truthMoney(a.matched?.botPnl)} on the ${a.matched?.n || 0} filled trades`} />
+                    <Kpi label="Paper got" value={truthPct(a.matched?.paperRoi)} sub={`${truthMoney(a.matched?.paperPnl)} real paper P/L`} />
+                    <Kpi className=" bot-truth-gap" label="Gap" value={truthGapLabel(a.matched?.botRoi, a.matched?.paperRoi)} sub={`BOT P/L on orders that never filled: ${truthMoney(a.missedBotPnl)}`} />
+                  </section>
+                  {a.biggestMissed?.length ? <p className="bot-truth-missed"><b>Biggest BOT wins you never got:</b>{" "}
+                    {a.biggestMissed.map((m) => `${m.symbol} ${m.day.slice(5)} ${botRuleLabel(m.rule, m.side)} ${truthPct(m.botPct)} (limit $${Number(m.limit).toFixed(2)} not filled)`).join(" · ")}</p> : null}
+                  <details>
+                    <summary>By rule · {a.byRule?.length || 0} rules</summary>
+                    <div className="bot-scroll">
+                      <table className="bot-table">
+                        <thead><tr><th>Side</th><th>Rule</th><th>Orders</th><th>Never filled</th><th>Filled</th><th>BOT ROI</th><th>Paper ROI</th></tr></thead>
+                        <tbody>
+                          {(a.byRule || []).map((r) => (
+                            <tr key={`${r.side}-${r.rule}`}>
+                              <td>{r.side === "bear" ? "Puts" : "Calls"}</td><td>{botRuleLabel(r.rule, r.side)}</td>
+                              <td className="bot-num">{r.orders}</td><td className="bot-num">{r.missed}</td>
+                              <td className="bot-num">{r.fillRatePct == null ? "-" : Math.round(r.fillRatePct) + "%"}</td>
+                              <td className="bot-num">{truthPct(r.botRoi)}</td><td className="bot-num">{truthPct(r.paperRoi)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                </div>
+              ))}
+              <p className="bot-hint">Compared only on orders that filled and closed. An exit with a $0 bid counts as $0, because nobody would buy it.</p>
+            </>}
+    </section>
+  );
+}
+
 function Kpi({ label, value, sub, className = "" }) {
   return (
     <div className={"bot-kpi" + className}>
@@ -888,6 +952,7 @@ export default function BotPanel() {
         </div>
       </header>
 
+      <TruthCheckCard />
       {book === 'all' && side === 'bull' ? <details className="bot-level-help">
         <summary>Level strategies · 3+ Setup types · MOM optional · AI review afterward</summary>
         <p>{BOT_LEVEL_HELP} Entries use the existing 09:30–15:30 ET window. New records start with valid future scanner updates.</p>

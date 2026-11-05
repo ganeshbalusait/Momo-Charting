@@ -236,6 +236,10 @@ export function botLegResult(t, contract = BOT_CONTRACT, exit = BOT_EXIT, fills 
   if (fills === "mid" && exit !== "best" && bid !== null && ask !== null) {
     price = bid >= 0 && ask > 0 && ask >= bid ? Math.round((bid + ask) * 5000) / 10000 : null;
   }
+  // A $0 bid (2026-11-04 truth check): nobody would buy it, so it is worth $0,
+  // not the mid. Only a SOLD price (exit / close) - an open trade's live mark
+  // keeps its mid until the BOT actually sells.
+  if (fills === "mid" && bid === 0 && (exit === "close" ? f("close") !== null : exited)) price = 0;
   if (fills === "real" || fills === "pro") {
     const inBid = f("entryBid");
     const inAsk = f("entryAsk");

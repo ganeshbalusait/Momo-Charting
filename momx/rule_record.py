@@ -51,6 +51,8 @@ def exclusion(trade):
         bid, ask = trade.get(bid_key), trade.get(ask_key)
         if not _num(bid) or not _num(ask):
             return 'missing_bid_ask'
+        if bid_key == 'exitBid' and bid == 0 and ask >= 0:
+            continue  # unsellable exit: scored at $0 in summarize, whatever was logged
         if bid < 0 or ask < bid or abs(price - (bid + ask) / 2) > .005001:
             return 'invalid_midpoint'
     if not trade.get('symbol') or not trade.get('contract') or not trade.get('rule'):
@@ -78,7 +80,10 @@ def summarize(days_list):
                 if reason:
                     a['excluded'][reason] += 1
                     continue
-                gross = (trade['exitPrice'] - trade['entry']) * 100
+                # A $0 exit bid (2026-11-04): nobody would buy - worth $0, not the
+                # logged price (it was cent-rounded or the ask: +100% on $0.005).
+                sold = 0.0 if trade.get('exitBid') == 0 else trade['exitPrice']
+                gross = (sold - trade['entry']) * 100
                 a['outcomes'].append({'day': day['day'], 'entryAt': trade['entryAt'],
                     'exitAt': trade['exitPriceAt'], 'cost': trade['entry'] * 100,
                     'gross': gross, 'net': gross - ROUNDTRIP_FEE})

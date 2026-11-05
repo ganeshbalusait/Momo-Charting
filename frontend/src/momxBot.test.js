@@ -337,12 +337,14 @@ test("AI pick keeps only trades the AI scored 55%+", () => {
 });
 
 
-test("0.20 delta losses use zero-bid midpoint and never a frozen missing exit", async () => {
+test("0.20 delta losses: a zero-bid exit is unsellable ($0) and never a frozen missing exit", async () => {
   const { botLegResult, setBotContract } = await import("./momxBot.js");
   const loss = {symbol: "AAPL", rule: "go", status: "closed", exitPrice: 2,
     eEntry: 1, eEntryBid: 0.9, eEntryAsk: 1.1, eExit: 1,
     eExitBid: 0, eExitAsk: 0.02};
-  assert.equal(botLegResult(loss, "entry").pct, -99);
+  // Was -99 (scored at the $0.01 mid) until the 2026-11-04 truth check: a $0 bid
+  // has no buyer, so the exit is worth $0.
+  assert.equal(botLegResult(loss, "entry").pct, -100);
   assert.equal(botLegResult({...loss, eExit: 0, eExitBid: null, eExitAsk: null}, "entry").pct, -100);
   assert.equal(botLegResult({status: "closed", eEntry: 1, eLast: 1}, "entry").pct, null);
   try {
@@ -350,8 +352,8 @@ test("0.20 delta losses use zero-bid midpoint and never a frozen missing exit", 
     const report = botReport([{day: "2026-10-30", trades: [loss]}]);
     assert.equal(report.total.losses, 1);
     assert.equal(report.total.wins, 0);
-    assert.equal(report.total.dollars, -99);
-    assert.equal(report.total.roi, -99);
+    assert.equal(report.total.dollars, -100);
+    assert.equal(report.total.roi, -100);
   } finally { setBotContract("main"); }
 });
 
@@ -416,4 +418,14 @@ test("fractional midpoint dollars and small losses remain visible", () => {
   assert.equal(formatBotDollars(1234.50000000001), "+$1,234.50");
   assert.equal(formatBotPct(-.32), "-0.32%");
   assert.equal(formatBotPct(.001), "+<0.01%");
+});
+
+test("zero exit bid is unsellable: the BOT scores it at $0, not the mid", async () => {
+  // 2026-11-04 truth check: 2,216 trades with a $0 exit bid were scored at a
+  // price nobody would pay. At the mid a $0 / $0.02 exit looked like $0.01.
+  const { botLegResult } = await import("./momxBot.js");
+  const t = { entry: 0.5, entryBid: 0.45, entryAsk: 0.55, exitPrice: 0.01, exitBid: 0, exitAsk: 0.02,
+    status: "closed", exitAt: "2026-10-20T10:00:00-04:00", at: "2026-10-20T09:40:00-04:00" };
+  assert.equal(botLegResult(t, "main", "exit", "mid").pct, -100);
+  assert.equal(botLegResult({ ...t, exitBid: 0.01, exitAsk: 0.03 }, "main", "exit", "mid").pct, -96);
 });

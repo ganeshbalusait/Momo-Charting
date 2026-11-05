@@ -23283,6 +23283,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # Served HERE from the bot's day files (2026-10-08), not proxied:
                 # the worker spends ~60% of its time rebuilding boards at IDLE
                 # priority, and a request thread there got ~1% - the Bot page
+            if parsed.path == "/api/momx-scanner/bot-truth":
+                # Truth check (2026-11-04): the BOT's virtual mid trades vs the
+                # real Alpaca paper orders on the same signals. Admin only, like
+                # the Bot page; served from files here, never proxied.
+                _truth_user = self._session_user()
+                if not (_truth_user and _truth_user.get("isAdmin")):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                try:
+                    _truth_days = max(1, min(60, int(str((parse_qs(parsed.query or "").get("days") or ["30"])[0]))))
+                except ValueError:
+                    _truth_days = 30
+                self._send_json(HTTPStatus.OK, _momx_bot_truth(_truth_days))
+                return
                 # timed out after 20 s and showed zeros (10-08 23:14 ET, the
                 # worker took 100-120 s). Read-only files; no board work here.
                 _bot_user = self._session_user()
@@ -25117,6 +25131,26 @@ def _momx_bot_version(days: int) -> tuple:
     and the news files trade_news.annotate stamps from. Same tuple = same bytes.
     (day files, news files) - the caller lets the news half lag a few minutes."""
     from momx import option_track as ot, trade_news
+
+_MOMX_BOT_TRUTH: dict = {}
+_MOMX_BOT_TRUTH_LOCK = threading.Lock()
+
+
+def _momx_bot_truth(days: int) -> dict:
+    """BOT vs real Alpaca paper fills (momx/truth_check.py), cached 60 s.
+    Read-only: the saved paper-mirror and BOT day files, never the broker."""
+    with _MOMX_BOT_TRUTH_LOCK:
+        hit = _MOMX_BOT_TRUTH.get(days)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+    base = Path(override) if override else Path(ARTIFACTS_DIR)
+    from momx import truth_check
+    payload = truth_check.build(base, days)
+    with _MOMX_BOT_TRUTH_LOCK:
+        _MOMX_BOT_TRUTH[days] = (time.time(), payload)
+    return payload
+
 
     override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
     base = Path(override) if override else Path(ARTIFACTS_DIR)

@@ -111,3 +111,12 @@ def test_strategy_exit_failed_quote_retry_and_day_rollover(tmp_path):
     book._quotes_fetch=rollover
     book._fast_price(['TEST'])
     assert t['exitPrice'] is None
+
+
+def test_zero_bid_exit_scores_zero():
+    # 2026-11-04 truth check: a $0 bid means nobody would buy. The old record
+    # counted a $0.005 entry "sold" at $0.01 (the ask) as +100%.
+    row = trade(entry=.005, entryBid=0, entryAsk=.01, exitPrice=.01, exitBid=0, exitAsk=.01)
+    assert exclusion(row) is None
+    result = summarize([{'day': '2026-10-09', 'trades': [row]}])['dayLine']
+    assert result['grossPnl'] == -0.5 and result['losses'] == 1 and result['wins'] == 0
