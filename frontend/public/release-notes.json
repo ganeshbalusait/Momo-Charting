@@ -2,6 +2,16 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-05T17:45:00-05:00",
+      "heading": "Scanner: 21 / 50 EMA Touch lists now use your exact TOS rule",
+      "items": [
+        "A ticker is on '21 EMA Touch' when the current bar's low is at or below the 21 EMA and its high is at or above it - the same as your TOS line 'low <= ema21 and high >= ema21'. Same for 50.",
+        "The EMA now includes the current bar's close, like TOS ExpAverage(close, 21). Before, it used the last finished bar's EMA.",
+        "The extra 'must be in an uptrend' check is gone, because your TOS script has none. Falling stocks that tag the EMA now show too, so the lists are longer.",
+        "Works on Monthly, Weekly and Daily - pick with the EMA chart dropdown as before."
+      ]
+    },
+    {
       "at": "2026-11-05T08:45:00-05:00",
       "heading": "Scanner: new Confirm L1 / L2 / L3 rules, and you can filter by them in Setup ▾",
       "items": [

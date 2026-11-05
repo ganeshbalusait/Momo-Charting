@@ -2,8 +2,7 @@
 
 2026-11-04: Alpaca served OUST 39 flat $253.90 months (the SPAC shell) before
 it traded in 2020-09. The scanner seeded its monthly 50 EMA from them and the
-line came out $37.53 instead of ~$29, so the uptrend check failed and a real
-touch never showed in "50 EMA Touch Monthly" (BBAI, DJT and GRAB the same).
+line came out $37.53 instead of ~$29, and a real touch never showed in "50 EMA Touch Monthly" (BBAI, DJT and GRAB the same).
 
 Here the real refresh (momx.ema_touch.refresh) runs on a faked Alpaca reply,
 then the list is read through the real scanner worker over HTTP. Only the
@@ -30,10 +29,10 @@ def _months(count, start_year=2010):
 def _alpaca_reply(placeholder_months: int):
     stamps = list(_months(placeholder_months + 111))
     real = [20.0 + 0.05 * i for i in range(111)]
-    level = ema_touch.ema(real[:-1], 50)[-1]
-    bars = [{"t": t, "l": 253.9, "c": 253.9} for t in stamps[:placeholder_months]]
-    bars += [{"t": t, "l": c, "c": c} for t, c in zip(stamps[placeholder_months:], real)]
-    bars[-1]["l"] = round(level - 0.01, 4)          # this month's low tags the real line
+    level = ema_touch.ema(real, 50)[-1]               # TOS: includes this month's close
+    bars = [{"t": t, "l": 253.9, "h": 253.9, "c": 253.9} for t in stamps[:placeholder_months]]
+    bars += [{"t": t, "l": c, "h": c, "c": c} for t, c in zip(stamps[placeholder_months:], real)]
+    bars[-1]["l"] = round(level - 0.01, 4)          # this month's range straddles the real line
     return {"OUST": bars}
 
 
@@ -91,6 +90,6 @@ def test_spac_lead_in_does_not_hide_a_real_monthly_50_touch(tmp_path, monkeypatc
         assert summary["50:Monthly"] == 1
         assert _count(worker, "50 EMA Touch Monthly") == 1
     state = ema_touch.detail("OUST")["50:Monthly"]
-    real = [20.0 + 0.05 * i for i in range(110)]
+    real = [20.0 + 0.05 * i for i in range(111)]
     assert state["level"] == pytest.approx(ema_touch.ema(real, 50)[-1], abs=1e-3)
-    assert state["uptrend"] and state["touched"]
+    assert state["touched"] and state["pass"]

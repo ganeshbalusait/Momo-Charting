@@ -16,18 +16,20 @@ default Monthly) and is part of the list's NAME ("21 EMA Touch Weekly"), so
 History, matched-since stamps and the Jev log never mix timeframes - switching
 is switching to another list.
 
-THE GATE, per timeframe bar ("period"):
-  level   = EMA(n) of the last COMPLETED period's close (TOS ExpAverage)
-  uptrend = that period closed above the EMA, and the EMA rose that period
-  touch   = the current period's low (so far) reached the level
+THE GATE = his TOS scan script, verbatim (2026-11-05: "use same as TOS"):
+    def ema21 = ExpAverage(close, 21);
+    plot scan = low <= ema21 and high >= ema21;
+  (and the same with 50), evaluated on the CURRENT bar of the timeframe:
+  the EMA includes the current bar's close (so far), and the bar's range
+  must straddle it. No uptrend condition (the pre-11-05 rule required one
+  and used the last COMPLETED period's EMA; TOS does neither).
 "Current period" = the newest period any symbol has a bar for, so after the
 close (and over a weekend) Daily shows the last session and Weekly the last
-week, the way a scanner would. Fewer than ``2n`` completed periods = left out
-(the EMA's seed still weighs >2%; APP/VKTX/APLD "touched" an unsettled monthly
-line on 2026-10-04).
-Back-test (artifacts/backtest_leap_ema*.py, 48 stocks 2000-2026, LEAP calls):
-the MONTHLY 50 touch won 60% vs 54% for any day; WEEKLY and DAILY touches were
-no better than any day. Weekly/Daily are here because he asked for them.
+week, the way a scanner would. A symbol with no bar in the current period
+does not pass. Fewer than ``2n`` real bars = left out (the EMA's seed still
+weighs >2%; TOS loads decades so its seed is negligible, ours would not be).
+Back-test (artifacts/backtest_ema_swing.py, OLD rule with uptrend): only the
+MONTHLY 50 touch beat a random entry; Weekly/Daily were no better.
 
 DATA: Alpaca SIP bars, split-adjusted (monthly matched Yahoo to the cent on
 MSFT/TSLA/BKNG): 1Month since 2015, 1Week ~3 years, 1Day ~14 months. One
@@ -203,28 +205,31 @@ def _drop_placeholder_lead(bars: list[Mapping[str, Any]]) -> list[Mapping[str, A
 
 
 def touch_state(bars: Sequence[Mapping[str, Any]], length: int, period: str) -> dict | None:
-    """The gate for one symbol, one EMA length, one timeframe.
+    """The gate for one symbol, one EMA length, one timeframe - TOS verbatim.
 
     ``bars`` are that timeframe's bars (``period`` sortable key, ``low``,
-    ``close``), ascending; ``period`` is the current period. Returns ``None``
-    when the EMA is not settled (fewer than ``2 * length`` completed periods),
-    else ``{"level", "uptrend", "low", "touched", "pass"}``.
+    ``high``, ``close``), ascending; ``period`` is the current period. The
+    EMA runs over every close up to and including the current bar, and the
+    gate is ``low <= ema and high >= ema`` on the current bar. Returns
+    ``None`` when the EMA is not settled (fewer than ``2 * length`` bars),
+    else ``{"level", "low", "high", "touched", "pass"}``.
     """
-    completed = _drop_placeholder_lead([b for b in bars if str(b.get("period")) < period])
-    current = [b for b in bars if str(b.get("period")) == period]
-    if len(completed) < max(2 * length, 2):
+    rows = _drop_placeholder_lead([b for b in bars if str(b.get("period")) <= period])
+    if len(rows) < max(2 * length, 2):
         return None
-    line = ema([float(b["close"]) for b in completed], length)
-    level, before = line[-1], line[-2]
-    uptrend = float(completed[-1]["close"]) > level and level > before
-    low = float(current[-1]["low"]) if current else None
-    touched = low is not None and low <= level
+    level = ema([float(b["close"]) for b in rows], length)[-1]
+    current = rows[-1] if str(rows[-1].get("period")) == period else None
+    low = float(current["low"]) if current is not None else None
+    raw_high = current.get("high") if current is not None else None
+    # A bar without a high (an old cache row) cannot be judged; never a hit.
+    high = float(raw_high) if raw_high is not None else None
+    touched = low is not None and high is not None and low <= level <= high
     return {
         "level": round(level, 4),
-        "uptrend": bool(uptrend),
         "low": low,
+        "high": high,
         "touched": bool(touched),
-        "pass": bool(uptrend and touched),
+        "pass": bool(touched),
     }
 
 
@@ -329,7 +334,7 @@ def _fetch(symbols: list[str], tf: str, now: datetime) -> dict[str, list[dict]]:
             if ok:
                 for sym, bars in got.items():
                     out[sym] = [
-                        {"period": str(b["t"])[:key_len], "low": b["l"], "close": b["c"]}
+                        {"period": str(b["t"])[:key_len], "low": b["l"], "high": b.get("h"), "close": b["c"]}
                         for b in bars if b.get("t") and b.get("c") is not None
                     ]
                 break
