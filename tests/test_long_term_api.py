@@ -17,6 +17,7 @@ import pytest
 from api_harness import RELAYED, running_api, seed_user
 from cf_access_auth import ACCESS_EMAIL_HEADER
 from long_term import service as lt_service
+from test_long_term_leaps import FakeChain, expiry_of, std_chain
 from test_long_term_service import NOW, NOW_MS, fake_finnhub, make_svc
 
 VIEWER = "viewer-long-term@example.com"
@@ -261,3 +262,76 @@ def test_detail_route_canonicalises_the_symbol(svc):
         ok_status, ok = api.get("/api/long-term/aApL")
     assert status == 404 and body == {"error": "unknown ticker"}
     assert ok_status == 200 and ok["symbol"] == "AAPL" and ok["row"]["price"] == AAPL_PRICE
+
+
+# ---------- LEAP to buy: GET /api/long-term/<SYM>/leap ----------
+# The chain is a fake (nothing leaves the PC); the LEAPS-flagged row is the buy_store AAPL.
+
+def _leap_svc(monkeypatch, directory, price, chain):
+    s = _install(monkeypatch, directory, Quotes({"AAPL": {"last_price": price, "quote_time_ms": NOW_MS,
+                                                           "description": "Apple"}}))
+    s._chain_fn = chain
+    return s
+
+
+def test_leap_route_returns_a_contract_for_a_flagged_row(monkeypatch, buy_store):
+    directory, price = buy_store
+    fake = FakeChain(std_chain((30, 400, 600, 800), spot=price, today=NOW.date()))
+    s = _leap_svc(monkeypatch, directory, price, fake)
+    try:
+        with running_api() as api:
+            status, body = api.get("/api/long-term/aapl/leap?mos=50")
+            detail_status, detail = api.get("/api/long-term/AAPL?mos=50")
+    finally:
+        s.stop_refresher()
+    assert status == 200, body
+    assert body["symbol"] == "AAPL" and body["leaps"] is True and body["price"] == pytest.approx(price)
+    assert body["reason"] == "" and body["expiries"] == [expiry_of(400, NOW.date()), expiry_of(600, NOW.date())]
+    c = body["contract"]
+    assert c and c["dte"] == 600 and c["strike"] < price and c["bid"] > 0 and c["ask"] >= c["bid"]
+    assert c["delta"] == 0.75 and c["intrinsic"] == pytest.approx(price - c["strike"])
+    assert c["breakeven"] == pytest.approx(c["strike"] + c["ask"]) and c["cost"] == pytest.approx(c["ask"] * 100)
+    assert fake.calls and fake.calls[0][0] == "AAPL"
+    assert detail_status == 200 and detail["row"]["leaps"] is True and detail["explain"]    # detail still works
+
+
+def test_leap_route_wait_row_is_not_flagged_and_makes_no_chain_call(svc):
+    fake = svc._chain_fn = FakeChain(std_chain(today=NOW.date()))
+    with running_api() as api:
+        status, body = api.get("/api/long-term/AAPL/leap")
+    assert status == 200, body
+    assert body["leaps"] is False and body["contract"] is None and body["reason"] == "LEAPS not flagged"
+    assert body["price"] == AAPL_PRICE and body["expiries"] == []
+    assert fake.calls == []
+
+
+def test_leap_route_unknown_ticker_is_404(svc):
+    svc._chain_fn = FakeChain(std_chain(today=NOW.date()))
+    with running_api() as api:
+        status, body = api.get("/api/long-term/ZZZQ/leap")
+        junk_status, junk = api.get("/api/long-term/%20/leap")
+    assert (status, body) == (404, {"error": "unknown ticker"})
+    assert (junk_status, junk) == (404, {"error": "unknown ticker"})
+
+
+def test_leap_route_chain_failure_is_200_chain_unavailable(monkeypatch, buy_store):
+    directory, price = buy_store
+    s = _leap_svc(monkeypatch, directory, price, FakeChain(error="Schwab down"))
+    try:
+        with running_api() as api:
+            status, body = api.get("/api/long-term/AAPL/leap")
+    finally:
+        s.stop_refresher()
+    assert status == 200, body
+    assert body["leaps"] is True and body["contract"] is None and body["reason"] == "chain unavailable"
+
+
+def test_leap_route_shares_the_mos_validation(svc):
+    svc._chain_fn = FakeChain(std_chain(today=NOW.date()))
+    with running_api() as api:
+        bad_status, bad = api.get("/api/long-term/AAPL/leap?mos=40")
+        ok_status, ok = api.get("/api/long-term/AAPL/leap?mos=30")
+        anon_status, _ = api.get("/api/long-term/AAPL/leap", headers=RELAYED)
+    assert (bad_status, bad) == (400, {"error": "mos must be 50 or 30"})
+    assert ok_status == 200 and ok["symbol"] == "AAPL"
+    assert anon_status == 401

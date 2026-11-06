@@ -29,6 +29,12 @@ import {
   big5Dots,
   formatEtStamp,
   acceptsPayload,
+  leapLine,
+  leapSection,
+  leapOrder,
+  leapTransient,
+  leapRetryDue,
+  LEAP_FETCH_CAP,
 } from "./longTerm";
 
 const POLL_MS = 30000;
@@ -105,7 +111,54 @@ function BuyZone({ pct }) {
   );
 }
 
-function cellContent(key, row) {
+// The contract line under the LEAPS pill (table cell and phone card). The
+// Retry control is a span, not a button: the phone card is itself a button.
+// `queued`: the page is about to read this row on its own (inside the cap or
+// its drawer is open); otherwise a row with no entry offers a "Find contract"
+// link instead of saying "finding…" for a read that will never come.
+function LeapLine({ symbol, entry, onRetry, queued = true }) {
+  const act = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    onRetry?.();
+  };
+  const link = (label, title) => (
+    <span
+      role="button"
+      tabIndex={0}
+      className="long-term-link"
+      title={title}
+      onClick={act}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") act(e);
+      }}
+    >
+      {label}
+    </span>
+  );
+  let text;
+  if (!entry && !queued) {
+    text = link("Find contract", `Only the first ${LEAP_FETCH_CAP} LEAPS rows are looked up on their own; click to look this one up`);
+  } else if (!entry || entry.loading) text = "finding…";
+  else if (entry.error) {
+    text = (
+      <>
+        contract not available{" "}
+        {link("Retry")}
+      </>
+    );
+  } else if (entry.transient) {
+    text = (
+      <>
+        {leapLine(entry.payload)}{" "}
+        {link("Retry", "The chain feed did not answer; the page retries on its own")}
+      </>
+    );
+  } else text = leapLine(entry.payload);
+  return <small className="long-term-leap" data-testid={`long-term-leap-${symbol}`}>{text}</small>;
+}
+
+function cellContent(key, row, leap = {}) {
   const local = row.currency && row.currency !== "USD";
   switch (key) {
     case "symbol":
@@ -126,7 +179,12 @@ function cellContent(key, row) {
     case "signal":
       return <Pill tone={signalTone(row.signal)}>{SIGNAL_LABEL[row.signal] || row.signal || DASH}</Pill>;
     case "leaps":
-      return row.leaps ? <Pill tone="leaps">LEAPS</Pill> : <span className="long-term-dim">{DASH}</span>;
+      return row.leaps ? (
+        <>
+          <Pill tone="leaps">LEAPS</Pill>
+          <LeapLine symbol={row.symbol} entry={leap.entry} onRetry={leap.onRetry} queued={leap.queued} />
+        </>
+      ) : <span className="long-term-dim">{DASH}</span>;
     case "buyZonePct":
       return <BuyZone pct={row.buyZonePct} />;
     case "payback":
@@ -164,6 +222,7 @@ function markClass(line) {
   if (line.startsWith("✓")) return "is-ok";
   if (line.startsWith("✗")) return "is-no";
   if (line.startsWith("n/a")) return "is-na";
+  if (line.startsWith("⚠")) return "is-warn";
   return "";
 }
 
@@ -204,7 +263,41 @@ function YearsTable({ detail }) {
   );
 }
 
-function Drawer({ row, entry, onChart, onClose, onRetry, width }) {
+// "LEAP to buy": only for a LEAPS-flagged row; independent of the filings
+// detail so a slow EDGAR read never hides the contract (and the other way round).
+function LeapSection({ row, entry, onRetry }) {
+  let body;
+  if (!entry || entry.loading) body = <p className="long-term-dim">finding…</p>;
+  else if (entry.error) {
+    body = (
+      <p className="long-term-dim">
+        contract not available{" "}
+        <button type="button" className="long-term-link" onClick={onRetry}>Retry</button>
+      </p>
+    );
+  } else if (entry.transient) {
+    body = (
+      <>
+        <LineList lines={leapSection(entry.payload)} marks />
+        <p className="long-term-dim">
+          The chain feed did not answer; the page retries on its own.{" "}
+          <button type="button" className="long-term-link" onClick={onRetry}>Retry now</button>
+        </p>
+      </>
+    );
+  } else body = <LineList lines={leapSection(entry.payload)} marks />;
+  return (
+    <section className="long-term-drawer-leap" data-testid="long-term-drawer-leap">
+      <h4>LEAP to buy</h4>
+      {body}
+      <p className="long-term-note">
+        Shown because the price is under the LEAPS level {formatMoney(row.leapsBelow)}. The page picks the contract; the trade is yours.
+      </p>
+    </section>
+  );
+}
+
+function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, width }) {
   const detail = entry?.detail;
   const sections = useMemo(() => (detail ? drawerSections(detail) : null), [detail]);
   const byTitle = (t) => sections?.find((s) => s.title === t)?.lines || [];
@@ -221,6 +314,7 @@ function Drawer({ row, entry, onChart, onClose, onRetry, width }) {
           <X size={14} />
         </button>
       </header>
+      {row.leaps ? <LeapSection row={row} entry={leap} onRetry={onRetryLeap} /> : null}
       {!entry || entry.loading ? (
         <p className="long-term-dim">Loading the filings…</p>
       ) : entry.error ? (
@@ -254,7 +348,7 @@ function Drawer({ row, entry, onChart, onClose, onRetry, width }) {
   );
 }
 
-function Card({ row, open, onToggle }) {
+function Card({ row, open, onToggle, leap, onRetryLeap, leapQueued }) {
   const f = cardFields(row);
   return (
     <button
@@ -274,6 +368,7 @@ function Card({ row, open, onToggle }) {
         {f.leaps ? <Pill tone="leaps">LEAPS</Pill> : null}
         <BuyZone pct={row.buyZonePct} />
       </span>
+      {f.leaps ? <LeapLine symbol={row.symbol} entry={leap} onRetry={onRetryLeap} queued={leapQueued} /> : null}
       <span className="long-term-card-bottom">
         <span>BUY ≤ <b>{f.buyBelow}</b></span>
         <span>{row.financial ? "ROE" : "ROIC"} <b>{row.financial ? formatPct(row.roe) : f.roic}</b></span>
@@ -292,6 +387,10 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   const [query, setQuery] = useState("");
   const [openSym, setOpenSym] = useState(null);
   const [details, setDetails] = useState({});
+  // LEAP to buy, keyed by symbol: { epoch, loading } | { epoch, payload } | { epoch, error }
+  // | { epoch, payload, transient: true, at, tries } (the chain feed did not answer; retried).
+  // An entry counts only for the MOS and filings refresh it was fetched under.
+  const [leaps, setLeaps] = useState({});
   const [refreshMsg, setRefreshMsg] = useState("");
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [wrapWidth, setWrapWidth] = useState(0);
@@ -428,6 +527,74 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
     [current, clock, feedStale],
   );
   const counts = useMemo(() => tileCounts(guarded), [guarded]);
+
+  // LEAP to buy: one fetch per flagged symbol per MOS and filings refresh.
+  // A late answer from an earlier epoch is dropped, never shown.
+  const leapEpoch = `${mos}|${refreshedAt ?? ""}`;
+  const leapEntry = useCallback((symbol) => {
+    const e = leaps[symbol];
+    return e && e.epoch === leapEpoch ? e : undefined;
+  }, [leaps, leapEpoch]);
+  const loadLeap = useCallback((symbol) => {
+    const epoch = leapEpoch;
+    const put = (entry) => setLeaps((cur) => {
+      const was = cur[symbol];
+      if (was && was.epoch !== epoch && entry.loading !== true) return cur; // the page moved on
+      // Transient answers in a row (for the retry backoff); a real answer resets the count.
+      const tries = was && was.epoch === epoch && isNum(was.tries) ? was.tries : 0;
+      let next;
+      if (entry.loading) next = { epoch, loading: true, tries };
+      else if (entry.payload && leapTransient(entry.payload)) {
+        next = { epoch, payload: entry.payload, transient: true, at: Date.now(), tries: tries + 1 };
+      } else next = { epoch, ...entry };
+      return { ...cur, [symbol]: next };
+    });
+    put({ loading: true });
+    fetch(`/api/long-term/${encodeURIComponent(symbol)}/leap?mos=${mos}`)
+      .then(async (response) => {
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+        const ok = response.ok && payload && typeof payload === "object" && !payload.error;
+        put(ok ? { payload } : { error: true });
+      })
+      .catch(() => put({ error: true }));
+  }, [mos, leapEpoch]);
+  // The rows the page reads on its own: the flagged rows in default order, capped.
+  // Rows that are not flagged never cause a chain read; flagged rows past the
+  // cap offer a "Find contract" link and are read when their drawer opens.
+  const leapAuto = useMemo(() => new Set(leapOrder(guarded)), [guarded]);
+  // A row needs a read when it has no entry for this epoch, or its last answer
+  // was transient ("chain unavailable" / "no chain") and the backoff has passed.
+  const leapDue = useCallback((symbol) => {
+    const e = leapEntry(symbol);
+    return !e || leapRetryDue(e, clock);
+  }, [leapEntry, clock]);
+  // After a rows payload is accepted, and on every clock tick for the retries.
+  useEffect(() => {
+    if (!current) return;
+    const wanted = new Set(leapAuto);
+    // A flagged row looked up by hand ("Find contract" or its drawer) whose
+    // answer was transient is retried on its own too, as the Retry tooltip says.
+    for (const r of guarded) {
+      if (r.leaps === true && !wanted.has(r.symbol)) {
+        const e = leapEntry(r.symbol);
+        if (e && e.transient) wanted.add(r.symbol);
+      }
+    }
+    for (const symbol of wanted) {
+      if (leapDue(symbol)) loadLeap(symbol);
+    }
+  }, [current, guarded, leapAuto, leapEntry, leapDue, loadLeap]);
+  // Opening the drawer of a flagged row past the cap fetches its contract too.
+  useEffect(() => {
+    if (!openSym) return;
+    const row = guarded.find((r) => r.symbol === openSym);
+    if (row && row.leaps === true && leapDue(openSym)) loadLeap(openSym);
+  }, [openSym, guarded, leapDue, loadLeap]);
   const visible = useMemo(
     () => sortRows(filterRows(guarded, { tile: prefs.tile, query }), prefs.sort),
     [guarded, prefs.tile, prefs.sort, query],
@@ -513,14 +680,23 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
       <div className="long-term-cards">
         {visible.map((row) => (
           <div key={row.symbol} className="long-term-card-slot">
-            <Card row={row} open={openSym === row.symbol} onToggle={() => toggleRow(row.symbol)} />
+            <Card
+              row={row}
+              open={openSym === row.symbol}
+              onToggle={() => toggleRow(row.symbol)}
+              leap={leapEntry(row.symbol)}
+              onRetryLeap={() => loadLeap(row.symbol)}
+              leapQueued={leapAuto.has(row.symbol) || openSym === row.symbol}
+            />
             {openSym === row.symbol ? (
               <Drawer
                 row={row}
                 entry={details[`${row.symbol}:${mos}`]}
+                leap={leapEntry(row.symbol)}
                 onChart={onChart}
                 onClose={() => setOpenSym(null)}
                 onRetry={() => loadDetail(row.symbol)}
+                onRetryLeap={() => loadLeap(row.symbol)}
               />
             ) : null}
           </div>
@@ -559,8 +735,13 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
               const open = openSym === row.symbol;
               const tone = signalTone(row.signal);
               const cells = [];
+              const leap = {
+                entry: leapEntry(row.symbol),
+                onRetry: () => loadLeap(row.symbol),
+                queued: leapAuto.has(row.symbol) || open,
+              };
               for (const c of cols) {
-                cells.push(<td key={c.key} className={`is-${c.align} is-col-${c.key}`}>{cellContent(c.key, row)}</td>);
+                cells.push(<td key={c.key} className={`is-${c.align} is-col-${c.key}`}>{cellContent(c.key, row, leap)}</td>);
                 if (c.key === "signal") {
                   cells.push(
                     <td key="reason" className="is-left is-col-reason">
@@ -592,9 +773,11 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
                       <Drawer
                         row={row}
                         entry={details[`${row.symbol}:${mos}`]}
+                        leap={leap.entry}
                         onChart={onChart}
                         onClose={() => setOpenSym(null)}
                         onRetry={() => loadDetail(row.symbol)}
+                        onRetryLeap={leap.onRetry}
                         width={wrapWidth || undefined}
                       />
                     </td>

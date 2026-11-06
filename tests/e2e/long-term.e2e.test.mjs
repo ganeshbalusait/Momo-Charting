@@ -156,3 +156,174 @@ e2eTest("a row with no price time shows No price and never counts as BUY", async
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// ---- LEAP to buy (2026-11-06) ------------------------------------------------
+// The LEAPS row (AAPL) also reads /api/long-term/AAPL/leap; the WAIT and AVOID
+// rows never do. The fixture is the backend's payload shape, camelCase.
+
+const CONTRACT = {
+  symbol: "AAPL  280121C00080000", expiry: "2028-01-21", dte: 441, strike: 80, bid: 31.9, ask: 32.4, mid: 32.15,
+  delta: 0.76, openInterest: 1234, volume: 56, breakeven: 112.4, breakevenPct: 0.124, intrinsic: 20, extrinsic: 12.4,
+  cost: 3240, wideSpread: false,
+};
+const leap = (over = {}) => ({ json: {
+  symbol: "AAPL", name: "Apple Inc", leaps: true, price: 100, leapsBelow: 160, contract: CONTRACT, reason: "",
+  expiries: ["2027-11-19", "2028-01-21"], fetchedAt: "2026-11-06T14:00:00Z", refreshedAt: "2026-11-06T03:12:00-05:00", ...over,
+} });
+const leapReads = (answer = () => leap()) => ({ ...reads(), "GET /api/long-term/AAPL/leap": answer });
+const LINE = /Jan 2028 \$80 C · ask \$32\.40 · BE \$112 \(\+12%\)/;
+const leapPaths = (app) => app.reads.filter((r) => /\/leap$/.test(r.path)).map((r) => r.path);
+const leapText = (p, sym, re) => p.waitForFunction(
+  ([s, src]) => new RegExp(src).test(document.querySelector(`[data-testid='long-term-leap-${s}']`)?.textContent || ""),
+  [sym, re.source],
+  { timeout: 15_000 },
+);
+
+e2eTest("the LEAPS row shows the contract to buy, the drawer explains it, and no other row asks for one", async () => {
+  await withApp({ view: VIEW, fakeReads: leapReads() }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await leapText(p, "AAPL", /Jan 2028/);
+    assert.match(await p.getByTestId("long-term-leap-AAPL").innerText(), LINE);
+    assert.equal(await p.getByTestId("long-term-leap-NVDA").count(), 0, "a WAIT row carries no contract line");
+    assert.equal(await p.getByTestId("long-term-leap-HD").count(), 0, "an AVOID row carries no contract line");
+    await p.getByTestId("long-term-row-AAPL").click();
+    const section = p.getByTestId("long-term-drawer-leap");
+    await section.waitFor({ timeout: 10_000 });
+    const text = await section.innerText();
+    assert.match(text, /LEAP to buy/i); // innerText carries the CSS uppercase
+    assert.match(text, /Jan 21, 2028 \(441 days\) · \$80 call · delta 0\.76/);
+    assert.match(text, /Ask \$32\.40 · bid \$31\.90 · mid \$32\.15 · \$3,240 per contract/);
+    assert.match(text, /Breakeven \$112\.40 · \+12% from \$100/);
+    assert.match(text, /In the money \$20\.00 · time value \$12\.40/);
+    assert.match(text, /Open interest 1,234 · volume 56/);
+    assert.match(text, /under the LEAPS level \$160\.00/);
+    assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap"], "only the flagged row reads the chain, once");
+    assert.ok(app.reads.some((r) => r.path === "/api/long-term/AAPL/leap" && /mos=50/.test(r.search)));
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("on a phone the LEAPS card carries the contract line and nothing scrolls sideways", async () => {
+  await withApp({ view: VIEW, viewport: PHONE, fakeReads: leapReads() }, async (app) => {
+    const p = app.page;
+    const card = p.getByTestId("long-term-card-AAPL");
+    await card.waitFor({ timeout: 90_000 });
+    await leapText(p, "AAPL", /Jan 2028/);
+    assert.match(await card.getByTestId("long-term-leap-AAPL").innerText(), LINE);
+    assert.equal(await p.getByTestId("long-term-leap-NVDA").count(), 0);
+    assert.equal(await overflowsSideways(p), false);
+    await card.click();
+    const section = p.getByTestId("long-term-drawer-leap");
+    await section.waitFor({ timeout: 10_000 });
+    assert.match(await section.innerText(), /Breakeven \$112\.40/);
+    assert.equal(await overflowsSideways(p), false);
+    assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap"]);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("fail-safe: a leap answer with no contract says why, never a price, and the WAIT row is never asked", async () => {
+  const reason = "no in-the-money call with a live quote";
+  await withApp({ view: VIEW, fakeReads: leapReads(() => leap({ contract: null, reason })) }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await leapText(p, "AAPL", /No contract/);
+    const line = (await p.getByTestId("long-term-leap-AAPL").innerText()).trim();
+    assert.equal(line, `No contract: ${reason}`);
+    await p.getByTestId("long-term-row-AAPL").click();
+    const section = p.getByTestId("long-term-drawer-leap");
+    await section.waitFor({ timeout: 10_000 });
+    const lines = (await section.locator(".long-term-lines").innerText()).trim();
+    assert.equal(lines, `No contract: ${reason}`);
+    assert.ok(!/\$/.test(lines) && !/\$/.test(line), "no price is shown without a contract");
+    assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap"], "NVDA (WAIT) and HD (AVOID) never read /leap");
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("a 'chain unavailable' answer is not final: it says why, keeps a Retry, and the retry shows the contract", async () => {
+  // Schwab blocked at the first read (the server answers 200 + contract null and does not
+  // cache it); the page must ask again instead of holding the miss until the nightly refresh.
+  let calls = 0;
+  const answer = () => (calls++ === 0 ? leap({ contract: null, reason: "chain unavailable" }) : leap());
+  await withApp({ view: VIEW, fakeReads: leapReads(answer) }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await leapText(p, "AAPL", /No contract: chain unavailable/);
+    const line = p.getByTestId("long-term-leap-AAPL");
+    assert.ok(!/\$/.test(await line.innerText()), "no price without a contract");
+    assert.equal(await line.getByText("Retry").count(), 1, "a transient miss carries a Retry");
+    await p.getByTestId("long-term-row-AAPL").click();
+    const section = p.getByTestId("long-term-drawer-leap");
+    await section.waitFor({ timeout: 10_000 });
+    assert.match(await section.innerText(), /No contract: chain unavailable/);
+    assert.match(await section.innerText(), /retries on its own/);
+    await line.getByText("Retry").click();
+    await leapText(p, "AAPL", /Jan 2028/);
+    assert.match(await line.innerText(), LINE);
+    assert.equal(await line.getByText("Retry").count(), 0, "a contract carries no Retry");
+    assert.match(await section.innerText(), /Breakeven \$112\.40/);
+    assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap", "/api/long-term/AAPL/leap"]);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("a final 'no contract' verdict carries no Retry and is read once", async () => {
+  const reason = "no expiry 12-25 months out";
+  await withApp({ view: VIEW, fakeReads: leapReads(() => leap({ contract: null, reason })) }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await leapText(p, "AAPL", /No contract/);
+    const line = p.getByTestId("long-term-leap-AAPL");
+    assert.equal((await line.innerText()).trim(), `No contract: ${reason}`);
+    assert.equal(await line.getByText("Retry").count(), 0);
+    assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap"]);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("flagged rows past the first 12 offer 'Find contract' instead of 'finding…', and the link reads the chain", async () => {
+  // 15 LEAPS rows: T01..T12 are read on their own; T13..T15 wait for the trader.
+  const syms = Array.from({ length: 15 }, (_, i) => `T${String(i + 1).padStart(2, "0")}`);
+  const many = () => syms.map((s, i) => row({ symbol: s, name: `${s} Corp`, signal: "WAIT", buyZonePct: -0.01 * (i + 1), reason: "price above safety buy" }));
+  const fakes = { ...reads(many) };
+  for (const s of syms) fakes[`GET /api/long-term/${s}/leap`] = () => leap({ symbol: s, name: `${s} Corp` });
+  await withApp({ view: VIEW, fakeReads: fakes }, async (app) => {
+    const p = app.page;
+    await p.getByTestId("long-term-row-T01").waitFor({ timeout: 90_000 });
+    await leapText(p, "T12", /Jan 2028/);
+    await leapText(p, "T13", /Find contract/);
+    for (const s of ["T13", "T14", "T15"]) {
+      const text = (await p.getByTestId(`long-term-leap-${s}`).innerText()).trim();
+      assert.equal(text, "Find contract", `${s} is past the cap`);
+    }
+    assert.equal(leapPaths(app).length, 12, "only the first 12 are read on their own");
+    assert.ok(!leapPaths(app).some((path) => /T1[345]/.test(path)));
+    await p.getByTestId("long-term-leap-T14").getByText("Find contract").click();
+    await leapText(p, "T14", /Jan 2028/);
+    assert.match(await p.getByTestId("long-term-leap-T14").innerText(), LINE);
+    assert.equal(await p.getByTestId("long-term-drawer").count(), 0, "the link did not open the row");
+    assert.ok(leapPaths(app).includes("/api/long-term/T14/leap"));
+    assert.equal(leapPaths(app).length, 13);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("a failed leap read shows 'contract not available' with a Retry that reads again", async () => {
+  let calls = 0;
+  const answer = () => (calls++ === 0 ? { status: 503, json: { error: "chain down" } } : leap());
+  await withApp({ view: VIEW, fakeReads: leapReads(answer) }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await leapText(p, "AAPL", /contract not available/);
+    const line = p.getByTestId("long-term-leap-AAPL");
+    assert.ok(!/\$/.test(await line.innerText()));
+    await line.getByText("Retry").click();
+    await leapText(p, "AAPL", /Jan 2028/);
+    assert.match(await line.innerText(), LINE);
+    assert.equal(await p.getByTestId("long-term-drawer").count(), 0, "Retry did not open the row");
+    assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap", "/api/long-term/AAPL/leap"]);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});

@@ -371,3 +371,110 @@ export function formatEtStamp(value) {
   }).format(d);
   return `${text} ET`;
 }
+
+// ---- LEAP to buy ----------------------------------------------------------------
+// The leap payload (GET /api/long-term/<SYM>/leap): {symbol, name, leaps, price,
+// leapsBelow, contract | null, reason, expiries, fetchedAt, refreshedAt}. The
+// server picks the contract; these helpers only put it into words and never
+// let a missing number through as NaN or undefined.
+
+export const LEAP_FETCH_CAP = 12;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "Jan 2028", or "Jan 15, 2028" with `long`; DASH for anything that is not a date.
+export function formatExpiry(iso, { long = false } = {}) {
+  if (typeof iso !== "string") return DASH;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso.trim());
+  if (!m) return DASH;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const check = new Date(Date.UTC(y, mo - 1, d));
+  if (check.getUTCFullYear() !== y || check.getUTCMonth() !== mo - 1 || check.getUTCDate() !== d) return DASH;
+  return long ? `${MONTHS[mo - 1]} ${d}, ${y}` : `${MONTHS[mo - 1]} ${y}`;
+}
+
+const thousands = (s) => s.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+// "$200" for a whole number, "$202.50" otherwise, with thousands separators.
+function dollars(v) {
+  if (!isNum(v)) return DASH;
+  const sign = v < 0 ? MINUS : "";
+  const a = Math.abs(v);
+  if (Number.isInteger(a)) return `${sign}$${thousands(String(a))}`;
+  const [whole, cents] = a.toFixed(2).split(".");
+  return `${sign}$${thousands(whole)}.${cents}`;
+}
+
+// "$262" (whole dollars) for the short table line.
+const wholeDollars = (v) => (isNum(v) ? `${v < 0 ? MINUS : ""}$${thousands(String(Math.round(Math.abs(v))))}` : DASH);
+const signedPct = (v) => (isNum(v) ? `${v > 0 ? "+" : ""}${formatPct(v)}` : DASH);
+const count = (v) => (isNum(v) ? thousands(String(Math.round(v))) : DASH);
+
+const contractOf = (payload) => {
+  if (!payload || typeof payload !== "object") return null;
+  const c = payload.contract;
+  return c && typeof c === "object" ? c : null;
+};
+const noContract = (payload) => {
+  const reason = payload && typeof payload === "object" && typeof payload.reason === "string" && payload.reason.trim();
+  return `No contract: ${reason || DASH}`;
+};
+
+// One short line for the table cell / phone card:
+// "Jan 2028 $200 C · ask $62.40 · BE $262 (+9%)"; "No contract: <reason>"; "" for no payload.
+export function leapLine(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const c = contractOf(payload);
+  if (!c) return noContract(payload);
+  const line = `${formatExpiry(c.expiry)} ${dollars(c.strike)} C · ask ${formatMoney(c.ask)} · BE ${wholeDollars(c.breakeven)} (${signedPct(c.breakevenPct)})`;
+  return c.thin === true ? `${line} ⚠ thin` : line;
+}
+
+// The lines of the drawer's "LEAP to buy" section.
+export function leapSection(payload) {
+  const c = contractOf(payload);
+  if (!c) return [noContract(payload)];
+  const lines = [
+    `${formatExpiry(c.expiry, { long: true })} (${isNum(c.dte) ? Math.round(c.dte) : DASH} days) · ${dollars(c.strike)} call · delta ${isNum(c.delta) ? c.delta.toFixed(2) : DASH}`,
+    `Ask ${formatMoney(c.ask)} · bid ${formatMoney(c.bid)} · mid ${formatMoney(c.mid)} · ${wholeDollars(c.cost)} per contract`,
+    `Breakeven ${formatMoney(c.breakeven)} · ${signedPct(c.breakevenPct)} from ${dollars(payload.price)}`,
+    `In the money ${formatMoney(c.intrinsic)} · time value ${formatMoney(c.extrinsic)}`,
+    `Open interest ${count(c.openInterest)} · volume ${count(c.volume)}`,
+  ];
+  if (c.wideSpread === true) {
+    const over = isNum(c.ask) && isNum(c.mid) && c.mid > 0 ? (c.ask - c.mid) / c.mid : null;
+    lines.push(isNum(over) ? `⚠ wide spread (ask ${formatPct(over, 1)} over mid)` : "⚠ wide spread");
+  }
+  if (c.thin === true) {
+    lines.push(`⚠ thin market: open interest ${count(c.openInterest)} — use a limit order near the mid, and expect a wide exit`);
+  }
+  return lines;
+}
+
+// Which rows get a leap fetch after a rows payload lands: the LEAPS-flagged
+// rows in the page's default order, capped so a long list never floods the chain.
+export function leapOrder(rows, cap = LEAP_FETCH_CAP) {
+  const flagged = (rows || []).filter((r) => r && r.leaps === true);
+  return sortRows(flagged, DEFAULT_SORT).slice(0, cap).map((r) => r.symbol);
+}
+
+// A 200 answer with no contract for one of these reasons is a passing state of
+// the chain feed (Schwab blocked, dead token, client not configured), not a
+// verdict on the row: the server does not cache it, so the page asks again.
+export const LEAP_TRANSIENT_REASONS = new Set(["chain unavailable", "no chain"]);
+export const LEAP_RETRY_MS = 60_000; // first retry; doubles per repeat, capped
+export const LEAP_RETRY_MAX_MS = 10 * 60_000;
+
+export function leapTransient(payload) {
+  if (!payload || typeof payload !== "object" || contractOf(payload)) return false;
+  return typeof payload.reason === "string" && LEAP_TRANSIENT_REASONS.has(payload.reason.trim());
+}
+
+// When a transient entry ({transient: true, at, tries}) is due for another read.
+// tries counts the transient answers in a row: 1 min, 2, 4, 8, then every 10.
+export function leapRetryDue(entry, now = Date.now()) {
+  if (!entry || entry.transient !== true || entry.loading) return false;
+  if (!isNum(entry.at) || !isNum(now)) return true;
+  const tries = Math.max(1, Math.floor(isNum(entry.tries) ? entry.tries : 1));
+  const wait = Math.min(LEAP_RETRY_MS * 2 ** (tries - 1), LEAP_RETRY_MAX_MS);
+  return now - entry.at >= wait;
+}

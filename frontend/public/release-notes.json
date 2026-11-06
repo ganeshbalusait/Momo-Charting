@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-06T10:30:00-05:00",
+      "heading": "Long Term: the LEAP contract to buy, picked from the live option chain",
+      "items": [
+        "Every row with the LEAPS badge now shows the contract under it: expiry, strike, ask and breakeven (for example 'Jan 2028 $200 C · ask $62.40 · BE $262 (+9%)'). It is the in-the-money call nearest 0.75 delta on the farthest expiry 12 to 25 months out, read from Schwab's chain when the page loads.",
+        "Click the row: the Why drawer has a new 'LEAP to buy' box with the full contract - days to expiry, delta, bid/ask/mid, cost per contract, breakeven and how far the price must move, time value, open interest, and a warning when the spread is wide.",
+        "Fail-safe: when the chain is down, the price is missing or no in-the-money call has a live two-sided quote, the row says 'No contract' and why. Nothing is suggested for rows without the LEAPS badge. The page picks the contract; the trade is yours."
+      ]
+    },
+    {
       "at": "2026-11-06T07:08:00-05:00",
       "heading": "Scanner + BOT: Mag7 BULL/BEAR counts, SPY/QQQ in every Setup rule, bear Confirm levels, AI scorecard for every rule",
       "items": [

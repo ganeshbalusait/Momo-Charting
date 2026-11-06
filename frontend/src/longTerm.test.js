@@ -7,7 +7,8 @@ import {
   filterRows, DEFAULT_SORT, sortRows, SIGNAL_LABEL, signalTone, formatMoney, formatPct,
   formatCap, formatGrowth, buyZoneBar, columns, cardFields, drawerSections,
   reasonText, big5Dots, formatEtStamp, acceptsPayload, sortValue, etDate, previousWeekday, formatEps,
-  formatPayback,
+  formatPayback, formatExpiry, leapLine, leapSection, leapOrder,
+  leapTransient, leapRetryDue, LEAP_RETRY_MS, LEAP_RETRY_MAX_MS, LEAP_TRANSIENT_REASONS,
 } from "./longTerm.js";
 
 // quoteTimeMs defaults to "just now": the guard also rejects quotes older than the previous weekday (ET).
@@ -327,5 +328,146 @@ describe("final review fixes", () => {
     assert.equal(formatPayback(50), "50+y");
     assert.equal(formatPayback(12), "12.0y");
     assert.equal(formatPayback(null), "—");
+  });
+});
+
+describe("LEAP to buy", () => {
+  const contract = {
+    symbol: "AAPL  280115C00200000", expiry: "2028-01-15", dte: 434, strike: 200, bid: 61.9, ask: 62.4, mid: 62.15,
+    delta: 0.75, openInterest: 1234, volume: 56, breakeven: 262.4, breakevenPct: 0.0933, intrinsic: 40,
+    extrinsic: 22.4, cost: 6240, wideSpread: false,
+  };
+  const payload = (over = {}) => ({
+    symbol: "AAPL", name: "Apple Inc", leaps: true, price: 240, leapsBelow: 300, contract, reason: "",
+    expiries: ["2027-11-19", "2028-01-15"], fetchedAt: "2026-11-06T14:00:00Z", refreshedAt: "2026-11-06T03:12:00-05:00", ...over,
+  });
+
+  test("formatExpiry: short, long, invalid", () => {
+    assert.equal(formatExpiry("2028-01-15"), "Jan 2028");
+    assert.equal(formatExpiry("2028-01-15", { long: true }), "Jan 15, 2028");
+    assert.equal(formatExpiry("2027-12-17T00:00:00"), "Dec 2027");
+    assert.equal(formatExpiry("2028-13-01"), "—");
+    assert.equal(formatExpiry("2028-02-30"), "—");
+    assert.equal(formatExpiry("junk"), "—");
+    assert.equal(formatExpiry(null), "—");
+    assert.equal(formatExpiry(undefined, { long: true }), "—");
+    assert.equal(formatExpiry(20280115), "—");
+  });
+
+  test("leapLine: one short line for the contract", () => {
+    assert.equal(leapLine(payload()), "Jan 2028 $200 C · ask $62.40 · BE $262 (+9%)");
+    assert.equal(leapLine(payload({ contract: { ...contract, strike: 202.5, breakevenPct: -0.012, breakeven: 237.1 } })),
+      "Jan 2028 $202.50 C · ask $62.40 · BE $237 (−1%)");
+  });
+
+  test("leapLine: no contract says why, null payload is empty, missing numbers print the dash", () => {
+    assert.equal(leapLine(payload({ contract: null, reason: "no in-the-money call with a live quote" })),
+      "No contract: no in-the-money call with a live quote");
+    assert.equal(leapLine(payload({ contract: null, reason: "" })), "No contract: —");
+    assert.equal(leapLine(payload({ leaps: false, contract: null, reason: "LEAPS not flagged" })), "No contract: LEAPS not flagged");
+    assert.equal(leapLine(null), "");
+    assert.equal(leapLine(undefined), "");
+    assert.equal(leapLine("junk"), "");
+    const partial = leapLine(payload({ contract: { expiry: "2028-01-15" } }));
+    assert.equal(partial, "Jan 2028 — C · ask — · BE — (—)");
+    assert.ok(!/NaN|undefined|null/.test(partial));
+    const bad = leapLine(payload({ contract: { strike: "200", ask: NaN, breakeven: Infinity, breakevenPct: "x" } }));
+    assert.equal(bad, "— — C · ask — · BE — (—)");
+  });
+
+  test("leapSection: the drawer lines", () => {
+    assert.deepEqual(leapSection(payload()), [
+      "Jan 15, 2028 (434 days) · $200 call · delta 0.75",
+      "Ask $62.40 · bid $61.90 · mid $62.15 · $6,240 per contract",
+      "Breakeven $262.40 · +9% from $240",
+      "In the money $40.00 · time value $22.40",
+      "Open interest 1,234 · volume 56",
+    ]);
+  });
+
+  test("leapSection: a wide spread adds a warning line", () => {
+    const wide = payload({ contract: { ...contract, bid: 55, ask: 62.4, mid: 58.7, wideSpread: true } });
+    const lines = leapSection(wide);
+    assert.equal(lines.length, 6);
+    assert.equal(lines[5], "⚠ wide spread (ask 6.3% over mid)");
+    assert.equal(leapSection(payload({ contract: { ...contract, wideSpread: true, mid: null } }))[5], "⚠ wide spread");
+  });
+
+  test("thin market: the line and the drawer warn, the contract stays", () => {
+    const thin = payload({ contract: { ...contract, openInterest: 1, thin: true } });
+    assert.ok(leapLine(thin).endsWith(" ⚠ thin"), leapLine(thin));
+    assert.ok(!leapLine(payload()).includes("thin"));
+    const lines = leapSection(thin);
+    assert.equal(lines[lines.length - 1], "⚠ thin market: open interest 1 — use a limit order near the mid, and expect a wide exit");
+    assert.equal(lines.length, 6);
+    assert.ok(!leapSection(payload()).some((l) => l.includes("thin")));
+  });
+
+  test("leapSection: no contract, null payload and missing numbers never leak", () => {
+    assert.deepEqual(leapSection(payload({ contract: null, reason: "no expiry 12-25 months out" })), ["No contract: no expiry 12-25 months out"]);
+    assert.deepEqual(leapSection(payload({ contract: null })), ["No contract: —"]);
+    assert.deepEqual(leapSection(null), ["No contract: —"]);
+    assert.deepEqual(leapSection({}), ["No contract: —"]);
+    const lines = leapSection(payload({ price: null, contract: { expiry: "2028-01-15", strike: 200 } }));
+    assert.deepEqual(lines, [
+      "Jan 15, 2028 (— days) · $200 call · delta —",
+      "Ask — · bid — · mid — · — per contract",
+      "Breakeven — · — from —",
+      "In the money — · time value —",
+      "Open interest — · volume —",
+    ]);
+    assert.ok(!/NaN|undefined|null/.test(lines.join("\n")));
+  });
+
+  test("leapOrder: flagged rows only, default order, capped at 12", () => {
+    const flagged = (sym, extra = {}) => row({ symbol: sym, leaps: true, signal: "WAIT", buyZonePct: -0.1, ...extra });
+    const many = Array.from({ length: 15 }, (_, i) => flagged(`T${String(i).padStart(2, "0")}`));
+    const list = [KO, NVDA, flagged("ZZ", { signal: "BUY", buyZonePct: 0.2 }), ...many, AAPL, SPY, row({ symbol: "NO", leaps: "yes" })];
+    const order = leapOrder(list);
+    assert.equal(order.length, 12);
+    assert.equal(order[0], "ZZ"); // BUY + LEAPS leads the default order
+    assert.deepEqual(order.slice(1), many.slice(0, 11).map((r) => r.symbol));
+    assert.ok(!order.includes("KO") && !order.includes("AAPL") && !order.includes("NO"));
+    assert.deepEqual(leapOrder(null), []);
+    assert.deepEqual(leapOrder([KO]), []);
+  });
+
+  test("leapTransient: only a chain-feed miss is retried, never a verdict on the row", () => {
+    assert.deepEqual([...LEAP_TRANSIENT_REASONS].sort(), ["chain unavailable", "no chain"]);
+    assert.equal(leapTransient(payload({ contract: null, reason: "chain unavailable" })), true);
+    assert.equal(leapTransient(payload({ contract: null, reason: "no chain" })), true);
+    assert.equal(leapTransient(payload({ contract: null, reason: " chain unavailable " })), true);
+    assert.equal(leapTransient(payload({ contract: null, reason: "no in-the-money call with a live quote" })), false);
+    assert.equal(leapTransient(payload({ contract: null, reason: "no expiry 12-25 months out" })), false);
+    assert.equal(leapTransient(payload({ contract: null, reason: "LEAPS not flagged" })), false);
+    assert.equal(leapTransient(payload({ contract: null, reason: "" })), false);
+    assert.equal(leapTransient(payload({ reason: "chain unavailable" })), false, "a contract is never transient");
+    assert.equal(leapTransient(null), false);
+    assert.equal(leapTransient("junk"), false);
+    assert.equal(leapTransient({}), false);
+  });
+
+  test("leapRetryDue: 1 min, then doubling to 10 min; loading and settled entries never", () => {
+    const at = 1_000_000;
+    const t = (tries, elapsed) => leapRetryDue({ epoch: "50|x", transient: true, at, tries }, at + elapsed);
+    assert.equal(LEAP_RETRY_MS, 60_000);
+    assert.equal(LEAP_RETRY_MAX_MS, 600_000);
+    assert.equal(t(1, 59_999), false);
+    assert.equal(t(1, 60_000), true);
+    assert.equal(t(2, 119_999), false);
+    assert.equal(t(2, 120_000), true);
+    assert.equal(t(3, 240_000), true);
+    assert.equal(t(4, 479_999), false);
+    assert.equal(t(5, 599_999), false);
+    assert.equal(t(5, 600_000), true);
+    assert.equal(t(9, 600_000), true, "capped at 10 minutes");
+    assert.equal(t(0, 60_000), true, "a missing count means one try");
+    assert.equal(t("x", 60_000), true);
+    assert.equal(leapRetryDue({ epoch: "50|x", transient: true, at: "junk", tries: 1 }, at), true, "no stamp: ask again");
+    assert.equal(leapRetryDue({ epoch: "50|x", transient: true, at, tries: 1, loading: true }, at + 999_999), false);
+    assert.equal(leapRetryDue({ epoch: "50|x", payload: payload() }, at + 999_999), false);
+    assert.equal(leapRetryDue({ epoch: "50|x", error: true }, at + 999_999), false);
+    assert.equal(leapRetryDue(undefined, at), false);
+    assert.equal(leapRetryDue(null, at), false);
   });
 });

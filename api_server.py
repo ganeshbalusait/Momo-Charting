@@ -23589,9 +23589,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                         payload = service.page_payload(mos, quotes)
                     else:
                         from long_term.symbols import canonical as _lt_canonical
-                        symbol = _lt_canonical(parsed.path[len("/api/long-term/"):])
+                        rest = parsed.path[len("/api/long-term/"):]
+                        # GET /api/long-term/<SYM>/leap -> the LEAP contract to buy (same row
+                        # path, same MOS, same 404 rule as the detail route)
+                        want_leap = rest.endswith("/leap")
+                        symbol = _lt_canonical(rest[:-len("/leap")] if want_leap else rest)
                         quote = service.quotes_for([symbol]).get(symbol) if symbol else None
-                        payload = service.detail_payload(symbol, mos, quote) if symbol else None
+                        if want_leap:
+                            payload = service.leap_payload(symbol, mos, quote) if symbol else None
+                        else:
+                            payload = service.detail_payload(symbol, mos, quote) if symbol else None
                 except Exception:  # noqa: BLE001 - the screen says "unavailable", the server stays up
                     self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "long term service unavailable"})
                     return

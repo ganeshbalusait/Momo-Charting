@@ -29,6 +29,8 @@ from zoneinfo import ZoneInfo
 from long_term.edgar import EdgarBlocked, EdgarClient, Snapshot, build_snapshot
 from long_term.finnhub import FinnhubExtract, FinnhubPacer, fetch_metrics
 from long_term.finnhub import default_get as _finnhub_default_get
+from long_term.leaps import (LEAP_MAX_DTE, LEAP_MIN_DTE, REASON_CHAIN_UNAVAILABLE, REASON_NOT_FLAGGED,
+                             pick_leap)
 from long_term.metrics import CHECK_KEYS, Check, Metrics, compute_metrics, listing_factor, with_fcf
 from long_term.symbols import CIK_OVERRIDES, canonical, to_schwab
 from long_term.valuation import Valuation, price_guard, signal, valuation
@@ -43,6 +45,8 @@ SAVE_EVERY = 10                # tickers between store writes
 WRITE_TRIES = 5
 QUOTE_TTL_S = 45.0             # one Schwab batch serves every viewer per window (page polls every 30 s)
 QUOTE_CHUNK = 100
+CHAIN_TTL_S = 300.0            # one Schwab option chain per flagged symbol per window (failures not cached)
+CHAIN_STRIKES = 60
 TICK_S = 60.0
 SERVE_STALE_DAYS = 4           # a record or summary older than this is served STALE, whatever it said
 FINNHUB_TRIES = 3
@@ -263,7 +267,8 @@ class LongTermService:
                  finnhub_key: str | None = None, quotes_fn: Callable[[list[str]], dict] | None = None,
                  now_fn: Callable[[], datetime] | None = None, sleep: Callable[[float], None] = time.sleep,
                  is_etf_fn: Callable[[str], bool | None] | None = None,
-                 universe_fn: Callable[[], list[str]] | None = None):
+                 universe_fn: Callable[[], list[str]] | None = None,
+                 chain_fn: Callable[[str, date, date], dict] | None = None):
         self.directory = Path(directory) if directory is not None else default_directory()
         self._sleep = sleep
         self.store = Store(self.directory, sleep=sleep)
@@ -272,6 +277,7 @@ class LongTermService:
         self._finnhub_key = finnhub_key
         self._pacer = FinnhubPacer(per_minute=30, sleep=sleep)
         self._quotes_fn = quotes_fn
+        self._chain_fn = chain_fn                   # (schwab symbol, from_date, to_date) -> chain dict
         self._schwab = None
         self._now = now_fn or _default_now
         self._is_etf = is_etf_fn or _default_is_etf
@@ -289,6 +295,8 @@ class LongTermService:
         self._wake = threading.Event()
         self._quote_lock = threading.Lock()
         self._quote_cache: dict[str, tuple[float, dict | None]] = {}
+        self._chain_lock = threading.Lock()
+        self._chain_cache: dict[str, tuple[float, dict]] = {}   # schwab symbol -> (mono stamp, chain)
         self._computed: dict[str, dict] = {}       # symbol -> {"m": Metrics, "v": Valuation} | {"error": str}
         self._universe: list[str] | None = None
 
@@ -311,6 +319,30 @@ class LongTermService:
             from data.schwab_client import SchwabClient
             self._schwab = SchwabClient()
         return self._schwab.get_quotes(schwab_symbols)
+
+    def _schwab_chain(self, schwab_symbol: str, from_date: date, to_date: date) -> dict:
+        """The live CALL chain for the LEAP window (get_option_chain wants datetimes)."""
+        if self._schwab is None:
+            from data.schwab_client import SchwabClient
+            self._schwab = SchwabClient()
+        return self._schwab.get_option_chain(
+            schwab_symbol, contract_type="CALL", strike_count=CHAIN_STRIKES,
+            from_date=datetime.combine(from_date, dtime.min), to_date=datetime.combine(to_date, dtime.min))
+
+    def chain_for(self, schwab_symbol: str, from_date: date, to_date: date) -> dict:
+        """One symbol's call chain, cached CHAIN_TTL_S per symbol. A failure raises and is not cached."""
+        now = self._mono()
+        with self._chain_lock:
+            hit = self._chain_cache.get(schwab_symbol)
+            if hit is not None and now - hit[0] < CHAIN_TTL_S:
+                return hit[1]
+        fn = self._chain_fn or self._schwab_chain
+        chain = fn(schwab_symbol, from_date, to_date)
+        if not isinstance(chain, dict):
+            chain = {}
+        with self._chain_lock:
+            self._chain_cache[schwab_symbol] = (now, chain)
+        return chain
 
     def quotes_for(self, symbols: list[str]) -> dict[str, dict]:
         """Live Schwab quotes keyed by canonical symbol: {"last_price", "quote_time_ms", "description"}.
@@ -829,6 +861,44 @@ class LongTermService:
             return {"symbol": sym, "name": None, "row": None, "checks": [], "years": [], "unit": None,
                     "explain": [], "crossChecks": [], "sources": [], "listingFactor": None,
                     "fetchedAt": None, "refreshedAt": None}
+
+    def leap_payload(self, symbol: str, mos: int, quote: dict | None) -> dict | None:
+        """The LEAP contract to buy for one row. None for an unknown ticker (the detail rule);
+        otherwise always a dict and never raises. A row that is not LEAPS-flagged makes no chain call."""
+        sym = canonical(symbol)
+        if not sym:
+            return None
+        out = {"symbol": sym, "name": None, "leaps": False, "price": None, "leapsBelow": None, "contract": None,
+               "reason": REASON_CHAIN_UNAVAILABLE, "expiries": [], "fetchedAt": None, "refreshedAt": None}
+        try:
+            records, etfs, universe = self._view()
+            rec = records.get(sym)
+            if rec is None and sym not in etfs and sym not in set(universe):
+                return None
+            now = self._now()
+            row = self._row(sym, rec, sym in etfs, _mos(mos), quote, now)
+            out.update(name=row["name"], price=row["price"], leapsBelow=row["leapsBelow"],
+                       fetchedAt=(rec or {}).get("fetched_at"),
+                       refreshedAt=self.store.summary.get("refreshed_at") if isinstance(self.store.summary, dict)
+                       else None)
+            if row["leaps"] is not True:
+                out.update(reason=REASON_NOT_FLAGGED)
+                return out
+            out["leaps"] = True
+            today = _et(now).date()
+            try:
+                chain = self.chain_for(to_schwab(sym), today + timedelta(days=LEAP_MIN_DTE),
+                                       today + timedelta(days=LEAP_MAX_DTE))
+            except Exception as exc:  # noqa: BLE001 - the page says "chain unavailable", nothing else changes
+                log.warning("long_term: option chain failed for %s (%s: %s)", sym, type(exc).__name__, exc)
+                out.update(reason=REASON_CHAIN_UNAVAILABLE)
+                return out
+            out.update(pick_leap(chain, price=row["price"], today=today))
+            return out
+        except Exception as exc:  # noqa: BLE001
+            log.warning("long_term: leap %s failed (%s: %s)", sym, type(exc).__name__, exc)
+            out.update(contract=None, reason=REASON_CHAIN_UNAVAILABLE, expiries=[])
+            return out
 
     # ----- refresher -----
 
