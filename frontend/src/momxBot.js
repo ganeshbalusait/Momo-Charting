@@ -46,6 +46,8 @@ export const BOT_RULE_LABELS = Object.freeze({
   momFlip: "FLIP↑ (5m ADX flips cyan, momentum rising)",
   explosive: "💥 Explosive (volume burst)",
   steady: "📈 Steady (higher highs)",
+  chartSqz: "🔥 Chart squeeze",
+  warn: "⚠ Warning (setup with a warning)",
 });
 // Plain-language meaning of each rule (his ask 2026-09-28: "for each rule,
 // give me explanation ... so i know what is missing"). "Needs" = every
@@ -82,6 +84,8 @@ export const BOT_RULE_HELP = Object.freeze({
   momStrong: { what: "MOM strong: the strong call setup - momentum dots cyan and rising AND the ADX background filled cyan on 5m and 30m (bear: magenta / magenta).", needs: "On the last 5-minute candle the Squeeze Momentum line (shared_SqueezeChain24) is cyan - above 0 and rising (bear: magenta, below 0 and falling); AND on BOTH 5m and 30m ADX DI+ is above 25 and above DI- (bear: DI- above 25 and above DI+) - buyers pushing harder and the trend strong across timeframes. Same as the solid cyan MOM tag in the Setup column. 09:30-15:30, first time per stock per day.", tested: "TEST - starts 2026-10-05; not back-tested. Momentum + 5m ADX alone did the same as random stocks (Sep 1-28); the 30m agreement is new." },
   explosive: { what: "💥 Explosive: a sudden burst of buying on the 5-minute chart - the pattern beside the grade letter.", needs: "One of the last 6 five-minute candles traded 3 or more times its usual volume swing (RVOL z-score 3.0+) and closed in its upper half, while the 5m breakout is confirmed or holding. Puts: the same burst closing in the lower half while the breakdown holds. 09:30-15:30, first time per stock per day.", tested: "TEST - starts 2026-10-12. Never back-tested on its own." },
   steady: { what: "📈 Steady: a slow, clean climb - the pattern beside the grade letter.", needs: "At least 4 of the last 6 fifteen-minute candles made a higher high AND a higher low than the one before, and the price is above the 5m 20 EMA. Puts: lower highs and lower lows, below the 20 EMA. 09:30-15:30, first time per stock per day.", tested: "TEST - starts 2026-10-12. Never back-tested on its own." },
+  chartSqz: { what: "🔥 Chart squeeze: the chart's own squeeze flame - the same 🔥 your chart draws.", needs: "A live 🔥 on the 1h, 2h, 4h or Daily candle that started today, not removed by the chart (✕). Same as the Setup column's Chart squeeze tag. 09:30-15:30.", tested: "TEST - starts 2026-11-06 so the AI agents can learn from it; not back-tested." },
+  warn: { what: "⚠ Warning: a setup that also shows a warning - tracked to learn whether the warning really marks losers.", needs: "GO, GO+, MX A+, Daily-2, Turn or SOLO fired AND the row shows a ⚠ warning (momentum fading, below VWAP, up 8%+, 30m sellers in control, or bad news). 09:30-15:30.", tested: "TEST - starts 2026-11-06; not back-tested. Compare with the same setups without ⚠." },
   momFlip: { what: "MOM FLIP: the 5m ADX background flips to your side while the momentum dots turn your way - earlier than MOM.", needs: "On the last CLOSED 5-minute candle the ADX buyers' line (DI+) crosses above the sellers' line (DI-) - background magenta -> cyan - and the Squeeze Momentum dots are rising on that candle (cyan or dark blue). Puts: DI- crosses above DI+ (cyan -> magenta) and the dots are falling (purple or magenta). Does not wait for the dots to cross 0. 09:30-15:30, first time per stock per day.", tested: "TEST - starts 2026-10-05. Back-test Sep 1-28 (all optionable stocks, 5m): the flip alone, with the dots turning, or with the dots coloured did the SAME as random stocks at the same moment, calls and puts, in both halves of the month. Fires on ~350 stocks a day." },
   zs2: { what: "Your ZS entry, but today's own high does not block it.", needs: "Same lines as ZS; the clear path ignores today's high and the premarket high (ABVX 09-28 was blocked only by its own day high).", tested: "TEST - back-test -0.22% overall, +0.09% on Watchlist names." },
 });
@@ -105,14 +109,15 @@ export const BOT_RULE_LABELS_BEAR = Object.freeze({
   momFlip: "FLIP↓ (5m ADX flips magenta, momentum falling)",
   explosive: "💥 Explosive (selling burst)",
   steady: "📈 Steady (lower lows)",
+  chartSqz: "🔥 Chart squeeze (down)",
   news: "News ▼ (scan match + Jev bearish news)",
 });
 export function botRuleLabel(rule, side = "bull") {
   const map = side === "bear" ? BOT_RULE_LABELS_BEAR : BOT_RULE_LABELS;
   return map[rule] || rule;
 }
-export const BOT_TEST_RULES = new Set(["level1", "level2", "level3", "news", "jev", "c2h", "call2h", "adx", "skit", "rvol", "sqz", "zs", "zs2", "sectorHot", "sectorMove", "openPath", "solo", "hotLead", "dayLine", "dayReclaim", "dayLine100", "mom", "momStrong", "momFlip", "explosive", "steady"]);
-export const BOT_RULE_ORDER = ["level1", "level2", "level3", "news", "jev", "goRvolMacd", "go", "star1", "mxaplus", "daily2", "turn", "c2h", "call2h", "adx", "skit", "rvol", "sqz", "zs", "zs2", "sectorHot", "sectorMove", "openPath", "solo", "hotLead", "dayLine", "dayReclaim", "dayLine100", "mom", "momStrong", "momFlip", "explosive", "steady"];
+export const BOT_TEST_RULES = new Set(["level1", "level2", "level3", "news", "jev", "c2h", "call2h", "adx", "skit", "rvol", "sqz", "zs", "zs2", "sectorHot", "sectorMove", "openPath", "solo", "hotLead", "dayLine", "dayReclaim", "dayLine100", "mom", "momStrong", "momFlip", "explosive", "steady", "chartSqz", "warn"]);
+export const BOT_RULE_ORDER = ["level1", "level2", "level3", "news", "jev", "goRvolMacd", "go", "star1", "mxaplus", "daily2", "turn", "c2h", "call2h", "adx", "skit", "rvol", "sqz", "zs", "zs2", "sectorHot", "sectorMove", "openPath", "solo", "hotLead", "dayLine", "dayReclaim", "dayLine100", "mom", "momStrong", "momFlip", "explosive", "steady", "chartSqz", "warn"];
 
 function num(value) {
   if (value === null || value === undefined || value === "") return null;

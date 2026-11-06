@@ -16843,6 +16843,11 @@ button.avatar {
   color: var(--momx-down);
 }
 .momx-scanner-panel .momx-bull.is-bear:hover { background: rgba(244, 114, 208, 0.2); }
+/* Mag7 "BULL ↑ 2 ↓1" counts inside the switch (2026-11-05). */
+.momx-scanner-panel .momx-bull .momx-side-count { margin-left: 5px; color: inherit; background: rgba(255, 255, 255, 0.12); }
+.momx-scanner-panel .momx-bull .momx-side-count-other { margin-left: 5px; font-size: 10px; letter-spacing: 0; opacity: 0.85; }
+.momx-scanner-panel .momx-bull .momx-side-count-other.is-bull { color: var(--momx-up); }
+.momx-scanner-panel .momx-bull .momx-side-count-other.is-bear { color: var(--momx-down); }
 
 /* NEWS sits beside BULL and is drawn to the same size and weight, but it IS
    a button: pointer, hover, and a filled "pressed" state so a filter he left

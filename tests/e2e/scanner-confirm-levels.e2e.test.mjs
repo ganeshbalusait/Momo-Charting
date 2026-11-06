@@ -96,3 +96,35 @@ e2eTest("on a phone the Setup ▾ list shows the three Confirm choices on screen
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// Bear mirror (his "Yes" 2026-11-05): SPY on the BEAR board with magenta RVOL
+// rising, a magenta Daily SQZ and a red Monthly Skittles box -> Confirm L3.
+function bearBoard(call) {
+  const board = boardFor("Mag7", "bear");
+  const at = call ? LATER() : FIRST;
+  board.generatedAt = board.scanCompletedAt = at;
+  const spy = board.rows.find((row) => row.symbol === "SPY");
+  spy.marketDataAt = at;
+  for (const tf of ["1h", "2h", "4h"]) spy.rvol[tf] = { value: 2.1 + call * 0.4, bg: "magenta", fg: "black" };
+  for (const tf of ["2h", "4h"]) spy.sqz[tf] = { value: 5, bg: "orange", fg: "black" };
+  spy.sqz.D = { value: 2, bg: "magenta", fg: "black" };
+  spy.skittles.M = { value: 40, bg: "red", fg: "black" };
+  spy.bestRank = 1;
+  spy.m5 = { ...spy.m5, pattern: "explosive" };
+  return board;
+}
+
+e2eTest("the BEAR board shows Confirm L3 with mirrored colors, and Confirm L3 filters it", async () => {
+  let calls = 0;
+  const fakeReads = { ...boardReads(), "GET /api/momx-scanner": (read) => ({ json: /dir=bear/.test(read.search) ? bearBoard(calls++) : boardFor("Mag7", "bull") }) };
+  await withApp({ view: VIEW, storage: { ...BOARD_STORAGE, "momx.scanner.direction": "bear" }, fakeReads }, async (app) => {
+    await boardReady(app.page);
+    await levelOf(app.page, "SPY").waitFor({ timeout: 45_000 });
+    assert.equal((await levelOf(app.page, "SPY").innerText()).trim(), "Confirm L3");
+    const picker = await pickRule(app.page, "Confirm L3");
+    await picker.getByRole("button", { name: "Done" }).click();
+    await app.page.waitForFunction(() => document.querySelectorAll("tr.momx-row").length === 1);
+    assert.deepEqual(await rowSymbols(app.page), ["SPY"]);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});

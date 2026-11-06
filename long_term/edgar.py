@@ -8,9 +8,11 @@ Rules (spec "Fact selection rules (EDGAR)"):
 * annual row = form in ANNUAL_FORMS and 350-380 days long (instants: end only);
   never fy/fp/frame; key by period end; latest `filed` wins, then accession.
 * one unit per concept per company: most annual years; USD only on >= coverage.
-* tag resolution per company: most-covered candidate is primary; another
+* tag resolution per company: the primary is a candidate covering the latest
+  annual year (most coverage among those; table order for debt/capex); another
   candidate fills missing years only if it agrees within 2% in every overlap
-  year, else the year stays blank and the series is a "tag break".
+  year, else the year stays blank and the series is a "tag break" (debt and
+  capex fill without the 2% rule, noted).
 * splits are inferred from the same period carrying different EPS in
   different filings (clean ratios only).
 * TTM flow = latest annual + YTD - prior YTD of the same 10-Q accession, else
@@ -44,7 +46,8 @@ IFRS = "ifrs-full:"
 # One table, us-gaap first then ifrs-full. Bare names are us-gaap; "ifrs-full:" names are IFRS.
 # A tuple is a sum recipe (all non-optional parts must exist that year).
 CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
-    "revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet",
+    "revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet",
                 ("InterestAndDividendIncomeOperating", "NoninterestIncome"), IFRS + "Revenue"],
     "net_income": ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic",
                    IFRS + "ProfitLossAttributableToOwnersOfParent", IFRS + "ProfitLoss"],
@@ -58,13 +61,27 @@ CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
              "LongTermDebtAndCapitalLeaseObligations",
              (IFRS + "NoncurrentBorrowings", IFRS + "CurrentBorrowings"),
              (IFRS + "LongtermBorrowings", IFRS + "ShorttermBorrowings"),
-             IFRS + "Borrowings"],
+             IFRS + "Borrowings",
+             # audit 2026-11-06 (first pass): real tags on filers the recipes above missed
+             "NotesPayable",                                                        # DHI, GAP
+             ("ConvertibleLongTermNotesPayable", "ConvertibleNotesPayableCurrent"),  # DASH, DDOG, AEVA
+             "DebtAndCapitalLeaseObligations",                                      # F
+             "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",    # GM
+             "LoansPayable",                                                        # GAP
+             "OtherNotesPayableCurrent",                                            # AEVA
+             # audit round 2: real debt the proof would otherwise call "no debt"
+             "LongTermDebtNoncurrent",                                              # CRWD, REGN, MRNA, TEAM
+             ("ConvertibleDebtNoncurrent", "ConvertibleDebtCurrent"),               # PANW
+             "ConvertibleNotesPayable",                                             # DHI
+             # SPOT: exchangeable notes sit in current borrowings (LongtermBorrowings is 0)
+             (IFRS + "LongtermBorrowings", IFRS + "CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings")],
     "op_leases": ["OperatingLeaseLiability"],
     "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
              IFRS + "CashAndCashEquivalents"],
     "cfo": ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
             IFRS + "CashFlowsFromUsedInOperatingActivities"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets",
+              "PaymentsToAcquireOtherPropertyPlantAndEquipment",                     # LLY
               IFRS + "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"],
     "sbc": ["ShareBasedCompensation"],
     "buybacks": ["PaymentsForRepurchaseOfCommonStock"],
@@ -76,17 +93,25 @@ CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
                IFRS + "WeightedAverageNumberOfDilutedSharesOutstanding"],
     "split_ratio": ["StockholdersEquityNoteStockSplitConversionRatio1"],   # informational only
 }
-# Revenue: when both of these exist in a year, take the larger (one combined candidate).
-LARGER_OF = {"revenue": ("Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax")}
+# Revenue: when several of these exist in a year, take the largest (one combined candidate).
+LARGER_OF = {"revenue": ("Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
+                         "RevenueFromContractWithCustomerIncludingAssessedTax")}
 # Recipe parts that count as 0 when missing (ifrs ShorttermBorrowings is the IFRS twin of ShortTermBorrowings).
-OPTIONAL_PARTS = frozenset({"ShortTermBorrowings", "CommercialPaper", IFRS + "ShorttermBorrowings"})
+OPTIONAL_PARTS = frozenset({"ShortTermBorrowings", "CommercialPaper", IFRS + "ShorttermBorrowings",
+                            "ConvertibleNotesPayableCurrent", "ConvertibleDebtCurrent"})
 # Fill-only candidates: they may fill missing years under the 2% rule but are never primary
 # (unless nothing else exists for that concept).
 FILL_ONLY = frozenset({"NetIncomeLossAvailableToCommonStockholdersBasic", "EarningsPerShareBasic",
                        "WeightedAverageNumberOfSharesOutstandingBasic", IFRS + "BasicEarningsLossPerShare"})
-# Concepts ranked by table order (the first candidate covering the latest year is primary)
-# instead of by coverage: the debt recipes are listed best-first.
-ORDERED_CONCEPTS = frozenset({"debt"})
+# Every concept's primary candidate is one that covers the LATEST annual year (R19). Among those,
+# ordered concepts take table order (the debt recipes are listed best-first), the rest the most
+# coverage. Ordered concepts also fill the primary's missing years from the other candidates in
+# table order WITHOUT the 2% rule (the tags measure the same thing with structural differences:
+# commercial paper and leases for debt; AMZN's PP&E vs productive-assets capex), noted, no tag break.
+ORDERED_CONCEPTS = frozenset({"debt", "capex"})
+CAPEX_FILL_MAX_DIFF = 0.25        # capex: a candidate more than 25% off in an overlap year never fills
+# Single-part debt recipes that can miss part of the debt (R22): noted when they carry the latest year.
+PARTIAL_DEBT = frozenset({"NotesPayable", "LoansPayable", "OtherNotesPayableCurrent", "LongTermDebtNoncurrent"})
 SHARES_TAGS = ("WeightedAverageNumberOfDilutedSharesOutstanding", IFRS + "WeightedAverageNumberOfDilutedSharesOutstanding")
 INSTANT_CONCEPTS = frozenset({"equity", "debt", "op_leases", "cash", "assets"})
 MAGNITUDE_CONCEPTS = frozenset({"capex"})
@@ -140,8 +165,9 @@ class Series:
     filed: dict[str, str] = field(default_factory=dict)    # end -> filed date of the value used
     source: dict[str, str] = field(default_factory=dict)   # end -> candidate label that supplied it
     disagree: dict[str, int] = field(default_factory=dict)  # candidate label -> overlap years off by > 2%
-    unchecked: dict[str, list[str]] = field(default_factory=dict)  # debt: recipe label -> ends filled without 2% rule
+    unchecked: dict[str, list[str]] = field(default_factory=dict)  # debt/capex: label -> ends filled without 2% rule
     basic_only: bool = False                   # primary is a fill-only tag (nothing better had data)
+    far_off: list[str] = field(default_factory=list)  # capex: candidates refused for differing > 25%
     forms: dict[str, str] = field(default_factory=dict)    # end -> form of the fact used (10-K, 20-F...)
 
 
@@ -307,16 +333,22 @@ def _candidates(gaap: dict, ifrs: dict, concept: str) -> list[tuple[str, dict[st
     pair = LARGER_OF.get(concept)
     out = []
     for cand in cands:
-        if pair and cand == pair[1]:
+        if pair and cand in pair[1:]:
             continue                                      # folded into pair[0]
         rows = _candidate(gaap, ifrs, cand, instant)
         label = _cand_label(cand)
         if pair and cand == pair[0]:
-            rows = _larger_of(rows, _candidate(gaap, ifrs, pair[1], instant))
+            for other in pair[1:]:
+                rows = _larger_of(rows, _candidate(gaap, ifrs, other, instant))
             label = "|".join(pair)
         if rows:
             out.append((label, rows))
     return out
+
+
+def _off_by(a: float, b: float) -> float:
+    scale = max(abs(a), abs(b))
+    return 0.0 if scale == 0 else abs(abs(a) - abs(b)) / scale
 
 
 def _agrees(a: float, b: float) -> bool:
@@ -344,32 +376,44 @@ def resolve_series(gaap: dict, ifrs: dict, concept: str, *, year_ends: set[str] 
     ranked = [(lab, rows.get(unit, {})) for lab, rows in cands if rows.get(unit)]
     if not ranked:
         return None
+    # R19: the primary covers the latest annual year any (non-fill-only) candidate has, so a tag
+    # that stopped years ago never outranks the one the company files today (TEAM, AMZN capex).
+    pool = [c for c in ranked if c[0] not in FILL_ONLY] or ranked
+    latest = max(e for _, rows in pool for e in rows)
+    covering = [c for c in pool if latest in c[1]]
     if concept in ORDERED_CONCEPTS:
-        # table order; primary = first candidate covering the latest year any candidate has
-        latest = max(e for _, rows in ranked for e in rows)
-        first = next(i for i, (_, rows) in enumerate(ranked) if latest in rows)
-        ranked = [ranked[first]] + ranked[:first] + ranked[first + 1:]
+        # table order: the first candidate covering the latest year; the rest fill in table order
+        # a recipe showing 0 in the latest year never outranks a later one showing a value there:
+        # a 0 from a partial recipe is "a tag missed", not proof of no debt (SPOT)
+        first = next((c for c in covering if c[1][latest].val != 0), covering[0])
+        ranked = [first] + [c for c in ranked if c is not first]
     else:
-        # most coverage first; ties keep table order (sorted is stable); fill-only tags go last
-        ranked = sorted(ranked, key=lambda c: -len(c[1]))
-        ranked = [c for c in ranked if c[0] not in FILL_ONLY] + [c for c in ranked if c[0] in FILL_ONLY]
+        # most coverage among those covering the latest year (ties keep table order: sorted is
+        # stable); the rest by coverage, fill-only tags last
+        first = sorted(covering, key=lambda c: -len(c[1]))[0]
+        rest = sorted((c for c in ranked if c is not first), key=lambda c: -len(c[1]))
+        ranked = [first] + [c for c in rest if c[0] not in FILL_ONLY] + [c for c in rest if c[0] in FILL_ONLY]
     plabel, prim = ranked[0]
     chosen: dict[str, Fact] = dict(prim)
     source = {e: plabel for e in prim}
     refused: set[str] = set()                            # years a disagreeing candidate could have filled
     disagree: dict[str, int] = {}
     unchecked: dict[str, list[str]] = {}
+    far_off: list[str] = []
     for lab, rows in ranked[1:]:
         overlap = [e for e in rows if e in prim]
         off = sum(1 for e in overlap if not _agrees(rows[e].val, prim[e].val))
-        if off:
+        if off and concept not in ORDERED_CONCEPTS:          # ordered concepts disagree by design
             disagree[lab] = off
         missing = [e for e in rows if e not in chosen]
         if not missing:
             continue
         if concept in ORDERED_CONCEPTS:
-            # Debt recipes measure the same thing with structural differences (commercial paper,
-            # leases...), so older years are filled in table order without the 2% rule.
+            # Same thing measured with structural differences (see ORDERED_CONCEPTS), so missing
+            # years are filled in table order without the 2% rule; capex refuses a tag > 25% off.
+            if concept == "capex" and any(_off_by(rows[e].val, prim[e].val) > CAPEX_FILL_MAX_DIFF for e in overlap):
+                far_off.append(lab)
+                continue
             for e in missing:
                 chosen[e] = rows[e]
                 source[e] = lab
@@ -389,7 +433,7 @@ def resolve_series(gaap: dict, ifrs: dict, concept: str, *, year_ends: set[str] 
     ends = sorted(chosen)
     return Series(values={e: abs(chosen[e].val) if mag else chosen[e].val for e in ends}, unit=unit, tag=tag,
                   tag_break=broke, filed={e: chosen[e].filed for e in ends}, source={e: source[e] for e in ends},
-                  disagree=disagree, unchecked=unchecked, basic_only=plabel in FILL_ONLY,
+                  disagree=disagree, unchecked=unchecked, basic_only=plabel in FILL_ONLY, far_off=far_off,
                   forms={e: chosen[e].form for e in ends})
 
 
@@ -563,10 +607,18 @@ def build_snapshot(symbol: str, cik: int, companyfacts: dict, *, sic: int | None
     for c, s in series.items():
         notes.extend(f"{c}: {lab} disagrees >2% in {n} overlap years" for lab, n in s.disagree.items())
         letters = {_cand_label(cand): chr(ord("a") + i) for i, cand in enumerate(CONCEPTS[c])}
-        notes.extend(f"{c}: {', '.join(e[:4] for e in ends)} from recipe ({letters.get(lab, '?')}) {lab}"
-                     for lab, ends in s.unchecked.items())
+        for lab, ends in s.unchecked.items():
+            years = ", ".join(e[:4] for e in ends)
+            notes.append(f"{c}: {years} from recipe ({letters.get(lab, '?')}) {lab}" if c == "debt"
+                         else f"{c}: {years} from {lab}")
+        notes.extend(f"{c}: {lab} differs >25%, not used" for lab in s.far_off)
         if s.basic_only:
             notes.append(f"{c}: basic-only")
+    debt = series.get("debt")
+    if debt and debt.values:
+        lab = debt.source.get(max(debt.values), debt.tag)
+        if lab in PARTIAL_DEBT:
+            notes.append(f"debt: partial recipe {lab}")
     tag_breaks = [c for c, s in series.items() if s.tag_break]
     notes.extend(f"{c}: tag break" for c in tag_breaks)
 
@@ -806,14 +858,15 @@ def _ttm_fields(gaap: dict, ifrs: dict, series: dict[str, Series], latest: str |
         else:
             ttm["shares"], balance_ends["shares"] = s.values[max(s.values)], max(s.values)
     lead = next((c for c in ("net_income", "revenue") if c in stamps), None)
-    period_end = None
-    for c in ("net_income", "revenue"):
-        if c in series and series[c].values:
-            period_end = _period_end(gaap, ifrs, series[c])
-            break
+    # Latest period end of any allowed period form across EVERY resolved concept (flows and
+    # instants): C and NEE file their latest 10-Q facts under tags other than net income's.
+    ends = [e for e in (_period_end(gaap, ifrs, s) for s in series.values() if s.values) if e]
+    period_end = max(ends) if ends else None
     if lead is None:
         return ttm, latest, True, period_end, notes, stamps, balance_ends
     ttm_end, ttm_is_fy = stamps[lead]
+    if ttm_is_fy and period_end and period_end > ttm_end:
+        notes.append(f"income TTM = FY; later 10-Q balance at {period_end}")
     for c, (e, fy) in stamps.items():
         if (e, fy) != (ttm_end, ttm_is_fy):
             notes.append(f"{c}: TTM = FY" if fy else f"{c}: TTM through {e}")

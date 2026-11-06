@@ -46,6 +46,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
+from momx import etf_list
 from momx.bot_levels import LevelEvaluator, LEVEL_RULES
 
 ET = ZoneInfo("America/New_York")
@@ -119,7 +120,15 @@ RULES = ("go", "goRvolMacd", "mxaplus", "daily2", "turn", "star1", "c2h", "call2
 #: the CPU before - 6 x 15 caps the day at ~90 fetches per re-price round.
 INFO_RULES = ("c2h", "call2h", "adx", "skit", "rvol", "sqz", "zs", "zs2", "sectorHot", "sectorMove", "openPath",
               "solo", "hotLead", "dayLine", "dayReclaim", "dayLine100", "mom", "momStrong", "momFlip", "jev",
-              "explosive", "steady")
+              "explosive", "steady", "chartSqz", "warn")
+#: "chartSqz" / "warn" (his ask 2026-11-05, "Setup column all rule have AI
+#: agentic also"): the two Setup tags the bot never traded, so the review
+#: agents had nothing to learn from. chartSqz = momxFilters.chartSqueezeTags
+#: (a live chart 🔥 flame today, not removed); warn = a GO / GO+ / MX A+ /
+#: Daily-2 / Turn / SOLO setup that ALSO carries a ⚠ setup warning - tracked
+#: to learn whether the warning really marks losers. Neither is back-tested.
+CHART_SQZ_LIFE_SECONDS = {"1h": 3600, "2h": 7200, "4h": 14400, "D": 86400}
+WARN_SETUP_RULES = ("go", "goRvolMacd", "mxaplus", "daily2", "turn", "solo")
 #: "dayLine" (2026-09-29, his AMD / GOOGL / NVDA / AAPL charts: "enter above
 #: 21 EMA calls or below 21 EMA puts with volume increasing or momentum"):
 #: m5.dayLine.signal on one of the board's 30 biggest stocks by average dollar
@@ -206,7 +215,7 @@ def _stamp_today(value: Any, today) -> bool:
 #: ETFs the bot DOES trade on every rule (Ganesh 2026-10-11: "Trade spy/qqq in
 #: etf in bot"). Every other ETF and the cash indexes (SPX, NDX, ... - "don't
 #: trade SPX bot") stay out, per 2026-09-27 "use only stocks".
-BOT_TRADED_ETFS = frozenset({"SPY", "QQQ"})
+BOT_TRADED_ETFS = etf_list.RULE_ETFS  # one list for the BOT and every Setup rule (2026-11-05)
 
 
 def _etf_excluded(row: Mapping) -> bool:
@@ -316,6 +325,8 @@ def fired(row: Mapping, bear: bool, now: datetime) -> list[str]:
     pattern = m5.get("pattern")
     if pattern in ("explosive", "steady"):
         out.append(pattern)
+    if _chart_sqz_live(row, now):
+        out.append("chartSqz")
     # ZS / ZS2 / ABVX on both boards (bear = below every line, clear path DOWN,
     # 2026-09-28). The bear SECTOR rules are board-level - OptionTrackBook.apply.
     if _zs_now(row, now):
@@ -340,7 +351,27 @@ def fired(row: Mapping, bear: bool, now: datetime) -> list[str]:
                 out.append("sectorHot")
             elif rot.get("late") is True:
                 out.append("sectorMove")
+    if any(r in out for r in WARN_SETUP_RULES) and setup_warnings(row, bear) > 0:
+        out.append("warn")
     return out
+
+
+def _chart_sqz_live(row: Mapping, now: datetime) -> bool:
+    """momxFilters.chartSqueezeTags: a chart 🔥 flame from today, still inside
+    one candle of its timeframe, and not removed by the chart (goneAt)."""
+    today, now_ts = now.astimezone(ET).date(), now.timestamp()
+    for f in row.get("chartSqueeze") or []:
+        f = _m(f)
+        life = CHART_SQZ_LIFE_SECONDS.get(f.get("timeframe"))
+        at, seen = _iso(f.get("at")), _iso(f.get("seenAt"))
+        if not life or at is None or f.get("goneAt"):
+            continue
+        seen = seen or at
+        if at.astimezone(ET).date() != today or now_ts < min(at, seen).timestamp():
+            continue
+        if now_ts < max(at, seen).timestamp() + life:
+            return True
+    return False
 
 
 # --------------------------------------------------------------------- ⭐1
@@ -1276,8 +1307,10 @@ class OptionTrackBook:
             if local.weekday() >= 5:
                 return
             rows = [r for s in ("rows", "rest") for r in (_m(payload).get(s) or []) if isinstance(r, dict)]
-            level_signals = self._levels.evaluate(board, _m(payload), local) if not self.bear else {}
-            learning_contexts = getattr(self._levels, 'contexts', {}) if not self.bear else {}
+            # Bear Level 1/2/3 (his "Yes" 2026-11-05): the same shared rules,
+            # mirrored colors, on this book's own evaluator (puts).
+            level_signals = self._levels.evaluate(board, _m(payload), local, bear=self.bear)
+            learning_contexts = getattr(self._levels, 'contexts', {})
             for row in rows:
                 row.pop('scannerInputs', None)
                 if row.get('symbol') in learning_contexts:

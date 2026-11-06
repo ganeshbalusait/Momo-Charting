@@ -894,3 +894,243 @@ def test_optional_part_missing_at_10q_falls_back_to_annual_instant():
     assert edgar._latest_instant(g, {}, "LongTermDebtNoncurrent+LongTermDebtCurrent+ShortTermBorrowings",
                                  "USD", notes2) == ("2026-09-30", 122.0)
     assert notes2 == []
+
+
+# ---------- first nightly audit (2026-11-06): coverage gaps on 385 tickers ----------
+
+def _flows(tag_vals, unit="USD"):
+    """{tag: {year: val}} -> us-gaap nodes of 10-K annual flows (Jan-Dec)."""
+    return {t: {"units": {unit: [{"start": f"{y}-01-01", "end": f"{y}-12-31", "val": v, "accn": f"a{y}",
+                                  "form": "10-K", "filed": f"{y + 1}-02-01"} for y, v in vals.items()]}}
+            for t, vals in tag_vals.items()}
+
+
+def _insts(tag_vals):
+    return {t: {"units": {"USD": [{"end": f"{y}-12-31", "val": v, "accn": f"a{y}", "form": "10-K",
+                                   "filed": f"{y + 1}-02-01"} for y, v in vals.items()]}}
+            for t, vals in tag_vals.items()}
+
+
+def test_new_tags_are_in_the_table():
+    for tag in ("RevenueFromContractWithCustomerIncludingAssessedTax", "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+                "NotesPayable", "ConvertibleLongTermNotesPayable", "ConvertibleNotesPayableCurrent",
+                "DebtAndCapitalLeaseObligations", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
+                "LoansPayable", "OtherNotesPayableCurrent"):
+        assert tag in ALL_TAGS and tag in TAGS_BY_NAMESPACE["us-gaap"], tag
+    debt = [edgar._cand_label(c) for c in CONCEPTS["debt"]]
+    assert debt[-1] == "ifrs-full:LongtermBorrowings+ifrs-full:CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings"
+    assert debt[-10:-1] == ["NotesPayable", "ConvertibleLongTermNotesPayable+ConvertibleNotesPayableCurrent",
+                         "DebtAndCapitalLeaseObligations",
+                         "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
+                         "LoansPayable", "OtherNotesPayableCurrent",
+                         "LongTermDebtNoncurrent", "ConvertibleDebtNoncurrent+ConvertibleDebtCurrent",
+                         "ConvertibleNotesPayable"]
+    for tag in ("ConvertibleDebtNoncurrent", "ConvertibleDebtCurrent", "ConvertibleNotesPayable"):
+        assert tag in ALL_TAGS and tag in TAGS_BY_NAMESPACE["us-gaap"], tag
+
+
+def test_revenue_including_assessed_tax_crwd():
+    # CRWD tags revenue only as ...IncludingAssessedTax
+    series, _, tag, _ = resolve_concept(_flows({"RevenueFromContractWithCustomerIncludingAssessedTax":
+                                                {2024: 3.0, 2025: 4.0}}), {}, "revenue")
+    assert series == {"2024-12-31": 3.0, "2025-12-31": 4.0}
+    assert tag == "RevenueFromContractWithCustomerIncludingAssessedTax"
+    # with the Excluding tag in the same year the larger-of rule still applies
+    g = _flows({"RevenueFromContractWithCustomerExcludingAssessedTax": {2025: 100.0},
+                "RevenueFromContractWithCustomerIncludingAssessedTax": {2025: 104.0}})
+    assert resolve_concept(g, {}, "revenue")[0] == {"2025-12-31": 104.0}
+
+
+def test_capex_other_ppe_tag_lly():
+    series, _, tag, _ = resolve_concept(_flows({"PaymentsToAcquireOtherPropertyPlantAndEquipment":
+                                                {y: -5.0 for y in range(2020, 2026)}}), {}, "capex")
+    assert tag == "PaymentsToAcquireOtherPropertyPlantAndEquipment" and len(series) == 6
+    assert set(series.values()) == {5.0}
+
+
+@pytest.mark.parametrize("tag", ["NotesPayable", "DebtAndCapitalLeaseObligations",
+                                 "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
+                                 "LoansPayable", "OtherNotesPayableCurrent", "LongTermDebtNoncurrent",
+                                 "ConvertibleNotesPayable"])
+def test_new_single_tag_debt_recipes(tag):
+    series, _, primary, _ = resolve_concept(_insts({tag: {2024: 7.0, 2025: 9.0}}), {}, "debt")
+    assert primary == tag and series == {"2024-12-31": 7.0, "2025-12-31": 9.0}
+
+
+def test_convertible_notes_recipe_current_part_optional():
+    both = _insts({"ConvertibleLongTermNotesPayable": {2024: 100.0, 2025: 90.0},
+                   "ConvertibleNotesPayableCurrent": {2025: 10.0}})
+    series, _, tag, _ = resolve_concept(both, {}, "debt")
+    assert tag == "ConvertibleLongTermNotesPayable+ConvertibleNotesPayableCurrent"
+    assert series == {"2024-12-31": 100.0, "2025-12-31": 100.0}
+    # the current part alone is not that recipe
+    assert resolve_concept(_insts({"ConvertibleNotesPayableCurrent": {2025: 10.0}}), {}, "debt") is None
+
+
+def test_debt_recipes_stay_mutually_exclusive_first_covering_latest_wins():
+    # LongTermDebt AND convertible notes both cover the latest year: recipe (b) wins, nothing is summed
+    g = _insts({"LongTermDebt": {2024: 50.0, 2025: 60.0},
+                "ConvertibleLongTermNotesPayable": {y: 30.0 for y in range(2018, 2026)}})
+    series, _, tag, _ = resolve_concept(g, {}, "debt")
+    assert tag == "LongTermDebt+ShortTermBorrowings+CommercialPaper" and series["2025-12-31"] == 60.0
+    assert series["2018-12-31"] == 30.0                      # older years filled in table order
+    # convertible notes alone in the latest year: they are primary, LongTermDebt fills the old years
+    g = _insts({"LongTermDebt": {2019: 50.0, 2020: 60.0},
+                "ConvertibleLongTermNotesPayable": {2021: 30.0, 2025: 35.0}})
+    series, _, tag, _ = resolve_concept(g, {}, "debt")
+    assert tag.startswith("ConvertibleLongTermNotesPayable") and series["2025-12-31"] == 35.0
+    assert series["2019-12-31"] == 50.0
+
+
+def test_primary_is_the_tag_covering_the_latest_year_team():
+    # TEAM: long 20-F era under ProfitLoss (2014-2022), 10-Ks since 2023 under NetIncomeLoss (with
+    # comparatives back to 2021). Coverage alone picked ProfitLoss and dated the company 2022.
+    old = {y: 10.0 + y - 2014 for y in range(2014, 2023)}
+    new = {y: 10.0 + y - 2014 for y in range(2021, 2026)}
+    g = _flows({"ProfitLoss": old, "NetIncomeLoss": new})
+    s = resolve_series(g, {}, "net_income")
+    assert s.tag == "NetIncomeLoss" and max(s.values) == "2025-12-31" and len(s.values) == 12
+    assert s.source["2014-12-31"] == "ProfitLoss" and not s.tag_break
+    snap_ = build_snapshot("TEAM", 1, {"facts": {"us-gaap": g}}, sic=None, name="TEAM", fetched_at=FA)
+    assert snap_.latest_annual_end == "2025-12-31"
+    # the two tags disagree in the overlap (IFRS vs US GAAP): the old tag cannot fill, but the
+    # company is still dated by the tag it files today, never by the longer, older one
+    g = _flows({"ProfitLoss": old, "NetIncomeLoss": {y: v * 1.1 for y, v in new.items()}})
+    s = resolve_series(g, {}, "net_income")
+    assert s.tag == "NetIncomeLoss" and sorted(s.values) == [f"{y}-12-31" for y in range(2021, 2026)]
+    assert s.tag_break
+    snap_ = build_snapshot("TEAM", 1, {"facts": {"us-gaap": g}}, sic=None, name="TEAM", fetched_at=FA)
+    assert snap_.latest_annual_end == "2025-12-31" and snap_.annual_form == "10-K"
+
+
+def test_capex_fills_without_two_percent_rule_amzn():
+    # AMZN: PP&E capex 2015-2019, productive-assets capex 2019-2025, 10% apart in 2019. The newer tag
+    # covers the latest year so it is primary; the older years fill from the old tag, noted, no break.
+    g = _flows({"PaymentsToAcquirePropertyPlantAndEquipment": {y: -100.0 for y in range(2015, 2020)},
+                "PaymentsToAcquireProductiveAssets": {**{2019: -110.0}, **{y: -200.0 for y in range(2020, 2026)}}})
+    s = resolve_series(g, {}, "capex")
+    assert len(s.values) == 11 and min(s.values) == "2015-12-31" and max(s.values) == "2025-12-31"
+    assert s.tag == "PaymentsToAcquireProductiveAssets" and not s.tag_break
+    assert s.values["2025-12-31"] == 200.0 and s.values["2019-12-31"] == 110.0 and s.values["2015-12-31"] == 100.0
+    g.update(_flows({"NetIncomeLoss": {y: 5.0 for y in range(2015, 2026)}}))
+    snap_ = build_snapshot("AMZN", 1, {"facts": {"us-gaap": g}}, sic=None, name="AMZN", fetched_at=FA)
+    assert "capex" not in snap_.tag_breaks and len([r for r in snap_.annual.values() if "capex" in r]) == 11
+    assert "capex: 2015, 2016, 2017, 2018 from PaymentsToAcquirePropertyPlantAndEquipment" in snap_.notes
+
+
+def test_latest_period_end_spans_every_concept():
+    # Net income has nothing after the 10-K; only Assets carries a later 10-Q instant (C, NEE).
+    g = _flows({"NetIncomeLoss": {y: 5.0 for y in range(2021, 2026)},
+                "Revenues": {y: 50.0 for y in range(2021, 2026)}})
+    g.update(_insts({"Assets": {y: 500.0 for y in range(2021, 2026)}}))
+    g["Assets"]["units"]["USD"].append({"end": "2026-06-30", "val": 520.0, "accn": "q2", "form": "10-Q",
+                                        "filed": "2026-08-01"})
+    s = build_snapshot("X", 1, {"facts": {"us-gaap": g}}, sic=None, name="X", fetched_at=FA)
+    assert s.latest_annual_end == "2025-12-31" and s.latest_period_end == "2026-06-30"
+    # a form outside the period forms (8-K) never moves it
+    g["Assets"]["units"]["USD"].append({"end": "2026-09-30", "val": 1.0, "accn": "x", "form": "8-K",
+                                        "filed": "2026-10-01"})
+    s = build_snapshot("X", 1, {"facts": {"us-gaap": g}}, sic=None, name="X", fetched_at=FA)
+    assert s.latest_period_end == "2026-06-30"
+
+
+def test_long_term_debt_noncurrent_alone_crwd_team():
+    # CRWD / REGN / MRNA tag senior notes only as LongTermDebtNoncurrent (no current part)
+    series, _, tag, _ = resolve_concept(_insts({"LongTermDebtNoncurrent": {2024: 740.0, 2025: 742.0}}), {}, "debt")
+    assert tag == "LongTermDebtNoncurrent" and series["2025-12-31"] == 742.0
+    # TEAM: the current part stopped in 2024; the noncurrent part alone carries the latest year
+    g = _insts({"LongTermDebtNoncurrent": {2023: 990.0, 2024: 995.0, 2025: 1000.0},
+                "LongTermDebtCurrent": {2023: 10.0, 2024: 10.0}})
+    series, _, tag, _ = resolve_concept(g, {}, "debt")
+    assert tag == "LongTermDebtNoncurrent" and series["2025-12-31"] == 1000.0
+    # the primary supplies every year it has (ordered fill only fills gaps), so the 2023-2024
+    # current portion is not added: known, small undercount in those years
+    assert series["2024-12-31"] == 995.0
+    # both parts in the latest year: recipe (a) still wins
+    g = _insts({"LongTermDebtNoncurrent": {2025: 1000.0}, "LongTermDebtCurrent": {2025: 10.0}})
+    assert resolve_concept(g, {}, "debt")[2].startswith("LongTermDebtNoncurrent+LongTermDebtCurrent")
+
+
+def test_convertible_debt_recipe_panw():
+    g = _insts({"ConvertibleDebtNoncurrent": {2024: 900.0, 2025: 0.0}, "ConvertibleDebtCurrent": {2025: 950.0}})
+    series, _, tag, _ = resolve_concept(g, {}, "debt")
+    assert tag == "ConvertibleDebtNoncurrent+ConvertibleDebtCurrent"
+    assert series == {"2024-12-31": 900.0, "2025-12-31": 950.0}
+    assert resolve_concept(_insts({"ConvertibleDebtCurrent": {2025: 950.0}}), {}, "debt") is None
+
+
+def test_zero_recipe_never_outranks_a_recipe_with_debt_spot():
+    # SPOT: ifrs LongtermBorrowings is 0 in the latest year; the exchangeable notes are tagged as
+    # CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings. Recipe (f) shows 0 and must not win.
+    def inst(vals):
+        return {"units": {"EUR": [{"end": f"{y}-12-31", "val": v, "accn": f"a{y}", "form": "20-F",
+                                   "filed": f"{y + 1}-02-01"} for y, v in vals.items()]}}
+    ifrs_ = {"LongtermBorrowings": inst({2024: 1450.0, 2025: 0.0}),
+             "CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings": inst({2024: 0.0, 2025: 1458.0})}
+    series, unit, tag, _ = resolve_concept({}, ifrs_, "debt")
+    assert tag == "ifrs-full:LongtermBorrowings+ifrs-full:CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings"
+    assert series["2025-12-31"] == 1458.0 and unit == "EUR"
+    # when every covering recipe shows 0, the first in table order stays primary (a real zero)
+    ifrs_ = {"LongtermBorrowings": inst({2025: 0.0})}
+    assert resolve_concept({}, ifrs_, "debt")[0] == {"2025-12-31": 0.0}
+
+
+# ---------- review round 3 ----------
+
+def _snap_of(g, ifrs_=None):
+    facts = {"us-gaap": g}
+    if ifrs_:
+        facts["ifrs-full"] = ifrs_
+    return build_snapshot("X", 1, {"facts": facts}, sic=None, name="X", fetched_at=FA)
+
+
+def test_partial_debt_recipe_is_noted():
+    base = _flows({"NetIncomeLoss": {y: 5.0 for y in range(2021, 2026)}})
+    for tag in ("NotesPayable", "LoansPayable", "OtherNotesPayableCurrent", "LongTermDebtNoncurrent"):
+        s = _snap_of({**base, **_insts({tag: {y: 9.0 for y in range(2021, 2026)}})})
+        assert f"debt: partial recipe {tag}" in s.notes, tag
+    s = _snap_of({**base, **_insts({"LongTermDebtNoncurrent": {y: 9.0 for y in range(2021, 2026)},
+                                    "LongTermDebtCurrent": {y: 1.0 for y in range(2021, 2026)}})})
+    assert not any("partial recipe" in n for n in s.notes)
+
+
+def test_ordered_concepts_have_no_two_percent_notes():
+    g = _flows({"PaymentsToAcquirePropertyPlantAndEquipment": {y: -100.0 for y in range(2015, 2020)},
+                "PaymentsToAcquireProductiveAssets": {**{2019: -110.0}, **{y: -200.0 for y in range(2020, 2026)}},
+                "NetIncomeLoss": {y: 5.0 for y in range(2015, 2026)}})
+    g.update(_insts({"LongTermDebt": {2024: 50.0, 2025: 60.0}, "NotesPayable": {2024: 70.0, 2023: 40.0}}))
+    s = _snap_of(g)
+    assert not any(n.startswith(("capex:", "debt:")) and "disagrees" in n for n in s.notes)
+    assert "capex: 2015, 2016, 2017, 2018 from PaymentsToAcquirePropertyPlantAndEquipment" in s.notes
+
+
+def test_capex_fill_refused_beyond_25_percent():
+    g = _flows({"PaymentsToAcquirePropertyPlantAndEquipment": {y: -100.0 for y in range(2015, 2020)},
+                "PaymentsToAcquireProductiveAssets": {**{2019: -200.0}, **{y: -200.0 for y in range(2020, 2026)}},
+                "NetIncomeLoss": {y: 5.0 for y in range(2015, 2026)}})
+    s = resolve_series(g, {}, "capex")
+    assert sorted(s.values) == [f"{y}-12-31" for y in range(2019, 2026)] and s.far_off == [
+        "PaymentsToAcquirePropertyPlantAndEquipment"]
+    snap_ = _snap_of(g)
+    assert "capex: PaymentsToAcquirePropertyPlantAndEquipment differs >25%, not used" in snap_.notes
+    # the AMZN-shaped 10% case still fills (test_capex_fills_without_two_percent_rule_amzn)
+    g["PaymentsToAcquireProductiveAssets"]["units"]["USD"][0]["val"] = -110.0
+    assert len(resolve_series(g, {}, "capex").values) == 11
+
+
+def test_fy_ttm_with_later_quarter_is_noted():
+    g = _flows({"NetIncomeLoss": {y: 5.0 for y in range(2021, 2026)}})
+    g.update(_insts({"Assets": {y: 500.0 for y in range(2021, 2026)}}))
+    g["Assets"]["units"]["USD"].append({"end": "2026-06-30", "val": 520.0, "accn": "q2", "form": "10-Q",
+                                        "filed": "2026-08-01"})
+    s = _snap_of(g)
+    assert s.ttm_is_fy and "income TTM = FY; later 10-Q balance at 2026-06-30" in s.notes
+    assert not any(n.startswith("income TTM") for n in snap("AAPL").notes)   # AAPL: 10-K is the latest
+
+
+def test_zero_recipe_stays_primary_when_later_recipe_has_only_older_years():
+    g = _insts({"LongTermDebtNoncurrent": {2024: 0.0, 2025: 0.0}, "LongTermDebtCurrent": {2024: 0.0, 2025: 0.0},
+                "NotesPayable": {2019: 40.0, 2020: 45.0}})
+    series, _, tag, _ = resolve_concept(g, {}, "debt")
+    assert tag.startswith("LongTermDebtNoncurrent+LongTermDebtCurrent") and series["2025-12-31"] == 0.0
+    assert series["2019-12-31"] == 40.0                     # older years still fill in table order

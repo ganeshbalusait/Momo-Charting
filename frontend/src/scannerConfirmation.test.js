@@ -176,7 +176,7 @@ test('Setup filter has Confirm L1+/L2+/L3; they filter by level and never count 
     assert.ok(keys.includes(k));assert.ok(!SCANNER_SETUP_TYPES.some(([t])=>t===k));
   }
   assert.equal(scannerSetupBadge('confirmL2').className,'momx-strategy-tag is-confirmation is-level-2');
-  assert.equal(scannerSetupBadge('confirmL1','bear').text,'Confirm L1+ (bull only)');
+  assert.equal(scannerSetupBadge('confirmL1','bear').text,'Confirm L1+','bear has its own levels since 2026-11-05');
   // A real row with 3 real Setup types (RVOL, Explosive, Star 1).
   const r=risen({...row([2,2,2]),bestRank:1,grade:{letter:'A'},m5:{pattern:'explosive'}});
   assert.ok(scannerSetupTypes(r,T+15000).length>=3);
@@ -186,4 +186,41 @@ test('Setup filter has Confirm L1+/L2+/L3; they filter by level and never count 
   assert.deepEqual([pass('confirmL1'),pass('confirmL2'),pass('confirmL3')],[true,true,false],'L2 row: L1+ and L2+ tick, L3 does not');
   const flat=risen();
   assert.equal(setupRulesPass(flat,{setupRules:['confirmL1']},T+15000),false,'under 3 Setup types never passes');
+});
+
+// Bear mirror (his "Yes" 2026-11-05): magenta/red RVOL rising, one of 2h/4h/D
+// SQZ magenta, blank or fired, and a magenta/red/plum Skittles box 2h-M.
+function bearRow(values=[1,1,1]) {
+  const r=row(values);
+  r.direction='bear';
+  r.rvol=Object.fromEntries(['5m','15m','30m'].map((tf,i)=>[tf,{value:values[i],bg:'black',fg:i===0?'magenta':i===1?'red':'dark_red'}]));
+  for(const tf of ['2h','4h','D'])r.sqz[tf]={value:5,bg:'orange'};
+  r.skittles={M:{value:40,bg:'red',fg:'black'}};
+  r.gradeFresh.timeline=[];
+  return r;
+}
+function bearRisen(r) {
+  const t=createRvolObservationTracker();t.observe(bearRow(),T,'live');return attach(t,r,T+15000);
+}
+
+test('bear rows get Confirm L1/L2/L3 with mirrored colors',()=>{
+  let r=bearRisen(bearRow([2,2,2]));
+  assert.equal(scannerConfirmation(r,T+15000).level,1,'magenta/red RVOL rising, no SQZ');
+  r.sqz['4h']={value:2,bg:'magenta'};
+  assert.equal(scannerConfirmation(r,T+15000).level,3,'magenta SQZ + red Skittles box');
+  r.skittles={M:{value:40,bg:'green'}};
+  assert.equal(scannerConfirmation(r,T+15000).level,2,'a green box does not count for bear');
+  r.skittles={D:{bg:'plum'}};
+  assert.equal(scannerConfirmation(r,T+15000).level,3,'plum mirrors dark green');
+  r.sqz['4h']={value:2,bg:'cyan'};
+  assert.equal(scannerConfirmation(r,T+15000).level,1,'cyan SQZ is the bull color');
+  r.sqz['D']={value:'-',bg:'black'};
+  assert.equal(scannerConfirmation(r,T+15000).level,3,'blank counts on both sides');
+});
+
+test('bull-colored RVOL never confirms a bear row, and bear RVOL never confirms a bull row',()=>{
+  const r=bearRisen({...row([2,2,2]),direction:'bear'});
+  assert.equal(scannerConfirmation(r,T+15000).level,0);
+  const b=risen({...bearRow([2,2,2]),direction:'bull'});
+  assert.equal(scannerConfirmation(b,T+15000).level,0);
 });

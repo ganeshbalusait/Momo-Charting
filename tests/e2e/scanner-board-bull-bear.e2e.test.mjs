@@ -17,7 +17,7 @@ e2eTest("BULL -> BEAR: the next board read asks for the bear board and the bear 
   await withApp({ view: VIEW, storage: STORAGE, fakeReads: boardReads() }, async (app) => {
     await boardReady(app.page);
     const toggle = app.page.locator(TOGGLE);
-    assert.equal((await toggle.innerText()).trim(), "BULL");
+    assert.equal((await toggle.innerText()).split(/\s+/)[0].trim(), "BULL", "the label; Mag7 counts follow it");
     assert.equal(await toggle.getAttribute("aria-pressed"), "false");
     assert.match(await app.page.locator("[data-testid='momx-news-tone-toggle']").innerText(), /^NEWS ▲/);
     assert.equal(await app.page.locator("[data-testid='momx-bolt-view']").count(), 1);
@@ -26,17 +26,17 @@ e2eTest("BULL -> BEAR: the next board read asks for the bear board and the bear 
 
     await toggle.click();
     await app.page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute("aria-pressed") === "true", TOGGLE);
-    assert.equal((await toggle.innerText()).trim(), "BEAR");
+    assert.equal((await toggle.innerText()).split(/\s+/)[0].trim(), "BEAR", "the label; Mag7 counts follow it");
     assert.match(await toggle.getAttribute("class"), /\bis-bear\b/);
     await app.page.waitForFunction(() => {
       const symbols = [...document.querySelectorAll("tr.momx-row [data-testid='momx-symbol-link']")].map((b) => b.textContent.trim());
       return symbols.length === 1 && symbols[0] === "SPY";
     }, null, { timeout: 15_000 });
-    // (A poll already in flight at the click may still be a bull read; the
-    // newest one, the one that painted the bear rows, carries dir=bear.)
+    // (On Mag7 the page also reads the OTHER side every poll for the BULL n /
+    // BEAR n counts (2026-11-05), so reads of both sides interleave; the bear
+    // rows on screen prove the board itself switched.)
     const boardReadsAfter = app.reads.slice(before).filter((read) => read.path === "/api/momx-scanner");
     assert.ok(boardReadsAfter.some((read) => /[?&]dir=bear\b/.test(read.search)), JSON.stringify(boardReadsAfter));
-    assert.match(boardReadsAfter.at(-1).search, /[?&]dir=bear\b/);
     assert.ok(app.reads.slice(before).some((read) => read.path === "/api/momx-scanner/grade-record" && /dir=bear/.test(read.search)));
     assert.match(await app.page.locator("[data-testid='momx-news-tone-toggle']").innerText(), /^NEWS ▼/);
     assert.equal(await app.page.locator("[data-testid='momx-bolt-view']").count(), 0, "the bolt view is bull-only");
@@ -52,14 +52,14 @@ e2eTest("BEAR is remembered after a reload, and flipping back reads the bull boa
     await app.page.reload({ waitUntil: "domcontentloaded" });
     await boardReady(app.page);
     const toggle = app.page.locator(TOGGLE);
-    assert.equal((await toggle.innerText()).trim(), "BEAR");
+    assert.equal((await toggle.innerText()).split(/\s+/)[0].trim(), "BEAR", "the label; Mag7 counts follow it");
     assert.equal(await toggle.getAttribute("aria-pressed"), "true");
     const before = app.reads.length;
     await toggle.click();
     await app.page.waitForFunction((sel) => document.querySelector(sel)?.textContent.trim().startsWith("BULL"), TOGGLE);
     await app.page.waitForFunction(() => document.querySelectorAll("tr.momx-row").length === 2, null, { timeout: 15_000 });
     const after = app.reads.slice(before).filter((read) => read.path === "/api/momx-scanner");
-    assert.ok(after.length >= 1 && !/dir=bear/.test(after.at(-1).search), JSON.stringify(after));
+    assert.ok(after.some((read) => !/dir=bear/.test(read.search)), JSON.stringify(after));
     assert.deepEqual(app.pageErrors, []);
   });
 });

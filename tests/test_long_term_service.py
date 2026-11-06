@@ -750,3 +750,37 @@ def test_non_usd_filer_has_no_market_cap_or_payback(svc):
         row = _row_of(svc, sym)
         assert row["marketCap"] is None and row["payback"] is None, sym
     assert _row_of(svc, "AAPL")["marketCap"]                        # USD filers unchanged
+
+
+# ---------- first nightly audit (2026-11-06): CIK overrides (R20) ----------
+
+class XomSec(FakeSec):
+    """company_tickers.json maps XOM to the ExxonMobil Holdings shell (2115436, no facts); the real
+    filer is 34088 (served here from the AAPL fixture). Any request for the shell fails the test."""
+
+    def get(self, url, headers):
+        if url == TICKERS_URL:
+            self.calls.append(("tickers", None))
+            return json.dumps({"0": {"cik_str": 2115436, "ticker": "XOM", "title": "ExxonMobil Holdings Corp"}}).encode()
+        cik = int(re.search(r"CIK(\d{10})", url).group(1))
+        assert cik != 2115436, "the shell CIK must never be fetched"
+        if cik == 34088:
+            kind = "facts" if "companyfacts" in url else "sub"
+            self.calls.append((kind, cik))
+            return _bytes("companyfacts_AAPL.json" if kind == "facts" else "submissions_AAPL.json")
+        return super().get(url, headers)
+
+
+def test_cik_override_wins_over_the_sec_ticker_map(tmp_path):
+    from long_term.symbols import CIK_OVERRIDES
+    assert CIK_OVERRIDES["XOM"] == 34088
+    sec = XomSec()
+    svc = make_svc(tmp_path, universe=["XOM"], sec=sec)
+    try:
+        r = svc.refresh(force=True)
+        assert r["fetched"] == 1 and r["errors"] == 0
+        assert svc.store.records["XOM"]["cik"] == 34088
+        assert sec.facts_calls() == [34088]
+        assert svc.store.records["XOM"]["snapshot"]["cik"] == 34088
+    finally:
+        svc.stop_refresher()

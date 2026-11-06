@@ -426,6 +426,14 @@ class Handler(BaseHTTPRequestHandler):
                 from momx import paper_learning
                 self._json(HTTPStatus.OK, paper_learning.status())
                 return
+            if path == "/api/momx-scanner/rule-lab":
+                # Per-Setup-rule scorecard + AI chart-check tests (2026-11-05) - admin only.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import rule_lab
+                self._json(HTTPStatus.OK, rule_lab.status())
+                return
             if path == "/api/momx-scanner/paper-mirror":
                 # Alpaca PAPER fills of the Jev BOT trades (2026-10-16) - admin only.
                 if not viewer_is_admin(self.headers.get("X-AGX-User")):

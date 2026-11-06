@@ -170,7 +170,9 @@ def test_bear_compact_p2h_p4h_are_kept_only_in_regular_hours():
 def test_slow_lane_every_five_minutes_and_no_etfs(tmp_path):
     fake = Fake([sig("CALL2H", "2H", "13:00")])
     book = cs.ChartSignalBook(tmp_path, fetch=fake.fetch, compute=fake.compute, background=False)
-    etf = {**row("QQQ", letter=None), "etf": True}
+    # IWM: an ETF. (QQQ/SPY are charted like stocks since 2026-11-05 - see
+    # test_slow_lane_charts_spy_and_qqq below.)
+    etf = {**row("IWM", letter=None), "etf": True}
     book.apply("Watchlist", board(row("CHPT", letter=None), etf), at("13:05"))
     first = len(fake.computed)
     assert first == 1                                     # CHPT only; the ETF is never computed
@@ -178,6 +180,17 @@ def test_slow_lane_every_five_minutes_and_no_etfs(tmp_path):
     assert len(fake.computed) == first                    # slow lane: not again within 5 min
     book.apply("Watchlist", board(row("CHPT", letter=None)), at("13:11"))
     assert len(fake.computed) == first + 1                # 6 min later: recomputed
+
+
+def test_slow_lane_charts_spy_and_qqq(tmp_path):
+    """2026-11-05 "Yes, open them": SPY and QQQ get chart arrows like a stock."""
+    fake = Fake([sig("CALL2H", "2H", "13:00")])
+    book = cs.ChartSignalBook(tmp_path, fetch=fake.fetch, compute=fake.compute, background=False)
+    rows = [{**row(s, letter=None), "etf": True} for s in ("SPY", "QQQ", "IWM")]
+    book.apply("Mag7", board(*rows), at("13:05"))
+    fetched = {s for symbols, _ in fake.fetched for s in symbols}
+    assert {"SPY", "QQQ"} <= fetched and "IWM" not in fetched
+    assert len(fake.computed) == 2
 
 
 def test_bull_and_bear_books_share_one_compute_per_bar(tmp_path):

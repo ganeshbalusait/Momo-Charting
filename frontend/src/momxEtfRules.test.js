@@ -20,3 +20,14 @@ test("OPT, GO+RVOL+MACD, news momentum and the stars skip ETFs", () => {
   assert.equal(newsMomentum(etf), false);
   assert.equal(bestSetupRanks([etf], now).size, 0);
 });
+
+// "Yes, open them" (2026-11-05): SPY and QQQ fire every Setup rule like a
+// stock (the BOT already traded them since 2026-10-11); every other ETF stays out.
+test("SPY and QQQ fire GO like a stock; another ETF still does not", () => {
+  for (const symbol of ["SPY", "QQQ", "spy"]) {
+    assert.equal(isEtfRow(goRow({ symbol, etf: true })), false, symbol);
+    assert.ok(gapAndGo(goRow({ symbol, etf: true }), now), symbol);
+  }
+  assert.equal(isEtfRow(goRow({ symbol: "IWM", etf: true })), true);
+  assert.equal(gapAndGo(goRow({ symbol: "IWM", etf: true }), now), null);
+});

@@ -343,7 +343,7 @@ def test_zero_debt_requires_proof():
 
 def test_zero_debt_needs_finnhub_debt_to_equity_too():
     s = synth(debt=None, interest_share=None)
-    m = synth_run(s, synth_fh(s, debt_to_equity=0.30))
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.35))          # R18 (amended) threshold is 0.3
     assert m.status == "CHECK_DATA" and "debt unresolved" in m.status_reason
 
 
@@ -632,3 +632,157 @@ def test_market_cap_none_for_non_usd_filer():
     assert fh("TSM").market_cap_usd                  # Finnhub has a cap, but in TWD
     assert run("TSM", price=350.0).market_cap_usd is None
     assert run("AAPL").market_cap_usd == fh("AAPL").market_cap_usd   # USD filers unchanged
+
+
+# ---------- first nightly audit (2026-11-06) ----------
+
+def test_zero_debt_proof_r18_threshold():
+    # R18 (amended): Finnhub's D/E includes leases, so the proof accepts D/E < 0.3 (was 0.05)
+    s = synth(debt=None, interest_share=None)
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.15))
+    assert m.status is None and m.debt == 0.0 and m.checks["debt"].passed is True
+    assert m.checks["debt"].detail.startswith("no debt (proof: no interest expense; Finnhub D/E 0.15")
+    # D/E 0.25 with nothing tagged: the proof holds but the R22 cross-check (gap > 0.2) flags it
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.25))
+    assert m.status_reason == "Check data: debt understated? EDGAR D/E 0.00 vs Finnhub 0.25"
+    # ... unless operating leases explain Finnhub's figure (it counts leases as debt)
+    s.annual[s.latest_annual_end]["op_leases"] = 0.2 * s.ttm["equity"]
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.25))
+    assert m.status is None and m.debt == 0.0 and m.checks["debt"].passed is True
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.30))          # at the threshold: no proof
+    assert m.status_reason == "Check data: debt unresolved" and m.debt is None
+
+
+def test_missing_finnhub_de_never_proves_no_debt():
+    # R23: Finnhub answered but has no debt_to_equity -> unproven, like any other case
+    s = synth(debt=None, interest_share=None)
+    m = synth_run(s, synth_fh(s, debt_to_equity=None))
+    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: debt unresolved"
+    assert m.debt is None and "Finnhub D/E n/a" in m.checks["debt"].detail
+    assert m.roic_series == {} and not any("counted as 0" in n for n in m.notes)
+    # no Finnhub at all: Finnhub leads the reasons, the debt stays unresolved
+    m = compute_metrics(s, None, today=TODAY, is_etf=False, price=100.0)
+    assert m.status_reason == "Finnhub: no data" and m.debt is None
+    assert "check data: debt unresolved" in m.notes
+
+
+def test_zero_debt_proof_roic_series_counts_zero():
+    # interest absent and Finnhub D/E 0.10: the proof holds; every year without a debt figure is 0
+    # in the ROIC series (equity-only denominator), so consistency is computable
+    s = synth(debt=None, interest_share=None)
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.10))
+    assert m.status is None and m.checks["debt"].passed is True
+    assert "no debt (proof:" in m.checks["debt"].detail and "Finnhub D/E 0.10" in m.checks["debt"].detail
+    assert len(m.roic_series) == 10
+    for e, r in s.annual.items():
+        assert m.roic_series[e] == pytest.approx(r["net_income"] / r["equity"])
+    assert m.checks["roic_consistency"].passed is True and m.rule1_business
+    assert any(n.startswith("debt: 2016, 2017") and "counted as 0 (no-debt proof" in n for n in m.notes)
+
+
+def test_zero_debt_proof_fails_keeps_debt_unresolved():
+    for kw, fh_kw in ((dict(interest_share=0.05), dict(debt_to_equity=None)),     # interest 5% of op income
+                      (dict(interest_share=None), dict(debt_to_equity=1.51))):    # CAVA: D/E with leases 1.51
+        s = synth(debt=None, **kw)
+        m = synth_run(s, synth_fh(s, **fh_kw))
+        assert m.status == "CHECK_DATA" and m.status_reason == "Check data: debt unresolved", kw
+        assert m.checks["roic_consistency"].passed is None and m.roic_series == {}
+        assert not any("counted as 0" in n for n in m.notes)
+
+
+def test_debt_only_in_recent_years_without_proof_meta():
+    # META: debt tagged only since 2022, interest 1.5% of operating income -> no proof, so the older
+    # years stay out of the ROIC series and consistency stays n/a (unchanged behaviour)
+    s = synth(interest_share=0.015)
+    for e in sorted(s.annual)[:-4]:
+        del s.annual[e]["debt"]
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.28))
+    assert m.debt == s.ttm["debt"] and m.checks["debt"].passed is True
+    assert sorted(m.roic_series) == sorted(s.annual)[-4:]
+    assert m.checks["roic_consistency"].passed is None
+    assert m.checks["roic_consistency"].detail == "only 4 computable ROIC years in the window"
+    assert not m.rule1_business and not any("counted as 0" in n for n in m.notes)
+
+
+def test_negative_finnhub_eps_is_avoid_losing_money_not_check_data():
+    from long_term.valuation import signal, valuation
+    s = synth()
+    _set_latest(s, net_income=-10.0, eps=-1.0)                       # EDGAR EPS -1 (10 shares)
+    f = synth_fh(s, eps_ttm=-1.0, eps_incl_ttm=-1.0, pe_ttm=None)     # no earnings -> no P/E
+    for price in (50.0, None):
+        m = compute_metrics(s, f, today=TODAY, is_etf=False, price=price)
+        assert "price sanity: n/a (no earnings)" in m.checks["sources"].detail
+        assert "price sanity not checked" not in m.status_reason
+        assert m.status is None, m.status_reason
+        assert m.checks["earning"].passed is False
+        out = signal(m, valuation(m, f), price=price, price_ok=price is not None, mos=50)
+        assert out["signal"] == "AVOID" and out["reason"] == "losing money"
+
+
+def test_positive_eps_without_pe_is_still_not_checked():
+    s = synth()
+    m = synth_run(s, synth_fh(s, pe_ttm=None), price=100.0)
+    assert m.status_reason == "Check data: price sanity not checked"
+
+
+# ---------- review round 3 ----------
+
+def test_no_zero_backfill_when_debt_is_tagged_today():
+    # interest 0.5% and D/E 0.28 would satisfy the proof, but debt IS tagged in the last 4 years,
+    # so the older years must not be zeroed (that would inflate ROIC consistency)
+    s = synth(interest_share=0.005)
+    for e in sorted(s.annual)[:-4]:
+        del s.annual[e]["debt"]
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.28))
+    assert m.debt == s.ttm["debt"]
+    assert m.checks["roic_consistency"].passed is None
+    assert not any("counted as 0" in n for n in m.notes)
+
+
+def test_negative_finnhub_de_never_proves_no_debt():
+    s = synth(debt=None, interest_share=None)
+    m = synth_run(s, synth_fh(s, debt_to_equity=-0.5))
+    assert m.status_reason == "Check data: debt unresolved" and m.debt is None
+
+
+def test_debt_understated_cross_check():
+    s = synth(debt=20.0)                                       # our D/E 20 / 138.7 = 0.14
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.90))
+    assert m.status == "CHECK_DATA"
+    assert m.status_reason == "Check data: debt understated? EDGAR D/E 0.14 vs Finnhub 0.90"
+    assert m.checks["sources"].passed is False
+    # Finnhub only a little higher (< 2x, or a gap <= 0.2): fine
+    assert synth_run(s, synth_fh(s, debt_to_equity=0.25)).status is None
+    assert synth_run(s, synth_fh(s, debt_to_equity=0.33)).status is None     # >= 2x but gap 0.19
+    # operating leases count on our side (Finnhub's figure includes them)
+    s.annual[s.latest_annual_end]["op_leases"] = 100.0
+    assert synth_run(s, synth_fh(s, debt_to_equity=0.90)).status is None
+
+
+@pytest.mark.parametrize("sym", ["AAPL", "HD", "MCD", "GOOGL", "NVDA"])
+def test_debt_understated_does_not_trip_on_fixtures(sym):
+    m = run(sym)
+    assert "debt understated" not in m.checks["sources"].detail and "debt understated" not in m.status_reason
+
+
+def test_eps_exactly_zero_is_no_earnings():
+    from long_term.valuation import signal, valuation
+    s = synth()
+    _set_latest(s, net_income=0.0, eps=0.0)
+    f = synth_fh(s, eps_ttm=0.0, eps_incl_ttm=0.0, pe_ttm=None)
+    m = compute_metrics(s, f, today=TODAY, is_etf=False, price=50.0)
+    assert "price sanity: n/a (no earnings)" in m.checks["sources"].detail and m.status is None
+    assert signal(m, valuation(m, f), price=50.0, price_ok=True, mos=50)["reason"] == "losing money"
+
+
+def test_negative_eps_financial_row_is_no_earnings():
+    from long_term.valuation import signal, valuation
+    s = synth()
+    s.sic = 6021                                             # bank: Financial rule set
+    _set_latest(s, net_income=-10.0, eps=-1.0)
+    f = synth_fh(s, eps_ttm=-1.0, eps_incl_ttm=-1.0, pe_ttm=None)
+    m = compute_metrics(s, f, today=TODAY, is_etf=False, price=50.0)
+    assert m.financial and "price sanity: n/a (no earnings)" in m.checks["sources"].detail
+    assert m.status is None and m.checks["earning"].passed is False
+    out = signal(m, valuation(m, f), price=50.0, price_ok=True, mos=50)
+    assert out["signal"] == "AVOID" and out["reason"] == "losing money"

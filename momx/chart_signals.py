@@ -31,6 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
+from momx import etf_list
 
 ET = ZoneInfo("America/New_York")
 DIRNAME = "momx_chart_signals"
@@ -628,7 +629,7 @@ class ChartSignalBook:
             if isinstance(symbol, str) and symbol and is_candidate(row):
                 self._candidates[symbol] = local.timestamp()
                 self._slow.pop(symbol, None)
-            elif isinstance(symbol, str) and symbol and not row.get("etf"):
+            elif isinstance(symbol, str) and symbol and not etf_list.rule_excluded(row):
                 self._slow[symbol] = local.timestamp()
         self._stamp(payload)
 

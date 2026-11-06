@@ -34,3 +34,9 @@ def test_universe_unions_every_list(tmp_path):
 def test_universe_missing_files_still_returns_seed(tmp_path):
     rows = universe(watchlist_path=tmp_path / "nope.txt", universe_path=tmp_path / "nope.json")
     assert set(SEED_TICKERS) <= set(rows)
+
+
+def test_cik_overrides():
+    from long_term.symbols import CIK_OVERRIDES
+    # company_tickers.json maps XOM to the new ExxonMobil Holdings shell (no facts); 34088 files
+    assert CIK_OVERRIDES == {"XOM": 34088}

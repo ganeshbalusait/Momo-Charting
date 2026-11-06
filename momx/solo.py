@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
+from momx import etf_list
 
 ET = ZoneInfo("America/New_York")
 DIRNAME = "momx_solo"
@@ -89,7 +90,7 @@ class SoloBook:
                 if local.weekday() < 5 and FROM_MIN <= minute < UNTIL_MIN:
                     for row in rows:
                         symbol = row.get("symbol")
-                        if not isinstance(symbol, str) or symbol in self._hits or row.get("etf"):  # ETFs never fire a rule (momx/etf_list.py, 2026-09-27 "use only stocks")
+                        if not isinstance(symbol, str) or symbol in self._hits or etf_list.rule_excluded(row):  # ETFs never fire a rule except SPY/QQQ (momx/etf_list.py RULE_ETFS)
                             continue
                         ratio = qualifies(row)
                         if ratio is not None:

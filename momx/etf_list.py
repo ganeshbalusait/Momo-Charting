@@ -184,3 +184,22 @@ def mark(payload: Any) -> None:
                     row["etf"] = True
     except Exception:  # noqa: BLE001
         return
+
+
+#: The ETFs every Setup rule and the BOT treat like stocks. SPY/QQQ were let
+#: into the BOT on 2026-10-11 ("Trade spy/qqq in etf in bot"); on 2026-11-05
+#: ("Yes, open them") into MX A+, Market turn, SOLO, MomoX A+ and the chart
+#: arrows too. Every other ETF stays out ("use only stocks", 2026-09-27).
+RULE_ETFS = frozenset({"SPY", "QQQ"})
+
+
+def rule_excluded(row: Any, *, industry_label: bool = False) -> bool:
+    """True when a rule must skip this row because it is an ETF.
+
+    ``industry_label`` also treats an "ETF" industry label as an ETF (the
+    older check some books used before the official flag existed)."""
+    if not isinstance(row, Mapping):
+        return False
+    if str(row.get("symbol") or "").upper() in RULE_ETFS:
+        return False
+    return row.get("etf") is True or (industry_label and "ETF" in str(row.get("industry") or ""))

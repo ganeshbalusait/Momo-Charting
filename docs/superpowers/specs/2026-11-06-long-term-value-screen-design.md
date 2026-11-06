@@ -115,12 +115,18 @@ No FMP, no Alpha Vantage, no Yahoo.
   covers the most annual years; never mix units in a series; the unit is
   stored and shown ("in TWD millions").
 - **Tag resolution per company, not per year**: for each concept, the
-  candidate tag with the most annual coverage is primary; another tag may
-  fill missing years only if it agrees within 2% in every overlap year,
-  else the year is left blank and the series is marked "tag break".
+  primary is the candidate covering the **latest annual year** (ties →
+  most coverage; debt and capex → table order); another tag may fill
+  missing years only if it agrees within 2% in every overlap year, else
+  the year is left blank and the series is marked "tag break". Debt and
+  capex fill missing years in table order **without** the 2% rule (noted,
+  no tag break); capex refuses a tag more than 25% off in an overlap year.
+  A debt recipe showing 0 in the latest year never outranks a later one
+  showing a value there.
   Candidate lists (first draft; one module, one test per concept):
-  - Revenue: Revenues, RevenueFromContractWithCustomerExcludingAssessedTax
-    (take the larger when both exist in a year), SalesRevenueNet; banks:
+  - Revenue: Revenues, RevenueFromContractWithCustomerExcludingAssessedTax,
+    …IncludingAssessedTax (take the largest when several exist in a year),
+    SalesRevenueNet; banks:
     InterestAndDividendIncomeOperating + NoninterestIncome; IFRS Revenue.
   - Net income: NetIncomeLoss, ProfitLoss; IFRS
     ProfitLossAttributableToOwnersOfParent, ProfitLoss.
@@ -130,7 +136,16 @@ No FMP, no Alpha Vantage, no Yahoo.
     LongTermDebtCurrent + ShortTermBorrowings + CommercialPaper; (b)
     LongTermDebt + ShortTermBorrowings + CommercialPaper; (c) DebtCurrent +
     LongTermDebtNoncurrent; (d) LongTermDebtAndCapitalLeaseObligations;
-    (e) IFRS Noncurrent/Current Borrowings, else Borrowings. Operating
+    (e) IFRS Noncurrent/Current Borrowings, else Borrowings; then (audit
+    2026-11-06) NotesPayable; ConvertibleLongTermNotesPayable +
+    ConvertibleNotesPayableCurrent; DebtAndCapitalLeaseObligations;
+    LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities;
+    LoansPayable; OtherNotesPayableCurrent; LongTermDebtNoncurrent alone;
+    ConvertibleDebtNoncurrent + ConvertibleDebtCurrent; ConvertibleNotesPayable;
+    IFRS LongtermBorrowings + CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings
+    (current parts optional where listed). Single-part partial recipes
+    (NotesPayable, LoansPayable, OtherNotesPayableCurrent,
+    LongTermDebtNoncurrent) carry a "partial recipe" note. Operating
     leases excluded (shown in the drawer).
   - Cash: CashAndCashEquivalentsAtCarryingValue,
     CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents; IFRS
@@ -138,7 +153,8 @@ No FMP, no Alpha Vantage, no Yahoo.
   - Operating cash flow: NetCashProvidedByUsedInOperatingActivities,
     …ContinuingOperations; IFRS CashFlowsFromUsedInOperatingActivities.
   - Capex: PaymentsToAcquirePropertyPlantAndEquipment,
-    PaymentsToAcquireProductiveAssets; IFRS
+    PaymentsToAcquireProductiveAssets,
+    PaymentsToAcquireOtherPropertyPlantAndEquipment; IFRS
     PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities.
   - Stock comp: ShareBasedCompensation. Buybacks:
     PaymentsForRepurchaseOfCommonStock. Dividends: PaymentsOfDividends,
@@ -171,7 +187,8 @@ No FMP, no Alpha Vantage, no Yahoo.
   start or a peak end does not fake growth. Undefined when an endpoint
   ≤ 0.
 - **Three date stamps** per ticker: latest annual period end, latest
-  any-period end, fetchedAt. Stale = annual end older than 15 months, or
+  any-period end (the latest 10-K/10-Q/20-F/40-F period end across **every**
+  resolved concept, not net income alone), fetchedAt. Stale = annual end older than 15 months, or
   (US 10-Q filer and latest period end older than 7 months), or fetchedAt
   older than 4 days.
 
@@ -187,8 +204,17 @@ No FMP, no Alpha Vantage, no Yahoo.
   cumulative dividends over the window) so buyback companies are not
   punished; if the start value is still ≤ 0 the check is "n/a (buybacks)".
 - Debt resolved to 0 is accepted only when interest expense is absent or
-  < 1% of operating income AND Finnhub debt/equity < 0.05; otherwise the
-  row is "Check data: debt unresolved".
+  < 1% of operating income AND Finnhub debt/equity is present with
+  0 ≤ D/E < 0.3 (Finnhub's figure includes leases; a missing D/E proves
+  nothing); otherwise the row is
+  "Check data: debt unresolved". Only then do years without a debt figure
+  count as 0 in the ROIC series.
+- Debt-understated cross-check: when Finnhub D/E ≥ 2 × our (debt +
+  operating leases) ÷ equity and the gap is > 0.2 (equity > 0, not
+  financial), Sources agree fails: "debt understated? EDGAR D/E x vs
+  Finnhub y" → Check data.
+- CIK overrides (`long_term/symbols.py` `CIK_OVERRIDES`) win over the SEC
+  ticker file (XOM → 34088; the file points at a shell with no facts).
 - Financial companies (SIC 6000–6499 banks and savings, 6200–6299 brokers,
   6300–6399 insurers; V/MA are 7389 and score normally) use the
   **Financial rule set**: ROE replaces ROIC, FCF and debt checks are n/a,

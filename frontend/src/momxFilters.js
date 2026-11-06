@@ -140,9 +140,12 @@ export function isBearRow(row) {
 /** "Use only stocks" (2026-09-27): the worker stamps row.etf from the official
  * US listing directory (momx/etf_list.py - IBIT and DRAM are ETFs even though
  * their industry label says Crypto / Semis). No setup rule fires on an ETF:
- * GO, OPT, Best / Star (built from GO and OPT), GO+RVOL+MACD, news momentum. */
+ * GO, OPT, Best / Star (built from GO and OPT), GO+RVOL+MACD, news momentum.
+ * SPY and QQQ are the exception (BOT 2026-10-11, every rule 2026-11-05 "Yes,
+ * open them") - the same list as momx/etf_list.py RULE_ETFS. */
+export const RULE_ETFS = Object.freeze(["SPY", "QQQ"]);
 export function isEtfRow(row) {
-  return Boolean(row && row.etf === true);
+  return Boolean(row && row.etf === true && !RULE_ETFS.includes(String(row.symbol || "").toUpperCase()));
 }
 
 export function optionsSetup(row) {

@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { TOS_LINK_GROUPS, sendTickerToCharts, warmTickerForCharts, tosLinkGroup } from "./tosLinkGroups.js";
 import { createScannerRequestScope, isAbortError } from "./scannerRequestScope.js";
 import { readScannerBoard } from "./scannerBoardRead.js";
+import { directionCounts, otherDirectionUrl, showsDirectionCounts } from "./momxDirectionCounts.js";
 import { createLiveRowProjector, liveQuote } from "./scannerLiveRows.js";
 
 function useScannerReadFetch() {
@@ -5830,6 +5831,40 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
     [allRows],
   );
 
+  // BULL n / BEAR n pills (Mag7 only, 2026-11-05). The side on screen counts
+  // its own matches; the other side's board is read on the board's poll beat.
+  const dirCountsOn = showsDirectionCounts(activeList);
+  const [otherSideBoard, setOtherSideBoard] = useState(null);
+  useEffect(() => {
+    setOtherSideBoard(null);
+    if (!dirCountsOn) return undefined;
+    let cancelled = false;
+    let controller = null;
+    const read = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      controller = new AbortController();
+      try {
+        const { response, payload } = await readScannerBoard(
+          otherDirectionUrl(MOMX_ENDPOINT, activeList, direction),
+          { fetchImpl: fetch, signal: controller.signal },
+        );
+        if (!cancelled && response.ok && payload) setOtherSideBoard(payload);
+      } catch {
+        // A missed read keeps the last count; the next beat tries again.
+      }
+    };
+    read();
+    const timer = window.setInterval(read, MOMX_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      if (controller) controller.abort();
+    };
+  }, [dirCountsOn, activeList, direction]);
+  const sideCounts = dirCountsOn
+    ? directionCounts({ direction, currentMatches: board || allRows.length ? matchCount : null, otherPayload: otherSideBoard, listName: activeList })
+    : null;
+
   // Three memos, in this order, so a chip click cannot move the chip counts
   // under the trader's cursor: the counts are taken BEFORE the industry filter.
   // "Scan matches only" OFF means the whole list (2026-09-02: he unticked it
@@ -6773,14 +6808,30 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
           type="button"
           className={"momx-bull" + (bear ? " is-bear" : "")}
           onClick={() => setDirection((d) => (d === "bear" ? "bull" : "bear"))}
-          title={bear
+          title={(bear
             ? "BEAR scan: the bull scan mirrored for puts. Click for BULL."
-            : "BULL scan (AlertX Bull Momo). Click for BEAR - the same scan mirrored for puts."}
+            : "BULL scan (AlertX Bull Momo). Click for BEAR - the same scan mirrored for puts.")
+            + (sideCounts && sideCounts.bull != null && sideCounts.bear != null
+              ? " Mag7 now: " + sideCounts.bull + " pass BULL, " + sideCounts.bear + " pass BEAR."
+              : "")}
           aria-pressed={bear}
           data-testid="momx-direction-toggle"
         >
           {bear ? "BEAR" : "BULL"}
           {bear ? <ArrowDown size={11} aria-hidden="true" /> : <ArrowUp size={11} aria-hidden="true" />}
+          {/* Mag7 only (2026-11-05, "Bull arrow number"): how many Mag7
+              tickers pass this side's scan, then the other side's count in
+              its own color - "BULL ↑ 2 ↓1". */}
+          {sideCounts ? (
+            <>
+              <span className="momx-news-count momx-side-count" data-testid="momx-side-count-shown">
+                {sideCounts[direction] == null ? "–" : sideCounts[direction]}
+              </span>
+              <span className={"momx-side-count-other is-" + (bear ? "bull" : "bear")} data-testid="momx-side-count-other">
+                {bear ? "↑" : "↓"}{sideCounts[bear ? "bull" : "bear"] == null ? "–" : sideCounts[bear ? "bull" : "bear"]}
+              </span>
+            </>
+          ) : null}
         </button>
 
         {/* FILTERS: press to narrow, click the sliders to tune. Two controls in
@@ -7468,7 +7519,7 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
         Colours come straight from the thinkScript studies on the server. The scanner re-runs
         continuously; this view checks for a scan every 15 seconds while the tab is open.
         When markets are closed or study candles are old, saved rows remain for review with their Data timestamp; a new scan does not mean new market data.
-        {" "}Confirm L1/L2/L3 are rule confirmations, not win probabilities. Every level needs 3+ Setup types and at least three cyan/green RVOL cells (5m-D) rising versus their previous valid scanner publication; first observations do not match. L2 adds one of 2h/4h/D SQZ cyan, blank or fired today; L3 adds one or more cyan/green Skittles boxes 2h-M. History uses only earlier loaded snapshots.
+        {" "}Confirm L1/L2/L3 are rule confirmations, not win probabilities. Every level needs 3+ Setup types and at least three cyan/green RVOL cells (5m-D) rising versus their previous valid scanner publication; first observations do not match. L2 adds one of 2h/4h/D SQZ cyan, blank or fired today; L3 adds one or more cyan/green Skittles boxes 2h-M. On the BEAR board every color is mirrored: magenta/red RVOL, magenta SQZ, magenta/red/plum Skittles. History uses only earlier loaded snapshots.
         The small number under an RVOL value is how long ago that volume arrived &mdash; 12m is
         happening now, 3h is old news. It brightens under 15 minutes, and pulses when the cell
         is also coloured.

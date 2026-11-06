@@ -30,7 +30,7 @@ from long_term.edgar import EdgarBlocked, EdgarClient, Snapshot, build_snapshot
 from long_term.finnhub import FinnhubExtract, FinnhubPacer, fetch_metrics
 from long_term.finnhub import default_get as _finnhub_default_get
 from long_term.metrics import CHECK_KEYS, Check, Metrics, compute_metrics, listing_factor, with_fcf
-from long_term.symbols import canonical, to_schwab
+from long_term.symbols import CIK_OVERRIDES, canonical, to_schwab
 from long_term.valuation import Valuation, price_guard, signal, valuation
 
 log = logging.getLogger("long_term")
@@ -475,7 +475,10 @@ class LongTermService:
                    fresh: dict) -> None:
         quotes = self.quotes_for(due)
         # Tickers sharing a CIK (GOOG / GOOGL) sit next to each other so one facts fetch serves both.
-        order = sorted(due, key=lambda s: (cik_map.get(s) or 0, s))
+        def cik_of(s: str) -> int | None:
+            return CIK_OVERRIDES.get(s) or cik_map.get(s)        # R20: overrides win over the SEC map
+
+        order = sorted(due, key=lambda s: (cik_of(s) or 0, s))
         facts_cik, facts = None, None
         for i, sym in enumerate(order):
             if gated and market_hours(self._now()):
@@ -490,7 +493,7 @@ class LongTermService:
             # A night without a quote keeps the previous reference (the 25% price check stays on).
             ref = _pos(q.get("last_price")) or _pos(old.get("ref_price"))
             try:
-                cik = cik_map.get(sym)
+                cik = cik_of(sym)
                 if cik is None:
                     self._put(sym, {"cik": None, "name": q.get("description") or old.get("name"), "sic": None,
                                     "snapshot": None, "finnhub": None, "ref_price": ref, "listing_factor": None,

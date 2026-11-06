@@ -98,14 +98,14 @@ e2eTest("News trade and AI pick explain themselves, follow BULL / BEAR, and surv
   });
 });
 
-e2eTest("the Level strategy select shows only for All trades on the BULL board", async () => {
+e2eTest("the Level strategy select shows for All trades on both boards (bear Level puts, 2026-11-05) and hides for other bots", async () => {
   await withApp({ view: "Bot", fakeReads: canned() }, async (app) => {
     await openBot(app);
     const level = app.page.locator("select.bot-paper-select[aria-label='Level strategy']");
     await level.waitFor({ state: "visible", timeout: 15_000 });
     assert.equal(await level.inputValue(), "all");
     await group(app.page, "Board").locator("button", { hasText: "BEAR · puts" }).click();
-    await level.waitFor({ state: "detached", timeout: 10_000 });
+    await level.waitFor({ state: "visible", timeout: 10_000 });
     await group(app.page, "Board").locator("button", { hasText: "BULL · calls" }).click();
     await level.waitFor({ state: "visible", timeout: 10_000 });
     await group(app.page, "Which bot").locator("button", { hasText: "News trade" }).click();

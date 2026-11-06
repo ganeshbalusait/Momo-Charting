@@ -18,7 +18,7 @@ export const SCANNER_SETUP_CHOICES = Object.freeze([['aPlus', 'A+'], ...CONFIRM_
 
 export function scannerSetupLabel(key, direction = 'bull') {
   if (key === 'aPlus') return 'A+';
-  if (confirmChoiceLevel(key)) return CONFIRM_LEVEL_CHOICES.find(([value]) => value === key)[1] + (direction === 'bear' ? ' (bull only)' : '');
+  if (confirmChoiceLevel(key)) return CONFIRM_LEVEL_CHOICES.find(([value]) => value === key)[1];
   const arrow = direction === 'bear' ? '↓' : '↑';
   const labels = { tagBolt: '⚡ Setup fired today', tagStar1: '⭐1', tagSector: '🔥 / 🔸 SECTOR',
     dayLine: 'LINE' + arrow, dayLine100: '$LINE' + arrow, dayReclaim: 'RECLAIM' + arrow,

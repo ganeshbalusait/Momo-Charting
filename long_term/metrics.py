@@ -42,7 +42,9 @@ JUMP = 5.0
 ASSET_FLOOR = 0.10                # ROIC denominator must be >= 10% of total assets
 DEBT_FCF_MULT = 3.0
 NO_DEBT_INTEREST_SHARE = 0.01
-NO_DEBT_DE = 0.05
+NO_DEBT_DE = 0.3                  # R18 (amended): Finnhub totalDebt/totalEquity includes leases
+DEBT_UNDERSTATED_RATIO = 2.0      # R22: Finnhub D/E >= 2x ours ...
+DEBT_UNDERSTATED_GAP = 0.2        # ... and more than 0.2 above it -> "debt understated?"
 EPS_FALL = 0.8
 PRICE_TOL = 0.15
 EPS_TOL_REL, EPS_TOL_ABS = 0.25, 0.10
@@ -479,21 +481,30 @@ def compute_metrics(snapshot: Snapshot | None, fh: FinnhubExtract | None, *, tod
     debt_raw, debt_d = now.balance("debt")
     interest_ok, int_detail = _interest_small(now)
     de = fh.debt_to_equity if fh else None
-    proof = interest_ok and _ok(de) and de < NO_DEBT_DE
+    # R18/R23 no-debt proof: interest absent or < 1% of operating income AND Finnhub D/E PRESENT and
+    # in [0, 0.3); a missing D/E proves nothing, nor does a negative one (negative equity)
+    proof = interest_ok and _ok(de) and 0 <= de < NO_DEBT_DE
+    de_s = f"{de:.2f}" if _ok(de) else "n/a"
     debt_unresolved = False
     if _ok(debt_raw) and debt_raw > 0:
         debt_now, debt_detail = debt_raw, f"debt {debt_raw:,.0f} {debt_d}"
     elif proof:
-        debt_now, debt_detail = 0.0, f"no debt ({debt_d}; {int_detail}; Finnhub D/E {de:.2f})"
+        debt_now, debt_detail = 0.0, f"no debt (proof: {int_detail}; Finnhub D/E {de_s}; {debt_d})"
     else:
         debt_now = None
-        de_s = f"{de:.2f}" if _ok(de) else "n/a"
         debt_detail = f"debt unresolved ({debt_d}; {int_detail}; Finnhub D/E {de_s})"
         debt_unresolved = not fin
-    if proof:     # years without a debt figure count as debt-free only with the same proof per year
-        for r in table.values():
+    if proof and debt_now == 0.0:
+        # R18: only on the "no debt" branch (never when debt is tagged today), years without a debt
+        # figure count as 0 in the ROIC series so consistency is computable; a year whose own
+        # interest is material stays out.
+        zeroed = []
+        for e, r in sorted(table.items()):
             if not _ok(r.get("debt")) and _interest_small_row(r):
                 r["debt"] = 0.0
+                zeroed.append(e[:4])
+        if zeroed:
+            notes.append(f"debt: {', '.join(zeroed)} counted as 0 (no-debt proof: {int_detail}; Finnhub D/E {de_s})")
 
     # --- ROIC / ROE now ---
     roic_now = _roic(ni_now, equity_now, debt_now, assets_now)
@@ -667,6 +678,11 @@ def compute_metrics(snapshot: Snapshot | None, fh: FinnhubExtract | None, *, tod
     src_fail, src_notes, price_unchecked = _sources(snapshot, fh, fin=fin, usd=usd, gate=gate, eps_edgar=eps_edgar,
                                    ni_basis=ni_basis, g_eps_fh=g_eps_fh if fh_full else None,
                                    fh_full=fh_full, g_eps_edgar=g_eps_edgar, years=years, price=price, lf=lf)
+    understated = _debt_understated(fh, fin=fin, debt=debt_now, equity=equity_now,
+                                    leases=now.balance("op_leases")[0])
+    if understated:
+        src_fail.append(understated)
+        src_notes.append(understated)
     if _ok(lf) and lf > 0 and _ok(prior_listing_factor) and prior_listing_factor > 0:
         moved = abs(lf - prior_listing_factor) / prior_listing_factor
         if moved > LISTING_FACTOR_DRIFT:
@@ -727,6 +743,17 @@ def _interest_small(now: _Now) -> tuple[bool, str]:
         return False, f"interest with operating income unknown or ≤ 0 ({basis})"
     share = abs(pair[0]) / pair[1]
     return share < NO_DEBT_INTEREST_SHARE, f"interest {share * 100:.1f}% of operating income ({basis})"
+
+
+def _debt_understated(fh: FinnhubExtract | None, *, fin: bool, debt, equity, leases) -> str | None:
+    """R22: our (debt + operating leases) / equity far below Finnhub's D/E means a debt tag was missed."""
+    if fin or fh is None or not _ok(fh.debt_to_equity) or not _ok(debt) or not _ok(equity) or equity <= 0:
+        return None
+    ours = (debt + (abs(leases) if _ok(leases) else 0.0)) / equity
+    theirs = fh.debt_to_equity
+    if theirs >= DEBT_UNDERSTATED_RATIO * ours and theirs - ours > DEBT_UNDERSTATED_GAP:
+        return f"debt understated? EDGAR D/E {ours:.2f} vs Finnhub {theirs:.2f}"
+    return None
 
 
 def _interest_small_row(r: dict) -> bool:
@@ -799,7 +826,10 @@ def _sources(snap: Snapshot, fh: FinnhubExtract | None, *, fin, usd, gate, eps_e
             fails.append(msg)
     # Price sanity: a missing input is never a silent pass
     unchecked = False
-    if not _ok(price) or price <= 0:
+    if _ok(fh.eps_ttm) and fh.eps_ttm <= 0:
+        # no earnings means no P/E: nothing to check, and the earning check already fails the row
+        parts.append("price sanity: n/a (no earnings)")
+    elif not _ok(price) or price <= 0:
         parts.append("price sanity: not checked (no price)")
         unchecked = True
     elif lf is None:

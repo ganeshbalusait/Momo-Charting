@@ -45,7 +45,7 @@ def test_missing_and_future_publication_never_start_worker(monkeypatch):
 def test_capture_three_separate_virtual_rules_once_and_preserve_evidence(tmp_path,monkeypatch):
     signal={'highestLevel':3,'setupCount':3,'setupTypes':[{'key':x,'text':x} for x in ('tagRvol','tagSqz','tagExplosive')], 'momMandatory':False}
     book=ot.OptionTrackBook(tmp_path,fetch=lambda s:None,background=False,healthy=lambda:False)
-    book._levels=SimpleNamespace(evaluate=lambda *a:{'X':signal},status={'state':'ready'})
+    book._levels=SimpleNamespace(evaluate=lambda *a,**k:{'X':signal},status={'state':'ready'})
     monkeypatch.setattr(ot,'fired',lambda *a:[]);monkeypatch.setattr(ot,'live_today',lambda *a:True)
     book.apply('W',{'rows':[row(2)]},NOW);book.apply('W',{'rows':[row(3)]},NOW)
     trades=[t for t in book.trades() if t['rule'].startswith('level')]
@@ -61,12 +61,35 @@ def test_capture_three_separate_virtual_rules_once_and_preserve_evidence(tmp_pat
     assert decision['approved'] is True and 'probability' not in decision['prediction']
     assert specialist_task({'patterns':[{'rule':'level2','scope':'virtual','side':'bull'}]}, {})['role']=='squeeze'
 
-def test_bear_does_not_invent_mirrored_levels(tmp_path,monkeypatch):
+def test_bear_book_trades_its_own_mirrored_levels(tmp_path,monkeypatch):
+    """Bear Level 1/2/3 (his "Yes" 2026-11-05): the bear book asks its own
+    evaluator with bear=True and records put Level trades."""
+    seen=[]
+    signal={'highestLevel':2,'setupCount':3,'setupTypes':[{'key':x,'text':x} for x in ('tagRvol','tagSqz','tagExplosive')],'momMandatory':False}
     book=ot.OptionTrackBook(tmp_path,direction='bear',fetch=lambda s:None,background=False,healthy=lambda:False)
-    book._levels=SimpleNamespace(evaluate=lambda *a:pytest.fail('bull-only definitions'),status={})
+    book._levels=SimpleNamespace(evaluate=lambda *a,**k:(seen.append(k.get('bear')) or {'X':signal}),status={'state':'ready'},contexts={})
     monkeypatch.setattr(ot,'fired',lambda *a:[]);monkeypatch.setattr(ot,'live_today',lambda *a:True)
     book.apply('W',{'rows':[row(2)]},NOW)
-    assert not any(t['rule'].startswith('level') for t in book.trades())
+    assert seen and all(seen)
+    assert [t['rule'] for t in book.trades() if t['rule'].startswith('level')]==['level1','level2']
+
+
+@pytest.mark.skipif(not shutil.which('node'),reason='Node required for production shared-rule integration')
+def test_worker_mirrors_colors_for_bear_rows(monkeypatch):
+    monkeypatch.setenv('AGX_BOT_LEVEL_STRATEGIES','1');engine=LevelEvaluator()
+    def bear_row(value):
+        r=row(value);r['bestRank']=1
+        r['rvol']={tf:{'value':value,'bg':'magenta','fg':'black','barAt':NOW.timestamp()} for tf in ('5m','15m','30m')}
+        r['sqz']={tf:{'value':5,'bg':'orange','fg':'black'} for tf in ('2h','4h','D')};r['sqz']['D']={'value':2,'bg':'magenta','fg':'black'}
+        r['skittles']={'M':{'value':40,'bg':'red','fg':'black'}};r['gradeFresh']['timeline']=[]
+        return r
+    def call(value,seconds):
+        at=NOW+timedelta(seconds=seconds)
+        return engine.evaluate('Watchlist',{'generatedAt':at.isoformat(),'rows':[bear_row(value)]},at,bear=True)
+    try:
+        assert call(1,0)=={}
+        assert call(2,15)['X']['highestLevel']==3
+    finally:engine.close()
 
 
 def test_signal_snapshot_is_frozen_for_normal_and_star_entries(tmp_path, monkeypatch):
@@ -77,7 +100,7 @@ def test_signal_snapshot_is_frozen_for_normal_and_star_entries(tmp_path, monkeyp
     source['m5']['chartContext']={'version':1,'timeframe':'5m','barAt':int(NOW.timestamp())-300,
         'availableAt':int(NOW.timestamp()),'capturedAt':int(NOW.timestamp()),'referencePrice':100,'levels':{'ema21':99}}
     book=ot.OptionTrackBook(tmp_path,fetch=lambda s:None,background=False,healthy=lambda:False)
-    book._levels=SimpleNamespace(evaluate=lambda *a:{},contexts={'X':context},status={'state':'ready'})
+    book._levels=SimpleNamespace(evaluate=lambda *a,**k:{},contexts={'X':context},status={'state':'ready'})
     monkeypatch.setattr(ot,'fired',lambda *a:['go'])
     monkeypatch.setattr(ot,'live_today',lambda *a:True)
     monkeypatch.setattr(ot,'star_one',lambda *a:'X')

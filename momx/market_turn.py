@@ -31,6 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
+from momx import etf_list
 
 ET = ZoneInfo("America/New_York")
 DIRNAME = "momx_market_turn"
@@ -100,8 +101,8 @@ def pick(rows: list[dict], n: int = TOP_N, bear: bool = False) -> list[dict]:
     for row in rows:
         symbol = row.get("symbol")
         industry = str(row.get("industry") or "")
-        if (not isinstance(symbol, str) or row.get("etf")
-                or any(word in industry for word in EXCLUDED_INDUSTRY_WORDS)):  # ETFs never fire a rule (momx/etf_list.py, 2026-09-27 "use only stocks")
+        if (not isinstance(symbol, str) or etf_list.rule_excluded(row)
+                or (str(symbol).upper() not in etf_list.RULE_ETFS and any(word in industry for word in EXCLUDED_INDUSTRY_WORDS))):  # ETFs never fire a rule except SPY/QQQ (momx/etf_list.py RULE_ETFS)
             continue
         last, pct = _num(row.get("last")), _num(row.get("pctChange"))
         vwap = _num(_m(row.get("m5")).get("vwap"))

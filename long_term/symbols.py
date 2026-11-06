@@ -36,6 +36,10 @@ SEED_TICKERS: tuple[str, ...] = tuple(
     """.split()
 )
 
+# Ticker -> SEC CIK, applied before company_tickers.json (R20). company_tickers.json maps XOM to the
+# new ExxonMobil Holdings shell (CIK 2115436), which has no XBRL facts; the real filer is 34088.
+CIK_OVERRIDES: dict[str, int] = {"XOM": 34088}
+
 
 def canonical(symbol: Any) -> str:
     """Upper-case, trimmed, ``.`` and ``/`` -> ``-``; "" for anything unusable."""

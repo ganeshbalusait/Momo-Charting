@@ -48,6 +48,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
+from momx import etf_list
 
 import oi_auto_alerts
 
@@ -266,7 +267,7 @@ class MomoxAPlusBook:
                     for tf in sqz_cyan_now(row, self.bear):
                         seen.setdefault(symbol, {})[tf] = ts
                     if (symbol in hits or local.weekday() >= 5 or not (FROM_MIN <= minute <= UNTIL_MIN)
-                            or is_etf(row)):
+                            or etf_list.rule_excluded(row, industry_label=True)):
                         continue
                     recent = [tf for tf, at in (seen.get(symbol) or {}).items() if ts - at <= SQZ_LOOKBACK_SECONDS]
                     if recent and rvol_cyan(row, self.bear) and skittles_bullish(row, self.bear) and has_catalyst(row, local):

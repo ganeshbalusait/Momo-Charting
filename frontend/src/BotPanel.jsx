@@ -7,6 +7,7 @@ import { BOT_LEVEL_OPTIONS, BOT_LEVEL_HELP, filterBotLevel } from "./botLevels.j
 import { SCANNER_SETUP_TYPES } from "./scannerSetupTypes.js";
 import { loadPaperHistory } from "./paperBotHistory.js";
 import { EXPERIMENT_DECISION_URL, awaitingLines } from "./botExperiment.js";
+import { RULE_LAB_URL, ruleLabRows, ruleLabSummary } from "./ruleLab.js";
 import { truthAccountLabel, truthGapLabel, truthHeadline, truthMoney, truthNewRulesLine, truthPct } from "./botTruth.js";
 import { Bot, RefreshCw, X } from "lucide-react";
 import { BOT_RULE_HELP, BOT_RULE_LABELS, BOT_RULE_ORDER, botRuleLabel, BOT_TEST_RULES, botContractLabel, botDailyLog, botEntryStrikeLabel, botNewsBook, botAiBook, isEarlyDayLine, setBotFills, setBotExit, setBotContract, BOT_EXIT_LABELS, BOT_CONTRACT_LABELS, botExitMatrix, botRiskOk, botRiskRoi, botMomentumMatrix, botPeriodMatrix, botReport, formatBotDollars, formatBotPct, nextBotSort, sortBotRows } from "./momxBot.js";
@@ -246,6 +247,31 @@ function ExperimentStatus({ lab }) {
       {lab.recentDecisions?.length ? <p>Recent Paper 5 decisions: {lab.recentDecisions.map(x => `${x.symbol} ${x.qualified ? "qualified" : "outside candidate rule"}`).join(" · ")}</p> : null}
     </details> : null}
   </div>;
+}
+
+// Every Setup rule's record + the AI's chart-check tests (2026-11-05).
+function RuleLabScorecard({ side }) {
+  const [lab, setLab] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    const load = () => fetch(RULE_LAB_URL, { credentials: "include", cache: "no-store", signal: AbortSignal.timeout(15000) })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(d => { if (alive) { setLab(d); setError(""); } })
+      .catch(() => { if (alive) setError("Rule scorecard unavailable right now."); });
+    load();
+    const id = window.setInterval(load, 300000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, []);
+  const rows = ruleLabRows(lab, side);
+  return <details className="bot-jevbook-note" data-testid="bot-rule-lab">
+    <summary><b>Every Setup rule · AI scorecard</b> · {lab ? ruleLabSummary(lab) : error || "Loading…"}</summary>
+    <p>Each rule's BOT trades scored at a half-spread fill (buy mid + ¼ spread, sell mid − ¼ spread). Every evening the AI picks one chart check to test on one rule; it counts only trades AFTER the pick, for 10 trading days, and the rule is marked improved only if it passes the same statistics check as Paper 5 (every try counted). Your rules are never changed; the BOT keeps trading them.</p>
+    {lab?.scorecard?.generatedAt ? <p>Updated {String(lab.scorecard.generatedAt).slice(0, 16).replace("T", " ")} ET · rebuilt evenings, nights and weekends.</p> : <p>{error || "The first scorecard is built this evening."}</p>}
+    {rows.length ? <div className="bot-scroll"><table className="bot-table"><thead><tr><th>Rule</th><th>Trades</th><th>Win</th><th>Avg</th><th>Latest day</th><th>Best chart check</th><th>AI</th></tr></thead><tbody>
+      {rows.map(r => <tr key={r.rule} className={r.improved ? "is-improved" : undefined}><td>{r.label}</td><td>{r.trades}</td><td>{r.win}</td><td>{r.avg}</td><td>{r.today}</td><td>{r.best}</td><td>{r.ai}</td></tr>)}
+    </tbody></table></div> : null}
+  </details>;
 }
 
 function LearningTeamStatus({ onStatus }) {
@@ -804,7 +830,7 @@ export default function BotPanel() {
   setBotContract(contractMode);
   const pick = useCallback(
     (days) => (book === "news" ? botNewsBook(days)
-      : book === "ai" ? botAiBook(days) : book === "all" && side === "bull" ? filterBotLevel(days, levelStrategy) : days),
+      : book === "ai" ? botAiBook(days) : book === "all" ? filterBotLevel(days, levelStrategy) : days),
     // fills / exit / contract are read inside botTradeResults; listing them here
     // re-runs every memo built on pick
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -939,7 +965,7 @@ export default function BotPanel() {
               title="Display filter for trades scored 55%+ by the local model. This score does not block entries; agents review completed trades afterward.">AI pick</button>
           </div>
           {/* Paper accounts as ONE drop-down (2026-10-17, his "Instead of panel use dropdown for paper 3/paper5"). */}
-          {book === 'all' && side === 'bull' ? <label className="bot-level-select">
+          {book === 'all' ? <label className="bot-level-select">
             <span>Level strategy</span>
             <select className="bot-paper-select" aria-label="Level strategy" title={BOT_LEVEL_HELP}
               value={levelStrategy} onChange={e => { setLevelStrategy(e.target.value); setRule(null); setOutcome('all'); }}>
@@ -992,14 +1018,14 @@ export default function BotPanel() {
       </header>
 
       <TruthCheckCard />
-      {book === 'all' && side === 'bull' ? <details className="bot-level-help">
+      {book === 'all' ? <details className="bot-level-help">
         <summary>Level strategies · 3+ Setup types · MOM optional · AI review afterward</summary>
         <p>{BOT_LEVEL_HELP} Entries use the existing 09:30–15:30 ET window. New records start with valid future scanner updates.</p>
         <p><b>Setup column rules counted (23):</b> {SCANNER_SETUP_TYPES.map(([, label]) => label).join(' · ')}.</p>
         <p>Any three distinct types above satisfy the Setup requirement for each level. Multiple timeframes of one type count once. MOM is optional; these types include status and warning tags, so three types do not mean three independent bullish confirmations. Each new level trade shows its recorded Setup rules below its strategy name.</p>
-        {learningTeam?.capture?.bull?.levelStrategies ? <p role="status">Level engine: {learningTeam.capture.bull.levelStrategies.state} · {learningTeam.capture.bull.levelStrategies.reason}</p> : null}
+        {learningTeam?.capture?.[side]?.levelStrategies ? <p role="status">Level engine ({side === "bear" ? "puts" : "calls"}): {learningTeam.capture[side].levelStrategies.state} · {learningTeam.capture[side].levelStrategies.reason}</p> : null}
       </details> : null}
-      {!paperMode ? <LearningTeamStatus onStatus={setLearningTeam} /> : null}
+      {!paperMode ? <><LearningTeamStatus onStatus={setLearningTeam} /><RuleLabScorecard side={side} /></> : null}
       {paperMode ? <><PaperBook account={book} side={side} days={days} team={learningTeam} refreshKey={paperRefresh} /><LearningTeamStatus onStatus={setLearningTeam} /></> : (<>
       {error ? <p className="bot-error" role="alert">{error} Use Refresh to retry.</p> : null}
       {loading ? <p className="bot-hint" role="status">Loading BOT trades…</p> : null}

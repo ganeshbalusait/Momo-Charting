@@ -295,6 +295,9 @@ def price_guard(price: float | None, quote_time_ms: float | None, ref_price: flo
 
 def _avoid_reason(m: Metrics) -> str | None:
     c = m.checks or {}
+    earning = c.get("earning")
+    if earning is not None and earning.passed is False and _ok(earning.value) and earning.value <= 0:
+        return "losing money"                  # negative EPS: say so before the ROIC it drags down
 
     for k in AVOID_GATES:
         ch = c.get(k)

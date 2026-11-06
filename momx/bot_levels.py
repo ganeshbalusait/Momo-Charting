@@ -50,7 +50,7 @@ class LevelEvaluator:
             finally: answers.put({'error': 'Level worker stopped'})
         threading.Thread(target=read, name='bot-level-reader', daemon=True).start()
 
-    def evaluate(self, board, payload, now):
+    def evaluate(self, board, payload, now, bear=False):
         self.contexts = {}
         if os.environ.get('AGX_BOT_LEVEL_STRATEGIES', '1') == '0':
             self.status = {'state': 'disabled', 'reason': 'Level strategies disabled'}
@@ -69,7 +69,8 @@ class LevelEvaluator:
                 if self.process is None or self.process.poll() is not None: self._start()
                 self.serial += 1
                 request = {'id': self.serial, 'board': board, 'now': now.isoformat(),
-                           'publicationAt': publication, 'rows': list(payload.get('rows') or []) + list(payload.get('rest') or [])}
+                           'publicationAt': publication, 'rows': [{**r, 'direction': 'bear'} if bear and isinstance(r, dict) else r
+                                                                   for r in list(payload.get('rows') or []) + list(payload.get('rest') or [])]}
                 self.process.stdin.write(json.dumps(request, allow_nan=False) + '\n')
                 self.process.stdin.flush()
                 answer = self.answers.get(timeout=5)
