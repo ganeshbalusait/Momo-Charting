@@ -506,6 +506,13 @@ def _scan_one(args):
     # pass through the floor.
     last = columns.last_price(tapes)
     passed, reasons = scan.scan_symbol(tapes, last)
+    # The two Price_Change readings themselves, so a list with stricter
+    # minimums (the EMA Touch lists, scan.EMA_LIST_GATES) can re-judge this
+    # record - even one it borrowed from another list's build.
+    changes = (
+        scan.price_change_pct(tapes.get("4h"), "volume", scan.VOLUME_CHANGE_BARS_AGO),
+        scan.price_change_pct(tapes.get("1h"), "close", scan.CLOSE_CHANGE_BARS_AGO),
+    )
     # The BEAR scan on the same tapes (spec 2026-09-24): a few EMA/MACD
     # comparisons and one RVOL pass per timeframe - cheap next to build_row.
     bear_passed, bear_reasons = scan.scan_symbol(tapes, last, direction="bear")
@@ -527,9 +534,9 @@ def _scan_one(args):
             except Exception as exc:  # noqa: BLE001 - per-symbol isolation
                 row = None
                 failure = f"{type(exc).__name__}: {exc}"
-            return symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons
+            return symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons, changes
         return (symbol, None, pct, passed, reasons, None, last,
-                bear_passed, bear_reasons)
+                bear_passed, bear_reasons, changes)
     try:
         row = columns.build_row(symbol, tapes, industry)
         failure = None
@@ -549,7 +556,20 @@ def _scan_one(args):
     # again. The daily-only expression remains ONLY for a symbol whose row
     # build raised - the single case where there is no row to read.
     pct = row.get("pctChange") if row is not None else columns.pct_change(daily_bars)
-    return symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons
+    return symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons, changes
+
+
+def _apply_gate_min_pct(record: Mapping[str, Any], gates: Mapping[str, float]) -> dict:
+    """A copy of one scan record judged by a list's stricter Price_Change gates."""
+    out = dict(record)
+    for flag, key, direction in (("scanPass", "_reasons", "bull"), ("bearPass", "_bearReasons", "bear")):
+        blocked = scan.stricter_gates(record.get("_volChg4h"), record.get("_closeChg1h"), gates, direction)
+        if not blocked:
+            continue
+        reasons = list(record.get(key) or ())
+        out[flag] = False
+        out[key] = [b for b in blocked if b not in reasons] + reasons
+    return out
 
 
 def _scan_one_guarded(args):
@@ -568,7 +588,7 @@ def _scan_one_guarded(args):
         return _scan_one(args)
     except Exception as exc:  # noqa: BLE001 - one symbol must not take the pool down
         symbol = args[0] if args else "?"
-        return symbol, None, None, False, (), f"{type(exc).__name__}: {exc}", None, False, ()
+        return symbol, None, None, False, (), f"{type(exc).__name__}: {exc}", None, False, (), (None, None)
 
 
 def _pool():
@@ -791,8 +811,14 @@ def build_board(
     full_rows_for: Iterable[Any] | None = None,
     reuse_rows: Mapping[str, Any] | None = None,
     reuse_bear_rows_for: Iterable[Any] | None = None,
+    gate_min_pct: Mapping[str, float] | None = None,
 ) -> dict:
     """Build the whole board, synchronously, and return the payload document.
+
+    ``gate_min_pct`` (e.g. ``scan.EMA_LIST_GATES``) raises the two
+    Price_Change ALL-gates for THIS list only; a record that fails it loses
+    its bull/bear match and gets the ``blocked:`` reason. Records are copied
+    first, so a scan lent to (or borrowed from) another list is untouched.
 
     ``symbols`` defaults to the persisted universe. ``limit`` is TOS's
     "Show: 50"; pass ``None`` for every row. ``feed_module`` is the test seam
@@ -912,7 +938,8 @@ def build_board(
     _timing_scan_start = time.perf_counter()
 
     def _absorb(result):
-        symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons = result
+        symbol, row, pct, passed, reasons, failure, last, bear_passed, bear_reasons, *more = result
+        volume_chg, close_chg = (more[0] if more else None) or (None, None)
         if failure:
             _record_error(errors, symbol, failure)
         scanned.append(
@@ -926,6 +953,8 @@ def build_board(
                 # The bear verdict rides beside the bull one; bear_view promotes it.
                 "bearPass": bear_passed,
                 "_bearReasons": bear_reasons,
+                "_volChg4h": volume_chg,
+                "_closeChg1h": close_chg,
             }
         )
 
@@ -1054,6 +1083,8 @@ def build_board(
                    if symbol in fresh or symbol in borrowed]
     elif feed_module is None and len(wanted) >= PARALLEL_MIN_SYMBOLS:
         _remember_scan(wanted, scanned, tape_as_of)
+    if gate_min_pct:
+        scanned = [_apply_gate_min_pct(record, gate_min_pct) for record in scanned]
 
     # rank_board picks the survivors from the cheap fields - matches first,
     # never displaced by a non-matching mover. A symbol whose row build failed
@@ -1401,6 +1432,7 @@ def cached_board(
         tuple(wanted),
         kwargs.get("limit", DEFAULT_LIMIT),
         kwargs.get("two_hour_anchor", TWO_HOUR_ANCHOR),
+        tuple(sorted((kwargs.get("gate_min_pct") or {}).items())),
     )
     try:
         ttl = float(ttl_seconds)

@@ -808,6 +808,14 @@ def _apply_fired_at(name: str, payload: dict, direction: str = "bull") -> None:
 # the warmer
 # ---------------------------------------------------------------------------
 
+def _gate_kwargs(name: str) -> dict:
+    """The EMA Touch lists run his stricter Price_Change ALL-gates (2026-11-05,
+    "EMA lists only": VOLUME 4h >= 1.0%, CLOSE 1h >= 0.5%)."""
+    if ema_touch.parse_name(name) is not None:
+        return {"gate_min_pct": dict(scan.EMA_LIST_GATES)}
+    return {}
+
+
 def _reuse_kwargs(state) -> dict:
     """Tell build_board which rows may reuse their previous study columns.
 
@@ -941,7 +949,7 @@ def _build_once(name: str) -> float:
             return SKIPPED_BUILD
         try:
             payload = board.cached_board(
-                symbols, ttl_seconds=0.0, **_reuse_kwargs(state)
+                symbols, ttl_seconds=0.0, **_reuse_kwargs(state), **_gate_kwargs(name)
             )
             boarded_at = time.monotonic()
         finally:

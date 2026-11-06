@@ -61,6 +61,9 @@ __all__ = [
     "rank_board",
     "CLOSE_CHANGE_BARS_AGO",
     "CLOSE_CHANGE_MIN_PCT",
+    "EMA_LIST_CLOSE_CHANGE_MIN_PCT",
+    "EMA_LIST_GATES",
+    "EMA_LIST_VOLUME_CHANGE_MIN_PCT",
     "MOMENTUM_CROSS_NAMES",
     "MOMENTUM_TIMEFRAMES",
     "PRICE_FLOOR",
@@ -81,6 +84,8 @@ __all__ = [
     "momentum_cross",
     "momentum_cross_names",
     "price_change_gate",
+    "price_change_pct",
+    "stricter_gates",
     "completed_bars",
     "price_floor",
     "rank_rows",
@@ -119,6 +124,14 @@ CLOSE_CHANGE_MIN_PCT = 0.3
 
 #: The live 1h filter also compares against price[2].
 CLOSE_CHANGE_BARS_AGO = 2
+
+#: The 21 / 50 EMA Touch lists run his "Momox_2NEW!" TOS scan, whose ALL block
+#: (screenshot 2026-11-05) is stricter than the main scan's: VOLUME 4h EXT at
+#: least 1.0% and CLOSE 1h EXT at least 0.5% greater than 2 bars ago. He chose
+#: "EMA lists only" - every other list keeps the 0.5% / 0.3% above.
+EMA_LIST_VOLUME_CHANGE_MIN_PCT = 1.0
+EMA_LIST_CLOSE_CHANGE_MIN_PCT = 0.5
+EMA_LIST_GATES = {"volume": EMA_LIST_VOLUME_CHANGE_MIN_PCT, "close": EMA_LIST_CLOSE_CHANGE_MIN_PCT}
 
 #: RVOL scanner inputs: ``relVolLength = 50``, ``numDev = 3``.
 RVOL_LENGTH = 50
@@ -296,6 +309,63 @@ def price_change_gate(
     if is_bear(direction):
         return change <= -threshold
     return change >= threshold
+
+
+def price_change_pct(bars: Iterable[Any] | None, source: str, bars_ago: int = 2) -> float | None:
+    """The reading :func:`price_change_gate` compares: ``100 * (x[0] / x[-n] - 1)``.
+
+    ``None`` exactly where the gate fails for want of a reading (short tape,
+    non-finite value, zero/negative baseline), so ``pct >= m`` on a non-None
+    reading gives the gate's own answer for any threshold ``m``.
+    """
+    key = str(source or "").strip().lower()
+    if key not in _PRICE_CHANGE_SOURCES:
+        raise ValueError(f"unsupported Price_Change source {source!r}")
+    try:
+        offset = int(bars_ago)
+    except (TypeError, ValueError):
+        return None
+    rows = _rows(bars)
+    if offset < 1 or len(rows) < offset + 1:
+        return None
+    current = _field(rows[-1], key)
+    baseline = _field(rows[-1 - offset], key)
+    if not (math.isfinite(current) and math.isfinite(baseline)) or baseline <= 0.0:
+        return None
+    return 100.0 * (current / baseline - 1.0)
+
+
+def stricter_gates(
+    volume_pct: Any,
+    close_pct: Any,
+    gates: Mapping[str, float],
+    direction: str = "bull",
+) -> list[str]:
+    """The ``blocked:`` entries a list with its own Price_Change minimums adds.
+
+    ``volume_pct`` is the 4h VOLUME reading and ``close_pct`` the 1h CLOSE
+    reading (:func:`price_change_pct`); a missing reading blocks, as in TOS.
+    Bear mirrors the CLOSE row (a drop of at least the minimum), like
+    :func:`scan_symbol`. Empty list = both rows pass.
+    """
+    blocked: list[str] = []
+
+    def _num(value: Any) -> float | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+    volume, close = _num(volume_pct), _num(close_pct)
+    if "volume" in gates and (volume is None or volume < float(gates["volume"])):
+        blocked.append("blocked:pricechange:volume:4h")
+    if "close" in gates:
+        need = float(gates["close"])
+        ok = close is not None and (close <= -need if is_bear(direction) else close >= need)
+        if not ok:
+            blocked.append("blocked:pricechange:close:1h")
+    return blocked
 
 
 # ----------------------------------------------------------------------
