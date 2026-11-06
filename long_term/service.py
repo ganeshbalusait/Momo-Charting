@@ -321,7 +321,8 @@ class LongTermService:
         return self._schwab.get_quotes(schwab_symbols)
 
     def _schwab_chain(self, schwab_symbol: str, from_date: date, to_date: date) -> dict:
-        """The live CALL chain for the LEAP window (get_option_chain wants datetimes)."""
+        """The live CALL chain for the LEAP window, today + 90 .. today + 365 days (Ganesh 11-06: "3 months
+        to 12 months"); get_option_chain wants datetimes."""
         if self._schwab is None:
             from data.schwab_client import SchwabClient
             self._schwab = SchwabClient()
@@ -863,13 +864,15 @@ class LongTermService:
                     "fetchedAt": None, "refreshedAt": None}
 
     def leap_payload(self, symbol: str, mos: int, quote: dict | None) -> dict | None:
-        """The LEAP contract to buy for one row. None for an unknown ticker (the detail rule);
-        otherwise always a dict and never raises. A row that is not LEAPS-flagged makes no chain call."""
+        """The LEAP contracts for one row: ``contract`` (the ENTRY-style pick) and ``deep`` (the stock
+        substitute), both on one expiry. None for an unknown ticker (the detail rule); otherwise always a
+        dict and never raises. A row that is not LEAPS-flagged makes no chain call."""
         sym = canonical(symbol)
         if not sym:
             return None
         out = {"symbol": sym, "name": None, "leaps": False, "price": None, "leapsBelow": None, "contract": None,
-               "reason": REASON_CHAIN_UNAVAILABLE, "expiries": [], "fetchedAt": None, "refreshedAt": None}
+               "deep": None, "reason": REASON_CHAIN_UNAVAILABLE, "expiries": [], "fetchedAt": None,
+               "refreshedAt": None}
         try:
             records, etfs, universe = self._view()
             rec = records.get(sym)
@@ -887,6 +890,7 @@ class LongTermService:
             out["leaps"] = True
             today = _et(now).date()
             try:
+                # Schwab is asked only for the 3-12 month window (today + 90 .. today + 365 days)
                 chain = self.chain_for(to_schwab(sym), today + timedelta(days=LEAP_MIN_DTE),
                                        today + timedelta(days=LEAP_MAX_DTE))
             except Exception as exc:  # noqa: BLE001 - the page says "chain unavailable", nothing else changes
@@ -897,7 +901,7 @@ class LongTermService:
             return out
         except Exception as exc:  # noqa: BLE001
             log.warning("long_term: leap %s failed (%s: %s)", sym, type(exc).__name__, exc)
-            out.update(contract=None, reason=REASON_CHAIN_UNAVAILABLE, expiries=[])
+            out.update(contract=None, deep=None, reason=REASON_CHAIN_UNAVAILABLE, expiries=[])
             return out
 
     # ----- refresher -----

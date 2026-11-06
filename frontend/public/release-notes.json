@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-06T16:20:00-05:00",
+      "heading": "Long Term: the LEAP pick now follows the chain page's ENTRY rule, 3 to 12 months out",
+      "items": [
+        "The contract under the LEAPS badge is now the out-of-the-money call just under 0.20 delta with the most open interest, the way the Options chain marks ENTRY, on the farthest expiry 3 to 12 months out (was the deep 0.75-delta call 12 to 25 months out).",
+        "The Why drawer's 'LEAP to buy' box shows that ENTRY-style contract in full and, under it, one line with the deep 0.75-delta call (the Rule #1 stock substitute, now the strike with the most open interest near 0.75) so you can compare the two.",
+        "After 16:00 ET Schwab hides option deltas; the row then says so and keeps retrying on its own instead of showing 'no contract'. A thin contract (open interest under 50) is still flagged ⚠ thin."
+      ]
+    },
+    {
       "at": "2026-11-06T11:15:00-05:00",
       "heading": "Scanner + BOT: Confirm L1 / L2 / L3 no longer flicker off between scans",
       "items": [

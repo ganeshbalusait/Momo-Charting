@@ -23145,7 +23145,7 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-lines li.is-na { color: var(--lt-muted); }
 .long-term-lines li.is-warn { color: var(--lt-amber); }
 /* LEAP to buy: the contract line under the LEAPS pill, and the drawer section */
-.long-term-leap { display: block; margin-top: 3px; color: var(--lt-muted); font-family: var(--terminal-font); font-size: 10px; font-weight: 500; letter-spacing: 0; line-height: 1.3; white-space: nowrap; }
+.long-term-leap { display: block; margin-top: 3px; max-width: 38ch; color: var(--lt-muted); font-family: var(--terminal-font); font-size: 10px; font-weight: 500; letter-spacing: 0; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }
 .long-term-leap .long-term-link { font-size: inherit; }
 .long-term-table > tbody > tr > td.is-col-leaps { padding-top: 5px; padding-bottom: 5px; vertical-align: middle; }
 .long-term-card > .long-term-leap { min-width: 0; margin-top: 0; white-space: normal; overflow-wrap: anywhere; }
@@ -23153,6 +23153,7 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-drawer-leap h4 { margin: 0 0 5px; color: #7fd3ee; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .long-term-drawer-leap .long-term-lines { font-family: var(--terminal-font); }
 .long-term-drawer-leap .long-term-lines li:first-child { color: #e7f7ff; font-weight: 700; }
+.long-term-drawer-leap .long-term-lines li.is-sub { margin-top: 4px; color: #7fd3ee; font-weight: 700; }
 .long-term-drawer-leap > p { margin: 4px 0; font-size: 12px; }
 .long-term-drawer-leap > .long-term-note { margin: 6px 0 0; }
 .long-term-years-wrap { max-width: 100%; overflow-x: auto; }

@@ -17,7 +17,7 @@ import pytest
 from api_harness import RELAYED, running_api, seed_user
 from cf_access_auth import ACCESS_EMAIL_HEADER
 from long_term import service as lt_service
-from test_long_term_leaps import FakeChain, expiry_of, std_chain
+from test_long_term_leaps import FRACTIONS, FakeChain, contract, expiry_of, make_chain, std_chain
 from test_long_term_service import NOW, NOW_MS, fake_finnhub, make_svc
 
 VIEWER = "viewer-long-term@example.com"
@@ -276,7 +276,7 @@ def _leap_svc(monkeypatch, directory, price, chain):
 
 def test_leap_route_returns_a_contract_for_a_flagged_row(monkeypatch, buy_store):
     directory, price = buy_store
-    fake = FakeChain(std_chain((30, 400, 600, 800), spot=price, today=NOW.date()))
+    fake = FakeChain(std_chain((30, 250, 340, 800), spot=price, today=NOW.date()))
     s = _leap_svc(monkeypatch, directory, price, fake)
     try:
         with running_api() as api:
@@ -286,13 +286,60 @@ def test_leap_route_returns_a_contract_for_a_flagged_row(monkeypatch, buy_store)
         s.stop_refresher()
     assert status == 200, body
     assert body["symbol"] == "AAPL" and body["leaps"] is True and body["price"] == pytest.approx(price)
-    assert body["reason"] == "" and body["expiries"] == [expiry_of(400, NOW.date()), expiry_of(600, NOW.date())]
-    c = body["contract"]
-    assert c and c["dte"] == 600 and c["strike"] < price and c["bid"] > 0 and c["ask"] >= c["bid"]
-    assert c["delta"] == 0.75 and c["intrinsic"] == pytest.approx(price - c["strike"])
+    assert body["reason"] == "" and body["expiries"] == [expiry_of(250, NOW.date()), expiry_of(340, NOW.date())]
+    c, d = body["contract"], body["deep"]
+    # the ENTRY pick: out of the money, delta from 0.10 to under 0.20 (the chain page's ENTRY), kind "entry"
+    assert c and c["kind"] == "entry" and c["dte"] == 340 and c["strike"] > price      # farthest in 90..365
+    assert c["bid"] > 0 and c["ask"] >= c["bid"] and 0.10 <= c["delta"] < 0.20
+    assert c["intrinsic"] == 0 and c["extrinsic"] == pytest.approx(c["ask"])
     assert c["breakeven"] == pytest.approx(c["strike"] + c["ask"]) and c["cost"] == pytest.approx(c["ask"] * 100)
-    assert fake.calls and fake.calls[0][0] == "AAPL"
+    # the deep pick: same expiry, in the money near 0.75 delta, kind "deep"
+    assert d and d["kind"] == "deep" and d["expiry"] == c["expiry"] and d["dte"] == 340 and d["strike"] < price
+    assert d["delta"] == 0.75 and d["intrinsic"] == pytest.approx(price - d["strike"])
+    assert d["breakeven"] == pytest.approx(d["strike"] + d["ask"]) and d["cost"] == pytest.approx(d["ask"] * 100)
+    # Schwab is asked for the 3-12 month window only: today + 90 .. today + 365 days (Ganesh 11-06 15:25)
+    assert fake.calls == [("AAPL", NOW.date() + timedelta(days=90), NOW.date() + timedelta(days=365))]
     assert detail_status == 200 and detail["row"]["leaps"] is True and detail["explain"]    # detail still works
+
+
+def test_leap_route_expiry_with_only_a_deep_pick_is_200_with_reason_and_deep(monkeypatch, buy_store):
+    """No out-of-the-money call near 0.20 delta: the page gets the reason AND the deep call, never a 500."""
+    directory, price = buy_store
+    itm_only = make_chain([contract(250, round(price * f, 1),spot=price, today=NOW.date())
+                           for f in FRACTIONS if f < 1.0], spot=price, today=NOW.date())
+    s = _leap_svc(monkeypatch, directory, price, FakeChain(itm_only))
+    try:
+        with running_api() as api:
+            status, body = api.get("/api/long-term/AAPL/leap?mos=50")
+    finally:
+        s.stop_refresher()
+    assert status == 200, body
+    assert body["leaps"] is True and body["contract"] is None
+    assert body["reason"] == "no out-of-the-money call near 0.20 delta with a live quote"
+    d = body["deep"]
+    assert d and d["kind"] == "deep" and d["strike"] < price and d["delta"] == 0.75
+    assert body["expiries"] == [expiry_of(250, NOW.date())]
+
+
+def test_leap_route_after_hours_chain_without_deltas_is_200_with_the_no_delta_reason_and_deep(monkeypatch, buy_store):
+    """Review 11-06 (finding 2): Schwab stamps +/-999 on every greek after 16:00 ET. The route says the
+    feed hid the deltas (a reason the page retries), never "no such call", and still carries the deep
+    0.80 x price fallback. Never a 500."""
+    directory, price = buy_store
+    hidden = make_chain([contract(250, round(price * f, 1),delta=999.0, spot=price, today=NOW.date())
+                         for f in FRACTIONS], spot=price, today=NOW.date())
+    s = _leap_svc(monkeypatch, directory, price, FakeChain(hidden))
+    try:
+        with running_api() as api:
+            status, body = api.get("/api/long-term/AAPL/leap?mos=50")
+    finally:
+        s.stop_refresher()
+    assert status == 200, body
+    assert body["leaps"] is True and body["contract"] is None
+    assert body["reason"] == "no deltas from the chain feed (hidden outside market hours)"
+    d = body["deep"]
+    assert d and d["kind"] == "deep" and d["strike"] < price and d["delta"] is None
+    assert body["expiries"] == [expiry_of(250, NOW.date())]
 
 
 def test_leap_route_wait_row_is_not_flagged_and_makes_no_chain_call(svc):
@@ -300,7 +347,8 @@ def test_leap_route_wait_row_is_not_flagged_and_makes_no_chain_call(svc):
     with running_api() as api:
         status, body = api.get("/api/long-term/AAPL/leap")
     assert status == 200, body
-    assert body["leaps"] is False and body["contract"] is None and body["reason"] == "LEAPS not flagged"
+    assert body["leaps"] is False and body["contract"] is None and body["deep"] is None
+    assert body["reason"] == "LEAPS not flagged"
     assert body["price"] == AAPL_PRICE and body["expiries"] == []
     assert fake.calls == []
 
@@ -323,7 +371,8 @@ def test_leap_route_chain_failure_is_200_chain_unavailable(monkeypatch, buy_stor
     finally:
         s.stop_refresher()
     assert status == 200, body
-    assert body["leaps"] is True and body["contract"] is None and body["reason"] == "chain unavailable"
+    assert body["leaps"] is True and body["contract"] is None and body["deep"] is None
+    assert body["reason"] == "chain unavailable"
 
 
 def test_leap_route_shares_the_mos_validation(svc):

@@ -400,9 +400,13 @@ export function formatEtStamp(value) {
 
 // ---- LEAP to buy ----------------------------------------------------------------
 // The leap payload (GET /api/long-term/<SYM>/leap): {symbol, name, leaps, price,
-// leapsBelow, contract | null, reason, expiries, fetchedAt, refreshedAt}. The
-// server picks the contract; these helpers only put it into words and never
-// let a missing number through as NaN or undefined.
+// leapsBelow, contract | null, deep | null, reason, expiries, fetchedAt,
+// refreshedAt}. v2 (2026-11-06): `contract` is the ENTRY-style pick (the
+// out-of-the-money call just under 0.20 delta with the most open interest, like
+// the chain page's ENTRY badge); `deep` is the Rule #1 stock substitute (in the
+// money near 0.75 delta) on the same expiry. The server picks both; these
+// helpers only put them into words and never let a missing number through as
+// NaN or undefined.
 
 export const LEAP_FETCH_CAP = 12;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -435,44 +439,76 @@ const wholeDollars = (v) => (isNum(v) ? `${v < 0 ? MINUS : ""}$${thousands(Strin
 const signedPct = (v) => (isNum(v) ? `${v > 0 ? "+" : ""}${formatPct(v)}` : DASH);
 const count = (v) => (isNum(v) ? thousands(String(Math.round(v))) : DASH);
 
-const contractOf = (payload) => {
+const pickOf = (payload, key) => {
   if (!payload || typeof payload !== "object") return null;
-  const c = payload.contract;
+  const c = payload[key];
   return c && typeof c === "object" ? c : null;
 };
-const noContract = (payload) => {
+const contractOf = (payload) => pickOf(payload, "contract"); // the ENTRY-style pick
+const deepOf = (payload) => pickOf(payload, "deep"); // the stock-substitute pick
+const reasonOf = (payload) => {
   const reason = payload && typeof payload === "object" && typeof payload.reason === "string" && payload.reason.trim();
-  return `No contract: ${reason || DASH}`;
+  return reason || DASH;
 };
+const noContract = (payload) => `No contract: ${reasonOf(payload)}`;
+const noEntry = (payload) => `No ENTRY contract: ${reasonOf(payload)}`;
+const deltaText = (v) => (isNum(v) ? v.toFixed(2) : DASH);
+
+export const DEEP_HEADING = "Deep call (stock substitute):";
+export const DEEP_NONE = "Deep call: none";
+
+// The deep pick on one compact line: "$200 call · delta 0.75 · ask $78.20 ·
+// breakeven $278 (+16%) · OI 20,672", with " ⚠ thin" / " ⚠ wide spread" when flagged.
+function deepLine(d) {
+  let line = `${dollars(d.strike)} call · delta ${deltaText(d.delta)} · ask ${formatMoney(d.ask)} · breakeven ${wholeDollars(d.breakeven)} (${signedPct(d.breakevenPct)}) · OI ${count(d.openInterest)}`;
+  if (d.thin === true) line += " ⚠ thin";
+  if (d.wideSpread === true) line += " ⚠ wide spread";
+  return line;
+}
 
 // One short line for the table cell / phone card:
-// "Jan 2028 $200 C · ask $62.40 · BE $262 (+9%)"; "No contract: <reason>"; "" for no payload.
+// "Jan 2028 $450 C · ask $8.90 · BE $459 (+91%)" (the ENTRY pick); with no ENTRY
+// pick but a deep one, "No ENTRY contract: <reason> · deep Jan 2028 $200 C ask $78.20";
+// "No contract: <reason>" when there is neither; "" for no payload.
 export function leapLine(payload) {
   if (!payload || typeof payload !== "object") return "";
   const c = contractOf(payload);
-  if (!c) return noContract(payload);
+  if (!c) {
+    const d = deepOf(payload);
+    if (!d) return noContract(payload);
+    return `${noEntry(payload)} · deep ${formatExpiry(d.expiry)} ${dollars(d.strike)} C ask ${formatMoney(d.ask)}`;
+  }
   const line = `${formatExpiry(c.expiry)} ${dollars(c.strike)} C · ask ${formatMoney(c.ask)} · BE ${wholeDollars(c.breakeven)} (${signedPct(c.breakevenPct)})`;
   return c.thin === true ? `${line} ⚠ thin` : line;
 }
 
-// The lines of the drawer's "LEAP to buy" section.
+// The lines of the drawer's "LEAP to buy" section: the ENTRY block (headline,
+// quote, breakeven, time value, open interest, warnings), then the deep call
+// on one line under its heading. With no ENTRY pick the block is the one
+// "No ENTRY contract" line; with neither pick, "No contract: <reason>".
 export function leapSection(payload) {
   const c = contractOf(payload);
-  if (!c) return [noContract(payload)];
-  const lines = [
-    `${formatExpiry(c.expiry, { long: true })} (${isNum(c.dte) ? Math.round(c.dte) : DASH} days) · ${dollars(c.strike)} call · delta ${isNum(c.delta) ? c.delta.toFixed(2) : DASH}`,
-    `Ask ${formatMoney(c.ask)} · bid ${formatMoney(c.bid)} · mid ${formatMoney(c.mid)} · ${wholeDollars(c.cost)} per contract`,
-    `Breakeven ${formatMoney(c.breakeven)} · ${signedPct(c.breakevenPct)} from ${dollars(payload.price)}`,
-    `In the money ${formatMoney(c.intrinsic)} · time value ${formatMoney(c.extrinsic)}`,
-    `Open interest ${count(c.openInterest)} · volume ${count(c.volume)}`,
-  ];
-  if (c.wideSpread === true) {
-    const over = isNum(c.ask) && isNum(c.mid) && c.mid > 0 ? (c.ask - c.mid) / c.mid : null;
-    lines.push(isNum(over) ? `⚠ wide spread (ask ${formatPct(over, 1)} over mid)` : "⚠ wide spread");
-  }
-  if (c.thin === true) {
-    lines.push(`⚠ thin market: open interest ${count(c.openInterest)} — use a limit order near the mid, and expect a wide exit`);
-  }
+  const d = deepOf(payload);
+  if (!c && !d) return [noContract(payload)];
+  const lines = [];
+  if (c) {
+    lines.push(
+      `ENTRY-style · ${formatExpiry(c.expiry, { long: true })} (${isNum(c.dte) ? Math.round(c.dte) : DASH} days) · ${dollars(c.strike)} call · delta ${deltaText(c.delta)} · OI ${count(c.openInterest)}`,
+      `Ask ${formatMoney(c.ask)} · bid ${formatMoney(c.bid)} · mid ${formatMoney(c.mid)} · ${wholeDollars(c.cost)} per contract`,
+      `Breakeven ${formatMoney(c.breakeven)} · ${signedPct(c.breakevenPct)} from ${dollars(payload.price)}`,
+      `In the money ${formatMoney(c.intrinsic)} · time value ${formatMoney(c.extrinsic)}`,
+      `Open interest ${count(c.openInterest)} · volume ${count(c.volume)}`,
+    );
+    if (c.wideSpread === true) {
+      const over = isNum(c.ask) && isNum(c.mid) && c.mid > 0 ? (c.ask - c.mid) / c.mid : null;
+      lines.push(isNum(over) ? `⚠ wide spread (ask ${formatPct(over, 1)} over mid)` : "⚠ wide spread");
+    }
+    if (c.thin === true) {
+      lines.push(`⚠ thin market: open interest ${count(c.openInterest)} — use a limit order near the mid, and expect a wide exit`);
+    }
+  } else lines.push(noEntry(payload));
+  if (d) lines.push(DEEP_HEADING, deepLine(d));
+  else lines.push(DEEP_NONE);
   return lines;
 }
 
@@ -484,15 +520,36 @@ export function leapOrder(rows, cap = LEAP_FETCH_CAP) {
 }
 
 // A 200 answer with no contract for one of these reasons is a passing state of
-// the chain feed (Schwab blocked, dead token, client not configured), not a
-// verdict on the row: the server does not cache it, so the page asks again.
-export const LEAP_TRANSIENT_REASONS = new Set(["chain unavailable", "no chain"]);
+// the chain feed, not a verdict on the row, so the page asks again: "chain
+// unavailable" / "no chain" (Schwab blocked, dead token, client not configured;
+// the server does not cache it) and LEAP_NO_DELTA_REASON (the chain came back,
+// but Schwab hides every greek outside market hours, so there is no delta to
+// pick an ENTRY by; the server's 5-minute chain copy lapses before the retry).
+export const LEAP_NO_DELTA_REASON = "no deltas from the chain feed (hidden outside market hours)";
+// "LEAPS not flagged" can only reach the page for a row it saw flagged (it never
+// asks for other rows): a quote blip on the server dropped the flag for one
+// request, so it is retried like a feed miss, never shown as a verdict.
+export const LEAP_NOT_FLAGGED_REASON = "LEAPS not flagged";
+export const LEAP_TRANSIENT_REASONS = new Set(["chain unavailable", "no chain", LEAP_NO_DELTA_REASON, LEAP_NOT_FLAGGED_REASON]);
 export const LEAP_RETRY_MS = 60_000; // first retry; doubles per repeat, capped
 export const LEAP_RETRY_MAX_MS = 10 * 60_000;
 
 export function leapTransient(payload) {
   if (!payload || typeof payload !== "object" || contractOf(payload)) return false;
   return typeof payload.reason === "string" && LEAP_TRANSIENT_REASONS.has(payload.reason.trim());
+}
+
+// The sentence under a transient answer (the cell's Retry tooltip, the drawer):
+// what the feed is doing, and that the page keeps asking on its own.
+export function leapTransientNote(payload) {
+  const reason = payload && typeof payload === "object" && typeof payload.reason === "string" ? payload.reason.trim() : "";
+  if (reason === LEAP_NO_DELTA_REASON) {
+    return "The chain feed is not sending deltas (Schwab hides them outside market hours); the page retries on its own.";
+  }
+  if (reason === LEAP_NOT_FLAGGED_REASON) {
+    return "The quote blinked and the row lost its LEAPS flag for one answer; the page retries on its own.";
+  }
+  return "The chain feed did not answer; the page retries on its own.";
 }
 
 // When a transient entry ({transient: true, at, tries}) is due for another read.

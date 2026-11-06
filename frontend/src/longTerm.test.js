@@ -8,7 +8,8 @@ import {
   formatCap, formatGrowth, buyZoneBar, columns, cardFields, drawerSections,
   reasonText, big5Dots, formatEtStamp, acceptsPayload, sortValue, etDate, previousWeekday, formatEps,
   formatPayback, formatExpiry, leapLine, leapSection, leapOrder,
-  leapTransient, leapRetryDue, LEAP_RETRY_MS, LEAP_RETRY_MAX_MS, LEAP_TRANSIENT_REASONS,
+  leapTransient, leapTransientNote, leapRetryDue, LEAP_RETRY_MS, LEAP_RETRY_MAX_MS, LEAP_TRANSIENT_REASONS,
+  LEAP_NO_DELTA_REASON,
 } from "./longTerm.js";
 
 // quoteTimeMs defaults to "just now": the guard also rejects quotes older than the previous weekday (ET).
@@ -362,15 +363,26 @@ describe("final review fixes", () => {
 });
 
 describe("LEAP to buy", () => {
+  // v2 (2026-11-06 15:20 ET): `contract` is the ENTRY-style pick (out of the money, delta
+  // just under 0.20, highest open interest); `deep` is the Rule #1 stock substitute on the
+  // same expiry. Numbers follow the Adobe check in the brief (price 240, $450 C / $200 C).
   const contract = {
-    symbol: "AAPL  280115C00200000", expiry: "2028-01-15", dte: 434, strike: 200, bid: 61.9, ask: 62.4, mid: 62.15,
-    delta: 0.75, openInterest: 1234, volume: 56, breakeven: 262.4, breakevenPct: 0.0933, intrinsic: 40,
-    extrinsic: 22.4, cost: 6240, wideSpread: false,
+    symbol: "ADBE  280115C00450000", expiry: "2028-01-15", dte: 434, strike: 450, bid: 8.7, ask: 8.9, mid: 8.8,
+    delta: 0.16, openInterest: 1687, volume: 56, breakeven: 458.9, breakevenPct: 0.9121, intrinsic: 0,
+    extrinsic: 8.9, cost: 890, wideSpread: false, thin: false, kind: "entry",
   };
+  const deep = {
+    symbol: "ADBE  280115C00200000", expiry: "2028-01-15", dte: 434, strike: 200, bid: 77.8, ask: 78.2, mid: 78,
+    delta: 0.75, openInterest: 20672, volume: 312, breakeven: 278.2, breakevenPct: 0.1592, intrinsic: 40,
+    extrinsic: 38.2, cost: 7820, wideSpread: false, thin: false, kind: "deep",
+  };
+  const NO_ENTRY = "no out-of-the-money call near 0.20 delta with a live quote";
+  const NO_DELTA = "no deltas from the chain feed (hidden outside market hours)";
   const payload = (over = {}) => ({
-    symbol: "AAPL", name: "Apple Inc", leaps: true, price: 240, leapsBelow: 300, contract, reason: "",
+    symbol: "ADBE", name: "Adobe Inc", leaps: true, price: 240, leapsBelow: 300, contract, deep, reason: "",
     expiries: ["2027-11-19", "2028-01-15"], fetchedAt: "2026-11-06T14:00:00Z", refreshedAt: "2026-11-06T03:12:00-05:00", ...over,
   });
+  const DEEP_LINE = "$200 call · delta 0.75 · ask $78.20 · breakeven $278 (+16%) · OI 20,672";
 
   test("formatExpiry: short, long, invalid", () => {
     assert.equal(formatExpiry("2028-01-15"), "Jan 2028");
@@ -384,17 +396,42 @@ describe("LEAP to buy", () => {
     assert.equal(formatExpiry(20280115), "—");
   });
 
-  test("leapLine: one short line for the contract", () => {
-    assert.equal(leapLine(payload()), "Jan 2028 $200 C · ask $62.40 · BE $262 (+9%)");
-    assert.equal(leapLine(payload({ contract: { ...contract, strike: 202.5, breakevenPct: -0.012, breakeven: 237.1 } })),
-      "Jan 2028 $202.50 C · ask $62.40 · BE $237 (−1%)");
+  test("leapLine: one short line for the ENTRY contract (the deep pick stays out of it)", () => {
+    assert.equal(leapLine(payload()), "Jan 2028 $450 C · ask $8.90 · BE $459 (+91%)");
+    assert.equal(leapLine(payload({ contract: { ...contract, strike: 452.5, breakevenPct: -0.012, breakeven: 237.1 } })),
+      "Jan 2028 $452.50 C · ask $8.90 · BE $237 (−1%)");
+    assert.equal(leapLine(payload({ deep: null })), "Jan 2028 $450 C · ask $8.90 · BE $459 (+91%)", "deep never changes the ENTRY line");
   });
 
-  test("leapLine: no contract says why, null payload is empty, missing numbers print the dash", () => {
-    assert.equal(leapLine(payload({ contract: null, reason: "no in-the-money call with a live quote" })),
+  test("leapLine: no ENTRY pick but a deep pick names both, shortly", () => {
+    assert.equal(leapLine(payload({ contract: null, reason: NO_ENTRY })),
+      `No ENTRY contract: ${NO_ENTRY} · deep Jan 2028 $200 C ask $78.20`);
+    assert.equal(leapLine(payload({ contract: null, reason: "" })), "No ENTRY contract: — · deep Jan 2028 $200 C ask $78.20");
+    const partial = leapLine(payload({ contract: null, reason: NO_ENTRY, deep: { strike: "200", ask: NaN } }));
+    assert.equal(partial, `No ENTRY contract: ${NO_ENTRY} · deep — — C ask —`);
+    assert.ok(!/NaN|undefined|null/.test(partial));
+    assert.equal(leapLine(payload({ contract: null, reason: NO_ENTRY, deep: "junk" })), `No contract: ${NO_ENTRY}`, "a non-object deep is no deep");
+  });
+
+  test("leapLine: the after-hours no-delta answer shows the reason and the deep fallback, never a price for the ENTRY", () => {
+    // Review 11-06 (finding 2): every greek is +/-999 after the close, so the server sends the
+    // no-delta reason and a deep call picked by 0.80 x price with no delta.
+    const line = leapLine(payload({ contract: null, reason: NO_DELTA, deep: { ...deep, delta: null } }));
+    assert.equal(line, `No ENTRY contract: ${NO_DELTA} · deep Jan 2028 $200 C ask $78.20`);
+    assert.ok(!/NaN|undefined|null/.test(line));
+    assert.deepEqual(leapSection(payload({ contract: null, reason: NO_DELTA, deep: { ...deep, delta: null } })), [
+      `No ENTRY contract: ${NO_DELTA}`,
+      "Deep call (stock substitute):",
+      "$200 call · delta — · ask $78.20 · breakeven $278 (+16%) · OI 20,672",
+    ]);
+  });
+
+  test("leapLine: no contract at all says why, null payload is empty, missing numbers print the dash", () => {
+    assert.equal(leapLine(payload({ contract: null, deep: null, reason: "no in-the-money call with a live quote" })),
       "No contract: no in-the-money call with a live quote");
-    assert.equal(leapLine(payload({ contract: null, reason: "" })), "No contract: —");
-    assert.equal(leapLine(payload({ leaps: false, contract: null, reason: "LEAPS not flagged" })), "No contract: LEAPS not flagged");
+    assert.equal(leapLine(payload({ contract: null, deep: null, reason: "" })), "No contract: —");
+    assert.equal(leapLine(payload({ leaps: false, contract: null, deep: null, reason: "LEAPS not flagged" })), "No contract: LEAPS not flagged");
+    assert.equal(leapLine(payload({ contract: null, reason: "chain unavailable", deep: undefined })), "No contract: chain unavailable", "v1 payload without a deep key");
     assert.equal(leapLine(null), "");
     assert.equal(leapLine(undefined), "");
     assert.equal(leapLine("junk"), "");
@@ -405,22 +442,42 @@ describe("LEAP to buy", () => {
     assert.equal(bad, "— — C · ask — · BE — (—)");
   });
 
-  test("leapSection: the drawer lines", () => {
+  test("leapSection: the ENTRY block, then the deep call on one line", () => {
     assert.deepEqual(leapSection(payload()), [
-      "Jan 15, 2028 (434 days) · $200 call · delta 0.75",
-      "Ask $62.40 · bid $61.90 · mid $62.15 · $6,240 per contract",
-      "Breakeven $262.40 · +9% from $240",
-      "In the money $40.00 · time value $22.40",
-      "Open interest 1,234 · volume 56",
+      "ENTRY-style · Jan 15, 2028 (434 days) · $450 call · delta 0.16 · OI 1,687",
+      "Ask $8.90 · bid $8.70 · mid $8.80 · $890 per contract",
+      "Breakeven $458.90 · +91% from $240",
+      "In the money $0.00 · time value $8.90",
+      "Open interest 1,687 · volume 56",
+      "Deep call (stock substitute):",
+      DEEP_LINE,
     ]);
   });
 
-  test("leapSection: a wide spread adds a warning line", () => {
-    const wide = payload({ contract: { ...contract, bid: 55, ask: 62.4, mid: 58.7, wideSpread: true } });
+  test("leapSection: no deep pick says so on one line; no ENTRY pick keeps the deep block", () => {
+    const none = leapSection(payload({ deep: null }));
+    assert.equal(none.length, 6);
+    assert.equal(none[5], "Deep call: none");
+    assert.ok(!none.some((l) => l.includes("stock substitute")));
+    assert.deepEqual(leapSection(payload({ deep: undefined })).slice(5), ["Deep call: none"], "v1 payload without a deep key");
+    assert.deepEqual(leapSection(payload({ contract: null, reason: NO_ENTRY })), [
+      `No ENTRY contract: ${NO_ENTRY}`,
+      "Deep call (stock substitute):",
+      DEEP_LINE,
+    ]);
+  });
+
+  test("leapSection: a wide spread adds a warning line to the ENTRY block, and a flag to the deep line", () => {
+    const wide = payload({ contract: { ...contract, bid: 7.9, ask: 8.9, mid: 8.4, wideSpread: true } });
     const lines = leapSection(wide);
-    assert.equal(lines.length, 6);
-    assert.equal(lines[5], "⚠ wide spread (ask 6.3% over mid)");
+    assert.equal(lines.length, 8);
+    assert.equal(lines[5], "⚠ wide spread (ask 6.0% over mid)");
+    assert.deepEqual(lines.slice(6), ["Deep call (stock substitute):", DEEP_LINE]);
     assert.equal(leapSection(payload({ contract: { ...contract, wideSpread: true, mid: null } }))[5], "⚠ wide spread");
+    const deepWide = leapSection(payload({ deep: { ...deep, wideSpread: true } }));
+    assert.equal(deepWide[6], `${DEEP_LINE} ⚠ wide spread`);
+    const deepBoth = leapSection(payload({ deep: { ...deep, wideSpread: true, thin: true, openInterest: 3 } }));
+    assert.equal(deepBoth[6], "$200 call · delta 0.75 · ask $78.20 · breakeven $278 (+16%) · OI 3 ⚠ thin ⚠ wide spread");
   });
 
   test("thin market: the line and the drawer warn, the contract stays", () => {
@@ -428,23 +485,29 @@ describe("LEAP to buy", () => {
     assert.ok(leapLine(thin).endsWith(" ⚠ thin"), leapLine(thin));
     assert.ok(!leapLine(payload()).includes("thin"));
     const lines = leapSection(thin);
-    assert.equal(lines[lines.length - 1], "⚠ thin market: open interest 1 — use a limit order near the mid, and expect a wide exit");
-    assert.equal(lines.length, 6);
+    assert.equal(lines[5], "⚠ thin market: open interest 1 — use a limit order near the mid, and expect a wide exit");
+    assert.equal(lines.length, 8);
+    assert.deepEqual(lines.slice(6), ["Deep call (stock substitute):", DEEP_LINE]);
     assert.ok(!leapSection(payload()).some((l) => l.includes("thin")));
+    const deepThin = leapSection(payload({ deep: { ...deep, openInterest: 12, thin: true } }));
+    assert.equal(deepThin[6], "$200 call · delta 0.75 · ask $78.20 · breakeven $278 (+16%) · OI 12 ⚠ thin");
   });
 
   test("leapSection: no contract, null payload and missing numbers never leak", () => {
-    assert.deepEqual(leapSection(payload({ contract: null, reason: "no expiry 12-25 months out" })), ["No contract: no expiry 12-25 months out"]);
-    assert.deepEqual(leapSection(payload({ contract: null })), ["No contract: —"]);
+    assert.deepEqual(leapSection(payload({ contract: null, deep: null, reason: "no expiry 3-12 months out" })), ["No contract: no expiry 3-12 months out"]);
+    assert.deepEqual(leapSection(payload({ contract: null, deep: null })), ["No contract: —"]);
     assert.deepEqual(leapSection(null), ["No contract: —"]);
     assert.deepEqual(leapSection({}), ["No contract: —"]);
-    const lines = leapSection(payload({ price: null, contract: { expiry: "2028-01-15", strike: 200 } }));
+    assert.deepEqual(leapSection({ contract: null, reason: "no chain", deep: "junk" }), ["No contract: no chain"]);
+    const lines = leapSection(payload({ price: null, contract: { expiry: "2028-01-15", strike: 450 }, deep: { strike: 200 } }));
     assert.deepEqual(lines, [
-      "Jan 15, 2028 (— days) · $200 call · delta —",
+      "ENTRY-style · Jan 15, 2028 (— days) · $450 call · delta — · OI —",
       "Ask — · bid — · mid — · — per contract",
       "Breakeven — · — from —",
       "In the money — · time value —",
       "Open interest — · volume —",
+      "Deep call (stock substitute):",
+      "$200 call · delta — · ask — · breakeven — (—) · OI —",
     ]);
     assert.ok(!/NaN|undefined|null/.test(lines.join("\n")));
   });
@@ -463,18 +526,40 @@ describe("LEAP to buy", () => {
   });
 
   test("leapTransient: only a chain-feed miss is retried, never a verdict on the row", () => {
-    assert.deepEqual([...LEAP_TRANSIENT_REASONS].sort(), ["chain unavailable", "no chain"]);
+    assert.equal(LEAP_NO_DELTA_REASON, NO_DELTA, "the backend's REASON_NO_DELTA, byte for byte");
+    assert.deepEqual([...LEAP_TRANSIENT_REASONS].sort(), ["LEAPS not flagged", "chain unavailable", "no chain", NO_DELTA]);
     assert.equal(leapTransient(payload({ contract: null, reason: "chain unavailable" })), true);
     assert.equal(leapTransient(payload({ contract: null, reason: "no chain" })), true);
+    // Review 11-06 (finding 2): hidden greeks after the close are a feed state, retried; the deep
+    // fallback riding along does not make the answer final.
+    assert.equal(leapTransient(payload({ contract: null, reason: NO_DELTA })), true);
+    assert.equal(leapTransient(payload({ contract: null, reason: NO_DELTA, deep: { ...deep, delta: null } })), true);
+    assert.equal(leapTransient(payload({ contract: null, reason: NO_ENTRY })), false, "no call in the band is a verdict");
     assert.equal(leapTransient(payload({ contract: null, reason: " chain unavailable " })), true);
     assert.equal(leapTransient(payload({ contract: null, reason: "no in-the-money call with a live quote" })), false);
-    assert.equal(leapTransient(payload({ contract: null, reason: "no expiry 12-25 months out" })), false);
-    assert.equal(leapTransient(payload({ contract: null, reason: "LEAPS not flagged" })), false);
+    assert.equal(leapTransient(payload({ contract: null, reason: "no expiry 3-12 months out" })), false);
+    // The page only asks for rows it saw flagged, so "not flagged" can only be a quote blip on the
+    // server (review 11-06): retried, never shown as a verdict under a LEAPS pill.
+    assert.equal(leapTransient(payload({ contract: null, reason: "LEAPS not flagged" })), true);
+    assert.equal(leapTransientNote(payload({ contract: null, reason: "LEAPS not flagged" })),
+      "The quote blinked and the row lost its LEAPS flag for one answer; the page retries on its own.");
     assert.equal(leapTransient(payload({ contract: null, reason: "" })), false);
     assert.equal(leapTransient(payload({ reason: "chain unavailable" })), false, "a contract is never transient");
     assert.equal(leapTransient(null), false);
     assert.equal(leapTransient("junk"), false);
     assert.equal(leapTransient({}), false);
+  });
+
+  test("leapTransientNote: names what the feed is doing and that the page retries", () => {
+    const noDelta = leapTransientNote(payload({ contract: null, reason: NO_DELTA }));
+    assert.equal(noDelta, "The chain feed is not sending deltas (Schwab hides them outside market hours); the page retries on its own.");
+    assert.equal(leapTransientNote(payload({ contract: null, reason: ` ${NO_DELTA} ` })), noDelta, "trimmed");
+    const silent = "The chain feed did not answer; the page retries on its own.";
+    assert.equal(leapTransientNote(payload({ contract: null, reason: "chain unavailable" })), silent);
+    assert.equal(leapTransientNote(payload({ contract: null, reason: "no chain" })), silent);
+    assert.equal(leapTransientNote(null), silent);
+    assert.equal(leapTransientNote({}), silent);
+    assert.equal(leapTransientNote("junk"), silent);
   });
 
   test("leapRetryDue: 1 min, then doubling to 10 min; loading and settled entries never", () => {

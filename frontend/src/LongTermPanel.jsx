@@ -33,8 +33,11 @@ import {
   leapSection,
   leapOrder,
   leapTransient,
+  leapTransientNote,
   leapRetryDue,
   LEAP_FETCH_CAP,
+  DEEP_HEADING,
+  DEEP_NONE,
 } from "./longTerm";
 
 const POLL_MS = 30000;
@@ -151,7 +154,7 @@ function LeapLine({ symbol, entry, onRetry, queued = true }) {
     text = (
       <>
         {leapLine(entry.payload)}{" "}
-        {link("Retry", "The chain feed did not answer; the page retries on its own")}
+        {link("Retry", leapTransientNote(entry.payload))}
       </>
     );
   } else text = leapLine(entry.payload);
@@ -223,6 +226,7 @@ function markClass(line) {
   if (line.startsWith("✗")) return "is-no";
   if (line.startsWith("n/a")) return "is-na";
   if (line.startsWith("⚠")) return "is-warn";
+  if (line === DEEP_HEADING || line === DEEP_NONE) return "is-sub"; // the deep-call heading in the LEAP section
   return "";
 }
 
@@ -265,7 +269,7 @@ function YearsTable({ detail }) {
 
 // "LEAP to buy": only for a LEAPS-flagged row; independent of the filings
 // detail so a slow EDGAR read never hides the contract (and the other way round).
-function LeapSection({ row, entry, onRetry }) {
+function LeapSection({ entry, onRetry }) {
   let body;
   if (!entry || entry.loading) body = <p className="long-term-dim">finding…</p>;
   else if (entry.error) {
@@ -280,7 +284,7 @@ function LeapSection({ row, entry, onRetry }) {
       <>
         <LineList lines={leapSection(entry.payload)} marks />
         <p className="long-term-dim">
-          The chain feed did not answer; the page retries on its own.{" "}
+          {leapTransientNote(entry.payload)}{" "}
           <button type="button" className="long-term-link" onClick={onRetry}>Retry now</button>
         </p>
       </>
@@ -291,7 +295,8 @@ function LeapSection({ row, entry, onRetry }) {
       <h4>LEAP to buy</h4>
       {body}
       <p className="long-term-note">
-        Shown because the price is under the LEAPS level {formatMoney(row.leapsBelow)}. The page picks the contract; the trade is yours.
+        ENTRY-style pick: the out-of-the-money call just under 0.20 delta with the most open interest, like the chain page&apos;s ENTRY.
+        The deep call is the Rule #1 stock substitute. The page picks; the trade is yours.
       </p>
     </section>
   );
@@ -314,7 +319,7 @@ function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, widt
           <X size={14} />
         </button>
       </header>
-      {row.leaps ? <LeapSection row={row} entry={leap} onRetry={onRetryLeap} /> : null}
+      {row.leaps ? <LeapSection entry={leap} onRetry={onRetryLeap} /> : null}
       {!entry || entry.loading ? (
         <p className="long-term-dim">Loading the filings…</p>
       ) : entry.error ? (
@@ -388,7 +393,8 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   const [openSym, setOpenSym] = useState(null);
   const [details, setDetails] = useState({});
   // LEAP to buy, keyed by symbol: { epoch, loading } | { epoch, payload } | { epoch, error }
-  // | { epoch, payload, transient: true, at, tries } (the chain feed did not answer; retried).
+  // | { epoch, payload, transient: true, at, tries } (the chain feed did not answer, or
+  // answered without deltas outside market hours; retried on its own).
   // An entry counts only for the MOS and filings refresh it was fetched under.
   const [leaps, setLeaps] = useState({});
   const [refreshMsg, setRefreshMsg] = useState("");
@@ -568,7 +574,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   // cap offer a "Find contract" link and are read when their drawer opens.
   const leapAuto = useMemo(() => new Set(leapOrder(guarded)), [guarded]);
   // A row needs a read when it has no entry for this epoch, or its last answer
-  // was transient ("chain unavailable" / "no chain") and the backoff has passed.
+  // was transient ("chain unavailable" / "no chain" / no deltas after hours) and the backoff has passed.
   const leapDue = useCallback((symbol) => {
     const e = leapEntry(symbol);
     return !e || leapRetryDue(e, clock);

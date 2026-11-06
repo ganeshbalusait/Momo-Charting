@@ -161,17 +161,28 @@ e2eTest("a row with no price time shows No price and never counts as BUY", async
 // The LEAPS row (AAPL) also reads /api/long-term/AAPL/leap; the WAIT and AVOID
 // rows never do. The fixture is the backend's payload shape, camelCase.
 
+// v2 (2026-11-06 15:20 ET): `contract` is the ENTRY-style pick (out of the money, delta
+// just under 0.20, the most open interest: his chain-page screenshot had delta 0.17,
+// OI 8,254); `deep` is the Rule #1 stock substitute on the same expiry.
 const CONTRACT = {
+  symbol: "AAPL  280121C00150000", expiry: "2028-01-21", dte: 441, strike: 150, bid: 3.1, ask: 3.2, mid: 3.15,
+  delta: 0.17, openInterest: 8254, volume: 212, breakeven: 153.2, breakevenPct: 0.532, intrinsic: 0, extrinsic: 3.2,
+  cost: 320, wideSpread: false, thin: false, kind: "entry",
+};
+const DEEP = {
   symbol: "AAPL  280121C00080000", expiry: "2028-01-21", dte: 441, strike: 80, bid: 31.9, ask: 32.4, mid: 32.15,
   delta: 0.76, openInterest: 1234, volume: 56, breakeven: 112.4, breakevenPct: 0.124, intrinsic: 20, extrinsic: 12.4,
-  cost: 3240, wideSpread: false,
+  cost: 3240, wideSpread: false, thin: false, kind: "deep",
 };
 const leap = (over = {}) => ({ json: {
-  symbol: "AAPL", name: "Apple Inc", leaps: true, price: 100, leapsBelow: 160, contract: CONTRACT, reason: "",
+  symbol: "AAPL", name: "Apple Inc", leaps: true, price: 100, leapsBelow: 160, contract: CONTRACT, deep: DEEP, reason: "",
   expiries: ["2027-11-19", "2028-01-21"], fetchedAt: "2026-11-06T14:00:00Z", refreshedAt: "2026-11-06T03:12:00-05:00", ...over,
 } });
 const leapReads = (answer = () => leap()) => ({ ...reads(), "GET /api/long-term/AAPL/leap": answer });
-const LINE = /Jan 2028 \$80 C · ask \$32\.40 · BE \$112 \(\+12%\)/;
+const LINE = /Jan 2028 \$150 C · ask \$3\.20 · BE \$153 \(\+53%\)/;
+const DEEP_LINE = /\$80 call · delta 0\.76 · ask \$32\.40 · breakeven \$112 \(\+12%\) · OI 1,234/;
+const NO_ENTRY = "no out-of-the-money call near 0.20 delta with a live quote";
+const NO_DELTA = "no deltas from the chain feed (hidden outside market hours)";
 const leapPaths = (app) => app.reads.filter((r) => /\/leap$/.test(r.path)).map((r) => r.path);
 const leapText = (p, sym, re) => p.waitForFunction(
   ([s, src]) => new RegExp(src).test(document.querySelector(`[data-testid='long-term-leap-${s}']`)?.textContent || ""),
@@ -192,12 +203,16 @@ e2eTest("the LEAPS row shows the contract to buy, the drawer explains it, and no
     await section.waitFor({ timeout: 10_000 });
     const text = await section.innerText();
     assert.match(text, /LEAP to buy/i); // innerText carries the CSS uppercase
-    assert.match(text, /Jan 21, 2028 \(441 days\) · \$80 call · delta 0\.76/);
-    assert.match(text, /Ask \$32\.40 · bid \$31\.90 · mid \$32\.15 · \$3,240 per contract/);
-    assert.match(text, /Breakeven \$112\.40 · \+12% from \$100/);
-    assert.match(text, /In the money \$20\.00 · time value \$12\.40/);
-    assert.match(text, /Open interest 1,234 · volume 56/);
-    assert.match(text, /under the LEAPS level \$160\.00/);
+    assert.match(text, /ENTRY-style · Jan 21, 2028 \(441 days\) · \$150 call · delta 0\.17 · OI 8,254/);
+    assert.match(text, /Ask \$3\.20 · bid \$3\.10 · mid \$3\.15 · \$320 per contract/);
+    assert.match(text, /Breakeven \$153\.20 · \+53% from \$100/);
+    assert.match(text, /In the money \$0\.00 · time value \$3\.20/);
+    assert.match(text, /Open interest 8,254 · volume 212/);
+    assert.match(text, /Deep call \(stock substitute\):/);
+    assert.match(text, DEEP_LINE);
+    assert.ok(text.indexOf("ENTRY-style ·") < text.indexOf("Deep call ("), "the ENTRY block comes first, the deep call after it");
+    assert.match(text, /ENTRY-style pick: the out-of-the-money call just under 0\.20 delta with the most open interest/);
+    assert.match(text, /The deep call is the Rule #1 stock substitute\. The page picks; the trade is yours\./);
     assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap"], "only the flagged row reads the chain, once");
     assert.ok(app.reads.some((r) => r.path === "/api/long-term/AAPL/leap" && /mos=50/.test(r.search)));
     assert.deepEqual(app.pageErrors, []);
@@ -216,16 +231,43 @@ e2eTest("on a phone the LEAPS card carries the contract line and nothing scrolls
     await card.click();
     const section = p.getByTestId("long-term-drawer-leap");
     await section.waitFor({ timeout: 10_000 });
-    assert.match(await section.innerText(), /Breakeven \$112\.40/);
+    const text = await section.innerText();
+    assert.match(text, /Breakeven \$153\.20/);
+    assert.match(text, /Deep call \(stock substitute\):/);
+    assert.match(text, DEEP_LINE);
     assert.equal(await overflowsSideways(p), false);
     assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap"]);
     assert.deepEqual(app.pageErrors, []);
   });
 });
 
+e2eTest("no ENTRY pick but a deep pick: the line says so and names the deep call, the drawer keeps the deep block", async () => {
+  await withApp({ view: VIEW, fakeReads: leapReads(() => leap({ contract: null, reason: NO_ENTRY })) }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await leapText(p, "AAPL", /No ENTRY contract/);
+    const line = (await p.getByTestId("long-term-leap-AAPL").innerText()).trim();
+    assert.equal(line, `No ENTRY contract: ${NO_ENTRY} · deep Jan 2028 $80 C ask $32.40`);
+    assert.ok(!/\$150|\$3\.20|BE/.test(line), "no ENTRY numbers without an ENTRY pick");
+    assert.equal(await p.getByTestId("long-term-leap-AAPL").getByText("Retry").count(), 0, "a verdict, not a feed miss: no Retry");
+    await p.getByTestId("long-term-row-AAPL").click();
+    const section = p.getByTestId("long-term-drawer-leap");
+    await section.waitFor({ timeout: 10_000 });
+    const lines = (await section.locator(".long-term-lines").innerText()).trim().split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    assert.deepEqual(lines, [
+      `No ENTRY contract: ${NO_ENTRY}`,
+      "Deep call (stock substitute):",
+      "$80 call · delta 0.76 · ask $32.40 · breakeven $112 (+12%) · OI 1,234",
+    ]);
+    assert.ok(!/ENTRY-style ·|Breakeven \$/.test(lines.join("\n")), "no ENTRY block without an ENTRY pick");
+    assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap"], "read once; NVDA (WAIT) and HD (AVOID) never read /leap");
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
 e2eTest("fail-safe: a leap answer with no contract says why, never a price, and the WAIT row is never asked", async () => {
   const reason = "no in-the-money call with a live quote";
-  await withApp({ view: VIEW, fakeReads: leapReads(() => leap({ contract: null, reason })) }, async (app) => {
+  await withApp({ view: VIEW, fakeReads: leapReads(() => leap({ contract: null, deep: null, reason })) }, async (app) => {
     const p = app.page;
     await ready(p);
     await leapText(p, "AAPL", /No contract/);
@@ -246,7 +288,7 @@ e2eTest("a 'chain unavailable' answer is not final: it says why, keeps a Retry, 
   // Schwab blocked at the first read (the server answers 200 + contract null and does not
   // cache it); the page must ask again instead of holding the miss until the nightly refresh.
   let calls = 0;
-  const answer = () => (calls++ === 0 ? leap({ contract: null, reason: "chain unavailable" }) : leap());
+  const answer = () => (calls++ === 0 ? leap({ contract: null, deep: null, reason: "chain unavailable" }) : leap());
   await withApp({ view: VIEW, fakeReads: leapReads(answer) }, async (app) => {
     const p = app.page;
     await ready(p);
@@ -263,15 +305,49 @@ e2eTest("a 'chain unavailable' answer is not final: it says why, keeps a Retry, 
     await leapText(p, "AAPL", /Jan 2028/);
     assert.match(await line.innerText(), LINE);
     assert.equal(await line.getByText("Retry").count(), 0, "a contract carries no Retry");
-    assert.match(await section.innerText(), /Breakeven \$112\.40/);
+    assert.match(await section.innerText(), /Breakeven \$153\.20/);
+    assert.match(await section.innerText(), DEEP_LINE);
+    assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap", "/api/long-term/AAPL/leap"]);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("after the close the chain has no deltas: the row keeps the deep call and a Retry, the drawer says the feed hides deltas, and the retry brings the ENTRY pick", async () => {
+  // Review 11-06 (finding 2): Schwab stamps +/-999 on every greek after 16:00 ET, so the server
+  // answers 200 with contract null, the no-delta reason and the deep 0.80 x price fallback (no
+  // delta). The page must treat that as passing, not as "nothing to buy", and ask again.
+  let calls = 0;
+  const hidden = () => leap({ contract: null, deep: { ...DEEP, delta: null }, reason: NO_DELTA });
+  const answer = () => (calls++ === 0 ? hidden() : leap());
+  await withApp({ view: VIEW, fakeReads: leapReads(answer) }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await leapText(p, "AAPL", /No ENTRY contract: no deltas from the chain feed/);
+    const line = p.getByTestId("long-term-leap-AAPL");
+    assert.match(await line.innerText(), /deep Jan 2028 \$80 C ask \$32\.40/, "the deep fallback is still shown");
+    assert.equal(await line.getByText("Retry").count(), 1, "hidden deltas are a transient miss: Retry");
+    await p.getByTestId("long-term-row-AAPL").click();
+    const section = p.getByTestId("long-term-drawer-leap");
+    await section.waitFor({ timeout: 10_000 });
+    const drawer = await section.innerText();
+    assert.match(drawer, /No ENTRY contract: no deltas from the chain feed \(hidden outside market hours\)/);
+    assert.match(drawer, /\$80 call · delta — · ask \$32\.40/, "the deep line prints the dash for the missing delta");
+    assert.match(drawer, /not sending deltas \(Schwab hides them outside market hours\); the page retries on its own/);
+    assert.ok(!/No ENTRY contract: no out-of-the-money call/.test(drawer), "never the 'no such call' verdict");
+    await line.getByText("Retry").click();
+    await leapText(p, "AAPL", /Jan 2028 \$150/);
+    assert.match(await line.innerText(), LINE);
+    assert.equal(await line.getByText("Retry").count(), 0, "a contract carries no Retry");
+    assert.match(await section.innerText(), /Breakeven \$153\.20/);
+    assert.match(await section.innerText(), DEEP_LINE);
     assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap", "/api/long-term/AAPL/leap"]);
     assert.deepEqual(app.pageErrors, []);
   });
 });
 
 e2eTest("a final 'no contract' verdict carries no Retry and is read once", async () => {
-  const reason = "no expiry 12-25 months out";
-  await withApp({ view: VIEW, fakeReads: leapReads(() => leap({ contract: null, reason })) }, async (app) => {
+  const reason = "no expiry 3-12 months out";
+  await withApp({ view: VIEW, fakeReads: leapReads(() => leap({ contract: null, deep: null, reason })) }, async (app) => {
     const p = app.page;
     await ready(p);
     await leapText(p, "AAPL", /No contract/);
