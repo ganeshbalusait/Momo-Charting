@@ -1,0 +1,10 @@
+{
+ "name": "ASML HOLDING NV",
+ "sic": "3559",
+ "sicDescription": "Special Industry Machinery, NEC",
+ "fiscalYearEnd": "1231",
+ "tickers": [
+  "ASML",
+  "ASMLF"
+ ]
+}

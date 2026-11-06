@@ -28,6 +28,7 @@ import {
   GraduationCap,
   HelpCircle,
   KeyRound,
+  Landmark,
   LayoutDashboard,
   LayoutGrid,
   LayoutPanelTop,
@@ -66,6 +67,7 @@ import AgxMark from "./AgxMark";
 import MomxScannerPanel from "./MomxScannerPanel.jsx";
 import BotPanel from "./BotPanel.jsx";
 import SectorHeatmapPanel from "./SectorHeatmapPanel.jsx";
+import LongTermPanel from "./LongTermPanel.jsx";
 import { CHART_LINK_CHANNEL, CHART_LINK_EVENT, TOS_LINK_GROUPS } from "./tosLinkGroups.js";
 import MomoAlertWatcher from "./MomoAlertWatcher.jsx";
 import { gradeUnderwaterNow, gradeWithinCandle, isBullishCallLabel, isBearishPutLabel } from "./momxGrade.js";
@@ -1180,6 +1182,9 @@ const optionNavItems = [
   // style sector heatmap as its own page, so the phone reaches it from the
   // More sheet. It is also a panel in the option chain's + menu on desktop.
   { label: "Sectors", icon: LayoutGrid },
+  // Long Term (2026-11-06, "build in our app in left side panel 'long term'"):
+  // the Buffett / Rule #1 value screen. Phone reaches it from the More sheet.
+  { label: "Long Term", icon: Landmark },
   { label: "News Feed", icon: Newspaper },
   { label: "Earnings Calendar", icon: CalendarDays },
   { label: "Mag7 Scanner", displayLabel: "Mag7 Watchlist", icon: Trophy },
@@ -1201,6 +1206,7 @@ function viewDescription(view) {
   if (view === "Paper Trading") return "Stock paper positions, automation, and risk controls";
   if (view === "Watchlist") return "Your saved tickers, shared by the scanners and the chart rails";
   if (view === "Sectors") return "Sector heatmap: each sector's top stocks, sized by market cap, colored by today's move";
+  if (view === "Long Term") return "Rule #1 / Buffett screen: ten years of filings, sticker price, safety price, BUY / WAIT / AVOID and a LEAPS flag for every ticker you follow";
   if (view === "News Feed") return "Headlines and catalysts across MAG7 and your watchlist";
   if (view === "Earnings Calendar") return "Upcoming earnings releases for your saved watchlist";
   if (view === "Mag7 Scanner") return "The dense MAG7 board: signals, flow, and review rows per ticker";
@@ -31308,6 +31314,15 @@ function TradingWorkspace({ authUser, onLogout }) {
                 setMobileChartSection("chart");
                 openChartSignalChart(symbol, "5m", "sectors");
               }}
+            />
+          </section>
+        )}
+
+        {activeView === "Long Term" && (
+          <section className="long-term-view" data-testid="long-term-view">
+            <LongTermPanel
+              isAdmin={Boolean(authUser?.isAdmin)}
+              onChart={(symbol) => { setMobileChartSection("chart"); openChartSignalChart(symbol, "D", "long-term"); }}
             />
           </section>
         )}

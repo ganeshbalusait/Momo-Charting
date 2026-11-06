@@ -1,0 +1,12 @@
+{
+ "name": "Alphabet Inc.",
+ "sic": "7370",
+ "sicDescription": "Services-Computer Programming, Data Processing, Etc.",
+ "fiscalYearEnd": "1231",
+ "tickers": [
+  "GOOGL",
+  "GOOG",
+  "GOOGM",
+  "GOOGN"
+ ]
+}

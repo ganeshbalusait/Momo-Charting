@@ -76,6 +76,10 @@ _os.environ["AGX_MOMX_EMA_LISTS"] = "0"
 # the trader's real artifacts/momx_data_source.json (the suite would behave
 # differently once he unticks TOS) or write it (it would flip the live scanner).
 _os.environ["AGX_MOMX_DATA_SOURCE_PATH"] = str(_SCRATCH_DIR / "momx_data_source.json")
+# Long Term screen (long_term/service.py): no nightly EDGAR/Finnhub refresher in tests,
+# and its store lives in the scratch folder, never artifacts/long_term.
+_os.environ["AGX_LONG_TERM_REFRESH"] = "0"
+_os.environ["AGX_LONG_TERM_DIR"] = str(_SCRATCH_DIR / "long_term")
 
 
 # The MomX volume correction reads Schwab. Feed tests drive the tape with a

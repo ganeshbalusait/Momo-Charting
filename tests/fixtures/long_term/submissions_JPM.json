@@ -1,0 +1,17 @@
+{
+ "name": "JPMORGAN CHASE & CO",
+ "sic": "6021",
+ "sicDescription": "National Commercial Banks",
+ "fiscalYearEnd": "1231",
+ "tickers": [
+  "JPM",
+  "JPM-PC",
+  "AMJB",
+  "JPM-PD",
+  "JPM-PJ",
+  "JPM-PK",
+  "JPM-PL",
+  "JPM-PM",
+  "VYLD"
+ ]
+}

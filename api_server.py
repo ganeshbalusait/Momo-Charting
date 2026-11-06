@@ -23569,6 +23569,37 @@ class ApiHandler(BaseHTTPRequestHandler):
                         pass
                 self._send_json(HTTPStatus.OK, strip)
                 return
+            if parsed.path == "/api/long-term" or parsed.path.startswith("/api/long-term/"):
+                # Long Term (Rule #1 / Buffett) screen. Imported lazily so a
+                # broken long_term package can never take the server down.
+                user = self._require_session_user()
+                if user is None:
+                    return
+                raw_mos = str(parse_qs(parsed.query).get("mos", ["50"])[0]).strip()
+                if raw_mos not in ("50", "30"):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "mos must be 50 or 30"})
+                    return
+                mos = int(raw_mos)
+                try:
+                    from long_term.service import service_instance
+                    service = service_instance()
+                    if parsed.path == "/api/long-term":
+                        # in-memory symbol list (no disk per request); quotes cached 45 s
+                        quotes = service.quotes_for(service.known_symbols())
+                        payload = service.page_payload(mos, quotes)
+                    else:
+                        from long_term.symbols import canonical as _lt_canonical
+                        symbol = _lt_canonical(parsed.path[len("/api/long-term/"):])
+                        quote = service.quotes_for([symbol]).get(symbol) if symbol else None
+                        payload = service.detail_payload(symbol, mos, quote) if symbol else None
+                except Exception:  # noqa: BLE001 - the screen says "unavailable", the server stays up
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "long term service unavailable"})
+                    return
+                if payload is None:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown ticker"})
+                    return
+                self._send_json(HTTPStatus.OK, payload)
+                return
             if parsed.path == "/api/watchlist-quotes":
                 query = parse_qs(parsed.query)
                 raw_symbols = str(query.get("symbols", [""])[0])
@@ -24848,6 +24879,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                     symbols = [item.strip().upper() for item in symbols.replace("\n", ",").split(",") if item.strip()]
                 self._send_json(HTTPStatus.OK, STATE.replace_mag7_scanner_watchlist(symbols))
                 return
+            if parsed.path == "/api/long-term/refresh":
+                user = self._require_admin_user()
+                if user is None:
+                    return
+                try:
+                    from long_term.service import service_instance
+                    result = service_instance().request_refresh(now=datetime.now(ZoneInfo(EASTERN_TZ)))
+                except Exception:  # noqa: BLE001 - a broken long_term package never takes the server down
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "long term service unavailable"})
+                    return
+                self._send_json(HTTPStatus.OK, result)
+                return
             if parsed.path == "/api/watchlist/add":
                 symbol = str(body.get("symbol", body.get("ticker", ""))).strip().upper()
                 if not symbol:
@@ -25282,6 +25325,13 @@ def main() -> None:
         _news_auto_start()
     except Exception:  # noqa: BLE001
         pass
+    # Long Term screen: nightly SEC/Finnhub refresh (never in market hours).
+    if os.getenv("AGX_LONG_TERM_REFRESH", "1") != "0":
+        try:
+            from long_term.service import service_instance as _long_term_service
+            _long_term_service().start_refresher()
+        except Exception as exc:  # noqa: BLE001 - optional starter never blocks startup
+            print(f"WARNING: Long Term refresher did not start ({type(exc).__name__}: {exc})")
     # ...and the live feeds push new stories in as they are published.
     try:
         _news_live_start()

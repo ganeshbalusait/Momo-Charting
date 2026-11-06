@@ -2,6 +2,20 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-06T05:10:00-05:00",
+      "heading": "New: Long Term page (Buffett / Rule #1 screen)",
+      "items": [
+        "A new Long Term page in the left panel scores every ticker from your watchlist and lists with the Buffett / Rule #1 method - no typing needed.",
+        "The numbers come from ten years of SEC filings plus Finnhub, refreshed every night.",
+        "BUY means a Rule #1 business trading at or under its Safety Buy price. WAIT is a good business whose price is above the buy level, or that is still too young or whose earnings are falling. AVOID is a business that fails the Rule #1 checks. The LEAPS flag means the price is under the level where long-dated calls are worth a look.",
+        "WAIT rows show the price to wait for: \"BUY ≤ $X · LEAPS ≤ $Y\".",
+        "Buys are rare by design: the default safety margin is 50%, and a 30% switch at the top loosens it.",
+        "A missing or stale price shows \"No price\" and is never marked BUY.",
+        "ETFs and names that have no SEC filings are listed at the bottom as not scored.",
+        "Tap or click a row for the why: the checklist, the ten-year table and the valuation in plain words."
+      ]
+    },
+    {
       "at": "2026-11-06T00:45:00-05:00",
       "heading": "Scanner: 21 / 50 EMA Touch lists use your Momox_2NEW! volume and close filters",
       "items": [
