@@ -37,8 +37,27 @@ test('three mixed bullish cells must each rise vs previous same-timeframe values
   const r=attach(tracker,row([1.1,1.2,1.3]),T+15000);
   assert.equal(scannerConfirmation(r,T+15000).level,3);
   assert.deepEqual(scannerConfirmation(r,T+15000).increasing,['5m','15m','30m']);
-  // Across-column ascending values alone do not establish a time increase.
-  assert.equal(scannerConfirmation(attach(tracker,row([1.1,1.2,1.3]),T+30000),T+30000).level,0);
+  // His "Last change" rule (2026-11-06): the next scan repeating the same
+  // numbers is not a new reading, so the rise vs 1/1/1 still stands...
+  assert.equal(scannerConfirmation(attach(tracker,row([1.1,1.2,1.3]),T+30000),T+30000).level,3);
+  // ...until a number actually falls.
+  assert.equal(scannerConfirmation(attach(tracker,row([1.0,1.2,1.3]),T+45000),T+45000).level,0);
+});
+
+test('repeated scans of the same bar keep RVOL rising (live 2026-11-06: 90% of scans repeat the number)',()=>{
+  const t=createRvolObservationTracker();
+  t.observe(row([1,1,1]),T,'live');
+  for (let i=1;i<=4;i++) {
+    const r=attach(t,row([1.4,1.4,1.4]),T+i*80000);
+    assert.deepEqual(scannerConfirmation(r,T+i*80000).increasing,['5m','15m','30m'],`scan ${i}`);
+  }
+  // A new bar that rises again on 5m only: 15m/30m still hold their last rise.
+  const up=attach(t,row([1.6,1.4,1.4]),T+400000);
+  assert.deepEqual(scannerConfirmation(up,T+400000).increasing,['5m','15m','30m']);
+  // One timeframe falling drops it; two rising left is below the 3 needed.
+  const down=attach(t,row([1.6,1.2,1.4]),T+480000);
+  assert.deepEqual(scannerConfirmation(down,T+480000).increasing,['5m','30m']);
+  assert.equal(scannerConfirmation(down,T+480000).level,0);
 });
 
 test('equal/decreasing values and fewer than three rising cells remove the level',()=>{
@@ -62,7 +81,9 @@ test('repeated IDs and renders never become a new previous observation',()=>{
   // A corrected same publication compares to 1, not the earlier correction 2.
   assert.equal(scannerConfirmation(attach(t,row([1.5,1.5,1.5]),T+15000),T+15000).level,3);
   assert.equal(t.observe(row([8,8,8]),T-15000,'live'),null);
-  assert.equal(scannerConfirmation(attach(t,row([1.5,1.5,1.5]),T+30000),T+30000).level,0);
+  // A later scan with the same 1.5s is a repeat, so it still compares with 1.
+  assert.equal(scannerConfirmation(attach(t,row([1.5,1.5,1.5]),T+30000),T+30000).level,3);
+  assert.equal(scannerConfirmation(attach(t,row([1.4,1.4,1.4]),T+45000),T+45000).level,0);
 });
 
 test('ticker, timeframe, list/direction scopes and sessions remain isolated',()=>{

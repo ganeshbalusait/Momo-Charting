@@ -5,6 +5,7 @@ Every feature, with its unit, integration and end-to-end test files (see the
 
 | Feature | Unit | Integration | End to end |
 |---|---|---|---|
+| Scanner + BOT: Confirm RVOL rising = vs each timeframe's last DIFFERENT number (repeat scans hold the level) | `frontend/src/scannerConfirmation.test.js` | `tests/test_momx_bot_levels.py` (real Node level worker) | `tests/e2e/scanner-confirm-levels.e2e.test.mjs` |
 | Scanner (Mag7 only): BULL ↑ n ↓n counts inside the BULL/BEAR button | `frontend/src/momxDirectionCounts.test.js` | `tests/test_momx_mag7_side_counts_api.py` | `tests/e2e/scanner-mag7-side-counts.e2e.test.mjs`, `tests/e2e/scanner-board-bull-bear.e2e.test.mjs` |
 | Scanner + BOT: SPY/QQQ fire MX A+, Market turn, SOLO, MomoX A+, chart arrows and GO/OPT like a stock (other ETFs stay out) | `tests/test_momx_spy_qqq_rules.py`, `tests/test_momx_chart_signals.py`, `frontend/src/momxEtfRules.test.js` | `tests/test_momx_spy_qqq_rules_api.py` | `tests/e2e/scanner-spy-qqq-setup-tags.e2e.test.mjs` |
 | BOT: bear Confirm L1/L2/L3 puts; Chart squeeze / Warning rules; fair-share AI review | `tests/test_momx_bot_levels.py`, `tests/test_momx_setup_rules_chartsqz_warn.py`, `tests/test_momx_review_fair_share.py`, `frontend/src/scannerConfirmation.test.js` | `tests/test_momx_bot_levels.py` (real Node level worker) | `tests/e2e/scanner-confirm-levels.e2e.test.mjs` |

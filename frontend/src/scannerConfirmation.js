@@ -43,8 +43,14 @@ export function createRvolObservationTracker({ maxTickers = 3000 } = {}) {
       let before = {};
       if (previous?.day === day) {
         before = { ...previous.before };
+        // His choice 2026-11-06 ("Last change"): RVOL only moves when a bar
+        // closes but the scanner republishes every ~80 s, so a repeated number
+        // is not a new reading. Each timeframe keeps comparing with its last
+        // DIFFERENT value; it stays rising until the number actually falls.
         if (at > previous.at) {
-          for (const tf of FILTER_RVOL_TIMEFRAMES) if (valid(previous.current[tf])) before[tf] = previous.current[tf];
+          for (const tf of FILTER_RVOL_TIMEFRAMES) {
+            if (valid(previous.current[tf]) && previous.current[tf] !== current[tf]) before[tf] = previous.current[tf];
+          }
         }
       }
       const increasing = FILTER_RVOL_TIMEFRAMES.filter(tf => valid(current[tf]) && valid(before[tf]) && current[tf] > before[tf]);

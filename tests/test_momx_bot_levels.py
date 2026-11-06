@@ -31,7 +31,10 @@ def test_exact_worker_warmup_duplicates_equal_values_isolation_and_optional_mom(
         assert engine.contexts['X']['highestLevel'] == 3
         assert result['momMandatory'] is False and not any(t['key']=='tagMomStrong' for t in result['setupTypes'])
         assert call(2,15)['X']['highestLevel']==3
-        assert call(2,30)=={}
+        # His "Last change" rule (2026-11-06): a later scan repeating the same
+        # RVOL is not a new reading, so the level holds until a number falls.
+        assert call(2,30)['X']['highestLevel']==3
+        assert call(1.5,40)=={}
         assert engine.contexts['X']['highestLevel'] == 0
         assert call(3,45,'Other')=={}
     finally:engine.close()
