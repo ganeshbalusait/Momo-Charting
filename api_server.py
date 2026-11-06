@@ -23283,10 +23283,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                     _rr_days = 10
                 self._send_json(HTTPStatus.OK, _momx_rule_record(_rr_days))
                 return
-            if parsed.path == "/api/momx-scanner/bot":
-                # Served HERE from the bot's day files (2026-10-08), not proxied:
-                # the worker spends ~60% of its time rebuilding boards at IDLE
-                # priority, and a request thread there got ~1% - the Bot page
             if parsed.path == "/api/momx-scanner/bot-truth":
                 # Truth check (2026-11-04): the BOT's virtual mid trades vs the
                 # real Alpaca paper orders on the same signals. Admin only, like
@@ -23301,6 +23297,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                     _truth_days = 30
                 self._send_json(HTTPStatus.OK, _momx_bot_truth(_truth_days))
                 return
+            if parsed.path == "/api/momx-scanner/bot":
+                # Served HERE from the bot's day files (2026-10-08), not proxied:
+                # the worker spends ~60% of its time rebuilding boards at IDLE
+                # priority, and a request thread there got ~1% - the Bot page
                 # timed out after 20 s and showed zeros (10-08 23:14 ET, the
                 # worker took 100-120 s). Read-only files; no board work here.
                 _bot_user = self._session_user()
@@ -23985,9 +23985,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # also why POST /rebuild 404'd through the browser while
                 # working against :3010 directly (verify agent, 2026-08-30).
                 if parsed.path in ("/api/momx-scanner/data-source", "/api/momx-scanner/paper-experiment-decision"):
-                    # Also the Paper 5 rule Approve / Reject (2026-11-05) - admin only.
                     # The "TOS" checkbox switches the scanner's data source for
                     # EVERY viewer (2026-09-30) - admin only, like preflight.
+                    # Paper 5 rule Approve / Reject (2026-11-05) - admin only.
                     # The worker re-checks the forwarded X-AGX-User too.
                     if self._require_admin_user() is None:
                         return
@@ -25176,6 +25176,26 @@ def _momx_rule_record(days: int) -> dict:
     return payload
 
 
+_MOMX_BOT_TRUTH: dict = {}
+_MOMX_BOT_TRUTH_LOCK = threading.Lock()
+
+
+def _momx_bot_truth(days: int) -> dict:
+    """BOT vs real Alpaca paper fills (momx/truth_check.py), cached 60 s.
+    Read-only: the saved paper-mirror and BOT day files, never the broker."""
+    with _MOMX_BOT_TRUTH_LOCK:
+        hit = _MOMX_BOT_TRUTH.get(days)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+    base = Path(override) if override else Path(ARTIFACTS_DIR)
+    from momx import truth_check
+    payload = truth_check.build(base, days)
+    with _MOMX_BOT_TRUTH_LOCK:
+        _MOMX_BOT_TRUTH[days] = (time.time(), payload)
+    return payload
+
+
 def _momx_bot_payload(days: int) -> dict:
     from momx import option_track as ot
 
@@ -25200,26 +25220,6 @@ def _momx_bot_version(days: int) -> tuple:
     and the news files trade_news.annotate stamps from. Same tuple = same bytes.
     (day files, news files) - the caller lets the news half lag a few minutes."""
     from momx import option_track as ot, trade_news
-
-_MOMX_BOT_TRUTH: dict = {}
-_MOMX_BOT_TRUTH_LOCK = threading.Lock()
-
-
-def _momx_bot_truth(days: int) -> dict:
-    """BOT vs real Alpaca paper fills (momx/truth_check.py), cached 60 s.
-    Read-only: the saved paper-mirror and BOT day files, never the broker."""
-    with _MOMX_BOT_TRUTH_LOCK:
-        hit = _MOMX_BOT_TRUTH.get(days)
-    if hit and time.time() - hit[0] < 60:
-        return hit[1]
-    override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
-    base = Path(override) if override else Path(ARTIFACTS_DIR)
-    from momx import truth_check
-    payload = truth_check.build(base, days)
-    with _MOMX_BOT_TRUTH_LOCK:
-        _MOMX_BOT_TRUTH[days] = (time.time(), payload)
-    return payload
-
 
     override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
     base = Path(override) if override else Path(ARTIFACTS_DIR)

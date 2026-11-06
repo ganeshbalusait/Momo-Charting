@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-06T06:15:00-05:00",
+      "heading": "Fix: the saved copy of the app server could not start",
+      "items": [
+        "Nothing changes on screen today: the running app already had the fix.",
+        "The saved copy of the server had the BOT and Truth check pages tangled together, so a fresh install or restore would have failed to start the app. It is straightened out and a test now checks the saved copy every time."
+      ]
+    },
+    {
       "at": "2026-11-06T05:10:00-05:00",
       "heading": "New: Long Term page (Buffett / Rule #1 screen)",
       "items": [
