@@ -198,6 +198,36 @@ describe("drawerSections", () => {
     assert.deepEqual(s[3].lines, ["✓ Shares — match", "✗ Cash — off"]);
     assert.deepEqual(s[4].lines, ["SEC: 10-K"]);
   });
+  test("checklist: the server's bare numbers read the way the threshold does", () => {
+    const checks = [
+      { key: "roic_now", label: "ROIC now", value: 0.44065335753176044, threshold: "≥ 15%", passed: true, detail: "" },
+      { key: "roic_consistency", label: "ROIC consistency", value: 0.8, threshold: "≥ 10% in 80% of years", passed: true, detail: "" },
+      { key: "sales_growth", label: "Sales growth", value: 0.16528715482540224, threshold: "≥ 10%/yr", passed: true, detail: "" },
+      { key: "fcf_growth", label: "FCF growth", value: 0.0781, threshold: "≥ 10%/yr", passed: false, detail: "" },
+      { key: "debt", label: "Debt payable", value: 0.44996223564954685, threshold: "debt ≤ 3× FCF, or no debt", passed: true, detail: "" },
+      { key: "earning", label: "Earning money now", value: 17.9203, threshold: "EPS TTM > 0 and FCF TTM > 0", passed: true, detail: "" },
+      { key: "history", label: "History and freshness", value: 10.0, threshold: "≥ 5 complete years, not stale", passed: true, detail: "" },
+      { key: "eps_not_falling", label: "Earnings not falling", value: 1.0732068104372405, threshold: "EPS TTM ≥ 0.8 × last FY EPS", passed: true, detail: "" },
+      { key: "sources", label: "Sources agree", value: null, threshold: "EDGAR and Finnhub agree", passed: null, detail: "ROIC 44% vs Finnhub 41% ok" },
+    ];
+    assert.deepEqual(drawerSections({ unit: "USD", checks }).map((x) => x.lines)[0], [
+      "✓ ROIC now 44% ≥ 15%",
+      "✓ ROIC consistency 80% ≥ 10% in 80% of years",
+      "✓ Sales growth 17%/yr ≥ 10%/yr",
+      "✗ FCF growth 8%/yr ≥ 10%/yr",
+      "✓ Debt payable 0.4× FCF debt ≤ 3× FCF, or no debt",
+      "✓ Earning money now EPS $17.92 EPS TTM > 0 and FCF TTM > 0",
+      "✓ History and freshness 10 years ≥ 5 complete years, not stale",
+      "✓ Earnings not falling 1.07× last FY EPS TTM ≥ 0.8 × last FY EPS",
+      "n/a Sources agree — ROIC 44% vs Finnhub 41% ok",
+    ]);
+    // a foreign filer's EPS keeps its currency; an unknown numeric key prints as-is
+    const s = drawerSections({ unit: "TWD", checks: [
+      { key: "earning", label: "Earning money now", value: 45.25, threshold: "> 0", passed: true, detail: "" },
+      { key: "other", label: "Other", value: 2.5, threshold: "?", passed: true, detail: "" },
+    ] });
+    assert.deepEqual(s[0].lines, ["✓ Earning money now EPS TWD 45.25 > 0", "✓ Other 2.5 ?"]);
+  });
   test("missing parts never print undefined", () => {
     const s = drawerSections({ checks: "nope", crossChecks: [{ label: "A", ok: true }], sources: [{ label: "S" }, { value: "v" }] });
     assert.deepEqual(s[0].lines, []);

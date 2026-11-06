@@ -290,11 +290,37 @@ export function drawerSections(detail) {
 
   const arr = (v) => (Array.isArray(v) ? v : []);
   const join = (parts, sep) => parts.filter((x) => x !== undefined && x !== null && x !== "").join(sep);
+  // The server sends each check's value as a bare number (0.4406 for ROIC, 10 for years);
+  // show it the way the threshold reads. A value that already is text passes through.
+  const checkValue = (c) => {
+    const v = c.value;
+    if (!isNum(v)) return v === undefined || v === null || v === "" ? null : v;
+    switch (c.key) {
+      case "roic_now":
+      case "roic_consistency":
+        return formatPct(v);
+      case "sales_growth":
+      case "eps_growth":
+      case "equity_growth":
+      case "fcf_growth":
+        return `${formatPct(v)}/yr`;
+      case "debt":
+        return `${v.toFixed(1)}× FCF`;
+      case "earning":
+        return `EPS ${formatEps(v, d.unit)}`;
+      case "history":
+        return `${Math.round(v)} years`;
+      case "eps_not_falling":
+        return `${v.toFixed(2)}× last FY`;
+      default:
+        return String(v);
+    }
+  };
   const checklist = arr(d.checks).map((c) => {
     if (c.passed === null || c.passed === undefined) {
       return `n/a ${c.label}${c.detail ? ` — ${c.detail}` : ""}`;
     }
-    const body = [c.label, c.value, c.threshold].filter((x) => x !== undefined && x !== null && x !== "").join(" ");
+    const body = [c.label, checkValue(c), c.threshold].filter((x) => x !== undefined && x !== null && x !== "").join(" ");
     return `${c.passed ? "✓" : "✗"} ${body}`;
   });
 
