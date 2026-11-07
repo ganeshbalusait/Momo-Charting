@@ -349,7 +349,7 @@ def test_googl_debt_fills_older_years_from_later_recipes():
     assert s.tags["debt"].startswith("LongTermDebtNoncurrent+LongTermDebtCurrent") and len(years) >= 10
     assert s.annual["2025-12-31"]["debt"] == pytest.approx(want)
     assert "debt" not in s.tag_breaks
-    assert any(n.startswith("debt: ") and " from recipe (b) LongTermDebt+" in n for n in s.notes)
+    assert any(n.startswith("debt: ") and " from recipe (d) LongTermDebt+" in n for n in s.notes)   # (d) since E2
 
 
 def test_basic_only_is_last_resort_with_note():
@@ -921,12 +921,11 @@ def test_new_tags_are_in_the_table():
         assert tag in ALL_TAGS and tag in TAGS_BY_NAMESPACE["us-gaap"], tag
     debt = [edgar._cand_label(c) for c in CONCEPTS["debt"]]
     spot = debt.index("ifrs-full:LongtermBorrowings+ifrs-full:CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings")
-    assert debt[spot - 9:spot] == ["NotesPayable", "ConvertibleLongTermNotesPayable+ConvertibleNotesPayableCurrent",
-                         "DebtAndCapitalLeaseObligations",
-                         "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
+    assert debt[spot - 7:spot] == ["NotesPayable", "ConvertibleLongTermNotesPayable+ConvertibleNotesPayableCurrent",
                          "LoansPayable", "OtherNotesPayableCurrent",
                          "LongTermDebtNoncurrent", "ConvertibleDebtNoncurrent+ConvertibleDebtCurrent",
                          "ConvertibleNotesPayable"]
+    # audit fix E2: the filer totals moved ahead of LongTermDebt (b), see test_debt_table_order_*
     for tag in ("ConvertibleDebtNoncurrent", "ConvertibleDebtCurrent", "ConvertibleNotesPayable"):
         assert tag in ALL_TAGS and tag in TAGS_BY_NAMESPACE["us-gaap"], tag
 
@@ -951,7 +950,6 @@ def test_capex_other_ppe_tag_lly():
 
 
 @pytest.mark.parametrize("tag", ["NotesPayable", "DebtAndCapitalLeaseObligations",
-                                 "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
                                  "LoansPayable", "OtherNotesPayableCurrent", "LongTermDebtNoncurrent",
                                  "ConvertibleNotesPayable"])
 def test_new_single_tag_debt_recipes(tag):
@@ -1745,7 +1743,13 @@ def test_fixture_mar_debt_takes_the_larger_recipe():
     assert annual_facts(g["LongTermDebt"]["units"])["USD"]["2025-12-31"].val == 23000000.0
     assert s.annual["2025-12-31"]["debt"] == 16204000000.0 and s.ttm["debt"] == 16843000000.0
     assert s.balance_ends["debt"] == "2026-09-30"
-    assert any(n.startswith("debt: candidates differ, larger used in 2019, 2020, 2021, 2022, 2023, 2024, 2025") for n in s.notes)
+    # audit fix E2/E7: the filer's own total (DebtAndCapitalLeaseObligations) now ranks ahead of the 23M
+    # LongTermDebt fragment, so it is primary outright (no larger-value replacement needed) and names
+    # the series; every window year is the total, never the fragment
+    assert s.tags["debt"] == "DebtAndCapitalLeaseObligations"
+    totals = annual_facts(g["DebtAndCapitalLeaseObligations"]["units"])["USD"]
+    assert all(s.annual[e]["debt"] == totals[e].val for e in totals if e >= "2016" and e in s.annual)
+    assert not any(n.startswith("debt: candidates differ, larger used") for n in s.notes)
 
 
 def test_fixture_xom_merge_brings_the_2026_quarters():
@@ -1757,3 +1761,333 @@ def test_fixture_xom_merge_brings_the_2026_quarters():
     assert any(n.startswith("shares: 2014, 2015") and n.endswith("from WeightedAverageNumberOfSharesOutstandingBasic")
                for n in merged.notes)
     assert not nsnap("XOM2").annual                                                   # the successor CIK alone has no history
+
+
+# ---------- audit fix round (2026-11-07, ten-ticker audit): E1-E7 ----------
+
+def _rows_node(rows, unit="USD"):
+    """[(end, val, accn, form, filed)] or [(start, end, val, accn, form, filed)] -> one tag node."""
+    out = []
+    for r in rows:
+        if len(r) == 6:
+            st, e, v, a, f, fl = r
+            out.append({"start": st, "end": e, "val": v, "accn": a, "form": f, "filed": fl})
+        else:
+            e, v, a, f, fl = r
+            out.append({"end": e, "val": v, "accn": a, "form": f, "filed": fl})
+    return {"units": {unit: out}}
+
+
+def _ni(years, val=100.0):
+    return _flows({"NetIncomeLoss": {y: val for y in years}})
+
+
+# --- E1 (B4): split ratios ---
+
+def test_split_ratios_include_every_real_ratio_e1():
+    for r in (6.0, 9.0, 15.0, 25.0, 30.0, 40.0, 100.0):
+        assert edgar._clean(r) == r and edgar._clean(1 / r) == pytest.approx(1 / r), r
+    assert edgar._clean(19.37 / 3.23) == 6.0                       # DECK FY2023 EPS, 2024 vs 2025 10-K
+    assert edgar._clean(29.16 / 4.86) == 6.0                       # DECK FY2024
+    assert edgar._clean(5.5) is None and edgar._clean(1.13) is None   # still clean ratios only
+    assert edgar.SPLIT_TOL == 0.03
+
+
+def test_six_for_one_split_restates_the_pre_split_years_deck():
+    # DECK: FY2023 diluted EPS 19.37 in the 2023 and 2024 10-Ks, 3.23 in the 2025 10-K (6-for-1, Sep
+    # 2024); diluted shares 26,686,000 -> 160,111,000 confirm it. FY2022 exists only before the split.
+    rows = [Fact("2023-03-31", "2022-04-01", 19.37, "USD/shares", "EarningsPerShareDiluted", "10-K", "k23", "2023-05-26"),
+            Fact("2023-03-31", "2022-04-01", 19.37, "USD/shares", "EarningsPerShareDiluted", "10-K", "k24", "2024-05-24"),
+            Fact("2023-03-31", "2022-04-01", 3.23, "USD/shares", "EarningsPerShareDiluted", "10-K", "k25", "2025-05-23"),
+            Fact("2022-03-31", "2021-04-01", 16.26, "USD/shares", "EarningsPerShareDiluted", "10-K", "k22", "2022-05-27"),
+            Fact("2022-03-31", "2021-04-01", 16.26, "USD/shares", "EarningsPerShareDiluted", "10-K", "k24", "2024-05-24")]
+    shares = [Fact("2023-03-31", "2022-04-01", 26686000.0, "shares", "WeightedAverageNumberOfDilutedSharesOutstanding",
+                   "10-K", "k24", "2024-05-24"),
+              Fact("2023-03-31", "2022-04-01", 160111000.0, "shares", "WeightedAverageNumberOfDilutedSharesOutstanding",
+                   "10-K", "k25", "2025-05-23")]
+    assert edgar.split_events(rows, shares) == [("2024-05-24", "2025-05-23", pytest.approx(1 / 6))]
+    f = infer_split_factors(rows, shares)
+    assert f["2022-03-31"] == pytest.approx(1 / 6) and f["2023-03-31"] == pytest.approx(1 / 6)
+    assert 16.26 * f["2022-03-31"] == pytest.approx(2.71, abs=0.005)
+    # a "split" the share counts contradict is still refused
+    bad = shares[:1] + [Fact("2023-03-31", "2022-04-01", 26700000.0, "shares",
+                             "WeightedAverageNumberOfDilutedSharesOutstanding", "10-K", "k25", "2025-05-23")]
+    assert edgar.split_events(rows, bad) == []
+
+
+def test_a_pair_spanning_two_splits_is_not_a_third_split():
+    # 2:1 (seen through FY2021) then 3:1 (seen through FY2023); FY2020 is seen only before the first
+    # and after the second, showing their product 6. Applying all three would scale FY2020 by 1/36.
+    def eps(end, val, accn, filed):
+        return Fact(end, end[:4] + "-01-01", val, "USD/shares", "EarningsPerShareDiluted", "10-K", accn, filed)
+    rows = [eps("2021-12-31", 1.2, "k22", "2022-02-01"), eps("2021-12-31", 0.6, "k23", "2023-02-01"),
+            eps("2023-12-31", 0.9, "k24", "2024-02-01"), eps("2023-12-31", 0.3, "k25", "2025-02-01"),
+            eps("2020-12-31", 6.0, "k21", "2021-02-01"), eps("2020-12-31", 1.0, "k25", "2025-02-01")]
+    events = edgar.split_events(rows)
+    assert [round(r, 6) for *_, r in events] == [0.5, round(1 / 3, 6)]
+    assert infer_split_factors(rows)["2020-12-31"] == pytest.approx(1 / 6)
+    # the product alone (no single splits seen) is still one split
+    assert [round(r, 6) for *_, r in edgar.split_events(rows[-2:])] == [round(1 / 6, 6)]
+
+
+def test_fixture_deck_six_for_one_split():
+    s = build_snapshot("DECK", 910521, load("DECK"), sic=3021, name="DECK", fetched_at=FA)
+    eps = _eps_years(s)
+    assert s.split_factor == pytest.approx(1 / 6) and "splits: x0.166667 after 2024-05-24" in s.notes
+    assert eps["2017"] == pytest.approx(0.03, abs=0.005) and eps["2022"] == pytest.approx(2.71, abs=0.005)
+    assert eps["2019"] == pytest.approx(8.84 / 6, abs=0.005) and eps["2021"] == pytest.approx(13.47 / 6, abs=0.005)
+    assert eps["2023"] == 3.23 and eps["2024"] == 4.86                      # restated by the 2025 10-K already
+    assert all(eps[str(y)] < eps[str(y + 1)] * 3 for y in range(2018, 2026))   # no pre-split cliff left
+
+
+# --- E2 (B1/B2): debt recipes that carry the current part ---
+
+def test_debt_table_order_current_part_first_e2():
+    debt = [edgar._cand_label(c) for c in CONCEPTS["debt"]]
+    assert debt[:6] == ["LongTermDebtNoncurrent+LongTermDebtCurrent+ShortTermBorrowings+CommercialPaper",
+                        "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities+ShortTermBorrowings+CommercialPaper",
+                        "DebtAndCapitalLeaseObligations",
+                        "LongTermDebt+ShortTermBorrowings+CommercialPaper",
+                        "DebtCurrent+LongTermDebtNoncurrent",
+                        "LongTermDebtAndCapitalLeaseObligations+LongTermDebtAndCapitalLeaseObligationsCurrent"]
+    # the noncurrent-only (d) never stands alone any more; the bare noncurrent tag sits after every total
+    assert "LongTermDebtAndCapitalLeaseObligations" not in debt
+    assert debt.index("LongTermDebtNoncurrent") > max(debt.index(lab) for lab in debt[:6])
+    assert set(edgar.CURRENT_MAX) == {debt[0], debt[3], debt[5]} and edgar.LTD_EXCLUDES_CURRENT == {debt[3]}
+
+
+def test_filer_total_outranks_the_noncurrent_tag_cls_lhx():
+    # CLS: (d) 791.5M is noncurrent; ...IncludingCurrentMaturities 818.8M is the total
+    g = _insts({"LongTermDebtAndCapitalLeaseObligations": {2023: 648.0, 2025: 791.5},
+                "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities": {2023: 675.3, 2025: 818.8}})
+    s = resolve_series(g, {}, "debt")
+    assert s.values == {"2023-12-31": 675.3, "2025-12-31": 818.8}
+    assert s.tag.startswith("LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities")
+    # LHX FY2023: the total plus 1,602M short-term borrowings (outside it by definition)
+    g = _insts({"LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities": {2023: 11523.0, 2025: 11116.0},
+                "ShortTermBorrowings": {2023: 1602.0, 2025: 0.0},
+                "LongTermDebtAndCapitalLeaseObligations": {2023: 11160.0, 2025: 10443.0},
+                "LongTermDebtAndCapitalLeaseObligationsCurrent": {2023: 363.0, 2025: 673.0}})
+    assert resolve_series(g, {}, "debt").values == {"2023-12-31": 13125.0, "2025-12-31": 11116.0}
+    # the total alone (GM) still resolves on its own
+    s = resolve_series(_insts({"LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities": {2024: 7.0, 2025: 9.0}}),
+                       {}, "debt")
+    assert s.values == {"2024-12-31": 7.0, "2025-12-31": 9.0}
+    # (d) with no current part anywhere is still debt (noncurrent only), through the (d)+current recipe
+    s = resolve_series(_insts({"LongTermDebtAndCapitalLeaseObligations": {2025: 50.0}}), {}, "debt")
+    assert s.values == {"2025-12-31": 50.0}
+
+
+def test_filer_totals_fill_before_long_term_debt_cop():
+    # COP: the total ...IncludingCurrentMaturities from 2020, DebtAndCapitalLeaseObligations to 2020,
+    # and a LongTermDebt series (2017-2021) larger than both totals: the totals fill first
+    g = _insts({"LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities": {2020: 15369.0, 2025: 23400.0},
+                "DebtAndCapitalLeaseObligations": {2016: 27275.0, 2017: 19703.0, 2018: 14968.0, 2020: 15400.0},
+                "LongTermDebt": {2017: 22435.0, 2018: 16147.0, 2021: 22797.0},
+                "LongTermDebtAndCapitalLeaseObligations": {y: 14000.0 for y in range(2016, 2026)}})
+    s = resolve_series(g, {}, "debt")
+    assert s.values["2017-12-31"] == 19703.0 and s.values["2018-12-31"] == 14968.0 and s.values["2016-12-31"] == 27275.0
+    assert s.values["2021-12-31"] == 22797.0                                  # only LongTermDebt has 2021
+    assert s.values["2025-12-31"] == 23400.0
+
+
+def test_debt_current_replaces_smaller_current_parts_qcom_pypl():
+    # QCOM FY2026: DebtCurrent 2,492 = current maturities 1,993 + ~499 commercial paper with no instant
+    g = _insts({"LongTermDebtNoncurrent": {2025: 14811.0, 2026: 12620.0}, "LongTermDebtCurrent": {2025: 0.0, 2026: 1993.0},
+                "DebtCurrent": {2025: 0.0, 2026: 2492.0}})
+    s = resolve_series(g, {}, "debt")
+    assert s.values == {"2025-12-31": 14811.0, "2026-12-31": 15112.0} and s.current_max == ["2026-12-31"]
+    assert s.tag == "LongTermDebtNoncurrent+LongTermDebtCurrent+ShortTermBorrowings+CommercialPaper"
+    # never DebtCurrent ON TOP of the parts it already holds (no double count)
+    g["CommercialPaper"] = _insts({"x": {2026: 499.0}})["x"]
+    s = resolve_series(g, {}, "debt")
+    assert s.values["2026-12-31"] == 15112.0 and s.current_max == []          # 12,620 + 1,993 + 499 = 15,112
+    # DebtCurrent smaller than the parts (AAPL-style): the parts stand
+    g["CommercialPaper"] = _insts({"x": {2026: 1000.0}})["x"]
+    s = resolve_series(g, {}, "debt")
+    assert s.values["2026-12-31"] == 15613.0 and s.current_max == []
+    # PYPL 2026-09-30 10-Q: DebtCurrent 2,533 vs LongTermDebtCurrent 2,333 -> TTM 13,472 (Finnhub 13,482)
+    g = _ni(range(2024, 2026))
+    g.update({"LongTermDebtNoncurrent": _rows_node([("2025-12-31", 9987.0, "k25", "10-K", "2026-02-01"),
+                                                    ("2026-09-30", 10939.0, "q3", "10-Q", "2026-11-01")]),
+              "LongTermDebtCurrent": _rows_node([("2025-12-31", 1396.0, "k25", "10-K", "2026-02-01"),
+                                                 ("2026-09-30", 2333.0, "q3", "10-Q", "2026-11-01")]),
+              "DebtCurrent": _rows_node([("2025-12-31", 1596.0, "k25", "10-K", "2026-02-01"),
+                                         ("2026-09-30", 2533.0, "q3", "10-Q", "2026-11-01")])})
+    snap_ = _snap_of(g)
+    assert snap_.annual["2025-12-31"]["debt"] == 11583.0
+    assert snap_.ttm["debt"] == 13472.0 and snap_.balance_ends["debt"] == "2026-09-30"
+    assert "debt: 2025 current part from DebtCurrent (total current debt), larger than the recipe's current parts" in snap_.notes
+    assert any(n.startswith("debt: current part at 2026-09-30 from DebtCurrent") for n in snap_.notes)
+
+
+def _adbe(with_combined=True, trade_off=False, ltdn_at_fy2019=False):
+    g = _ni(range(2019, 2026))
+    ltd = [("2019-12-31", 989.0, "k19", "10-K", "2020-01-20"), ("2024-12-31", 4129.0, "k24", "10-K", "2025-01-20"),
+           ("2025-12-31", 6210.0, "k25", "10-K", "2026-01-20"), ("2026-09-30", 4766.0, "q3", "10-Q", "2026-10-01")]
+    dc = [("2019-12-31", 3149.0, "k19", "10-K", "2020-01-20"), ("2024-12-31", 1499.0, "k24", "10-K", "2025-01-20"),
+          ("2025-12-31", 0.0, "k25", "10-K", "2026-01-20"), ("2026-09-30", 1597.0, "q3", "10-Q", "2026-10-01")]
+    if trade_off:   # 2019 Q1 -> Q2: a 2.25B maturity moves from LongTermDebt to DebtCurrent
+        ltd += [("2019-03-31", 3237.0, "q1", "10-Q", "2019-04-20"), ("2019-06-30", 988.0, "q2", "10-Q", "2019-07-20")]
+        dc += [("2019-03-31", 893.0, "q1", "10-Q", "2019-04-20"), ("2019-06-30", 3146.0, "q2", "10-Q", "2019-07-20")]
+    g.update({"LongTermDebt": _rows_node(ltd), "DebtCurrent": _rows_node(dc)})
+    if with_combined:
+        g["DebtLongtermAndShorttermCombinedAmount"] = _rows_node([("2019-12-31", 4138.0, "k19", "10-K", "2020-01-20")])
+    if ltdn_at_fy2019:
+        g["LongTermDebtNoncurrent"] = _rows_node([("2019-12-31", 989.0, "k19", "10-K", "2020-01-20")])
+    return g
+
+
+def test_long_term_debt_plus_debt_current_only_with_evidence_adbe():
+    # ADBE tags LongTermDebt as its noncurrent line: FY2019 989 + DebtCurrent 3,149 = its own combined
+    # 4,138; Finnhub's D/E reproduces LongTermDebt + DebtCurrent = 6,363 at the latest 10-Q
+    g = _adbe()
+    assert edgar.ltd_excludes_current(g)
+    s = _snap_of(g)
+    assert s.annual["2024-12-31"]["debt"] == 5628.0 and s.annual["2025-12-31"]["debt"] == 6210.0
+    assert s.ttm["debt"] == 6363.0 and s.balance_ends["debt"] == "2026-09-30"
+    assert s.tags["debt"] == "LongTermDebt+ShortTermBorrowings+CommercialPaper"
+    assert any(n.startswith("debt: 2019, 2024 current part from DebtCurrent") for n in s.notes)
+    # no evidence (no combined total, no trade-off): LongTermDebt is taken as defined (incl. current)
+    g = _adbe(with_combined=False)
+    assert not edgar.ltd_excludes_current(g)
+    s = _snap_of(g)
+    assert s.annual["2024-12-31"]["debt"] == 4129.0 and s.ttm["debt"] == 4766.0
+    # the trade-off between two quarter-ends is evidence too
+    assert edgar.ltd_excludes_current(_adbe(with_combined=False, trade_off=True))
+    assert _snap_of(_adbe(with_combined=False, trade_off=True)).ttm["debt"] == 6363.0
+    # counter-evidence: LongTermDebt alone IS the combined total -> it includes the current part
+    g = _adbe()
+    g["DebtLongtermAndShorttermCombinedAmount"] = _rows_node([("2019-12-31", 989.0, "k19", "10-K", "2020-01-20")])
+    assert not edgar.ltd_excludes_current(g) and _snap_of(g).ttm["debt"] == 4766.0
+    # an instant with LongTermDebtNoncurrent is (a)/(e)'s business: never LongTermDebt + DebtCurrent there
+    s = resolve_series(_adbe(ltdn_at_fy2019=True), {}, "debt")
+    assert "2019-12-31" not in s.current_max
+
+
+def test_noncurrent_d_pairs_the_filers_current_debt_xom():
+    # XOM from 2018: (d) is the noncurrent line, DebtCurrent (notes and loans payable, incl. commercial
+    # paper) the current one; the 2026-09-30 10-Q has no ...Current part, DebtCurrent covers it
+    g = _ni(range(2017, 2026))
+    g.update({"LongTermDebtAndCapitalLeaseObligations": _rows_node(
+                  [("2018-12-31", 20538.0, "k18", "10-K", "2019-02-27"), ("2025-12-31", 34241.0, "k25", "10-K", "2026-02-18"),
+                   ("2026-09-30", 29727.0, "q3", "10-Q", "2026-11-01")]),
+              "LongTermDebtAndCapitalLeaseObligationsCurrent": _rows_node(
+                  [("2018-12-31", 4070.0, "k18", "10-K", "2019-02-27"), ("2025-12-31", 6234.0, "k25", "10-K", "2026-02-18")]),
+              "DebtCurrent": _rows_node(
+                  [("2018-12-31", 17258.0, "k18", "10-K", "2019-02-27"), ("2025-12-31", 9296.0, "k25", "10-K", "2026-02-18"),
+                   ("2026-09-30", 4523.0, "q3", "10-Q", "2026-11-01")])})
+    s = _snap_of(g)
+    assert s.annual["2018-12-31"]["debt"] == 37796.0 and s.annual["2025-12-31"]["debt"] == 43537.0
+    assert s.ttm["debt"] == 34250.0 and s.balance_ends["debt"] == "2026-09-30"
+    # without DebtCurrent at the 10-Q the recipe still dates back to the annual end (VZ, unchanged)
+    g["DebtCurrent"] = _rows_node([("2018-12-31", 17258.0, "k18", "10-K", "2019-02-27"),
+                                   ("2025-12-31", 9296.0, "k25", "10-K", "2026-02-18")])
+    s = _snap_of(g)
+    assert s.ttm["debt"] == 43537.0 and s.balance_ends["debt"] == "2025-12-31"
+
+
+def test_optional_part_at_an_explicit_zero_does_not_date_the_recipe_back_lhx():
+    # LHX: ShortTermBorrowings 0 at FY2025, untagged at the later 10-Qs -> the fresh 10-Q balance stands
+    g = _ni(range(2024, 2026))
+    g.update({"LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities": _rows_node(
+                  [("2025-12-31", 11116.0, "k25", "10-K", "2026-02-01"), ("2026-09-30", 10996.0, "q3", "10-Q", "2026-11-01")]),
+              "ShortTermBorrowings": _rows_node([("2025-12-31", 0.0, "k25", "10-K", "2026-02-01")])})
+    s = _snap_of(g)
+    assert s.ttm["debt"] == 10996.0 and s.balance_ends["debt"] == "2026-09-30"
+    assert not any("recipe dated at the annual end" in n for n in s.notes)
+
+
+# --- E3 (B3): a current part copying the noncurrent part ---
+
+def test_current_part_equal_to_the_noncurrent_part_in_one_filing_is_skipped_xom_2010():
+    g = _ni(range(2010, 2012))
+    g.update({"LongTermDebtAndCapitalLeaseObligations": _rows_node(
+                  [("2010-12-31", 12227.0, "k10", "10-K", "2011-02-25"), ("2010-12-31", 12227.0, "q1", "10-Q", "2011-05-05"),
+                   ("2011-12-31", 9322.0, "k11", "10-K", "2012-02-24")]),
+              "LongTermDebtAndCapitalLeaseObligationsCurrent": _rows_node(
+                  [("2010-12-31", 12227.0, "q1", "10-Q", "2011-05-05")])})
+    s = _snap_of(g)
+    assert s.annual["2010-12-31"]["debt"] == 12227.0                          # not 24,454
+    assert ("debt: 2010 LongTermDebtAndCapitalLeaseObligationsCurrent equals the noncurrent part in the same "
+            "filing (filer error), not added") in s.notes
+    # a genuine current part (345M) is added
+    g["LongTermDebtAndCapitalLeaseObligationsCurrent"] = _rows_node([("2010-12-31", 345.0, "k10", "10-K", "2011-02-25")])
+    s = _snap_of(g)
+    assert s.annual["2010-12-31"]["debt"] == 12572.0 and not any("filer error" in n for n in s.notes)
+    # an equal value from a filing whose noncurrent value differs is not a copy
+    g["LongTermDebtAndCapitalLeaseObligationsCurrent"] = _rows_node([("2010-12-31", 9322.0, "k11", "10-K", "2012-02-24")])
+    assert _snap_of(g).annual["2010-12-31"]["debt"] == 12227.0 + 9322.0
+
+
+# --- E4 (B5), E5 (J9) ---
+
+def test_dividends_ordinary_tag_qcom():
+    g = _flows({"PaymentsOfDividends": {2011: 1346.0, 2012: 1583.0, 2013: 2055.0},
+                "PaymentsOfOrdinaryDividends": {**{2013: 2055.0}, **{y: 3000.0 + y for y in range(2014, 2027)}}})
+    s = resolve_series(g, {}, "dividends")
+    assert s.tag == "PaymentsOfOrdinaryDividends" and len(s.values) == 16 and s.values["2011-12-31"] == 1346.0
+    assert "PaymentsOfOrdinaryDividends" in TAGS_BY_NAMESPACE["us-gaap"]
+
+
+def test_sales_revenue_net_joins_the_larger_of_group_lhx():
+    g = _flows({"Revenues": {2010: 102.0, 2011: 189.0, 2012: 374.0},
+                "SalesRevenueNet": {2010: 4725.0, 2011: 5418.0, 2012: 5451.0}})
+    s = resolve_series(g, {}, "revenue")
+    assert s.values == {"2010-12-31": 4725.0, "2011-12-31": 5418.0, "2012-12-31": 5451.0} and not s.tag_break
+    assert s.tag == "SalesRevenueNet" and "SalesRevenueNet" in edgar.LARGER_OF["revenue"]
+
+
+# --- E6 (B7): TTM EPS for a filer with no EPS tag and no diluted shares ---
+
+def _hsy_like(with_eps_tag=False):
+    g = _flows({"NetIncomeLoss": {2024: 2200.0, 2025: 883.3}})
+    g["NetIncomeLoss"]["units"]["USD"] += [
+        {"start": "2026-01-01", "end": "2026-09-30", "val": 1473.6, "accn": "q3", "form": "10-Q", "filed": "2026-11-01"},
+        {"start": "2025-01-01", "end": "2025-09-30", "val": 563.3, "accn": "q3", "form": "10-Q", "filed": "2026-11-01"}]
+    g["CommonStockSharesOutstanding"] = {"units": {"shares": [
+        {"end": "2024-12-31", "val": 202.0, "accn": "a2024", "form": "10-K", "filed": "2025-02-01"},
+        {"end": "2025-12-31", "val": 202.84, "accn": "a2025", "form": "10-K", "filed": "2026-02-01"}]}}
+    if with_eps_tag:
+        g.update(_per_share({"EarningsPerShareDiluted": {2024: 10.9, 2025: 4.35}}))
+    return g
+
+
+def test_ttm_eps_derived_from_ni_over_period_end_shares_hsy():
+    from long_term.metrics import EPS_TTM_DERIVED_NOTE
+    s = _snap_of(_hsy_like())
+    assert s.tags["eps"] == "derived" and _eps_years(s)["2025"] == pytest.approx(883.3 / 202.84)
+    assert s.ttm["eps"] == pytest.approx(1793.6 / 202.84) and s.ttm["eps"] == pytest.approx(8.84, abs=0.005)
+    assert s.ttm_ends["eps"] == ("2026-09-30", False)
+    note = [n for n in s.notes if n.startswith(EPS_TTM_DERIVED_NOTE)]
+    assert note == ["eps TTM derived from NI/period-end shares (TTM 2026-09-30, shares at 2025-12-31)"]
+    assert not any(n.startswith("eps: TTM") for n in s.notes)
+    # a filer whose latest EPS comes from the tag keeps the tag's TTM (no derived TTM, no note)
+    s = _snap_of(_hsy_like(with_eps_tag=True))
+    assert s.ttm["eps"] == 4.35 and not any(n.startswith(EPS_TTM_DERIVED_NOTE) for n in s.notes)
+    # nor one whose latest derived EPS used the diluted weighted count
+    g = _hsy_like()
+    g.update(_flows({"WeightedAverageNumberOfDilutedSharesOutstanding": {2024: 203.0, 2025: 203.0}}, "shares"))
+    assert not any(n.startswith(EPS_TTM_DERIVED_NOTE) for n in _snap_of(g).notes)
+
+
+def test_fixture_hsy_ttm_eps_derived():
+    s = nsnap("HSY")
+    assert s.ttm["eps"] == pytest.approx(8.84, abs=0.01) and s.ttm_ends["eps"] == ("2026-09-27", False)
+    assert "eps TTM derived from NI/period-end shares (TTM 2026-09-27, shares at 2025-12-31)" in s.notes
+
+
+# --- E7 (B6b): tags.debt names the recipe of the latest year ---
+
+def test_debt_tag_names_the_recipe_that_supplied_the_latest_year_mar():
+    g = _insts({"LongTermDebt": {y: 23.0 for y in range(2019, 2026)},
+                "LongTermDebtAndCapitalLeaseObligations": {y: 15000.0 for y in range(2019, 2026)},
+                "LongTermDebtAndCapitalLeaseObligationsCurrent": {2025: 1209.0}})
+    assert resolve_series(g, {}, "debt").tag == "LongTermDebt+ShortTermBorrowings+CommercialPaper"   # primary
+    g.update(_flows({"NetIncomeLoss": {y: 5.0 for y in range(2019, 2026)}}))
+    s = _snap_of(g)
+    assert s.tags["debt"] == "LongTermDebtAndCapitalLeaseObligations+LongTermDebtAndCapitalLeaseObligationsCurrent"
+    # a carried 0 never names the series
+    g = _flows({"NetIncomeLoss": {y: 5.0 for y in range(2022, 2027)}})
+    g.update(_insts({"ConvertibleDebtNoncurrent": {2022: 1136.5, 2023: 1139.9, 2024: 1143.3, 2025: 0.0}}))
+    assert _snap_of(g).tags["debt"] == "ConvertibleDebtNoncurrent+ConvertibleDebtCurrent"

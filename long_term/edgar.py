@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import copy
 import gzip
+import itertools
 import json
 import math
 import os
@@ -53,7 +54,9 @@ FILL_MAX_DIFF = 0.25              # R36: ordered concepts fill from a candidate 
 SPLIT_TOL = 0.03                  # relative tolerance when snapping a ratio to a clean split
 SPLIT_MIN_EPS = 0.10              # below this, cent rounding makes EPS ratios meaningless
 # 8 is not in the spec's list but 1-for-8 reverse splits are common (and the brief's test uses one).
-_CLEAN = (1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 8.0, 10.0, 20.0, 50.0)
+# audit fix E1 (B4, 2026-11-07): 6 (DECK 2024 6-for-1), 9, 15, 25, 30, 40, 100 are real split ratios too;
+# a pair spanning two splits (2:1 then 3:1 = 6) is merged away in _split_scan, never applied twice.
+_CLEAN = (1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 100.0)
 CLEAN_RATIOS = tuple(sorted(set(_CLEAN) | {1.0 / r for r in _CLEAN}))
 
 IFRS = "ifrs-full:"
@@ -83,18 +86,26 @@ CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
             IFRS + "BasicEarningsLossPerShare", IFRS + "BasicEarningsLossPerShareFromContinuingOperations"],
     "equity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
                IFRS + "EquityAttributableToOwnersOfParent", IFRS + "Equity"],
+    # audit fix E2 (B1/B2, 2026-11-07): every recipe that carries the current part ranks before a bare
+    # noncurrent tag. The filer's own totals (LHX/COP/CLS ...IncludingCurrentMaturities, MAR/COP
+    # DebtAndCapitalLeaseObligations) come right after (a) and before LongTermDebt (b), and
+    # LongTermDebtAndCapitalLeaseObligations - noncurrent by definition - only ever appears with its
+    # current part. Recipes in CURRENT_MAX take DebtCurrent (total current debt) when it is larger.
     "debt": [("LongTermDebtNoncurrent", "LongTermDebtCurrent", "ShortTermBorrowings", "CommercialPaper"),
+             ("LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
+              OPT + "ShortTermBorrowings", OPT + "CommercialPaper"),                   # GM, LHX, COP, CLS
+             "DebtAndCapitalLeaseObligations",                                      # F, MAR, COP
              ("LongTermDebt", "ShortTermBorrowings", "CommercialPaper"),
              ("DebtCurrent", "LongTermDebtNoncurrent"),
-             "LongTermDebtAndCapitalLeaseObligations",
+             # MAR, LHX, XOM: (d) plus the current portion; a filer that tags the current part only in
+             # 10-Ks (VZ) dates its balance at the annual end (_latest_instant)
+             ("LongTermDebtAndCapitalLeaseObligations", OPT + "LongTermDebtAndCapitalLeaseObligationsCurrent"),
              (IFRS + "NoncurrentBorrowings", IFRS + "CurrentBorrowings"),
              (IFRS + "LongtermBorrowings", IFRS + "ShorttermBorrowings"),
              IFRS + "Borrowings",
              # audit 2026-11-06 (first pass): real tags on filers the recipes above missed
              "NotesPayable",                                                        # DHI, GAP
              ("ConvertibleLongTermNotesPayable", "ConvertibleNotesPayableCurrent"),  # DASH, DDOG, AEVA
-             "DebtAndCapitalLeaseObligations",                                      # F
-             "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",    # GM
              "LoansPayable",                                                        # GAP
              "OtherNotesPayableCurrent",                                            # AEVA
              # audit round 2: real debt the proof would otherwise call "no debt"
@@ -115,10 +126,7 @@ CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
               OPT + IFRS + "CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued",
               OPT + IFRS + "LongtermBorrowings", OPT + IFRS + "CurrentPortionOfLongtermBorrowings"),   # TSM
              (IFRS + "NotesAndDebenturesIssued",
-              OPT + IFRS + "CurrentNotesAndDebenturesIssuedAndCurrentPortionOfNoncurrentNotesAndDebenturesIssued"),  # TME
-             # MAR: (d) plus the current portion; kept after (d) so a filer that tags the current part
-             # only in 10-Ks (VZ) keeps its fresh 10-Q balance from (d) (the larger-value rule picks this)
-             ("LongTermDebtAndCapitalLeaseObligations", OPT + "LongTermDebtAndCapitalLeaseObligationsCurrent")],
+              OPT + IFRS + "CurrentNotesAndDebenturesIssuedAndCurrentPortionOfNoncurrentNotesAndDebenturesIssued")],  # TME
     "op_leases": ["OperatingLeaseLiability"],
     "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
              IFRS + "CashAndCashEquivalents"],
@@ -134,7 +142,8 @@ CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
               IFRS + "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets"],  # ACB
     "sbc": ["ShareBasedCompensation"],
     "buybacks": ["PaymentsForRepurchaseOfCommonStock"],
-    "dividends": ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock"],
+    "dividends": ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock",
+                  "PaymentsOfOrdinaryDividends"],                                      # QCOM 2013+ (audit fix E4)
     "interest": ["InterestExpense", "InterestExpenseNonoperating", "InterestExpenseDebt"],
     "op_income": ["OperatingIncomeLoss", IFRS + "ProfitLossFromOperatingActivities"],
     "assets": ["Assets", IFRS + "Assets"],
@@ -150,8 +159,28 @@ CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
     "shares_outstanding": ["CommonStockSharesOutstanding"],                # HSY: period-end shares when no weighted tag
 }
 # Revenue: when several of these exist in a year, take the largest (one combined candidate).
+# audit fix E5 (J9): SalesRevenueNet joins it (LHX 2010-13 tagged a 102-420M sub-line as Revenues).
 LARGER_OF = {"revenue": ("Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
-                         "RevenueFromContractWithCustomerIncludingAssessedTax")}
+                         "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet")}
+# audit fix E2 (B2): recipe label -> its noncurrent base part. The recipe's current block becomes the
+# larger of its own current parts and DebtCurrent (the filer's total current debt, which already holds
+# the current maturities, short-term borrowings and commercial paper: never summed with them) at the
+# same instant: QCOM 2026-09-27 DebtCurrent 2,492 vs LongTermDebtCurrent 1,993; XOM 2018+ notes and
+# loans payable beside the noncurrent (d). Recipe (b) only under LTD_EXCLUDES_CURRENT (ADBE).
+DEBT_CURRENT = "DebtCurrent"
+DEBT_COMBINED = "DebtLongtermAndShorttermCombinedAmount"
+CURRENT_MAX = {"LongTermDebtNoncurrent+LongTermDebtCurrent+ShortTermBorrowings+CommercialPaper": "LongTermDebtNoncurrent",
+               "LongTermDebt+ShortTermBorrowings+CommercialPaper": "LongTermDebt",
+               "LongTermDebtAndCapitalLeaseObligations+LongTermDebtAndCapitalLeaseObligationsCurrent":
+                   "LongTermDebtAndCapitalLeaseObligations"}
+# LongTermDebt is defined to include current maturities; a filer that tags it as the noncurrent line
+# (ADBE) shows it: DebtCurrent + LongTermDebt reproduces its combined total, or the two trade off
+# between quarter-ends (a maturity moving to current). Only then is DebtCurrent added to it, only at
+# instants with no LongTermDebtNoncurrent, and never off the combined total by more than 25%.
+LTD_EXCLUDES_CURRENT = frozenset({"LongTermDebt+ShortTermBorrowings+CommercialPaper"})
+TRADE_OFF_MIN_MOVE = 0.10             # LongTermDebt moved >= 10% between consecutive quarter-ends ...
+TRADE_OFF_MATCH = 0.05                # ... and DebtCurrent moved the other way within 5% of it
+TRADE_OFF_MAX_DAYS = 120
 # Candidates only some industries may use: label -> "financial" (is_financial_sic must hold).
 SIC_GATED = {IFRS + "RevenueAndOperatingIncome": "financial"}   # non-banks (ABVX) tag grants/other income with it
 # Recipe parts that count as 0 when missing (ifrs ShorttermBorrowings is the IFRS twin of ShortTermBorrowings).
@@ -281,6 +310,10 @@ class Series:
     far_off: list[str] = field(default_factory=list)  # capex: candidates refused for differing > 25%
     forms: dict[str, str] = field(default_factory=dict)    # end -> form of the fact used (10-K, 20-F...)
     larger: dict[str, list[str]] = field(default_factory=dict)  # debt/capex: label -> ends where it was the larger value
+    # debt (audit fix E2/E3): ends whose value took DebtCurrent as the current block, and
+    # "part" -> ends where that optional part copied the noncurrent part (filer error, not added)
+    current_max: list[str] = field(default_factory=list)
+    self_copy: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -417,9 +450,75 @@ def _node_rows(gaap: dict, ifrs: dict, name: str, instant: bool | None = None, *
     return rows
 
 
+def _self_copy(gaap: dict, ifrs: dict, base: str, f: Fact, cache: dict | None = None) -> bool:
+    """Audit fix E3 (B3): optional part `f` repeats the noncurrent base part to the dollar in the same
+    filing (XOM 2010-12-31 ...CapitalLeaseObligationsCurrent = 12,227M = the noncurrent value, one
+    Q1-2011 10-Q): a filer tagging error, the part is not added."""
+    if f.val == 0:
+        return False
+    if cache is None or base not in cache:
+        rows = {(g.end, g.accn, g.unit): g.val for g in _node_facts(gaap, ifrs, base) if not g.start}
+        if cache is None:
+            return rows.get((f.end, f.accn, f.unit)) == f.val
+        cache[base] = rows
+    return cache[base].get((f.end, f.accn, f.unit)) == f.val
+
+
+def _instant_map(gaap: dict, ifrs: dict, name: str) -> dict[tuple[str, str], Fact]:
+    """(unit, end) -> latest-filed instant fact of one tag from any period form."""
+    out: dict[tuple[str, str], Fact] = {}
+    for f in _node_facts(gaap, ifrs, name):
+        if f.form in PERIOD_FORMS and not f.start:
+            cur = out.get((f.unit, f.end))
+            if cur is None or _newer(f, cur):
+                out[(f.unit, f.end)] = f
+    return out
+
+
+def ltd_excludes_current(gaap: dict, ifrs: dict | None = None) -> bool:
+    """Whether this filer tags LongTermDebt as the NONCURRENT line (ADBE), see LTD_EXCLUDES_CURRENT.
+
+    The latest instant carrying LongTermDebt, a positive DebtCurrent and the combined total decides:
+    LongTermDebt + DebtCurrent must sit within 25% of the total and closer to it than LongTermDebt
+    alone (ADBE FY2019: 989 + 3,149 = 4,138). Without such an instant, a quarter-end pair where
+    LongTermDebt moved >= 10% and DebtCurrent moved the other way by the same amount (within 5%)
+    shows the maturity being reclassified (ADBE 2019-03 -> 2019-05: -2,249 / +2,253)."""
+    ifrs = ifrs or {}
+    ltd, dc = _instant_map(gaap, ifrs, "LongTermDebt"), _instant_map(gaap, ifrs, DEBT_CURRENT)
+    comb = _instant_map(gaap, ifrs, DEBT_COMBINED)
+    full = sorted(k for k in ltd if k in dc and k in comb and dc[k].val > 0)
+    if full:
+        k = max(full, key=lambda k: k[1])
+        total, alone, both = comb[k].val, ltd[k].val, ltd[k].val + dc[k].val
+        return _off_by(both, total) <= FILL_MAX_DIFF and abs(both - total) < abs(alone - total)
+    pairs = sorted(k for k in ltd if k in dc)
+    for a, b in zip(pairs, pairs[1:]):
+        if a[0] != b[0] or (date.fromisoformat(b[1]) - date.fromisoformat(a[1])).days > TRADE_OFF_MAX_DAYS:
+            continue
+        dl, dd = ltd[b].val - ltd[a].val, dc[b].val - dc[a].val
+        if abs(dl) >= TRADE_OFF_MIN_MOVE * max(abs(ltd[a].val), abs(ltd[b].val)) and abs(dl + dd) <= TRADE_OFF_MATCH * abs(dl):
+            return True
+    return False
+
+
+def _current_alt(label: str, base: Fact | None, dc: Fact | None, ltdn: Fact | None, comb: Fact | None,
+                 gated_ok: bool) -> float | None:
+    """The CURRENT_MAX alternative value (base part + DebtCurrent) at one instant, or None."""
+    if base is None or dc is None or label not in CURRENT_MAX:
+        return None
+    if label in LTD_EXCLUDES_CURRENT:
+        if not gated_ok or ltdn is not None:
+            return None
+        if comb is not None and _off_by(base.val + dc.val, comb.val) > FILL_MAX_DIFF:
+            return None
+    return base.val + dc.val
+
+
 def _candidate(gaap: dict, ifrs: dict, cand, instant: bool | None = None, *, adjust: Adjust = None,
-               year_ends: set[str] | None = None) -> dict[str, dict[str, Fact]]:
-    """unit -> end -> Fact (recipes yield synthetic Facts whose val is the sum)."""
+               year_ends: set[str] | None = None, log: dict | None = None) -> dict[str, dict[str, Fact]]:
+    """unit -> end -> Fact (recipes yield synthetic Facts whose val is the sum).
+
+    `log` (debt): collects ("current_max", label, end) and ("self_copy", label, end, part) events."""
     if not isinstance(cand, tuple):
         return _node_rows(gaap, ifrs, cand, instant, adjust=adjust, year_ends=year_ends)
     label = _cand_label(cand)
@@ -427,13 +526,38 @@ def _candidate(gaap: dict, ifrs: dict, cand, instant: bool | None = None, *, adj
     parts = {p: _node_rows(gaap, ifrs, p, instant, adjust=adjust, year_ends=year_ends) for p in names}
     required = [p for p in names if not _optional(p, label)]
     units = set.intersection(*(set(parts[p]) for p in required)) if required else set()
+    alt = label in CURRENT_MAX and instant
+    if alt:
+        base_name = CURRENT_MAX[label]
+        rows_of = {n: _node_rows(gaap, ifrs, n, instant, year_ends=year_ends)
+                   for n in (base_name, DEBT_CURRENT, "LongTermDebtNoncurrent", DEBT_COMBINED)}
+        gated_ok = label not in LTD_EXCLUDES_CURRENT or ltd_excludes_current(gaap, ifrs)
+    cache: dict = {}
     out: dict[str, dict[str, Fact]] = {}
     for u in units:
         ends = set.intersection(*(set(parts[p][u]) for p in required))
         for e in sorted(ends):
-            used = [parts[p][u][e] for p in names if e in parts[p].get(u, {})]
+            used = []
+            for p in names:
+                f = parts[p].get(u, {}).get(e)
+                if f is None:
+                    continue
+                if p != names[0] and _optional(p, label) and _self_copy(gaap, ifrs, names[0], f, cache):
+                    if log is not None:
+                        log.setdefault("self_copy", set()).add((label, e, p))
+                    continue
+                used.append(f)
             total = sum(f.val for f in used)
             last = max(used, key=lambda f: (f.filed, f.accn))
+            if alt:
+                at = {n: r.get(u, {}).get(e) for n, r in rows_of.items()}
+                v = _current_alt(label, at[base_name], at[DEBT_CURRENT], at["LongTermDebtNoncurrent"],
+                                 at[DEBT_COMBINED], gated_ok)
+                if v is not None and v > total:
+                    total = v
+                    last = max([last, at[DEBT_CURRENT]], key=lambda f: (f.filed, f.accn))
+                    if log is not None:
+                        log.setdefault("current_max", set()).add((label, e))
             out.setdefault(u, {})[e] = Fact(e, last.start, total, u, label, last.form, last.accn, last.filed)
     return out
 
@@ -454,7 +578,8 @@ def _gated_out(label: str, sic) -> bool:
 
 
 def _candidates(gaap: dict, ifrs: dict, concept: str, *, adjust: Adjust = None, sic=None,
-                year_ends: set[str] | None = None) -> list[tuple[str, dict[str, dict[str, Fact]]]]:
+                year_ends: set[str] | None = None, log: dict | None = None
+                ) -> list[tuple[str, dict[str, dict[str, Fact]]]]:
     cands = CONCEPTS[concept]
     instant = None if concept == "split_ratio" else concept in INSTANT_CONCEPTS
     pair = LARGER_OF.get(concept)
@@ -465,7 +590,7 @@ def _candidates(gaap: dict, ifrs: dict, concept: str, *, adjust: Adjust = None, 
         label = _cand_label(cand)
         if _gated_out(label, sic):
             continue
-        rows = _candidate(gaap, ifrs, cand, instant, adjust=adjust, year_ends=year_ends if instant else None)
+        rows = _candidate(gaap, ifrs, cand, instant, adjust=adjust, year_ends=year_ends if instant else None, log=log)
         if pair and cand == pair[0]:
             for other in pair[1:]:
                 rows = _larger_of(rows, _candidate(gaap, ifrs, other, instant, adjust=adjust))
@@ -514,7 +639,8 @@ def resolve_series(gaap: dict, ifrs: dict, concept: str, *, year_ends: set[str] 
     `adjust` maps every candidate Fact before comparison (split normalisation of per-share facts);
     `sic` enables the SIC-gated candidates; `year_ends` restricts balance items to fiscal year ends
     (and lets 10-Q comparatives at those ends count)."""
-    cands = _candidates(gaap or {}, ifrs or {}, concept, adjust=adjust, sic=sic, year_ends=year_ends)
+    log: dict = {}
+    cands = _candidates(gaap or {}, ifrs or {}, concept, adjust=adjust, sic=sic, year_ends=year_ends, log=log)
     if year_ends is not None:
         cands = [(lab, {u: {e: f for e, f in r.items() if e in year_ends} for u, r in rows.items()})
                  for lab, rows in cands]
@@ -590,10 +716,16 @@ def resolve_series(gaap: dict, ifrs: dict, concept: str, *, year_ends: set[str] 
         tag = max(set(names), key=names.count) if names else plabel
     mag = concept in MAGNITUDE_CONCEPTS
     ends = sorted(chosen)
+    current_max = sorted(e for lab, e in log.get("current_max", ()) if source.get(e) == lab and e in chosen)
+    self_copy: dict[str, list[str]] = {}
+    for lab, e, part in log.get("self_copy", ()):
+        if source.get(e) == lab and e in chosen:
+            self_copy.setdefault(part, []).append(e)
     return Series(values={e: abs(chosen[e].val) if mag else chosen[e].val for e in ends}, unit=unit, tag=tag,
                   tag_break=broke, filed={e: chosen[e].filed for e in ends}, source={e: source[e] for e in ends},
                   disagree=disagree, unchecked=unchecked, basic_only=plabel in FILL_ONLY, far_off=far_off,
-                  forms={e: chosen[e].form for e in ends}, larger={k: sorted(v) for k, v in larger.items()})
+                  forms={e: chosen[e].form for e in ends}, larger={k: sorted(v) for k, v in larger.items()},
+                  current_max=current_max, self_copy={k: sorted(v) for k, v in self_copy.items()})
 
 
 def resolve_concept(gaap: dict, ifrs: dict, concept: str, *,
@@ -673,7 +805,27 @@ def _split_scan(eps_rows: list[Fact], share_rows: list[Fact] | None = None
                     break
             else:
                 events.append([a.filed, b.filed, r])
-    return sorted((lo, hi, r) for lo, hi, r in events), sorted(unconfirmed)
+    return _drop_composites(sorted((lo, hi, r) for lo, hi, r in events)), sorted(unconfirmed)
+
+
+def _drop_composites(events: list[tuple[str, str, float]]) -> list[tuple[str, str, float]]:
+    """A period seen only before one split and after the next one shows their product (NVDA 4:1 then
+    10:1 = 40; 2:1 then 3:1 = 6). That pair is not a third split: an event whose ratio is the product
+    of two or more other events whose windows overlap its own is dropped (applied once, not twice)."""
+    out = []
+    for ev in events:
+        inner = [o for o in events if o is not ev and max(ev[0], o[0]) < min(ev[1], o[1])]
+        composite = False
+        for n in range(2, len(inner) + 1):
+            for combo in itertools.combinations(inner, n):
+                if abs(math.prod(o[2] for o in combo) / ev[2] - 1.0) <= SPLIT_TOL:
+                    composite = True
+                    break
+            if composite:
+                break
+        if not composite:
+            out.append(ev)
+    return out
 
 
 def factor_at(events: list[tuple[str, str, float]], filed: str) -> float:
@@ -782,24 +934,27 @@ def _ratio_events(gaap: dict, ifrs: dict, latest_annual_end: str | None,
 
 
 def _derive_eps(series: dict[str, Series], internal: dict[str, Series], currency: str | None,
-                notes: list[str]) -> None:
+                notes: list[str]) -> list[str]:
     """R36: EPS = net income to common / diluted weighted shares for a year with no EPS tag (never for
     a year that has one); HSY-style fallback to the period-end share count. Not derived when NI/shares
-    contradicts the EPS tag in the latest overlap years (mis-scaled share counts)."""
+    contradicts the EPS tag in the latest overlap years (mis-scaled share counts).
+
+    Returns the period ends derived from the period-end share count (audit fix E6 extends that
+    derivation to the TTM, see _derived_ttm_eps)."""
     ni = internal.get("ni_common")
     if not ni or not ni.values:
-        return
+        return []
     eps = series.get("eps")
     unit = eps.unit if eps else (f"{currency}/shares" if currency else None)
     if unit is None or ni.unit != unit.split("/")[0]:
-        return
+        return []
     sh, so = series.get("shares"), internal.get("shares_outstanding")
     if eps and sh:
         both = [e for e in sorted(eps.values) if e in ni.values and sh.values.get(e, 0) > 0
                 and abs(eps.values[e]) >= SPLIT_MIN_EPS and eps.source.get(e) != "derived"][-3:]
         if any(_off_by(ni.values[e] / sh.values[e], eps.values[e]) > FILL_MAX_DIFF for e in both):
             notes.append("eps: NI/shares disagrees with the EPS tag; not derived")
-            return
+            return []
     weighted, period_end, rescaled = [], [], []
     for e, v in ni.values.items():
         if eps and e in eps.values:
@@ -827,6 +982,7 @@ def _derive_eps(series: dict[str, Series], internal: dict[str, Series], currency
         notes.append(f"eps: {', '.join(e[:4] for e in sorted(period_end))} derived from NI/period-end shares")
     if rescaled:
         notes.append(f"eps: share count rescaled for the derived EPS ({', '.join(rescaled)})")
+    return sorted(period_end)
 
 
 SCALE_STEPS = (1e3, 1e6, 1e-3, 1e-6)
@@ -969,7 +1125,7 @@ def build_snapshot(symbol: str, cik: int, companyfacts: dict, *, sic: int | None
                                adjust=adjust_for.get(c), sic=sic)
             if s:
                 (internal if c in INTERNAL_CONCEPTS else series)[c] = s
-    _derive_eps(series, internal, currency, notes)
+    period_end_eps = _derive_eps(series, internal, currency, notes)
     _carry_zero_debt(series, year_ends, notes)
 
     split_factor = 1.0
@@ -996,11 +1152,23 @@ def build_snapshot(symbol: str, cik: int, companyfacts: dict, *, sic: int | None
             notes.append(f"{c}: candidates differ, larger used in {', '.join(e[:4] for e in ends)} ({lab})")
         if s.basic_only:
             notes.append(f"{c}: basic-only")
+        if s.current_max:
+            notes.append(f"{c}: {', '.join(e[:4] for e in s.current_max)} current part from DebtCurrent "
+                         f"(total current debt), larger than the recipe's current parts")
+        for part, ends in s.self_copy.items():
+            notes.append(f"{c}: {', '.join(e[:4] for e in ends)} {part} equals the noncurrent part in the same "
+                         f"filing (filer error), not added")
     debt = series.get("debt")
+    tags = {c: s.tag for c, s in series.items()}
     if debt and debt.values:
         lab = debt.source.get(max(debt.values), debt.tag)
         if lab in PARTIAL_DEBT:
             notes.append(f"debt: partial recipe {lab}")
+        # audit fix E7 (B6b): name the recipe that supplied the latest year (MAR: the total tag the
+        # larger-value rule took, not the 23M LongTermDebt fragment that ranked first)
+        real = [debt.source[e] for e in sorted(debt.values) if debt.source.get(e) not in (None, "carried 0")]
+        if real:
+            tags["debt"] = real[-1]
     tag_breaks = [c for c, s in series.items() if s.tag_break]
     notes.extend(f"{c}: tag break" for c in tag_breaks)
 
@@ -1013,12 +1181,15 @@ def build_snapshot(symbol: str, cik: int, companyfacts: dict, *, sic: int | None
         if c in series and series[c].values:
             latest = max(series[c].values)
             break
+    derived = None
+    if latest and latest in period_end_eps and "ni_common" in internal and "shares_outstanding" in internal:
+        derived = (internal["ni_common"], internal["shares_outstanding"])
     ttm, ttm_end, ttm_is_fy, period_end, ttm_notes, ttm_ends, balance_ends = _ttm_fields(gaap, ifrs, series, latest,
-                                                                                          events)
+                                                                                          events, derived)
     notes.extend(ttm_notes)
     return Snapshot(symbol=symbol, cik=cik, name=name, sic=sic, currency=currency,
                     annual=dict(sorted(annual.items())), units={c: s.unit for c, s in series.items()},
-                    tags={c: s.tag for c, s in series.items()}, tag_breaks=tag_breaks,
+                    tags=tags, tag_breaks=tag_breaks,
                     ttm=ttm, ttm_period_end=ttm_end, ttm_is_fy=ttm_is_fy, latest_annual_end=latest,
                     latest_period_end=period_end, fetched_at=fetched_at, split_factor=split_factor, notes=notes,
                     ttm_ends=ttm_ends, balance_ends=balance_ends,
@@ -1219,13 +1390,42 @@ def _latest_instant(gaap: dict, ifrs: dict, label: str, unit: str,
     if len(names) > 1:
         ann_common = set.intersection(*(annual_ends[n] for n in required)) & ends
         ae = max(ann_common) if ann_common else None
+        # an optional part whose annual value was an explicit 0 (LHX ShortTermBorrowings at FY2025)
+        # counts as 0 at the later 10-Q too: nothing to carry, the fresh instant stands
         dropped = [n for n in names if n not in required and ae is not None and e > ae
-                   and ae in annual_ends[n] and e not in per[n]]
+                   and ae in annual_ends[n] and e not in per[n] and (ae not in per[n] or per[n][ae].val != 0)]
+        if dropped and label in CURRENT_MAX and _current_alt(
+                label, *(_instant_map(gaap, ifrs, n).get((unit, e)) for n in
+                         (CURRENT_MAX[label], DEBT_CURRENT, "LongTermDebtNoncurrent", DEBT_COMBINED)),
+                label not in LTD_EXCLUDES_CURRENT or ltd_excludes_current(gaap, ifrs)) is not None:
+            dropped = []                  # DebtCurrent at the 10-Q instant holds the whole current block (XOM)
         if dropped:
             if notes is not None:
                 notes.append(f"{label}: {', '.join(dropped)} untagged at {e}; recipe dated at the annual end {ae}")
             e = ae
-    return e, sum(per[n][e].val for n in names if e in per[n])
+    total = 0.0
+    for n in names:
+        f = per[n].get(e)
+        if f is None:
+            continue
+        if n != names[0] and len(names) > 1 and _optional(n, label) and e in per[names[0]] \
+                and _self_copy(gaap, ifrs, names[0], f):
+            if notes is not None:
+                notes.append(f"debt: {n} at {e} equals the noncurrent part in the same filing (filer error), not added")
+            continue
+        total += f.val
+    if label in CURRENT_MAX:
+        at = {n: _instant_map(gaap, ifrs, n).get((unit, e)) for n in
+              (CURRENT_MAX[label], DEBT_CURRENT, "LongTermDebtNoncurrent", DEBT_COMBINED)}
+        gated_ok = label not in LTD_EXCLUDES_CURRENT or ltd_excludes_current(gaap, ifrs)
+        v = _current_alt(label, at[CURRENT_MAX[label]], at[DEBT_CURRENT], at["LongTermDebtNoncurrent"],
+                         at[DEBT_COMBINED], gated_ok)
+        if v is not None and v > total:
+            if notes is not None:
+                notes.append(f"debt: current part at {e} from DebtCurrent (total current debt, "
+                             f"{_short_money(at[DEBT_CURRENT].val)}), larger than the recipe's current parts")
+            total = v
+    return e, total
 
 
 def _period_end(gaap: dict, ifrs: dict, s: Series) -> str | None:
@@ -1239,8 +1439,29 @@ def _period_end(gaap: dict, ifrs: dict, s: Series) -> str | None:
     return max(ends) if ends else None
 
 
+def _derived_ttm_eps(gaap: dict, ifrs: dict, ni: Series, so: Series, latest: str,
+                     events: list[tuple[str, str, float]] = ()) -> tuple[float, tuple[str, bool], str] | None:
+    """Audit fix E6 (B7): a filer with no EPS tag and no diluted share count (HSY tags both per class)
+    gets the TTM EPS the way its annual EPS was derived: NI to common TTM / the latest period-end
+    CommonStockSharesOutstanding (split-adjusted, not older than the latest annual end, within x2 of
+    the annual count). (value, stamp, note) or None."""
+    if latest not in ni.values or latest not in so.values or so.values[latest] <= 0:
+        return None
+    v, end, is_fy = _flow_ttm(gaap, ifrs, "ni_common", ni, latest)
+    facts = [f for (u, e), f in _instant_map(gaap, ifrs, so.source.get(latest, so.tag)).items()
+             if u == so.unit and e >= latest and f.val > 0]
+    if not facts:
+        return None
+    f = max(facts, key=lambda f: (f.end, f.filed, f.accn))
+    count = f.val / (factor_at(events, f.filed) if events else 1.0)
+    if not 1 / NEIGHBOUR_TOL <= count / so.values[latest] <= NEIGHBOUR_TOL:
+        return None
+    basis = "FY" if is_fy else "TTM"
+    return v / count, (end, is_fy), f"eps TTM derived from NI/period-end shares ({basis} {end}, shares at {f.end})"
+
+
 def _ttm_fields(gaap: dict, ifrs: dict, series: dict[str, Series], latest: str | None,
-                events: list[tuple[str, str, float]] = ()):
+                events: list[tuple[str, str, float]] = (), derived: tuple[Series, Series] | None = None):
     """(ttm, ttm_period_end, ttm_is_fy, latest_period_end, notes, ttm_ends, balance_ends).
 
     Balances and the quarterly share count come from the candidate that supplied the latest annual
@@ -1257,6 +1478,11 @@ def _ttm_fields(gaap: dict, ifrs: dict, series: dict[str, Series], latest: str |
         if s and latest in s.values:
             v, e, fy = _flow_ttm(gaap, ifrs, c, s, latest, scale if c in PER_SHARE_CONCEPTS else None)
             ttm[c], stamps[c] = v, (e, fy)
+    if derived is not None and "eps" in ttm:
+        got = _derived_ttm_eps(gaap, ifrs, *derived, latest, events)
+        if got is not None:
+            ttm["eps"], stamps["eps"], note = got
+            notes.append(note)
     for c in TTM_BALANCES:
         s = series.get(c)
         if not s or not s.values:

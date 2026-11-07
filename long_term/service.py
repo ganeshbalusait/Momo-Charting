@@ -32,7 +32,7 @@ from long_term.finnhub import FinnhubExtract, FinnhubPacer, fetch_metrics
 from long_term.finnhub import default_get as _finnhub_default_get
 from long_term.leaps import (LEAP_MAX_DTE, LEAP_MIN_DTE, REASON_CHAIN_UNAVAILABLE, REASON_NOT_FLAGGED,
                              pick_leap)
-from long_term.metrics import CHECK_KEYS, Check, Metrics, compute_metrics, listing_factor, with_fcf
+from long_term.metrics import CHECK_KEYS, Check, Metrics, compute_metrics, stored_listing_factor, with_fcf
 from long_term.symbols import CIK_OVERRIDES, canonical, to_schwab
 from long_term.valuation import Valuation, price_guard, signal, valuation
 
@@ -561,11 +561,14 @@ class LongTermService:
                     prior_lf = _pos(old.get("listing_factor"))
                     if prior_lf is None:
                         log.info("long_term: %s has no stored listing factor yet (no drift check tonight)", sym)
+                    # audit fix M2 (B8): a USD 10-K filer stores 1.0 (R39 pins its factor), never the
+                    # raw price / (EPS x P/E) ratio; non-USD / 20-F / 40-F filers keep the raw ratio
+                    lf_tonight = stored_listing_factor(snap, ref, fh)
                     self._put(sym, {"cik": cik, "name": name, "sic": info.get("sic"),
                                     "snapshot": dataclasses.asdict(snap),
                                     "finnhub": dataclasses.asdict(fh) if fh is not None else None,
                                     "ref_price": ref,
-                                    "listing_factor": listing_factor(ref, fh) if listing_factor(ref, fh) is not None
+                                    "listing_factor": lf_tonight if lf_tonight is not None
                                     else old.get("listing_factor"),
                                     "prior_listing_factor": prior_lf,
                                     "fetched_at": stamp, "last_seen": stamp})

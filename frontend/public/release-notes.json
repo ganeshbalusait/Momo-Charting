@@ -2,6 +2,17 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-07T12:30:00-05:00",
+      "heading": "Long Term: numbers re-checked against the SEC filings; Deckers now shows as a LEAPS candidate, debt reads in full",
+      "items": [
+        "Every number on ten tickers (ADBE, QCOM, PYPL and seven others) was re-derived by hand from the SEC filings, Finnhub and the Schwab chain. ADBE BUY + LEAPS, QCOM LEAPS and PYPL AVOID all reproduce exactly: sticker, Safety Buy, LEAPS level and the contracts.",
+        "Deckers (DECK) was hidden: its 6-for-1 split was not recognised, so its old earnings read six times too high and its growth 5% instead of 36%. It now reads WAIT with the LEAPS flag (sticker about $153, LEAPS at or under about $122; BUY at the 30% margin).",
+        "Debt now includes the part due within a year for companies that file it separately (Adobe $6.4B, was $4.8B; Qualcomm, L3Harris, Conoco, Exxon, Celestica, PayPal). ROIC and the debt test are a little lower and more honest; ADBE and QCOM keep their verdicts, Celestica moves to AVOID.",
+        "Hershey's earnings now come from its own filings (about $8.84 a share) instead of a broken Finnhub figure; still AVOID. Qualcomm's dividends now count in its equity growth. The Why drawer says 'dividends missing' instead of 'buybacks/dividends missing' when only dividends are absent.",
+        "Weekend note: Schwab shows open interest 0 on most option strikes on Saturday and Sunday, so the LEAP contract under a badge may change on Monday's open."
+      ]
+    },
+    {
       "at": "2026-11-07T07:40:00-05:00",
       "heading": "Long Term: 'No data' drops from 220 tickers to a few dozen; every other row now says AVOID or WAIT with its reason",
       "items": [

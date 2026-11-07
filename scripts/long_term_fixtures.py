@@ -1,7 +1,8 @@
 """Build tests/fixtures/long_term/* from raw SEC company-facts files.
 
 Usage: python scripts/long_term_fixtures.py <folder with raw <SYM>.json files>
-       python scripts/long_term_fixtures.py --edgar-only <folder>   (EDGAR_ONLY_CIKS: companyfacts only)
+       python scripts/long_term_fixtures.py --edgar-only <folder> [SYM ...]   (EDGAR_ONLY_CIKS: companyfacts only;
+                                                                         naming symbols rebuilds only those)
 
 Network is used by THIS script only (Finnhub metric + SEC submissions); the
 tests never touch it. The Finnhub key is read from .env and never printed.
@@ -33,8 +34,9 @@ CIKS = {"AAPL": 320193, "ASML": 937966, "TSM": 1046179, "HOOD": 1783879, "MCD": 
 # with no EPS tag (derived from NI / period-end shares); WELL = REIT capex (capital improvements +
 # construction); MAR = LongTermDebt is a 23M component, the real debt sits in (d); XOM / XOM2 = the
 # facts split between the old CIK 34088 and the successor CIK 2115436 (merge_companyfacts).
+# DECK (audit fix E1, 2026-11-07) = the 6-for-1 split of 2024 (FY2017-FY2022 EPS only in pre-split filings).
 EDGAR_ONLY_CIKS = {"HAL": 45012, "LHX": 202058, "HSY": 47111, "WELL": 766704, "MAR": 1048286,
-                   "XOM": 34088, "XOM2": 2115436}
+                   "XOM": 34088, "XOM2": 2115436, "DECK": 910521}
 UA = "AGX Trading App (admin@agxtrade.com)"
 MAX_BYTES = 600_000
 
@@ -80,9 +82,14 @@ def _trim_to_file(sym: str, doc: dict) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) == 3 and argv[1] == "--edgar-only":
+    if len(argv) >= 3 and argv[1] == "--edgar-only":
         OUT.mkdir(parents=True, exist_ok=True)
-        for sym in EDGAR_ONLY_CIKS:
+        wanted = [s.upper() for s in argv[3:]] or list(EDGAR_ONLY_CIKS)
+        unknown = [s for s in wanted if s not in EDGAR_ONLY_CIKS]
+        if unknown:
+            print(f"not in EDGAR_ONLY_CIKS: {', '.join(unknown)}")
+            return 2
+        for sym in wanted:
             _trim_to_file(sym, json.loads((Path(argv[2]) / f"{sym}.json").read_text(encoding="utf-8")))
         return 0
     if len(argv) != 2:

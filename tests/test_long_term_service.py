@@ -658,20 +658,54 @@ def _row_of(svc, sym, quotes=None, mos=50):
 
 
 def test_listing_factor_drift_turns_row_check_data(svc):
+    # the drift check is for rows that carry a listing factor (ASML: EUR 20-F); audit fix M2 (B8)
+    # moved the USD 10-K case to test_usd_10k_filer_stores_listing_factor_one_and_never_drifts
     svc.refresh(force=True)
-    rec = svc.store.records["AAPL"]
+    rec = svc.store.records["ASML"]
     assert rec["prior_listing_factor"] is None                       # first night: no baseline, no check
-    assert "listing factor" not in (_row_of(svc, "AAPL")["reason"] or "")
+    assert "listing factor" not in (_row_of(svc, "ASML")["reason"] or "")
     lf = rec["listing_factor"]
     with svc.store.lock:
         rec["listing_factor"] = lf / 1.31                            # last night's factor was 31% lower
     svc.refresh(force=True)
-    assert svc.store.records["AAPL"]["prior_listing_factor"] == pytest.approx(lf / 1.31)
-    row = _row_of(svc, "AAPL", {"AAPL": {"last_price": fixture_price("AAPL"), "quote_time_ms": NOW_MS}})
+    assert svc.store.records["ASML"]["prior_listing_factor"] == pytest.approx(lf / 1.31)
+    row = _row_of(svc, "ASML", {"ASML": {"last_price": fixture_price("ASML"), "quote_time_ms": NOW_MS}})
     assert row["signal"] == "CHECK_DATA" and row["reason"] == "Check data: listing factor moved 31%"
     assert row["buyBelow"] is None and row["leaps"] is False
     svc.refresh(force=True)                                          # a steady factor the next night clears it
-    assert "listing factor" not in (_row_of(svc, "AAPL")["reason"] or "")
+    assert "listing factor" not in (_row_of(svc, "ASML")["reason"] or "")
+
+
+def test_usd_10k_filer_stores_listing_factor_one_and_never_drifts(tmp_path):
+    # audit fix M2 (B8): a USD 10-K filer's stored factor is 1.0 (R39 pins it), never the raw
+    # price / (EPS x P/E) ratio (HSY 1.26, CLS 0.82 in the live store), so a later night cannot see a
+    # false "Check data: listing factor moved"; a 20-F filer (ASML) keeps the raw ratio and the check
+    prices = {s: fixture_price(s) for s in SYMBOLS if fixture_price(s)}
+    prices["AAPL"] *= 1.3                                            # Schwab 30% above Finnhub's EPS x P/E
+    prices["ASML"] *= 1.3
+    quotes = FakeQuotes(prices)
+    svc = make_svc(tmp_path, quotes=quotes)
+    clock = {"mono": 0.0}
+    svc._mono = lambda: clock["mono"]
+    try:
+        svc.refresh(force=True)
+        aapl, asml = svc.store.records["AAPL"], svc.store.records["ASML"]
+        assert aapl["listing_factor"] == 1.0 and aapl["ref_price"] == pytest.approx(prices["AAPL"])
+        assert asml["listing_factor"] == pytest.approx(1.3)
+        with svc.store.lock:
+            aapl["listing_factor"] = 1.26                            # a raw ratio the old code stored (HSY)
+        quotes.prices["AAPL"] = fixture_price("AAPL")                # tonight the price is back at EPS x P/E
+        quotes.prices["ASML"] = fixture_price("ASML")
+        clock["mono"] += 60.0                                          # past the 45 s quote cache: tonight's quotes
+        svc.refresh(force=True)
+        aapl, asml = svc.store.records["AAPL"], svc.store.records["ASML"]
+        assert aapl["prior_listing_factor"] == pytest.approx(1.26) and aapl["listing_factor"] == 1.0
+        assert asml["prior_listing_factor"] == pytest.approx(1.3) and asml["listing_factor"] == 1.0
+        q = {s: {"last_price": fixture_price(s), "quote_time_ms": NOW_MS} for s in ("AAPL", "ASML")}
+        assert "listing factor" not in (_row_of(svc, "AAPL", q)["reason"] or "")
+        assert _row_of(svc, "ASML", q)["reason"] == "Check data: listing factor moved 23%"
+    finally:
+        svc.stop_refresher()
 
 
 def test_old_data_is_served_stale_at_request_time(svc):

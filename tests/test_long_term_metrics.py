@@ -654,7 +654,10 @@ def test_money_format():
 # ---------- final review fixes ----------
 
 def _synth_prior(prior):
+    # a EUR 20-F filer: the drift check is for rows that carry a listing factor (audit fix M2 moved
+    # the USD 10-K case to test_listing_factor_drift_is_never_checked_on_a_usd_10k_filer)
     s = synth()
+    s.currency, s.annual_form = "EUR", "20-F"
     f = synth_fh(s)
     return compute_metrics(s, f, today=TODAY, is_etf=False, price=f.eps_ttm * f.pe_ttm,
                            prior_listing_factor=prior)
@@ -1015,7 +1018,9 @@ def test_check_data_stays_when_the_worse_source_still_passes():
 
 
 def test_check_data_eps_disagreement_scales_roic_to_the_lower_eps():
-    # R38 example: ROIC evaluated with the LESS favourable EPS -> "ROIC 7% < 15% (sources differ on EPS)"
+    # R38 example: ROIC evaluated with the LESS favourable EPS. Audit fix M5 (COP): the reason names
+    # both EPS so the trader sees why this ROIC differs from the column's (13% on EDGAR's EPS):
+    # "ROIC 10% < 15% on Finnhub's lower EPS 7.57 (EDGAR 9.49)"
     s = ttm_based(synth())
     for r in s.annual.values():
         r["net_income"] = r["revenue"] * 0.1                           # ROIC ~ 17%
@@ -1025,8 +1030,10 @@ def test_check_data_eps_disagreement_scales_roic_to_the_lower_eps():
     f.eps_ttm = f.eps_incl_ttm = f.eps_ttm / 3.0                       # Finnhub EPS a third of EDGAR's
     m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm * 3.0)
     assert m.roic_now > 0.15
-    assert m.status is None and m.forced_avoid.endswith("< 15% (sources differ on EPS)")
-    assert m.forced_avoid.startswith("ROIC 6%") or m.forced_avoid.startswith("ROIC 7%")
+    assert m.status is None
+    tail = f"< 15% on Finnhub's lower EPS {f.eps_ttm:.2f} (EDGAR {m.eps_ttm_edgar:.2f})"
+    assert m.forced_avoid in (f"ROIC 6% {tail}", f"ROIC 7% {tail}"), m.forced_avoid
+    assert "sources differ on EPS" not in m.forced_avoid
 
 
 def test_negative_equity_roic_na_caps_at_wait_or_avoids_on_finnhub():
@@ -1289,3 +1296,153 @@ def test_short_history_row_with_failing_roic_is_avoid_with_the_reason():
     s2.ttm.pop("capex", None)
     m2 = synth_run(s2, synth_fh(s2), price=10.0)
     assert m2.years == 0 and m2.status == "SHORT_HISTORY" and m2.forced_avoid == ""
+
+
+# ---------- audit fix round (2026-11-07, after the ten-ticker audit): M1-M3, M5 ----------
+
+def test_capital_returned_note_names_only_the_missing_concept():
+    # audit fix M1 (B6a): ADBE / DECK / CLS / QCOM tag buybacks every year and pay no dividend; the
+    # drawer note said "buybacks/dividends missing ... (counted as 0)", the opposite of what the
+    # number did. Name only the concept(s) actually missing; both only when both are.
+    years = ", ".join(str(y) for y in range(2017, 2026))   # window 2016-2025; the first year's own returns are excluded (J2)
+    s = synth()
+    for r in s.annual.values():
+        r.pop("dividends")
+    m = synth_run(s)
+    assert f"equity: dividends missing in {years} (counted as 0)" in m.notes
+    assert not any(n.startswith("equity:") and "buybacks" in n for n in m.notes)
+    s = synth()
+    for r in s.annual.values():
+        r.pop("buybacks")
+    m = synth_run(s)
+    assert f"equity: buybacks missing in {years} (counted as 0)" in m.notes
+    assert not any(n.startswith("equity:") and "dividends" in n for n in m.notes)
+    s = synth()
+    for r in s.annual.values():
+        r.pop("buybacks")
+        r.pop("dividends")
+    m = synth_run(s)
+    assert f"equity: buybacks/dividends missing in {years} (counted as 0)" in m.notes
+    s = synth()                                                        # different years: one note each
+    s.annual["2020-12-31"].pop("buybacks")
+    s.annual["2022-12-31"].pop("dividends")
+    s.annual["2024-12-31"].pop("dividends")
+    m = synth_run(s)
+    assert "equity: buybacks missing in 2020 (counted as 0)" in m.notes
+    assert "equity: dividends missing in 2022, 2024 (counted as 0)" in m.notes
+    assert not any(n.startswith("equity: ") and "missing" in n for n in synth_run(synth()).notes)
+    s = synth()                                                        # the first window year never counts
+    s.annual["2016-12-31"].pop("dividends")
+    assert not any(n.startswith("equity: ") and "missing" in n for n in synth_run(s).notes)
+
+
+def test_listing_factor_drift_is_never_checked_on_a_usd_10k_filer():
+    # audit fix M2 (B8): a USD 10-K filer's factor is pinned at 1.0 (R39), so no drift can exist;
+    # a raw ratio stored by the old code (HSY 1.26, CLS 0.82) must not become "Check data: listing
+    # factor moved N%" on a later night. Non-USD / 20-F / 40-F rows keep the check.
+    from long_term.metrics import is_tenk, stored_listing_factor
+    s = synth()
+    s.annual_form = "10-K"
+    f = synth_fh(s)
+    price = f.eps_ttm * f.pe_ttm * 1.31                                # Schwab 31% above Finnhub's EPS x P/E
+    m = compute_metrics(s, f, today=TODAY, is_etf=False, price=price, prior_listing_factor=1.0)
+    assert m.status is None and m.listing_factor == 1.0 and m.checks["sources"].passed is True
+    assert not any("listing factor" in n for n in m.notes) and "moved" not in m.checks["sources"].detail
+    assert "(note only, 10-K filer)" in m.checks["sources"].detail    # the raw ratio stays the price-sanity note
+    m = compute_metrics(s, f, today=TODAY, is_etf=False, price=price, prior_listing_factor=1.31)
+    assert m.status is None and m.listing_factor == 1.0
+    assert is_tenk(s) and stored_listing_factor(s, price, f) == 1.0    # what the store keeps for the next night
+    assert stored_listing_factor(s, None, f) is None
+    s.currency, s.annual_form = "EUR", "20-F"                           # the ADR / foreign filer keeps the raw ratio
+    assert not is_tenk(s) and stored_listing_factor(s, price, f) == pytest.approx(1.31)
+    m = compute_metrics(s, f, today=TODAY, is_etf=False, price=price, prior_listing_factor=1.0)
+    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: listing factor moved 31%"
+    s.currency, s.annual_form = "CAD", "10-K"                           # a 10-K filer reporting in CAD still needs the factor
+    assert not is_tenk(s) and stored_listing_factor(s, price, f) == pytest.approx(1.31)
+    s.currency, s.annual_form = "USD", None                             # form unknown: the currency stands in
+    assert is_tenk(s) and stored_listing_factor(s, price, f) == 1.0
+
+
+def _derived_ttm_snapshot(eps=8.84):
+    # HSY-shaped: diluted shares tagged per class only, so NI / shares cannot form a TTM EPS; edgar
+    # (E6) then carries ttm["eps"] = NI TTM / period-end CommonStockSharesOutstanding with the note
+    s = ttm_based(synth())
+    del s.ttm["shares"]
+    s.balance_ends.pop("shares", None)
+    for r in s.annual.values():
+        r.pop("shares")                                                # no diluted count in the annual rows either
+    s.ttm["eps"] = eps
+    s.notes.append("eps TTM derived from NI/period-end shares")
+    return s
+
+
+def test_derived_ttm_eps_is_the_edgar_eps_for_the_cross_check_and_the_sticker():
+    # audit fix M3 (B7): the derived TTM EPS is EDGAR's "EPS now" (cross-check and sticker), one
+    # source -> capped at WAIT (R40); a Finnhub TTM that disagrees > 25% with it is the ordinary EPS
+    # disagreement (R38: judged on the lower). HSY: sticker from 8.84, not Finnhub's corrupted 5.70.
+    from long_term.valuation import signal, valuation
+    cap = "not cross-checked: EPS TTM derived from NI/period-end shares"
+    s = _derived_ttm_snapshot()
+    f = synth_fh(s, eps_ttm=8.84, eps_incl_ttm=8.84)
+    m = synth_run(s, f, price=8.84 * 20.0)
+    assert m.eps_ttm_edgar == 8.84 and m.status is None and m.forced_avoid == ""
+    assert m.wait_cap == cap and m.checks["sources"].passed is None
+    assert f"EPS 8.84 (TTM {s.latest_period_end}, derived NI/period-end shares) vs Finnhub 8.84 ok" in m.checks["sources"].detail
+    assert "EDGAR shares missing" not in m.checks["sources"].detail
+    assert m.eps_ttm_usd == 8.84
+    v = valuation(m, f)
+    assert v.sticker_eps == pytest.approx(min(8.84, 1.5 * m.eps_3yr_avg)) and v.sticker is not None
+    sig = signal(m, v, price=1.0, price_ok=True, mos=50)                # never BUY / LEAPS on one source
+    assert sig["signal"] == "WAIT" and sig["reason"] == cap and sig["leaps"] is False
+    # Finnhub's corrupted 5.70 (36% below): the ordinary EPS disagreement, Check data; the sticker
+    # still reads from EDGAR's 8.84 and R38 judges the ROIC on the lower EPS (passes here: 35% x 5.70/8.84)
+    f2 = synth_fh(s, eps_ttm=5.70, eps_incl_ttm=5.70)
+    m2 = synth_run(s, f2, price=8.84 * 20.0)
+    assert m2.eps_ttm_edgar == 8.84 and m2.eps_ttm_usd == 8.84
+    assert m2.checks["sources"].passed is False
+    assert f"EPS 8.84 (TTM {s.latest_period_end}, derived NI/period-end shares) vs Finnhub 5.70" in m2.checks["sources"].detail
+    assert m2.status == "CHECK_DATA" and m2.status_reason.startswith("Check data: EPS 8.84 (TTM ")
+    assert "wait cap: " + cap in m2.notes
+    assert valuation(m2, f2).sticker_eps == pytest.approx(min(8.84, 1.5 * m2.eps_3yr_avg))
+    # ... and a lower Finnhub EPS that drags the ROIC under 15% is AVOID on Finnhub's lower EPS (R38)
+    f3 = synth_fh(s, eps_ttm=2.0, eps_incl_ttm=2.0)
+    m3 = synth_run(s, f3, price=8.84 * 20.0)
+    assert m3.forced_avoid.startswith("ROIC ") and m3.forced_avoid.endswith("on Finnhub's lower EPS 2.00 (EDGAR 8.84)")
+    # no Finnhub EPS at all: EDGAR's derived EPS is "EPS now", still capped (the derived cap comes first)
+    f4 = synth_fh(s, eps_ttm=None, eps_incl_ttm=None)
+    m4 = synth_run(s, f4, price=100.0)
+    assert m4.status is None and m4.wait_cap == cap and m4.checks["earning"].detail.startswith("EPS 8.84 (EDGAR)")
+    assert "wait cap: not cross-checked: Finnhub EPS missing" in m4.notes
+
+
+def test_derived_ttm_eps_yields_to_a_real_share_count_and_to_the_eps_tag():
+    # the derived figure only stands in when NI / diluted shares cannot form an EPS; the EPS tag's
+    # own TTM is never mistaken for it, and a snapshot without the note behaves as before
+    s = _derived_ttm_snapshot()
+    s.ttm["shares"], s.balance_ends["shares"] = 10.0, s.latest_period_end     # a diluted count after all
+    m = synth_run(s, synth_fh(s))
+    assert m.eps_ttm_edgar == pytest.approx(s.ttm["net_income"] / 10.0) and m.wait_cap == ""
+    assert "derived" not in m.checks["sources"].detail
+    s = _derived_ttm_snapshot()
+    s.ttm["eps"], s.ttm_ends["eps"] = 1.23, (s.latest_period_end, False)      # stamped like the tag, but the note says derived
+    m = synth_run(s, synth_fh(s, eps_ttm=1.23, eps_incl_ttm=1.23), price=1.23 * 20.0)
+    assert m.eps_ttm_edgar == 1.23 and "derived NI/period-end shares" in m.checks["sources"].detail
+    assert m.wait_cap == "not cross-checked: EPS TTM derived from NI/period-end shares"
+    s = _derived_ttm_snapshot()                                               # no note: the old "shares missing" cap
+    s.notes.clear()
+    m = synth_run(s, synth_fh(s))
+    assert m.eps_ttm_edgar is None and m.wait_cap == "not cross-checked: EDGAR shares missing"
+    assert m.eps_ttm_usd == synth_fh(s).eps_ttm
+
+def test_derived_ttm_eps_note_is_matched_in_either_edgar_shape():
+    # the note is edgar's (E6); "eps TTM derived ..." and the "eps: "-prefixed form both count, the
+    # annual R36 note ("eps: 2008, 2009 derived from NI/shares") never does
+    cap = "not cross-checked: EPS TTM derived from NI/period-end shares"
+    s = _derived_ttm_snapshot()
+    s.notes[:] = ["eps: TTM derived from NI/period-end shares"]
+    m = synth_run(s, synth_fh(s, eps_ttm=8.84, eps_incl_ttm=8.84), price=8.84 * 20.0)
+    assert m.eps_ttm_edgar == 8.84 and m.wait_cap == cap
+    s = _derived_ttm_snapshot()
+    s.notes[:] = ["eps: 2008, 2009 derived from NI/shares"]
+    m = synth_run(s, synth_fh(s))
+    assert m.eps_ttm_edgar is None and m.wait_cap == "not cross-checked: EDGAR shares missing"

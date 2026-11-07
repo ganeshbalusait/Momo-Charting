@@ -515,7 +515,7 @@ def test_signal_truth_table_no_data_rows():
     v = synth_v(100.0, 120.0)
     # R35 / R38: a forced AVOID reason wins over everything and publishes no levels
     for why in ("no revenue yet", "losing money", "losing money (sources differ on the size)",
-                "ROIC 7% < 15% (sources differ on EPS)", "cash from operations negative"):
+                "ROIC 10% < 15% on Finnhub's lower EPS 7.57 (EDGAR 9.49)", "cash from operations negative"):
         s = signal(synth_m(forced_avoid=why, years=0), v, price=40, price_ok=True, mos=50)
         assert s["signal"] == "AVOID" and s["reason"] == why and s["leaps"] is False
         assert all(s[k] is None for k in ("buy_below", "leaps_below", "safety_buy", "buy_zone_pct"))

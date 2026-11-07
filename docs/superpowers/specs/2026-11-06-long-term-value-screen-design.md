@@ -176,8 +176,22 @@ No FMP, no Alpha Vantage, no Yahoo.
   day after the annual period end (±7 days) with 80–290 days duration, and
   prior YTD is the fact from the **same accession** one year earlier (±7
   days). If anything is missing, TTM = latest FY, stamped "TTM = FY". 20-F
-  filers have no quarterly facts: TTM = FY. EDGAR TTM EPS = NI_TTM ÷ latest
-  quarterly diluted shares (never summed EPS facts).
+  filers have no quarterly facts: TTM = FY. **EDGAR TTM EPS** = the diluted
+  EPS tag's own TTM (latest FY + YTD − prior YTD, the same accession rule,
+  split-scaled to today's share basis) when the tag's TTM ends on the net
+  income TTM's period (±10 days); otherwise NI_TTM ÷ latest quarterly diluted
+  shares. Why the tag first (ruled 2026-11-07, audit J1): buybacks and share
+  raises move the diluted count inside the year, so NI_TTM ÷ the latest
+  quarter's count mixes four quarters of income with one quarter's shares
+  (DECK 7.83 vs the tag's 7.52 after buybacks; CLS 10.23 vs 10.60 after a
+  raise); the tag also carries the parent share, preferred dividends and
+  the if-converted method that NI ÷ shares misses (IBKR, MCHP, BYND). The
+  two bases sat 0.1–4% apart on all ten audited tickers. When neither
+  can be formed (diluted shares tagged per class only: HSY), NI_TTM ÷
+  period-end CommonStockSharesOutstanding is used (noted "eps TTM derived
+  from NI/period-end shares") as EDGAR's EPS for the cross-check and the
+  sticker; that row is one source and is capped at WAIT ("not
+  cross-checked: EPS TTM derived from NI/period-end shares").
 - **Growth windows**: up to 10 fiscal years ending at the latest annual
   row, minimum 5 complete rows; start at the first year whose revenue is
   ≥ 5% of the latest year's and after any > 5× year-over-year jump
@@ -203,6 +217,13 @@ No FMP, no Alpha Vantage, no Yahoo.
   capital-returned-adjusted equity (equity + cumulative buybacks +
   cumulative dividends over the window) so buyback companies are not
   punished; if the start value is still ≤ 0 the check is "n/a (buybacks)".
+  "Cumulative over the window" is accumulated from the **second** window
+  year: the first year's equity is the start value as reported, and its
+  own buybacks / dividends are not added (they happened before or while
+  that balance formed). Pinned 2026-11-07 (audit J2) as the chosen reading;
+  the inclusive reading is slightly more conservative (PYPL g 14.79% vs
+  15.37%). A missing buyback or dividend figure counts as 0 and the drawer
+  names the concept that is missing ("equity: dividends missing in …").
 - Debt resolved to 0 is accepted only when interest expense is absent or
   < 1% of operating income AND Finnhub debt/equity is present with
   0 ≤ D/E < 0.3 (Finnhub's figure includes leases; a missing D/E proves
@@ -244,7 +265,7 @@ five is a fail and check 2 is not the one that fails.
 "Check data: <reason>"):
 - ROIC: EDGAR TTM vs Finnhub roiTTM on the same side of the 15% gate, or
   within max(5 points, 25% relative). Applies to ADRs too.
-- EPS (US filers, USD): EDGAR NI_TTM ÷ diluted shares vs Finnhub
+- EPS (US filers, USD): EDGAR TTM EPS (as defined under TTM above) vs Finnhub
   epsInclExtraItemsTTM (else epsTTM), same period, within max(25%, $0.10).
   Finnhub period more than one quarter from EDGAR's → "periods differ".
 - EPS growth: Finnhub series CAGR vs EDGAR split-corrected CAGR within 10
@@ -255,7 +276,9 @@ five is a fail and check 2 is not the one that fails.
   peTTM) is then the **listing factor** (ADR ratio ÷ FX), stored nightly
   and used to convert Finnhub per-share figures to USD per listed share;
   a factor that moves > 20% between refreshes → "Check data: listing
-  factor". Verified: TSM epsTTM 98.25 TWD × P/E 23.0 = 2,260 TWD; ASML
+  factor". A USD 10-K filer has no listing factor: it is pinned at 1.0,
+  stored as 1.0 and never drift-checked (the raw ratio is only the
+  price-sanity note; audit 2026-11-07, HSY 1.26 / CLS 0.82). Verified: TSM epsTTM 98.25 TWD × P/E 23.0 = 2,260 TWD; ASML
   26.96 × 49.0 = 1,322 ≈ the USD ADR price (factor 1).
 
 ## Valuation

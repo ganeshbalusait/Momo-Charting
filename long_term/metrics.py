@@ -93,6 +93,10 @@ IMPLAUSIBLE_INTEREST_RATE = 0.25  # R41: interest / estimated debt above this ->
 # edgar snapshot notes parsed here (build_snapshot writes exactly these shapes; pinned in test_long_term_edgar)
 CAPEX_LARGER_NOTE = "capex: candidates differ, larger used in "    # ... "2016, 2017, 2018 (<tag>)"
 EPS_DERIVED_NOTE = "eps: "                                          # ... "2008, 2009 derived from NI/shares"
+# audit fix M3 (B7): the snapshot's TTM EPS was derived from NI TTM / period-end shares (no diluted
+# count tagged: HSY per-class shares); one source, so the row is capped at WAIT (R40)
+EPS_TTM_DERIVED_NOTE = "eps TTM derived"
+EPS_TTM_DERIVED_CAP = "not cross-checked: EPS TTM derived from NI/period-end shares"
 
 COMPLETE = ("revenue", "net_income", "eps", "equity", "fcf")
 COMPLETE_FIN = ("revenue", "net_income", "eps", "equity")
@@ -358,6 +362,26 @@ def listing_factor(price: float | None, fh: FinnhubExtract | None) -> float | No
     return 1.0 if abs(ratio - 1.0) <= PRICE_TOL else ratio
 
 
+def is_tenk(snapshot: Snapshot) -> bool:
+    """R39: a USD 10-K filer (Schwab's price is authoritative, no listing factor). A 10-K filer
+    reporting in CAD / EUR still needs the factor, so the currency is part of the test; an unknown
+    form falls back to the currency."""
+    usd = snapshot.currency == "USD"
+    form = (getattr(snapshot, "annual_form", None) or "").upper()
+    return (usd and form.startswith("10-K")) if form else usd
+
+
+def stored_listing_factor(snapshot: Snapshot, price: float | None, fh: FinnhubExtract | None) -> float | None:
+    """The factor the store keeps for the next night's drift check (audit fix M2, B8): a USD 10-K
+    filer's factor is pinned at 1.0 (R39), so the raw price / (EPS x P/E) ratio must never be stored
+    for it (HSY 1.26, CLS 0.82 would read as a false "listing factor moved" later); non-USD / 20-F /
+    40-F filers keep the raw ratio. None when the ratio cannot be formed."""
+    lf = listing_factor(price, fh)
+    if lf is None:
+        return None
+    return 1.0 if is_tenk(snapshot) else lf
+
+
 # ---------- snapshot preparation ----------
 
 def _rescale_shares(table: dict, ttm: dict, notes: list[str]) -> None:
@@ -537,10 +561,9 @@ def compute_metrics(snapshot: Snapshot | None, fh: FinnhubExtract | None, *, tod
     lae = snapshot.latest_annual_end
     fy_row = table.get(lae) or {}
     usd = snapshot.currency == "USD"
-    form = (getattr(snapshot, "annual_form", None) or "").upper()
     # R39: `tenk` = a USD 10-K filer (Schwab's price is authoritative, no listing factor). A 10-K
     # filer reporting in CAD / EUR still needs the factor, so the currency is part of the test.
-    tenk = (usd and form.startswith("10-K")) if form else usd
+    tenk = is_tenk(snapshot)
     check_data: list[str] = []          # blockers (CHECK_DATA), most important first
     caps: list[str] = []                # R40 / R41: the row can be WAIT at most; first one names the gap
     checks: dict[str, Check] = {}
@@ -695,9 +718,15 @@ def compute_metrics(snapshot: Snapshot | None, fh: FinnhubExtract | None, *, tod
         if fh and fh.eps_annual:
             notes.append("eps: Finnhub series does not cover the window; EDGAR split-corrected used")
     adj = adjusted_equity(table, window)
-    gaps = [e[:4] for e in window[1:] if not all(_ok(table[e].get(k)) for k in ("buybacks", "dividends"))]
-    if gaps and window:
-        notes.append(f"equity: buybacks/dividends missing in {', '.join(gaps)} (counted as 0)")
+    # audit fix M1 (B6a): name only the concept(s) actually missing (ADBE / DECK / CLS / QCOM tag
+    # buybacks every year and pay no dividend: "dividends missing", not "buybacks/dividends")
+    gaps = {k: [e[:4] for e in window[1:] if not _ok(table[e].get(k))] for k in ("buybacks", "dividends")}
+    if gaps["buybacks"] and gaps["buybacks"] == gaps["dividends"]:
+        notes.append(f"equity: buybacks/dividends missing in {', '.join(gaps['buybacks'])} (counted as 0)")
+    else:
+        for k in ("buybacks", "dividends"):
+            if gaps[k]:
+                notes.append(f"equity: {k} missing in {', '.join(gaps[k])} (counted as 0)")
     endpoints = 3 if years >= AVERAGED_ROWS else 1
     eq_start_bad = years >= MIN_YEARS and any(adj.get(e, 0.0) <= 0 for e in window[:endpoints])
     growth["equity"] = None if eq_start_bad else cagr(adj, window)
@@ -783,7 +812,14 @@ def compute_metrics(snapshot: Snapshot | None, fh: FinnhubExtract | None, *, tod
     ni_stamp_end = (snapshot.ttm_ends.get("net_income") or (None,))[0]
     tag_fresh = bool(eps_stamp) and (ni_stamp_end is None or
                                      abs((_d(eps_stamp[0]) - _d(ni_stamp_end)).days) <= PERIOD_MATCH_DAYS)
-    if _ok(ttm.get("eps")) and tag_fresh:
+    # audit fix M3 (B7): a snapshot TTM EPS that edgar derived from NI TTM / period-end shares (no
+    # diluted count tagged: HSY) is not the EPS tag; it stands in for "EDGAR EPS now" only when the
+    # NI / diluted shares path below cannot form one, and it is one source (capped at WAIT)
+    # matched loosely ("eps TTM derived ..." / "eps: TTM derived ..."), never the annual "eps: 2008 derived"
+    ttm_eps_derived = any(str(n).lower().replace("eps:", "eps").startswith(EPS_TTM_DERIVED_NOTE.lower())
+                          for n in snapshot.notes)
+    eps_derived_ttm = False
+    if _ok(ttm.get("eps")) and tag_fresh and not ttm_eps_derived:
         # IBKR / MCHP / BYND: the EPS tag carries the parent share, preferred dividends and the
         # if-converted method that NI / diluted shares misses
         eps_edgar, eps_basis = ttm["eps"], ("FY " if eps_stamp[1] else "TTM ") + eps_stamp[0] + ", EPS tag"
@@ -794,6 +830,11 @@ def compute_metrics(snapshot: Snapshot | None, fh: FinnhubExtract | None, *, tod
             sh, _ = now.balance("shares")
         eps_edgar = ni_now / sh if _ok(ni_now) and _ok(sh) and sh > 0 else None
         eps_basis = ni_basis
+        if eps_edgar is None and ttm_eps_derived and _ok(ttm.get("eps")):
+            stamp = eps_stamp or snapshot.ttm_ends.get("net_income")
+            when = (("FY " if stamp[1] else "TTM ") + str(stamp[0])) if stamp else "TTM"
+            eps_edgar, eps_basis, eps_derived_ttm = ttm["eps"], when + ", derived NI/period-end shares", True
+            cap(EPS_TTM_DERIVED_CAP)
     eps_fy_edgar = fy_row.get("eps")
     if not _ok(eps_fy_edgar) and _ok(fy_row.get("net_income")) and _ok(fy_row.get("shares")) and fy_row["shares"] > 0:
         eps_fy_edgar = fy_row["net_income"] / fy_row["shares"]
@@ -854,12 +895,17 @@ def compute_metrics(snapshot: Snapshot | None, fh: FinnhubExtract | None, *, tod
         snapshot, fh, fin=fin, usd=usd, tenk=tenk, gate=gate, eps_edgar=eps_edgar, eps_basis=eps_basis,
         eps_fy=eps_fy_edgar, g_eps_fh=g_eps_fh if fh_full else None, fh_full=fh_full, g_eps_edgar=g_eps_edgar,
         years=years, price=price, lf=lf_raw)
+    if eps_derived_ttm:
+        # audit fix M3: one source, so check 11 reads "not cross-checked" (None), never a pass
+        src_caps.insert(0, EPS_TTM_DERIVED_CAP)
     if understated_blocker:
         src_fail.append(understated_blocker)
         src_notes.append(understated_blocker)
     elif understated:
         src_notes.append(understated + " (larger used)")
-    if _ok(lf_raw) and lf_raw > 0 and _ok(prior_listing_factor) and prior_listing_factor > 0:
+    # audit fix M2 (B8): a 10-K filer's factor is pinned at 1.0 (R39), so no drift can exist for it;
+    # the raw ratio is only the price-sanity note. The drift check is for non-USD / 20-F / 40-F rows.
+    if not tenk and _ok(lf_raw) and lf_raw > 0 and _ok(prior_listing_factor) and prior_listing_factor > 0:
         moved = abs(lf_raw - prior_listing_factor) / prior_listing_factor
         if moved > LISTING_FACTOR_DRIFT:
             src_fail.append(f"listing factor moved {moved * 100:.0f}%")
@@ -909,7 +955,11 @@ def compute_metrics(snapshot: Snapshot | None, fh: FinnhubExtract | None, *, tod
 
     eps_window = [eps_series[e] for e in window if _ok(eps_series.get(e))]
     pe_vals = [v for v in (_match(fh.pe_annual, e) for e in window) if v is not None] if fh else []
-    if usd:
+    if usd and eps_derived_ttm:
+        # audit fix M3 (B7): the derived EDGAR TTM EPS is the sticker's EPS too (HSY: 8.84, not
+        # Finnhub's corrupted 5.70); the row is capped at WAIT, so the sticker can never BUY / LEAPS
+        eps_usd = eps_edgar
+    elif usd:
         eps_usd = fh.eps_ttm if fh and _ok(fh.eps_ttm) else None
     else:
         eps_usd = fh.eps_ttm * lf if fh and _ok(fh.eps_ttm) and lf is not None else None
@@ -992,7 +1042,8 @@ def _worst_case(*, fin, name, gate, fh, eps_edgar, eps_fh, fcf_now, cfo_now, deb
                 return f"{name} {_pct(lo, True)} < 15% (Finnhub; " + \
                     ("EDGAR not measurable)" if not _ok(gate) else f"sources differ on {name})")
             if src == "EPS":
-                return f"{name} {_pct(lo, True)} < 15% (sources differ on EPS)"
+                # audit fix M5 (COP): say why this ROIC differs from the column's (13% on EDGAR's EPS)
+                return f"{name} {_pct(lo, True)} < 15% on Finnhub's lower EPS {eps_fh:.2f} (EDGAR {eps_edgar:.2f})"
             return f"{name} {_pct(lo, True)} < 15%"
     if not fin and _ok(debt_now) and debt_now > 0 and _ok(fcf_now) and fcf_now > 0:
         ratio = debt_now / fcf_now
