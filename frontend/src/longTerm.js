@@ -37,7 +37,7 @@ export function readPrefs(storage) {
     if (saved.sort && typeof saved.sort.key === "string" && saved.sort.key) {
       prefs.sort = { key: saved.sort.key, dir: saved.sort.dir === "asc" ? "asc" : "desc" };
     }
-    if (TILES.includes(saved.tile)) prefs.tile = saved.tile;
+    // a tile is a filter for this visit only: the next visit starts with every row (Ganesh 11-07)
   } catch {
     return { mos: 50, sort: { ...DEFAULT_SORT }, tile: null };
   }
@@ -46,7 +46,8 @@ export function readPrefs(storage) {
 
 export function writePrefs(storage, prefs) {
   try {
-    storage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    const { tile, ...kept } = prefs || {}; // eslint-disable-line no-unused-vars
+    storage.setItem(PREFS_KEY, JSON.stringify(kept));
   } catch {
     /* storage may be full, blocked or absent; the page works without it */
   }

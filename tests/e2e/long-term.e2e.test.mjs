@@ -436,3 +436,23 @@ e2eTest("a no-revenue company reads AVOID 'no revenue yet' and a 4-year company 
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// Ganesh 11-07 ("I need to see all the data also if I don't select BUY"): a tile
+// left on from an earlier visit (NO DATA on his phone) hid every row. Each visit
+// now opens with all rows; the 30% / 50% choice still carries over.
+e2eTest("a tile stored from an earlier visit does not filter the next visit: every row shows", async () => {
+  const storage = { longTermPrefs: JSON.stringify({ mos: 50, sort: { key: "default", dir: "desc" }, tile: "NODATA" }) };
+  await withApp({ view: VIEW, viewport: PHONE, storage, fakeReads: reads() }, async (app) => {
+    const p = app.page;
+    await p.getByTestId("long-term-card-AAPL").waitFor({ timeout: 90_000 });
+    for (const sym of ["AAPL", "NVDA", "HD"]) {
+      assert.equal(await p.getByTestId(`long-term-card-${sym}`).count(), 1, `${sym} shows without picking a tile`);
+    }
+    assert.doesNotMatch(await p.getByTestId("long-term-tile-NODATA").getAttribute("class"), /is-active/);
+    await p.getByTestId("long-term-tile-BUY").click();
+    await p.waitForFunction(() => document.querySelectorAll("[data-testid^='long-term-card-']").length === 1);
+    const saved = JSON.parse(await p.evaluate(() => window.localStorage.getItem("longTermPrefs")));
+    assert.equal(saved.tile, undefined, "the BUY tile is not remembered for the next visit");
+    assert.deepEqual(app.pageErrors, []);
+  });
+});

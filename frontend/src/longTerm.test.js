@@ -32,10 +32,15 @@ describe("prefs", () => {
   test("defaults", () => {
     assert.deepEqual(readPrefs(mem()), { mos: 50, sort: { key: "default", dir: "desc" }, tile: null });
   });
-  test("round trip", () => {
+  test("round trip keeps MOS and sort; a tile never carries over to the next visit", () => {
+    // Ganesh 11-07: "I need to see all the data also if I don't select BUY": a tile left on
+    // (NO DATA on his phone) hid every row on the next visit, so each visit starts with all rows
     const s = mem();
     writePrefs(s, { mos: 30, sort: { key: "pe", dir: "asc" }, tile: "BUY" });
-    assert.deepEqual(readPrefs(s), { mos: 30, sort: { key: "pe", dir: "asc" }, tile: "BUY" });
+    assert.deepEqual(readPrefs(s), { mos: 30, sort: { key: "pe", dir: "asc" }, tile: null });
+    assert.equal(JSON.parse(s.getItem("longTermPrefs")).tile, undefined, "the tile is not stored");
+    // an older stored tile (written before this change) is ignored too
+    assert.equal(readPrefs(mem({ longTermPrefs: JSON.stringify({ mos: 50, tile: "NODATA" }) })).tile, null);
   });
   test("invalid mos and junk fall back", () => {
     assert.equal(readPrefs(mem({ longTermPrefs: JSON.stringify({ mos: 40 }) })).mos, 50);
