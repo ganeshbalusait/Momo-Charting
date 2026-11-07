@@ -144,9 +144,16 @@ def test_cagr_undefined_on_negative_endpoint():
     assert cagr(vals2, sorted(vals2)) is None                         # last-3 mean -2
 
 
-def test_cagr_needs_five_rows_and_every_window_value():
+def test_cagr_needs_three_rows_and_every_window_value():
+    # R33: 3-4 rows use single endpoints (first -> last, real days); 5+ rows the 3-year averages
     vals = {f"{y}-12-31": 10.0 * 1.1 ** i for i, y in enumerate(range(2021, 2025))}
-    assert cagr(vals, sorted(vals)) is None                           # 4 rows
+    days = (date(2024, 12, 31) - date(2021, 12, 31)).days
+    assert cagr(vals, sorted(vals)) == pytest.approx((1.1 ** 3) ** (365.25 / days) - 1, rel=1e-9)   # 4 rows
+    three = {k: v for k, v in list(vals.items())[:3]}
+    assert cagr(three, sorted(three)) is not None                     # 3 rows
+    two = {k: v for k, v in list(vals.items())[:2]}
+    assert cagr(two, sorted(two)) is None                             # 2 rows: no growth
+    assert cagr({"2023-12-31": -1.0, "2024-12-31": 2.0, "2025-12-31": 3.0}, ["2023-12-31", "2024-12-31", "2025-12-31"]) is None
     vals = {f"{y}-12-31": 10.0 * 1.1 ** i for i, y in enumerate(range(2016, 2026))}
     window = sorted(vals)
     del vals["2020-12-31"]
@@ -212,8 +219,14 @@ def test_roic_town_definition_mcd():
 def test_mcd_shares_rescaled_from_millions():
     m = run("MCD", price=300)
     assert "shares: rescaled ×1e6" in m.notes
-    assert m.eps_ttm_edgar == pytest.approx(8.787e9 / 711.1e6, rel=1e-6)
+    # the EPS tag's TTM (12.31) is "EPS now"; NI / rescaled shares (12.36) is the fallback
+    assert m.eps_ttm_edgar == pytest.approx(snap("MCD").ttm["eps"])
+    assert m.eps_ttm_edgar == pytest.approx(8.787e9 / 711.1e6, rel=0.01)
     assert m.checks["sources"].passed is True
+    s = snap("MCD")
+    del s.ttm["eps"], s.ttm_ends["eps"]
+    m = compute_metrics(s, fh("MCD"), today=TODAY, is_etf=False, price=300)
+    assert m.eps_ttm_edgar == pytest.approx(8.787e9 / 711.1e6, rel=1e-6)
 
 
 def test_equity_growth_na_for_buybacks_hd():
@@ -233,27 +246,47 @@ def test_financial_rule_set_jpm():
     assert m.checks["roic_now"].label == "ROE now"
 
 
-def test_jpm_stale_debt_balance_recorded():
+def test_jpm_debt_is_na_by_design():
     m = run("JPM")
-    assert "debt balance stale (2014-06-30)" in m.notes
-    assert m.debt is None and m.roic_now is None
-    assert m.status is None                                            # financial: debt is n/a by design
+    assert m.financial and m.checks["debt"].passed is None and "n/a (financial)" in m.checks["debt"].detail
+    assert m.status is None and m.wait_cap == ""                       # financial: debt is n/a by design
+    s = snap("JPM")
+    s.balance_ends["debt"] = "2014-06-30"                              # a stale balance is recorded, never estimated
+    m = compute_metrics(s, fh("JPM"), today=TODAY, is_etf=False, price=fixture_price("JPM"))
+    assert "debt balance stale (2014-06-30)" in m.notes and m.debt is None and m.status is None
 
 
 def test_eps_growth_prefers_finnhub_series():
     assert run("GOOGL").growth_source["eps"] == "finnhub"
 
 
-def test_sources_disagree_on_roic_sets_check_data():
+def test_sources_disagree_on_roic_is_avoid_on_the_worse_source():
+    # R38: the sources disagree on ROIC and the worse one (Finnhub 5%) already fails the 15% gate,
+    # so the row is scored and AVOID with that reason, never "Check data"
     f = fh("AAPL")
     f.roi_ttm = 5.0
     m = compute_metrics(snap("AAPL"), f, today=TODAY, is_etf=False, price=fixture_price("AAPL"))
-    assert m.status == "CHECK_DATA" and m.status_reason.startswith("Check data: ROIC 69% vs Finnhub 5%")
+    assert m.status is None and m.status_reason == ""
+    assert m.forced_avoid == "ROIC 5% < 15% (Finnhub; sources differ on ROIC)"
     assert m.checks["sources"].passed is False
+    assert "check data: ROIC 69% vs Finnhub 5%" in m.notes
 
 
-def test_price_sanity_catches_scale_error():
+def test_price_sanity_is_a_note_for_usd_10k_filers():
+    # R39: Schwab's price is authoritative for a USD 10-K filer; Finnhub's EPS x P/E lags
     m = run("AAPL", price=100.0)                                      # eps x pe = 343.7
+    assert m.status is None and m.forced_avoid == "" and m.wait_cap == ""
+    assert m.checks["sources"].passed is True
+    assert "price sanity: price 100.00 vs Finnhub EPS × P/E 343" in m.checks["sources"].detail
+    assert "note only" in m.checks["sources"].detail
+    assert m.listing_factor == 1.0                                    # a 10-K filer never gets an ADR factor
+
+
+def test_price_sanity_still_blocks_usd_20f_filer():
+    s = synth(lpe="2025-12-31")
+    s.annual_form = "20-F"
+    f = synth_fh(s)
+    m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm * 0.5)             # 50% off Finnhub's EPS x P/E
     assert m.status == "CHECK_DATA" and "price sanity" in m.status_reason
 
 
@@ -265,7 +298,7 @@ def test_aapl_clean_with_right_price():
 
 def test_tsm_adr_no_shares_skips_eps_check_and_is_stale():
     m = run("TSM", price=350.0)
-    assert m.eps_ttm_edgar is None
+    assert m.eps_ttm_edgar == pytest.approx(snap("TSM").ttm["eps"])     # the EPS tag's TTM, in TWD
     assert "EPS: skipped (non-USD filer)" in m.checks["sources"].detail
     assert m.status == "STALE" and m.status_reason == "Stale filing (annual 2024-12-31)"
     assert 0.1 < m.listing_factor < 0.2
@@ -279,11 +312,16 @@ def test_nvda_fcf_from_finnhub_margin_when_capex_has_a_hole():
     assert m.growth["fcf"] is not None
 
 
-def test_short_history_crwv():
+def test_crwv_three_years_scored_and_losing_money():
     m = run("CRWV")
-    # three annual rows, but 2023 -> 2024 revenue is an 8.4x jump, so the window starts at 2024
-    assert m.status == "SHORT_HISTORY" and m.status_reason == "Short history (2 years)"
-    assert m.window == ["2024-12-31", "2025-12-31"]
+    # R34: the 2023 -> 2024 revenue jump (8.4x) no longer breaks the window because 2023 revenue
+    # (229M) is above the 100M shell floor, but the 5%-of-latest start rule (257M) still cuts 2023.
+    # Two years, and CRWV loses money: AVOID "losing money", never "Short history".
+    assert m.window == ["2024-12-31", "2025-12-31"] and m.years == 2 and m.young is False
+    assert m.status is None and m.forced_avoid.startswith("losing money")
+    assert m.checks["earning"].passed is False
+    assert not any("revenue jump" in n for n in m.notes)
+    assert any("earlier revenue < 5% of latest" in n for n in m.notes)
 
 
 def test_young_eight_year_rule():
@@ -344,7 +382,10 @@ def test_zero_debt_requires_proof():
 def test_zero_debt_needs_finnhub_debt_to_equity_too():
     s = synth(debt=None, interest_share=None)
     m = synth_run(s, synth_fh(s, debt_to_equity=0.35))          # R18 (amended) threshold is 0.3
-    assert m.status == "CHECK_DATA" and "debt unresolved" in m.status_reason
+    # no proof, but R41: Finnhub's D/E x equity is a usable (over-stated) debt -> scored, capped at WAIT
+    assert m.status is None and m.debt == pytest.approx(0.35 * s.ttm["equity"])
+    assert m.wait_cap == "debt from Finnhub D/E 0.35 × equity (EDGAR debt unresolved)"
+    assert m.checks["debt"].passed is True and "Finnhub D/E" in m.checks["debt"].detail
 
 
 def test_zero_debt_accepted_with_proof():
@@ -358,9 +399,15 @@ def test_zero_debt_accepted_with_proof():
 def test_stale_debt_balance_is_unresolved():
     s = synth()
     s.balance_ends["debt"] = "2014-06-30"
-    m = synth_run(s)
-    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: debt unresolved"
-    assert "debt balance stale (2014-06-30)" in m.notes and m.roic_now is None
+    f = synth_fh(s)
+    m = synth_run(s, f)
+    assert "debt balance stale (2014-06-30)" in m.notes
+    # R41: the stale EDGAR balance is replaced by Finnhub's D/E x equity, capped at WAIT
+    assert m.status is None and m.debt == pytest.approx(f.debt_to_equity * s.ttm["equity"])
+    assert m.wait_cap.startswith("debt from Finnhub D/E") and m.roic_now is not None
+    f.debt_to_equity = None                                          # no Finnhub D/E: unresolved for real
+    m = synth_run(s, f)
+    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: debt unresolved" and m.roic_now is None
 
 
 def test_debt_over_three_times_fcf_fails():
@@ -393,8 +440,9 @@ def test_stale_by_fetched_at():
 
 
 def test_short_history_synthetic():
-    m = synth_run(synth(n=4))
-    assert m.status == "SHORT_HISTORY" and m.status_reason == "Short history (4 years)"
+    m = synth_run(synth(n=2))
+    assert m.status == "SHORT_HISTORY" and m.status_reason == "Short history (2 years)"
+    assert m.years == 2 and m.young is False
 
 
 def test_mixed_ttm_stamps_use_fy_for_both():
@@ -437,15 +485,21 @@ def test_eps_cross_check_periods_differ():
     f.eps_annual = {e: v for e, v in f.eps_annual.items() if e < "2025"}
     f.pe_annual = {e: v for e, v in f.pe_annual.items() if e < "2025"}
     m = synth_run(s, f)
-    assert m.status == "CHECK_DATA" and "periods differ" in m.status_reason
+    # R40: a missing cross-check is not "no data": scored, capped at WAIT, the gap named
+    assert m.status is None and m.wait_cap.startswith("not cross-checked: periods differ (Finnhub FY 2024-12-31")
+    assert m.checks["sources"].passed is None
 
 
-def test_eps_growth_sources_disagree():
+def test_eps_growth_sources_disagree_uses_lower_growth_and_caps():
     s = synth()
     f = synth_fh(s)
-    f.eps_annual = {e: 1.0 for e in f.eps_annual}                     # Finnhub flat, EDGAR +12%/yr
+    last = f.eps_annual[s.latest_annual_end]
+    f.eps_annual = {e: last for e in f.eps_annual}                    # Finnhub flat, EDGAR +12%/yr
     m = synth_run(s, f)
-    assert m.status == "CHECK_DATA" and "EPS growth" in m.status_reason
+    assert m.status is None and m.wait_cap == "not cross-checked: EPS growth Finnhub 0% vs EDGAR 12% (lower used)"
+    assert m.growth["eps"] == pytest.approx(0.0, abs=1e-9) and m.growth_source["eps"] == "finnhub"
+    assert m.checks["eps_growth"].passed is False
+    assert any("EPS growth: sources differ" in n and "lower used" in n for n in m.notes)
 
 
 def test_rule1_business_needs_roic_consistency_pass():
@@ -479,11 +533,12 @@ def test_input_snapshot_not_mutated():
 # ---------- review fixes (2026-11-06) ----------
 
 def test_price_sanity_not_checked_without_price_usd():
+    # R39/R40: a USD 10-K filer's price sanity is a cross-check only -> scored, capped at WAIT
     s = synth()
     m = synth_run(s, price=None)
     assert m.checks["sources"].passed is None
     assert "price sanity: not checked (no price)" in m.checks["sources"].detail
-    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: price sanity not checked"
+    assert m.status is None and m.wait_cap == "not cross-checked: price sanity (no price)"
 
 
 def test_price_sanity_not_checked_without_pe():
@@ -491,7 +546,7 @@ def test_price_sanity_not_checked_without_pe():
     m = synth_run(s, synth_fh(s, pe_ttm=None), price=100.0)
     assert m.checks["sources"].passed is None
     assert "price sanity: not checked (no P/E)" in m.checks["sources"].detail
-    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: price sanity not checked"
+    assert m.status is None and m.wait_cap == "not cross-checked: price sanity (no P/E)"
 
 
 def test_price_sanity_not_checked_non_usd_no_price():
@@ -506,7 +561,9 @@ def test_price_sanity_real_failure_outranks_not_checked():
     f = fh("AAPL")
     f.roi_ttm = 5.0
     m = compute_metrics(snap("AAPL"), f, today=TODAY, is_etf=False, price=None)
-    assert m.checks["sources"].passed is False and m.status_reason.startswith("Check data: ROIC")
+    assert m.checks["sources"].passed is False
+    assert m.status is None and m.forced_avoid.startswith("ROIC 5% < 15%")      # R38 beats the WAIT cap
+    assert m.wait_cap == "" and "wait cap: not cross-checked: price sanity (no price)" in m.notes
 
 
 def test_eps_not_falling_na_when_edgar_ttm_is_fy_bank():
@@ -615,11 +672,12 @@ def test_listing_factor_small_move_or_no_baseline_is_fine():
 
 
 def test_eps_growth_one_source_only_non_financial():
+    # R40: Finnhub's EPS series missing is a missing cross-check -> scored, capped at WAIT
     s = synth()
     f = synth_fh(s, eps_annual={})
     m = compute_metrics(s, f, today=TODAY, is_etf=False, price=f.eps_ttm * f.pe_ttm)
-    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: EPS growth: one source only"
-    assert "EPS growth: one source only" in m.checks["sources"].detail and m.checks["sources"].passed is False
+    assert m.status is None and m.wait_cap == "not cross-checked: EPS growth: one source only"
+    assert "EPS growth: one source only" in m.checks["sources"].detail and m.checks["sources"].passed is None
 
 
 def test_eps_growth_edgar_only_still_allowed_for_financials():
@@ -642,15 +700,19 @@ def test_zero_debt_proof_r18_threshold():
     m = synth_run(s, synth_fh(s, debt_to_equity=0.15))
     assert m.status is None and m.debt == 0.0 and m.checks["debt"].passed is True
     assert m.checks["debt"].detail.startswith("no debt (proof: no interest expense; Finnhub D/E 0.15")
-    # D/E 0.25 with nothing tagged: the proof holds but the R22 cross-check (gap > 0.2) flags it
+    # D/E 0.25 with nothing tagged: the proof holds but the R22 cross-check (gap > 0.2) flags it;
+    # R41: the larger candidate (Finnhub D/E x equity) is used and the row is capped at WAIT
     m = synth_run(s, synth_fh(s, debt_to_equity=0.25))
-    assert m.status_reason == "Check data: debt understated? EDGAR D/E 0.00 vs Finnhub 0.25"
+    assert m.status is None and m.debt == pytest.approx(0.25 * s.ttm["equity"])
+    assert m.wait_cap == "debt: candidates differ, larger used (EDGAR D/E 0.00 vs Finnhub 0.25)"
+    assert "debt understated? EDGAR D/E 0.00 vs Finnhub 0.25" in m.checks["sources"].detail
     # ... unless operating leases explain Finnhub's figure (it counts leases as debt)
     s.annual[s.latest_annual_end]["op_leases"] = 0.2 * s.ttm["equity"]
     m = synth_run(s, synth_fh(s, debt_to_equity=0.25))
-    assert m.status is None and m.debt == 0.0 and m.checks["debt"].passed is True
+    assert m.status is None and m.debt == 0.0 and m.checks["debt"].passed is True and m.wait_cap == ""
     m = synth_run(s, synth_fh(s, debt_to_equity=0.30))          # at the threshold: no proof
-    assert m.status_reason == "Check data: debt unresolved" and m.debt is None
+    assert m.status is None and m.debt == pytest.approx(0.30 * s.ttm["equity"])   # R41 estimate, capped
+    assert m.wait_cap == "debt from Finnhub D/E 0.30 × equity (EDGAR debt unresolved)"
 
 
 def test_missing_finnhub_de_never_proves_no_debt():
@@ -682,7 +744,7 @@ def test_zero_debt_proof_roic_series_counts_zero():
 
 def test_zero_debt_proof_fails_keeps_debt_unresolved():
     for kw, fh_kw in ((dict(interest_share=0.05), dict(debt_to_equity=None)),     # interest 5% of op income
-                      (dict(interest_share=None), dict(debt_to_equity=1.51))):    # CAVA: D/E with leases 1.51
+                      (dict(interest_share=None), dict(debt_to_equity=2.0))):     # D/E above liabilities/equity 1.5
         s = synth(debt=None, **kw)
         m = synth_run(s, synth_fh(s, **fh_kw))
         assert m.status == "CHECK_DATA" and m.status_reason == "Check data: debt unresolved", kw
@@ -722,7 +784,7 @@ def test_negative_finnhub_eps_is_avoid_losing_money_not_check_data():
 def test_positive_eps_without_pe_is_still_not_checked():
     s = synth()
     m = synth_run(s, synth_fh(s, pe_ttm=None), price=100.0)
-    assert m.status_reason == "Check data: price sanity not checked"
+    assert m.status is None and m.wait_cap == "not cross-checked: price sanity (no P/E)"
 
 
 # ---------- review round 3 ----------
@@ -748,15 +810,21 @@ def test_negative_finnhub_de_never_proves_no_debt():
 def test_debt_understated_cross_check():
     s = synth(debt=20.0)                                       # our D/E 20 / 138.7 = 0.14
     m = synth_run(s, synth_fh(s, debt_to_equity=0.90))
-    assert m.status == "CHECK_DATA"
-    assert m.status_reason == "Check data: debt understated? EDGAR D/E 0.14 vs Finnhub 0.90"
-    assert m.checks["sources"].passed is False
-    # Finnhub only a little higher (< 2x, or a gap <= 0.2): fine
-    assert synth_run(s, synth_fh(s, debt_to_equity=0.25)).status is None
-    assert synth_run(s, synth_fh(s, debt_to_equity=0.33)).status is None     # >= 2x but gap 0.19
+    # R41: candidates differ by > 25% -> the LARGER debt (Finnhub D/E x equity) is used, noted, capped
+    assert m.status is None and m.debt == pytest.approx(0.90 * s.ttm["equity"])
+    assert m.wait_cap == "debt: candidates differ, larger used (EDGAR D/E 0.14 vs Finnhub 0.90)"
+    assert "debt understated? EDGAR D/E 0.14 vs Finnhub 0.90" in m.checks["sources"].detail
+    assert m.checks["sources"].passed is None
+    assert m.checks["debt"].value == pytest.approx(0.90 * s.ttm["equity"] / m.fcf_ttm)
+    assert m.roic_now == pytest.approx(s.ttm["net_income"] / (s.ttm["equity"] * 1.90))
+    # Finnhub only a little higher (< 2x, or a gap <= 0.2): fine, EDGAR's figure stands
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.25))
+    assert m.status is None and m.wait_cap == "" and m.debt == 20.0
+    assert synth_run(s, synth_fh(s, debt_to_equity=0.33)).wait_cap == ""   # >= 2x but gap 0.19
     # operating leases count on our side (Finnhub's figure includes them)
     s.annual[s.latest_annual_end]["op_leases"] = 100.0
-    assert synth_run(s, synth_fh(s, debt_to_equity=0.90)).status is None
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.90))
+    assert m.status is None and m.wait_cap == "" and m.debt == 20.0
 
 
 @pytest.mark.parametrize("sym", ["AAPL", "HD", "MCD", "GOOGL", "NVDA"])
@@ -786,3 +854,438 @@ def test_negative_eps_financial_row_is_no_earnings():
     assert m.status is None and m.checks["earning"].passed is False
     out = signal(m, valuation(m, f), price=50.0, price_ok=True, mos=50)
     assert out["signal"] == "AVOID" and out["reason"] == "losing money"
+
+
+# ---------- "no data" fix (2026-11-07): R33 R34 R35 R38 R39 R40 R41 ----------
+
+def test_three_and_four_year_rows_score_as_young():
+    # R33: MIN_YEARS 3; growth from single endpoints; ROIC consistency over the 3 computable years
+    for n in (3, 4):
+        s = synth(n=n)
+        m = synth_run(s)
+        assert m.status is None, (n, m.status_reason)
+        assert m.years == n and m.young is True and m.forced_avoid == "" and m.wait_cap == ""
+        assert m.growth["sales"] == pytest.approx(0.12, abs=2e-3)
+        assert m.checks["sales_growth"].passed is True and m.checks["eps_growth"].passed is True
+        assert m.checks["roic_consistency"].passed is True
+        assert m.checks["roic_consistency"].detail == f"ROIC ≥ 10% in {n} of {n} years"
+        assert m.checks["history"].passed is True and m.checks["history"].threshold == "≥ 3 complete years, not stale"
+        assert m.eps_3yr_avg is not None
+
+
+def test_ten_year_row_still_needs_five_consistency_years():
+    # a long window with only 4 computable ROIC years stays n/a (unchanged; see the META test)
+    s = synth(interest_share=0.015)
+    for e in sorted(s.annual)[:-4]:
+        del s.annual[e]["debt"]
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.28))
+    assert m.checks["roic_consistency"].passed is None
+
+
+def test_revenue_jump_breaks_window_only_under_the_shell_floor():
+    # R34: a > 5x jump breaks the window only when the pre-jump revenue is under 100M (shells)
+    big = rows([200e6, 220e6, 1.5e9, 1.6e9, 1.7e9, 1.8e9, 1.9e9, 2.0e9, 2.1e9, 2.2e9])
+    assert growth_window(big)[0] == "2016-12-31" and len(growth_window(big)) == 10
+    shell = rows([20e6, 22e6, 1.5e9, 1.6e9, 1.7e9, 1.8e9, 1.9e9, 2.0e9, 2.1e9, 2.2e9])
+    assert growth_window(shell)[0] == "2018-12-31" and len(growth_window(shell)) == 8
+    # the 5%-of-latest start rule is untouched
+    small = rows([1, 2, 3, 4, 10, 20, 30, 40, 50, 60])
+    assert growth_window(small)[0] == "2018-12-31"
+
+
+def test_revenue_jump_floor_is_usd_equivalent():
+    annual = rows([2.0e9, 2.2e9, 15e9, 16e9, 17e9, 18e9, 19e9, 20e9, 21e9, 22e9])
+    assert growth_window(annual, currency="USD")[0] == "2016-12-31"        # 2.0B USD: real company
+    assert growth_window(annual, currency="JPY")[0] == "2018-12-31"        # 2.0B JPY ~ 13M USD: shell
+    assert growth_window(annual, currency="EUR")[0] == "2016-12-31"
+
+
+def test_window_drops_duplicate_fiscal_years_under_350_days_apart():
+    # TLRY / SYM carry a second entity's fiscal years next to their own: the later row of a pair wins
+    annual = rows([10, 11, 12, 13, 14, 15, 16, 17], start=2018, md="09-30")
+    annual["2021-12-31"] = dict(revenue=99.0, net_income=1.0, eps=1.0, equity=10.0, cfo=2.0, capex=1.0)   # SPAC shell
+    w = growth_window(annual)
+    assert "2021-12-31" not in w and "2021-09-30" in w and len(w) == 8
+    s = synth()
+    s.annual["2025-06-30"] = dict(s.annual["2025-12-31"])            # a stray row 184 days before the latest
+    m = synth_run(s)
+    assert "2025-06-30" not in m.window and m.years == 10
+    assert any(n.startswith("window: 2025-06-30 dropped (") for n in m.notes)
+
+
+def ttm_based(s):
+    """Stamp the synthetic company's flows as a TTM (a 10-K filer with 10-Qs), not the FY."""
+    for c in list(s.ttm_ends):
+        s.ttm_ends[c] = (s.latest_period_end, False)
+    return s
+
+
+def _pre_revenue(revenue="absent", ni=-5.0):
+    s = synth(n=6)
+    for r in s.annual.values():
+        r["net_income"] = ni
+        r["eps"] = ni / 10.0
+        if revenue == "absent":
+            del r["revenue"]
+        else:
+            r["revenue"] = revenue
+    s.ttm["net_income"] = ni
+    if revenue == "absent":
+        del s.ttm["revenue"], s.ttm_ends["revenue"]
+    else:
+        s.ttm["revenue"] = revenue
+    return s
+
+
+def test_pre_revenue_company_is_avoid_no_revenue_yet():
+    from long_term.valuation import signal, valuation
+    for revenue in ("absent", 0.0):
+        s = _pre_revenue(revenue)
+        f = synth_fh(s, eps_ttm=-0.5, eps_incl_ttm=-0.5, pe_ttm=None, roi_ttm=-20.0)
+        m = synth_run(s, f, price=10.0)
+        assert m.pre_revenue is True and m.status is None and m.status_reason == "", revenue
+        assert m.forced_avoid == "no revenue yet" and m.years == 0
+        out = signal(m, valuation(m, f), price=10.0, price_ok=True, mos=50)
+        assert out["signal"] == "AVOID" and out["reason"] == "no revenue yet" and out["leaps"] is False
+        assert all(out[k] is None for k in ("buy_below", "leaps_below", "safety_buy", "buy_zone_pct"))
+
+
+def test_pre_revenue_needs_losses_a_profitable_row_without_revenue_is_a_tag_gap():
+    # HSBC-shaped: net income and equity but no revenue tag -> honest SHORT_HISTORY, never "no revenue yet"
+    s = _pre_revenue("absent", ni=20.0)
+    m = synth_run(s, synth_fh(s, eps_ttm=2.0, eps_incl_ttm=2.0))
+    assert m.pre_revenue is False and m.status == "SHORT_HISTORY" and m.forced_avoid == ""
+
+
+def test_revenue_after_the_latest_annual_is_not_pre_revenue():
+    # OKLO-shaped: no annual revenue yet, but the TTM already carries revenue > 0 -> not pre-revenue;
+    # the company loses money, so the row is AVOID "losing money" (never "no data")
+    s = _pre_revenue("absent")
+    s.ttm["revenue"], s.ttm_ends["revenue"] = 3.0, ("2026-09-30", False)
+    m = synth_run(s, synth_fh(s, eps_ttm=-0.5, eps_incl_ttm=-0.5, pe_ttm=None, roi_ttm=-20.0), price=10.0)
+    assert m.pre_revenue is False and m.status is None and m.forced_avoid == "losing money"
+
+
+def test_loss_maker_with_short_history_is_avoid_losing_money():
+    # LAES-shaped: the latest year has net income < 0 but no EPS, so the window is empty; the
+    # company loses money, which is enough for AVOID (R38 spirit), never "Short history"
+    from long_term.valuation import signal, valuation
+    s = synth(n=6)
+    lae = s.latest_annual_end
+    f = synth_fh(s, eps_ttm=-0.38, eps_incl_ttm=-0.38, pe_ttm=None, roi_ttm=-12.0)
+    del s.annual[lae]["eps"]
+    _set_latest(s, net_income=-30.0)
+    m = synth_run(s, f, price=10.0)
+    assert m.years == 0 and m.status is None and m.forced_avoid == "losing money"
+    assert signal(m, valuation(m, f), price=10.0, price_ok=True, mos=50)["reason"] == "losing money"
+    # a 2-year company that loses money: AVOID too (true, and fail-safe)
+    s2 = synth(n=2)
+    _set_latest(s2, net_income=-5.0, eps=-0.5)
+    m2 = synth_run(s2, synth_fh(s2, eps_ttm=-0.5, eps_incl_ttm=-0.5, pe_ttm=None), price=10.0)
+    assert m2.status is None and m2.forced_avoid == "losing money"
+    # ... while a 2-year company that earns money is still SHORT_HISTORY
+    assert synth_run(synth(n=2)).status == "SHORT_HISTORY"
+
+
+def test_check_data_with_both_eps_negative_is_avoid_losing_money():
+    # R38: the sources disagree on the size of the loss but both say loss -> AVOID "losing money"
+    s = ttm_based(synth())
+    _set_latest(s, net_income=-10.0, eps=-1.0)
+    f = synth_fh(s, eps_ttm=-3.0, eps_incl_ttm=-3.0, pe_ttm=None)    # EDGAR -1.00 vs Finnhub -3.00
+    m = synth_run(s, f, price=10.0)
+    assert "EPS -1.00" in m.checks["sources"].detail and m.checks["sources"].passed is False
+    assert m.status is None and m.forced_avoid == "losing money"
+
+
+def test_check_data_with_one_source_negative_is_avoid_sources_differ():
+    s = ttm_based(synth())
+    f = synth_fh(s, eps_ttm=-0.5, eps_incl_ttm=-0.5, pe_ttm=None)    # EDGAR +5.55 vs Finnhub -0.50
+    m = synth_run(s, f, price=10.0)
+    assert m.status is None and m.forced_avoid == "losing money (sources differ on the size)"
+
+
+def test_check_data_stays_when_the_worse_source_still_passes():
+    # EPS disagree (both positive, ROIC fine either way, debt fine): still CHECK_DATA (R38 keeps it)
+    s = ttm_based(synth())
+    f = synth_fh(s)
+    f.eps_ttm = f.eps_incl_ttm = f.eps_ttm * 2.0
+    m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm / 2.0)          # price sanity ok at the EDGAR EPS
+    assert m.status == "CHECK_DATA" and m.status_reason.startswith("Check data: EPS ")
+    assert m.forced_avoid == ""
+
+
+def test_check_data_eps_disagreement_scales_roic_to_the_lower_eps():
+    # R38 example: ROIC evaluated with the LESS favourable EPS -> "ROIC 7% < 15% (sources differ on EPS)"
+    s = ttm_based(synth())
+    for r in s.annual.values():
+        r["net_income"] = r["revenue"] * 0.1                           # ROIC ~ 17%
+        r["eps"] = r["net_income"] / r["shares"]
+    s.ttm["net_income"] = s.annual[s.latest_annual_end]["net_income"]
+    f = synth_fh(s)
+    f.eps_ttm = f.eps_incl_ttm = f.eps_ttm / 3.0                       # Finnhub EPS a third of EDGAR's
+    m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm * 3.0)
+    assert m.roic_now > 0.15
+    assert m.status is None and m.forced_avoid.endswith("< 15% (sources differ on EPS)")
+    assert m.forced_avoid.startswith("ROIC 6%") or m.forced_avoid.startswith("ROIC 7%")
+
+
+def test_negative_equity_roic_na_caps_at_wait_or_avoids_on_finnhub():
+    # R40: ROIC n/a from negative equity is scored and capped at WAIT; R38: Finnhub ROI < 15% -> AVOID
+    s = synth(debt=5.0)
+    _set_latest(s, equity=-10.0)                                       # denominator -5 -> n/a
+    m = synth_run(s, synth_fh(s, roi_ttm=25.0, debt_to_equity=-0.5))
+    assert m.roic_now is None and m.status is None
+    assert m.wait_cap == "ROIC not measurable: negative equity"
+    assert m.checks["roic_now"].passed is None
+    m = synth_run(s, synth_fh(s, roi_ttm=9.6, debt_to_equity=-0.5))
+    assert m.status is None and m.forced_avoid == "ROIC 10% < 15% (Finnhub; EDGAR not measurable)"
+
+
+def test_missing_finnhub_eps_caps_at_wait():
+    s = synth()
+    f = synth_fh(s, eps_ttm=None, eps_incl_ttm=None)
+    m = synth_run(s, f, price=100.0)
+    assert m.status is None
+    assert m.wait_cap == "not cross-checked: Finnhub EPS missing"
+    assert m.checks["sources"].passed is None and m.checks["earning"].passed is True
+    assert m.checks["earning"].detail.startswith("EPS 5.55 (EDGAR)")
+
+
+def test_wait_cap_lists_every_gap_in_notes():
+    s = synth()
+    f = synth_fh(s, eps_ttm=None, eps_incl_ttm=None, eps_annual={})
+    m = synth_run(s, f, price=100.0)
+    assert m.wait_cap == "not cross-checked: Finnhub EPS missing"
+    assert "wait cap: not cross-checked: EPS growth: one source only" in m.notes
+
+
+def test_debt_unresolved_estimate_needs_plausible_interest():
+    # interest 5% of operating income cannot be carried by a 1%-of-equity debt: the Finnhub estimate
+    # is implausible, so the debt stays unresolved (CHECK_DATA)
+    s = synth(debt=None, interest_share=0.05)
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.01))
+    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: debt unresolved"
+    assert any("implausible" in n for n in m.notes)
+    # the same interest with a D/E that can carry it: estimate used, capped
+    m = synth_run(s, synth_fh(s, debt_to_equity=0.50))
+    assert m.status is None and m.debt == pytest.approx(0.5 * s.ttm["equity"])
+    assert m.wait_cap == "debt from Finnhub D/E 0.50 × equity (EDGAR debt unresolved)"
+
+
+def test_finnhub_de_above_liabilities_is_ignored_and_no_debt_proof_uses_liabilities():
+    # CAVA-shaped: no debt tag ever, no interest, Finnhub D/E 1.51 while liabilities/equity is 0.74
+    s = synth(debt=None, interest_share=None)
+    lae = s.latest_annual_end
+    eq = s.ttm["equity"]
+    _set_latest(s, assets=eq * 1.74, op_leases=eq * 0.60)              # liabilities 0.74 eq, leases 0.60 eq
+    m = synth_run(s, synth_fh(s, debt_to_equity=1.51))
+    assert m.status is None and m.debt == 0.0 and m.checks["debt"].passed is True and m.wait_cap == ""
+    assert any(n.startswith("Finnhub D/E 1.51 not reproducible (liabilities/equity 0.74") for n in m.notes)
+    assert "debt understated" not in m.checks["sources"].detail
+    # without the leases the non-lease liabilities (0.74 eq) could hide debt: no proof, no estimate
+    del s.annual[lae]["op_leases"], s.ttm["op_leases"]
+    m = synth_run(s, synth_fh(s, debt_to_equity=1.51))
+    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: debt unresolved"
+
+
+def test_debt_understated_compares_at_the_fiscal_year_end_too():
+    # PL / STX: an equity raise after the FY end makes the TTM D/E look far below Finnhub's FY-end
+    # figure; when the FY-end comparison agrees, the flag is dropped
+    s = synth(debt=100.0)
+    s.ttm["equity"] = s.ttm["equity"] * 4.0                            # TTM D/E a quarter of the FY's
+    s.balance_ends["equity"] = "2026-09-30"
+    fy = s.annual[s.latest_annual_end]
+    de = 100.0 / fy["equity"]
+    m = synth_run(s, synth_fh(s, debt_to_equity=de))
+    assert m.status is None and m.wait_cap == "" and "debt understated" not in m.checks["sources"].detail
+
+
+def test_capex_unknown_with_negative_cfo_is_avoid():
+    # RUN / TLRY: capex unknown => FCF <= CFO; CFO < 0 settles it: AVOID "cash from operations negative"
+    s = synth()
+    lae = s.latest_annual_end
+    del s.annual[lae]["capex"], s.ttm["capex"], s.ttm_ends["capex"]
+    _set_latest(s, cfo=-50.0)
+    m = synth_run(s)
+    assert m.fcf_ttm is None and m.status is None
+    assert m.forced_avoid == "cash from operations negative"
+    # capex unknown with CFO > 0: nothing can be said -> honest SHORT_HISTORY (latest row incomplete)
+    _set_latest(s, cfo=50.0)
+    m = synth_run(s)
+    assert m.status == "SHORT_HISTORY" and m.forced_avoid == ""
+
+
+def test_eps_now_prefers_the_snapshot_ttm_eps_tag():
+    # IBKR / MCHP / BYND: when the snapshot carries a TTM EPS from the EPS tag, it beats NI / shares
+    s = synth()
+    s.ttm["eps"], s.ttm_ends["eps"] = 1.23, (s.latest_annual_end, True)
+    m = synth_run(s)
+    assert m.eps_ttm_edgar == 1.23
+    del s.ttm["eps"], s.ttm_ends["eps"]
+    m = synth_run(s)
+    assert m.eps_ttm_edgar == pytest.approx(s.ttm["net_income"] / s.ttm["shares"])
+
+
+def test_annual_only_usd_filer_compares_fy_eps_with_finnhub_annual():
+    # WB: a 20-F filer's EDGAR "TTM" is the FY; Finnhub's TTM runs two quarters later. Compare the FY
+    # with Finnhub's annual EPS for the same FY instead of calling it a disagreement.
+    s = synth(lpe="2025-12-31")
+    s.annual_form = "20-F"
+    f = synth_fh(s)
+    fy_eps = s.annual[s.latest_annual_end]["eps"]
+    f.eps_ttm = f.eps_incl_ttm = fy_eps * 0.7                          # newer TTM, 30% lower
+    f.pe_ttm = 20.0
+    m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm)
+    assert f"EPS {fy_eps:.2f} (FY {s.latest_annual_end}) vs Finnhub FY {fy_eps:.2f} ok" in m.checks["sources"].detail
+    # the TTM in use is Finnhub's and newer than anything EDGAR can confirm: capped at WAIT (R40)
+    assert m.status is None and m.checks["sources"].passed is None
+    assert m.wait_cap == f"not cross-checked: Finnhub EPS TTM {f.eps_ttm:.2f} newer than EDGAR FY {fy_eps:.2f}"
+    f.eps_ttm = f.eps_incl_ttm = fy_eps                                # Finnhub's TTM still the FY: no cap
+    m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm)
+    assert m.status is None and m.wait_cap == "" and m.checks["sources"].passed is True
+
+
+def test_forced_avoid_never_set_on_a_clean_row():
+    m = synth_run(synth())
+    assert m.forced_avoid == "" and m.wait_cap == "" and m.pre_revenue is False
+
+
+# ---------- "no data" fix round (2026-11-07, after review): M1-M5 ----------
+
+def test_tenk_means_a_usd_10k_filer_cad_reporter_keeps_the_listing_factor():
+    # R39 (fix round M1): `tenk` is a USD 10-K filer. A 10-K filer reporting in CAD with a USD quote
+    # keeps its listing factor (the FX), price sanity stays a CHECK_DATA blocker, and the sticker is
+    # never computed from unconverted CAD EPS.
+    from long_term.valuation import valuation
+    s = synth(lpe="2026-09-30")
+    s.currency, s.annual_form = "CAD", "10-K"
+    f = synth_fh(s)
+    m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm * 0.73)             # USD price = CAD-implied x 0.73
+    assert m.status is None and m.listing_factor == pytest.approx(0.73) and m.listing_factor != 1.0
+    assert m.eps_ttm_usd == pytest.approx(f.eps_ttm * 0.73)
+    assert "listing factor 0.7300" in m.checks["sources"].detail and "note only" not in m.checks["sources"].detail
+    v = valuation(m, f)
+    assert v.sticker_eps == pytest.approx(min(f.eps_ttm * 0.73, 1.5 * m.eps_3yr_avg * 0.73))
+    # no P/E: the listing factor cannot be checked -> blocker (not a WAIT cap), and no sticker
+    f2 = synth_fh(s, pe_ttm=None)
+    m = synth_run(s, f2, price=100.0)
+    assert m.status == "CHECK_DATA" and m.status_reason == "Check data: price sanity not checked"
+    assert m.eps_ttm_usd is None and m.listing_factor is None and valuation(m, f2).sticker is None
+    assert not any("price sanity" in n for n in m.notes if n.startswith("wait cap"))
+
+
+def test_annual_only_filer_with_a_newer_finnhub_fy_is_periods_differ_even_when_eps_agree():
+    # R40 (fix round M2, the reviewer's probe): EDGAR's latest FY is 2025, Finnhub's annual series
+    # already carries FY2026 and its TTM is 1.2x EDGAR's FY (inside the EPS tolerance). Every EPS
+    # behind the sticker is then one source: capped at WAIT, no BUY / LEAPS level at any price.
+    from long_term.valuation import signal, valuation
+    s = synth(lpe="2025-12-31")
+    s.annual_form = "20-F"
+    f = synth_fh(s)
+    fy_eps = s.annual[s.latest_annual_end]["eps"]
+    f.eps_annual["2026-12-31"], f.pe_annual["2026-12-31"] = fy_eps * 1.25, 20.0
+    f.eps_ttm = f.eps_incl_ttm = fy_eps * 1.2
+    m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm)
+    assert f"EPS {fy_eps:.2f} (FY 2025-12-31) vs Finnhub FY {fy_eps:.2f} ok" in m.checks["sources"].detail
+    assert m.status is None and m.forced_avoid == "" and m.checks["sources"].passed is None
+    assert m.wait_cap == "not cross-checked: periods differ (Finnhub FY 2026-12-31 vs EDGAR 2025-12-31)"
+    out = signal(m, valuation(m, f), price=1.0, price_ok=True, mos=50)
+    assert out["signal"] == "WAIT" and out["reason"] == m.wait_cap and out["leaps"] is False
+    assert out["buy_below"] is None and out["leaps_below"] is None
+    # WB's behaviour where the periods do NOT differ is kept: a TTM 1.2x the FY (inside the
+    # tolerance) is not a cap, one 30% off is the "newer than EDGAR FY" cap
+    del f.eps_annual["2026-12-31"], f.pe_annual["2026-12-31"]
+    m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm)
+    assert m.status is None and m.wait_cap == "" and m.checks["sources"].passed is True
+    f.eps_ttm = f.eps_incl_ttm = fy_eps * 0.7
+    m = synth_run(s, f, price=f.eps_ttm * f.pe_ttm)
+    assert m.wait_cap == f"not cross-checked: Finnhub EPS TTM {f.eps_ttm:.2f} newer than EDGAR FY {fy_eps:.2f}"
+
+
+def test_four_year_row_with_one_uncomputable_roic_year_is_judged_on_three():
+    # R33 (fix round M3): a 3-4 year row needs >= 3 computable ROIC years, not every year
+    from long_term.valuation import signal, valuation
+    s = synth(n=4)
+    first = sorted(s.annual)[0]
+    del s.annual[first]["debt"]                     # interest 2% of op income: no zero-debt proof -> year n/a
+    f = synth_fh(s)
+    m = synth_run(s, f)
+    assert m.years == 4 and sorted(m.roic_series) == sorted(s.annual)[1:]
+    assert m.checks["roic_consistency"].passed is True
+    assert m.checks["roic_consistency"].detail == "ROIC ≥ 10% in 3 of 3 years"
+    assert m.status is None and m.forced_avoid == "" and m.wait_cap == "" and m.rule1_business
+    out = signal(m, valuation(m, f), price=1.0, price_ok=True, mos=50)
+    assert out["signal"] == "WAIT" and out["reason"] == "young: 4 years, BUY needs 8"
+    # a 4-year row with two uncomputable years is still n/a
+    del s.annual[sorted(s.annual)[1]]["debt"]
+    m = synth_run(s, synth_fh(s))
+    assert m.checks["roic_consistency"].passed is None
+    assert m.checks["roic_consistency"].detail == "only 2 computable ROIC years in the window"
+
+
+def test_capex_larger_used_inside_the_window_caps_at_wait():
+    # fix round M4 (fail-safe): edgar's "larger used" capex is fail-safe for FCF now but not for FCF
+    # growth (a larger early-year capex lowers the early FCF and inflates the growth): two tags, one
+    # unconfirmed -> WAIT at most. The same note for years before the window does not matter.
+    tag = "(PaymentsToAcquireProductiveAssets)"
+    s = synth()
+    s.notes.append(f"capex: candidates differ, larger used in 2016, 2017, 2018 {tag}")
+    m = synth_run(s)
+    assert m.status is None and m.forced_avoid == ""
+    assert m.wait_cap == "not cross-checked: capex from two tags (larger used in 2016-2018)"
+    s = synth()
+    s.notes.append(f"capex: candidates differ, larger used in 2014, 2015, 2016 {tag}")
+    m = synth_run(s)
+    assert m.wait_cap == "not cross-checked: capex from two tags (larger used in 2016)"
+    s = synth()
+    s.notes.append(f"capex: candidates differ, larger used in 2009, 2010 {tag}")
+    s.notes.append("debt: candidates differ, larger used in 2016, 2017 (DebtAndCapitalLeaseObligations)")
+    m = synth_run(s)
+    assert m.wait_cap == "" and not any("capex from two tags" in n for n in m.notes)
+
+
+def test_derived_eps_inside_the_window_caps_without_a_finnhub_series():
+    # fix round M5 (fail-safe): EPS derived from NI/shares is one source; unless a full Finnhub annual
+    # series confirms the EPS growth, the row is WAIT at most. Derived years before the window and
+    # rows with an agreeing Finnhub series are untouched.
+    cap = "not cross-checked: EPS derived in 2016, 2017"
+    s = synth()
+    s.notes.append("eps: 2016, 2017 derived from NI/shares")
+    m = synth_run(s, synth_fh(s, eps_annual={}))
+    assert m.status is None and m.growth_source["eps"] == "edgar" and m.wait_cap == cap
+    assert "wait cap: not cross-checked: EPS growth: one source only" in m.notes
+    m = synth_run(s)                                                  # full Finnhub series agrees: no cap
+    assert m.wait_cap == "" and not any("EPS derived in" in n for n in m.notes)
+    s.sic = 6021                                                      # bank: the "no Finnhub series" branch
+    m = synth_run(s, synth_fh(s, eps_annual={}))
+    assert m.financial and m.status is None and m.wait_cap == cap
+    assert "EPS growth: no Finnhub series (EDGAR used)" in m.checks["sources"].detail
+    s = synth()
+    s.notes.append("eps: 2008, 2009 derived from NI/period-end shares")
+    m = synth_run(s, synth_fh(s, eps_annual={}))
+    assert m.wait_cap == "not cross-checked: EPS growth: one source only"
+    assert not any("EPS derived in" in n for n in m.notes)
+
+
+def test_short_history_row_with_failing_roic_is_avoid_with_the_reason():
+    # R46 (NEE-shaped): no capex tag so the window is empty, but the TTM ROIC is 7% on both
+    # sources: AVOID "ROIC 7% < 15%" beats "Short history (0 years)"; a short history with a
+    # passing ROIC stays SHORT_HISTORY (fail-safe both ways)
+    from long_term.valuation import signal, valuation
+    s = synth(n=6)
+    for e in s.annual:
+        s.annual[e].pop("capex", None)
+    s.ttm.pop("capex", None)
+    f = synth_fh(s, roi_ttm=7.0)
+    _set_latest(s, net_income=7.0)                       # equity 100 (synth): ROIC 7%
+    m = synth_run(s, f, price=10.0)
+    assert m.years == 0 and m.status is None, (m.years, m.status, m.status_reason)
+    assert m.forced_avoid.startswith("ROIC ") and "< 15%" in m.forced_avoid, m.forced_avoid
+    assert signal(m, valuation(m, f), price=10.0, price_ok=True, mos=50)["signal"] == "AVOID"
+    # the same empty window with a healthy ROIC is an honest SHORT_HISTORY
+    s2 = synth(n=6)
+    for e in s2.annual:
+        s2.annual[e].pop("capex", None)
+    s2.ttm.pop("capex", None)
+    m2 = synth_run(s2, synth_fh(s2), price=10.0)
+    assert m2.years == 0 and m2.status == "SHORT_HISTORY" and m2.forced_avoid == ""

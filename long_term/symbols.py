@@ -37,7 +37,8 @@ SEED_TICKERS: tuple[str, ...] = tuple(
 )
 
 # Ticker -> SEC CIK, applied before company_tickers.json (R20). company_tickers.json maps XOM to the
-# new ExxonMobil Holdings shell (CIK 2115436), which has no XBRL facts; the real filer is 34088.
+# new ExxonMobil Holdings CIK 2115436, which carries only the 2026 10-Qs; the 2008-2025 10-Ks sit under
+# 34088, so 34088 is fetched first and 2115436 is merged in (edgar.EXTRA_CIKS / merge_companyfacts, R42).
 CIK_OVERRIDES: dict[str, int] = {"XOM": 34088}
 
 

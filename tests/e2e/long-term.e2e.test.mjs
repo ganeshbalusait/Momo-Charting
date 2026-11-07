@@ -403,3 +403,36 @@ e2eTest("a failed leap read shows 'contract not available' with a Retry that rea
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// "No data" fix (2026-11-07): a company with no revenue yet reads AVOID with
+// that reason, a 4-year company reads WAIT with the young tag; neither counts
+// as "No data", and neither asks for a LEAP contract.
+e2eTest("a no-revenue company reads AVOID 'no revenue yet' and a 4-year company reads WAIT young, not 'No data'", async () => {
+  const list = () => [
+    ...rows(),
+    row({
+      symbol: "QS", name: "QuantumScape", signal: "AVOID", leaps: false, price: 12, refPrice: 12, buyBelow: null, leapsBelow: null,
+      buyZonePct: null, safetyBuy: null, big5: 0, years: 0, reason: "no revenue yet",
+    }),
+    row({
+      symbol: "TEM", name: "Tempus AI", signal: "WAIT", leaps: false, price: 60, refPrice: 60, buyBelow: 40, leapsBelow: null,
+      buyZonePct: -0.5, safetyBuy: 40, years: 4, young: true, reason: "young: 4 years, BUY needs 8",
+    }),
+  ];
+  await withApp({ view: VIEW, fakeReads: reads(list) }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await p.getByTestId("long-term-row-QS").waitFor({ timeout: 10_000 });
+    assert.deepEqual(
+      [await tileCount(p, "BUY"), await tileCount(p, "WAIT"), await tileCount(p, "AVOID"), await tileCount(p, "NODATA")],
+      ["1", "2", "2", "0"],
+    );
+    assert.match(await p.getByTestId("long-term-row-QS").innerText(), /AVOID[\s\S]*no revenue yet/);
+    const tem = await p.getByTestId("long-term-row-TEM").innerText();
+    assert.match(tem, /WAIT[\s\S]*young: 4 years, BUY needs 8/);
+    assert.match(tem, /young/);
+    assert.equal(await p.getByTestId("long-term-leap-QS").count() + await p.getByTestId("long-term-leap-TEM").count(), 0);
+    assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap"], "neither new row asks for a contract");
+    assert.deepEqual(app.pageErrors, []);
+  });
+});

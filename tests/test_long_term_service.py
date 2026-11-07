@@ -755,20 +755,36 @@ def test_non_usd_filer_has_no_market_cap_or_payback(svc):
 # ---------- first nightly audit (2026-11-06): CIK overrides (R20) ----------
 
 class XomSec(FakeSec):
-    """company_tickers.json maps XOM to the ExxonMobil Holdings shell (2115436, no facts); the real
-    filer is 34088 (served here from the AAPL fixture). Any request for the shell fails the test."""
+    """company_tickers.json maps XOM to ExxonMobil Holdings (2115436: the 2026 10-Qs, no history);
+    the historical filer is 34088 (CIK_OVERRIDES). 34088 is served from the trimmed XOM fixture,
+    2115436 from the XOM2 fixture (R42). NEE stands in with the same two fixtures: primary 753308 =
+    the XOM history, extra 37634 = XOM2, of which only the Q2 2026 accession is in NEE's own
+    submissions index. XOMX is a second ticker on XOM's CIK (never merged)."""
+
+    FACTS = {34088: "XOM", 2115436: "XOM2", 753308: "XOM", 37634: "XOM2"}
+    Q2_ACCN, Q3_ACCN = "0000034088-26-000093", "0002115436-26-000020"     # the two 10-Qs in XOM2
+
+    def __init__(self, fail_extra=False):
+        super().__init__()
+        self.fail_extra = fail_extra
 
     def get(self, url, headers):
         if url == TICKERS_URL:
             self.calls.append(("tickers", None))
-            return json.dumps({"0": {"cik_str": 2115436, "ticker": "XOM", "title": "ExxonMobil Holdings Corp"}}).encode()
+            return json.dumps({"0": {"cik_str": 2115436, "ticker": "XOM", "title": "ExxonMobil Holdings Corp"},
+                               "1": {"cik_str": 753308, "ticker": "NEE", "title": "NEXTERA ENERGY INC"},
+                               "2": {"cik_str": 34088, "ticker": "XOMX", "title": "second ticker on 34088"}}).encode()
         cik = int(re.search(r"CIK(\d{10})", url).group(1))
-        assert cik != 2115436, "the shell CIK must never be fetched"
-        if cik == 34088:
-            kind = "facts" if "companyfacts" in url else "sub"
-            self.calls.append((kind, cik))
-            return _bytes("companyfacts_AAPL.json" if kind == "facts" else "submissions_AAPL.json")
-        return super().get(url, headers)
+        if cik not in self.FACTS:
+            return super().get(url, headers)
+        if "companyfacts" in url:
+            self.calls.append(("facts", cik))
+            if self.fail_extra and cik in (2115436, 37634):
+                raise ValueError(f"extra CIK {cik} facts unavailable")
+            return _bytes(f"companyfacts_{self.FACTS[cik]}.json")
+        self.calls.append(("sub", cik))
+        return json.dumps({"name": f"filer {cik}", "sic": "2911", "sicDescription": "Petroleum Refining",
+                           "filings": {"recent": {"accessionNumber": [self.Q2_ACCN, "0000753308-26-000001"]}}}).encode()
 
 
 def test_cik_override_wins_over_the_sec_ticker_map(tmp_path):
@@ -780,7 +796,161 @@ def test_cik_override_wins_over_the_sec_ticker_map(tmp_path):
         r = svc.refresh(force=True)
         assert r["fetched"] == 1 and r["errors"] == 0
         assert svc.store.records["XOM"]["cik"] == 34088
-        assert sec.facts_calls() == [34088]
+        # re-pinned under R42 (fix round M6): the override still names the primary CIK, and the
+        # successor CIK is fetched as XOM's extra CIK (EXTRA_CIKS) for the 2026 10-Qs, never as primary
+        assert sec.facts_calls() == [34088, 2115436]
         assert svc.store.records["XOM"]["snapshot"]["cik"] == 34088
+    finally:
+        svc.stop_refresher()
+
+
+# ---------- R42 (fix round M6): facts split across CIKs are merged in the pass ----------
+
+def test_xom_merges_the_successor_cik_facts(tmp_path):
+    from long_term.edgar import EXTRA_CIKS
+    assert EXTRA_CIKS["XOM"] == (2115436,)
+    sec = XomSec()
+    svc = make_svc(tmp_path, universe=["XOM"], sec=sec)
+    try:
+        r = svc.refresh(force=True)
+        assert r["fetched"] == 1 and r["errors"] == 0
+        assert sec.facts_calls() == [34088, 2115436]
+        snap = svc.store.records["XOM"]["snapshot"]
+        assert snap["cik"] == 34088 and snap["latest_annual_end"] == "2025-12-31"
+        assert snap["latest_period_end"] == "2026-09-30"                 # 34088 alone stops at 2026-03-31
+        assert snap["ttm"]["net_income"] == 40622000000.0 and tuple(snap["ttm_ends"]["net_income"]) == ("2026-09-30", False)
+        row = _row_of(svc, "XOM")                                        # scored (the 34088 copy alone was STALE)
+        assert row["signal"] == "AVOID" and row["reason"] == "ROIC 14% < 15%" and row["years"] == 10
+    finally:
+        svc.stop_refresher()
+
+
+def test_merged_facts_are_never_reused_for_a_symbol_sharing_the_primary_cik(tmp_path):
+    sec = XomSec()
+    svc = make_svc(tmp_path, universe=["XOM", "XOMX"], sec=sec)
+    try:
+        r = svc.refresh(force=True)
+        assert r["fetched"] == 2 and r["errors"] == 0
+        assert sec.facts_calls() == [34088, 2115436, 34088]              # XOMX re-fetches the primary alone
+        assert svc.store.records["XOM"]["snapshot"]["latest_period_end"] == "2026-09-30"
+        assert svc.store.records["XOMX"]["snapshot"]["latest_period_end"] == "2026-03-31"
+        assert _row_of(svc, "XOMX")["signal"] == "STALE" and _row_of(svc, "XOM")["signal"] == "AVOID"
+    finally:
+        svc.stop_refresher()
+
+
+def test_nee_takes_only_its_own_accessions_from_the_extra_cik(tmp_path):
+    from long_term.edgar import EXTRA_CIKS, NEEDS_ACCESSION_FILTER
+    assert EXTRA_CIKS["NEE"] == (37634,) and "NEE" in NEEDS_ACCESSION_FILTER
+    sec = XomSec()
+    svc = make_svc(tmp_path, universe=["NEE"], sec=sec)
+    try:
+        r = svc.refresh(force=True)
+        assert r["fetched"] == 1 and r["errors"] == 0
+        assert sec.facts_calls() == [753308, 37634]
+        assert [c for k, c in sec.calls if k == "sub"].count(753308) >= 1 and 37634 not in [c for k, c in sec.calls if k == "sub"]
+        snap = svc.store.records["NEE"]["snapshot"]
+        assert snap["cik"] == 753308 and snap["latest_annual_end"] == "2025-12-31"
+        assert snap["latest_period_end"] == "2026-06-30"                 # Q2 accession allowed, Q3 (FPL's) not
+    finally:
+        svc.stop_refresher()
+
+
+def test_extra_cik_failure_keeps_the_primary_facts(tmp_path):
+    sec = XomSec(fail_extra=True)
+    svc = make_svc(tmp_path, universe=["XOM", "NEE"], sec=sec)
+    try:
+        r = svc.refresh(force=True)
+        assert r["fetched"] == 2 and r["errors"] == 0                   # the ticker is never aborted
+        assert sorted(sec.facts_calls()) == [34088, 37634, 753308, 2115436]
+        for sym in ("XOM", "NEE"):
+            rec = svc.store.records[sym]
+            assert "error" not in rec and rec["snapshot"]["latest_period_end"] == "2026-03-31", sym
+    finally:
+        svc.stop_refresher()
+
+
+# ---------- "no data" fix (2026-11-07) ----------
+
+def _synthetic_record(n=2, **latest):
+    """A stored record built from the synthetic snapshot of test_long_term_metrics."""
+    import dataclasses
+    from test_long_term_metrics import _set_latest, synth, synth_fh
+    s = synth(n=n)
+    if latest:
+        _set_latest(s, **latest)
+    eps = s.annual[s.latest_annual_end]["eps"]
+    f = synth_fh(s, eps_ttm=eps, eps_incl_ttm=eps, pe_ttm=None if eps <= 0 else 20.0)
+    s.symbol = f.symbol = "SYN"
+    return {"cik": 1, "name": "Synthetic Co", "sic": 3571, "snapshot": dataclasses.asdict(s),
+            "finnhub": dataclasses.asdict(f), "ref_price": 10.0, "listing_factor": None,
+            "prior_listing_factor": None, "fetched_at": NOW.isoformat(), "last_seen": NOW.isoformat()}
+
+
+def test_loss_making_short_history_row_is_avoid_not_no_data(svc):
+    with svc.store.lock:
+        svc.store.records["SYN"] = _synthetic_record(n=2, net_income=-5.0, eps=-0.5)
+    row = _row_of(svc, "SYN", {"SYN": {"last_price": 10.0, "quote_time_ms": NOW_MS}})
+    assert row["signal"] == "AVOID" and row["reason"] == "losing money" and row["years"] == 2
+    assert row["leaps"] is False and row["buyBelow"] is None and row["safetyBuy"] is None
+    assert set(row) == EXPECTED_ROW_KEYS
+    # a profitable two-year company stays SHORT_HISTORY
+    with svc.store.lock:
+        svc.store.records["SYN"] = _synthetic_record(n=2)
+        svc._computed.pop("SYN", None)
+    row = _row_of(svc, "SYN", {"SYN": {"last_price": 10.0, "quote_time_ms": NOW_MS}})
+    assert row["signal"] == "SHORT_HISTORY" and row["reason"] == "Short history (2 years)"
+
+
+def test_three_year_row_is_young_wait_with_no_buy_level(svc):
+    with svc.store.lock:
+        svc.store.records["SYN"] = _synthetic_record(n=3)
+    row = _row_of(svc, "SYN", {"SYN": {"last_price": 10.0, "quote_time_ms": NOW_MS}})
+    assert row["signal"] in ("WAIT", "AVOID") and row["years"] == 3 and row["young"] is True
+    assert row["leaps"] is False and row["buyBelow"] is None and row["leapsBelow"] is None
+
+
+def test_etn_is_classified_as_etf_and_never_fetched(tmp_path):
+    from long_term.service import ETN_SYMBOLS
+    assert {"VXX", "VXZ"} <= ETN_SYMBOLS
+    sec = FakeSec()
+    svc = make_svc(tmp_path, universe=["AAPL", "VXX", "VXZ"])
+    svc._test_sec = sec
+    try:
+        r = svc.refresh(force=True)
+        assert r["fetched"] == 1
+        assert "VXX" not in svc.store.records and "VXZ" not in svc.store.records
+        assert set(svc.store.summary["etfs"]) >= {"VXX", "VXZ"}
+        page = svc.page_payload(50, {})
+        by = {row["symbol"]: row for row in page["rows"]}
+        assert by["VXX"]["signal"] == "ETF" and by["VXX"]["reason"] == "ETF" and "VXX" in page["meta"]["etfs"]
+    finally:
+        svc.stop_refresher()
+
+
+def test_stored_etn_record_is_served_as_etf_until_dropped(tmp_path):
+    # VXX was fetched as Barclays Bank PLC before the rule: the stale record must not score a bank
+    svc = make_svc(tmp_path, universe=["AAPL", "VXX"])
+    try:
+        with svc.store.lock:
+            svc.store.records["VXX"] = dict(_synthetic_record(n=10), name="BARCLAYS BANK PLC", sic=6029)
+        svc.refresh(force=True)
+        row = _row_of(svc, "VXX", {"VXX": {"last_price": 10.0, "quote_time_ms": NOW_MS}})
+        assert row["signal"] == "ETF" and row["reason"] == "ETF"
+    finally:
+        svc.stop_refresher()
+
+
+def test_departed_etn_record_is_served_as_etf(tmp_path):
+    # VXX left the universe (watchlist edit) but its record is kept for KEEP_DAYS: the ETN list
+    # still makes it an ETF row, never a bank scored as "Short history"
+    svc = make_svc(tmp_path, universe=["AAPL"])
+    try:
+        with svc.store.lock:
+            svc.store.records["VXX"] = dict(_synthetic_record(n=10), name="BARCLAYS BANK PLC", sic=6029)
+        svc.refresh(force=True)
+        assert "VXX" not in set(svc.store.summary.get("etfs") or [])
+        row = _row_of(svc, "VXX", {"VXX": {"last_price": 10.0, "quote_time_ms": NOW_MS}})
+        assert row["signal"] == "ETF" and row["reason"] == "ETF"
     finally:
         svc.stop_refresher()

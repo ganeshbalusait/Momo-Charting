@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from long_term.edgar import EdgarBlocked, EdgarClient, Snapshot, build_snapshot
+from long_term.edgar import (EXTRA_CIKS, NEEDS_ACCESSION_FILTER, EdgarBlocked, EdgarClient, Snapshot, build_snapshot,
+                             merge_companyfacts)
 from long_term.finnhub import FinnhubExtract, FinnhubPacer, fetch_metrics
 from long_term.finnhub import default_get as _finnhub_default_get
 from long_term.leaps import (LEAP_MAX_DTE, LEAP_MIN_DTE, REASON_CHAIN_UNAVAILABLE, REASON_NOT_FLAGGED,
@@ -56,6 +57,11 @@ DEFER_AT = dtime(16, 5)
 DEFER_LABEL = "16:05 ET"
 DEFAULT_MOS = 50
 SCORED = frozenset({"BUY", "WAIT", "AVOID", "NO_PRICE"})
+# Exchange-traded NOTES: the SEC ticker map sends them to the issuing bank (VXX -> Barclays Bank
+# PLC) and the Nasdaq Trader ETF flag misses them, so the page would score a bank's 20-F under a
+# VIX note. They are ETFs for this page (2026-11-06 "no data" fix, revenue probe).
+ETN_SYMBOLS = frozenset({"VXX", "VXZ", "ZIV", "TVIX", "XIV", "VIIX", "DJP", "GSP", "JJC", "JJG", "JO", "NIB",
+                         "BAL", "SGG", "COW", "AMJ", "AMJB", "MLPB"})
 
 ROW_KEYS = (
     "symbol", "name", "price", "quoteTimeMs", "refPrice", "signal", "leaps", "reason", "buyBelow",
@@ -499,6 +505,8 @@ class LongTermService:
         return result
 
     def _safe_is_etf(self, symbol: str) -> bool:
+        if str(symbol or "").upper() in ETN_SYMBOLS:
+            return True                                  # an exchange-traded note is an ETF for this page
         try:
             return self._is_etf(symbol) is True
         except Exception:  # noqa: BLE001
@@ -536,6 +544,11 @@ class LongTermService:
                         facts_cik, facts = None, None               # release the previous filer first
                         facts = self.edgar.company_facts(cik)
                         facts_cik = cik
+                    if sym in EXTRA_CIKS:
+                        # R42: XOM / NEE facts live under more than one CIK; the merged copy is this
+                        # symbol's only, so a later ticker on the same primary CIK fetches afresh
+                        facts = self._merged_facts(sym, cik, facts)
+                        facts_cik = None
                     info = self.store.ciks.get(str(cik))
                     if not info or info.get("sic") is None:
                         sub = self.edgar.submission(cik) or {}
@@ -575,6 +588,37 @@ class LongTermService:
                 self._save_records_safely()
         facts = None
         self._save_records_safely()
+
+    def _merged_facts(self, sym: str, cik: int, facts: dict) -> dict:
+        """R42: `facts` (the primary CIK's companyfacts) plus the rows of the symbol's extra CIKs
+        (`EXTRA_CIKS`) that the primary lacks. A symbol in `NEEDS_ACCESSION_FILTER` (NEE: its
+        combined 10-Qs sit under FPL's CIK) takes only the accessions of its OWN submissions index.
+        An extra fetch that fails logs and leaves the primary facts alone (the ticker never aborts);
+        an SEC block still propagates and stops the pass."""
+        allowed = None
+        if sym in NEEDS_ACCESSION_FILTER:
+            try:
+                allowed = set(self.edgar.submission(cik, with_accessions=True).get("accessions") or ())
+            except EdgarBlocked:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.warning("long_term: %s accession index failed (%s: %s); extra CIKs skipped", sym,
+                            type(exc).__name__, exc)
+                return facts
+            if not allowed:
+                log.warning("long_term: %s submissions index lists no accessions; extra CIKs skipped", sym)
+                return facts
+        merged = facts
+        for extra_cik in EXTRA_CIKS[sym]:
+            try:
+                extra = self.edgar.company_facts(extra_cik)
+                merged = merge_companyfacts(merged, extra, allowed_accns=allowed)
+            except EdgarBlocked:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.warning("long_term: %s extra CIK %s failed (%s: %s); primary facts kept", sym, extra_cik,
+                            type(exc).__name__, exc)
+        return merged
 
     def _save_records_safely(self) -> None:
         try:
@@ -771,7 +815,8 @@ class LongTermService:
             now = self._now()
             m = _mos(mos)
             quotes = quotes if isinstance(quotes, dict) else {}
-            out = [self._row(s, records.get(s), s in etfs, m, quotes.get(s), now)
+            # a record that left the universe (kept KEEP_DAYS) is still an ETF / ETN when the list says so
+            out = [self._row(s, records.get(s), s in etfs or self._safe_is_etf(s), m, quotes.get(s), now)
                    for s in sorted(set(records) | etfs)]
             return out
         except Exception as exc:  # noqa: BLE001

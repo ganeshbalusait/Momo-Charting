@@ -3,6 +3,7 @@
 Fixtures are trimmed real SEC company-facts files (tests/fixtures/long_term).
 """
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -841,9 +842,10 @@ def test_per_concept_ttm_stamps_jpm():
     s = snap("JPM")
     assert s.ttm_ends["revenue"] == (s.latest_annual_end, True)
     assert s.ttm_ends["net_income"] == ("2026-09-30", False) == (s.ttm_period_end, s.ttm_is_fy)
-    assert set(s.ttm_ends) == {c for c in ("revenue", "net_income", "cfo", "capex", "sbc", "interest", "op_income")
+    assert set(s.ttm_ends) == {c for c in ("revenue", "net_income", "cfo", "capex", "sbc", "interest", "op_income", "eps")
                                if c in s.ttm}
     assert "revenue: TTM = FY" in s.notes
+    assert s.ttm_ends["eps"] == ("2026-09-30", False)      # EPS TTM from the EPS tag (FY + YTD - prior YTD)
 
 
 def test_balance_stamps_hd():
@@ -918,8 +920,8 @@ def test_new_tags_are_in_the_table():
                 "LoansPayable", "OtherNotesPayableCurrent"):
         assert tag in ALL_TAGS and tag in TAGS_BY_NAMESPACE["us-gaap"], tag
     debt = [edgar._cand_label(c) for c in CONCEPTS["debt"]]
-    assert debt[-1] == "ifrs-full:LongtermBorrowings+ifrs-full:CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings"
-    assert debt[-10:-1] == ["NotesPayable", "ConvertibleLongTermNotesPayable+ConvertibleNotesPayableCurrent",
+    spot = debt.index("ifrs-full:LongtermBorrowings+ifrs-full:CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings")
+    assert debt[spot - 9:spot] == ["NotesPayable", "ConvertibleLongTermNotesPayable+ConvertibleNotesPayableCurrent",
                          "DebtAndCapitalLeaseObligations",
                          "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
                          "LoansPayable", "OtherNotesPayableCurrent",
@@ -1134,3 +1136,624 @@ def test_zero_recipe_stays_primary_when_later_recipe_has_only_older_years():
     series, _, tag, _ = resolve_concept(g, {}, "debt")
     assert tag.startswith("LongTermDebtNoncurrent+LongTermDebtCurrent") and series["2025-12-31"] == 0.0
     assert series["2019-12-31"] == 40.0                     # older years still fill in table order
+
+
+# ---------- "no data" fix (2026-11-07): R36 ordered fills, derived EPS, R37 recipes, R41, R42 ----------
+
+NEW_SYMBOLS = ["HAL", "LHX", "HSY", "WELL", "MAR", "XOM", "XOM2"]
+NEW_CIKS = {"HAL": 45012, "LHX": 202058, "HSY": 47111, "WELL": 766704, "MAR": 1048286, "XOM": 34088, "XOM2": 2115436}
+NEW_SIC = {"HAL": 1389, "LHX": 3812, "HSY": 2060, "WELL": 6798, "MAR": 7011, "XOM": 2911, "XOM2": 2911}
+
+
+def nsnap(sym, doc=None):
+    return build_snapshot(sym, NEW_CIKS[sym], doc or load(sym), sic=NEW_SIC[sym], name=sym, fetched_at=FA)
+
+
+def _per_share(tag_vals, unit="USD/shares"):
+    return _flows(tag_vals, unit)
+
+
+def _eps_years(s):
+    return {e[:4]: r["eps"] for e, r in s.annual.items() if "eps" in r}
+
+
+@pytest.mark.parametrize("sym", NEW_SYMBOLS)
+def test_new_fixture_tags_are_in_the_table(sym):
+    for ns, tags in load(sym)["facts"].items():
+        assert set(tags) <= set(TAGS_BY_NAMESPACE[ns]), (sym, ns)
+
+
+def test_optional_recipe_parts_marker():
+    assert edgar.RECIPE_OPTIONAL["LongTermNotesPayable+DebtCurrent"] == {"DebtCurrent"}
+    assert edgar._optional("DebtCurrent", "LongTermNotesPayable+DebtCurrent")
+    assert not edgar._optional("DebtCurrent", "DebtCurrent+LongTermDebtNoncurrent")   # required in recipe (c)
+    assert edgar._optional("CommercialPaper")                                          # globally optional
+    assert not any(t.startswith("?") for tags in TAGS_BY_NAMESPACE.values() for t in tags)
+    assert not any("?" in edgar._cand_label(c) for cands in CONCEPTS.values() for c in cands)
+    for c in ("ni_common", "shares_outstanding", "split_ratio"):
+        assert c in CONCEPTS and c not in edgar.TABLE_CONCEPTS
+
+
+def test_internal_concepts_never_reach_the_table():
+    s = nsnap("HSY")
+    assert not ({"ni_common", "shares_outstanding", "split_ratio"} & set(s.units))
+    assert not any({"ni_common", "shares_outstanding"} & set(r) for r in s.annual.values())
+
+
+# --- R36: per-year ordered fill for eps / cfo / shares / revenue at 25% ---
+
+def test_eps_cont_plus_disc_recipe_fills_a_tag_switch_hal():
+    # EarningsPerShareDiluted stops in 2019; the filer moved to continuing + discontinued per share.
+    g = _per_share({"EarningsPerShareDiluted": {y: 2.0 for y in range(2012, 2020)},
+                    "IncomeLossFromContinuingOperationsPerDilutedShare": {y: 1.5 for y in range(2012, 2026)},
+                    "IncomeLossFromDiscontinuedOperationsNetOfTaxPerDilutedShare": {y: 0.5 for y in range(2012, 2020)}})
+    s = resolve_series(g, {}, "eps")
+    assert s.tag.startswith("IncomeLossFromContinuingOperationsPerDilutedShare+") and len(s.values) == 14
+    assert s.values["2025-12-31"] == 1.5 and s.values["2019-12-31"] == 2.0 and not s.tag_break
+    assert s.source["2015-12-31"] == s.tag                         # the recipe itself carries every year
+    g.update(_flows({"NetIncomeLoss": {y: 100.0 for y in range(2012, 2026)}}))
+    snap_ = _snap_of(g)
+    assert not any("disagrees" in n and n.startswith("eps") for n in snap_.notes)
+    # the old tag fills years the recipe lacks, noted
+    del g["IncomeLossFromContinuingOperationsPerDilutedShare"]["units"]["USD/shares"][0:3]
+    snap_ = _snap_of(g)
+    assert "eps: 2012, 2013, 2014 from EarningsPerShareDiluted" in snap_.notes and _eps_years(snap_)["2012"] == 2.0
+
+
+def test_eps_fill_tolerance_is_25_percent_dell_and_refuses_beyond():
+    # DELL: FY2024 restated 4.60 vs 4.36 in the recipe (5% off) -> the recipe still fills FY2022
+    g = _per_share({"EarningsPerShareDiluted": {2020: 3.0, 2021: 3.5, 2023: 4.0, 2024: 4.60, 2025: 5.0},
+                    "IncomeLossFromContinuingOperationsPerDilutedShare": {2022: 7.02, 2024: 4.36}})
+    s = resolve_series(g, {}, "eps")
+    assert s.tag == "EarningsPerShareDiluted" and s.values["2022-12-31"] == 7.02 and not s.tag_break
+    # 30% off in an overlap year: refused, the year stays blank, noted as a tag break
+    g = _per_share({"EarningsPerShareDiluted": {2020: 3.0, 2021: 3.5, 2023: 4.0, 2024: 4.60, 2025: 5.0},
+                    "IncomeLossFromContinuingOperationsPerDilutedShare": {2022: 7.02, 2024: 3.0}})
+    s = resolve_series(g, {}, "eps")
+    assert "2022-12-31" not in s.values and s.tag_break and s.far_off == [
+        "IncomeLossFromContinuingOperationsPerDilutedShare+IncomeLossFromDiscontinuedOperationsNetOfTaxPerDilutedShare"
+        "+DiscontinuedOperationIncomeLossFromDiscontinuedOperationNetOfTaxPerDilutedShare"]
+
+
+def test_eps_single_tag_recipes_in_table_order():
+    for tag in ("EarningsPerShareBasicAndDiluted", "IncomeLossFromContinuingOperationsPerBasicAndDilutedShare",
+                "NetIncomeLossNetOfTaxPerOutstandingLimitedPartnershipUnitDiluted"):
+        s = resolve_series(_per_share({tag: {2024: 1.0, 2025: 1.1}}), {}, "eps")
+        assert s.tag == tag and len(s.values) == 2, tag
+    # diluted EPS outranks the recipe when both cover the latest year
+    g = _per_share({"EarningsPerShareDiluted": {2025: 1.0}, "IncomeLossFromContinuingOperationsPerDilutedShare": {2025: 1.1}})
+    assert resolve_series(g, {}, "eps").tag == "EarningsPerShareDiluted"
+    # fill-only tags never lead
+    for tag in ("NetIncomeLossPerOutstandingLimitedPartnershipUnitBasicNetOfTax",
+                "ifrs-full:BasicEarningsLossPerShareFromContinuingOperations"):
+        assert tag in edgar.FILL_ONLY
+    ifrs_ = {"DilutedEarningsLossPerShareFromContinuingOperations": _per_share({"x": {2024: 3.0, 2025: 3.0}})["x"],
+             "BasicEarningsLossPerShareFromContinuingOperations": _per_share({"x": {2023: 3.1, 2024: 3.1, 2025: 3.1}})["x"]}
+    s = resolve_series({}, ifrs_, "eps")
+    assert s.tag == "ifrs-full:DilutedEarningsLossPerShareFromContinuingOperations" and len(s.values) == 3   # SHEL
+
+
+def test_cfo_continuing_operations_fills_at_25_percent_dltr():
+    # DLTR: the FY2023+ 10-Ks tag cfo as ...ContinuingOperations (12% off the total tag in the overlap)
+    g = _flows({"NetCashProvidedByUsedInOperatingActivitiesContinuingOperations": {2023: 1418.0, 2024: 2401.0, 2025: 2193.0, 2026: 2191.0},
+                "NetCashProvidedByUsedInOperatingActivities": {**{y: 1000.0 + y for y in range(2009, 2023)}, 2023: 1615.0, 2024: 2684.0}})
+    s = resolve_series(g, {}, "cfo")
+    assert s.tag == "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations" and len(s.values) == 18
+    assert s.values["2026-12-31"] == 2191.0 and s.values["2023-12-31"] == 1418.0 and s.values["2010-12-31"] == 3010.0
+    assert not s.tag_break and s.source["2010-12-31"] == "NetCashProvidedByUsedInOperatingActivities"
+
+
+def test_shares_basic_fills_the_diluted_tag_xom():
+    g = _flows({"WeightedAverageNumberOfDilutedSharesOutstanding": {y: 4000.0 for y in range(2010, 2014)},
+                "WeightedAverageNumberOfSharesOutstandingBasic": {y: 3990.0 for y in range(2010, 2026)}}, "shares")
+    g.update(_flows({"NetIncomeLoss": {y: 5.0 for y in range(2010, 2026)}}))
+    s = resolve_series(g, {}, "shares")
+    assert s.tag == "WeightedAverageNumberOfDilutedSharesOutstanding" and len(s.values) == 16 and not s.basic_only
+    assert s.source["2025-12-31"] == "WeightedAverageNumberOfSharesOutstandingBasic"
+    g["WeightedAverageNumberOfSharesOutstandingBasic"]["units"]["shares"].append(
+        {"start": "2026-07-01", "end": "2026-09-30", "val": 3900.0, "accn": "q3", "form": "10-Q", "filed": "2026-11-01"})
+    snap_ = _snap_of(g)
+    assert snap_.ttm["shares"] == 3900.0 and snap_.balance_ends["shares"] == "2026-09-30"   # from the filling tag
+    assert "shares: 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025 from " \
+           "WeightedAverageNumberOfSharesOutstandingBasic" in snap_.notes
+
+
+def test_revenue_ifrs_contracts_with_customers_nok_kgc():
+    def node(vals):
+        return _flows({"x": vals}, "EUR")["x"]
+    ifrs_ = {"Revenue": node({2015: 12560.0, 2016: 23641.0, 2017: 23147.0}),
+             "RevenueFromContractsWithCustomers": node({2016: 23641.0, 2017: 23147.0, 2018: 22563.0, 2025: 19889.0})}
+    s = resolve_series({}, ifrs_, "revenue")
+    assert s.tag == "ifrs-full:RevenueFromContractsWithCustomers" and len(s.values) == 5
+    assert s.values["2015-12-31"] == 12560.0 and s.source["2015-12-31"] == "ifrs-full:Revenue" and not s.tag_break
+    ifrs_ = {"RevenueFromSaleOfGoods": node({2016: 3472.0, 2017: 3303.0}),
+             "RevenueFromContractsWithCustomers": node({2017: 3303.0, 2018: 3212.6})}
+    assert len(resolve_series({}, ifrs_, "revenue").values) == 3
+
+
+def test_revenue_and_operating_income_only_for_financial_sic_hsbc_abvx():
+    ifrs_ = {"RevenueAndOperatingIncome": _flows({"x": {2024: 65.85, 2025: 68.27}})["x"],
+             "ProfitLossAttributableToOwnersOfParent": _flows({"x": {2024: 20.0, 2025: 21.0}})["x"]}
+    assert resolve_series({}, ifrs_, "revenue", sic=6035).tag == "ifrs-full:RevenueAndOperatingIncome"
+    assert resolve_series({}, ifrs_, "revenue", sic=2834) is None and resolve_series({}, ifrs_, "revenue") is None
+    bank = build_snapshot("HSBC", 1, {"facts": {"ifrs-full": ifrs_}}, sic=6035, name="HSBC", fetched_at=FA)
+    biotech = build_snapshot("ABVX", 1, {"facts": {"ifrs-full": ifrs_}}, sic=2834, name="ABVX", fetched_at=FA)
+    assert bank.annual["2025-12-31"]["revenue"] == 68.27 and "revenue" not in biotech.units
+
+
+# --- R36: derived EPS = NI to common / diluted shares ---
+
+def test_eps_derived_only_for_years_without_an_eps_tag():
+    g = _flows({"NetIncomeLoss": {y: 100.0 for y in range(2018, 2026)}})
+    g.update(_flows({"WeightedAverageNumberOfDilutedSharesOutstanding": {y: 50.0 for y in range(2018, 2026)}}, "shares"))
+    g.update(_per_share({"EarningsPerShareDiluted": {y: 2.0 for y in range(2021, 2026)}}))
+    s = _snap_of(g)
+    assert _eps_years(s) == {str(y): 2.0 for y in range(2018, 2026)}
+    assert s.tags["eps"] == "EarningsPerShareDiluted" and "eps: 2018, 2019, 2020 derived from NI/shares" in s.notes
+    # a tagged year is never replaced, even when NI/shares differs
+    g["EarningsPerShareDiluted"]["units"]["USD/shares"][0]["val"] = 1.9
+    assert _eps_years(_snap_of(g))["2021"] == 1.9
+
+
+def test_eps_derived_from_period_end_shares_when_no_weighted_tag_hsy():
+    g = _flows({"NetIncomeLoss": {y: 200.0 for y in range(2018, 2026)}})
+    g.update(_flows({"WeightedAverageNumberOfDilutedSharesOutstanding": {2018: 100.0, 2019: 100.0}}, "shares"))
+    g.update(_insts({"CommonStockSharesOutstanding": {y: 80.0 for y in range(2018, 2026)}}))
+    g["CommonStockSharesOutstanding"]["units"] = {"shares": g["CommonStockSharesOutstanding"]["units"]["USD"]}
+    s = _snap_of(g)
+    assert s.tags["eps"] == "derived" and s.units["eps"] == "USD/shares"
+    assert _eps_years(s) == {"2018": 2.0, "2019": 2.0, **{str(y): 2.5 for y in range(2020, 2026)}}
+    assert "eps: 2018, 2019 derived from NI/shares" in s.notes
+    assert "eps: 2020, 2021, 2022, 2023, 2024, 2025 derived from NI/period-end shares" in s.notes
+    assert s.ttm["eps"] == 2.5 and s.ttm_ends["eps"] == ("2025-12-31", True)
+
+
+def test_eps_derived_uses_ni_to_common_never_profitloss_glxy_fcx():
+    g = _flows({"ProfitLoss": {2024: 300.0, 2025: 300.0},                                       # incl. minority
+                "NetIncomeLossAvailableToCommonStockholdersDiluted": {2024: 150.0, 2025: 150.0}})
+    g.update(_flows({"WeightedAverageNumberOfDilutedSharesOutstanding": {2024: 100.0, 2025: 100.0}}, "shares"))
+    s = _snap_of(g)
+    assert _eps_years(s) == {"2024": 1.5, "2025": 1.5}
+    # ProfitLoss alone (no to-common / parent tag): nothing to derive from
+    g2 = _flows({"ProfitLoss": {2024: 300.0, 2025: 300.0}})
+    g2.update(_flows({"WeightedAverageNumberOfDilutedSharesOutstanding": {2024: 100.0, 2025: 100.0}}, "shares"))
+    assert "eps" not in _snap_of(g2).units
+
+
+def test_eps_not_derived_when_ni_over_shares_contradicts_the_tag():
+    # MCD-style: diluted shares tagged in millions; NI/shares is 1e6 off the EPS tag -> no derivation
+    g = _flows({"NetIncomeLoss": {y: 100e6 for y in range(2018, 2026)}})
+    g.update(_flows({"WeightedAverageNumberOfDilutedSharesOutstanding": {y: 50.0 for y in range(2018, 2026)}}, "shares"))
+    g.update(_per_share({"EarningsPerShareDiluted": {y: 2.0 for y in range(2021, 2026)}}))
+    s = _snap_of(g)
+    assert set(_eps_years(s)) == {str(y) for y in range(2021, 2026)}
+    assert "eps: NI/shares disagrees with the EPS tag; not derived" in s.notes
+
+
+def test_eps_derived_rescales_a_mis_scaled_share_year_hsy_2009():
+    g = _flows({"NetIncomeLoss": {y: 400.0 for y in range(2008, 2015)}})
+    g.update(_flows({"WeightedAverageNumberOfDilutedSharesOutstanding": {**{y: 230.0 for y in range(2008, 2015)}, 2009: 0.229}},
+                    "shares"))
+    s = _snap_of(g)
+    assert _eps_years(s)["2009"] == pytest.approx(400.0 / 229.0) and _eps_years(s)["2010"] == pytest.approx(400.0 / 230.0)
+    assert "eps: share count rescaled for the derived EPS (2009 x1000)" in s.notes
+    g["WeightedAverageNumberOfDilutedSharesOutstanding"]["units"]["shares"][1]["val"] = 7.0   # not a power of 1000
+    assert "2009" not in _eps_years(_snap_of(g))
+
+
+def test_net_income_prefers_to_common_over_profitloss_fcx_ibkr():
+    # FCX never tags NetIncomeLoss: ProfitLoss (incl. minority) vs to-common basic, both cover the latest year
+    g = _flows({"ProfitLoss": {y: 4152.0 for y in range(2007, 2026)},
+                "NetIncomeLossAvailableToCommonStockholdersBasic": {y: 2197.0 for y in range(2010, 2026)}})
+    s = resolve_series(g, {}, "net_income")
+    assert s.tag == "NetIncomeLossAvailableToCommonStockholdersBasic" and s.values["2025-12-31"] == 2197.0
+    assert "2007-12-31" not in s.values and s.tag_break           # ProfitLoss disagrees, old years stay blank
+    # NetIncomeLoss covering the latest year still leads (and fills from the basic tag only when it agrees)
+    g = _flows({"ProfitLoss": {y: 4152.0 for y in range(2007, 2026)},
+                "NetIncomeLoss": {y: 2200.0 for y in range(2020, 2026)},
+                "NetIncomeLossAvailableToCommonStockholdersBasic": {y: 2197.0 for y in range(2010, 2026)}})
+    s = resolve_series(g, {}, "net_income")
+    assert s.tag == "NetIncomeLoss" and s.values["2010-12-31"] == 2197.0 and s.values["2025-12-31"] == 2200.0
+    # ProfitLoss alone stays primary
+    assert resolve_series(_flows({"ProfitLoss": {2025: 1.0}}), {}, "net_income").tag == "ProfitLoss"
+
+
+# --- splits: normalised before comparison; 10-Q split ratio ---
+
+def _tagrows(tag, rows, unit="USD/shares"):
+    """rows: (start, end, val, accn, form, filed)"""
+    return {tag: {"units": {unit: [{"start": s, "end": e, "val": v, "accn": a, "form": f, "filed": fl}
+                                   for s, e, v, a, f, fl in rows]}}}
+
+
+def test_per_share_candidates_are_split_normalised_before_comparison_fcx():
+    # 2:1 split reflected from the FY2010 10-K (filed 2011-02) on. The cont-ops tag's 2008 and 2009
+    # facts were filed before the split (pre-split basis); the diluted tag's 2009 fact was restated.
+    g = {}
+    g.update(_tagrows("EarningsPerShareDiluted", [("2009-01-01", "2009-12-31", 5.86, "k09", "10-K", "2010-02-26"),
+                                                  ("2009-01-01", "2009-12-31", 2.93, "k10", "10-K", "2011-02-25"),
+                                                  ("2010-01-01", "2010-12-31", 4.57, "k10", "10-K", "2011-02-25"),
+                                                  ("2011-01-01", "2011-12-31", 4.78, "k11", "10-K", "2012-02-24")]))
+    g.update(_tagrows("IncomeLossFromContinuingOperationsPerDilutedShare",
+                      [("2008-01-01", "2008-12-31", -29.72, "k08", "10-K", "2009-02-27"),
+                       ("2009-01-01", "2009-12-31", 5.86, "k09", "10-K", "2010-02-26"),
+                       ("2011-01-01", "2011-12-31", 4.78, "k11", "10-K", "2012-02-24"),
+                       ("2025-01-01", "2025-12-31", 1.52, "k25", "10-K", "2026-02-20")]))
+    g.update(_tagrows("WeightedAverageNumberOfDilutedSharesOutstanding",
+                      [("2009-01-01", "2009-12-31", 470.0, "k09", "10-K", "2010-02-26"),
+                       ("2009-01-01", "2009-12-31", 940.0, "k10", "10-K", "2011-02-25"),
+                       ("2025-01-01", "2025-12-31", 1443.0, "k25", "10-K", "2026-02-20")], "shares"))
+    g.update(_flows({"NetIncomeLoss": {y: 1.0 for y in (2008, 2009, 2010, 2011, 2025)}}))
+    s = _snap_of(g)
+    eps = _eps_years(s)
+    assert eps["2008"] == pytest.approx(-14.86) and eps["2009"] == pytest.approx(2.93) and eps["2025"] == 1.52
+    assert eps["2010"] == 4.57 and "eps" not in s.tag_breaks and not any("not used" in n for n in s.notes)
+    assert s.annual["2009-12-31"]["shares"] == pytest.approx(940.0) and s.split_factor == pytest.approx(0.5)
+    assert any(n.startswith("splits: x0.5 after 2010-02-26") for n in s.notes)
+
+
+def test_split_scan_compares_within_one_tag_only():
+    # continuing-ops EPS at half of total EPS in the same filings is not a split
+    g = {}
+    g.update(_tagrows("EarningsPerShareDiluted", [("2024-01-01", "2024-12-31", 4.0, "k24", "10-K", "2025-02-01"),
+                                                  ("2025-01-01", "2025-12-31", 4.2, "k25", "10-K", "2026-02-01")]))
+    g.update(_tagrows("IncomeLossFromContinuingOperationsPerDilutedShare",
+                      [("2024-01-01", "2024-12-31", 2.0, "k24", "10-K", "2025-02-01"),
+                       ("2025-01-01", "2025-12-31", 2.1, "k25", "10-K", "2026-02-01")]))
+    g.update(_flows({"NetIncomeLoss": {2024: 1.0, 2025: 1.0}}))
+    s = _snap_of(g)
+    assert s.split_factor == 1.0 and not any(n.startswith("splits") for n in s.notes)
+    assert _eps_years(s) == {"2024": 4.0, "2025": 4.2}
+
+
+def test_10q_split_ratio_event_cvna():
+    g = {}
+    g.update(_tagrows("EarningsPerShareDiluted", [("2024-01-01", "2024-12-31", 1.59, "k24", "10-K", "2025-02-20"),
+                                                  ("2025-01-01", "2025-12-31", 8.45, "k25", "10-K", "2026-02-20")]))
+    g.update(_tagrows("WeightedAverageNumberOfDilutedSharesOutstanding",
+                      [("2025-01-01", "2025-12-31", 224.3, "k25", "10-K", "2026-02-20"),
+                       ("2026-07-01", "2026-09-30", 739.9, "q3", "10-Q", "2026-10-30")], "shares"))
+    g.update(_tagrows("StockholdersEquityNoteStockSplitConversionRatio1",
+                      [(None, "2026-05-05", 0.2, "q2", "10-Q", "2026-07-30")], "pure"))
+    g.update(_flows({"NetIncomeLoss": {2024: 1.0, 2025: 1407.0}}))
+    s = _snap_of(g)
+    assert _eps_years(s) == {"2024": pytest.approx(1.59 / 5), "2025": pytest.approx(8.45 / 5)}
+    assert s.annual["2025-12-31"]["shares"] == pytest.approx(224.3 * 5) and s.ttm["shares"] == 739.9
+    assert s.split_factor == pytest.approx(0.2) and "split 5:1 from the 10-Q split ratio at 2026-05-05" in s.notes
+    # the ratio tagged the other way round (5) means the same
+    g["StockholdersEquityNoteStockSplitConversionRatio1"]["units"]["pure"][0]["val"] = 5.0
+    assert _eps_years(_snap_of(g))["2025"] == pytest.approx(8.45 / 5)
+    # no share-count jump: the ratio fact alone proves nothing
+    g["WeightedAverageNumberOfDilutedSharesOutstanding"]["units"]["shares"][1]["val"] = 230.0
+    s = _snap_of(g)
+    assert _eps_years(s)["2025"] == 8.45 and s.split_factor == 1.0
+    # a split the annual filings already reflect (scan event within 400 days) is not applied twice
+    g["WeightedAverageNumberOfDilutedSharesOutstanding"]["units"]["shares"][1]["val"] = 739.9
+    g["EarningsPerShareDiluted"]["units"]["USD/shares"].append(
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 1.69, "accn": "k26", "form": "10-K", "filed": "2027-02-20"})
+    g["WeightedAverageNumberOfDilutedSharesOutstanding"]["units"]["shares"].append(
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 1121.5, "accn": "k26", "form": "10-K", "filed": "2027-02-20"})
+    s = _snap_of(g)
+    assert _eps_years(s)["2025"] == pytest.approx(1.69) and _eps_years(s)["2024"] == pytest.approx(1.59 / 5)
+
+
+def test_ttm_eps_from_the_eps_tag_ibkr_bynd():
+    g = {}
+    g.update(_tagrows("EarningsPerShareDiluted", [("2025-01-01", "2025-12-31", 2.22, "k25", "10-K", "2026-02-20"),
+                                                  ("2026-01-01", "2026-09-30", 1.98, "q3", "10-Q", "2026-10-30"),
+                                                  ("2025-01-01", "2025-09-30", 1.58, "q3", "10-Q", "2026-10-30")]))
+    g.update(_flows({"NetIncomeLoss": {2025: 1.0}}))
+    s = _snap_of(g)
+    assert s.ttm["eps"] == pytest.approx(2.22 + 1.98 - 1.58) and s.ttm_ends["eps"] == ("2026-09-30", False)
+    # with a split between the 10-K and the 10-Q, the FY value is brought to the 10-Q's basis
+    g["EarningsPerShareDiluted"]["units"]["USD/shares"].append(
+        {"start": "2024-01-01", "end": "2024-12-31", "val": 4.0, "accn": "k24", "form": "10-K", "filed": "2025-02-20"})
+    g["EarningsPerShareDiluted"]["units"]["USD/shares"].append(
+        {"start": "2024-01-01", "end": "2024-12-31", "val": 2.0, "accn": "k25", "form": "10-K", "filed": "2026-02-20"})
+    g.update(_flows({"NetIncomeLoss": {2024: 1.0, 2025: 1.0}}))
+    s = _snap_of(g)
+    assert s.ttm["eps"] == pytest.approx(2.22 + 1.98 - 1.58)      # all three filed after the split
+    # a recipe label gets its TTM from the parts (continuing + optional discontinued)
+    g = {}
+    g.update(_tagrows("IncomeLossFromContinuingOperationsPerDilutedShare",
+                      [("2025-01-01", "2025-12-31", 1.5, "k25", "10-K", "2026-02-20"),
+                       ("2026-01-01", "2026-06-30", 1.0, "q2", "10-Q", "2026-07-30"),
+                       ("2025-01-01", "2025-06-30", 0.6, "q2", "10-Q", "2026-07-30")]))
+    g.update(_flows({"NetIncomeLoss": {2025: 1.0}}))
+    s = _snap_of(g)
+    assert s.ttm["eps"] == pytest.approx(1.9) and s.ttm_ends["eps"] == ("2026-06-30", False)
+
+
+# --- LHX: the full-year revenue tagged with Q4 dates ---
+
+def test_misdated_10k_revenue_is_rescued_from_the_9_month_ytd_lhx():
+    g = _flows({"NetIncomeLoss": {2024: 1.0, 2025: 1.0}, "RevenueFromContractWithCustomerExcludingAssessedTax": {2024: 21325.0}})
+    g["RevenueFromContractWithCustomerExcludingAssessedTax"]["units"]["USD"] += [
+        {"start": "2025-10-01", "end": "2025-12-31", "val": 21865.0, "accn": "k25", "form": "10-K", "filed": "2026-02-12"},
+        {"start": "2025-01-01", "end": "2025-09-30", "val": 16217.0, "accn": "q3", "form": "10-Q", "filed": "2025-10-30"}]
+    s = _snap_of(g)
+    assert s.annual["2025-12-31"]["revenue"] == 21865.0 and s.ttm["revenue"] == 21865.0
+    assert "revenue: 10-K fact 2025-10-01..2025-12-31 taken as the annual value (above the 9-month YTD " \
+           "2025-01-01..2025-09-30)" in s.notes
+    # a real quarter (below the YTD) is never taken as the year
+    g["RevenueFromContractWithCustomerExcludingAssessedTax"]["units"]["USD"][1]["val"] = 5648.0
+    assert "revenue" not in _snap_of(g).annual["2025-12-31"]
+    # nor a value more than 1.5x the YTD
+    g["RevenueFromContractWithCustomerExcludingAssessedTax"]["units"]["USD"][1]["val"] = 30000.0
+    assert "revenue" not in _snap_of(g).annual["2025-12-31"]
+
+
+# --- R37 capex recipes and R41 larger-value rule ---
+
+@pytest.mark.parametrize("tag", ["PaymentsToAcquireOtherProductiveAssets", "PaymentsForCapitalImprovements",
+                                 "PaymentsForProceedsFromProductiveAssets"])
+def test_new_capex_tags(tag):
+    s = resolve_series(_flows({tag: {2024: -5.0, 2025: -6.0}}), {}, "capex")
+    assert s.tag.startswith(tag) and s.values == {"2024-12-31": 5.0, "2025-12-31": 6.0}
+
+
+def test_new_ifrs_capex_tags_shel_acb():
+    for tag in ("PurchaseOfOtherLongtermAssetsClassifiedAsInvestingActivities",
+                "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets"):
+        s = resolve_series({}, {tag: _flows({"x": {2024: 5.0, 2025: 6.0}})["x"]}, "capex")
+        assert s.tag == "ifrs-full:" + tag and s.values["2025-12-31"] == 6.0
+
+
+def test_reit_capex_is_improvements_plus_construction_well():
+    g = _flows({"PaymentsForCapitalImprovements": {2024: 900.0, 2025: 1050.0},
+                "PaymentsForConstructionInProcess": {2025: 438.0},
+                "PaymentsToAcquireCommercialRealEstate": {2025: 13914.0}})      # acquisitions: not capex
+    s = resolve_series(g, {}, "capex")
+    assert s.tag == "PaymentsForCapitalImprovements+PaymentsForConstructionInProcess"
+    assert s.values == {"2024-12-31": 900.0, "2025-12-31": 1488.0}
+
+
+def test_capex_larger_value_wins_and_the_fuller_tag_fills_vz():
+    # VZ: the new tag carries the acquisitions line in 2009-2014 (small), the old tag the real capex
+    g = _flows({"PaymentsToAcquireOtherProductiveAssets": {**{y: 1000.0 for y in range(2009, 2015)},
+                                                           **{y: 17000.0 for y in range(2017, 2026)}},
+                "PaymentsToAcquireProductiveAssets": {y: 16000.0 for y in range(2007, 2019)}})
+    s = resolve_series(g, {}, "capex")
+    assert s.tag == "PaymentsToAcquireOtherProductiveAssets" and len(s.values) == 19
+    assert s.values["2012-12-31"] == 16000.0 and s.source["2012-12-31"] == "PaymentsToAcquireProductiveAssets"
+    assert s.values["2007-12-31"] == 16000.0 and s.values["2025-12-31"] == 17000.0 and not s.far_off
+    assert s.larger == {"PaymentsToAcquireProductiveAssets": [f"{y}-12-31" for y in range(2009, 2015)]}
+    g.update(_flows({"NetIncomeLoss": {y: 5.0 for y in range(2007, 2026)}}))
+    assert "capex: candidates differ, larger used in 2009, 2010, 2011, 2012, 2013, 2014 " \
+           "(PaymentsToAcquireProductiveAssets)" in _snap_of(g).notes
+
+
+def test_debt_larger_candidate_replaces_a_component_mar_orcl():
+    # MAR: LongTermDebt (recipe b) is a 23M component every year; (d) carries the 16B
+    g = _insts({"LongTermDebt": {y: 23.0 for y in range(2019, 2026)},
+                "LongTermDebtAndCapitalLeaseObligations": {y: 15000.0 for y in range(2019, 2026)},
+                "LongTermDebtAndCapitalLeaseObligationsCurrent": {2025: 1209.0}})
+    s = resolve_series(g, {}, "debt")
+    assert s.tag == "LongTermDebt+ShortTermBorrowings+CommercialPaper"
+    assert s.values["2025-12-31"] == 16209.0 and s.values["2024-12-31"] == 15000.0
+    assert s.source["2025-12-31"] == "LongTermDebtAndCapitalLeaseObligations+LongTermDebtAndCapitalLeaseObligationsCurrent"
+    g.update(_flows({"NetIncomeLoss": {y: 5.0 for y in range(2019, 2026)}}))
+    snap_ = _snap_of(g)
+    assert any(n.startswith("debt: candidates differ, larger used in 2019, 2020") for n in snap_.notes)
+    # ORCL: a one-row 0 under LongTermDebt never beats the issuer total
+    g = _insts({"LongTermDebt": {2022: 0.0},
+                "DebtLongtermAndShorttermCombinedAmount": {2022: 80000.0, 2025: 92568.0, 2026: 129541.0}})
+    s = resolve_series(g, {}, "debt")
+    assert s.values == {"2022-12-31": 80000.0, "2025-12-31": 92568.0, "2026-12-31": 129541.0}
+    # within 25% the primary keeps its own value (structural differences, no churn)
+    g = _insts({"LongTermDebt": {2025: 100.0}, "LongTermDebtAndCapitalLeaseObligations": {2025: 120.0}})
+    assert resolve_series(g, {}, "debt").values["2025-12-31"] == 100.0
+
+
+def test_new_debt_recipes_from_the_probe():
+    assert resolve_series(_insts({"DebtLongtermAndShorttermCombinedAmount": {2025: 9.0}}), {}, "debt").values["2025-12-31"] == 9.0
+    hl = resolve_series(_insts({"LongTermNotesPayable": {2024: 508.9, 2025: 268.6}, "DebtCurrent": {2024: 33.6}}), {}, "debt")
+    assert hl.values == {"2024-12-31": 542.5, "2025-12-31": 268.6}                     # DebtCurrent optional
+    xyz = resolve_series(_insts({"OtherLongTermDebtNoncurrent": {2025: 5715.8}, "OtherLongTermDebtCurrent": {2025: 1573.3},
+                                 "SecuredDebtCurrent": {2025: 466.9}, "LongTermLineOfCredit": {2025: 897.9}}), {}, "debt")
+    assert xyz.values["2025-12-31"] == pytest.approx(8653.9)
+    ntra = resolve_series(_insts({"LongTermNotesAndLoans": {2023: 286.5}, "ShortTermBorrowings": {2023: 80.4, 2025: 80.3}}), {}, "debt")
+    assert ntra.values == {"2023-12-31": 366.9, "2025-12-31": 80.3} and ntra.source["2025-12-31"] == "ShortTermBorrowings"
+    for tag in ("LinesOfCreditCurrent", "LongTermLineOfCredit", "ShortTermBorrowings"):
+        s = resolve_series(_insts({tag: {2025: 20.0}}), {}, "debt")
+        assert s.tag == tag and s.values["2025-12-31"] == 20.0 and tag in edgar.PARTIAL_DEBT
+    tsm = {"NoncurrentPortionOfNoncurrentBondsIssued": _insts({"x": {2024: 926.6}})["x"],
+           "CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued": _insts({"x": {2024: 57.1}})["x"],
+           "LongtermBorrowings": _insts({"x": {2024: 31.8}})["x"],
+           "CurrentPortionOfLongtermBorrowings": _insts({"x": {2024: 59.9}})["x"]}
+    s = resolve_series({}, tsm, "debt")
+    # the borrowings recipe (f) is primary by table order; the bonds recipe wins the year (R41, larger)
+    assert s.values["2024-12-31"] == pytest.approx(1075.4)
+    assert s.source["2024-12-31"].startswith("ifrs-full:NoncurrentPortionOfNoncurrentBondsIssued")
+    assert resolve_series({}, {k: v for k, v in tsm.items() if "Bonds" in k}, "debt").values["2024-12-31"] == pytest.approx(983.7)
+    tme = {"NotesAndDebenturesIssued": _insts({"x": {2024: 3.572}})["x"],
+           "CurrentNotesAndDebenturesIssuedAndCurrentPortionOfNoncurrentNotesAndDebenturesIssued": _insts({"x": {2024: 2.154}})["x"]}
+    assert resolve_series({}, tme, "debt").values["2024-12-31"] == pytest.approx(5.726)
+
+
+def test_debt_tag_ended_at_zero_carries_forward_mdb():
+    g = _flows({"NetIncomeLoss": {y: 5.0 for y in range(2022, 2027)}})
+    g.update(_insts({"ConvertibleDebtNoncurrent": {2022: 1136.5, 2023: 1139.9, 2024: 1143.3, 2025: 0.0}}))
+    s = _snap_of(g)
+    assert s.annual["2026-12-31"]["debt"] == 0.0 and s.ttm["debt"] == 0.0 and s.balance_ends["debt"] == "2026-12-31"
+    assert "debt: 0 carried forward to 2026 (tag ended at 0 in 2025)" in s.notes
+    # a tag that ended on a real balance is not carried
+    g["ConvertibleDebtNoncurrent"]["units"]["USD"][-1]["val"] = 900.0
+    s = _snap_of(g)
+    assert "debt" not in s.annual["2026-12-31"] and not any("carried" in n for n in s.notes)
+
+
+def test_carry_zero_debt_needs_absent_or_small_interest():
+    """E1 (fail-safe): 0 is carried only into a later year whose interest expense is absent or
+    < 1% of a positive operating income (CARRY_ZERO_INTEREST_SHARE); the carry stops at the first
+    year that fails, and that year and every later one stay blank."""
+    assert edgar.CARRY_ZERO_INTEREST_SHARE == 0.01
+    base = _flows({"NetIncomeLoss": {y: 5.0 for y in range(2022, 2028)}})
+    base.update(_insts({"ConvertibleDebtNoncurrent": {2022: 1136.5, 2023: 1139.9, 2024: 1143.3, 2025: 0.0}}))
+    # no interest tag at all (MDB / OUST / SOUN): carried into every later year
+    s = _snap_of(dict(base))
+    assert s.annual["2026-12-31"]["debt"] == 0.0 and s.annual["2027-12-31"]["debt"] == 0.0
+    assert "debt: 0 carried forward to 2026, 2027 (tag ended at 0 in 2025)" in s.notes
+    # interest below 1% of operating income: carried
+    g = dict(base)
+    g.update(_flows({"InterestExpense": {2026: 0.5e6, 2027: 0.4e6}, "OperatingIncomeLoss": {2026: 90e6, 2027: 95e6}}))
+    s = _snap_of(g)
+    assert s.annual["2026-12-31"]["debt"] == 0.0 and s.annual["2027-12-31"]["debt"] == 0.0
+    assert "debt: 0 carried forward to 2026, 2027 (tag ended at 0 in 2025)" in s.notes
+    # material interest in 2027: 2026 is carried, the carry stops at 2027 and 2027 stays blank
+    g = dict(base)
+    g.update(_flows({"InterestExpense": {2026: 0.5e6, 2027: 12e6}, "OperatingIncomeLoss": {2026: 90e6, 2027: 90e6}}))
+    s = _snap_of(g)
+    assert s.annual["2026-12-31"]["debt"] == 0.0 and "debt" not in s.annual["2027-12-31"]
+    assert ("debt: 0 carried forward to 2026 (tag ended at 0 in 2025) "
+            "(stopped at 2027: interest 12M vs operating income 90M)") in s.notes
+    # material interest in the first later year: nothing is carried
+    g = dict(base)
+    g.update(_flows({"InterestExpense": {2026: 12e6}, "OperatingIncomeLoss": {2026: 90e6}}))
+    s = _snap_of(g)
+    assert "debt" not in s.annual["2026-12-31"] and "debt" not in s.annual["2027-12-31"]
+    assert ("debt: 0 not carried forward (tag ended at 0 in 2025) "
+            "(stopped at 2026: interest 12M vs operating income 90M)") in s.notes
+    # interest with no positive operating income to size it against (or no operating income at all): stopped
+    g = dict(base)
+    g.update(_flows({"InterestExpense": {2026: 0.5e6}, "OperatingIncomeLoss": {2026: -90e6}}))
+    s = _snap_of(g)
+    assert "debt" not in s.annual["2026-12-31"]
+    assert "debt: 0 not carried forward (tag ended at 0 in 2025) (stopped at 2026: interest 500K vs operating income -90M)" in s.notes
+    g = dict(base)
+    g.update(_flows({"InterestExpense": {2026: 0.5e6}}))
+    s = _snap_of(g)
+    assert "debt" not in s.annual["2026-12-31"]
+    assert "debt: 0 not carried forward (tag ended at 0 in 2025) (stopped at 2026: interest 500K vs operating income n/a)" in s.notes
+    # an explicit 0 interest is as good as no interest tag, whatever the operating income
+    g = dict(base)
+    g.update(_flows({"InterestExpense": {2026: 0.0, 2027: 0.0}, "OperatingIncomeLoss": {2026: -90e6, 2027: -90e6}}))
+    s = _snap_of(g)
+    assert s.annual["2026-12-31"]["debt"] == 0.0 and s.annual["2027-12-31"]["debt"] == 0.0
+
+
+def test_larger_used_and_derived_eps_notes_have_the_shape_metrics_parses():
+    """E2: compute_metrics parses the years out of these two notes (fail-safe caps), so the exact
+    prefix and the "YYYY, YYYY" list are pinned here."""
+    g = _flows({"PaymentsToAcquireOtherProductiveAssets": {**{y: 1000.0 for y in range(2016, 2019)},
+                                                           **{y: 17000.0 for y in range(2020, 2026)}},
+                "PaymentsToAcquireProductiveAssets": {y: 16000.0 for y in range(2015, 2022)},
+                "NetIncomeLoss": {y: 5.0 for y in range(2015, 2026)}})
+    capex = [n for n in _snap_of(g).notes if n.startswith("capex: candidates differ, larger used in ")]
+    assert capex == ["capex: candidates differ, larger used in 2016, 2017, 2018 (PaymentsToAcquireProductiveAssets)"]
+    m = re.fullmatch(r"capex: candidates differ, larger used in (\d{4}(?:, \d{4})*) \(([^()]+)\)", capex[0])
+    assert m and m.group(1) == "2016, 2017, 2018" and m.group(2) == "PaymentsToAcquireProductiveAssets"
+    g = _flows({"NetIncomeLoss": {y: 100.0 for y in range(2008, 2012)}})
+    g.update(_flows({"WeightedAverageNumberOfDilutedSharesOutstanding": {y: 50.0 for y in range(2008, 2012)}}, "shares"))
+    g.update(_per_share({"EarningsPerShareDiluted": {2010: 2.0, 2011: 2.0}}))
+    eps = [n for n in _snap_of(g).notes if n.startswith("eps: ") and "derived from NI/" in n]
+    assert eps == ["eps: 2008, 2009 derived from NI/shares"]
+    m = re.fullmatch(r"eps: (\d{4}(?:, \d{4})*) derived from NI/(period-end )?shares", eps[0])
+    assert m and m.group(1) == "2008, 2009"
+
+
+def test_10q_comparative_instant_at_the_fiscal_year_end_counts_chwy():
+    g = _flows({"NetIncomeLoss": {2024: 5.0, 2025: 5.0}})
+    g["LongTermDebt"] = {"units": {"USD": [
+        {"end": "2025-12-31", "val": 0.0, "accn": "q2", "form": "10-Q", "filed": "2026-08-01"},        # FY-end comparative
+        {"end": "2026-06-30", "val": 591.7, "accn": "q2", "form": "10-Q", "filed": "2026-08-01"}]}}
+    s = _snap_of(g)
+    assert s.annual["2025-12-31"]["debt"] == 0.0 and s.ttm["debt"] == 591.7 and s.balance_ends["debt"] == "2026-06-30"
+    # a 10-Q instant that is not at a fiscal year end is still not an annual row
+    assert "2026-06-30" not in s.annual
+    # flows never take 10-Q rows
+    g["NetIncomeLoss"]["units"]["USD"].append({"start": "2026-01-01", "end": "2026-12-31", "val": 9.0, "accn": "q",
+                                               "form": "10-Q", "filed": "2027-02-01"})
+    assert "2026-12-31" not in _snap_of(g).annual
+
+
+# --- R42: facts split across CIKs ---
+
+def test_merge_companyfacts_takes_only_accessions_the_base_lacks():
+    base = {"cik": 1, "facts": {"us-gaap": {"NetIncomeLoss": {"units": {"USD": [
+        {"start": "2025-01-01", "end": "2025-12-31", "val": 1.0, "accn": "k25", "form": "10-K", "filed": "2026-02-01"}]}}}}}
+    extra = {"cik": 2, "facts": {"us-gaap": {
+        "NetIncomeLoss": {"units": {"USD": [
+            {"start": "2025-01-01", "end": "2025-12-31", "val": 99.0, "accn": "k25", "form": "10-K", "filed": "2026-02-01"},
+            {"start": "2026-01-01", "end": "2026-09-30", "val": 3.0, "accn": "q3", "form": "10-Q", "filed": "2026-11-01"},
+            {"start": "2025-01-01", "end": "2025-09-30", "val": 2.0, "accn": "q3", "form": "10-Q", "filed": "2026-11-01"}]}},
+        "Assets": {"units": {"USD": [{"end": "2026-09-30", "val": 50.0, "accn": "q3", "form": "10-Q", "filed": "2026-11-01"},
+                                     {"end": "2024-12-31", "val": 40.0, "accn": "other", "form": "10-K", "filed": "2025-02-01"}]}}}}}
+    merged = edgar.merge_companyfacts(base, extra)
+    rows = merged["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"]
+    assert [r["val"] for r in rows] == [1.0, 3.0, 2.0]                      # k25 already in base: skipped
+    assert [r["val"] for r in merged["facts"]["us-gaap"]["Assets"]["units"]["USD"]] == [50.0, 40.0]
+    assert base["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"] == rows[:1]   # base untouched
+    limited = edgar.merge_companyfacts(base, extra, allowed_accns={"q3"})
+    assert [r["val"] for r in limited["facts"]["us-gaap"]["Assets"]["units"]["USD"]] == [50.0]
+    s = build_snapshot("X", 1, merged, sic=None, name="X", fetched_at=FA)
+    assert s.ttm["net_income"] == 2.0 and s.latest_period_end == "2026-09-30"
+    assert edgar.EXTRA_CIKS == {"XOM": (2115436,), "NEE": (37634,)} and "NEE" in edgar.NEEDS_ACCESSION_FILTER
+
+
+def test_client_submission_with_accessions():
+    raw = json.loads((FIX / "submissions_JPM.json").read_text(encoding="utf-8"))
+    raw.update({"filings": {"recent": {"accessionNumber": ["0000019617-26-000001", "0000019617-26-000002"]}}})
+    client = EdgarClient(lambda u, h: json.dumps(raw).encode(), sleep=lambda s: None)
+    assert "accessions" not in client.submission(19617)
+    sub = client.submission(19617, with_accessions=True)
+    assert sub["accessions"] == ["0000019617-26-000001", "0000019617-26-000002"] and sub["sic"] == 6021
+
+
+# --- fixture-pinned (trimmed real companyfacts) ---
+
+def test_fixture_hal_eps_recipe_covers_the_tag_switch():
+    s = nsnap("HAL")
+    eps = _eps_years(s)
+    assert s.tags["eps"].startswith("IncomeLossFromContinuingOperationsPerDilutedShare+")
+    assert len(eps) == 14 and eps["2025"] == 1.5 and eps["2022"] == 1.73 and eps["2019"] == -1.29
+    assert "eps" not in s.tag_breaks and not any(n.startswith("eps:") and "not used" in n for n in s.notes)
+    assert s.ttm["eps"] == 1.5                                   # FY2025 10-K is the latest EPS filing in the fixture
+
+
+def test_fixture_lhx_misdated_annual_revenue():
+    s = nsnap("LHX")
+    assert s.latest_annual_end == "2026-01-02" and s.annual["2026-01-02"]["revenue"] == 21865000000.0
+    assert "revenue: 10-K fact 2025-10-04..2026-01-02 taken as the annual value (above the 9-month YTD " \
+           "2025-01-04..2025-10-03)" in s.notes
+    assert s.ttm["revenue"] == 21865000000.0 and s.ttm_ends["revenue"] == ("2026-01-02", True)
+
+
+def test_fixture_hsy_eps_derived_from_period_end_shares():
+    s = nsnap("HSY")
+    eps = _eps_years(s)
+    assert s.tags["eps"] == "derived" and s.units["eps"] == "USD/shares" and len(eps) == 14
+    assert eps["2024"] == pytest.approx(10.92, rel=0.01) and eps["2022"] == pytest.approx(7.96, rel=0.01)   # reported
+    assert "eps: 2012, 2013, 2014 derived from NI/shares" in s.notes
+    assert any(n.startswith("eps: 2015, 2016") and n.endswith("derived from NI/period-end shares") for n in s.notes)
+
+
+def test_fixture_well_reit_capex():
+    s = nsnap("WELL")
+    g = gaap(load("WELL"))
+    parts = sum(annual_facts(g[t]["units"])["USD"]["2025-12-31"].val
+                for t in ("PaymentsForCapitalImprovements", "PaymentsForConstructionInProcess"))
+    assert s.tags["capex"] == "PaymentsForCapitalImprovements+PaymentsForConstructionInProcess"
+    assert s.annual["2025-12-31"]["capex"] == pytest.approx(parts) and parts > 1e9
+    assert len([r for r in s.annual.values() if "capex" in r]) == 14 and s.ttm_ends["capex"] == ("2026-09-30", False)
+    assert s.tags["net_income"] == "NetIncomeLossAvailableToCommonStockholdersBasic"   # to common, not ProfitLoss
+
+
+def test_fixture_mar_debt_takes_the_larger_recipe():
+    s = nsnap("MAR")
+    g = gaap(load("MAR"))
+    assert annual_facts(g["LongTermDebt"]["units"])["USD"]["2025-12-31"].val == 23000000.0
+    assert s.annual["2025-12-31"]["debt"] == 16204000000.0 and s.ttm["debt"] == 16843000000.0
+    assert s.balance_ends["debt"] == "2026-09-30"
+    assert any(n.startswith("debt: candidates differ, larger used in 2019, 2020, 2021, 2022, 2023, 2024, 2025") for n in s.notes)
+
+
+def test_fixture_xom_merge_brings_the_2026_quarters():
+    alone, merged = nsnap("XOM"), nsnap("XOM", edgar.merge_companyfacts(load("XOM"), load("XOM2")))
+    assert alone.latest_period_end == "2026-03-31" and merged.latest_period_end == "2026-09-30"
+    assert merged.ttm["net_income"] == 40622000000.0 and merged.ttm_ends["net_income"] == ("2026-09-30", False)
+    assert merged.annual["2025-12-31"] == alone.annual["2025-12-31"]                  # history unchanged
+    assert merged.balance_ends["shares"] == "2026-09-30" and alone.balance_ends["shares"] == "2026-03-31"
+    assert any(n.startswith("shares: 2014, 2015") and n.endswith("from WeightedAverageNumberOfSharesOutstandingBasic")
+               for n in merged.notes)
+    assert not nsnap("XOM2").annual                                                   # the successor CIK alone has no history

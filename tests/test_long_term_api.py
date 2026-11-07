@@ -236,11 +236,12 @@ def test_bad_quote_on_a_buy_row_is_no_price(monkeypatch, buy_store, quote):
     assert row["leaps"] is False and row["buyZonePct"] is None
 
 
-def test_finnhub_roic_disagreement_turns_buy_into_check_data(monkeypatch, roic_store):
+def test_finnhub_roic_disagreement_turns_buy_into_avoid(monkeypatch, roic_store):
+    # R38: Finnhub's ROIC (5%) is the worse source and already fails the 15% gate -> AVOID, not CHECK_DATA
     directory, price = roic_store
     row = _aapl_over_http(monkeypatch, directory, {"last_price": price, "quote_time_ms": NOW_MS})
-    assert row["signal"] == "CHECK_DATA" and "ROIC" in row["reason"], row["reason"]
-    assert row["leaps"] is False and row["buyBelow"] is None
+    assert row["signal"] == "AVOID" and row["reason"] == "ROIC 5% < 15% (Finnhub; sources differ on ROIC)", row["reason"]
+    assert row["leaps"] is False and row["buyBelow"] is None and row["safetyBuy"] is None
 
 
 # ---------- final review fixes 8 and 11: request-path cost, detail symbol ----------
@@ -384,3 +385,29 @@ def test_leap_route_shares_the_mos_validation(svc):
     assert (bad_status, bad) == (400, {"error": "mos must be 50 or 30"})
     assert ok_status == 200 and ok["symbol"] == "AAPL"
     assert anon_status == 401
+
+
+
+# ---------- "no data" fix (2026-11-07): a loss-maker with a short history is AVOID over HTTP ----------
+
+def test_loss_making_short_history_row_is_avoid_over_http(monkeypatch, tmp_path):
+    import json
+    from test_long_term_service import _synthetic_record
+    rec = _synthetic_record(n=2, net_income=-5.0, eps=-0.5)
+    (tmp_path / "fundamentals.json").write_text(json.dumps({"records": {"SYN": rec}, "ciks": {}}), encoding="utf-8")
+    (tmp_path / "summary.json").write_text(json.dumps({"refreshed_at": NOW.isoformat(), "universe": ["SYN"],
+                                                       "etfs": [], "rows_by_symbol": {}}), encoding="utf-8")
+    s = _install(monkeypatch, tmp_path,
+                 Quotes({"SYN": {"last_price": 10.0, "quote_time_ms": NOW_MS, "description": "Synthetic"}}))
+    try:
+        with running_api() as api:
+            status, body = api.get("/api/long-term")
+            dstatus, detail = api.get("/api/long-term/SYN")
+    finally:
+        s.stop_refresher()
+    assert status == 200, body
+    row = _rows(body)["SYN"]
+    assert row["signal"] == "AVOID" and row["reason"] == "losing money" and row["years"] == 2
+    assert row["leaps"] is False and row["buyBelow"] is None and row["safetyBuy"] is None
+    assert dstatus == 200 and detail["row"]["signal"] == "AVOID"
+    assert any(c["key"] == "earning" and c["passed"] is False for c in detail["checks"])

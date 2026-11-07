@@ -376,8 +376,10 @@ def test_tsm_is_stale():
     assert real_signal("TSM")[3]["signal"] == "STALE"
 
 
-def test_crwv_is_short_history():
-    assert real_signal("CRWV")[3]["signal"] == "SHORT_HISTORY"
+def test_crwv_is_avoid_not_short_history():
+    # two years (the 5%-of-latest rule cuts 2023) and losing money: the loss decides, not the history
+    m, v, p, s = real_signal("CRWV")
+    assert m.years == 2 and s["signal"] == "AVOID" and s["reason"] == "losing money"
 
 
 @pytest.mark.parametrize("sym", SYMBOLS)
@@ -505,3 +507,90 @@ def test_payback_none_for_non_usd_filer():
     f = FinnhubExtract(symbol="SYN", market_cap_usd=2000.0)
     assert valuation(synth_m(), f).payback_years is not None
     assert valuation(synth_m(currency="TWD", market_cap_usd=None), f).payback_years is None
+
+
+# ---------- "no data" fix (2026-11-07): forced AVOID, WAIT cap, young at 3 ----------
+
+def test_signal_truth_table_no_data_rows():
+    v = synth_v(100.0, 120.0)
+    # R35 / R38: a forced AVOID reason wins over everything and publishes no levels
+    for why in ("no revenue yet", "losing money", "losing money (sources differ on the size)",
+                "ROIC 7% < 15% (sources differ on EPS)", "cash from operations negative"):
+        s = signal(synth_m(forced_avoid=why, years=0), v, price=40, price_ok=True, mos=50)
+        assert s["signal"] == "AVOID" and s["reason"] == why and s["leaps"] is False
+        assert all(s[k] is None for k in ("buy_below", "leaps_below", "safety_buy", "buy_zone_pct"))
+        assert signal(synth_m(forced_avoid=why), v, price=None, price_ok=False, mos=50)["signal"] == "AVOID"
+    # R40: a WAIT cap never BUYs or LEAPS, whatever the price; the reason names the gap
+    cap = "not cross-checked: Finnhub EPS missing"
+    s = signal(synth_m(wait_cap=cap), v, price=40, price_ok=True, mos=50)
+    assert s["signal"] == "WAIT" and s["reason"] == cap and s["leaps"] is False
+    assert s["buy_below"] is None and s["leaps_below"] is None and s["safety_buy"] == 50.0
+    # a capped row with an n/a gate is WAIT (the cap explains the n/a), not "Check data: ... n/a"
+    m = flip(synth_m(wait_cap="ROIC not measurable: negative equity", roic_now=None), "roic_now", passed=None)
+    s = signal(m, v, price=40, price_ok=True, mos=50)
+    assert s["signal"] == "WAIT" and s["reason"] == "ROIC not measurable: negative equity" and s["quality"] == "LOW"
+    # ... but a failing gate on a capped row is still AVOID
+    m = flip(synth_m(wait_cap=cap), "debt", value=5.3)
+    assert signal(m, v, price=40, price_ok=True, mos=50)["reason"] == "debt 5.3× FCF"
+    # a capped row without a price is NO_PRICE with no reachable BUY level
+    s = signal(synth_m(wait_cap=cap), v, price=None, price_ok=False, mos=50)
+    assert s["signal"] == "NO_PRICE" and s["buy_below"] is None and s["leaps_below"] is None
+    # R33: three- and four-year rows are young WAIT rows
+    for n in (3, 4):
+        s = signal(synth_m(years=n, young=True, window=[f"{y}-12-31" for y in range(2026 - n, 2026)]),
+                   v, price=40, price_ok=True, mos=50)
+        assert s["signal"] == "WAIT" and s["reason"] == f"young: {n} years, BUY needs 8" and s["leaps"] is False
+    # the cap beats "young" in the reason (the gap is the more useful words)
+    s = signal(synth_m(years=4, young=True, wait_cap=cap), v, price=40, price_ok=True, mos=50)
+    assert s["signal"] == "WAIT" and s["reason"] == cap
+    # fix round (M2 / M4 / M5): the new cap texts behave like every other cap, at any price
+    for cap2 in ("not cross-checked: periods differ (Finnhub FY 2026-12-31 vs EDGAR 2025-12-31)",
+                 "not cross-checked: capex from two tags (larger used in 2016-2018)",
+                 "not cross-checked: EPS derived in 2016, 2017"):
+        for price in (1.0, 40.0, 500.0):
+            s = signal(synth_m(wait_cap=cap2), v, price=price, price_ok=True, mos=50)
+            assert s["signal"] == "WAIT" and s["reason"] == cap2 and s["leaps"] is False, (cap2, price)
+            assert s["buy_below"] is None and s["leaps_below"] is None
+    # unchanged: a clean full row still BUYs
+    assert signal(synth_m(), v, price=40, price_ok=True, mos=50)["signal"] == "BUY"
+
+
+def test_earning_gate_words_tell_the_cash_side_apart():
+    # ORCL: EPS +6.44 but FCF -$28.7B is "no free cash flow", not "losing money"
+    v = synth_v()
+    s = signal(flip(synth_m(), "earning", value=6.44, detail="EPS 6.44 (Finnhub); FCF -28,720,000,000 (TTM)"),
+               v, price=40, price_ok=True, mos=50)
+    assert s["signal"] == "AVOID" and s["reason"] == "no free cash flow"
+    s = signal(flip(synth_m(), "earning", value=2.0, detail="owner earnings negative after stock comp (FCF $19.7B − SBC $30.4B)"),
+               v, price=40, price_ok=True, mos=50)
+    assert s["reason"] == "owner earnings negative after stock comp"
+    assert signal(flip(synth_m(), "earning", value=-1.0), v, price=40, price_ok=True, mos=50)["reason"] == "losing money"
+    assert signal(flip(synth_m(), "earning", value=None), v, price=40, price_ok=True, mos=50)["reason"] == "losing money"
+
+
+def test_unknown_gate_without_cap_is_still_avoid():
+    m = flip(synth_m(), "roic_now", passed=None)
+    assert signal(m, synth_v(), price=40, price_ok=True, mos=50)["reason"] == "Check data: ROIC now n/a"
+
+
+def test_history_avoid_words_use_min_years():
+    from long_term.metrics import MIN_YEARS
+    assert MIN_YEARS == 3
+    m = flip(synth_m(years=2), "history", value=2.0)
+    assert signal(m, synth_v(), price=40, price_ok=True, mos=50)["reason"] == "Short history (2 years)"
+    m = flip(synth_m(years=6), "history", value=6.0, detail="6 complete years; Stale filing (annual 2025-06-30)")
+    assert signal(m, synth_v(), price=40, price_ok=True, mos=50)["reason"].startswith("history: 6 complete years")
+
+
+def test_crwv_is_avoid_losing_money():
+    m, v, p, s = real_signal("CRWV")
+    assert m.years == 2 and m.status is None and m.forced_avoid == "losing money"
+    assert s["signal"] == "AVOID" and s["reason"] == "losing money" and s["leaps"] is False
+    assert all(s[k] is None for k in ("buy_below", "leaps_below", "safety_buy", "buy_zone_pct"))
+
+
+def test_metrics_round_trip_keeps_the_new_fields():
+    # the service rebuilds Metrics from summary.json: the new fields must survive asdict/**kw
+    m = synth_m(forced_avoid="no revenue yet", wait_cap="x", pre_revenue=True)
+    d = dataclasses.asdict(m)
+    assert d["forced_avoid"] == "no revenue yet" and d["wait_cap"] == "x" and d["pre_revenue"] is True

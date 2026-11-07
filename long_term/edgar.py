@@ -9,17 +9,29 @@ Rules (spec "Fact selection rules (EDGAR)"):
   never fy/fp/frame; key by period end; latest `filed` wins, then accession.
 * one unit per concept per company: most annual years; USD only on >= coverage.
 * tag resolution per company: the primary is a candidate covering the latest
-  annual year (most coverage among those; table order for debt/capex); another
-  candidate fills missing years only if it agrees within 2% in every overlap
-  year, else the year stays blank and the series is a "tag break" (debt and
-  capex fill without the 2% rule, noted).
+  annual year (most coverage among those; table order for the ORDERED_CONCEPTS
+  debt, capex, revenue, eps, cfo, shares); another candidate fills missing years
+  only if it agrees within 2% in every overlap year (ordered concepts: within
+  25%, R36), else the year stays blank and the series is a "tag break". Debt
+  and capex take the LARGER value where candidates differ by > 25% (R41, noted);
+  net income prefers a to-common / parent tag over ProfitLoss (minority interest).
+* EPS derived (R36) = net income to common / diluted weighted shares (else the
+  period-end share count) for a year with no EPS tag, noted; never for a year
+  that has one.
 * splits are inferred from the same period carrying different EPS in
-  different filings (clean ratios only).
+  different filings of the same tag (clean ratios only), confirmed by the share
+  counts, plus a 10-Q split-ratio fact the annual filings do not reflect yet;
+  every per-share candidate is brought to today's basis BEFORE comparison.
+* a 10-Q comparative instant at a fiscal year end counts as the annual balance;
+  a debt tag that ended at an explicit 0 means 0 in the later years no tag covers.
 * TTM flow = latest annual + YTD - prior YTD of the same 10-Q accession, else
   the annual ("TTM = FY"); balance items = latest instant of any period form.
+* facts split across CIKs (XOM's successor, NEE's co-registrant) are unioned by
+  `merge_companyfacts` (EXTRA_CIKS); the service fetches the extra CIKs.
 """
 from __future__ import annotations
 
+import copy
 import gzip
 import json
 import math
@@ -34,8 +46,10 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 ANNUAL_FORMS = frozenset({"10-K", "10-K/A", "10-KT", "20-F", "20-F/A", "40-F"})
+QUARTERLY_FORMS = frozenset({"10-Q", "10-Q/A"})
 MIN_DAYS, MAX_DAYS = 350, 380
-AGREE = 0.02                      # fill tolerance between candidate tags
+AGREE = 0.02                      # fill tolerance between candidate tags (net_income, equity, ...)
+FILL_MAX_DIFF = 0.25              # R36: ordered concepts fill from a candidate within 25% in every overlap year
 SPLIT_TOL = 0.03                  # relative tolerance when snapping a ratio to a clean split
 SPLIT_MIN_EPS = 0.10              # below this, cent rounding makes EPS ratios meaningless
 # 8 is not in the spec's list but 1-for-8 reverse splits are common (and the brief's test uses one).
@@ -43,16 +57,30 @@ _CLEAN = (1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 8.0, 10.0, 20.0, 50.0)
 CLEAN_RATIOS = tuple(sorted(set(_CLEAN) | {1.0 / r for r in _CLEAN}))
 
 IFRS = "ifrs-full:"
+OPT = "?"                         # recipe part prefix: optional (counts as 0 when the year lacks it)
 # One table, us-gaap first then ifrs-full. Bare names are us-gaap; "ifrs-full:" names are IFRS.
-# A tuple is a sum recipe (all non-optional parts must exist that year).
+# A tuple is a sum recipe (all non-optional parts must exist that year; "?Name" parts are optional).
 CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
     "revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
                 "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet",
-                ("InterestAndDividendIncomeOperating", "NoninterestIncome"), IFRS + "Revenue"],
+                ("InterestAndDividendIncomeOperating", "NoninterestIncome"), IFRS + "Revenue",
+                # no-data fix 2026-11-07 (R37): IFRS filers that never tag ifrs-full:Revenue
+                IFRS + "RevenueFromContractsWithCustomers",                            # KGC, NOK, BLDP, INFY, ACB
+                IFRS + "RevenueFromSaleOfGoods",                                       # KGC 2016
+                IFRS + "RevenueAndOperatingIncome"],                                   # HSBC (financial SIC only)
     "net_income": ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic",
                    IFRS + "ProfitLossAttributableToOwnersOfParent", IFRS + "ProfitLoss"],
-    "eps": ["EarningsPerShareDiluted", "EarningsPerShareBasic",
-            IFRS + "DilutedEarningsLossPerShare", IFRS + "BasicEarningsLossPerShare"],
+    "eps": ["EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted",                # HAL, CLSK, ASTS, APPS
+            # HAL, FCX, CLSK, ENPH, DELL: continuing + discontinued operations per diluted share = EPS
+            ("IncomeLossFromContinuingOperationsPerDilutedShare",
+             OPT + "IncomeLossFromDiscontinuedOperationsNetOfTaxPerDilutedShare",
+             OPT + "DiscontinuedOperationIncomeLossFromDiscontinuedOperationNetOfTaxPerDilutedShare"),
+            "IncomeLossFromContinuingOperationsPerBasicAndDilutedShare",                # ENPH 2010-2018
+            "NetIncomeLossNetOfTaxPerOutstandingLimitedPartnershipUnitDiluted",         # ET (partnership units)
+            "NetIncomeLossPerOutstandingLimitedPartnershipUnitDiluted",                 # ET 2008-2011
+            "EarningsPerShareBasic", "NetIncomeLossPerOutstandingLimitedPartnershipUnitBasicNetOfTax",
+            IFRS + "DilutedEarningsLossPerShare", IFRS + "DilutedEarningsLossPerShareFromContinuingOperations",  # SHEL
+            IFRS + "BasicEarningsLossPerShare", IFRS + "BasicEarningsLossPerShareFromContinuingOperations"],
     "equity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
                IFRS + "EquityAttributableToOwnersOfParent", IFRS + "Equity"],
     "debt": [("LongTermDebtNoncurrent", "LongTermDebtCurrent", "ShortTermBorrowings", "CommercialPaper"),
@@ -74,7 +102,23 @@ CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
              ("ConvertibleDebtNoncurrent", "ConvertibleDebtCurrent"),               # PANW
              "ConvertibleNotesPayable",                                             # DHI
              # SPOT: exchangeable notes sit in current borrowings (LongtermBorrowings is 0)
-             (IFRS + "LongtermBorrowings", IFRS + "CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings")],
+             (IFRS + "LongtermBorrowings", IFRS + "CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings"),
+             # no-data fix 2026-11-07 (R37/R41 recipes, from the debt probe)
+             "DebtLongtermAndShorttermCombinedAmount",                              # ORCL, STX (issuer total)
+             ("LongTermNotesPayable", OPT + "DebtCurrent"),                         # ORCL 2009-2014, HL
+             ("OtherLongTermDebtNoncurrent", OPT + "OtherLongTermDebtCurrent",
+              OPT + "SecuredDebtCurrent", OPT + "LongTermLineOfCredit"),             # XYZ
+             ("LongTermNotesAndLoans", OPT + "ShortTermBorrowings"),                # NTRA (to 2023)
+             "ShortTermBorrowings",                                                 # NTRA (UBS line)
+             "LinesOfCreditCurrent", "LongTermLineOfCredit",                        # LASR, QMCO
+             (IFRS + "NoncurrentPortionOfNoncurrentBondsIssued",
+              OPT + IFRS + "CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued",
+              OPT + IFRS + "LongtermBorrowings", OPT + IFRS + "CurrentPortionOfLongtermBorrowings"),   # TSM
+             (IFRS + "NotesAndDebenturesIssued",
+              OPT + IFRS + "CurrentNotesAndDebenturesIssuedAndCurrentPortionOfNoncurrentNotesAndDebenturesIssued"),  # TME
+             # MAR: (d) plus the current portion; kept after (d) so a filer that tags the current part
+             # only in 10-Ks (VZ) keeps its fresh 10-Q balance from (d) (the larger-value rule picks this)
+             ("LongTermDebtAndCapitalLeaseObligations", OPT + "LongTermDebtAndCapitalLeaseObligationsCurrent")],
     "op_leases": ["OperatingLeaseLiability"],
     "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
              IFRS + "CashAndCashEquivalents"],
@@ -82,48 +126,115 @@ CONCEPTS: dict[str, list[str | tuple[str, ...]]] = {
             IFRS + "CashFlowsFromUsedInOperatingActivities"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets",
               "PaymentsToAcquireOtherPropertyPlantAndEquipment",                     # LLY
-              IFRS + "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"],
+              "PaymentsToAcquireOtherProductiveAssets",                              # VZ 2017+
+              ("PaymentsForCapitalImprovements", OPT + "PaymentsForConstructionInProcess"),  # PENN, NVAX, KITT; WELL (REIT)
+              "PaymentsForProceedsFromProductiveAssets",                             # APPS (net of proceeds)
+              IFRS + "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+              IFRS + "PurchaseOfOtherLongtermAssetsClassifiedAsInvestingActivities",  # SHEL
+              IFRS + "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets"],  # ACB
     "sbc": ["ShareBasedCompensation"],
     "buybacks": ["PaymentsForRepurchaseOfCommonStock"],
     "dividends": ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock"],
     "interest": ["InterestExpense", "InterestExpenseNonoperating", "InterestExpenseDebt"],
     "op_income": ["OperatingIncomeLoss", IFRS + "ProfitLossFromOperatingActivities"],
     "assets": ["Assets", IFRS + "Assets"],
-    "shares": ["WeightedAverageNumberOfDilutedSharesOutstanding", "WeightedAverageNumberOfSharesOutstandingBasic",
-               IFRS + "WeightedAverageNumberOfDilutedSharesOutstanding"],
-    "split_ratio": ["StockholdersEquityNoteStockSplitConversionRatio1"],   # informational only
+    "shares": ["WeightedAverageNumberOfDilutedSharesOutstanding",
+               "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",             # CLSK, ASTS, ENPH
+               "WeightedAverageLimitedPartnershipUnitsOutstandingDiluted",           # ET
+               "WeightedAverageNumberOfSharesOutstandingBasic",
+               IFRS + "WeightedAverageNumberOfDilutedSharesOutstanding", IFRS + "WeightedAverageShares"],  # SHEL
+    "split_ratio": ["StockholdersEquityNoteStockSplitConversionRatio1"],   # 10-Q split ratio (CVNA), see _ratio_events
+    # internal (not in the annual table): inputs of the derived EPS (R36)
+    "ni_common": ["NetIncomeLossAvailableToCommonStockholdersDiluted", "NetIncomeLossAvailableToCommonStockholdersBasic",
+                  "NetIncomeLoss", IFRS + "ProfitLossAttributableToOwnersOfParent"],   # never ProfitLoss (minority interest)
+    "shares_outstanding": ["CommonStockSharesOutstanding"],                # HSY: period-end shares when no weighted tag
 }
 # Revenue: when several of these exist in a year, take the largest (one combined candidate).
 LARGER_OF = {"revenue": ("Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
                          "RevenueFromContractWithCustomerIncludingAssessedTax")}
+# Candidates only some industries may use: label -> "financial" (is_financial_sic must hold).
+SIC_GATED = {IFRS + "RevenueAndOperatingIncome": "financial"}   # non-banks (ABVX) tag grants/other income with it
 # Recipe parts that count as 0 when missing (ifrs ShorttermBorrowings is the IFRS twin of ShortTermBorrowings).
 OPTIONAL_PARTS = frozenset({"ShortTermBorrowings", "CommercialPaper", IFRS + "ShorttermBorrowings",
                             "ConvertibleNotesPayableCurrent", "ConvertibleDebtCurrent"})
-# Fill-only candidates: they may fill missing years under the 2% rule but are never primary
+# Fill-only candidates: they may fill missing years under the fill rule but are never primary
 # (unless nothing else exists for that concept).
 FILL_ONLY = frozenset({"NetIncomeLossAvailableToCommonStockholdersBasic", "EarningsPerShareBasic",
-                       "WeightedAverageNumberOfSharesOutstandingBasic", IFRS + "BasicEarningsLossPerShare"})
+                       "WeightedAverageNumberOfSharesOutstandingBasic", IFRS + "BasicEarningsLossPerShare",
+                       "NetIncomeLossPerOutstandingLimitedPartnershipUnitBasicNetOfTax",
+                       IFRS + "BasicEarningsLossPerShareFromContinuingOperations"})
+# net_income: ProfitLoss includes minority interest, so a to-common / parent tag covering the latest
+# year outranks it regardless of coverage (FCX: 4,152M ProfitLoss vs 2,197M to common; IBKR's Up-C).
+LAST_RESORT = frozenset({"ProfitLoss", IFRS + "ProfitLoss"})
 # Every concept's primary candidate is one that covers the LATEST annual year (R19). Among those,
-# ordered concepts take table order (the debt recipes are listed best-first), the rest the most
-# coverage. Ordered concepts also fill the primary's missing years from the other candidates in
-# table order WITHOUT the 2% rule (the tags measure the same thing with structural differences:
-# commercial paper and leases for debt; AMZN's PP&E vs productive-assets capex), noted, no tag break.
-ORDERED_CONCEPTS = frozenset({"debt", "capex"})
-CAPEX_FILL_MAX_DIFF = 0.25        # capex: a candidate more than 25% off in an overlap year never fills
+# ordered concepts take table order (best-first), the rest the most coverage. Ordered concepts also
+# fill the primary's missing years from the other candidates in table order under the 25% rule
+# (R36: a candidate more than 25% off in an overlap year never fills), noted, no tag break for
+# debt/capex (structural differences: commercial paper and leases for debt; AMZN's PP&E vs
+# productive-assets capex).
+ORDERED_CONCEPTS = frozenset({"debt", "capex", "revenue", "eps", "cfo", "shares", "ni_common"})
+# R41: debt and capex are fail-safe magnitudes: in a year where another candidate is > 25% LARGER
+# than the chosen value, the larger value is used and noted ("candidates differ, larger used").
+LARGER_WINS = frozenset({"debt", "capex"})
+CAPEX_FILL_MAX_DIFF = FILL_MAX_DIFF   # kept for callers; capex uses the common 25% rule
 # Single-part debt recipes that can miss part of the debt (R22): noted when they carry the latest year.
-PARTIAL_DEBT = frozenset({"NotesPayable", "LoansPayable", "OtherNotesPayableCurrent", "LongTermDebtNoncurrent"})
-SHARES_TAGS = ("WeightedAverageNumberOfDilutedSharesOutstanding", IFRS + "WeightedAverageNumberOfDilutedSharesOutstanding")
-INSTANT_CONCEPTS = frozenset({"equity", "debt", "op_leases", "cash", "assets"})
+PARTIAL_DEBT = frozenset({"NotesPayable", "LoansPayable", "OtherNotesPayableCurrent", "LongTermDebtNoncurrent",
+                          "ShortTermBorrowings", "LinesOfCreditCurrent", "LongTermLineOfCredit"})
+# Diluted share-count tags: confirm inferred splits and divide the derived EPS.
+SHARES_TAGS = ("WeightedAverageNumberOfDilutedSharesOutstanding", "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",
+               "WeightedAverageLimitedPartnershipUnitsOutstandingDiluted",
+               IFRS + "WeightedAverageNumberOfDilutedSharesOutstanding", IFRS + "WeightedAverageShares")
+PER_SHARE_CONCEPTS = frozenset({"eps"})                       # split factor applies
+SHARE_COUNT_CONCEPTS = frozenset({"shares", "shares_outstanding"})   # inverse split factor applies
+INSTANT_CONCEPTS = frozenset({"equity", "debt", "op_leases", "cash", "assets", "shares_outstanding"})
 MAGNITUDE_CONCEPTS = frozenset({"capex"})
-TABLE_CONCEPTS = tuple(c for c in CONCEPTS if c != "split_ratio")
+INTERNAL_CONCEPTS = frozenset({"split_ratio", "ni_common", "shares_outstanding"})
+TABLE_CONCEPTS = tuple(c for c in CONCEPTS if c not in INTERNAL_CONCEPTS)
 # Fetched (fixtures/trimmer) but not resolved into a concept here.
 EXTRA_TAGS = {"us-gaap": ["Liabilities", "DepreciationDepletionAndAmortization", "IncomeTaxExpenseBenefit"],
               "ifrs-full": ["PurchaseOfIntangibleAssetsClassifiedAsInvestingActivities", "Liabilities"],
               "dei": ["EntityCommonStockSharesOutstanding"]}
+# Filers whose facts live under more than one CIK (R42): symbol -> extra CIKs whose facts are merged
+# into the primary CIK's companyfacts with `merge_companyfacts` (the service fetches them).
+# XOM: the SEC map moved XOM to ExxonMobil Holdings (2115436), which carries the 2026 10-Qs but no
+# history; 34088 (CIK_OVERRIDES) has the history. NEE: its combined 10-Qs with Florida Power & Light
+# were attributed to FPL's CIK 37634 for Q2/Q3 2026; only NEE's own accessions may be taken from it
+# (pass `allowed_accns` from NEE's submissions index, see EdgarClient.accessions).
+EXTRA_CIKS: dict[str, tuple[int, ...]] = {"XOM": (2115436,), "NEE": (37634,)}
+NEEDS_ACCESSION_FILTER = frozenset({"NEE"})
+
+
+def _part_name(name: str) -> str:
+    return name[len(OPT):] if name.startswith(OPT) else name
 
 
 def _split_name(name: str) -> tuple[str, str]:
+    name = _part_name(name)
     return ("ifrs-full", name[len(IFRS):]) if name.startswith(IFRS) else ("us-gaap", name)
+
+
+def _cand_label(cand) -> str:
+    return "+".join(_part_name(p) for p in cand) if isinstance(cand, tuple) else cand
+
+
+def _recipe_optional() -> dict[str, frozenset[str]]:
+    """recipe label -> parts marked optional with the "?" prefix."""
+    out: dict[str, frozenset[str]] = {}
+    for cands in CONCEPTS.values():
+        for cand in cands:
+            if isinstance(cand, tuple):
+                opt = frozenset(_part_name(p) for p in cand if p.startswith(OPT))
+                if opt:
+                    out[_cand_label(cand)] = opt
+    return out
+
+
+RECIPE_OPTIONAL: dict[str, frozenset[str]] = _recipe_optional()
+
+
+def _optional(name: str, label: str | None = None) -> bool:
+    """Whether `name` counts as 0 when missing: globally optional, or optional inside recipe `label`."""
+    return name in OPTIONAL_PARTS or (label is not None and name in RECIPE_OPTIONAL.get(label, ()))
 
 
 def _tags_by_namespace() -> dict[str, list[str]]:
@@ -169,6 +280,7 @@ class Series:
     basic_only: bool = False                   # primary is a fill-only tag (nothing better had data)
     far_off: list[str] = field(default_factory=list)  # capex: candidates refused for differing > 25%
     forms: dict[str, str] = field(default_factory=dict)    # end -> form of the fact used (10-K, 20-F...)
+    larger: dict[str, list[str]] = field(default_factory=dict)  # debt/capex: label -> ends where it was the larger value
 
 
 @dataclass
@@ -243,12 +355,16 @@ def _newer(a: Fact, b: Fact) -> bool:
 
 
 def annual_facts(facts_by_unit: dict, *, forms=ANNUAL_FORMS, tag: str = "",
-                 instant: bool | None = None) -> dict[str, dict[str, Fact]]:
-    """unit -> period end -> latest-filed annual Fact (tie-break: accession)."""
+                 instant: bool | None = None, year_ends: set[str] | None = None) -> dict[str, dict[str, Fact]]:
+    """unit -> period end -> latest-filed annual Fact (tie-break: accession).
+
+    `year_ends` (balance items only): a 10-Q comparative instant dated exactly at one of these fiscal
+    year ends counts as the annual fact too (CHWY's FY-end debt exists only in 10-Q comparatives)."""
     out: dict[str, dict[str, Fact]] = {}
     for f in to_facts(facts_by_unit, tag):
         if not is_annual(f, forms, instant=instant):
-            continue
+            if not (instant and year_ends and f.form in QUARTERLY_FORMS and not f.start and f.end in year_ends):
+                continue
         per = out.setdefault(f.unit, {})
         cur = per.get(f.end)
         if cur is None or _newer(f, cur):
@@ -285,32 +401,37 @@ def pick_unit(per_unit: dict[str, dict], *, prefer: str | None = None) -> str | 
 
 # ---------- tag resolution ----------
 
-def _cand_label(cand) -> str:
-    return "+".join(cand) if isinstance(cand, tuple) else cand
+Adjust = Callable[[Fact], Fact] | None
 
 
-def _node_rows(gaap: dict, ifrs: dict, name: str, instant: bool | None = None) -> dict[str, dict[str, Fact]]:
+def _node_rows(gaap: dict, ifrs: dict, name: str, instant: bool | None = None, *, adjust: Adjust = None,
+               year_ends: set[str] | None = None) -> dict[str, dict[str, Fact]]:
     ns, tag = _split_name(name)
     src = ifrs if ns == "ifrs-full" else gaap
     node = (src or {}).get(tag)
     if not node:
         return {}
-    return annual_facts(node.get("units") or {}, tag=name, instant=instant)
+    rows = annual_facts(node.get("units") or {}, tag=_part_name(name), instant=instant, year_ends=year_ends)
+    if adjust is not None:
+        rows = {u: {e: adjust(f) for e, f in r.items()} for u, r in rows.items()}
+    return rows
 
 
-def _candidate(gaap: dict, ifrs: dict, cand, instant: bool | None = None) -> dict[str, dict[str, Fact]]:
+def _candidate(gaap: dict, ifrs: dict, cand, instant: bool | None = None, *, adjust: Adjust = None,
+               year_ends: set[str] | None = None) -> dict[str, dict[str, Fact]]:
     """unit -> end -> Fact (recipes yield synthetic Facts whose val is the sum)."""
     if not isinstance(cand, tuple):
-        return _node_rows(gaap, ifrs, cand, instant)
-    parts = {p: _node_rows(gaap, ifrs, p, instant) for p in cand}
-    required = [p for p in cand if p not in OPTIONAL_PARTS]
-    units = set.intersection(*(set(parts[p]) for p in required)) if required else set()
+        return _node_rows(gaap, ifrs, cand, instant, adjust=adjust, year_ends=year_ends)
     label = _cand_label(cand)
+    names = [_part_name(p) for p in cand]
+    parts = {p: _node_rows(gaap, ifrs, p, instant, adjust=adjust, year_ends=year_ends) for p in names}
+    required = [p for p in names if not _optional(p, label)]
+    units = set.intersection(*(set(parts[p]) for p in required)) if required else set()
     out: dict[str, dict[str, Fact]] = {}
     for u in units:
         ends = set.intersection(*(set(parts[p][u]) for p in required))
         for e in sorted(ends):
-            used = [parts[p][u][e] for p in cand if e in parts[p].get(u, {})]
+            used = [parts[p][u][e] for p in names if e in parts[p].get(u, {})]
             total = sum(f.val for f in used)
             last = max(used, key=lambda f: (f.filed, f.accn))
             out.setdefault(u, {})[e] = Fact(e, last.start, total, u, label, last.form, last.accn, last.filed)
@@ -327,7 +448,13 @@ def _larger_of(a: dict[str, dict[str, Fact]], b: dict[str, dict[str, Fact]]) -> 
     return out
 
 
-def _candidates(gaap: dict, ifrs: dict, concept: str) -> list[tuple[str, dict[str, dict[str, Fact]]]]:
+def _gated_out(label: str, sic) -> bool:
+    gate = SIC_GATED.get(label)
+    return gate == "financial" and not is_financial_sic(sic)
+
+
+def _candidates(gaap: dict, ifrs: dict, concept: str, *, adjust: Adjust = None, sic=None,
+                year_ends: set[str] | None = None) -> list[tuple[str, dict[str, dict[str, Fact]]]]:
     cands = CONCEPTS[concept]
     instant = None if concept == "split_ratio" else concept in INSTANT_CONCEPTS
     pair = LARGER_OF.get(concept)
@@ -335,11 +462,13 @@ def _candidates(gaap: dict, ifrs: dict, concept: str) -> list[tuple[str, dict[st
     for cand in cands:
         if pair and cand in pair[1:]:
             continue                                      # folded into pair[0]
-        rows = _candidate(gaap, ifrs, cand, instant)
         label = _cand_label(cand)
+        if _gated_out(label, sic):
+            continue
+        rows = _candidate(gaap, ifrs, cand, instant, adjust=adjust, year_ends=year_ends if instant else None)
         if pair and cand == pair[0]:
             for other in pair[1:]:
-                rows = _larger_of(rows, _candidate(gaap, ifrs, other, instant))
+                rows = _larger_of(rows, _candidate(gaap, ifrs, other, instant, adjust=adjust))
             label = "|".join(pair)
         if rows:
             out.append((label, rows))
@@ -356,10 +485,36 @@ def _agrees(a: float, b: float) -> bool:
     return scale == 0 or abs(a - b) <= AGREE * scale
 
 
+def _primary(ranked: list, concept: str) -> list:
+    """Reorder `ranked` so the primary candidate comes first (see the module docstring and R19)."""
+    fill_only = FILL_ONLY if concept != "ni_common" else frozenset()   # to-common basic NI is first-class there
+    pool = [c for c in ranked if c[0] not in fill_only] or ranked
+    latest = max(e for _, rows in pool for e in rows)
+    covering = [c for c in pool if latest in c[1]]
+    if all(c[0] in LAST_RESORT for c in covering):
+        # net_income: a fill-only to-common tag covering the latest year beats ProfitLoss (IBKR, FCX)
+        covering = [c for c in ranked if c[0] in fill_only and latest in c[1]] + covering
+    if concept in ORDERED_CONCEPTS:
+        # table order: the first candidate covering the latest year; the rest fill in table order
+        # a recipe showing 0 in the latest year never outranks a later one showing a value there:
+        # a 0 from a partial recipe is "a tag missed", not proof of no debt (SPOT)
+        first = next((c for c in covering if c[1][latest].val != 0), covering[0])
+        return [first] + [c for c in ranked if c is not first]
+    # most coverage among those covering the latest year, last-resort tags behind the rest (ties keep
+    # table order: sorted is stable); the rest by coverage, fill-only tags last
+    first = sorted(covering, key=lambda c: (c[0] in LAST_RESORT, -len(c[1])))[0]
+    rest = sorted((c for c in ranked if c is not first), key=lambda c: -len(c[1]))
+    return [first] + [c for c in rest if c[0] not in fill_only] + [c for c in rest if c[0] in fill_only]
+
+
 def resolve_series(gaap: dict, ifrs: dict, concept: str, *, year_ends: set[str] | None = None,
-                   prefer_currency: str | None = None) -> Series | None:
-    """Per-company resolution of one concept (see module docstring)."""
-    cands = _candidates(gaap or {}, ifrs or {}, concept)
+                   prefer_currency: str | None = None, adjust: Adjust = None, sic=None) -> Series | None:
+    """Per-company resolution of one concept (see module docstring).
+
+    `adjust` maps every candidate Fact before comparison (split normalisation of per-share facts);
+    `sic` enables the SIC-gated candidates; `year_ends` restricts balance items to fiscal year ends
+    (and lets 10-Q comparatives at those ends count)."""
+    cands = _candidates(gaap or {}, ifrs or {}, concept, adjust=adjust, sic=sic, year_ends=year_ends)
     if year_ends is not None:
         cands = [(lab, {u: {e: f for e, f in r.items() if e in year_ends} for u, r in rows.items()})
                  for lab, rows in cands]
@@ -376,23 +531,7 @@ def resolve_series(gaap: dict, ifrs: dict, concept: str, *, year_ends: set[str] 
     ranked = [(lab, rows.get(unit, {})) for lab, rows in cands if rows.get(unit)]
     if not ranked:
         return None
-    # R19: the primary covers the latest annual year any (non-fill-only) candidate has, so a tag
-    # that stopped years ago never outranks the one the company files today (TEAM, AMZN capex).
-    pool = [c for c in ranked if c[0] not in FILL_ONLY] or ranked
-    latest = max(e for _, rows in pool for e in rows)
-    covering = [c for c in pool if latest in c[1]]
-    if concept in ORDERED_CONCEPTS:
-        # table order: the first candidate covering the latest year; the rest fill in table order
-        # a recipe showing 0 in the latest year never outranks a later one showing a value there:
-        # a 0 from a partial recipe is "a tag missed", not proof of no debt (SPOT)
-        first = next((c for c in covering if c[1][latest].val != 0), covering[0])
-        ranked = [first] + [c for c in ranked if c is not first]
-    else:
-        # most coverage among those covering the latest year (ties keep table order: sorted is
-        # stable); the rest by coverage, fill-only tags last
-        first = sorted(covering, key=lambda c: -len(c[1]))[0]
-        rest = sorted((c for c in ranked if c is not first), key=lambda c: -len(c[1]))
-        ranked = [first] + [c for c in rest if c[0] not in FILL_ONLY] + [c for c in rest if c[0] in FILL_ONLY]
+    ranked = _primary(ranked, concept)
     plabel, prim = ranked[0]
     chosen: dict[str, Fact] = dict(prim)
     source = {e: plabel for e in prim}
@@ -400,30 +539,50 @@ def resolve_series(gaap: dict, ifrs: dict, concept: str, *, year_ends: set[str] 
     disagree: dict[str, int] = {}
     unchecked: dict[str, list[str]] = {}
     far_off: list[str] = []
+    larger: dict[str, list[str]] = {}
+    ordered = concept in ORDERED_CONCEPTS
     for lab, rows in ranked[1:]:
         overlap = [e for e in rows if e in prim]
-        off = sum(1 for e in overlap if not _agrees(rows[e].val, prim[e].val))
-        if off and concept not in ORDERED_CONCEPTS:          # ordered concepts disagree by design
-            disagree[lab] = off
+        if not ordered:
+            off = sum(1 for e in overlap if not _agrees(rows[e].val, prim[e].val))
+            if off:
+                disagree[lab] = off
         missing = [e for e in rows if e not in chosen]
-        if not missing:
-            continue
-        if concept in ORDERED_CONCEPTS:
-            # Same thing measured with structural differences (see ORDERED_CONCEPTS), so missing
-            # years are filled in table order without the 2% rule; capex refuses a tag > 25% off.
-            if concept == "capex" and any(_off_by(rows[e].val, prim[e].val) > CAPEX_FILL_MAX_DIFF for e in overlap):
+        if ordered:
+            # Same thing measured with structural differences (see ORDERED_CONCEPTS): missing years
+            # fill in table order under the 25% rule; a candidate > 25% off in an overlap year never
+            # fills (debt keeps filling: its recipes differ by construction, R22/R41 note the rest).
+            far = [e for e in overlap if _off_by(rows[e].val, prim[e].val) > FILL_MAX_DIFF]
+            if concept in LARGER_WINS:
+                # a candidate that was the LARGER value in every far-off year is the fuller measure
+                # (VZ's old capex tag beside the acquisitions line): it may fill; debt always fills
+                far = [e for e in far if abs(rows[e].val) < abs(prim[e].val)] if concept != "debt" else []
+            if far:
                 far_off.append(lab)
+                if concept not in LARGER_WINS:
+                    refused.update(missing)
+                continue
+            if not missing:
                 continue
             for e in missing:
                 chosen[e] = rows[e]
                 source[e] = lab
             unchecked[lab] = sorted(missing)
+        elif not missing:
+            continue
         elif overlap and not off:
             for e in missing:
                 chosen[e] = rows[e]
                 source[e] = lab
         else:
             refused.update(missing)                       # disagrees, or nothing to check it against
+    if concept in LARGER_WINS:
+        # R41 (fail-safe): per year, a candidate more than 25% larger than the chosen value replaces it
+        for e in list(chosen):
+            best = max((rows[e] for _, rows in ranked if e in rows), key=lambda f: abs(f.val))
+            if abs(best.val) > abs(chosen[e].val) and _off_by(best.val, chosen[e].val) > FILL_MAX_DIFF:
+                chosen[e], source[e] = best, best.tag
+                larger.setdefault(best.tag, []).append(e)
     broke = any(e not in chosen for e in refused)         # a year left blank because tags disagree
     tag = plabel
     if "|" in plabel:                                     # combined pair: name the tag that supplied most years
@@ -434,7 +593,7 @@ def resolve_series(gaap: dict, ifrs: dict, concept: str, *, year_ends: set[str] 
     return Series(values={e: abs(chosen[e].val) if mag else chosen[e].val for e in ends}, unit=unit, tag=tag,
                   tag_break=broke, filed={e: chosen[e].filed for e in ends}, source={e: source[e] for e in ends},
                   disagree=disagree, unchecked=unchecked, basic_only=plabel in FILL_ONLY, far_off=far_off,
-                  forms={e: chosen[e].form for e in ends})
+                  forms={e: chosen[e].form for e in ends}, larger={k: sorted(v) for k, v in larger.items()})
 
 
 def resolve_concept(gaap: dict, ifrs: dict, concept: str, *,
@@ -481,13 +640,16 @@ def _shares_in(look: dict, f: Fact) -> float | None:
 
 def _split_scan(eps_rows: list[Fact], share_rows: list[Fact] | None = None
                 ) -> tuple[list[tuple[str, str, float]], list[str]]:
-    """(events, period ends whose EPS jump was contradicted by the share counts)."""
+    """(events, period ends whose EPS jump was contradicted by the share counts).
+
+    Facts are compared per tag, unit and period end: the same period in two filings of the SAME
+    tag (continuing-operations EPS never meets total EPS)."""
     look = _share_lookup(share_rows)
     unconfirmed: set[str] = set()
-    by_end: dict[tuple[str, str], list[Fact]] = {}
+    by_end: dict[tuple[str, str, str], list[Fact]] = {}
     for f in eps_rows:
         if is_annual(f) and f.start:
-            by_end.setdefault((f.unit, f.end), []).append(f)
+            by_end.setdefault((f.tag, f.unit, f.end), []).append(f)
     events: list[list] = []
     for rows in by_end.values():
         latest: dict[str, Fact] = {}
@@ -543,13 +705,230 @@ def apply_split(series: dict[str, float], factors: dict[str, float]) -> dict[str
     return {e: v * factors.get(e, 1.0) for e, v in series.items()}
 
 
-# ---------- snapshot ----------
-
-def _eps_rows(gaap: dict, ifrs: dict, s: Series) -> list[Fact]:
-    """All annual facts (every filing) of the EPS primary tag, in the series' unit."""
-    ns, tag = _split_name(s.tag)
+def _node_facts(gaap: dict, ifrs: dict, name: str) -> list[Fact]:
+    """Every fact (any form, any unit) of one tag, labelled with its full name."""
+    ns, tag = _split_name(name)
     node = ((ifrs if ns == "ifrs-full" else gaap) or {}).get(tag) or {}
-    return [f for f in to_facts({s.unit: (node.get("units") or {}).get(s.unit, [])}, s.tag) if is_annual(f)]
+    return to_facts(node.get("units") or {}, _part_name(name))
+
+
+def _per_share_rows(gaap: dict, ifrs: dict) -> tuple[list[Fact], list[Fact]]:
+    """(annual facts of every EPS candidate tag, every fact of the diluted share-count tags)."""
+    eps_rows: list[Fact] = []
+    for cand in CONCEPTS["eps"]:
+        for name in (cand if isinstance(cand, tuple) else (cand,)):
+            eps_rows += [f for f in _node_facts(gaap, ifrs, name) if is_annual(f)]
+    shares_rows: list[Fact] = []
+    for name in SHARES_TAGS:
+        shares_rows += _node_facts(gaap, ifrs, name)
+    return eps_rows, shares_rows
+
+
+def _adjuster(events: list[tuple[str, str, float]], *, inverse: bool = False) -> Adjust:
+    """Fact -> Fact on today's share basis (per-share values x factor; share counts / factor)."""
+    if not events:
+        return None
+
+    def adjust(f: Fact) -> Fact:
+        k = factor_at(events, f.filed)
+        return Fact(f.end, f.start, f.val / k if inverse else f.val * k, f.unit, f.tag, f.form, f.accn, f.filed)
+    return adjust
+
+
+RATIO_WINDOW_DAYS = 400               # a scanned split this close to the 10-Q ratio fact is the same split
+SHARE_MOVE = 2.0                      # quarterly / annual diluted shares beyond this confirms a 10-Q ratio
+
+
+def _share_move(gaap: dict, ifrs: dict, latest_annual_end: str) -> float | None:
+    """Latest 10-Q diluted share count / the count at the latest annual end (first tag carrying both)."""
+    for name in SHARES_TAGS:
+        units = _units_of(gaap, ifrs, name)
+        annual = annual_facts({"shares": units.get("shares") or []}, instant=False).get("shares", {}).get(latest_annual_end)
+        q = _quarterly_shares_fact(units)
+        if annual and q is not None and q.end > latest_annual_end and q.form in QUARTERLY_FORMS and annual.val > 0:
+            return q.val / annual.val
+    return None
+
+
+def _ratio_events(gaap: dict, ifrs: dict, latest_annual_end: str | None,
+                  events: list[tuple[str, str, float]]) -> list[tuple[str, str, float, str]]:
+    """Splits so far reported only by a 10-Q StockholdersEquityNoteStockSplitConversionRatio1 fact
+    (CVNA 5:1, May 2026): the ratio's date is after the latest annual end, it snaps to a clean ratio
+    and the latest 10-Q diluted share count moved > 2x against the annual one in the same direction.
+    Every per-share fact filed before that 10-Q is brought to the new basis. [(lo, hi, factor, note)]."""
+    if not latest_annual_end:
+        return []
+    out: list[tuple[str, str, float, str]] = []
+    for f in _node_facts(gaap, ifrs, "StockholdersEquityNoteStockSplitConversionRatio1"):
+        if f.form not in QUARTERLY_FORMS or f.end <= latest_annual_end or f.val <= 0 or f.val == 1:
+            continue
+        m = _clean(max(f.val, 1.0 / f.val))
+        if m is None:
+            continue
+        move = _share_move(gaap, ifrs, latest_annual_end)
+        if move is None:
+            continue
+        if move > SHARE_MOVE:
+            r, label = 1.0 / m, f"{m:g}:1"
+        elif move < 1.0 / SHARE_MOVE:
+            r, label = m, f"1:{m:g}"
+        else:
+            continue
+        if any(ev[2] == r and abs((_date(ev[1]) - _date(f.filed)).days) <= RATIO_WINDOW_DAYS for ev in events
+               if _date(ev[1]) and _date(f.filed)) or any(r == o[2] for o in out):
+            continue
+        out.append((f.filed, f.filed, r, f"split {label} from the 10-Q split ratio at {f.end}"))
+    return out
+
+
+def _derive_eps(series: dict[str, Series], internal: dict[str, Series], currency: str | None,
+                notes: list[str]) -> None:
+    """R36: EPS = net income to common / diluted weighted shares for a year with no EPS tag (never for
+    a year that has one); HSY-style fallback to the period-end share count. Not derived when NI/shares
+    contradicts the EPS tag in the latest overlap years (mis-scaled share counts)."""
+    ni = internal.get("ni_common")
+    if not ni or not ni.values:
+        return
+    eps = series.get("eps")
+    unit = eps.unit if eps else (f"{currency}/shares" if currency else None)
+    if unit is None or ni.unit != unit.split("/")[0]:
+        return
+    sh, so = series.get("shares"), internal.get("shares_outstanding")
+    if eps and sh:
+        both = [e for e in sorted(eps.values) if e in ni.values and sh.values.get(e, 0) > 0
+                and abs(eps.values[e]) >= SPLIT_MIN_EPS and eps.source.get(e) != "derived"][-3:]
+        if any(_off_by(ni.values[e] / sh.values[e], eps.values[e]) > FILL_MAX_DIFF for e in both):
+            notes.append("eps: NI/shares disagrees with the EPS tag; not derived")
+            return
+    weighted, period_end, rescaled = [], [], []
+    for e, v in ni.values.items():
+        if eps and e in eps.values:
+            continue
+        count, fixed = _plausible_count(sh, e)
+        if count is None:
+            count, fixed = _plausible_count(so, e)
+            bucket = period_end
+        else:
+            bucket = weighted
+        if count is None:
+            continue
+        val = v / count
+        if fixed:
+            rescaled.append(f"{e[:4]} x{fixed:g}")
+        if eps is None:
+            eps = series["eps"] = Series(values={}, unit=unit, tag="derived")
+        eps.values[e], eps.filed[e], eps.source[e], eps.forms[e] = val, ni.filed[e], "derived", ni.forms[e]
+        bucket.append(e)
+    if eps:
+        eps.values = dict(sorted(eps.values.items()))
+    if weighted:
+        notes.append(f"eps: {', '.join(e[:4] for e in sorted(weighted))} derived from NI/shares")
+    if period_end:
+        notes.append(f"eps: {', '.join(e[:4] for e in sorted(period_end))} derived from NI/period-end shares")
+    if rescaled:
+        notes.append(f"eps: share count rescaled for the derived EPS ({', '.join(rescaled)})")
+
+
+SCALE_STEPS = (1e3, 1e6, 1e-3, 1e-6)
+NEIGHBOUR_TOL = 2.0                   # a share count within x2 of its neighbours' median is plausible
+
+
+def _plausible_count(s: Series | None, end: str) -> tuple[float | None, float | None]:
+    """(share count for `end`, rescale factor applied or None): a count more than 2x away from the
+    median of its two nearest years is mis-scaled (HSY tags FY2009 diluted shares in thousands);
+    it is brought back by a power of 1000 when that lands within 2x, else the year is skipped."""
+    if not s or s.values.get(end, 0) <= 0:
+        return None, None
+    val = s.values[end]
+    others = sorted((abs(_days(e, end)) if e <= end else abs(_days(end, e)), v) for e, v in s.values.items()
+                    if e != end and v > 0)[:2]
+    if not others:
+        return val, None
+    ref = sorted(v for _, v in others)[len(others) // 2]
+    if 1 / NEIGHBOUR_TOL <= val / ref <= NEIGHBOUR_TOL:
+        return val, None
+    for k in SCALE_STEPS:
+        if 1 / NEIGHBOUR_TOL <= val * k / ref <= NEIGHBOUR_TOL:
+            return val * k, k
+    return None, None
+
+
+YTD9_MIN_DAYS, YTD9_MAX_DAYS = 240, 290
+MISDATED_MAX_RATIO = 1.5
+
+
+def _rescue_misdated_revenue(gaap: dict, ifrs: dict, series: dict[str, Series], latest: str | None,
+                             currency: str | None, notes: list[str]) -> None:
+    """LHX: the FY2025 10-K tags the full-year revenue with the fourth quarter's dates, so no annual
+    fact exists. A 10-K fact ending exactly at the latest annual year end (shorter than a year) is
+    taken as the annual value when it is >= the same year's 9-month YTD 10-Q value of the same tag
+    and <= 1.5x it (a quarter can never exceed the YTD)."""
+    rev = series.get("revenue")
+    if latest is None or (rev and latest in rev.values):
+        return
+    unit = rev.unit if rev else currency
+    if not unit:
+        return
+    for name in (c for c in CONCEPTS["revenue"] if isinstance(c, str)):
+        rows = [f for f in _node_facts(gaap, ifrs, name) if f.unit == unit and f.start]
+        short = [f for f in rows if f.form in ANNUAL_FORMS and f.end == latest and _days(f.start, f.end) < MIN_DAYS]
+        if not short:
+            continue
+        fy = max(short, key=lambda f: (f.filed, f.accn))
+        ytds = [f for f in rows if f.form in QUARTERLY_FORMS and f.end < latest
+                and YTD9_MIN_DAYS <= _days(f.start, f.end) <= YTD9_MAX_DAYS and _days(f.end, latest) <= 120]
+        if not ytds:
+            continue
+        ytd = max(ytds, key=lambda f: (f.end, f.filed))
+        if ytd.val > 0 and ytd.val <= fy.val <= MISDATED_MAX_RATIO * ytd.val:
+            if rev is None:
+                rev = series["revenue"] = Series(values={}, unit=unit, tag=name)
+            rev.values[latest], rev.filed[latest], rev.source[latest], rev.forms[latest] = fy.val, fy.filed, name, fy.form
+            rev.values = dict(sorted(rev.values.items()))
+            notes.append(f"revenue: 10-K fact {fy.start}..{fy.end} taken as the annual value "
+                         f"(above the 9-month YTD {ytd.start}..{ytd.end})")
+            return
+
+
+CARRY_ZERO_INTEREST_SHARE = 0.01      # = metrics.NO_DEBT_INTEREST_SHARE: interest < 1% of operating income reads as no debt
+
+
+def _short_money(v: float) -> str:
+    for div, suf in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(v) >= div:
+            return f"{v / div:g}{suf}"
+    return f"{v:g}"
+
+
+def _carry_zero_debt(series: dict[str, Series], year_ends: set[str] | None, notes: list[str]) -> None:
+    """A debt tag that ended at an explicit 0 and was then dropped (notes repaid: MDB, OUST, SOUN)
+    means 0 in the later fiscal years that no debt candidate covers - but only while the year's
+    interest expense agrees (fail-safe): no interest value for the year, an explicit 0, or interest
+    below CARRY_ZERO_INTEREST_SHARE of a positive operating income. The carry stops at the first
+    year that fails the guard; that year and every later one stay blank (the row caps at WAIT)."""
+    debt = series.get("debt")
+    if not debt or not debt.values or not year_ends:
+        return
+    last = max(debt.values)
+    later = sorted(e for e in year_ends if e > last)
+    if not later or debt.values[last] != 0:
+        return
+    interest = series["interest"].values if "interest" in series else {}
+    op_income = series["op_income"].values if "op_income" in series else {}
+    carried, stopped = [], None
+    for e in later:
+        i, op = interest.get(e), op_income.get(e)
+        if i is None or i == 0 or (op is not None and op > 0 and abs(i) / op < CARRY_ZERO_INTEREST_SHARE):
+            debt.values[e], debt.filed[e], debt.source[e], debt.forms[e] = 0.0, debt.filed[last], "carried 0", debt.forms[last]
+            carried.append(e)
+            continue
+        stopped = (f" (stopped at {e[:4]}: interest {_short_money(i)} vs operating income "
+                   f"{_short_money(op) if op is not None else 'n/a'})")
+        break
+    if carried:
+        notes.append(f"debt: 0 carried forward to {', '.join(e[:4] for e in carried)} (tag ended at 0 in {last[:4]}){stopped or ''}")
+    else:
+        notes.append(f"debt: 0 not carried forward (tag ended at 0 in {last[:4]}){stopped}")
 
 
 def build_snapshot(symbol: str, cik: int, companyfacts: dict, *, sic: int | None, name: str,
@@ -557,48 +936,49 @@ def build_snapshot(symbol: str, cik: int, companyfacts: dict, *, sic: int | None
     facts = (companyfacts or {}).get("facts") or {}
     gaap, ifrs = facts.get("us-gaap") or {}, facts.get("ifrs-full") or {}
     series: dict[str, Series] = {}
+    internal: dict[str, Series] = {}
     # The reporting currency is net income's unit (fallback revenue, then equity); every other
-    # money concept prefers it on a coverage tie.
-    currency = None
+    # money concept prefers it on a coverage tie. Net income also dates the company.
+    currency, latest = None, None
     for c in ("net_income", "revenue", "equity"):
-        s = resolve_series(gaap, ifrs, c)
-        if s:
-            currency = s.unit
+        s = resolve_series(gaap, ifrs, c, sic=sic)
+        if s and s.values:
+            currency, latest = s.unit, max(s.values)
             break
-    for c in TABLE_CONCEPTS:
+    # Splits first (every per-share tag, confirmed by the diluted share counts, plus a 10-Q split
+    # ratio the annual filings do not reflect yet), so every per-share candidate is compared and
+    # assembled on today's share basis.
+    eps_rows, shares_rows = _per_share_rows(gaap, ifrs)
+    events, unconfirmed = _split_scan(eps_rows, shares_rows)
+    notes: list[str] = [f"eps: unconfirmed split at {e}" for e in unconfirmed]
+    ratio = _ratio_events(gaap, ifrs, latest, events)
+    events = sorted(events + [(lo, hi, r) for lo, hi, r, _ in ratio])
+    notes.extend(n for *_, n in ratio)
+    adjust_for = {c: _adjuster(events, inverse=c in SHARE_COUNT_CONCEPTS) for c in PER_SHARE_CONCEPTS | SHARE_COUNT_CONCEPTS}
+    for c in TABLE_CONCEPTS + ("ni_common",):
         if c not in INSTANT_CONCEPTS:
-            s = resolve_series(gaap, ifrs, c, prefer_currency=currency)
+            s = resolve_series(gaap, ifrs, c, prefer_currency=currency, adjust=adjust_for.get(c), sic=sic)
             if s:
-                series[c] = s
+                (internal if c in INTERNAL_CONCEPTS else series)[c] = s
+    _rescue_misdated_revenue(gaap, ifrs, series, latest, currency, notes)
     # Balance-sheet instants only at fiscal year ends (drops e.g. lease-adoption dates).
     year_ends = set().union(*(series[c].values for c in ("revenue", "net_income", "cfo") if c in series)) or None
-    for c in TABLE_CONCEPTS:
+    for c in TABLE_CONCEPTS + ("shares_outstanding",):
         if c in INSTANT_CONCEPTS:
-            s = resolve_series(gaap, ifrs, c, year_ends=year_ends, prefer_currency=currency)
+            s = resolve_series(gaap, ifrs, c, year_ends=year_ends, prefer_currency=currency,
+                               adjust=adjust_for.get(c), sic=sic)
             if s:
-                series[c] = s
+                (internal if c in INTERNAL_CONCEPTS else series)[c] = s
+    _derive_eps(series, internal, currency, notes)
+    _carry_zero_debt(series, year_ends, notes)
 
-    notes: list[str] = []
     split_factor = 1.0
     eps = series.get("eps")
-    if eps:
-        shares_rows: list[Fact] = []
-        for sname in SHARES_TAGS:
-            ns, stag = _split_name(sname)
-            node = ((ifrs if ns == "ifrs-full" else gaap) or {}).get(stag) or {}
-            shares_rows += to_facts(node.get("units") or {}, sname)
-        events, unconfirmed = _split_scan(_eps_rows(gaap, ifrs, eps), shares_rows)
-        notes.extend(f"eps: unconfirmed split at {e}" for e in unconfirmed)
-        if events:
-            for c in ("eps", "shares"):
-                s = series.get(c)
-                if not s:
-                    continue
-                f = {e: factor_at(events, s.filed[e]) for e in s.values}
-                s.values = apply_split(s.values, f if c == "eps" else {e: 1.0 / v for e, v in f.items()})
-            oldest = min(eps.values)
-            split_factor = factor_at(events, eps.filed[oldest])
-            notes.append("splits: " + ", ".join(f"x{r:g} after {lo}" for lo, _hi, r in events))
+    if events and eps and eps.values:
+        oldest = min(eps.values)
+        split_factor = factor_at(events, eps.filed[oldest])
+    if events:
+        notes.append("splits: " + ", ".join(f"x{r:g} after {lo}" for lo, _hi, r in events))
 
     for c, s in series.items():
         money = s.unit.split("/")[0]
@@ -612,6 +992,8 @@ def build_snapshot(symbol: str, cik: int, companyfacts: dict, *, sic: int | None
             notes.append(f"{c}: {years} from recipe ({letters.get(lab, '?')}) {lab}" if c == "debt"
                          else f"{c}: {years} from {lab}")
         notes.extend(f"{c}: {lab} differs >25%, not used" for lab in s.far_off)
+        for lab, ends in s.larger.items():
+            notes.append(f"{c}: candidates differ, larger used in {', '.join(e[:4] for e in ends)} ({lab})")
         if s.basic_only:
             notes.append(f"{c}: basic-only")
     debt = series.get("debt")
@@ -631,7 +1013,8 @@ def build_snapshot(symbol: str, cik: int, companyfacts: dict, *, sic: int | None
         if c in series and series[c].values:
             latest = max(series[c].values)
             break
-    ttm, ttm_end, ttm_is_fy, period_end, ttm_notes, ttm_ends, balance_ends = _ttm_fields(gaap, ifrs, series, latest)
+    ttm, ttm_end, ttm_is_fy, period_end, ttm_notes, ttm_ends, balance_ends = _ttm_fields(gaap, ifrs, series, latest,
+                                                                                          events)
     notes.extend(ttm_notes)
     return Snapshot(symbol=symbol, cik=cik, name=name, sic=sic, currency=currency,
                     annual=dict(sorted(annual.items())), units={c: s.unit for c, s in series.items()},
@@ -642,14 +1025,37 @@ def build_snapshot(symbol: str, cik: int, companyfacts: dict, *, sic: int | None
                     annual_form=series["net_income"].forms.get(latest) if "net_income" in series else None)
 
 
+def merge_companyfacts(base: dict, extra: dict, *, allowed_accns: set[str] | None = None) -> dict:
+    """`base`'s companyfacts plus `extra`'s rows from accessions `base` has nowhere (R42).
+
+    XOM: the SEC moved the ticker to ExxonMobil Holdings (2115436), which holds the 2026 10-Qs and
+    no history. NEE: Q2/Q3 2026 facts of its combined 10-Qs sit under Florida Power & Light's CIK.
+    An accession already present in `base` is never taken (the same combined filing carries the
+    other entity's numbers); `allowed_accns` keeps only the filer's own accessions.
+    """
+    out = copy.deepcopy(base or {})
+    facts = out.setdefault("facts", {})
+    have = {r.get("accn") for ns in facts.values() for node in (ns or {}).values()
+            for rows in ((node or {}).get("units") or {}).values() for r in rows or []}
+    for ns, tags in ((extra or {}).get("facts") or {}).items():
+        for tag, node in (tags or {}).items():
+            for unit, rows in ((node or {}).get("units") or {}).items():
+                keep = [r for r in rows or [] if r.get("accn") not in have
+                        and (allowed_accns is None or r.get("accn") in allowed_accns)]
+                if not keep:
+                    continue
+                dst = facts.setdefault(ns, {}).setdefault(tag, {k: v for k, v in node.items() if k != "units"})
+                dst.setdefault("units", {}).setdefault(unit, []).extend(copy.deepcopy(keep))
+    return out
+
+
 # ---------- TTM and date stamps ----------
 
-QUARTERLY_FORMS = frozenset({"10-Q", "10-Q/A"})
 PERIOD_FORMS = ANNUAL_FORMS | QUARTERLY_FORMS       # every form a latest instant / period end may come from
 YTD_MIN_DAYS, YTD_MAX_DAYS = 80, 290
 QTR_MIN_DAYS, QTR_MAX_DAYS = 80, 100
 DATE_TOL = 7                                         # +-days when matching period starts/ends
-TTM_FLOWS = ("revenue", "net_income", "cfo", "capex", "sbc", "interest", "op_income")
+TTM_FLOWS = ("revenue", "net_income", "cfo", "capex", "sbc", "interest", "op_income", "eps")
 TTM_BALANCES = ("debt", "cash", "equity", "assets")
 
 
@@ -744,37 +1150,43 @@ def _label_names(label: str) -> list[str]:
     return [n for part in label.split("|") for n in part.split("+")]
 
 
-def _flow_ttm(gaap: dict, ifrs: dict, concept: str, s: Series, end: str) -> tuple[float, str, bool]:
-    """TTM for one resolved flow series, from the tag (or recipe) that supplied its latest annual value."""
+def _flow_ttm(gaap: dict, ifrs: dict, concept: str, s: Series, end: str,
+              scale: Callable[[Fact], float] | None = None) -> tuple[float, str, bool]:
+    """TTM for one resolved flow series, from the tag (or recipe) that supplied its latest annual value.
+
+    `scale` (per-share flows): multiplier per fact, the split factor at its filing date."""
     fy_val = s.values[end]
     mag = concept in MAGNITUDE_CONCEPTS
     label = s.source.get(end, s.tag)
 
     def same(v: float) -> bool:
-        return math.isclose(abs(v) if mag else v, fy_val, rel_tol=1e-9, abs_tol=0.5)
+        return math.isclose(abs(v) if mag else v, fy_val, rel_tol=1e-9, abs_tol=0.5 if not scale else 0.005)
+
+    def val(f: Fact) -> float:
+        return f.val * scale(f) if scale else f.val
 
     if "+" not in label:
         names = [s.tag] + [n for n in _label_names(label) if n != s.tag]
         for name in names:
             fy, ytd, prior = _ttm_parts(_units_of(gaap, ifrs, name), s.unit, end)
-            if fy is None or not same(fy.val):
+            if fy is None or not same(val(fy)):
                 continue                                   # this tag did not supply the annual value
             if ytd is None or prior is None:
                 break
-            v = fy.val + ytd.val - prior.val
+            v = val(fy) + val(ytd) - val(prior)
             return (abs(v) if mag else v), ytd.end, False
         return fy_val, end, True
     total_fy, total, ends = 0.0, 0.0, set()                # sum recipe: every present part needs a TTM
     for name in label.split("+"):
         fy, ytd, prior = _ttm_parts(_units_of(gaap, ifrs, name), s.unit, end)
         if fy is None:
-            if name in OPTIONAL_PARTS:
+            if _optional(name, label):
                 continue
             return fy_val, end, True
         if ytd is None or prior is None:
             return fy_val, end, True
-        total_fy += fy.val
-        total += fy.val + ytd.val - prior.val
+        total_fy += val(fy)
+        total += val(fy) + val(ytd) - val(prior)
         ends.add(ytd.end)
     if len(ends) != 1 or not same(total_fy):
         return fy_val, end, True
@@ -799,7 +1211,7 @@ def _latest_instant(gaap: dict, ifrs: dict, label: str, unit: str,
             if f.form in ANNUAL_FORMS and not f.start:
                 ann.add(f.end)
         per[name], annual_ends[name] = rows, ann
-    required = [n for n in names if len(names) == 1 or n not in OPTIONAL_PARTS]
+    required = [n for n in names if len(names) == 1 or not _optional(n, label)]
     ends = set.intersection(*(set(per[n]) for n in required)) if required else set()
     if not ends:
         return None
@@ -827,36 +1239,42 @@ def _period_end(gaap: dict, ifrs: dict, s: Series) -> str | None:
     return max(ends) if ends else None
 
 
-def _ttm_fields(gaap: dict, ifrs: dict, series: dict[str, Series], latest: str | None
-                ):
-    """(ttm, ttm_period_end, ttm_is_fy, latest_period_end, notes, ttm_ends, balance_ends)."""
+def _ttm_fields(gaap: dict, ifrs: dict, series: dict[str, Series], latest: str | None,
+                events: list[tuple[str, str, float]] = ()):
+    """(ttm, ttm_period_end, ttm_is_fy, latest_period_end, notes, ttm_ends, balance_ends).
+
+    Balances and the quarterly share count come from the candidate that supplied the latest annual
+    year (a larger debt recipe, the basic share count filling the diluted one), not the primary."""
     ttm: dict[str, float] = {}
     stamps: dict[str, tuple[str, bool]] = {}
     balance_ends: dict[str, str] = {}
     notes: list[str] = []
     if latest is None:
         return ttm, None, False, None, notes, stamps, balance_ends
+    scale = (lambda f: factor_at(events, f.filed)) if events else None
     for c in TTM_FLOWS:
         s = series.get(c)
         if s and latest in s.values:
-            v, e, fy = _flow_ttm(gaap, ifrs, c, s, latest)
+            v, e, fy = _flow_ttm(gaap, ifrs, c, s, latest, scale if c in PER_SHARE_CONCEPTS else None)
             ttm[c], stamps[c] = v, (e, fy)
     for c in TTM_BALANCES:
         s = series.get(c)
         if not s or not s.values:
             continue
         end, val = max(s.values.items())
-        got = _latest_instant(gaap, ifrs, s.tag, s.unit, notes)
+        got = _latest_instant(gaap, ifrs, s.source.get(end, s.tag), s.unit, notes)
         if got and got[0] >= end:
             end, val = got
         ttm[c], balance_ends[c] = val, end
     s = series.get("shares")
     if s and s.values:
-        q = _quarterly_shares_fact(_units_of(gaap, ifrs, s.tag), s.unit)
+        last = max(s.values)
+        q = _quarterly_shares_fact(_units_of(gaap, ifrs, s.source.get(last, s.tag)), s.unit)
         if q is not None:
-            ttm["shares"], balance_ends["shares"] = q.val, q.end
+            k = factor_at(events, q.filed) if events else 1.0
+            ttm["shares"], balance_ends["shares"] = q.val / k, q.end
         else:
-            ttm["shares"], balance_ends["shares"] = s.values[max(s.values)], max(s.values)
+            ttm["shares"], balance_ends["shares"] = s.values[last], last
     lead = next((c for c in ("net_income", "revenue") if c in stamps), None)
     # Latest period end of any allowed period form across EVERY resolved concept (flows and
     # instants): C and NEE file their latest 10-Q facts under tags other than net income's.
@@ -991,11 +1409,16 @@ class EdgarClient:
     def company_facts(self, cik: int) -> dict:
         return self._json(FACTS_URL.format(cik=int(cik)))
 
-    def submission(self, cik: int) -> dict:
+    def submission(self, cik: int, *, with_accessions: bool = False) -> dict:
+        """Trimmed submissions record; `with_accessions` adds "accessions" (the recent filings' accession
+        numbers, for `merge_companyfacts(allowed_accns=...)` of a co-registrant CIK)."""
         raw = self._json(SUBMISSIONS_URL.format(cik=int(cik))) or {}
         out = {k: raw.get(k) for k in SUBMISSION_KEYS}
         try:
             out["sic"] = int(str(out["sic"]).strip()) if out["sic"] not in (None, "") else None
         except ValueError:
             out["sic"] = None
+        if with_accessions:
+            recent = ((raw.get("filings") or {}).get("recent") or {}).get("accessionNumber") or []
+            out["accessions"] = [str(a) for a in recent]
         return out

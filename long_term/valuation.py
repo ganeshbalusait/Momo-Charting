@@ -18,6 +18,10 @@ Binding rules:
 * Previous trading day for the price guard = the last weekday before today's ET date. Market
   holidays are treated as weekdays (a quote from the day before a holiday Monday is "stale" on the
   Tuesday), which errs on the safe side.
+* `Metrics.forced_avoid` (R35 / R38: pre-revenue, losing money, the less favourable source fails
+  a hard check) is the AVOID reason before any gate. `Metrics.wait_cap` (R40 / R41: a missing
+  cross-check or a one-source debt) keeps the row at WAIT, with the gap as the reason; an n/a
+  gate on a capped row is explained by the cap and is not "Check data: ... n/a".
 """
 from __future__ import annotations
 
@@ -27,7 +31,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from long_term.finnhub import FinnhubExtract
-from long_term.metrics import LABELS, Metrics
+from long_term.metrics import LABELS, MIN_YEARS, Metrics
 
 ET = ZoneInfo("America/New_York")
 YEARS = 10
@@ -295,15 +299,21 @@ def price_guard(price: float | None, quote_time_ms: float | None, ref_price: flo
 
 def _avoid_reason(m: Metrics) -> str | None:
     c = m.checks or {}
+    forced = getattr(m, "forced_avoid", "") or ""
+    if forced:
+        return forced                          # R35 / R38: settled by the less favourable source
     earning = c.get("earning")
     if earning is not None and earning.passed is False and _ok(earning.value) and earning.value <= 0:
         return "losing money"                  # negative EPS: say so before the ROIC it drags down
 
+    capped = bool(getattr(m, "wait_cap", "") or "")
     for k in AVOID_GATES:
         ch = c.get(k)
         if ch is None or ch.passed is None:
             if k == "debt" and m.financial:
                 continue                       # financial rule set: debt is legitimately n/a
+            if capped:
+                continue                       # R40: the cap names the gap; the row is WAIT at most
             label = ch.label if ch is not None and ch.label else LABELS.get(k, k)
             return f"Check data: {label} n/a"  # an unknown gate is never a pass
         if ch.passed is True:
@@ -314,9 +324,14 @@ def _avoid_reason(m: Metrics) -> str | None:
         if k == "debt":
             return f"debt {ch.value:.1f}× FCF" if _ok(ch.value) else "debt with no free cash flow"
         if k == "earning":
+            if _ok(ch.value) and ch.value > 0:          # EPS positive: the cash side failed, say which
+                detail = str(ch.detail or "")
+                if detail.startswith("owner earnings negative after stock comp"):
+                    return "owner earnings negative after stock comp"
+                return "no free cash flow"
             return "losing money"
         if k == "history":
-            if m.years < 5:
+            if m.years < MIN_YEARS:
                 return f"Short history ({m.years} year{'s' if m.years != 1 else ''})"
             return f"history: {ch.detail}"
         parts = [p for p in str(ch.detail or "").split("; ")
@@ -372,7 +387,8 @@ def signal(m: Metrics, v: Valuation, *, price: float | None, price_ok: bool, mos
     full = m.years >= BUY_YEARS
     nf = (m.checks or {}).get("eps_not_falling")
     not_falling = nf is not None and nf.passed is True
-    can_buy = full and not_falling                       # the row can reach BUY at some price
+    cap = getattr(m, "wait_cap", "") or ""               # R40 / R41: a missing cross-check caps the row at WAIT
+    can_buy = full and not_falling and not cap           # the row can reach BUY at some price
     can_leaps = can_buy and _ok(gate) and gate >= LEAPS_ROIC
     if not can_buy:
         out["buy_below"] = None
@@ -392,8 +408,10 @@ def signal(m: Metrics, v: Valuation, *, price: float | None, price_ok: bool, mos
         return out
 
     out["leaps"] = bool(can_leaps and leaps_below is not None and price <= leaps_below)
-    if full and not_falling and price <= safety:
+    if can_buy and price <= safety:
         out.update(signal="BUY", reason=f"price {_money(price)} ≤ Safety Buy {_money(safety)}")
+    elif cap:
+        out.update(signal="WAIT", reason=cap)
     elif not full:
         out.update(signal="WAIT", reason=f"young: {m.years} years, BUY needs {BUY_YEARS}")
     elif not not_falling:

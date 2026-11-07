@@ -2,6 +2,17 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-07T07:40:00-05:00",
+      "heading": "Long Term: 'No data' drops from 220 tickers to a few dozen; every other row now says AVOID or WAIT with its reason",
+      "items": [
+        "Most of the 220 'No data' rows were real companies whose SEC filings use a different tag for one number (Hershey's EPS, L3Harris's revenue, Verizon's capex, Oracle's debt). The page now reads those tags, fills a missing year from a second tag only when the two agree, and derives EPS from net income and share count when a year has no EPS tag.",
+        "Companies with 3 to 7 clean years are scored and capped at WAIT ('young: 4 years, BUY needs 8'). Companies with no revenue yet (QuantumScape, Oklo, NuScale...) read AVOID 'no revenue yet'. A company that loses money reads AVOID 'losing money' even when its history is short.",
+        "When the SEC and Finnhub disagree, the row is judged on the less favourable number: if that already fails a test the row reads AVOID with the reason ('ROIC 6% < 15% (sources differ on EPS)'); a missing cross-check scores the row but caps it at WAIT ('not cross-checked: ...'). Nothing in this change can make a row BUY or LEAPS that could not before. PayPal drops from BUY to AVOID: its debt was counted without the part due within a year (10.9B instead of 13.3B, PayPal's own total), and with the full debt its ROIC is 14%, just under the 15% bar. ADBE (BUY + LEAPS) and QCOM (LEAPS) remain.",
+        "Exxon and NextEra no longer show 'stale': their 2026 quarterly filings sit under a second SEC number that is now merged in. Exchange-traded notes such as VXX are listed with the ETFs instead of as a bank. A company with too little history but a ROIC already under 15% on either source reads AVOID with that number instead of 'No data' (NextEra, Conoco, Alibaba, On, STMicro).",
+        "The new numbers appear after the backend restarts and the nightly pass has run; until then the page shows yesterday's rows."
+      ]
+    },
+    {
       "at": "2026-11-06T16:20:00-05:00",
       "heading": "Long Term: the LEAP pick now follows the chain page's ENTRY rule, 3 to 12 months out",
       "items": [

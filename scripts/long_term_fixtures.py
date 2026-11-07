@@ -1,9 +1,12 @@
 """Build tests/fixtures/long_term/* from raw SEC company-facts files.
 
 Usage: python scripts/long_term_fixtures.py <folder with raw <SYM>.json files>
+       python scripts/long_term_fixtures.py --edgar-only <folder>   (EDGAR_ONLY_CIKS: companyfacts only)
 
 Network is used by THIS script only (Finnhub metric + SEC submissions); the
 tests never touch it. The Finnhub key is read from .env and never printed.
+The --edgar-only set pins the tag-resolution recipes of the "no data" fix
+(2026-11-07) and needs no Finnhub / submissions files.
 """
 from __future__ import annotations
 
@@ -25,6 +28,13 @@ assert {"Revenues", "Revenue", "EntityCommonStockSharesOutstanding"} <= ALL_TAGS
 FORMS = {"10-K", "10-K/A", "10-KT", "10-Q", "20-F", "20-F/A", "40-F"}
 CIKS = {"AAPL": 320193, "ASML": 937966, "TSM": 1046179, "HOOD": 1783879, "MCD": 63908,
         "HD": 354950, "JPM": 19617, "GOOGL": 1652044, "NVDA": 1045810, "CRWV": 1769628}
+# companyfacts-only fixtures (no-data fix 2026-11-07): HAL = EPS tag switch to continuing+discontinued
+# per share; LHX = full-year revenue tagged with Q4 dates in the FY2025 10-K; HSY = two-class filer
+# with no EPS tag (derived from NI / period-end shares); WELL = REIT capex (capital improvements +
+# construction); MAR = LongTermDebt is a 23M component, the real debt sits in (d); XOM / XOM2 = the
+# facts split between the old CIK 34088 and the successor CIK 2115436 (merge_companyfacts).
+EDGAR_ONLY_CIKS = {"HAL": 45012, "LHX": 202058, "HSY": 47111, "WELL": 766704, "MAR": 1048286,
+                   "XOM": 34088, "XOM2": 2115436}
 UA = "AGX Trading App (admin@agxtrade.com)"
 MAX_BYTES = 600_000
 
@@ -56,7 +66,25 @@ def _get(url: str, headers: dict) -> bytes:
         return data
 
 
+def _trim_to_file(sym: str, doc: dict) -> None:
+    floor = "2012-01-01"
+    trimmed = trim_facts(doc, floor)
+    text = json.dumps(trimmed, separators=(",", ":"))
+    if len(text.encode()) > MAX_BYTES:
+        floor = "2014-01-01"
+        trimmed = trim_facts(doc, floor)
+        text = json.dumps(trimmed, separators=(",", ":"))
+        print(f"{sym}: raised floor to {floor}")
+    (OUT / f"companyfacts_{sym}.json").write_text(text, encoding="utf-8")
+    print(f"{sym}: companyfacts {len(text.encode())} bytes")
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "--edgar-only":
+        OUT.mkdir(parents=True, exist_ok=True)
+        for sym in EDGAR_ONLY_CIKS:
+            _trim_to_file(sym, json.loads((Path(argv[2]) / f"{sym}.json").read_text(encoding="utf-8")))
+        return 0
     if len(argv) != 2:
         print(__doc__)
         return 2
@@ -67,17 +95,7 @@ def main(argv: list[str]) -> int:
     load_dotenv(ROOT / ".env")
     key = os.getenv("FINNHUB_API_KEY", "")
     for sym, cik in CIKS.items():
-        doc = json.loads((raw_dir / f"{sym}.json").read_text(encoding="utf-8"))
-        floor = "2012-01-01"
-        trimmed = trim_facts(doc, floor)
-        text = json.dumps(trimmed, separators=(",", ":"))
-        if len(text.encode()) > MAX_BYTES:
-            floor = "2014-01-01"
-            trimmed = trim_facts(doc, floor)
-            text = json.dumps(trimmed, separators=(",", ":"))
-            print(f"{sym}: raised floor to {floor}")
-        (OUT / f"companyfacts_{sym}.json").write_text(text, encoding="utf-8")
-        print(f"{sym}: companyfacts {len(text.encode())} bytes")
+        _trim_to_file(sym, json.loads((raw_dir / f"{sym}.json").read_text(encoding="utf-8")))
         if key:
             body = _get(f"https://finnhub.io/api/v1/stock/metric?symbol={sym}&metric=all&token={key}", {})
             (OUT / f"finnhub_{sym}.json").write_bytes(body)
