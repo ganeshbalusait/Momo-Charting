@@ -23156,6 +23156,18 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-drawer-leap .long-term-lines li.is-sub { margin-top: 4px; color: #7fd3ee; font-weight: 700; }
 .long-term-drawer-leap > p { margin: 4px 0; font-size: 12px; }
 .long-term-drawer-leap > .long-term-note { margin: 6px 0 0; }
+/* The "i" next to a term and the explanation it opens (tap, so it works on the phone) */
+.long-term-info { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 17px; height: 17px; margin-left: 6px; padding: 0; border: 1px solid rgba(127, 211, 238, 0.55); border-radius: 50%; background: transparent; color: #7fd3ee; font: italic 700 11px/1 Georgia, "Times New Roman", serif; vertical-align: 1px; cursor: pointer; }
+.long-term-info:hover, .long-term-info.is-open { background: rgba(127, 211, 238, 0.16); border-color: #7fd3ee; }
+.long-term-info:focus-visible { outline: 2px solid #7fd3ee; outline-offset: 1px; }
+.long-term-info-text { display: block; margin: 5px 0 3px; padding: 7px 9px; border-left: 2px solid #7fd3ee; border-radius: 4px; background: rgba(127, 211, 238, 0.08); color: #d6eef6; font-family: inherit; font-size: 11.5px; font-style: normal; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
+.long-term-info-text b { color: #e7f7ff; font-weight: 700; }
+.long-term-with-info { min-width: 0; }
+.long-term-with-info-row { display: flex; align-items: center; min-width: 0; }
+.long-term-with-info-row > h4 { margin-bottom: 0; }
+.long-term-controls .long-term-with-info:has(.long-term-info-text) { flex: 1 1 100%; }
+.long-term-with-info.is-tiles { margin: 0 0 6px; }
+.long-term-info-label { color: var(--lt-muted); font-size: 11px; }
 .long-term-years-wrap { max-width: 100%; overflow-x: auto; }
 .long-term-years { width: 100%; border-collapse: collapse; font-size: 10.5px; }
 .long-term-years th, .long-term-years td { padding: 2px 5px; text-align: right; white-space: nowrap; }

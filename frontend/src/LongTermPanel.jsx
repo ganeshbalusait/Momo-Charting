@@ -39,6 +39,7 @@ import {
   DEEP_HEADING,
   DEEP_NONE,
 } from "./longTerm";
+import { glossaryEntry, glossaryKey } from "./longTermGlossary";
 
 const POLL_MS = 30000;
 // A rows request that has not answered in this long is stuck, not slow (the
@@ -239,11 +240,77 @@ function markClass(line) {
   return "";
 }
 
-function LineList({ lines, marks = false }) {
+// The "i" next to a term (Ganesh 11-07: "what is MOS, ROIC, EPS"). A tap, not a
+// hover, so it works on the phone; the explanation opens right under the term.
+function InfoButton({ k, open, onToggle }) {
+  const entry = glossaryEntry(k);
+  if (!entry) return null;
+  return (
+    <button
+      type="button"
+      className={`long-term-info${open ? " is-open" : ""}`}
+      data-testid={`long-term-info-${k}`}
+      aria-label={`What is ${entry.term}?`}
+      aria-expanded={open}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+    >
+      i
+    </button>
+  );
+}
+
+function InfoText({ k }) {
+  const entry = glossaryEntry(k);
+  if (!entry) return null;
+  return (
+    <span className="long-term-info-text" data-testid={`long-term-info-text-${k}`} role="note">
+      <b>{entry.term}.</b> {entry.text}
+    </span>
+  );
+}
+
+// A heading or control with its own "i" and the explanation under it.
+function WithInfo({ k, children, className = "" }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`long-term-with-info ${className}`.trim()}>
+      <div className="long-term-with-info-row">
+        {children}
+        <InfoButton k={k} open={open} onToggle={() => setOpen((v) => !v)} />
+      </div>
+      {open ? <InfoText k={k} /> : null}
+    </div>
+  );
+}
+
+// Tiles are buttons themselves (a button cannot hold another), so their "i"
+// sits on a small label above the row and explains all five at once.
+function TilesInfo() {
+  return (
+    <WithInfo k="tiles" className="is-tiles">
+      <span className="long-term-info-label">What the tiles mean</span>
+    </WithInfo>
+  );
+}
+
+function LineList({ lines, marks = false, info = false }) {
+  const [openIdx, setOpenIdx] = useState(-1);
   if (!lines.length) return <p className="long-term-dim">{DASH}</p>;
   return (
     <ul className="long-term-lines">
-      {lines.map((line, i) => <li key={i} className={marks ? markClass(line) : ""}>{line}</li>)}
+      {lines.map((line, i) => {
+        const k = info ? glossaryKey(line) : null;
+        return (
+          <li key={i} className={marks ? markClass(line) : ""}>
+            {line}
+            {k ? <InfoButton k={k} open={openIdx === i} onToggle={() => setOpenIdx((v) => (v === i ? -1 : i))} /> : null}
+            {k && openIdx === i ? <InfoText k={k} /> : null}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -291,14 +358,14 @@ function LeapSection({ entry, onRetry }) {
   } else if (entry.transient) {
     body = (
       <>
-        <LineList lines={leapSection(entry.payload)} marks />
+        <LineList lines={leapSection(entry.payload)} marks info />
         <p className="long-term-dim">
           {leapTransientNote(entry.payload)}{" "}
           <button type="button" className="long-term-link" onClick={onRetry}>Retry now</button>
         </p>
       </>
     );
-  } else body = <LineList lines={leapSection(entry.payload)} marks />;
+  } else body = <LineList lines={leapSection(entry.payload)} marks info />;
   return (
     <section className="long-term-drawer-leap" data-testid="long-term-drawer-leap">
       <h4>LEAP to buy</h4>
@@ -340,18 +407,22 @@ function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, widt
         <div className="long-term-drawer-grid">
           <section>
             <h4>Checklist</h4>
-            <LineList lines={byTitle("Checklist")} marks />
+            <LineList lines={byTitle("Checklist")} marks info />
           </section>
           <section>
             <h4>Valuation</h4>
-            <LineList lines={byTitle("Valuation")} />
+            <LineList lines={byTitle("Valuation")} info />
           </section>
           <section>
-            <h4>Ten years{detail?.unit ? <small> · {detail.unit}</small> : null}</h4>
+            <WithInfo k="years">
+              <h4>Ten years{detail?.unit ? <small> · {detail.unit}</small> : null}</h4>
+            </WithInfo>
             <YearsTable detail={detail} />
           </section>
           <section>
-            <h4>Cross-checks</h4>
+            <WithInfo k="crosschecks">
+              <h4>Cross-checks</h4>
+            </WithInfo>
             <LineList lines={byTitle("Cross-checks")} marks />
             <h4>Sources</h4>
             <LineList lines={byTitle("Sources")} />
@@ -843,6 +914,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
           <p className="long-term-note">Rule #1 buys are rare; WAIT rows show the price to buy at</p>
         </div>
         <div className="long-term-controls">
+          <WithInfo k="mos" className="is-mos">
           <div className="long-term-switch" role="group" aria-label="Margin of safety">
             {MOS_OPTIONS.map((m) => (
               <button
@@ -862,6 +934,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
               </button>
             ))}
           </div>
+          </WithInfo>
           <input
             type="search"
             className="long-term-search"
@@ -889,6 +962,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
         </div>
       </header>
 
+      <TilesInfo />
       <div className="long-term-tiles" role="group" aria-label="Filter by signal">
         {TILES.map((t) => {
           const count = counts[t] || 0;

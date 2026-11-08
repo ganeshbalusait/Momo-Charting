@@ -253,7 +253,8 @@ e2eTest("no ENTRY pick but a deep pick: the line says so and names the deep call
     await p.getByTestId("long-term-row-AAPL").click();
     const section = p.getByTestId("long-term-drawer-leap");
     await section.waitFor({ timeout: 10_000 });
-    const lines = (await section.locator(".long-term-lines").innerText()).trim().split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    // each line's own text (the "i" button after it is not part of the line)
+    const lines = await section.locator(".long-term-lines > li").evaluateAll((lis) => lis.map((li) => li.firstChild.textContent.trim()));
     assert.deepEqual(lines, [
       `No ENTRY contract: ${NO_ENTRY}`,
       "Deep call (stock substitute):",
@@ -478,6 +479,62 @@ e2eTest("a rows request that never answers is given up and asked again: the rows
     await p.getByTestId("long-term-card-AAPL").waitFor({ timeout: 120_000 });
     assert.ok(calls >= 3, "the page asked again after giving up on the stuck requests");
     assert.equal(await p.getByTestId("long-term-card-HD").count(), 1);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+// Ganesh 11-07: "I need each name 'I' for information - what is MOS, ROIC, EPS".
+// Every term carries an "i"; a tap opens a plain explanation under it and a
+// second tap closes it. Desktop: MOS, tiles, checklist, valuation. Phone: the
+// same inside the card's drawer, and nothing scrolls sideways when one is open.
+e2eTest("the i next to MOS, the tiles, ROIC and the valuation opens a plain explanation and closes again", async () => {
+  await withApp({ view: VIEW, fakeReads: reads() }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await p.getByTestId("long-term-info-mos").click();
+    assert.match(await p.getByTestId("long-term-info-text-mos").innerText(), /margin of safety[\s\S]*half the fair value/i);
+    await p.getByTestId("long-term-info-mos").click();
+    assert.equal(await p.getByTestId("long-term-info-text-mos").count(), 0, "a second tap closes it");
+    await p.getByTestId("long-term-info-tiles").click();
+    assert.match(await p.getByTestId("long-term-info-text-tiles").innerText(), /BUY:[\s\S]*LEAPS:[\s\S]*WAIT:[\s\S]*AVOID:[\s\S]*NO DATA:/);
+    assert.equal(await p.getByTestId("long-term-tile-BUY").getAttribute("aria-pressed"), "false", "the i never filters the table");
+
+    await p.getByTestId("long-term-row-AAPL").click();
+    const drawer = p.getByTestId("long-term-drawer");
+    await drawer.getByText(/Sticker/).first().waitFor({ timeout: 10_000 });
+    await drawer.getByTestId("long-term-info-roic_now").click();
+    assert.match(await drawer.getByTestId("long-term-info-text-roic_now").innerText(), /return on invested capital[\s\S]*15%/i);
+    await drawer.getByTestId("long-term-info-debt").click();
+    assert.match(await drawer.getByTestId("long-term-info-text-debt").innerText(), /3× or less/);
+    assert.equal(await drawer.getByTestId("long-term-info-text-roic_now").count(), 0, "one explanation open per list");
+    await drawer.getByTestId("long-term-info-sticker").click();
+    assert.match(await drawer.getByTestId("long-term-info-text-sticker").innerText(), /EPS/);
+    assert.equal(await drawer.getByTestId("long-term-info-text-debt").count(), 1, "the checklist and valuation lists open independently");
+    assert.equal(await p.getByTestId("long-term-drawer").count(), 1, "tapping an i does not close the drawer");
+    for (const k of ["debt", "pe", "discount", "safety", "years", "crosschecks"]) {
+      assert.equal(await drawer.getByTestId(`long-term-info-${k}`).count(), 1, `${k} has its i`);
+    }
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("on a phone the i opens under the term inside the card drawer, including the LEAP box, with no sideways scroll", async () => {
+  await withApp({ view: VIEW, viewport: PHONE, fakeReads: leapReads() }, async (app) => {
+    const p = app.page;
+    await p.getByTestId("long-term-card-AAPL").waitFor({ timeout: 90_000 });
+    await p.getByTestId("long-term-card-AAPL").click();
+    const drawer = p.getByTestId("long-term-drawer");
+    await drawer.getByText(/Sticker/).first().waitFor({ timeout: 10_000 });
+    await drawer.getByTestId("long-term-info-roic_now").tap();
+    assert.match(await drawer.getByTestId("long-term-info-text-roic_now").innerText(), /return on invested capital/i);
+    const leap = p.getByTestId("long-term-drawer-leap");
+    await leap.getByText(/Breakeven/).first().waitFor({ timeout: 15_000 });
+    await leap.getByTestId("long-term-info-breakeven").tap();
+    assert.match(await leap.getByTestId("long-term-info-text-breakeven").innerText(), /money back/);
+    await leap.getByTestId("long-term-info-deep").tap();
+    assert.match(await leap.getByTestId("long-term-info-text-deep").innerText(), /0\.75/);
+    assert.equal(await overflowsSideways(p), false, "nothing scrolls sideways with explanations open");
+    assert.equal(await p.getByTestId("long-term-drawer").count(), 1);
     assert.deepEqual(app.pageErrors, []);
   });
 });
