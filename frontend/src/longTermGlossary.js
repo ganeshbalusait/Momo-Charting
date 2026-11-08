@@ -160,7 +160,7 @@ const LINE_RULES = [
   [/^Payback\b/, "payback"],
   [/^ENTRY-style\b/, "entry"],
   [/^No ENTRY contract\b/, "entry"],
-  [/^Ask \$/, "quote"],
+  [/^Ask(?= \$)/, "quote"],
   [/^Breakeven\b/, "breakeven"],
   [/^In the money\b/, "intrinsic"],
   [/^Open interest\b/, "oi"],
@@ -169,12 +169,22 @@ const LINE_RULES = [
   [/^Deep call\b/, "deep"],
 ];
 
-export function glossaryKey(line) {
-  const text = String(line ?? "").trim();
+// Which term a line is about, and where its label ends, so the "i" sits right
+// after the term ("ROIC now ⓘ 40% ≥ 15%"), not at the end of a long line
+// (Ganesh 11-07: "next to ROIC, EPS like that"). `at` indexes the line as given.
+export function glossaryMatch(line) {
+  const raw = String(line ?? "");
+  const lead = raw.length - raw.trimStart().length;
+  const text = raw.trim();
   for (const [re, key] of LINE_RULES) {
-    if (re.test(text)) return key;
+    const m = re.exec(text);
+    if (m) return { key, at: lead + m.index + m[0].length };
   }
   return null;
+}
+
+export function glossaryKey(line) {
+  return glossaryMatch(line)?.key ?? null;
 }
 
 export function glossaryEntry(key) {

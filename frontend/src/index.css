@@ -23157,7 +23157,7 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-drawer-leap > p { margin: 4px 0; font-size: 12px; }
 .long-term-drawer-leap > .long-term-note { margin: 6px 0 0; }
 /* The "i" next to a term and the explanation it opens (tap, so it works on the phone) */
-.long-term-info { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 17px; height: 17px; margin-left: 6px; padding: 0; border: 1px solid rgba(127, 211, 238, 0.55); border-radius: 50%; background: transparent; color: #7fd3ee; font: italic 700 11px/1 Georgia, "Times New Roman", serif; vertical-align: 1px; cursor: pointer; }
+.long-term-info { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 17px; height: 17px; margin: 0 5px 0 4px; padding: 0; border: 1px solid rgba(127, 211, 238, 0.55); border-radius: 50%; background: transparent; color: #7fd3ee; font: italic 700 11px/1 Georgia, "Times New Roman", serif; vertical-align: 1px; cursor: pointer; }
 .long-term-info:hover, .long-term-info.is-open { background: rgba(127, 211, 238, 0.16); border-color: #7fd3ee; }
 .long-term-info:focus-visible { outline: 2px solid #7fd3ee; outline-offset: 1px; }
 .long-term-info-text { display: block; margin: 5px 0 3px; padding: 7px 9px; border-left: 2px solid #7fd3ee; border-radius: 4px; background: rgba(127, 211, 238, 0.08); color: #d6eef6; font-family: inherit; font-size: 11.5px; font-style: normal; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }

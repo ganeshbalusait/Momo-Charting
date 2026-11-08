@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { GLOSSARY, glossaryEntry, glossaryKey } from "./longTermGlossary.js";
+import { GLOSSARY, glossaryEntry, glossaryKey, glossaryMatch } from "./longTermGlossary.js";
 import { DEEP_HEADING, DEEP_NONE, drawerSections, leapSection } from "./longTerm.js";
 
 // Ganesh 11-07: "I need each name 'I' for information - what is MOS, ROIC, EPS".
@@ -85,5 +85,32 @@ describe("every drawer line finds its explanation", () => {
     assert.equal(glossaryKey(DEEP_HEADING), "deep");
     assert.equal(glossaryKey(DEEP_NONE), "deep");
     assert.equal(glossaryKey("No ENTRY contract: no expiry 3-12 months out · deep $200 call"), "entry");
+  });
+});
+
+describe("the i sits right after the term, not at the end of the line", () => {
+  const at = (line) => {
+    const m = glossaryMatch(line);
+    return m ? line.slice(0, m.at) : null;
+  };
+  test("checklist: after the label, before the numbers", () => {
+    assert.equal(at("✓ ROIC now 40% ≥ 15%"), "✓ ROIC now");
+    assert.equal(at("✓ EPS growth 21%/yr ≥ 10%/yr"), "✓ EPS growth");
+    assert.equal(at("✓ Debt payable 0.6× FCF debt ≤ 3× FCF, or no debt"), "✓ Debt payable");
+    assert.equal(at("n/a ROIC consistency — only 2 computable ROIC years"), "n/a ROIC consistency");
+  });
+  test("valuation and LEAP box", () => {
+    assert.equal(at("Sticker EPS $17.9 (TTM $17.9)"), "Sticker EPS");
+    assert.equal(at("Safety Buy $269 at 50% margin"), "Safety Buy");
+    assert.equal(at("Ask $7.00 · bid $5.70 · mid $6.35 · $700 per contract"), "Ask");
+    assert.equal(at("Breakeven $427.00 · +79% from $239"), "Breakeven");
+    assert.equal(at("Open interest 6 · volume 34"), "Open interest");
+    assert.equal(at("⚠ thin market: open interest 6 — use a limit order"), "⚠ thin market");
+    assert.equal(at(DEEP_HEADING), "Deep call");
+    assert.equal(at("ENTRY-style · Sep 17, 2027 (313 days) · $420 call"), "ENTRY-style");
+  });
+  test("leading spaces are counted in the position", () => {
+    const m = glossaryMatch("  ✓ ROIC now 40%");
+    assert.equal("  ✓ ROIC now 40%".slice(0, m.at), "  ✓ ROIC now");
   });
 });

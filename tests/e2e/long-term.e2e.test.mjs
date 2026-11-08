@@ -184,6 +184,14 @@ const DEEP_LINE = /\$80 call · delta 0\.76 · ask \$32\.40 · breakeven \$112 \
 const NO_ENTRY = "no out-of-the-money call near 0.20 delta with a live quote";
 const NO_DELTA = "no deltas from the chain feed (hidden outside market hours)";
 const leapPaths = (app) => app.reads.filter((r) => /\/leap$/.test(r.path)).map((r) => r.path);
+// The visible text of a block without its "i" buttons (they sit inside the lines
+// since 11-07, so a raw innerText would read "Breakeveni $153.20").
+const sectionText = async (loc) => {
+  await loc.evaluate((el) => el.querySelectorAll(".long-term-info").forEach((b) => { b.style.display = "none"; }));
+  const text = await loc.innerText();
+  await loc.evaluate((el) => el.querySelectorAll(".long-term-info").forEach((b) => { b.style.display = ""; }));
+  return text;
+};
 const leapText = (p, sym, re) => p.waitForFunction(
   ([s, src]) => new RegExp(src).test(document.querySelector(`[data-testid='long-term-leap-${s}']`)?.textContent || ""),
   [sym, re.source],
@@ -201,7 +209,7 @@ e2eTest("the LEAPS row shows the contract to buy, the drawer explains it, and no
     await p.getByTestId("long-term-row-AAPL").click();
     const section = p.getByTestId("long-term-drawer-leap");
     await section.waitFor({ timeout: 10_000 });
-    const text = await section.innerText();
+    const text = await sectionText(section);
     assert.match(text, /LEAP to buy/i); // innerText carries the CSS uppercase
     assert.match(text, /ENTRY-style · Jan 21, 2028 \(441 days\) · \$150 call · delta 0\.17 · OI 8,254/);
     assert.match(text, /Ask \$3\.20 · bid \$3\.10 · mid \$3\.15 · \$320 per contract/);
@@ -231,7 +239,7 @@ e2eTest("on a phone the LEAPS card carries the contract line and nothing scrolls
     await card.click();
     const section = p.getByTestId("long-term-drawer-leap");
     await section.waitFor({ timeout: 10_000 });
-    const text = await section.innerText();
+    const text = await sectionText(section);
     assert.match(text, /Breakeven \$153\.20/);
     assert.match(text, /Deep call \(stock substitute\):/);
     assert.match(text, DEEP_LINE);
@@ -254,7 +262,11 @@ e2eTest("no ENTRY pick but a deep pick: the line says so and names the deep call
     const section = p.getByTestId("long-term-drawer-leap");
     await section.waitFor({ timeout: 10_000 });
     // each line's own text (the "i" button after it is not part of the line)
-    const lines = await section.locator(".long-term-lines > li").evaluateAll((lis) => lis.map((li) => li.firstChild.textContent.trim()));
+    const lines = await section.locator(".long-term-lines > li").evaluateAll((lis) => lis.map((li) => {
+      const c = li.cloneNode(true);
+      c.querySelectorAll(".long-term-info, .long-term-info-text").forEach((n) => n.remove());
+      return c.textContent.trim();
+    }));
     assert.deepEqual(lines, [
       `No ENTRY contract: ${NO_ENTRY}`,
       "Deep call (stock substitute):",
@@ -300,14 +312,14 @@ e2eTest("a 'chain unavailable' answer is not final: it says why, keeps a Retry, 
     await p.getByTestId("long-term-row-AAPL").click();
     const section = p.getByTestId("long-term-drawer-leap");
     await section.waitFor({ timeout: 10_000 });
-    assert.match(await section.innerText(), /No contract: chain unavailable/);
-    assert.match(await section.innerText(), /retries on its own/);
+    assert.match(await sectionText(section), /No contract: chain unavailable/);
+    assert.match(await sectionText(section), /retries on its own/);
     await line.getByText("Retry").click();
     await leapText(p, "AAPL", /Jan 2028/);
     assert.match(await line.innerText(), LINE);
     assert.equal(await line.getByText("Retry").count(), 0, "a contract carries no Retry");
-    assert.match(await section.innerText(), /Breakeven \$153\.20/);
-    assert.match(await section.innerText(), DEEP_LINE);
+    assert.match(await sectionText(section), /Breakeven \$153\.20/);
+    assert.match(await sectionText(section), DEEP_LINE);
     assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap", "/api/long-term/AAPL/leap"]);
     assert.deepEqual(app.pageErrors, []);
   });
@@ -330,7 +342,7 @@ e2eTest("after the close the chain has no deltas: the row keeps the deep call an
     await p.getByTestId("long-term-row-AAPL").click();
     const section = p.getByTestId("long-term-drawer-leap");
     await section.waitFor({ timeout: 10_000 });
-    const drawer = await section.innerText();
+    const drawer = await sectionText(section);
     assert.match(drawer, /No ENTRY contract: no deltas from the chain feed \(hidden outside market hours\)/);
     assert.match(drawer, /\$80 call · delta — · ask \$32\.40/, "the deep line prints the dash for the missing delta");
     assert.match(drawer, /not sending deltas \(Schwab hides them outside market hours\); the page retries on its own/);
@@ -339,8 +351,8 @@ e2eTest("after the close the chain has no deltas: the row keeps the deep call an
     await leapText(p, "AAPL", /Jan 2028 \$150/);
     assert.match(await line.innerText(), LINE);
     assert.equal(await line.getByText("Retry").count(), 0, "a contract carries no Retry");
-    assert.match(await section.innerText(), /Breakeven \$153\.20/);
-    assert.match(await section.innerText(), DEEP_LINE);
+    assert.match(await sectionText(section), /Breakeven \$153\.20/);
+    assert.match(await sectionText(section), DEEP_LINE);
     assert.deepEqual(leapPaths(app), ["/api/long-term/AAPL/leap", "/api/long-term/AAPL/leap"]);
     assert.deepEqual(app.pageErrors, []);
   });
@@ -502,6 +514,11 @@ e2eTest("the i next to MOS, the tiles, ROIC and the valuation opens a plain expl
     await p.getByTestId("long-term-row-AAPL").click();
     const drawer = p.getByTestId("long-term-drawer");
     await drawer.getByText(/Sticker/).first().waitFor({ timeout: 10_000 });
+    // the i sits right after the term, before the numbers (Ganesh: "next to ROIC, EPS")
+    const before = await drawer.getByTestId("long-term-info-roic_now").evaluate((b) => b.previousSibling?.textContent);
+    assert.match(before, /ROIC now$/);
+    const after = await drawer.getByTestId("long-term-info-roic_now").evaluate((b) => b.nextSibling?.textContent);
+    assert.match(after, /^ 55%/);
     await drawer.getByTestId("long-term-info-roic_now").click();
     assert.match(await drawer.getByTestId("long-term-info-text-roic_now").innerText(), /return on invested capital[\s\S]*15%/i);
     await drawer.getByTestId("long-term-info-debt").click();

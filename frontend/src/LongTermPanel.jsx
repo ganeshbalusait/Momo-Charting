@@ -39,7 +39,7 @@ import {
   DEEP_HEADING,
   DEEP_NONE,
 } from "./longTerm";
-import { glossaryEntry, glossaryKey } from "./longTermGlossary";
+import { glossaryEntry, glossaryMatch } from "./longTermGlossary";
 
 const POLL_MS = 30000;
 // A rows request that has not answered in this long is stuck, not slow (the
@@ -302,11 +302,15 @@ function LineList({ lines, marks = false, info = false }) {
   return (
     <ul className="long-term-lines">
       {lines.map((line, i) => {
-        const k = info ? glossaryKey(line) : null;
+        const hit = info ? glossaryMatch(line) : null;
+        const k = hit?.key;
+        const text = String(line);
         return (
           <li key={i} className={marks ? markClass(line) : ""}>
-            {line}
+            {/* the "i" right after the term ("ROIC now ⓘ 40% ≥ 15%"), not at the end of the line */}
+            {k ? text.slice(0, hit.at) : text}
             {k ? <InfoButton k={k} open={openIdx === i} onToggle={() => setOpenIdx((v) => (v === i ? -1 : i))} /> : null}
+            {k ? text.slice(hit.at) : null}
             {k && openIdx === i ? <InfoText k={k} /> : null}
           </li>
         );
