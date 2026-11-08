@@ -41,6 +41,15 @@ import {
 } from "./longTerm";
 
 const POLL_MS = 30000;
+// A rows request that has not answered in this long is stuck, not slow (the
+// server answers in ~2-12 s even during a filings pass; the gateway itself
+// gives up on a GET at 90 s): give up on it and ask again. An iPhone app
+// resumed from the background can leave a fetch that never settles, and the
+// page then sat on "Loading Long Term…" for hours (Ganesh 11-07).
+const LOAD_TIMEOUT_MS = 45000;
+// Back on screen with a request out for longer than this: it was probably
+// frozen with the app; ask again now instead of waiting out the timeout.
+const RESUME_STALE_MS = 10000;
 // No accepted payload for 3 poll intervals: the prices on screen are stale,
 // so rows are shown downgraded (no BUY, no LEAPS) until the feed returns.
 const FEED_STALE_MS = 3 * POLL_MS;
@@ -424,19 +433,37 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
 
   // Rows: on open, on MOS change, every 30 s while the page is visible.
   // A poll is skipped while a request is still out (a slow backend still gets
-  // to answer); only unmount, a MOS change or Retry abort it. Rows are kept
-  // with the MOS they were computed for and only shown under that MOS.
+  // to answer), but never for longer than LOAD_TIMEOUT_MS: a stuck request is
+  // abandoned and asked again, and coming back on screen re-asks at once when
+  // the request out is older than RESUME_STALE_MS. Unmount, a MOS change or
+  // Retry abort it too. Rows are kept with the MOS they were computed for and
+  // only shown under that MOS.
   useEffect(() => {
     let alive = true;
     let controller = null;
     let inFlight = false;
+    let startedAt = 0;
     setFailed(false);
+    const abandon = () => {
+      controller?.abort();
+      controller = null;
+      inFlight = false;
+    };
     const load = async () => {
-      if (inFlight) return;
+      if (inFlight) {
+        if (Date.now() - startedAt < LOAD_TIMEOUT_MS) return;
+        abandon(); // stuck: never let one silent request block every poll
+      }
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       const ctrl = new AbortController();
       controller = ctrl;
       inFlight = true;
+      startedAt = Date.now();
+      const giveUp = setTimeout(() => {
+        if (controller !== ctrl) return;
+        abandon();
+        if (alive) load();
+      }, LOAD_TIMEOUT_MS);
       try {
         const response = await fetch(`/api/long-term?mos=${mos}`, { signal: ctrl.signal });
         let payload = null;
@@ -457,13 +484,17 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
       } catch {
         if (alive && !ctrl.signal.aborted) setFailed(true);
       } finally {
-        inFlight = false;
+        clearTimeout(giveUp);
+        // an abandoned request settling late must not clear the flag of the newer one
+        if (controller === ctrl) inFlight = false;
       }
     };
     load();
     const timer = setInterval(load, POLL_MS);
     const onVisible = () => {
-      if (document.visibilityState === "visible") load();
+      if (document.visibilityState !== "visible") return;
+      if (inFlight && Date.now() - startedAt > RESUME_STALE_MS) abandon();
+      load();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {

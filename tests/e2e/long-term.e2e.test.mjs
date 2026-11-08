@@ -456,3 +456,28 @@ e2eTest("a tile stored from an earlier visit does not filter the next visit: eve
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// Ganesh 11-07 (phone, "I don't see the data"): the page sat on "Loading Long
+// Term…" with no error. Its first rows request never settled (an iPhone app
+// resumed from the background can leave one hanging), and every 30 s poll was
+// skipped while that request was "still out". The page now gives up on a
+// request after LOAD_TIMEOUT_MS (45 s) and asks again at once.
+e2eTest("a rows request that never answers is given up and asked again: the rows show", async () => {
+  // Every rows request made in the first 5 s hangs (the dev server mounts the page
+  // twice, so hanging only the first one would not reproduce the phone).
+  let calls = 0;
+  let first = 0;
+  const hangingFirst = (read) => {
+    calls += 1;
+    first = first || Date.now();
+    if (Date.now() - first < 5_000) return new Promise(() => {}); // the phone's stuck request
+    return page()(read);
+  };
+  await withApp({ view: VIEW, viewport: PHONE, fakeReads: { ...reads(), "GET /api/long-term": hangingFirst } }, async (app) => {
+    const p = app.page;
+    await p.getByTestId("long-term-card-AAPL").waitFor({ timeout: 120_000 });
+    assert.ok(calls >= 3, "the page asked again after giving up on the stuck requests");
+    assert.equal(await p.getByTestId("long-term-card-HD").count(), 1);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
