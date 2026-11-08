@@ -33,6 +33,7 @@ from long_term.finnhub import default_get as _finnhub_default_get
 from long_term.leaps import (LEAP_MAX_DTE, LEAP_MIN_DTE, REASON_CHAIN_UNAVAILABLE, REASON_NOT_FLAGGED,
                              pick_leap)
 from long_term.metrics import CHECK_KEYS, Check, Metrics, compute_metrics, stored_listing_factor, with_fcf
+from long_term.setups import setup_state
 from long_term.symbols import CIK_OVERRIDES, canonical, to_schwab
 from long_term.valuation import Valuation, price_guard, signal, valuation
 
@@ -57,6 +58,11 @@ DEFER_AT = dtime(16, 5)
 DEFER_LABEL = "16:05 ET"
 DEFAULT_MOS = 50
 SCORED = frozenset({"BUY", "WAIT", "AVOID", "NO_PRICE"})
+# LEAP setup (long_term/setups.py): monthly 50 EMA intramonth touch in an uptrend, on daily bars.
+SETUP_HISTORY_DAYS = 15 * 366    # ~15 years of daily bars in ONE Schwab call (probed 11-08: QCOM 3,894 bars)
+SETUP_STALE_DAYS = 4             # a state whose newest bar is older than this is shown, never a setup
+SETUP_PACE_S = 0.6               # <= ~100 Schwab price-history calls a minute in the nightly pass
+SETUP_SIGNALS = frozenset({"BUY", "WAIT"})   # a LEAP setup also needs the business: BUY or WAIT, never AVOID
 # Exchange-traded NOTES: the SEC ticker map sends them to the issuing bank (VXX -> Barclays Bank
 # PLC) and the Nasdaq Trader ETF flag misses them, so the page would score a bank's 20-F under a
 # VIX note. They are ETFs for this page (2026-11-06 "no data" fix, revenue probe).
@@ -67,7 +73,7 @@ ROW_KEYS = (
     "symbol", "name", "price", "quoteTimeMs", "refPrice", "signal", "leaps", "reason", "buyBelow",
     "leapsBelow", "buyZonePct", "safetyBuy", "sticker", "buffett", "fairValue", "payback", "roic", "roe",
     "financial", "big5", "big5Na", "quality", "pe", "debtToEquity", "salesGrowth", "epsGrowth",
-    "fcfGrowth", "equityGrowth", "marketCap", "filedEnd", "years", "currency", "young",
+    "fcfGrowth", "equityGrowth", "marketCap", "filedEnd", "years", "currency", "young", "setup", "setupPass",
 )
 _METRICS_FIELDS = frozenset(f.name for f in dataclasses.fields(Metrics))
 _VALUATION_FIELDS = frozenset(f.name for f in dataclasses.fields(Valuation))
@@ -274,7 +280,8 @@ class LongTermService:
                  now_fn: Callable[[], datetime] | None = None, sleep: Callable[[float], None] = time.sleep,
                  is_etf_fn: Callable[[str], bool | None] | None = None,
                  universe_fn: Callable[[], list[str]] | None = None,
-                 chain_fn: Callable[[str, date, date], dict] | None = None):
+                 chain_fn: Callable[[str, date, date], dict] | None = None,
+                 bars_fn: Callable[[str, date], Any] | None = None):
         self.directory = Path(directory) if directory is not None else default_directory()
         self._sleep = sleep
         self.store = Store(self.directory, sleep=sleep)
@@ -284,6 +291,7 @@ class LongTermService:
         self._pacer = FinnhubPacer(per_minute=30, sleep=sleep)
         self._quotes_fn = quotes_fn
         self._chain_fn = chain_fn                   # (schwab symbol, from_date, to_date) -> chain dict
+        self._bars_fn = bars_fn                     # (schwab symbol, start date) -> daily bars (rows / DataFrame)
         self._schwab = None
         self._now = now_fn or _default_now
         self._is_etf = is_etf_fn or _default_is_etf
@@ -335,6 +343,26 @@ class LongTermService:
         return self._schwab.get_option_chain(
             schwab_symbol, contract_type="CALL", strike_count=CHAIN_STRIKES,
             from_date=datetime.combine(from_date, dtime.min), to_date=datetime.combine(to_date, dtime.min))
+
+    def _schwab_daily_bars(self, schwab_symbol: str, start: date):
+        """Split-adjusted Schwab daily candles from `start` to now in ONE price-history call (a DataFrame
+        with timestamp/low/high/close), or None. get_stock_bars swallows its own failures ({})."""
+        if self._schwab is None:
+            from data.schwab_client import SchwabClient
+            self._schwab = SchwabClient()
+        frames = self._schwab.get_stock_bars([schwab_symbol], "1Day", datetime.combine(start, dtime.min, tzinfo=ET))
+        return (frames or {}).get(str(schwab_symbol).strip().upper())
+
+    def setup_for(self, symbol: str, today: date) -> dict | None:
+        """The LEAP-setup state for one symbol from ~15 years of daily bars; None on any failure (the
+        caller then keeps the previous state, which ages out by SETUP_STALE_DAYS)."""
+        fn = self._bars_fn or self._schwab_daily_bars
+        try:
+            rows = fn(to_schwab(symbol), today - timedelta(days=SETUP_HISTORY_DAYS))
+            return setup_state(rows, today=today)
+        except Exception as exc:  # noqa: BLE001 - a bars outage is "previous state kept", never an error
+            log.warning("long_term: daily bars failed for %s (%s: %s)", symbol, type(exc).__name__, exc)
+            return None
 
     def chain_for(self, schwab_symbol: str, from_date: date, to_date: date) -> dict:
         """One symbol's call chain, cached CHAIN_TTL_S per symbol. A failure raises and is not cached."""
@@ -498,6 +526,8 @@ class LongTermService:
                 cik_map, result["errors"] = None, len(due)
             if cik_map is not None:
                 self._fetch_all(due, cik_map, stamp, today, gated, result, fresh)
+        if not result["stopped"]:
+            self._fetch_setups(candidates, stamp, today, gated, force, result)
 
         self.drop_departed(now)
         self._rebuild_summary(names if full else None, etfs if full else None, stamp, today, result, fresh)
@@ -565,6 +595,7 @@ class LongTermService:
                     # raw price / (EPS x P/E) ratio; non-USD / 20-F / 40-F filers keep the raw ratio
                     lf_tonight = stored_listing_factor(snap, ref, fh)
                     self._put(sym, {"cik": cik, "name": name, "sic": info.get("sic"),
+                                    "setup": old.get("setup"), "setup_fetched_at": old.get("setup_fetched_at"),
                                     "snapshot": dataclasses.asdict(snap),
                                     "finnhub": dataclasses.asdict(fh) if fh is not None else None,
                                     "ref_price": ref,
@@ -591,6 +622,42 @@ class LongTermService:
                 self._save_records_safely()
         facts = None
         self._save_records_safely()
+
+    def _fetch_setups(self, candidates: list[str], stamp: str, today: date, gated: bool, force: bool,
+                      result: dict) -> None:
+        """After the facts: one Schwab daily-bars call per symbol with filings (ETFs / no-CIK skipped),
+        every symbol each night (a touch happens inside the month, so a 3-day-fresh fundamentals copy is
+        no reason to skip it); a symbol already done today is skipped unless forced. Only the computed
+        state is stored (record["setup"]), never the bars. A failure keeps the previous state."""
+        result.setdefault("setups", 0)
+        result.setdefault("setupErrors", 0)
+        with self.store.lock:
+            todo = [s for s in candidates if isinstance(self.store.records.get(s), dict)
+                    and self.store.records[s].get("cik") is not None
+                    and (force or self._setup_day(self.store.records[s]) != today)]
+        for i, sym in enumerate(todo):
+            if gated and market_hours(self._now()):
+                log.info("long_term: market open, setups stop at %d/%d", i, len(todo))
+                result["stopped"] = True
+                break
+            if i:
+                self._sleep(SETUP_PACE_S)
+            state = self.setup_for(sym, today)
+            if state is None:
+                result["setupErrors"] += 1
+                continue
+            with self.store.lock:
+                rec = self.store.records.get(sym)
+                if isinstance(rec, dict):
+                    rec["setup"], rec["setup_fetched_at"] = state, stamp
+            result["setups"] += 1
+        if todo:
+            self._save_records_safely()
+
+    @staticmethod
+    def _setup_day(rec: dict) -> date | None:
+        t = _parse(rec.get("setup_fetched_at"))
+        return t.date() if t is not None else None
 
     def _merged_facts(self, sym: str, cik: int, facts: dict) -> dict:
         """R42: `facts` (the primary CIK's companyfacts) plus the rows of the symbol's extra CIKs
@@ -731,8 +798,37 @@ class LongTermService:
 
     def _blank(self, sym: str) -> dict:
         row = dict.fromkeys(ROW_KEYS)
-        row.update(symbol=sym, leaps=False, financial=False, young=False)
+        row.update(symbol=sym, leaps=False, financial=False, young=False, setupPass=False)
         return row
+
+    @staticmethod
+    def _served_setup(rec: dict | None, now: datetime) -> dict | None:
+        """The stored LEAP-setup state as served: a copy with ``stale``. A state whose newest daily bar is
+        more than SETUP_STALE_DAYS old, or that was computed for another ET month than the current one
+        (last month's touch is not this month's), is kept for display but never passes. Why it is stale
+        goes in ``staleReason``; the state's own ``reason`` is left as computed."""
+        st = (rec or {}).get("setup")
+        if not isinstance(st, dict):
+            return None
+        out = dict(st)
+        today = _et(now).date()
+        try:
+            as_of = date.fromisoformat(str(out.get("asOf")))
+        except (TypeError, ValueError):
+            as_of = None
+        month = out.get("month")
+        why = None
+        if as_of is None:
+            why = "stale: no bar date"
+        elif (today - as_of).days > SETUP_STALE_DAYS:
+            why = f"stale: daily bars last {as_of.isoformat()}"
+        elif not isinstance(month, str) or month != f"{today.year:04d}-{today.month:02d}":
+            why = f"stale: state is for {month or 'no month'}, not this month"
+        out["stale"] = why is not None
+        if why is not None:
+            out["pass"] = False
+            out["staleReason"] = why
+        return out
 
     def _row(self, sym: str, rec: dict | None, etf: bool, mos: int, quote, now: datetime) -> dict:
         row = self._blank(sym)
@@ -746,6 +842,7 @@ class LongTermService:
             if etf:
                 row.update(signal="ETF", reason="ETF")
                 return row
+            row.update(setup=self._served_setup(rec, now))
             c = self._entry(sym, rec)
             if c.get("computing"):
                 row.update(signal="CHECK_DATA", reason="computing")
@@ -783,13 +880,18 @@ class LongTermService:
                 else (_num(fh.get("market_cap_usd")) if m.currency == "USD" else None),   # R16
                 filedEnd=snap.get("latest_annual_end"), years=m.years, currency=m.currency,
                 young=bool(m.young),
+                # a LEAP setup = the monthly 50 EMA touch AND a business worth owning (BUY / WAIT after
+                # the price guard and the stale rule; AVOID / NO_PRICE / STALE never)
+                setupPass=bool(isinstance(row["setup"], dict) and row["setup"].get("pass") is True
+                               and s["signal"] in SETUP_SIGNALS),
             )
             return row
         except Exception as exc:  # noqa: BLE001 - never let one row break the page
             log.warning("long_term: row %s failed (%s: %s)", sym, type(exc).__name__, exc)
             blank = self._blank(sym)
             blank.update(name=row.get("name"), price=row.get("price"), quoteTimeMs=row.get("quoteTimeMs"),
-                         refPrice=row.get("refPrice"), signal="CHECK_DATA", reason="data error")
+                         refPrice=row.get("refPrice"), signal="CHECK_DATA", reason="data error",
+                         setup=row.get("setup"))
             return blank
 
     def _stale_reason(self, rec: dict, now: datetime) -> str | None:
@@ -838,6 +940,7 @@ class LongTermService:
             "meta": {
                 "universe": universe,
                 "scored": sum(1 for r in rows if r["signal"] in SCORED),
+                "setups": sum(1 for r in rows if r.get("setupPass") is True),
                 "etfs": [r["symbol"] for r in rows if r["signal"] == "ETF"],
                 "noFilings": [r["symbol"] for r in rows if r["signal"] == "NO_FILINGS"],
                 "refreshedAt": refreshed or None,
@@ -857,8 +960,8 @@ class LongTermService:
             if rec is None and sym not in etfs and sym not in set(universe):
                 return None
             row = self._row(sym, rec, sym in etfs, _mos(mos), quote, self._now())
-            out = {"symbol": sym, "name": row["name"], "row": row, "checks": [], "years": [], "unit": None,
-                   "explain": [], "crossChecks": [], "sources": [], "listingFactor": None,
+            out = {"symbol": sym, "name": row["name"], "row": row, "setup": row.get("setup"), "checks": [],
+                   "years": [], "unit": None, "explain": [], "crossChecks": [], "sources": [], "listingFactor": None,
                    "fetchedAt": (rec or {}).get("fetched_at"), "refreshedAt": self.store.summary.get("refreshed_at")}
             c = self._entry(sym, rec) if rec is not None and sym not in etfs else {}
             if "m" not in c:
@@ -907,14 +1010,15 @@ class LongTermService:
             return out
         except Exception as exc:  # noqa: BLE001
             log.warning("long_term: detail %s failed (%s: %s)", sym, type(exc).__name__, exc)
-            return {"symbol": sym, "name": None, "row": None, "checks": [], "years": [], "unit": None,
+            return {"symbol": sym, "name": None, "row": None, "setup": None, "checks": [], "years": [], "unit": None,
                     "explain": [], "crossChecks": [], "sources": [], "listingFactor": None,
                     "fetchedAt": None, "refreshedAt": None}
 
     def leap_payload(self, symbol: str, mos: int, quote: dict | None) -> dict | None:
         """The LEAP contracts for one row: ``contract`` (the ENTRY-style pick) and ``deep`` (the stock
         substitute), both on one expiry. None for an unknown ticker (the detail rule); otherwise always a
-        dict and never raises. A row that is not LEAPS-flagged makes no chain call."""
+        dict and never raises. A row that is neither LEAPS-flagged nor a LEAP setup (``setupPass``) makes no
+        chain call. ``leaps`` stays the row's LEAPS flag (False for a setup-only row that gets a contract)."""
         sym = canonical(symbol)
         if not sym:
             return None
@@ -932,10 +1036,10 @@ class LongTermService:
                        fetchedAt=(rec or {}).get("fetched_at"),
                        refreshedAt=self.store.summary.get("refreshed_at") if isinstance(self.store.summary, dict)
                        else None)
-            if row["leaps"] is not True:
+            if row["leaps"] is not True and row.get("setupPass") is not True:
                 out.update(reason=REASON_NOT_FLAGGED)
                 return out
-            out["leaps"] = True
+            out["leaps"] = row["leaps"] is True
             today = _et(now).date()
             try:
                 # Schwab is asked only for the 3-12 month window (today + 90 .. today + 365 days)

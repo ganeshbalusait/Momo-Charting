@@ -555,3 +555,136 @@ e2eTest("on a phone the i opens under the term inside the card drawer, including
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// ---- LEAP setup (2026-11-08) -------------------------------------------------
+// Ganesh: "Build it 'leap setup'". QCOM-shaped: WAIT, not LEAPS-flagged, Monthly 50
+// EMA $155.44 touched by the Nov low, Oct closed above a rising EMA -> setupPass.
+// NVDA carries a setup state that fails (not touched) -> no tile count, no pill,
+// no contract read, but its drawer still explains the checks.
+const QSETUP = {
+  level: 155.44, prevLevel: 153.9, lastClose: 165.2, lastMonth: "2026-10", uptrend: true, closeAbove: true,
+  emaRising: true, month: "2026-11", monthLow: 152.1, touched: true, touchDate: "2026-11-05", pass: true,
+  asOf: "2026-11-07", reason: null,
+};
+const setupRows = () => [
+  row({
+    symbol: "QCOM", name: "Qualcomm Inc", signal: "WAIT", leaps: false, price: 170, refPrice: 170, buyBelow: 120,
+    leapsBelow: null, buyZonePct: -0.42, safetyBuy: 120, reason: "price above safety buy", setup: QSETUP, setupPass: true,
+  }),
+  row({
+    symbol: "NVDA", name: "Nvidia Corp", signal: "WAIT", leaps: false, price: 198, refPrice: 198, buyBelow: 68, leapsBelow: 108,
+    buyZonePct: -1.9, safetyBuy: 68, reason: "price above safety buy",
+    setup: { ...QSETUP, level: 120, prevLevel: 115, lastClose: 190, monthLow: 180, touched: false, touchDate: null, pass: false },
+    setupPass: false,
+  }),
+];
+const setupReads = () => ({
+  ...reads(setupRows),
+  "GET /api/long-term/QCOM": () => detail("QCOM", "Qualcomm Inc"),
+  "GET /api/long-term/QCOM/leap": () => leap({ symbol: "QCOM", name: "Qualcomm Inc", leaps: false, price: 170, leapsBelow: null }),
+});
+const SETUP_LINES = [
+  "✓ Monthly 50 EMA touched: Nov low $152.10 ≤ level $155.44 (first touch Nov 5)",
+  "✓ Uptrend: Oct closed $165.20 above the 50 EMA $155.44, which is rising (was $153.90)",
+  "✓ Long Term: WAIT (BUY or WAIT needed)",
+];
+const lineTexts = (section) => section.locator(".long-term-lines > li").evaluateAll((lis) => lis.map((li) => {
+  const c = li.cloneNode(true);
+  c.querySelectorAll(".long-term-info, .long-term-info-text").forEach((n) => n.remove());
+  return c.textContent.trim();
+}));
+
+e2eTest("LEAP SETUP: the tile counts and filters the setup row, the row carries a SETUP pill and its contract, and the drawer explains the three checks", async () => {
+  await withApp({ view: VIEW, fakeReads: setupReads() }, async (app) => {
+    const p = app.page;
+    await p.getByTestId("long-term-row-QCOM").waitFor({ timeout: 90_000 });
+    assert.equal(await tileCount(p, "SETUP"), "1");
+    assert.match(await p.getByTestId("long-term-tile-SETUP").innerText(), /LEAP SETUP/i);
+    assert.match(await p.getByTestId("long-term-tile-SETUP").getAttribute("class"), /is-glow/);
+    assert.equal(await tileCount(p, "LEAPS"), "0", "a setup is not a LEAPS flag");
+    assert.equal(await tileCount(p, "WAIT"), "2");
+    // the pill and the contract line, on the setup row only
+    const qcom = p.getByTestId("long-term-row-QCOM");
+    assert.equal(await qcom.getByTestId("long-term-setup-pill").count(), 1);
+    assert.equal(await p.getByTestId("long-term-row-NVDA").getByTestId("long-term-setup-pill").count(), 0);
+    await leapText(p, "QCOM", /Jan 2028/);
+    assert.match(await p.getByTestId("long-term-leap-QCOM").innerText(), LINE);
+    assert.equal(await p.getByTestId("long-term-leap-NVDA").count(), 0);
+    assert.deepEqual(leapPaths(app).filter((x) => /QCOM|NVDA/.test(x)), ["/api/long-term/QCOM/leap"], "the setup row's contract is read; the failing row never");
+    // the tile filters, and a second tap clears it
+    await p.getByTestId("long-term-tile-SETUP").click();
+    await p.waitForFunction(rowCount, 1);
+    assert.equal(await count(p, "QCOM"), 1);
+    await p.getByTestId("long-term-tile-SETUP").click();
+    await p.waitForFunction(rowCount, 2);
+    // the drawer: LEAP setup above LEAP to buy, the three checks, the back-test note
+    await qcom.click();
+    const section = p.getByTestId("long-term-drawer-setup");
+    await section.waitFor({ timeout: 10_000 });
+    assert.deepEqual(await lineTexts(section), SETUP_LINES);
+    const note = await section.locator(".long-term-note").innerText();
+    assert.match(note, /^Back-test 2005-2026 \(model option prices\): buying on this touch won 60% over 6 months vs 54% on any day\./);
+    assert.match(note, /Not advice\.$/);
+    const leapBox = p.getByTestId("long-term-drawer-leap");
+    await leapBox.waitFor({ timeout: 10_000 });
+    const above = await p.evaluate(() => {
+      const a = document.querySelector("[data-testid='long-term-drawer-setup']");
+      const b = document.querySelector("[data-testid='long-term-drawer-leap']");
+      return !!(a && b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING));
+    });
+    assert.equal(above, true, "LEAP setup sits above LEAP to buy");
+    assert.match(await sectionText(leapBox), /Breakeven \$153\.20/);
+    // each check carries its i, right after the term
+    for (const k of ["setup", "setup_touch", "setup_uptrend", "setup_verdict"]) {
+      assert.equal(await section.getByTestId(`long-term-info-${k}`).count(), 1, `${k} has its i`);
+    }
+    const before = await section.getByTestId("long-term-info-setup_touch").evaluate((b) => b.previousSibling?.textContent);
+    assert.match(before, /Monthly 50 EMA$/);
+    await section.getByTestId("long-term-info-setup_uptrend").click();
+    assert.match(await section.getByTestId("long-term-info-text-setup_uptrend").innerText(), /rising/);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("LEAP SETUP: a failing setup still explains itself in the drawer, with no contract and no LEAP to buy box", async () => {
+  await withApp({ view: VIEW, fakeReads: setupReads() }, async (app) => {
+    const p = app.page;
+    await p.getByTestId("long-term-row-NVDA").waitFor({ timeout: 90_000 });
+    await p.getByTestId("long-term-row-NVDA").click();
+    const section = p.getByTestId("long-term-drawer-setup");
+    await section.waitFor({ timeout: 10_000 });
+    assert.deepEqual(await lineTexts(section), [
+      "✗ Monthly 50 EMA not touched this month: Nov low $180.00, level $120.00 (50.0% below the low)",
+      "✓ Uptrend: Oct closed $190.00 above the 50 EMA $120.00, which is rising (was $115.00)",
+      "✓ Long Term: WAIT (BUY or WAIT needed)",
+    ]);
+    assert.match(await section.innerText(), /not now/i);
+    assert.equal(await p.getByTestId("long-term-drawer-leap").count(), 0, "no LEAP to buy for a row that is neither LEAPS nor a setup");
+    assert.ok(!leapPaths(app).includes("/api/long-term/NVDA/leap"));
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("LEAP SETUP on a phone: the card carries the SETUP pill and contract, the drawer the checks, and nothing scrolls sideways", async () => {
+  await withApp({ view: VIEW, viewport: PHONE, fakeReads: setupReads() }, async (app) => {
+    const p = app.page;
+    const card = p.getByTestId("long-term-card-QCOM");
+    await card.waitFor({ timeout: 90_000 });
+    assert.equal(await card.getByTestId("long-term-setup-pill").isVisible(), true);
+    assert.equal(await p.getByTestId("long-term-card-NVDA").getByTestId("long-term-setup-pill").count(), 0);
+    assert.equal(await tileCount(p, "SETUP"), "1");
+    await leapText(p, "QCOM", /Jan 2028/);
+    assert.equal(await overflowsSideways(p), false, "six tiles scroll inside their strip, not the page");
+    await card.click();
+    const section = p.getByTestId("long-term-drawer-setup");
+    await section.waitFor({ timeout: 10_000 });
+    assert.deepEqual(await lineTexts(section), SETUP_LINES);
+    await section.getByTestId("long-term-info-setup").tap();
+    assert.match(await section.getByTestId("long-term-info-text-setup").innerText(), /BUY or WAIT/);
+    assert.equal(await overflowsSideways(p), false);
+    await p.getByTestId("long-term-tile-SETUP").click();
+    await p.waitForFunction(() => document.querySelectorAll("[data-testid^='long-term-card-']").length === 1);
+    assert.equal(await p.getByTestId("long-term-card-QCOM").count(), 1);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});

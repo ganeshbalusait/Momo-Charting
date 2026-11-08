@@ -22,10 +22,18 @@ export const BOTTOM_NAV_LABELS = [
   "MomX Scanner",
 ];
 
+// 2026-11-08 (trader, phone): "Move 'long term' next to 'bot'". The sheet is a
+// two-column grid, so these lead it, in this order, and share the first row;
+// every other destination keeps the sidebar's order behind them. A label the
+// user cannot see (Bot is admin only) is simply skipped.
+export const SHEET_FIRST_LABELS = ["Bot", "Long Term"];
+
 export function selectOverflowDestinations(visibleNavItems, bottomNavLabels = BOTTOM_NAV_LABELS) {
   if (!Array.isArray(visibleNavItems)) return [];
   const covered = new Set(bottomNavLabels);
-  return visibleNavItems.filter((item) => item && item.label && !covered.has(item.label));
+  const sheet = visibleNavItems.filter((item) => item && item.label && !covered.has(item.label));
+  const first = SHEET_FIRST_LABELS.map((label) => sheet.find((item) => item.label === label)).filter(Boolean);
+  return [...first, ...sheet.filter((item) => !first.includes(item))];
 }
 
 // "More" should read as the active tab whenever the view on screen is one it

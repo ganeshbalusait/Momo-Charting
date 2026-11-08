@@ -38,6 +38,8 @@ EXPECTED_ROW_KEYS = {
     "leapsBelow", "buyZonePct", "safetyBuy", "sticker", "buffett", "fairValue", "payback", "roic", "roe",
     "financial", "big5", "big5Na", "quality", "pe", "debtToEquity", "salesGrowth", "epsGrowth",
     "fcfGrowth", "equityGrowth", "marketCap", "filedEnd", "years", "currency", "young",
+    # re-pinned 2026-11-08 (LEAP setup): every row now also carries the setup state and its verdict
+    "setup", "setupPass",
 }
 
 
@@ -111,7 +113,23 @@ class FakeQuotes:
         return out
 
 
-def make_svc(tmp_path, *, universe=None, sec=None, now=NOW, quotes=None, sleep=noop):
+class FakeBars:
+    """Stands in for LongTermService.bars_fn (Schwab daily bars): answers from `table`, records
+    (schwab symbol, start date) per call; a symbol not in the table gets None (no data)."""
+
+    def __init__(self, table=None, error=None):
+        self.table = dict(table or {})
+        self.error = error
+        self.calls = []
+
+    def __call__(self, symbol, start):
+        self.calls.append((symbol, start))
+        if self.error:
+            raise self.error
+        return self.table.get(symbol)
+
+
+def make_svc(tmp_path, *, universe=None, sec=None, now=NOW, quotes=None, sleep=noop, bars=None):
     sec = sec or FakeSec()
     clock = {"now": now}
     svc = LongTermService(
@@ -124,6 +142,7 @@ def make_svc(tmp_path, *, universe=None, sec=None, now=NOW, quotes=None, sleep=n
         sleep=sleep,
         is_etf_fn=lambda s: s == "SPY",
         universe_fn=lambda: list(universe if universe is not None else SYMBOLS + ["SPY", "ZZZZ"]),
+        bars_fn=bars if bars is not None else FakeBars(),        # never the real Schwab in a test
     )
     svc._test_sec, svc._test_clock = sec, clock
     return svc
@@ -285,7 +304,9 @@ def test_every_row_has_every_key_and_meta_contract(svc):
         assert set(row) == EXPECTED_ROW_KEYS, row["symbol"]
         assert isinstance(row["leaps"], bool) and isinstance(row["financial"], bool) and isinstance(row["young"], bool)
     meta = page["meta"]
-    assert set(meta) == {"universe", "scored", "etfs", "noFilings", "refreshedAt", "refreshing", "deferredUntil", "mos"}
+    # re-pinned 2026-11-08 (LEAP setup): meta also counts the LEAP setups
+    assert set(meta) == {"universe", "scored", "etfs", "noFilings", "refreshedAt", "refreshing", "deferredUntil", "mos",
+                         "setups"}
     assert isinstance(meta["mos"], int) and meta["mos"] == 30
     assert meta["universe"] == 12 and meta["scored"] >= 8
     assert meta["noFilings"] == ["ZZZZ"] and meta["etfs"] == ["SPY"]
@@ -988,3 +1009,232 @@ def test_departed_etn_record_is_served_as_etf(tmp_path):
         assert row["signal"] == "ETF" and row["reason"] == "ETF"
     finally:
         svc.stop_refresher()
+
+
+# ---------- LEAP setup (2026-11-08): monthly 50 EMA touch + Long Term BUY / WAIT ----------
+
+from long_term.service import SETUP_HISTORY_DAYS, SETUP_STALE_DAYS  # noqa: E402
+from test_long_term_setups import expected_level, history, november, rising  # noqa: E402
+
+
+def setup_rows(*, touched=True, today_month=(2026, 11)):
+    """QCOM-shaped daily bars: 130 rising completed months to Oct 2026, then Nov 2..6 (touched or not)."""
+    closes = rising()
+    level, _ = expected_level(closes)
+    lows = [level + 6, level + 3, level - 2, level + 1, level + 4] if touched else [level + 6, level + 3]
+    return history(closes) + november(lows)
+
+
+def _priced_quotes(symbols=SYMBOLS):
+    return {s: {"last_price": fixture_price(s), "quote_time_ms": NOW_MS} for s in symbols if fixture_price(s)}
+
+
+def _passing_state():
+    from long_term.setups import setup_state
+    return setup_state(setup_rows(), today=NOW.date())
+
+
+def test_refresh_stores_the_setup_state_per_filer_and_skips_etfs_and_no_cik(tmp_path):
+    bars = FakeBars({"AAPL": setup_rows()})
+    svc = make_svc(tmp_path, bars=bars)
+    try:
+        r = svc.refresh(force=True)
+        asked = [s for s, _ in bars.calls]
+        assert sorted(asked) == sorted(SYMBOLS)                    # one call per filer; SPY / ZZZZ never
+        assert all(start == NOW.date() - timedelta(days=SETUP_HISTORY_DAYS) for _, start in bars.calls)
+        rec = svc.store.records["AAPL"]
+        assert rec["setup"]["pass"] is True and rec["setup"]["touchDate"] == "2026-11-04"
+        assert rec["setup_fetched_at"] == NOW.isoformat()
+        assert "bars" not in rec and not any(isinstance(v, list) and len(v) > 50 for v in rec["setup"].values())
+        assert "setup" not in svc.store.records.get("ZZZZ", {}) or svc.store.records["ZZZZ"].get("setup") is None
+        assert r["setups"] == 1 and r["setupErrors"] == len(SYMBOLS) - 1   # the fake has bars for AAPL only
+        saved = json.loads((tmp_path / "fundamentals.json").read_text(encoding="utf-8"))["records"]["AAPL"]
+        assert saved["setup"]["level"] == rec["setup"]["level"]
+    finally:
+        svc.stop_refresher()
+
+
+def test_setups_refetch_every_night_even_when_the_facts_are_fresh(tmp_path):
+    bars = FakeBars({"AAPL": setup_rows()})
+    svc = make_svc(tmp_path, bars=bars)
+    try:
+        svc.refresh(force=True)
+        n = len(bars.calls)
+        svc.refresh()                     # same day, not forced: AAPL (done today) is not asked again;
+        again = [c[0] for c in bars.calls[n:]]        # the symbols whose fetch failed are retried
+        assert "AAPL" not in again and sorted(again) == sorted(set(SYMBOLS) - {"AAPL"})
+        m = len(bars.calls)
+        svc._test_clock["now"] = NOW + timedelta(days=1)          # next night: facts still fresh (3 days)
+        r = svc.refresh()
+        assert r["fetched"] == 0 and len(bars.calls) == m + n and r["setups"] == 1
+        assert svc.store.records["AAPL"]["setup_fetched_at"] == (NOW + timedelta(days=1)).isoformat()
+    finally:
+        svc.stop_refresher()
+
+
+def test_a_failed_fetch_keeps_the_previous_state(tmp_path):
+    bars = FakeBars({"AAPL": setup_rows()})
+    svc = make_svc(tmp_path, bars=bars)
+    try:
+        svc.refresh(force=True)
+        before = dict(svc.store.records["AAPL"]["setup"])
+        bars.table = {}                                           # Schwab now answers nothing
+        svc.refresh(force=True)
+        assert svc.store.records["AAPL"]["setup"] == before
+        bars.error = RuntimeError("Schwab 503")                   # or raises
+        r = svc.refresh(force=True)
+        assert svc.store.records["AAPL"]["setup"] == before and r["setupErrors"] == len(SYMBOLS)
+        # a refetch of the facts (a new record dict) carries the setup over
+        assert svc.store.records["AAPL"]["snapshot"] and svc.store.records["AAPL"]["setup"] == before
+    finally:
+        svc.stop_refresher()
+
+
+def test_stale_state_is_shown_but_never_passes(svc):
+    svc.refresh(force=True)
+    state = _passing_state()
+    old_day = (NOW.date() - timedelta(days=SETUP_STALE_DAYS + 1)).isoformat()
+    with svc.store.lock:
+        for s in SYMBOLS:
+            svc.store.records[s]["setup"] = dict(state, asOf=old_day)
+    rows = {r["symbol"]: r for r in svc.page_payload(50, _priced_quotes())["rows"]}
+    for s in SYMBOLS:
+        st = rows[s]["setup"]
+        assert st["stale"] is True and st["pass"] is False and rows[s]["setupPass"] is False, s
+        # re-pinned (review fix 3): the stale text moved to staleReason so the state's own reason
+        # (e.g. "fewer than 100 months of history") is not overwritten; the page has its own stale line
+        assert st["level"] == state["level"] and "stale" in st["staleReason"]
+        assert st["reason"] == state["reason"]
+    assert svc.store.records["AAPL"]["setup"]["pass"] is True     # the stored copy is not rewritten
+    # exactly SETUP_STALE_DAYS old is still fresh
+    with svc.store.lock:
+        svc.store.records["AAPL"]["setup"] = dict(state, asOf=(NOW.date() - timedelta(days=SETUP_STALE_DAYS)).isoformat())
+    row = _row_of(svc, "AAPL", _priced_quotes())
+    assert row["setup"]["stale"] is False
+
+
+def test_last_months_state_is_stale_after_the_month_rolls_over():
+    # review fix 1/2: a state computed in November (passing on a November touch, bars 4 days old at
+    # most) served on Tue 1 Dec is last month's touch, not this month's: shown, never a setup
+    state = dict(_passing_state(), asOf="2026-11-27")
+    assert state["month"] == "2026-11" and state["pass"] is True
+    out = LongTermService._served_setup({"setup": state}, ET_TIME(2026, 12, 1, 10, 0))
+    assert out["stale"] is True and out["pass"] is False
+    assert "2026-11" in out["staleReason"] and out["month"] == "2026-11"
+    assert out["reason"] == state["reason"]
+    # the same state on the last day of November is still fresh
+    out = LongTermService._served_setup({"setup": state}, ET_TIME(2026, 11, 30, 23, 0))
+    assert out["stale"] is False and out["pass"] is True and "staleReason" not in out
+    # the ET month decides, not UTC: 20:00 ET on 30 Nov is already 1 Dec in UTC
+    late = ET_TIME(2026, 11, 30, 20, 0).astimezone(ZoneInfo("UTC"))
+    assert late.day == 1 and LongTermService._served_setup({"setup": state}, late)["stale"] is False
+    # a state with no month is missing data: never a setup
+    out = LongTermService._served_setup({"setup": dict(state, month=None)}, ET_TIME(2026, 11, 30, 10, 0))
+    assert out["stale"] is True and out["pass"] is False
+
+
+def test_an_october_state_is_not_a_november_setup_on_the_page(svc):
+    # review fix 1/2: a WAIT row whose stored state is October's (asOf only one day old, so the
+    # 4-day rule alone would serve it) is shown stale and is not a LEAP setup in November
+    svc.refresh(force=True)
+    state = dict(_passing_state(), month="2026-10", asOf=(NOW.date() - timedelta(days=1)).isoformat())
+    with svc.store.lock:
+        for s in SYMBOLS:
+            svc.store.records[s]["setup"] = dict(state)
+    page = svc.page_payload(50, _priced_quotes())
+    assert any(r["signal"] == "WAIT" for r in page["rows"] if r["symbol"] in SYMBOLS)
+    for row in page["rows"]:
+        if row["symbol"] in SYMBOLS:
+            assert row["setup"]["stale"] is True and row["setup"]["pass"] is False, row["symbol"]
+            assert row["setupPass"] is False and row["setup"]["month"] == "2026-10"
+    assert page["meta"]["setups"] == 0
+
+
+def test_a_stale_short_history_state_keeps_its_own_reason(svc):
+    # review fix 3: staleness never overwrites the state's reason (the page shows that reason on
+    # the n/a line and its own stale line below it)
+    from long_term.setups import REASON_SHORT
+    svc.refresh(force=True)
+    old_day = (NOW.date() - timedelta(days=SETUP_STALE_DAYS + 1)).isoformat()
+    short = {"level": None, "prevLevel": None, "pass": None, "month": "2026-11", "asOf": old_day,
+             "reason": REASON_SHORT}
+    with svc.store.lock:
+        svc.store.records["AAPL"]["setup"] = dict(short)
+    st = _row_of(svc, "AAPL", _priced_quotes())["setup"]
+    assert st["reason"] == REASON_SHORT and st["stale"] is True and st["pass"] is False
+    assert st["staleReason"] == f"stale: daily bars last {old_day}"
+
+
+def test_setup_pass_needs_buy_or_wait_never_avoid_or_no_price(svc):
+    svc.refresh(force=True)
+    state = _passing_state()
+    with svc.store.lock:
+        for s in SYMBOLS:
+            svc.store.records[s]["setup"] = dict(state)
+    page = svc.page_payload(50, _priced_quotes())
+    signals = set()
+    for row in page["rows"]:
+        if row["symbol"] in SYMBOLS:
+            signals.add(row["signal"])
+            assert row["setupPass"] is (row["signal"] in ("BUY", "WAIT")), (row["symbol"], row["signal"])
+            assert row["setup"]["pass"] is True and row["setup"]["stale"] is False
+    assert "WAIT" in signals and signals - {"BUY", "WAIT"}          # both kinds are in the fixture set
+    assert page["meta"]["setups"] == sum(1 for r in page["rows"] if r["setupPass"]) >= 1
+    # no quote at all: every row is NO_PRICE (or not scorable) and none is a setup
+    page = svc.page_payload(50, {})
+    assert page["meta"]["setups"] == 0 and not any(r["setupPass"] for r in page["rows"])
+    assert any(r["signal"] == "NO_PRICE" and r["setup"]["pass"] is True for r in page["rows"])
+
+
+def test_avoid_row_with_a_passing_touch_is_never_a_setup(svc):
+    with svc.store.lock:
+        svc.store.records["SYN"] = dict(_synthetic_record(n=2, net_income=-5.0, eps=-0.5), setup=_passing_state())
+    row = _row_of(svc, "SYN", {"SYN": {"last_price": 10.0, "quote_time_ms": NOW_MS}})
+    assert row["signal"] == "AVOID" and row["setup"]["pass"] is True and row["setupPass"] is False
+
+
+def test_etf_and_failed_pass_rows_carry_no_setup(svc):
+    svc.refresh(force=True)
+    rows = {r["symbol"]: r for r in svc.page_payload(50, _priced_quotes())["rows"]}
+    assert rows["SPY"]["setup"] is None and rows["SPY"]["setupPass"] is False
+    assert rows["ZZZZ"]["setup"] is None and rows["ZZZZ"]["setupPass"] is False
+    assert rows["AAPL"]["setup"] is None and rows["AAPL"]["setupPass"] is False    # the default fake has no bars
+
+
+def test_short_history_state_is_none_pass_and_no_setup(svc):
+    from long_term.setups import setup_state
+    svc.refresh(force=True)
+    short = setup_state(history(rising(60)) + november([1.0]), today=NOW.date())
+    with svc.store.lock:
+        svc.store.records["AAPL"]["setup"] = short
+    row = _row_of(svc, "AAPL", _priced_quotes())
+    assert row["setup"]["pass"] is None and row["setup"]["reason"] == "fewer than 100 months of history"
+    assert row["setupPass"] is False
+
+
+def test_detail_carries_the_setup(svc):
+    svc.refresh(force=True)
+    with svc.store.lock:
+        svc.store.records["AAPL"]["setup"] = _passing_state()
+    quote = _priced_quotes()["AAPL"]
+    d = svc.detail_payload("AAPL", 50, quote)
+    assert d["setup"]["pass"] is True and d["setup"] == d["row"]["setup"] and d["setup"]["stale"] is False
+    with svc.store.lock:
+        svc.store.records["AAPL"].pop("setup")
+    assert svc.detail_payload("AAPL", 50, quote)["setup"] is None
+
+
+def test_leap_payload_serves_a_setup_row_that_is_not_leaps_flagged(svc):
+    from test_long_term_leaps import FakeChain, std_chain
+    svc.refresh(force=True)
+    quote = _priced_quotes()["AAPL"]
+    fake = svc._chain_fn = FakeChain(std_chain(spot=quote["last_price"], today=NOW.date()))
+    out = svc.leap_payload("AAPL", 50, quote)                       # WAIT, not flagged, no setup
+    assert out["reason"] == "LEAPS not flagged" and fake.calls == []
+    with svc.store.lock:
+        svc.store.records["AAPL"]["setup"] = _passing_state()
+    row = _row_of(svc, "AAPL", {"AAPL": quote})
+    assert row["setupPass"] is True and row["leaps"] is False
+    out = svc.leap_payload("AAPL", 50, quote)
+    assert len(fake.calls) == 1 and out["leaps"] is False and out["reason"] != "LEAPS not flagged"
+    assert out["contract"] is not None or out["deep"] is not None

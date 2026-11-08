@@ -4,7 +4,8 @@
 export const MOS_OPTIONS = [50, 30];
 export const PREFS_KEY = "longTermPrefs";
 export const DEFAULT_SORT = { key: "default", dir: "desc" };
-export const TILES = ["BUY", "LEAPS", "WAIT", "AVOID", "NODATA"];
+// SETUP (2026-11-08): the LEAP setup rows (Monthly 50 EMA touch in an uptrend on a BUY or WAIT business).
+export const TILES = ["BUY", "LEAPS", "SETUP", "WAIT", "AVOID", "NODATA"];
 
 export const SIGNAL_LABEL = {
   BUY: "BUY",
@@ -56,13 +57,23 @@ export function writePrefs(storage, prefs) {
 // ---- tiles, guard, filter --------------------------------------------------
 
 export function tileCounts(rows) {
-  const counts = { BUY: 0, LEAPS: 0, WAIT: 0, AVOID: 0, NODATA: 0 };
+  const counts = { BUY: 0, LEAPS: 0, SETUP: 0, WAIT: 0, AVOID: 0, NODATA: 0 };
   for (const r of rows || []) {
     if (r.signal === "BUY" || r.signal === "WAIT" || r.signal === "AVOID") counts[r.signal] += 1;
     else counts.NODATA += 1;
     if (r.leaps) counts.LEAPS += 1;
+    if (isSetup(r)) counts.SETUP += 1;
   }
   return counts;
+}
+
+// A LEAP setup row: the server's setupPass (the Monthly 50 EMA touched this month
+// in an uptrend), on a row the page still rates BUY or WAIT after its own price
+// guard, and never from a stale monthly state. The LEAPS flag is not needed.
+export function isSetup(row) {
+  if (!row || row.setupPass !== true) return false;
+  if (row.signal !== "BUY" && row.signal !== "WAIT") return false;
+  return !(row.setup && typeof row.setup === "object" && row.setup.stale === true);
 }
 
 const DAY_MS = 86400000;
@@ -103,15 +114,16 @@ export function priceGuard(row, now = Date.now()) {
 }
 
 // A row whose price fails the guard (or every row, with `force`, when the
-// feed itself is stale) can show no BUY, no LEAPS and no Buy Zone.
+// feed itself is stale) can show no BUY, no LEAPS, no LEAP setup and no Buy Zone.
 export function guardRow(row, { now = Date.now(), force = false } = {}) {
   if (!row || (!force && priceGuard(row, now))) return row;
-  return { ...row, signal: PRICED.has(row.signal) ? "NO_PRICE" : row.signal, leaps: false, buyZonePct: null };
+  return { ...row, signal: PRICED.has(row.signal) ? "NO_PRICE" : row.signal, leaps: false, setupPass: false, buyZonePct: null };
 }
 
 function matchesTile(row, tile) {
   if (!tile) return true;
   if (tile === "LEAPS") return !!row.leaps;
+  if (tile === "SETUP") return isSetup(row);
   if (tile === "NODATA") return !PRICED.has(row.signal);
   return row.signal === tile;
 }
@@ -273,6 +285,7 @@ export function cardFields(row) {
     signalLabel: SIGNAL_LABEL[row.signal] || row.signal || DASH,
     tone: signalTone(row.signal),
     leaps: !!row.leaps,
+    setup: isSetup(row),
     buyZone: buyZoneBar(row.buyZonePct),
     buyBelow: formatMoney(row.buyBelow),
     roic: formatPct(row.roic),
@@ -513,11 +526,106 @@ export function leapSection(payload) {
   return lines;
 }
 
-// Which rows get a leap fetch after a rows payload lands: the LEAPS-flagged
-// rows in the page's default order, capped so a long list never floods the chain.
+// Which rows get a leap fetch after a rows payload lands: the LEAP setup rows
+// first (rare, and the trade he back-tested), then the LEAPS-flagged rows, each
+// in the page's default order, capped so a long list never floods the chain.
 export function leapOrder(rows, cap = LEAP_FETCH_CAP) {
-  const flagged = (rows || []).filter((r) => r && r.leaps === true);
-  return sortRows(flagged, DEFAULT_SORT).slice(0, cap).map((r) => r.symbol);
+  const list = (rows || []).filter(Boolean);
+  const setups = list.filter((r) => isSetup(r));
+  const flagged = list.filter((r) => r.leaps === true && !isSetup(r));
+  return [...sortRows(setups, DEFAULT_SORT), ...sortRows(flagged, DEFAULT_SORT)].slice(0, cap).map((r) => r.symbol);
+}
+
+// Whether a row gets a contract at all ("LEAP to buy", the contract line).
+export function wantsLeap(row) {
+  return !!row && (row.leaps === true || isSetup(row));
+}
+
+// ---- LEAP setup (2026-11-08) -----------------------------------------------------
+// row.setup (and detail.setup) from the server: {level, prevLevel, lastClose,
+// lastMonth "YYYY-MM", uptrend, closeAbove, emaRising, month "YYYY-MM", monthLow,
+// touched, touchDate "YYYY-MM-DD", pass, asOf, reason, stale?}. The rule is his
+// back-test's (artifacts/scan_monthly_ema_touch.py): the 50 EMA of completed monthly
+// closes, touched by a daily low this month, with last month's close above a
+// rising EMA. These helpers only put it into words.
+
+export const SETUP_NOTE = "Back-test 2005-2026 (model option prices): buying on this touch won 60% over 6 months vs 54% on any day. In-the-money calls won most (20% ITM: 64%); far out-of-the-money calls paid only when sold at double. No daily-close stop at the 50 EMA: it cut wins to about 45%. Not advice.";
+const SETUP_SIGNALS = new Set(["BUY", "WAIT"]);
+
+// "Nov" from "2026-11"; null for anything else.
+function monthName(period) {
+  const m = typeof period === "string" ? /^(\d{4})-(\d{2})/.exec(period.trim()) : null;
+  const i = m ? Number(m[2]) - 1 : -1;
+  return i >= 0 && i < 12 ? MONTHS[i] : null;
+}
+
+// "Nov 5" from "2026-11-05" (or an ISO time); null for anything else.
+function dayName(iso) {
+  const long = formatExpiry(typeof iso === "string" ? iso.slice(0, 10) : iso, { long: true });
+  return long === DASH ? null : long.replace(/, \d{4}$/, "");
+}
+
+// The lines of the drawer's "LEAP setup" section. `source` is a row (its setup
+// and, unless `signal` is given, its signal) or a setup dict (detail.setup) with
+// the row's signal. [] when there is no setup state.
+export function setupLines(source, signal) {
+  if (!source || typeof source !== "object") return [];
+  // a row carries a symbol / signal; a setup dict never does
+  const fromRow = ["setup", "setupPass", "symbol", "signal"].some((k) => Object.prototype.hasOwnProperty.call(source, k));
+  const s = fromRow ? source.setup : source;
+  const sig = signal !== undefined ? signal : fromRow ? source.signal : undefined;
+  if (!s || typeof s !== "object") return [];
+  const lines = [];
+  const level = s.level;
+  const month = monthName(s.month);
+  const monthLow = month ? `${month} low` : "Low";
+
+  if (!isNum(level)) {
+    const why = typeof s.reason === "string" && s.reason.trim() ? s.reason.trim() : "no monthly data yet";
+    lines.push(`n/a Monthly 50 EMA: ${why}`);
+  } else {
+    const lvl = formatMoney(level);
+    const touched = s.touched === true || (s.touched === undefined && isNum(s.monthLow) && s.monthLow <= level);
+    if (touched) {
+      const day = dayName(s.touchDate);
+      lines.push(`✓ Monthly 50 EMA touched: ${monthLow} ${formatMoney(s.monthLow)} ≤ level ${lvl}${day ? ` (first touch ${day})` : ""}`);
+    } else if (isNum(s.monthLow)) {
+      const gap = level > 0 ? ` (${formatPct((s.monthLow - level) / level, 1)} below the low)` : "";
+      lines.push(`✗ Monthly 50 EMA not touched this month: ${monthLow} ${formatMoney(s.monthLow)}, level ${lvl}${gap}`);
+    } else {
+      const why = typeof s.reason === "string" && s.reason.trim() ? s.reason.trim() : "no trading day this month yet";
+      lines.push(`✗ Monthly 50 EMA not touched this month: ${why}, level ${lvl}`);
+    }
+
+    const closeAbove = typeof s.closeAbove === "boolean" ? s.closeAbove : isNum(s.lastClose) && s.lastClose > level;
+    const rising = typeof s.emaRising === "boolean" ? s.emaRising : isNum(s.prevLevel) && level > s.prevLevel;
+    const up = typeof s.uptrend === "boolean" ? s.uptrend : closeAbove && rising;
+    const last = monthName(s.lastMonth) || "Last month";
+    let where = "at";
+    if (isNum(s.lastClose)) where = s.lastClose > level ? "above" : s.lastClose < level ? "below" : "at";
+    const trend = isNum(s.prevLevel) ? `, which is ${rising ? "rising" : "falling"} (was ${formatMoney(s.prevLevel)})` : "";
+    lines.push(`${up ? "✓" : "✗"} Uptrend: ${last} closed ${formatMoney(s.lastClose)} ${where} the 50 EMA ${lvl}${trend}`);
+  }
+
+  const ok = SETUP_SIGNALS.has(sig);
+  const label = SIGNAL_LABEL[sig] || (typeof sig === "string" && sig) || DASH;
+  lines.push(`${ok ? "✓" : "✗"} Long Term: ${label} (BUY or WAIT needed)`);
+
+  // Stale only because a new month began (the server's staleReason "stale: state is for
+  // 2026-10, not this month"): the checks above are last month's; "4 days" would be false.
+  const rolled = typeof s.staleReason === "string" ? /state is for (\d{4}-\d{2})/.exec(s.staleReason) : null;
+  if (s.stale === true && rolled) {
+    const i = Number(rolled[1].slice(5, 7)) - 1;
+    const full = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+      "October", "November", "December"][i] || rolled[1];
+    lines.push(`⚠ These checks are for ${full}, not this month, so not a setup`);
+  } else if (s.stale === true) {
+    const day = dayName(s.asOf);
+    lines.push(day
+      ? `⚠ Monthly bars stale: last read ${day}, more than 4 days ago, so not a setup`
+      : "⚠ Monthly bars stale: not read in the last 4 days, so not a setup");
+  }
+  return lines;
 }
 
 // A 200 answer with no contract for one of these reasons is a passing state of

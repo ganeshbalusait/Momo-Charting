@@ -9,7 +9,7 @@ import {
   reasonText, big5Dots, formatEtStamp, acceptsPayload, sortValue, etDate, previousWeekday, formatEps,
   formatPayback, formatExpiry, leapLine, leapSection, leapOrder,
   leapTransient, leapTransientNote, leapRetryDue, LEAP_RETRY_MS, LEAP_RETRY_MAX_MS, LEAP_TRANSIENT_REASONS,
-  LEAP_NO_DELTA_REASON,
+  LEAP_NO_DELTA_REASON, isSetup, setupLines, SETUP_NOTE,
 } from "./longTerm.js";
 
 // quoteTimeMs defaults to "just now": the guard also rejects quotes older than the previous weekday (ET).
@@ -56,8 +56,10 @@ describe("prefs", () => {
 
 describe("tiles and guard", () => {
   test("tileCounts", () => {
-    assert.deepEqual(TILES, ["BUY", "LEAPS", "WAIT", "AVOID", "NODATA"]);
-    assert.deepEqual(tileCounts([AAPL, MSFT, KO, NVDA, SPY]), { BUY: 2, LEAPS: 1, WAIT: 1, AVOID: 1, NODATA: 1 });
+    // Re-pinned 2026-11-08 (LEAP setup): a sixth tile, SETUP, sits next to LEAPS and
+    // counts the setupPass rows; none of these five rows is a setup, so SETUP is 0.
+    assert.deepEqual(TILES, ["BUY", "LEAPS", "SETUP", "WAIT", "AVOID", "NODATA"]);
+    assert.deepEqual(tileCounts([AAPL, MSFT, KO, NVDA, SPY]), { BUY: 2, LEAPS: 1, SETUP: 0, WAIT: 1, AVOID: 1, NODATA: 1 });
   });
   test("priceGuard", () => {
     assert.equal(priceGuard(row({})), true);
@@ -589,5 +591,143 @@ describe("LEAP to buy", () => {
     assert.equal(leapRetryDue({ epoch: "50|x", error: true }, at + 999_999), false);
     assert.equal(leapRetryDue(undefined, at), false);
     assert.equal(leapRetryDue(null, at), false);
+  });
+});
+
+// ---- LEAP setup (2026-11-08) -------------------------------------------------
+// Ganesh: "Build it 'leap setup'". A setup = the Monthly 50 EMA intramonth touch
+// in an uptrend (his back-test's one edge) on a business the Long Term page rates
+// BUY or WAIT. The server decides (row.setupPass); the page re-checks the signal
+// after its own price guard and puts the three checks into words.
+describe("LEAP setup", () => {
+  // QCOM on Sun 11-08: monthly 50 level ~155.44, Nov low touched it, Oct closed above a rising EMA.
+  const QSETUP = {
+    level: 155.44, prevLevel: 153.9, lastClose: 165.2, lastMonth: "2026-10", uptrend: true, closeAbove: true,
+    emaRising: true, month: "2026-11", monthLow: 152.1, touched: true, touchDate: "2026-11-05", pass: true,
+    asOf: "2026-11-07", reason: null,
+  };
+  const QCOM = row({ symbol: "QCOM", name: "Qualcomm", signal: "WAIT", leaps: false, buyZonePct: -0.3, setup: QSETUP, setupPass: true });
+  const setupRow = (o = {}, s = {}) => row({ symbol: "S", signal: "WAIT", setup: { ...QSETUP, ...s }, setupPass: true, ...o });
+
+  test("isSetup: setupPass on a BUY or WAIT row only, never stale, never a guarded row", () => {
+    assert.equal(isSetup(QCOM), true);
+    assert.equal(isSetup(setupRow({ signal: "BUY" })), true);
+    assert.equal(isSetup(setupRow({ signal: "AVOID" })), false, "AVOID is never a setup even if the server said so");
+    assert.equal(isSetup(setupRow({ signal: "NO_PRICE" })), false);
+    assert.equal(isSetup(setupRow({ signal: "ETF" })), false);
+    assert.equal(isSetup(setupRow({ setupPass: false })), false);
+    assert.equal(isSetup(setupRow({ setupPass: "true" })), false, "only a real true counts");
+    assert.equal(isSetup(setupRow({}, { stale: true })), false, "a stale state is never a setup");
+    assert.equal(isSetup(row({ setupPass: undefined })), false, "rows from before the change carry no field");
+    assert.equal(isSetup(null), false);
+    assert.equal(isSetup(guardRow({ ...QCOM, price: null })), false, "the price guard drops the setup with the signal");
+    assert.equal(guardRow({ ...QCOM, price: null }).setupPass, false);
+    assert.equal(guardRow(QCOM, { force: true }).setupPass, false, "a stale feed drops it too");
+    assert.equal(guardRow(QCOM).setupPass, true);
+  });
+
+  test("tileCounts and the SETUP tile filter", () => {
+    const list = [AAPL, MSFT, KO, NVDA, SPY, QCOM, setupRow({ symbol: "BAD", signal: "AVOID" })];
+    const counts = tileCounts(list);
+    assert.equal(counts.SETUP, 1);
+    assert.equal(counts.WAIT, 2, "the setup row still counts as WAIT");
+    assert.equal(counts.LEAPS, 1, "a setup is not a LEAPS flag");
+    assert.deepEqual(filterRows(list, { tile: "SETUP" }).map((r) => r.symbol), ["QCOM"]);
+    assert.deepEqual(filterRows(list, { tile: "SETUP", query: "qual" }).map((r) => r.symbol), ["QCOM"]);
+    assert.deepEqual(filterRows(list, { tile: "SETUP", query: "AAPL" }), []);
+    assert.deepEqual(filterRows(list, { tile: "LEAPS" }).map((r) => r.symbol), ["MSFT"]);
+  });
+
+  test("cardFields carries the setup flag for the SETUP pill", () => {
+    assert.equal(cardFields(QCOM).setup, true);
+    assert.equal(cardFields(KO).setup, false);
+    assert.equal(cardFields(setupRow({ signal: "AVOID" })).setup, false);
+  });
+
+  test("leapOrder reads setup rows too, ahead of the LEAPS-only rows so the cap never drops them", () => {
+    const flagged = (sym, extra = {}) => row({ symbol: sym, leaps: true, signal: "WAIT", buyZonePct: -0.1, ...extra });
+    const many = Array.from({ length: 15 }, (_, i) => flagged(`T${String(i).padStart(2, "0")}`));
+    const order = leapOrder([...many, KO, QCOM, setupRow({ symbol: "NOPE", signal: "AVOID" })]);
+    assert.equal(order.length, 12);
+    assert.equal(order[0], "QCOM");
+    assert.deepEqual(order.slice(1), many.slice(0, 11).map((r) => r.symbol));
+    assert.ok(!order.includes("NOPE") && !order.includes("KO"));
+    assert.deepEqual(leapOrder([QCOM]), ["QCOM"], "a setup that is not LEAPS-flagged still gets its contract");
+    assert.deepEqual(leapOrder([guardRow({ ...QCOM, price: null })]), [], "a guarded row is never read");
+  });
+
+  test("setupLines: QCOM-shaped pass", () => {
+    const want = [
+      "✓ Monthly 50 EMA touched: Nov low $152.10 ≤ level $155.44 (first touch Nov 5)",
+      "✓ Uptrend: Oct closed $165.20 above the 50 EMA $155.44, which is rising (was $153.90)",
+      "✓ Long Term: WAIT (BUY or WAIT needed)",
+    ];
+    assert.deepEqual(setupLines(QCOM), want, "a row: its setup and its signal");
+    assert.deepEqual(setupLines(QSETUP, "WAIT"), want, "a detail.setup plus the row's signal");
+    assert.equal(setupLines(QSETUP, "BUY")[2], "✓ Long Term: BUY (BUY or WAIT needed)");
+  });
+
+  test("setupLines: not touched this month says how far the level is under the low", () => {
+    const lines = setupLines(setupRow({}, { touched: false, touchDate: null, monthLow: 158.2, pass: false }));
+    assert.equal(lines[0], "✗ Monthly 50 EMA not touched this month: Nov low $158.20, level $155.44 (1.8% below the low)");
+    assert.equal(lines.length, 3);
+  });
+
+  test("setupLines: no trading day yet this month", () => {
+    const lines = setupLines(setupRow({}, { touched: false, touchDate: null, monthLow: null, pass: false, reason: "no trading day this month yet" }));
+    assert.equal(lines[0], "✗ Monthly 50 EMA not touched this month: no trading day this month yet, level $155.44");
+  });
+
+  test("setupLines: close below the EMA, EMA falling", () => {
+    const below = setupLines(setupRow({}, { lastClose: 150, closeAbove: false, uptrend: false, pass: false }));
+    assert.equal(below[1], "✗ Uptrend: Oct closed $150.00 below the 50 EMA $155.44, which is rising (was $153.90)");
+    const falling = setupLines(setupRow({}, { prevLevel: 156, emaRising: false, uptrend: false, pass: false }));
+    assert.equal(falling[1], "✗ Uptrend: Oct closed $165.20 above the 50 EMA $155.44, which is falling (was $156.00)");
+    // computed from the numbers when the booleans are missing
+    const bare = setupLines(setupRow({}, { closeAbove: undefined, emaRising: undefined, uptrend: undefined }));
+    assert.equal(bare[1], "✓ Uptrend: Oct closed $165.20 above the 50 EMA $155.44, which is rising (was $153.90)");
+  });
+
+  test("setupLines: the Long Term check fails for AVOID, No price and no-data rows", () => {
+    assert.equal(setupLines(setupRow({ signal: "AVOID" }))[2], "✗ Long Term: AVOID (BUY or WAIT needed)");
+    assert.equal(setupLines(setupRow({ signal: "NO_PRICE" }))[2], "✗ Long Term: No price (BUY or WAIT needed)");
+    assert.equal(setupLines(QSETUP, "CHECK_DATA")[2], "✗ Long Term: Check data (BUY or WAIT needed)");
+    assert.equal(setupLines(QSETUP)[2], "✗ Long Term: — (BUY or WAIT needed)", "no signal given: not passed");
+  });
+
+  test("setupLines: stale state and too little history give the reason", () => {
+    const stale = setupLines(setupRow({ setupPass: false }, { stale: true, pass: false, asOf: "2026-11-02" }));
+    assert.equal(stale[stale.length - 1], "⚠ Monthly bars stale: last read Nov 2, more than 4 days ago, so not a setup");
+    assert.equal(stale.length, 4);
+    const staleNoDate = setupLines(setupRow({}, { stale: true, asOf: null }));
+    assert.equal(staleNoDate[3], "⚠ Monthly bars stale: not read in the last 4 days, so not a setup");
+    // recheck 11-08: stale only because the month rolled over (bars read 3 days ago) - the
+    // server's staleReason says so; "more than 4 days ago" would be false
+    const rolled = setupLines(setupRow({ setupPass: false }, {
+      stale: true, pass: false, month: "2026-10", asOf: "2026-10-30", staleReason: "stale: state is for 2026-10, not this month",
+    }));
+    assert.equal(rolled[rolled.length - 1], "⚠ These checks are for October, not this month, so not a setup");
+    const young = setupLines(setupRow({ setupPass: false }, {
+      level: null, prevLevel: null, lastClose: null, uptrend: null, closeAbove: null, emaRising: null, touched: null,
+      touchDate: null, monthLow: null, pass: null, reason: "fewer than 100 months of history",
+    }));
+    assert.deepEqual(young, ["n/a Monthly 50 EMA: fewer than 100 months of history", "✓ Long Term: WAIT (BUY or WAIT needed)"]);
+    assert.equal(setupLines(setupRow({}, { level: null, reason: null }))[0], "n/a Monthly 50 EMA: no monthly data yet");
+  });
+
+  test("setupLines: nothing for no setup, never NaN or undefined for junk", () => {
+    assert.deepEqual(setupLines(row({})), []);
+    assert.deepEqual(setupLines(null), []);
+    assert.deepEqual(setupLines(undefined, "WAIT"), []);
+    assert.deepEqual(setupLines("junk", "WAIT"), []);
+    const junk = setupLines({ level: 155.44, month: "x", lastMonth: 7, touchDate: "nope", monthLow: "a", prevLevel: null, lastClose: undefined, touched: true }, "WAIT");
+    assert.ok(junk.length >= 2);
+    assert.ok(!/NaN|undefined|null/.test(junk.join("\n")), junk.join("\n"));
+  });
+
+  test("the back-test note is the plain sentence, ending Not advice", () => {
+    assert.match(SETUP_NOTE, /^Back-test 2005-2026 \(model option prices\): buying on this touch won 60% over 6 months vs 54% on any day\./);
+    assert.match(SETUP_NOTE, /20% ITM: 64%/);
+    assert.match(SETUP_NOTE, /cut wins to about 45%\. Not advice\.$/);
   });
 });

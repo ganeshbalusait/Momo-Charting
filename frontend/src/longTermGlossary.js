@@ -10,7 +10,7 @@ export const GLOSSARY = {
   },
   tiles: {
     term: "The tiles",
-    text: "BUY: a Rule #1 business at or under its Safety Buy price. LEAPS: strong enough to own through long-dated calls (price at most 80% of the sticker, ROIC 20%+, 8+ years, earnings not falling). WAIT: a good business, price still too high; the row shows the price to buy at. AVOID: fails a test, the reason says which. NO DATA: an ETF, no SEC filings, too little history, or a stale filing. Tap a tile to show only those rows; tap it again to show all.",
+    text: "BUY: a Rule #1 business at or under its Safety Buy price. LEAPS: strong enough to own through long-dated calls (price at most 80% of the sticker, ROIC 20%+, 8+ years, earnings not falling). LEAP SETUP: a BUY or WAIT business whose price touched its Monthly 50 EMA this month while the monthly trend is up, the one entry the back-test found that beats buying on any day. WAIT: a good business, price still too high; the row shows the price to buy at. AVOID: fails a test, the reason says which. NO DATA: an ETF, no SEC filings, too little history, or a stale filing. Tap a tile to show only those rows; tap it again to show all.",
   },
   roic_now: {
     term: "ROIC (return on invested capital)",
@@ -128,6 +128,22 @@ export const GLOSSARY = {
     term: "Ten years",
     text: "Revenue = sales. Net inc = profit after everything. EPS = profit per share. Equity = what the company owns minus what it owes. FCF = free cash flow. ROIC = profit ÷ (owners' money + debt). All from the company's SEC filings.",
   },
+  setup: {
+    term: "LEAP setup",
+    text: "Three checks at once: (1) a daily low this month reached the Monthly 50 EMA (the 50-month average of monthly closes, completed months only); (2) uptrend: last month closed above that EMA and the EMA is rising; (3) the Long Term page rates the business BUY or WAIT. All three = a LEAP setup, and the page looks up a contract for it even without the LEAPS flag.",
+  },
+  setup_touch: {
+    term: "Monthly 50 EMA touch",
+    text: "The 50 EMA of the monthly closes of completed months (thinkorswim's EMA, settled after 100 months). Touched = some daily low this month was at or below it: the pullback to long-term support the back-test buys. Not touched: the line says how far the level is below this month's low.",
+  },
+  setup_uptrend: {
+    term: "Uptrend (monthly)",
+    text: "Last month's close is above the Monthly 50 EMA, and the EMA is rising (higher than a month earlier). A touch in a falling trend is a breakdown, not a pullback, so it is not a setup.",
+  },
+  setup_verdict: {
+    term: "Long Term check",
+    text: "The business must be worth owning: the Long Term page rates it BUY or WAIT after the price check. AVOID, No price, No data or a stale filing never make a setup. The LEAPS flag is not needed; it is shown beside it.",
+  },
   crosschecks: {
     term: "Cross-checks",
     text: "Each line compares the SEC filings with Finnhub for the same number. ✓ = they agree; ✗ = they differ, and the row is judged on the worse one.",
@@ -167,6 +183,11 @@ const LINE_RULES = [
   [/^⚠ thin market\b/, "thin"],
   [/^⚠ wide spread\b/, "wide"],
   [/^Deep call\b/, "deep"],
+  // LEAP setup section (2026-11-08)
+  [/^(?:[✓✗] |n\/a )?Monthly 50 EMA\b/, "setup_touch"],
+  [/^(?:[✓✗] |n\/a )?Uptrend\b/, "setup_uptrend"],
+  [/^(?:[✓✗] |n\/a )?Long Term\b/, "setup_verdict"],
+  [/^⚠ Monthly bars stale\b/, "setup"],
 ];
 
 // Which term a line is about, and where its label ends, so the "i" sits right

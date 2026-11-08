@@ -2,7 +2,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { GLOSSARY, glossaryEntry, glossaryKey, glossaryMatch } from "./longTermGlossary.js";
-import { DEEP_HEADING, DEEP_NONE, drawerSections, leapSection } from "./longTerm.js";
+import { DEEP_HEADING, DEEP_NONE, drawerSections, leapSection, setupLines } from "./longTerm.js";
 
 // Ganesh 11-07: "I need each name 'I' for information - what is MOS, ROIC, EPS".
 
@@ -112,5 +112,46 @@ describe("the i sits right after the term, not at the end of the line", () => {
   test("leading spaces are counted in the position", () => {
     const m = glossaryMatch("  ✓ ROIC now 40%");
     assert.equal("  ✓ ROIC now 40%".slice(0, m.at), "  ✓ ROIC now");
+  });
+});
+
+// LEAP setup (2026-11-08): the drawer's "LEAP setup" lines each carry their "i".
+describe("LEAP setup lines find their explanation", () => {
+  const QSETUP = {
+    level: 155.44, prevLevel: 153.9, lastClose: 165.2, lastMonth: "2026-10", uptrend: true, closeAbove: true,
+    emaRising: true, month: "2026-11", monthLow: 152.1, touched: true, touchDate: "2026-11-05", pass: true,
+    asOf: "2026-11-07", reason: null,
+  };
+  test("the four entries exist and say what they check", () => {
+    assert.match(GLOSSARY.setup.term, /LEAP setup/);
+    assert.match(GLOSSARY.setup.text, /Monthly 50 EMA[\s\S]*uptrend[\s\S]*BUY or WAIT/i);
+    assert.match(GLOSSARY.setup_touch.text, /low/i);
+    assert.match(GLOSSARY.setup_uptrend.text, /rising/i);
+    assert.match(GLOSSARY.setup_verdict.text, /AVOID/);
+    assert.match(GLOSSARY.tiles.text, /LEAP SETUP:/);
+    assert.ok(GLOSSARY.tiles.text.indexOf("LEAPS:") < GLOSSARY.tiles.text.indexOf("LEAP SETUP:"), "in tile order");
+  });
+  test("every setup line, pass, fail, stale and n/a, matches its key", () => {
+    const pass = setupLines(QSETUP, "WAIT");
+    assert.deepEqual(pass.map(glossaryKey), ["setup_touch", "setup_uptrend", "setup_verdict"]);
+    const fail = setupLines({ ...QSETUP, touched: false, monthLow: 158.2, lastClose: 150, prevLevel: 156, stale: true }, "AVOID");
+    assert.deepEqual(fail.map(glossaryKey), ["setup_touch", "setup_uptrend", "setup_verdict", "setup"]);
+    const none = setupLines({ ...QSETUP, level: null, reason: "fewer than 100 months of history" }, "NO_PRICE");
+    assert.deepEqual(none.map(glossaryKey), ["setup_touch", "setup_verdict"]);
+  });
+  test("the i sits right after the term", () => {
+    const at = (line) => line.slice(0, glossaryMatch(line).at);
+    const [touch, up, verdict] = setupLines(QSETUP, "WAIT");
+    assert.equal(at(touch), "✓ Monthly 50 EMA");
+    assert.equal(at(up), "✓ Uptrend");
+    assert.equal(at(verdict), "✓ Long Term");
+    assert.equal(at("✗ Monthly 50 EMA not touched this month: Nov low $158.20"), "✗ Monthly 50 EMA");
+    assert.equal(at("n/a Monthly 50 EMA: fewer than 100 months of history"), "n/a Monthly 50 EMA");
+    assert.equal(at("⚠ Monthly bars stale: last read Nov 2"), "⚠ Monthly bars stale");
+  });
+  test("the other lists are unchanged by the new rules", () => {
+    assert.equal(glossaryKey("✓ ROIC now 40% ≥ 15%"), "roic_now");
+    assert.equal(glossaryKey("Payback 7 years"), "payback");
+    assert.equal(glossaryKey("2025: sales 1B"), null);
   });
 });

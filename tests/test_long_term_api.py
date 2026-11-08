@@ -18,7 +18,7 @@ from api_harness import RELAYED, running_api, seed_user
 from cf_access_auth import ACCESS_EMAIL_HEADER
 from long_term import service as lt_service
 from test_long_term_leaps import FRACTIONS, FakeChain, contract, expiry_of, make_chain, std_chain
-from test_long_term_service import NOW, NOW_MS, fake_finnhub, make_svc
+from test_long_term_service import NOW, NOW_MS, fake_finnhub, fixture_price, make_svc
 
 VIEWER = "viewer-long-term@example.com"
 AAPL_PRICE = 344.17
@@ -411,3 +411,67 @@ def test_loss_making_short_history_row_is_avoid_over_http(monkeypatch, tmp_path)
     assert row["leaps"] is False and row["buyBelow"] is None and row["safetyBuy"] is None
     assert dstatus == 200 and detail["row"]["signal"] == "AVOID"
     assert any(c["key"] == "earning" and c["passed"] is False for c in detail["checks"])
+
+
+# ---------- LEAP setup (2026-11-08): monthly 50 EMA touch + Long Term BUY / WAIT, over HTTP ----------
+
+from test_long_term_service import FakeBars, setup_rows  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def setup_store(tmp_path_factory):
+    """One pass with fake Schwab daily bars: AAPL touched its monthly 50 EMA in an uptrend (QCOM-shaped),
+    HD did not touch it this month; the rest have no bars."""
+    directory = tmp_path_factory.mktemp("long_term_setup")
+    s = make_svc(directory, bars=FakeBars({"AAPL": setup_rows(), "HD": setup_rows(touched=False)}))
+    s.refresh(force=True)
+    s.stop_refresher()
+    return directory
+
+
+SETUP_QUOTES = {"AAPL": {"last_price": AAPL_PRICE, "quote_time_ms": NOW_MS, "description": "Apple"},
+                "HD": {"last_price": fixture_price("HD"), "quote_time_ms": NOW_MS, "description": "Home Depot"}}
+
+
+def test_setup_row_fields_meta_and_detail_over_http(monkeypatch, setup_store):
+    s = _install(monkeypatch, setup_store, Quotes(SETUP_QUOTES))
+    try:
+        with running_api() as api:
+            status, body = api.get("/api/long-term?mos=50")
+            dstatus, detail = api.get("/api/long-term/AAPL")
+            hstatus, hd_detail = api.get("/api/long-term/HD")
+    finally:
+        s.stop_refresher()
+    assert status == 200, body
+    rows = _rows(body)
+    aapl, hd = rows["AAPL"], rows["HD"]
+    assert aapl["signal"] == "WAIT" and aapl["leaps"] is False
+    assert aapl["setupPass"] is True and aapl["setup"]["pass"] is True and aapl["setup"]["stale"] is False
+    assert aapl["setup"]["touched"] is True and aapl["setup"]["touchDate"] == "2026-11-04"
+    assert aapl["setup"]["uptrend"] is True and aapl["setup"]["month"] == "2026-11"
+    assert aapl["setup"]["lastMonth"] == "2026-10" and aapl["setup"]["level"] > 0
+    assert hd["setupPass"] is False and hd["setup"]["touched"] is False and hd["setup"]["monthLow"] > hd["setup"]["level"]
+    assert rows["SPY"]["setup"] is None and rows["SPY"]["setupPass"] is False
+    assert rows["MCD"]["setup"] is None and rows["MCD"]["setupPass"] is False
+    assert body["meta"]["setups"] == 1
+    assert dstatus == 200 and detail["setup"] == aapl["setup"] and detail["row"]["setupPass"] is True
+    assert hstatus == 200 and hd_detail["setup"]["pass"] is False
+
+
+def test_leap_route_serves_a_setup_row_that_is_not_leaps_flagged(monkeypatch, setup_store):
+    fake = FakeChain(std_chain((30, 250, 340, 800), spot=AAPL_PRICE, today=NOW.date()))
+    s = _install(monkeypatch, setup_store, Quotes(SETUP_QUOTES))
+    s._chain_fn = fake
+    try:
+        with running_api() as api:
+            status, body = api.get("/api/long-term/AAPL/leap?mos=50")
+            hd_status, hd = api.get("/api/long-term/HD/leap?mos=50")
+    finally:
+        s.stop_refresher()
+    assert status == 200, body
+    assert body["leaps"] is False and body["reason"] != "LEAPS not flagged"           # served for the setup
+    assert body["contract"] and body["contract"]["kind"] == "entry" and body["deep"]["kind"] == "deep"
+    assert fake.calls == [("AAPL", NOW.date() + timedelta(days=90), NOW.date() + timedelta(days=365))]
+    # HD: neither LEAPS-flagged nor a setup -> refused, no chain call for it
+    assert hd_status == 200 and hd["reason"] == "LEAPS not flagged" and hd["contract"] is None
+    assert len(fake.calls) == 1

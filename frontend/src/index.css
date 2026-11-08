@@ -23168,6 +23168,19 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-controls .long-term-with-info:has(.long-term-info-text) { flex: 1 1 100%; }
 .long-term-with-info.is-tiles { margin: 0 0 6px; }
 .long-term-info-label { color: var(--lt-muted); font-size: 11px; }
+/* LEAP setup (2026-11-08): the sixth tile, the SETUP pill and the drawer section (magenta) */
+.long-term-tiles { grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); }
+.long-term-tile.is-setup span { color: #f0a6ff; }
+.long-term-tile.is-setup.is-glow { border-color: rgba(232, 121, 249, .7); box-shadow: 0 0 14px rgba(232, 121, 249, .3), inset 0 0 10px rgba(232, 121, 249, .1); }
+.long-term-tile.is-setup.is-glow b { color: #f0a6ff; }
+.long-term-pill.is-setup { border-color: rgba(232, 121, 249, .65); background: rgba(232, 121, 249, .16); color: #f0a6ff; }
+.long-term-pills { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.long-term-drawer-setup { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px dashed var(--lt-line); }
+.long-term-drawer-setup h4 { margin: 0 0 5px; color: #f0a6ff; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.long-term-drawer-setup h4 small { color: var(--lt-muted); font-weight: 600; letter-spacing: 0; text-transform: none; }
+.long-term-drawer-setup.is-pass h4 small { color: #f0a6ff; }
+.long-term-drawer-setup .long-term-lines { font-family: var(--terminal-font); }
+.long-term-drawer-setup > .long-term-note { margin: 6px 0 0; }
 .long-term-years-wrap { max-width: 100%; overflow-x: auto; }
 .long-term-years { width: 100%; border-collapse: collapse; font-size: 10.5px; }
 .long-term-years th, .long-term-years td { padding: 2px 5px; text-align: right; white-space: nowrap; }

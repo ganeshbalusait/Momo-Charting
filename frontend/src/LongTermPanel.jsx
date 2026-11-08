@@ -35,6 +35,10 @@ import {
   leapTransient,
   leapTransientNote,
   leapRetryDue,
+  wantsLeap,
+  isSetup,
+  setupLines,
+  SETUP_NOTE,
   LEAP_FETCH_CAP,
   DEEP_HEADING,
   DEEP_NONE,
@@ -57,11 +61,12 @@ const FEED_STALE_MS = 3 * POLL_MS;
 const CLOCK_MS = 15000;
 const PHONE_QUERY = "(max-width: 760px)";
 const DASH = "—";
-const TILE_LABEL = { BUY: "BUY", LEAPS: "LEAPS", WAIT: "WAIT", AVOID: "AVOID", NODATA: "No data" };
-const TILE_TONE = { BUY: "buy", LEAPS: "leaps", WAIT: "wait", AVOID: "avoid", NODATA: "muted" };
+const TILE_LABEL = { BUY: "BUY", LEAPS: "LEAPS", SETUP: "LEAP SETUP", WAIT: "WAIT", AVOID: "AVOID", NODATA: "No data" };
+const TILE_TONE = { BUY: "buy", LEAPS: "leaps", SETUP: "setup", WAIT: "wait", AVOID: "avoid", NODATA: "muted" };
 const TILE_TITLE = {
   BUY: "Price at or under the safety price, Rule #1 business",
   LEAPS: "Price under the LEAPS level: long-dated calls worth a look",
+  SETUP: "Monthly 50 EMA touched this month in an uptrend, on a BUY or WAIT business",
   WAIT: "Good business, price still above the buy level",
   AVOID: "Not a Rule #1 business",
   NODATA: "No price, ETF, no filings, short history, stale or check data",
@@ -100,8 +105,13 @@ function useIsPhone() {
   return phone;
 }
 
-function Pill({ tone, children, title }) {
-  return <span className={`long-term-pill is-${tone}`} title={title}>{children}</span>;
+function Pill({ tone, children, title, testId }) {
+  return <span className={`long-term-pill is-${tone}`} title={title} data-testid={testId}>{children}</span>;
+}
+
+// LEAP setup (2026-11-08): the Monthly 50 EMA touch in an uptrend on a BUY or WAIT row.
+function SetupPill() {
+  return <Pill tone="setup" testId="long-term-setup-pill" title="LEAP setup: Monthly 50 EMA touched this month in an uptrend">SETUP</Pill>;
 }
 
 function Big5({ big5, big5Na }) {
@@ -192,9 +202,12 @@ function cellContent(key, row, leap = {}) {
     case "signal":
       return <Pill tone={signalTone(row.signal)}>{SIGNAL_LABEL[row.signal] || row.signal || DASH}</Pill>;
     case "leaps":
-      return row.leaps ? (
+      return wantsLeap(row) ? (
         <>
-          <Pill tone="leaps">LEAPS</Pill>
+          <span className="long-term-pills">
+            {row.leaps ? <Pill tone="leaps">LEAPS</Pill> : null}
+            {isSetup(row) ? <SetupPill /> : null}
+          </span>
           <LeapLine symbol={row.symbol} entry={leap.entry} onRetry={leap.onRetry} queued={leap.queued} />
         </>
       ) : <span className="long-term-dim">{DASH}</span>;
@@ -287,7 +300,7 @@ function WithInfo({ k, children, className = "" }) {
 }
 
 // Tiles are buttons themselves (a button cannot hold another), so their "i"
-// sits on a small label above the row and explains all five at once.
+// sits on a small label above the row and explains all six at once.
 function TilesInfo() {
   return (
     <WithInfo k="tiles" className="is-tiles">
@@ -382,9 +395,26 @@ function LeapSection({ entry, onRetry }) {
   );
 }
 
+// "LEAP setup" (2026-11-08): the three checks in words, above "LEAP to buy",
+// whenever the row (or its detail) carries a setup state, passing or not.
+function SetupSection({ setup, signal, pass }) {
+  const lines = setupLines(setup, signal);
+  if (!lines.length) return null;
+  return (
+    <section className={`long-term-drawer-setup${pass ? " is-pass" : ""}`} data-testid="long-term-drawer-setup">
+      <WithInfo k="setup">
+        <h4>LEAP setup{pass ? <small> · yes</small> : <small> · not now</small>}</h4>
+      </WithInfo>
+      <LineList lines={lines} marks info />
+      <p className="long-term-note">{SETUP_NOTE}</p>
+    </section>
+  );
+}
+
 function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, width }) {
   const detail = entry?.detail;
   const sections = useMemo(() => (detail ? drawerSections(detail) : null), [detail]);
+  const setup = row.setup && typeof row.setup === "object" ? row.setup : detail?.setup && typeof detail.setup === "object" ? detail.setup : null;
   const byTitle = (t) => sections?.find((s) => s.title === t)?.lines || [];
   return (
     <div className="long-term-drawer" data-testid="long-term-drawer" style={width ? { width } : undefined}>
@@ -399,7 +429,8 @@ function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, widt
           <X size={14} />
         </button>
       </header>
-      {row.leaps ? <LeapSection entry={leap} onRetry={onRetryLeap} /> : null}
+      {setup ? <SetupSection setup={setup} signal={row.signal} pass={isSetup(row)} /> : null}
+      {wantsLeap(row) ? <LeapSection entry={leap} onRetry={onRetryLeap} /> : null}
       {!entry || entry.loading ? (
         <p className="long-term-dim">Loading the filings…</p>
       ) : entry.error ? (
@@ -455,9 +486,10 @@ function Card({ row, open, onToggle, leap, onRetryLeap, leapQueued }) {
       <span className="long-term-card-mid">
         <Pill tone={f.tone}>{f.signalLabel}</Pill>
         {f.leaps ? <Pill tone="leaps">LEAPS</Pill> : null}
+        {f.setup ? <SetupPill /> : null}
         <BuyZone pct={row.buyZonePct} />
       </span>
-      {f.leaps ? <LeapLine symbol={row.symbol} entry={leap} onRetry={onRetryLeap} queued={leapQueued} /> : null}
+      {f.leaps || f.setup ? <LeapLine symbol={row.symbol} entry={leap} onRetry={onRetryLeap} queued={leapQueued} /> : null}
       <span className="long-term-card-bottom">
         <span>BUY ≤ <b>{f.buyBelow}</b></span>
         <span>{row.financial ? "ROE" : "ROIC"} <b>{row.financial ? formatPct(row.roe) : f.roic}</b></span>
@@ -692,7 +724,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
     // A flagged row looked up by hand ("Find contract" or its drawer) whose
     // answer was transient is retried on its own too, as the Retry tooltip says.
     for (const r of guarded) {
-      if (r.leaps === true && !wanted.has(r.symbol)) {
+      if (wantsLeap(r) && !wanted.has(r.symbol)) {
         const e = leapEntry(r.symbol);
         if (e && e.transient) wanted.add(r.symbol);
       }
@@ -705,7 +737,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   useEffect(() => {
     if (!openSym) return;
     const row = guarded.find((r) => r.symbol === openSym);
-    if (row && row.leaps === true && leapDue(openSym)) loadLeap(openSym);
+    if (wantsLeap(row) && leapDue(openSym)) loadLeap(openSym);
   }, [openSym, guarded, leapDue, loadLeap]);
   const visible = useMemo(
     () => sortRows(filterRows(guarded, { tile: prefs.tile, query }), prefs.sort),
@@ -971,7 +1003,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
         {TILES.map((t) => {
           const count = counts[t] || 0;
           const active = prefs.tile === t;
-          const glow = (t === "BUY" || t === "LEAPS") && count > 0;
+          const glow = (t === "BUY" || t === "LEAPS" || t === "SETUP") && count > 0;
           return (
             <button
               key={t}

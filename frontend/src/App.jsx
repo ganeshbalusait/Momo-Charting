@@ -1167,6 +1167,11 @@ const optionNavItems = [
   // Scanner ... only visible admin only"). The worker also refuses its data
   // to non-admins, so hiding the item is not the only guard.
   { label: "Bot", icon: Bot, adminOnly: true },
+  // Long Term (2026-11-06, "build in our app in left side panel 'long term'"):
+  // the Buffett / Rule #1 value screen. 2026-11-08 (trader): "Move 'long term'
+  // next to 'bot'" - directly under Bot here; the phone sheet puts the two
+  // side by side (mobileOverflowNavigation.SHEET_FIRST_LABELS).
+  { label: "Long Term", icon: Landmark },
   // Alpaca PAPER accounts back in the menu (2026-10-16, "I don't see alpaca
   // paper trade" -> "Do A and B"). Removed from the menu 2026-08-09; the
   // pages themselves never left. Admin only, like the trading routes.
@@ -1182,9 +1187,6 @@ const optionNavItems = [
   // style sector heatmap as its own page, so the phone reaches it from the
   // More sheet. It is also a panel in the option chain's + menu on desktop.
   { label: "Sectors", icon: LayoutGrid },
-  // Long Term (2026-11-06, "build in our app in left side panel 'long term'"):
-  // the Buffett / Rule #1 value screen. Phone reaches it from the More sheet.
-  { label: "Long Term", icon: Landmark },
   { label: "News Feed", icon: Newspaper },
   { label: "Earnings Calendar", icon: CalendarDays },
   { label: "Mag7 Scanner", displayLabel: "Mag7 Watchlist", icon: Trophy },

@@ -47,7 +47,8 @@ e2eTest("More lists every other page and none of the five bar pages", async () =
     for (const onBar of ["Charts & OI", "Options", "Sectors", "Premarket", "MomX Scanner"]) {
       assert.ok(!items.includes(onBar), `${onBar} is on the bar and must not repeat in More`);
     }
-    assert.equal((await app.page.locator(`${SHEET} header b`).innerText()).trim(), "Go to");
+    // textContent: the heading is drawn in capitals by CSS, the words are "Go to"
+    assert.equal((await app.page.locator(`${SHEET} header b`).textContent()).trim(), "Go to");
   });
 });
 
@@ -105,5 +106,31 @@ e2eTest("a non-admin's More sheet has no Bot or paper-trading pages", async () =
       assert.ok(!items.includes(hidden), `${hidden} offered to a non-admin`);
     }
     assert.ok(items.includes("Settings"));
+  });
+});
+
+// Trader 2026-11-08: "Move 'long term' next to 'bot'". The sheet's first row is
+// Bot | Long Term on the phone; on the desktop rail Long Term sits right under Bot.
+e2eTest("Long Term sits next to Bot: first row of the phone sheet, right under Bot on the desktop rail", async () => {
+  await withApp({ view: "Release Notes", viewport: PHONE }, async (app) => {
+    await bar(app.page);
+    const items = await openSheet(app.page);
+    assert.deepEqual(items.slice(0, 2), ["Bot", "Long Term"], `first row: ${JSON.stringify(items.slice(0, 4))}`);
+    const tops = await app.page.locator(`${SHEET} .mobile-more-grid [role="menuitem"]`).evaluateAll(
+      (els) => els.slice(0, 2).map((el) => Math.round(el.getBoundingClientRect().top)),
+    );
+    assert.equal(tops[0], tops[1], "Bot and Long Term are on the same row");
+    await app.page.locator(`${SHEET} [role="menuitem"]`, { hasText: "Long Term" }).tap();
+    await app.page.getByTestId("long-term-panel").waitFor({ state: "visible", timeout: 90_000 });
+    assert.equal(await overflowsSideways(app.page), false);
+    assert.deepEqual(app.pageErrors, []);
+  });
+  await withApp({ view: "Release Notes", viewport: DESKTOP }, async (app) => {
+    await app.page.locator("aside.sidebar").waitFor({ state: "visible", timeout: 90_000 });
+    // the title carries the name even when the rail is collapsed to icons
+    const rail = await app.page.locator("aside.sidebar nav button.nav-item").evaluateAll((els) => els.map((el) => el.getAttribute("title")));
+    const bot = rail.indexOf("Bot");
+    assert.ok(bot >= 0, `Bot on the rail: ${JSON.stringify(rail)}`);
+    assert.equal(rail[bot + 1], "Long Term", `under Bot: ${JSON.stringify(rail.slice(bot, bot + 3))}`);
   });
 });
