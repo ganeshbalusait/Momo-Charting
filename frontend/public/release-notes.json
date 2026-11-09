@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-09T16:26:49-05:00",
+      "heading": "Scanner: no more freezing while the board updates",
+      "items": [
+        "The scanner page used to lock up for 1-2 seconds at a time, several times a minute, because every tick of the app's clocks and alerts redrew the whole board. It now redraws only when the board itself changes, so scrolling, clicking and opening tickers stay smooth.",
+        "Live prices that have not changed no longer redraw the board every 2.5 seconds.",
+        "Confirm L1/L2/L3 on the Live board works the same as before: it shows only on rows that are confirmed right now and whose 5m data is under 10 minutes old, so you see fewer than in History, which lists every moment of the day."
+      ]
+    },
+    {
       "at": "2026-11-09T09:17:33-05:00",
       "heading": "Research: AI Picks back-test tools saved (nothing changes on screen)",
       "items": [

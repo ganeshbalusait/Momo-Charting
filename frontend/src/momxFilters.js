@@ -174,10 +174,21 @@ const OPT_CUTOFF_MIN = 10 * 60;
 // One latch per direction: a bear OPT at 09:40 must not be remembered as a
 // bull one (and the other way round) when he flips the switch.
 const optLatches = { bull: null, bear: null };
+// Built once and answered per minute (2026-11-09): a new Intl formatter per
+// call was the scanner's single biggest cost - ~4 s of every minute frozen.
+const ET_PARTS_FORMAT = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+const etPartsByMinute = new Map();
 function etParts(ms) {
-  const f = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
-  const o = Object.fromEntries(f.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
-  return { day: o.year + "-" + o.month + "-" + o.day, min: (Number(o.hour) % 24) * 60 + Number(o.minute) };
+  const minute = Math.floor(Number(ms) / 60000);
+  const held = etPartsByMinute.get(minute);
+  if (held) return held;
+  const o = Object.fromEntries(ET_PARTS_FORMAT.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  const parts = { day: o.year + "-" + o.month + "-" + o.day, min: (Number(o.hour) % 24) * 60 + Number(o.minute) };
+  if (Number.isFinite(minute)) {
+    if (etPartsByMinute.size > 5000) etPartsByMinute.clear();
+    etPartsByMinute.set(minute, parts);
+  }
+  return parts;
 }
 function loadOptLatch(day, direction = "bull") {
   const held = optLatches[direction];
@@ -395,7 +406,7 @@ export function gapAndGo(row, nowMs = Date.now()) {
   // The worker's bear gapGo is gap DOWN and go (below VWAP, the open and the
   // 09:30 LOW); here only the 30m side check flips.
   if (!Number.isFinite(t) || t <= 0 || !inControl30(row)) return null;
-  const day = (ms) => new Date(ms).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  const day = (ms) => etParts(ms).day;
   if (day(t * 1000) !== day(nowMs)) return null;
   // The clock is the candle's CLOSE - the moment it could be seen.
   return { clock: etClock(new Date((t + 300) * 1000).toISOString()), gap: Number(g.gap), at: t };
@@ -514,12 +525,13 @@ export function strategyRules(direction) {
 }
 
 /** "13:00" (ET) from an ISO time, or "". */
+const ET_CLOCK_FORMAT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false,
+});
 function etClock(iso) {
   const t = Date.parse(iso || "");
   if (!Number.isFinite(t)) return "";
-  return new Date(t).toLocaleTimeString("en-US", {
-    timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false,
-  });
+  return ET_CLOCK_FORMAT.format(new Date(t));
 }
 
 /**
@@ -1143,7 +1155,7 @@ export function fiveMinuteCross(row, nowMs = Date.now()) {
   // A bear row reads the 9x20 cross DOWN (the chart's PUT5 / P5).
   const t = row && row.m5 && Number(isBearRow(row) ? row.m5.crossDownAt : row.m5.crossUpAt);
   if (!Number.isFinite(t) || t <= 0) return null;
-  const day = (ms) => new Date(ms).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  const day = (ms) => etParts(ms).day;
   if (day(t * 1000) !== day(nowMs)) return null;
   return { clock: etClock(new Date(t * 1000).toISOString()), at: t };
 }
@@ -1181,8 +1193,7 @@ export function dayLineAt(row, key, nowMs = Date.now()) {
   const at = row && row.dayLines && row.dayLines[key];
   const ms = at ? Date.parse(at) : NaN;
   if (!Number.isFinite(ms)) return null;
-  const day = (x) => new Date(x).toLocaleDateString("en-US", { timeZone: "America/New_York" });
-  return day(ms) === day(nowMs) ? ms : null;
+  return etParts(ms).day === etParts(nowMs).day ? ms : null;
 }
 
 /**
@@ -1565,7 +1576,7 @@ export function aiTags(row, nowMs = Date.now(), minimum = AI_TAG_CUT) {
   const bear = row && (row.direction === "bear" || row.side === "bear");
   const at = Date.parse(s.at || "");
   const scoredAt = Date.parse(s.scoredAt || "");
-  const day = x => new Date(x).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  const day = x => etParts(x).day;
   if (!Number.isFinite(at) || at > nowMs || (Number.isFinite(scoredAt) && scoredAt > nowMs) || day(at) !== day(nowMs)
       || String(s.symbol || "").toUpperCase() !== String(row.symbol || "").toUpperCase()
       || s.side !== (bear ? "bear" : "bull")) return [];

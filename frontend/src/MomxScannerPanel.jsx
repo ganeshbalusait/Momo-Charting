@@ -4177,7 +4177,12 @@ const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, on
   );
 });
 
-export default function MomxScannerPanel({ initialList = null, embedded = false, background = false }) {
+// memo (2026-11-09): App re-renders ~3 times a second (clocks, alerts, the
+// Schwab countdown) and each one re-ran this whole panel - filters, Setup tags
+// and Confirm levels for every row - so the page froze black for 1-2 s at a
+// time. The panel owns all its state; App passes it nothing that changes.
+export default memo(MomxScannerPanel);
+function MomxScannerPanel({ initialList = null, embedded = false, background = false }) {
   const fetch = useScannerReadFetch();
   // `embedded` = this board is inside a pop-out window. It owns no windows of
   // its own (that would recurse), shows no pop-out button, and - the one that
@@ -5799,7 +5804,11 @@ export default function MomxScannerPanel({ initialList = null, embedded = false,
         liveQuotesServingRef.current = Boolean(data && data.serving);
         // Scope to this reply's symbols. Disconnected/missing/stale quotes
         // must not remain in a growing map and override newer board values.
-        setLiveQuotesBySymbol(data?.serving ? data.quotes || EMPTY_OBJECT : EMPTY_OBJECT);
+        // The same quotes again (quiet tape, after hours) keep the held map:
+        // a new object every 2.5 s re-ran the whole board for nothing (2026-11-09).
+        const nextQuotes = data?.serving ? data.quotes || EMPTY_OBJECT : EMPTY_OBJECT;
+        setLiveQuotesBySymbol((held) => (held === nextQuotes
+          || JSON.stringify(held) === JSON.stringify(nextQuotes) ? held : nextQuotes));
       } catch {
         // Network blip: keep showing build prices; next tick retries.
       } finally {
