@@ -688,3 +688,46 @@ e2eTest("LEAP SETUP on a phone: the card carries the SETUP pill and contract, th
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// Ganesh 11-08 (phone): "results are disappearing if I go to a different tab and come
+// back". The app unmounts this page on every tab switch; the page now keeps what it
+// had (rows, tile, search) for the session and shows it at once on return, while the
+// next rows request runs. Every rows request after the first hangs here, so the rows
+// on return can only come from the kept copy.
+e2eTest("leaving Long Term for another page and coming back keeps the rows and the tile on screen", async () => {
+  // answered until the page is left; from then on every rows request hangs (the dev
+  // server mounts the page twice, so "only the first answers" would hang the opening)
+  let calls = 0;
+  let away = false;
+  let callsAway = 0;
+  const firstOnly = (read) => {
+    calls += 1;
+    if (away) {
+      callsAway += 1;
+      return new Promise(() => {});
+    }
+    return page()(read);
+  };
+  await withApp({ view: VIEW, viewport: PHONE, fakeReads: { ...reads(), "GET /api/long-term": firstOnly } }, async (app) => {
+    const p = app.page;
+    await p.getByTestId("long-term-card-AAPL").waitFor({ timeout: 90_000 });
+    await p.getByTestId("long-term-tile-BUY").click();
+    await p.waitForFunction(() => document.querySelectorAll("[data-testid^='long-term-card-']").length === 1);
+    const sheet = '.mobile-more-sheet[role="menu"]';
+    // away: Release Notes from the More sheet
+    away = true;
+    await p.locator('[data-testid="mobile-primary-more"]').tap();
+    await p.locator(`${sheet} [role="menuitem"]`, { hasText: "Release Notes" }).tap();
+    await p.getByTestId("release-notes-view").waitFor({ state: "visible", timeout: 30_000 });
+    assert.equal(await p.getByTestId("long-term-panel").count(), 0, "the page really left");
+    // back
+    await p.locator('[data-testid="mobile-primary-more"]').tap();
+    await p.locator(`${sheet} [role="menuitem"]`, { hasText: "Long Term" }).tap();
+    await p.getByTestId("long-term-card-AAPL").waitFor({ timeout: 5_000 });
+    assert.equal(await p.getByText("Loading Long Term…").count(), 0, "no loading screen on return");
+    assert.equal(await p.getByTestId("long-term-tile-BUY").getAttribute("aria-pressed"), "true", "the BUY tile is still on");
+    assert.equal(await p.locator("[data-testid^='long-term-card-']").count(), 1);
+    assert.ok(callsAway >= 1, "the page still asked the server again on return");
+    assert.deepEqual(app.pageErrors, []);
+  });
+});

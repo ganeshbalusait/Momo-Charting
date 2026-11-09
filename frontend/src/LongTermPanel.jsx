@@ -500,23 +500,39 @@ function Card({ row, open, onToggle, leap, onRetryLeap, leapQueued }) {
   );
 }
 
+// What the page had on screen, kept while the app stays open (Ganesh 11-08: "results are
+// disappearing if I go to a different tab and come back"). The app unmounts this page on
+// every tab switch, so without this a return started from nothing and sat on "Loading
+// Long Term…" until the server answered again. In memory only: reopening the app still
+// starts with every row (the tile is not stored in localStorage, by his 11-07 request).
+// Rows keep their MOS and accept time, so the stale-feed guard still downgrades rows
+// that are too old; the rows request runs at once on return.
+export const LONG_TERM_SESSION = {
+  data: null, acceptedAt: 0, tile: null, query: "", openSym: null, details: {}, leaps: {},
+};
+
 export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
-  const [prefs, setPrefs] = useState(() => readPrefs(safeStorage()));
-  const [data, setData] = useState(null); // { rows, meta }
+  const S = LONG_TERM_SESSION;
+  const [prefs, setPrefs] = useState(() => ({ ...readPrefs(safeStorage()), tile: S.tile }));
+  const [data, setData] = useState(() => S.data); // { rows, meta, mos }
   const [failed, setFailed] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
-  const [query, setQuery] = useState("");
-  const [openSym, setOpenSym] = useState(null);
-  const [details, setDetails] = useState({});
+  const [query, setQuery] = useState(() => S.query);
+  const [openSym, setOpenSym] = useState(() => S.openSym);
+  const [details, setDetails] = useState(() => S.details);
   // LEAP to buy, keyed by symbol: { epoch, loading } | { epoch, payload } | { epoch, error }
   // | { epoch, payload, transient: true, at, tries } (the chain feed did not answer, or
   // answered without deltas outside market hours; retried on its own).
   // An entry counts only for the MOS and filings refresh it was fetched under.
-  const [leaps, setLeaps] = useState({});
+  const [leaps, setLeaps] = useState(() => S.leaps);
   const [refreshMsg, setRefreshMsg] = useState("");
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [wrapWidth, setWrapWidth] = useState(0);
-  const [acceptedAt, setAcceptedAt] = useState(0); // Date.now() of the last accepted rows payload
+  const [acceptedAt, setAcceptedAt] = useState(() => S.acceptedAt); // Date.now() of the last accepted rows payload
+  // keep the session copy current (cheap: references, no copies)
+  useEffect(() => {
+    Object.assign(LONG_TERM_SESSION, { data, acceptedAt, tile: prefs.tile, query, openSym, details, leaps });
+  }, [data, acceptedAt, prefs.tile, query, openSym, details, leaps]);
   const [clock, setClock] = useState(() => Date.now());
   const wrapRef = useRef(null);
   const phone = useIsPhone();
@@ -660,8 +676,13 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   // loading state (or "not available" if the fetch fails) until a match lands.
   const current = data && data.mos === mos ? data : null;
   const refreshedAt = current?.meta?.refreshedAt ?? null;
-  // A finished refresh changes the filings: drop the cached Why drawers.
+  // A finished refresh changes the filings: drop the cached Why drawers. Only when the
+  // refresh time really changed - a return to the page (same refresh) keeps them.
+  const detailsAt = useRef(LONG_TERM_SESSION.detailsAt);
   useEffect(() => {
+    if (refreshedAt === detailsAt.current) return;
+    detailsAt.current = refreshedAt;
+    LONG_TERM_SESSION.detailsAt = refreshedAt;
     setDetails({});
   }, [refreshedAt]);
 
