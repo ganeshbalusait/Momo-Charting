@@ -105,3 +105,5 @@ artifacts/thinkscript/
 # Local scratch: pre-edit .bak copies, and a nested working copy of the project.
 frontend/.restyle-backup/
 Momo-Chart/
+
+artifacts/ai_picks_data/
