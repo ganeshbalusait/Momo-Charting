@@ -34,15 +34,36 @@ def _auto_profile_tokens() -> list[str]:
     return sorted(tokens)
 
 
+def _parse_watchlist_text(text: str) -> list[str]:
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for token in text.replace(",", " ").split():
+        symbol = token.strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+    return symbols
+
+
+#: (path, mtime_ns, size) of watchlist.txt as last read into settings, so a
+#: separate process (the MomX scanner worker) can notice the trader's edits.
+_WATCHLIST_SEEN: tuple[str, int, int] | None = None
+
+
+def _watchlist_stamp(path: Path) -> tuple[str, int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (str(path), stat.st_mtime_ns, stat.st_size)
+
+
 def _load_watchlist() -> list[str]:
+    global _WATCHLIST_SEEN
     if WATCHLIST_PATH.exists():
-        symbols: list[str] = []
-        seen: set[str] = set()
-        for token in WATCHLIST_PATH.read_text(encoding="utf-8").replace(",", " ").split():
-            symbol = token.strip().upper()
-            if symbol and symbol not in seen:
-                seen.add(symbol)
-                symbols.append(symbol)
+        stamp = _watchlist_stamp(WATCHLIST_PATH)
+        symbols = _parse_watchlist_text(WATCHLIST_PATH.read_text(encoding="utf-8"))
+        _WATCHLIST_SEEN = stamp
         if symbols:
             return symbols
     return _csv_symbols(
@@ -477,3 +498,33 @@ class AppConfig:
 
 
 settings = AppConfig()
+
+
+def refresh_watchlist_if_changed(scanner_settings=None) -> bool:
+    """Re-read watchlist.txt into ``settings.scanner.default_universe`` if it changed.
+
+    ``default_universe`` is filled once at process start. The api_server edits
+    its own copy when the trader changes My Watchlist, but the MomX scanner
+    runs in a separate process and kept scanning the boot-time list (a deleted
+    KVUE stayed on the board until a restart). One stat per call is cheap.
+
+    Never blanks the list: a missing, unreadable or empty file leaves the
+    current symbols in place. Returns True when the list was replaced.
+    """
+    global _WATCHLIST_SEEN
+    target = scanner_settings if scanner_settings is not None else settings.scanner
+    path = Path(WATCHLIST_PATH)
+    stamp = _watchlist_stamp(path)
+    if stamp is None or stamp == _WATCHLIST_SEEN:
+        return False
+    try:
+        symbols = _parse_watchlist_text(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return False  # retry on the next call; keep the current list
+    _WATCHLIST_SEEN = stamp
+    if not symbols:
+        return False
+    if list(getattr(target, "default_universe", None) or []) == symbols:
+        return False
+    target.default_universe = symbols
+    return True

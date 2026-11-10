@@ -5,6 +5,7 @@ Every feature, with its unit, integration and end-to-end test files (see the
 
 | Feature | Unit | Integration | End to end |
 |---|---|---|---|
+| Scanner: a ticker removed from (or added to) My Watchlist reaches the scanner's Watchlist without a restart; an empty or unreadable file keeps the current list | `tests/test_watchlist_file_refresh.py` | `tests/test_cov_scanner-board_watchlist_file_refresh_api.py` (real worker /lists while watchlist.txt changes) | `tests/e2e/scanner-watchlist-file-refresh.e2e.test.mjs` (count drops on the next poll; desktop + phone) |
 | BOT Scorecard: Journal (day / week / month real P&L by strategy, best strategy per period, every closed trade) | `tests/test_momx_bot_desk.py`, `frontend/src/botDesk.test.js` | `tests/test_momx_bot_desk_api.py` | `tests/e2e/trading-bot-desk.e2e.test.mjs` (desktop + phone) |
 | BOT Ask: AI reply on top of the records answer (numbers checked against the records), AI understanding of unrecognised questions | `tests/test_momx_chat_ai.py`, `frontend/src/botChat.test.js` | `tests/test_momx_chatbot_api.py` (fake AI) | `tests/e2e/trading-bot-chat.e2e.test.mjs` |
 | BOT: Ask tab - the no-AI chatbot (how far a signal went, why it failed, why it was missed, what is on file, what the bot is doing) | `tests/test_momx_chatbot.py`, `frontend/src/botChat.test.js` | `tests/test_momx_chatbot_api.py` | `tests/e2e/trading-bot-chat.e2e.test.mjs` (desktop + phone) |

@@ -63,7 +63,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from config import ARTIFACTS_DIR, settings
+from config import ARTIFACTS_DIR, refresh_watchlist_if_changed, settings
 from momx import buckets, columns, ema_touch, feed, flags, grade, live_rvol, news, scan
 from momx.industries import industry_for
 from momx.industry_lookup import resolve as resolve_industries
@@ -1669,7 +1669,14 @@ def _watchlist_seed() -> list[str]:
     edits ``settings.scanner.default_universe`` when the trader changes his
     watchlist, and a snapshot taken at import time would silently freeze the
     seed at whatever the file said when the process booted.
+
+    The scanner worker is a separate process that never sees the server's
+    in-memory edit, so it re-reads watchlist.txt when the file changes.
     """
+    try:
+        refresh_watchlist_if_changed(settings.scanner)
+    except Exception:  # noqa: BLE001 - a failed refresh keeps the current list
+        pass
     try:
         raw = list(getattr(settings.scanner, "default_universe", None) or [])
     except Exception:  # noqa: BLE001 - a broken settings object must not blank the board
