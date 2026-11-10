@@ -24004,10 +24004,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Send a question"})
                     return
                 _chat_override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
-                from momx import chatbot as _chatbot
+                # momx/chat_ai.py wraps the no-AI chatbot: the AI may understand an
+                # unrecognised question and write a short reply from the record
+                # lines; any AI failure leaves the records answer untouched.
+                from momx import chat_ai as _chatbot
                 try:
-                    _chat_out = _chatbot.ask(_chat_q, Path(_chat_override) if _chat_override else Path(ARTIFACTS_DIR),
-                                             context=body.get("context") if isinstance(body.get("context"), dict) else None)
+                    _chat_out = _chatbot.answer(_chat_q, Path(_chat_override) if _chat_override else Path(ARTIFACTS_DIR),
+                                                context=body.get("context") if isinstance(body.get("context"), dict) else None)
                 except Exception as exc:  # noqa: BLE001 - a question must never take the server down
                     _chat_out = {"intent": "error", "ticker": None, "day": None, "suggest": [],
                                  "lines": [f"I could not read the records for that question ({type(exc).__name__}). Nothing was changed."]}

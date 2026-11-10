@@ -345,3 +345,65 @@ export function deskCurve(days, limits = {}, width = 640, height = 200, pad = 14
     last: points.length ? points[points.length - 1] : null,
   };
 }
+
+// ---- the Scorecard as a journal (2026-11-10: "how I see the d/w/m pnl with which strategy is good for real money")
+export const JOURNAL_MODES = [["day", "Day"], ["week", "Week"], ["month", "Month"]];
+export const JOURNAL_MODE_KEY = "bot.journalMode";
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+export function readJournalMode(stored) {
+  return JOURNAL_MODES.some(([key]) => key === stored) ? stored : "day";
+}
+
+/** "Tue 11-10" for a day, "Week of 11-09" for a week (its Monday), "Nov 2026" for a month. */
+export function journalLabel(mode, key) {
+  const k = String(key || "");
+  if (mode === "month") {
+    const m = Number(k.slice(5, 7));
+    return m >= 1 && m <= 12 ? `${MONTH_NAMES[m - 1]} ${k.slice(0, 4)}` : k;
+  }
+  if (mode === "week") return k.length >= 10 ? `Week of ${k.slice(5, 10)}` : k;
+  const at = new Date(k + "T12:00:00Z");
+  const name = Number.isNaN(at.getTime()) ? "" : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][at.getUTCDay()];
+  return k.length >= 10 ? `${name} ${k.slice(5, 10)}`.trim() : k;
+}
+
+/** The journal for one account: the periods of the chosen size with each strategy's P/L,
+ * a total line, the one-line answer for that size, and the trade list. */
+export function deskJournal(acct, mode = "day") {
+  const j = acct && acct.journal;
+  if (!j || !j.periods) return null;
+  const size = readJournalMode(mode);
+  const cell = (x) => (x && x.trades ? deskMoney(x.pnl) : "–");
+  const rows = (j.periods[size] || []).map((p) => {
+    const by = Object.fromEntries((p.strategies || []).map((s) => [s.rule, s]));
+    return {
+      key: p.key, label: journalLabel(size, p.key), trades: p.trades || 0, win: p.trades ? deskPct(p.winRatePct) : "–",
+      pnl: deskMoney(p.pnl), tone: deskTone(p.pnl),
+      level1: cell(by.level1), level2: cell(by.level2), level3: cell(by.level3),
+      tone1: by.level1 && by.level1.trades ? deskTone(by.level1.pnl) : "", tone2: by.level2 && by.level2.trades ? deskTone(by.level2.pnl) : "",
+      tone3: by.level3 && by.level3.trades ? deskTone(by.level3.pnl) : "",
+      calls: deskMoney(p.calls), puts: deskMoney(p.puts), callsTone: deskTone(p.calls), putsTone: deskTone(p.puts),
+      best: p.best ? LEVEL_NAMES[p.best] || p.best : "–",
+    };
+  });
+  const green = (j.periods[size] || []).filter((p) => p.pnl > 0).length;
+  const total = (j.periods[size] || []).length;
+  const word = size === "day" ? "days" : size === "week" ? "weeks" : "months";
+  // Which strategy was best most often: one count per period it led and made money.
+  const led = {};
+  for (const p of j.periods[size] || []) if (p.best) led[p.best] = (led[p.best] || 0) + 1;
+  const top = Object.entries(led).sort((a, b) => b[1] - a[1])[0];
+  const answer = !total ? "No closed trades yet. The journal fills in as real paper trades close."
+    : `${green} of ${total} ${word} in profit.` + (top ? ` ${LEVEL_NAMES[top[0]] || top[0]} was the best strategy on ${top[1]} of them.` : " No strategy has made money in any of them yet.");
+  const trades = (j.trades || []).map((t, i) => ({
+    key: `${t.closedAt || t.day}|${t.symbol}|${i}`,
+    when: deskClock(t.closedAt) || String(t.day || ""),
+    symbol: String(t.symbol || ""), side: t.side === "bear" ? "Put" : "Call",
+    strategy: (Array.isArray(t.levels) && t.levels.length ? t.levels : [t.rule]).map((r) => LEVEL_NAMES[r] || String(r || "")).slice(-1)[0],
+    qty: t.qty, buy: isNum(t.buy) ? "$" + t.buy.toFixed(2) : "–", pnl: deskMoney(t.pnl), tone: deskTone(t.pnl),
+    roi: isNum(t.roiPct) ? (t.roiPct > 0 ? "+" : t.roiPct < 0 ? "−" : "") + Math.abs(t.roiPct).toFixed(0) + "%" : "–",
+    exit: String(t.exit || "–"), aiPicked: !!t.aiPicked,
+  }));
+  return { mode: size, rows, answer, trades, tradeCount: j.tradeCount || 0, shown: trades.length };
+}

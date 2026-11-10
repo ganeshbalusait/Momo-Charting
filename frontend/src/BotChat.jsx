@@ -35,7 +35,7 @@ export default function BotChat() {
 
   return (
     <div className="chat" data-testid="bot-chat">
-      <p className="chat-note">Ask about a ticker or about the bot. Answers come straight from the app's records (the Bot's signals, the paper accounts' real orders and the Scorecard). No AI is used, so every number is one the app saved. It only reads; it cannot place or change a trade.</p>
+      <p className="chat-note">Ask about a ticker or about the bot. Answers come straight from the app's records (the Bot's signals, the paper accounts' real orders and the Scorecard). Every number is one the app saved: when the AI is available it writes a short reply on top, and any reply with a number that is not in the records is thrown away. It only reads; it cannot place or change a trade.</p>
       <div className="chat-log" role="log" aria-label="Conversation" aria-live="polite">
         {turns.length === 0 ? (
           <div className="chat-empty">
@@ -50,7 +50,12 @@ export default function BotChat() {
             {turn.answer ? (
               <div className="chat-a" data-testid="chat-answer">
                 <span className="chat-kind">{turn.answer.kind}{turn.answer.about ? ` · ${turn.answer.about}` : ""}</span>
+                {turn.answer.ai ? (<>
+                  <p className="chat-ai" data-testid="chat-ai"><span className="chat-ai-tag">AI</span>{turn.answer.ai}</p>
+                  <span className="chat-from">From the records{turn.answer.understoodByAi ? " (the AI worked out what you were asking)" : ""}</span>
+                </>) : turn.answer.understoodByAi ? <span className="chat-from">The AI worked out what you were asking; the answer is from the records</span> : null}
                 {turn.answer.lines.map((line, i) => <p key={i} className={line.bullet ? "chat-line is-bullet" : "chat-line"}>{line.text}</p>)}
+                {turn.answer.aiNote ? <span className="chat-ai-off" data-testid="chat-ai-off">No AI reply: {turn.answer.aiNote}. The answer above is straight from the records.</span> : null}
                 {turn.answer.suggest.length ? (
                   <div className="chat-chips">
                     {turn.answer.suggest.map((q) => <button key={q} type="button" className="chat-chip" onClick={() => ask(q)} disabled={busy}>{q}</button>)}

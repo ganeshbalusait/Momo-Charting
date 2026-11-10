@@ -360,3 +360,54 @@ def test_the_ai_bot_shows_how_many_orders_the_ai_really_chose(tmp_path, monkeypa
     assert (split["picked"]["sent"], split["picked"]["closed"], split["picked"]["pnl"]) == (2, 2, 30.0)
     assert (split["fallback"]["sent"], split["fallback"]["closed"], split["fallback"]["pnl"]) == (2, 1, -25.0)
     assert "aiPicks" not in doc["accounts"]["paper3"]
+
+
+# ---- the Scorecard as a journal (2026-11-10: "how I see the d/w/m pnl with which strategy is good for real money")
+def jr(pl, symbol, close_day, top=1, side="bull", **extra):
+    names = ["level1", "level2", "level3"][:top]
+    return {**closed(pl, symbol, day=close_day, rule=names[-1], side=side), "levels": names, **extra}
+
+
+def test_the_journal_groups_real_profit_by_day_week_and_month():
+    rows = [jr(100.0, "A", "2026-11-10", top=3), jr(-40.0, "B", "2026-11-10", top=1), jr(60.0, "C", "2026-11-12", top=2, side="bear"),
+            jr(-25.0, "D", "2026-11-17", top=1), jr(10.0, "E", "2026-12-01", top=3), order("missed", "F", day="2026-11-10")]
+    j = bd.account_report(rows, "2026-12-01")["journal"]
+    days = j["periods"]["day"]
+    assert [(d["key"], d["trades"], d["pnl"]) for d in days] == [
+        ("2026-12-01", 1, 10.0), ("2026-11-17", 1, -25.0), ("2026-11-12", 1, 60.0), ("2026-11-10", 2, 60.0)]      # newest first
+    assert [(w["key"], w["trades"], w["pnl"]) for w in j["periods"]["week"]] == [
+        ("2026-11-30", 1, 10.0), ("2026-11-16", 1, -25.0), ("2026-11-09", 3, 120.0)]                                # keyed by the Monday
+    assert [(m["key"], m["trades"], m["pnl"], m["winRatePct"]) for m in j["periods"]["month"]] == [
+        ("2026-12", 1, 10.0, 100.0), ("2026-11", 4, 95.0, 50.0)]
+    assert j["tradeCount"] == 5
+
+
+def test_each_period_splits_its_profit_by_strategy_and_names_the_best_one_only_when_it_made_money():
+    rows = [jr(100.0, "A", "2026-11-10", top=3), jr(-40.0, "B", "2026-11-10", top=1), jr(60.0, "C", "2026-11-10", top=2, side="bear")]
+    day = bd.account_report(rows, "2026-11-10")["journal"]["periods"]["day"][0]
+    assert day["strategies"] == [{"rule": "level1", "trades": 3, "pnl": 120.0}, {"rule": "level2", "trades": 2, "pnl": 160.0},
+                                 {"rule": "level3", "trades": 1, "pnl": 100.0}]
+    assert (day["pnl"], day["best"], day["calls"], day["puts"]) == (120.0, "level2", 60.0, 60.0)      # the day's total counts each trade once
+    red = bd.account_report([jr(-10.0, "A", "2026-11-10", top=2)], "2026-11-10")["journal"]["periods"]["day"][0]
+    assert red["best"] is None and red["strategies"][2] == {"rule": "level3", "trades": 0, "pnl": 0}
+
+
+def test_the_journal_lists_each_closed_trade_newest_first_with_how_it_ended():
+    rows = [jr(100.0, "AAPL", "2026-11-10", top=3, contract="AAPL261113C00285000", buyFillAt=at("2026-11-10", "09:41:00"),
+               sells=[{"qty": 2, "price": 2.0, "why": "+100%: sell 2 of 3"}, {"qty": 1, "price": 1.0, "why": "stop at break-even"}],
+               aiPick={"rank": 1, "of": 4, "why": "strong"}),
+            jr(-40.0, "MSFT", "2026-11-09", top=1)]
+    trades = bd.account_report(rows, "2026-11-10")["journal"]["trades"]
+    assert [t["symbol"] for t in trades] == ["AAPL", "MSFT"]
+    first = trades[0]
+    assert (first["rule"], first["levels"], first["pnl"], first["roiPct"], first["exit"], first["aiPicked"]) == (
+        "level3", ["level1", "level2", "level3"], 100.0, 33.3, "stop at break-even", True)
+    assert first["boughtAt"] == at("2026-11-10", "09:41:00") and first["day"] == "2026-11-10" and trades[1]["aiPicked"] is False
+    assert bd.account_report([], "2026-11-10")["journal"] == {"periods": {"day": [], "week": [], "month": []}, "trades": [], "tradeCount": 0}
+
+
+def test_the_journal_keeps_only_the_newest_trades_but_counts_them_all(monkeypatch):
+    monkeypatch.setattr(bd, "JOURNAL_TRADES", 3)
+    rows = [jr(1.0, f"T{i}", "2026-11-10") for i in range(5)]
+    j = bd.account_report(rows, "2026-11-10")["journal"]
+    assert len(j["trades"]) == 3 and j["tradeCount"] == 5 and j["periods"]["day"][0]["trades"] == 5

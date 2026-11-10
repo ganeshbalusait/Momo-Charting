@@ -12,7 +12,7 @@ import pytest
 
 from api_harness import running_api, seed_user
 from cf_access_auth import ACCESS_EMAIL_HEADER
-from momx import bot_desk, chatbot
+from momx import bot_desk, chat_ai, chatbot
 from test_momx_chatbot import order, signal, write
 
 OWNER = "owner-chat@example.com"
@@ -26,6 +26,15 @@ TODAY = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
 def _accounts():
     seed_user(OWNER, role="admin")
     seed_user(VIEWER, role="user")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ai(monkeypatch):
+    """The AI service is outside the PC: every test here answers for it. By default it has no answer."""
+    monkeypatch.setattr(chat_ai, "_default_ask", lambda system, user, schema: {"ok": False, "error": "no AI in tests"})
+    chat_ai._REST.update(until=0.0, why="")
+    yield
+    chat_ai._REST.update(until=0.0, why="")
 
 
 @pytest.fixture
@@ -78,3 +87,31 @@ def test_others_are_refused_and_an_empty_question_is_a_400(records):
     assert refused == 403 and "lines" not in body
     assert (empty, missing, odd) == (400, 400, 400)
     assert unknown_status == 200 and unknown["intent"] == "help" and unknown["suggest"]
+
+
+def test_the_ai_reply_is_served_on_top_of_the_record_lines_and_a_made_up_number_is_dropped(records, monkeypatch):
+    replies = iter(["Profit: three contracts would have made +$483 at the Bot's exit, up 140% from $1.15.",
+                    "Profit of exactly $9,999."])
+    monkeypatch.setattr(chat_ai, "_default_ask", lambda system, user, schema: {"ok": True, "provider": "openai", "data": {"reply": next(replies)}})
+    chat_ai._REST.update(until=0.0, why="")
+    with running_api() as api:
+        status, good = api.post(ROUTE, {"question": "SPY if I take how much it went up"}, headers=ADMIN)
+        _, bad = api.post(ROUTE, {"question": "SPY if I take how much it went up"}, headers=ADMIN)
+    assert status == 200 and good["ai"] == {"text": "Profit: three contracts would have made +$483 at the Bot's exit, up 140% from $1.15.", "source": "openai"}
+    assert any("The 0.20-delta call ($110) cost $1.15 at the mid." in line for line in good["lines"])          # the records are still there
+    assert "ai" not in bad and bad["lines"] == good["lines"]                                                   # $9,999 is in no record
+
+
+def test_a_question_only_the_ai_understands_is_still_answered_from_the_records(records, monkeypatch):
+    def fake(system, user, schema):
+        if "route a trader's question" in system:
+            return {"ok": True, "provider": "openai", "data": {"intent": "what_if", "ticker": "SPY", "day": "", "time": "", "side": ""}}
+        return {"ok": False, "error": "quota"}                                 # it understood, then ran out: plain lines
+    monkeypatch.setattr(chat_ai, "_default_ask", fake)
+    chat_ai._REST.update(until=0.0, why="")
+    with running_api() as api:
+        status, body = api.post(ROUTE, {"question": "did that S and P trade make any money for me"}, headers=ADMIN)
+        _, viewer = api.post(ROUTE, {"question": "did that S and P trade make any money for me"}, headers={ACCESS_EMAIL_HEADER: VIEWER})
+    assert status == 200 and (body["intent"], body["ticker"], body["understoodBy"]) == ("what_if", "SPY", "AI")
+    assert "ai" not in body and any("Three contracts at the mid would have been +$483" in line for line in body["lines"])
+    assert "lines" not in viewer                                               # still admin only, AI or not

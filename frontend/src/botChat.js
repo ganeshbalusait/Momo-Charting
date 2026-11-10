@@ -25,9 +25,15 @@ export function chatAnswer(reply) {
   const all = Array.isArray(r.lines) ? r.lines.filter((x) => typeof x === "string" && x.trim()) : [];
   const lines = all.map((text) => (text.startsWith("- ") ? { bullet: true, text: text.slice(2) } : { bullet: false, text }));
   const about = [r.ticker, r.day].filter(Boolean).join(" · ");
+  // The AI's short reply, when the server sent one that passed its check against the records.
+  const ai = r.ai && typeof r.ai.text === "string" && r.ai.text.trim() ? r.ai.text.trim() : "";
   return {
     kind: KINDS[r.intent] || KINDS.help,
     about,
+    ai,
+    // Why there is no AI reply on this answer, when the server said so (for example the free limit is used up).
+    aiNote: !ai && typeof r.aiNote === "string" ? r.aiNote.trim() : "",
+    understoodByAi: r.understoodBy === "AI",
     lines: lines.length ? lines : [{ bullet: false, text: "I have no answer for that." }],
     suggest: (Array.isArray(r.suggest) ? r.suggest : []).filter((x) => typeof x === "string" && x.trim()).slice(0, 4),
   };

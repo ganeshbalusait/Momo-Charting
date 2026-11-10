@@ -281,6 +281,68 @@ def _strategies(rows: list[dict]) -> dict:
             "mostClosed": {"rule": most["rule"], "closed": most["closed"]}}
 
 
+#: Closed trades listed in the journal, newest first.
+JOURNAL_TRADES = 150
+
+
+def _week_of(day: str) -> str:
+    """The Monday of a day's week, as its key ('2026-11-09')."""
+    d = date.fromisoformat(day)
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def _journal(rows: list[dict]) -> dict:
+    """The Scorecard as a trading journal (his "how I see the d/w/m pnl with which strategy is
+    good for real money. Scoreboard will be like a journal", 2026-11-10).
+
+    Real closed fills only, on the day each trade closed. For every day, week and month: the
+    trades, wins, P/L, and the same P/L split by strategy, with the best strategy of that
+    period named when it made money. One trade counts under every Level it qualified for
+    (as everywhere on the Scorecard); the period's own total counts it once."""
+    closed = [r for r in rows if _closed(r)]
+    buckets = {"day": defaultdict(list), "week": defaultdict(list), "month": defaultdict(list)}
+    for r in closed:
+        day = _day(r.get("closedAt")) or _day(r.get("at"))
+        try:
+            week = _week_of(day)
+        except ValueError:
+            continue
+        buckets["day"][day].append(r)
+        buckets["week"][week].append(r)
+        buckets["month"][day[:7]].append(r)
+
+    def period(key: str, mine: list[dict]) -> dict:
+        s = _trade_stats(mine)
+        split = []
+        for rule in STRATEGY_RULES:
+            took = [r for r in mine if rule in strategies(r)]
+            split.append({"rule": rule, "trades": len(took), "pnl": round(sum(r["pl"] for r in took), 2)})
+        named = [x for x in split if x["trades"]]
+        best = max(named, key=lambda x: x["pnl"], default=None)
+        return {"key": key, "trades": s["n"], "wins": s["wins"], "losses": s["losses"], "winRatePct": s["winRatePct"],
+                "pnl": s["netPnl"], "roiPct": s["roiPct"], "strategies": split,
+                "calls": round(sum(r["pl"] for r in mine if (r.get("side") or "bull") != "bear"), 2),
+                "puts": round(sum(r["pl"] for r in mine if r.get("side") == "bear"), 2),
+                # The strategy that made the most that period - only when it made money.
+                "best": best["rule"] if best and best["pnl"] > 0 else None}
+
+    def last_exit(r: dict) -> str:
+        sells = [x for x in (r.get("sells") or []) if isinstance(x, dict)]
+        return str(sells[-1].get("why") or "")[:60] if sells else ""
+
+    trades = []
+    for r in sorted(closed, key=lambda r: str(r.get("closedAt") or ""), reverse=True)[:JOURNAL_TRADES]:
+        cost = r["buyFill"] * 100 * _filled_qty(r)
+        trades.append({"symbol": r.get("symbol"), "side": r.get("side") or "bull", "rule": r.get("rule"), "levels": strategies(r),
+                       "day": _day(r.get("closedAt")) or _day(r.get("at")), "boughtAt": r.get("buyFillAt") or r.get("buyAt"),
+                       "closedAt": r.get("closedAt"), "qty": _filled_qty(r), "buy": r["buyFill"], "pnl": round(r["pl"], 2),
+                       "roiPct": _pct(r["pl"], cost), "exit": last_exit(r), "contract": r.get("contract"),
+                       "aiPicked": isinstance(r.get("aiPick"), dict)})
+    return {"periods": {name: [period(key, mine) for key, mine in sorted(group.items(), reverse=True)]
+                        for name, group in buckets.items()},
+            "trades": trades, "tradeCount": len(closed)}
+
+
 def _rules(rows: list[dict]) -> list[dict]:
     by = defaultdict(lambda: {"sent": 0, "filled": 0, "missed": 0, "closed": []})
     for r in rows:
@@ -357,6 +419,7 @@ def account_report(rows: list[dict], today: str, now_ts: float | None = None) ->
                    "holdingOvernight": sum(1 for r in holding if _day(r.get("at")) < today)},
         "stats": stats, "days": days, "daySummary": day_summary, "byRule": _rules(rows),
         "strategies": _strategies(rows),
+        "journal": _journal(rows),
         "objectives": objectives,
         "verdict": {"ready": all(o["pass"] for o in objectives),
                     "passed": sum(1 for o in objectives if o["pass"]), "total": len(objectives)},

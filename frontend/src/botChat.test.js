@@ -71,3 +71,21 @@ test("the side (calls or puts) of the last answer is remembered with the ticker"
   assert.deepEqual(chatSubject({ ticker: "NVDA", day: "2026-11-09", side: "up" }), { ticker: "NVDA", day: "2026-11-09" });
   assert.deepEqual(chatContext([{ subject: { ticker: "NVDA", day: "2026-11-09", side: "bear" } }]), { ticker: "NVDA", day: "2026-11-09", side: "bear" });
 });
+
+test("an AI reply is shown only when the server sent one; the record lines always stay", () => {
+  const withAi = chatAnswer({ intent: "what_if", ticker: "SPY", day: "2026-11-09", lines: ["The 0.20-delta call ($753) cost $1.15 at the mid."],
+    ai: { text: "  Profit: +$482 at the Bot's exit.  ", source: "openai" }, understoodBy: "AI" });
+  assert.equal(withAi.ai, "Profit: +$482 at the Bot's exit.");
+  assert.equal(withAi.understoodByAi, true);
+  assert.deepEqual(withAi.lines, [{ bullet: false, text: "The 0.20-delta call ($753) cost $1.15 at the mid." }]);
+  for (const none of [{ lines: ["x"] }, { lines: ["x"], ai: null }, { lines: ["x"], ai: { text: "   " } }, { lines: ["x"], ai: "text" }, { lines: ["x"], ai: { text: 5 } }]) {
+    assert.equal(chatAnswer(none).ai, "");
+    assert.equal(chatAnswer(none).understoodByAi, false);
+  }
+});
+
+test("when the AI is not being asked the answer says why, and never next to an AI reply", () => {
+  assert.equal(chatAnswer({ lines: ["x"], aiNote: " the AI service is over its free limit " }).aiNote, "the AI service is over its free limit");
+  assert.equal(chatAnswer({ lines: ["x"], aiNote: "ignored", ai: { text: "Up 140%." } }).aiNote, "");
+  assert.equal(chatAnswer({ lines: ["x"], aiNote: 5 }).aiNote, "");
+});

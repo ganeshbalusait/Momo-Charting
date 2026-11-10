@@ -37,7 +37,7 @@ e2eTest("Ask: a starter question, a typed question and a follow-up each send one
     const chat = app.page.locator(CHAT);
     await chat.waitFor({ timeout: 60_000 });
     assert.equal((await app.page.locator("[role='group'][aria-label='Page'] button[aria-pressed='true']").textContent()).trim(), "Ask");
-    assert.match(await chat.locator(".chat-note").textContent(), /No AI is used.*It only reads; it cannot place or change a trade\./);
+    assert.match(await chat.locator(".chat-note").textContent(), /any reply with a number that is not in the records is thrown away\. It only reads; it cannot place or change a trade\./);
     assert.deepEqual((await texts(chat.locator(".chat-empty .chat-chip"))).slice(0, 2), ["SPY if I take how much it went up", "why AAPL failed"]);
     assert.equal(await chat.locator("button.chat-send").isDisabled(), true);              // nothing typed yet
 
@@ -109,6 +109,43 @@ e2eTest("phone width: the Ask view fits, the question box stays reachable and an
       const box = await target.boundingBox();
       assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, "cut off on a phone");
     }
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("Ask: an AI reply shows on top with the record lines under it; without one the lines stand alone", async () => {
+  const withAi = { ...REPLIES["SPY if I take how much it went up"], ai: { text: "Profit: three contracts would have made +$482 at the Bot's exit.", source: "openai" } };
+  const understood = { ...REPLIES["why SPY failed"], understoodBy: "AI" };
+  const extra = { "did SPY make money": { json: withAi }, "was that spy trade any good": { json: understood } };
+  await withApp({ view: "Bot", storage: ASK, fakeWrites: answers(extra) }, async (app) => {
+    const chat = app.page.locator(CHAT);
+    await chat.waitFor({ timeout: 60_000 });
+    await chat.locator("input.chat-input").fill("did SPY make money");
+    await chat.locator("button.chat-send").click();
+    const first = chat.locator("[data-testid='chat-answer']").first();
+    await first.waitFor({ timeout: 15_000 });
+    assert.equal((await first.locator("[data-testid='chat-ai']").textContent()).trim(), "AIProfit: three contracts would have made +$482 at the Bot's exit.");
+    assert.equal((await first.locator(".chat-from").textContent()).trim(), "From the records");
+    assert.equal(await first.locator(".chat-line").count(), 5);                                   // every record line is still shown
+    // The AI's reply comes before the record lines.
+    const aiBox = await first.locator("[data-testid='chat-ai']").boundingBox();
+    const lineBox = await first.locator(".chat-line").first().boundingBox();
+    assert.ok(aiBox && lineBox && aiBox.y < lineBox.y);
+
+    await chat.locator("input.chat-input").fill("was that spy trade any good");
+    await chat.locator("button.chat-send").click();
+    const second = chat.locator("[data-testid='chat-answer']").nth(1);
+    await second.waitFor({ timeout: 15_000 });
+    assert.equal(await second.locator("[data-testid='chat-ai']").count(), 0);                     // understood by the AI, but no reply text
+    assert.equal((await second.locator(".chat-from").textContent()).trim(), "The AI worked out what you were asking; the answer is from the records");
+
+    await chat.locator("input.chat-input").fill("SPY if I take how much it went up");            // the plain canned answer: no AI at all
+    await chat.locator("button.chat-send").click();
+    const third = chat.locator("[data-testid='chat-answer']").nth(2);
+    await third.waitFor({ timeout: 15_000 });
+    assert.equal(await third.locator("[data-testid='chat-ai']").count(), 0);
+    assert.equal(await third.locator(".chat-from").count(), 0);
+    assert.equal(await overflowsSideways(app.page), false);
     assert.deepEqual(app.pageErrors, []);
   });
 });

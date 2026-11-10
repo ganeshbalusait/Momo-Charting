@@ -323,3 +323,55 @@ test("the AI bot says how many of its orders the AI really chose", async () => {
   assert.equal(deskAiPicks({ aiPicks: { picked: { sent: 9, closed: 6, pnl: 210 }, fallback: { sent: 2, closed: 0, pnl: 0 } } }),
     "Orders chosen by the AI: 9 picked by the AI (+$210 on 6 closed) · 2 on the rules order because the AI had no answer in time.");
 });
+
+// ---- the Scorecard as a journal (2026-11-10: "how I see the d/w/m pnl with which strategy is good for real money")
+const { deskJournal, journalLabel, readJournalMode } = await import("./botDesk.js");
+const split = (a, b, c) => [{ rule: "level1", trades: a[0], pnl: a[1] }, { rule: "level2", trades: b[0], pnl: b[1] }, { rule: "level3", trades: c[0], pnl: c[1] }];
+const per = (key, trades, pnl, strategies, best, extra = {}) => ({ key, trades, wins: 1, losses: 1, winRatePct: 50, pnl, roiPct: 2, strategies, best, calls: pnl, puts: 0, ...extra });
+const JOURNAL = { tradeCount: 5, periods: {
+  day: [per("2026-11-12", 1, 60, split([1, 60], [1, 60], [0, 0]), "level1"), per("2026-11-10", 2, -45, split([2, -45], [1, 30], [1, 30]), "level2", { calls: 30, puts: -75 })],
+  week: [per("2026-11-09", 3, 15, split([3, 15], [2, 90], [1, 30]), "level2")],
+  month: [per("2026-11", 3, 15, split([3, 15], [2, 90], [1, 30]), "level2")] },
+  trades: [{ symbol: "AAPL", side: "bull", rule: "level3", levels: ["level1", "level2", "level3"], day: "2026-11-12", closedAt: "2026-11-12T10:15:00-05:00",
+    qty: 3, buy: 0.6, pnl: 60, roiPct: 33.3, exit: "stop at break-even", aiPicked: true },
+  { symbol: "NVDA", side: "bear", rule: "level1", levels: ["level1"], day: "2026-11-10", closedAt: null, qty: 5, buy: 1.2, pnl: -75, roiPct: -12.5, exit: "", aiPicked: false }] };
+
+test("the journal period is remembered and labelled plainly", () => {
+  assert.deepEqual(["day", "week", "month", "year", null].map(readJournalMode), ["day", "week", "month", "day", "day"]);
+  assert.equal(journalLabel("day", "2026-11-10"), "Tue 11-10");
+  assert.equal(journalLabel("week", "2026-11-09"), "Week of 11-09");
+  assert.equal(journalLabel("month", "2026-11"), "Nov 2026");
+  assert.equal(journalLabel("month", "2026-13"), "2026-13");
+});
+
+test("the journal shows each period with every strategy's result and says which was best", () => {
+  const day = deskJournal({ journal: JOURNAL }, "day");
+  assert.equal(day.answer, "1 of 2 days in profit. Level 1 was the best strategy on 1 of them.");
+  assert.deepEqual(day.rows.map((r) => [r.label, r.trades, r.pnl, r.level1, r.level2, r.level3, r.calls, r.puts, r.best]), [
+    ["Thu 11-12", 1, "+$60", "+$60", "+$60", "–", "+$60", "$0", "Level 1"],
+    ["Tue 11-10", 2, "−$45", "−$45", "+$30", "+$30", "+$30", "−$75", "Level 2"]]);
+  assert.deepEqual([day.rows[1].tone, day.rows[1].tone1, day.rows[1].tone2, day.rows[0].tone3], ["is-down", "is-down", "is-up", ""]);
+  const week = deskJournal({ journal: JOURNAL }, "week");
+  assert.equal(week.answer, "1 of 1 weeks in profit. Level 2 was the best strategy on 1 of them.");
+  assert.equal(week.rows[0].label, "Week of 11-09");
+  assert.equal(deskJournal({ journal: JOURNAL }, "month").rows[0].label, "Nov 2026");
+  assert.equal(deskJournal({ journal: JOURNAL }, "nonsense").mode, "day");
+});
+
+test("the journal lists each trade with its strategy, result and how it ended", () => {
+  const j = deskJournal({ journal: JOURNAL }, "day");
+  assert.deepEqual(j.trades.map((t) => [t.when, t.symbol, t.side, t.strategy, t.qty, t.buy, t.pnl, t.roi, t.exit, t.aiPicked]), [
+    ["11-12 10:15 ET", "AAPL", "Call", "Level 3", 3, "$0.60", "+$60", "+33%", "stop at break-even", true],
+    ["2026-11-10", "NVDA", "Put", "Level 1", 5, "$1.20", "−$75", "−13%", "–", false]]);
+  assert.deepEqual([j.tradeCount, j.shown], [5, 2]);
+});
+
+test("an empty journal says so, and an account with no journal shows no card", () => {
+  const empty = deskJournal({ journal: { periods: { day: [], week: [], month: [] }, trades: [], tradeCount: 0 } }, "week");
+  assert.equal(empty.answer, "No closed trades yet. The journal fills in as real paper trades close.");
+  assert.deepEqual([empty.rows, empty.trades], [[], []]);
+  assert.equal(deskJournal({ orders: {} }), null);
+  const red = deskJournal({ journal: { periods: { day: [per("2026-11-10", 1, -20, split([1, -20], [0, 0], [0, 0]), null)] }, trades: [], tradeCount: 1 } });
+  assert.equal(red.answer, "0 of 1 days in profit. No strategy has made money in any of them yet.");
+  assert.equal(red.rows[0].best, "–");
+});

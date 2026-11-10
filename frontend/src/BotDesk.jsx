@@ -5,7 +5,7 @@
 // Data: GET /api/momx-scanner/bot-desk (momx/bot_desk.py). Read-only.
 import { useEffect, useMemo, useState } from "react";
 import { Check, RefreshCw, X } from "lucide-react";
-import { DESK_ACCOUNT_KEY, DESK_CONTROL_URL, DESK_URL, deskAccountLabel, deskAiPicks, deskAlerts, deskClock, deskControl, deskCoverage, deskCurve, deskDollars, deskEvaluation, deskLessons, deskMoney, deskObjectives, deskPct, deskStrategies, deskStuckRows, deskTone, deskTruthDays, deskTruthLabel, deskVerdict, deskVersus } from "./botDesk.js";
+import { JOURNAL_MODES, JOURNAL_MODE_KEY, deskJournal, readJournalMode, DESK_ACCOUNT_KEY, DESK_CONTROL_URL, DESK_URL, deskAccountLabel, deskAiPicks, deskAlerts, deskClock, deskControl, deskCoverage, deskCurve, deskDollars, deskEvaluation, deskLessons, deskMoney, deskObjectives, deskPct, deskStrategies, deskStuckRows, deskTone, deskTruthDays, deskTruthLabel, deskVerdict, deskVersus } from "./botDesk.js";
 import { truthAccountLabel, truthPct } from "./botTruth.js";
 import { botRuleLabel } from "./momxBot.js";
 
@@ -86,6 +86,14 @@ export default function BotDesk() {
   const lessons = deskLessons(doc, botRuleLabel);
   const strategies = deskStrategies(acct);
   const versus = deskVersus(doc, truthAccountLabel);
+  const [journalMode, setJournalModeState] = useState(() => {
+    try { return readJournalMode(window.localStorage.getItem(JOURNAL_MODE_KEY)); } catch { return "day"; }
+  });
+  const setJournalMode = (mode) => {
+    setJournalModeState(mode);
+    try { window.localStorage.setItem(JOURNAL_MODE_KEY, mode); } catch { /* private window */ }
+  };
+  const journal = deskJournal(acct, journalMode);
   const aiPicks = deskAiPicks(acct);
   const stuck = deskStuckRows(acct);
   // Pause / Resume / Remove a stuck order (2026-11-09). The answer is shown as
@@ -243,6 +251,57 @@ export default function BotDesk() {
               </table>
             </div>
             <p className="desk-note">The levels stack: a Level 3 signal is also a Level 2 and a Level 1 signal, so one trade can count in more than one row. Best = the highest return on the money used, among strategies with {doc.smallSample} or more closed trades that made money.</p>
+          </section>
+        ) : null}
+
+        {journal ? (
+          <section className="desk-card" aria-label="Journal">
+            <div className="desk-card-head">
+              <h4>Journal · profit and loss by day, week and month</h4>
+              <div className="desk-switch" role="group" aria-label="Journal period">
+                {JOURNAL_MODES.map(([key, label]) => (
+                  <button key={key} type="button" aria-pressed={journal.mode === key} onClick={() => setJournalMode(key)}>{label}</button>
+                ))}
+              </div>
+            </div>
+            <p className="desk-answer" data-testid="desk-journal-answer">{journal.answer}</p>
+            {journal.rows.length ? (
+              <div className="desk-scroll">
+                <table className="desk-table">
+                  <thead><tr><th className="is-left">{journal.mode === "day" ? "Day" : journal.mode === "week" ? "Week" : "Month"}</th><th>Trades</th><th>Win</th><th>Real P/L</th><th>Level 1</th><th>Level 2</th><th>Level 3</th><th>Calls</th><th>Puts</th><th>Best strategy</th></tr></thead>
+                  <tbody>
+                    {journal.rows.map((r) => (
+                      <tr key={r.key} data-period={r.key}>
+                        <td className="is-left">{r.label}</td><td>{r.trades}</td><td>{r.win}</td>
+                        <td className={r.tone}><b>{r.pnl}</b></td>
+                        <td className={r.tone1}>{r.level1}</td><td className={r.tone2}>{r.level2}</td><td className={r.tone3}>{r.level3}</td>
+                        <td className={r.callsTone}>{r.calls}</td><td className={r.putsTone}>{r.puts}</td><td>{r.best}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            {journal.trades.length ? (
+              <details className="desk-journal-trades">
+                <summary>Every closed trade{journal.tradeCount > journal.shown ? ` (newest ${journal.shown} of ${journal.tradeCount})` : ` (${journal.shown})`}</summary>
+                <div className="desk-scroll">
+                  <table className="desk-table">
+                    <thead><tr><th className="is-left">Closed</th><th className="is-left">Ticker</th><th className="is-left">Side</th><th className="is-left">Strategy</th><th>Contracts</th><th>Bought at</th><th>Real P/L</th><th>Return</th><th className="is-left">How it ended</th></tr></thead>
+                    <tbody>
+                      {journal.trades.map((t) => (
+                        <tr key={t.key}>
+                          <td className="is-left">{t.when}</td><td className="is-left"><b>{t.symbol}</b>{t.aiPicked ? <span className="desk-tag is-on">AI pick</span> : null}</td>
+                          <td className="is-left">{t.side}</td><td className="is-left">{t.strategy}</td><td>{t.qty}</td><td>{t.buy}</td>
+                          <td className={t.tone}>{t.pnl}</td><td className={t.tone}>{t.roi}</td><td className="is-left">{t.exit}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            ) : null}
+            <p className="desk-note">Real paper fills only, on the day each trade closed. A trade counts under every Level it qualified for, so the three Level columns can add up to more than the total.</p>
           </section>
         ) : null}
 

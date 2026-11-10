@@ -477,3 +477,72 @@ e2eTest("phone width: the bot comparison fits", async () => {
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// ---- the Scorecard as a journal (2026-11-10: "how I see the d/w/m pnl with which strategy is good for real money")
+const lv = (a, b, c) => [{ rule: "level1", trades: a[0], pnl: a[1] }, { rule: "level2", trades: b[0], pnl: b[1] }, { rule: "level3", trades: c[0], pnl: c[1] }];
+const periodRow = (key, trades, pnl, strategies, best, calls, puts) => ({ key, trades, wins: 1, losses: 1, winRatePct: 50, pnl, roiPct: 2, strategies, best, calls, puts });
+const JOURNAL = { tradeCount: 3, periods: {
+  day: [periodRow("2026-11-12", 1, 60, lv([1, 60], [1, 60], [0, 0]), "level1", 60, 0),
+    periodRow("2026-11-10", 2, -45, lv([2, -45], [1, 30], [1, 30]), "level2", 30, -75)],
+  week: [periodRow("2026-11-09", 3, 15, lv([3, 15], [2, 90], [1, 30]), "level2", 90, -75)],
+  month: [periodRow("2026-11", 3, 15, lv([3, 15], [2, 90], [1, 30]), "level2", 90, -75)] },
+  trades: [
+    { symbol: "AAPL", side: "bull", rule: "level3", levels: ["level1", "level2", "level3"], day: "2026-11-12", closedAt: "2026-11-12T10:15:00-05:00",
+      qty: 3, buy: 0.6, pnl: 60, roiPct: 33.3, exit: "stop at break-even", aiPicked: true },
+    { symbol: "NVDA", side: "bear", rule: "level1", levels: ["level1"], day: "2026-11-10", closedAt: "2026-11-10T09:58:00-05:00",
+      qty: 5, buy: 1.2, pnl: -75, roiPct: -12.5, exit: "stop loss -50%", aiPicked: false }] };
+const WITH_JOURNAL = { ...TWO_BOTS, accounts: { ...TWO_BOTS.accounts, paper3: { ...TWO_BOTS.accounts.paper3, journal: JOURNAL },
+  paper5: { ...TWO_BOTS.accounts.paper5, journal: { periods: { day: [], week: [], month: [] }, trades: [], tradeCount: 0 } } } };
+const JOURNAL_CARD = "section[aria-label='Journal']";
+
+e2eTest("Journal: day, week and month profit with each strategy, the best one named, and every closed trade", async () => {
+  await withApp({ view: "Bot", storage: SCORECARD, fakeReads: canned(WITH_JOURNAL) }, async (app) => {
+    const card = app.page.locator(`${DESK} ${JOURNAL_CARD}`);
+    await card.waitFor({ timeout: 60_000 });
+    assert.equal((await card.locator("[data-testid='desk-journal-answer']").textContent()).trim(), "1 of 2 days in profit. Level 1 was the best strategy on 1 of them.");
+    assert.deepEqual(await texts(card.locator("table").first().locator("thead th")),
+      ["Day", "Trades", "Win", "Real P/L", "Level 1", "Level 2", "Level 3", "Calls", "Puts", "Best strategy"]);
+    const rows = card.locator("table").first().locator("tbody tr");
+    assert.deepEqual(await texts(rows.nth(0).locator("td")), ["Thu 11-12", "1", "50%", "+$60", "+$60", "+$60", "–", "+$60", "$0", "Level 1"]);
+    assert.deepEqual(await texts(rows.nth(1).locator("td")), ["Tue 11-10", "2", "50%", "−$45", "−$45", "+$30", "+$30", "+$30", "−$75", "Level 2"]);
+
+    const period = card.locator("[role='group'][aria-label='Journal period']");
+    await period.locator("button", { hasText: "Week" }).click();
+    await card.locator("[data-testid='desk-journal-answer']", { hasText: "1 of 1 weeks in profit. Level 2 was the best strategy on 1 of them." }).waitFor({ timeout: 10_000 });
+    assert.deepEqual(await texts(card.locator("table").first().locator("tbody tr td:first-child")), ["Week of 11-09"]);
+    await period.locator("button", { hasText: "Month" }).click();
+    await card.locator("table tbody tr td", { hasText: "Nov 2026" }).waitFor({ timeout: 10_000 });
+    assert.equal(await period.locator("button[aria-pressed='true']").textContent(), "Month");
+
+    await card.locator("details.desk-journal-trades summary").click();
+    assert.equal((await card.locator("details.desk-journal-trades summary").textContent()).trim(), "Every closed trade (newest 2 of 3)");
+    const trades = card.locator("details.desk-journal-trades tbody tr");
+    assert.deepEqual(await texts(trades.nth(1).locator("td")), ["11-10 09:58 ET", "NVDA", "Put", "Level 1", "5", "$1.20", "−$75", "−13%", "stop loss -50%"]);
+    assert.match(await trades.nth(0).textContent(), /AAPL.*AI pick.*Call.*Level 3.*\+\$60.*stop at break-even/s);
+
+    await app.page.reload({ waitUntil: "domcontentloaded" });                                   // the chosen period is remembered
+    await app.page.locator(`${DESK} ${JOURNAL_CARD} table tbody tr td`, { hasText: "Nov 2026" }).waitFor({ timeout: 60_000 });
+    await app.page.locator(`${DESK} [role='group'][aria-label='Paper account'] button`, { hasText: "Paper 5" }).click();
+    await app.page.locator(`${DESK} [data-testid='desk-journal-answer']`, { hasText: "No closed trades yet. The journal fills in as real paper trades close." }).waitFor({ timeout: 15_000 });
+    assert.equal(await app.page.locator(`${DESK} ${JOURNAL_CARD} table`).count(), 0);
+    assert.equal(await overflowsSideways(app.page), false);
+    await shot(app, "desk-journal-desktop");
+    assert.deepEqual(app.writes, []);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("phone width: the journal fits and its tables scroll inside the card", async () => {
+  await withApp({ view: "Bot", viewport: PHONE, storage: SCORECARD, fakeReads: canned(WITH_JOURNAL) }, async (app) => {
+    const card = app.page.locator(`${DESK} ${JOURNAL_CARD}`);
+    await card.waitFor({ timeout: 60_000 });
+    await card.locator("details.desk-journal-trades summary").tap();
+    assert.equal(await overflowsSideways(app.page), false);
+    for (const target of [card, card.locator("[role='group'][aria-label='Journal period']"), card.locator("[data-testid='desk-journal-answer']")]) {
+      const box = await target.boundingBox();
+      assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, "cut off on a phone");
+    }
+    await shot(app, "desk-journal-phone");
+    assert.deepEqual(app.pageErrors, []);
+  });
+});

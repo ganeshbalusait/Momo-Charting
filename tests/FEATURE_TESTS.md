@@ -5,6 +5,8 @@ Every feature, with its unit, integration and end-to-end test files (see the
 
 | Feature | Unit | Integration | End to end |
 |---|---|---|---|
+| BOT Scorecard: Journal (day / week / month real P&L by strategy, best strategy per period, every closed trade) | `tests/test_momx_bot_desk.py`, `frontend/src/botDesk.test.js` | `tests/test_momx_bot_desk_api.py` | `tests/e2e/trading-bot-desk.e2e.test.mjs` (desktop + phone) |
+| BOT Ask: AI reply on top of the records answer (numbers checked against the records), AI understanding of unrecognised questions | `tests/test_momx_chat_ai.py`, `frontend/src/botChat.test.js` | `tests/test_momx_chatbot_api.py` (fake AI) | `tests/e2e/trading-bot-chat.e2e.test.mjs` |
 | BOT: Ask tab - the no-AI chatbot (how far a signal went, why it failed, why it was missed, what is on file, what the bot is doing) | `tests/test_momx_chatbot.py`, `frontend/src/botChat.test.js` | `tests/test_momx_chatbot_api.py` | `tests/e2e/trading-bot-chat.e2e.test.mjs` (desktop + phone) |
 | Option chains: 30 days of history, a copy every 30 minutes of the session | `tests/test_momx_chain_history.py` | `tests/test_momx_chain_history_api.py` (worker route through the api_server proxy) | none - no screen yet (storage job; the chatbot will read it) |
 | BOT: both paper bots on his manual exit plan (2 of 3 off at +100% or the high OI level, break-even runner, -50% stop) | `tests/test_momx_paper_mirror.py` | `tests/test_cov_trading_worker_routes_api.py` (paper-mirror route serves the exit plan) | none - order logic with no screen of its own; the Scorecard specs cover the results it produces |

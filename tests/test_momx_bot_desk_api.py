@@ -92,3 +92,15 @@ def test_the_off_switch_file_shows_as_paused(grade):
     with running_api() as api:
         status, body = api.get("/api/momx-scanner/bot-desk", headers=ADMIN)
     assert status == 200 and body["paused"] is True
+
+
+def test_the_journal_is_served_with_the_scorecard(grade):
+    seed(grade)
+    with running_api() as api:
+        status, body = api.get("/api/momx-scanner/bot-desk?days=30", headers=ADMIN)
+    journal = body["accounts"]["paper3"]["journal"]
+    assert status == 200 and journal["tradeCount"] == 1
+    day = journal["periods"]["day"][0]
+    assert (day["key"], day["trades"], day["pnl"], day["best"]) == (DAY, 1, -1100.0, None)
+    assert [p["trades"] for p in journal["periods"]["week"]] == [1] and journal["periods"]["month"][0]["key"] == DAY[:7]
+    assert journal["trades"][0]["symbol"] == "ZETA" and journal["trades"][0]["pnl"] == -1100.0
