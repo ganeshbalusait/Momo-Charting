@@ -10,6 +10,8 @@ import { EXPERIMENT_DECISION_URL, awaitingLines } from "./botExperiment.js";
 import { RULE_LAB_URL, ruleLabRows, ruleLabSummary } from "./ruleLab.js";
 import { truthAccountLabel, truthGapLabel, truthHeadline, truthMoney, truthNewRulesLine, truthPct } from "./botTruth.js";
 import { Bot, RefreshCw, X } from "lucide-react";
+import BotDesk from "./BotDesk.jsx";
+import { DESK_VIEW_KEY, readDeskView } from "./botDesk.js";
 import { BOT_RULE_HELP, BOT_RULE_LABELS, BOT_RULE_ORDER, botRuleLabel, BOT_TEST_RULES, botContractLabel, botDailyLog, botEntryStrikeLabel, botNewsBook, botAiBook, isEarlyDayLine, setBotFills, setBotExit, setBotContract, BOT_EXIT_LABELS, BOT_CONTRACT_LABELS, botExitMatrix, botRiskOk, botRiskRoi, botMomentumMatrix, botPeriodMatrix, botReport, formatBotDollars, formatBotPct, nextBotSort, sortBotRows } from "./momxBot.js";
 
 // Trading days with bot data (his ask 2026-09-28: daily / 2D / 3D / 4D /
@@ -791,7 +793,7 @@ function statusOf(t) {
   return t.status === "closed" ? "closed" : "open";
 }
 
-export default function BotPanel() {
+function BotResearch({ viewSwitch }) {
   const [days, setDays] = useState(1);
   const [side, setSide] = useState("bull");
   const [levelStrategy, setLevelStrategy] = useState('all');
@@ -957,6 +959,7 @@ export default function BotPanel() {
           <span className="bot-badge is-admin">Admin only</span>
         </div>
         <div className="bot-controls">
+          {viewSwitch}
           <div className="bot-seg" role="group" aria-label="Which bot">
             <button type="button" className={book === "all" ? "is-on" : ""} onClick={() => setBook("all")} title="Every trade the rules took">All trades</button>
             <button type="button" className={book === "news" ? "is-on is-jev" : ""} onClick={() => setBook("news")}
@@ -1491,6 +1494,41 @@ export default function BotPanel() {
         Paper tracking of your rules, not advice. Kept {data && data.keepDays ? data.keepDays : 180} days.
       </p>
       </>)}
+    </div>
+  );
+}
+
+// The page a trader lands on is the Scorecard (2026-11-09): real paper fills
+// judged like a prop-firm evaluation. Everything older lives under Research.
+export default function BotPanel() {
+  const [view, setViewState] = useState(() => {
+    try { return readDeskView(window.localStorage.getItem(DESK_VIEW_KEY)); } catch { return "desk"; }
+  });
+  const setView = (v) => {
+    setViewState(v);
+    try { window.localStorage.setItem(DESK_VIEW_KEY, v); } catch { /* private window */ }
+  };
+  const viewSwitch = (
+    <div className="bot-seg bot-view-switch" role="group" aria-label="Page">
+      <button type="button" className={view === "desk" ? "is-on" : ""} aria-pressed={view === "desk"} onClick={() => setView("desk")}
+        title="Real paper fills, judged like a prop-firm evaluation">Scorecard</button>
+      <button type="button" className={view === "research" ? "is-on" : ""} aria-pressed={view === "research"} onClick={() => setView("research")}
+        title="The virtual BOT: every signal scored as if it filled at the mid price">Research</button>
+    </div>
+  );
+  if (view === "research") return <BotResearch viewSwitch={viewSwitch} />;
+  return (
+    <div className="bot-page">
+      <header className="bot-head">
+        <div className="bot-title">
+          <Bot size={18} aria-hidden="true" />
+          <h2>BOT workspace</h2>
+          <span className="bot-badge">REAL PAPER FILLS</span>
+          <span className="bot-badge is-admin">Admin only</span>
+        </div>
+        <div className="bot-controls">{viewSwitch}</div>
+      </header>
+      <BotDesk />
     </div>
   );
 }

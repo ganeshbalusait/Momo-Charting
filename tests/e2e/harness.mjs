@@ -161,7 +161,10 @@ export async function openApp({
 } = {}) {
   const browser = await sharedBrowser();
   const seeded = {
-    agxLearnSeen: String(LEARN_CONTENT_VERSION), ...(view ? { agenticActiveView: view } : {}), ...(await gridAlreadyApplied(view)), ...storage,
+    agxLearnSeen: String(LEARN_CONTENT_VERSION), ...(view ? { agenticActiveView: view } : {}), ...(await gridAlreadyApplied(view)),
+    // The Bot page opens on its Scorecard (2026-11-09). The older Bot specs test
+    // the Research view, so that is seeded unless a spec asks for something else.
+    ...(view === "Bot" ? { "bot.view": "research" } : {}), ...storage,
   };
   const hasTouch = touch ?? viewport === PHONE;
   const context = await browser.newContext({ viewport, hasTouch, isMobile: hasTouch && viewport.width < 800 });

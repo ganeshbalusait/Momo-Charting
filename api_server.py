@@ -23283,6 +23283,19 @@ class ApiHandler(BaseHTTPRequestHandler):
                     _rr_days = 10
                 self._send_json(HTTPStatus.OK, _momx_rule_record(_rr_days))
                 return
+            if parsed.path == "/api/momx-scanner/bot-desk":
+                # Desk scorecard (2026-11-09): the paper accounts judged like a
+                # prop-firm evaluation, on real paper fills only. Admin only.
+                _desk_user = self._session_user()
+                if not (_desk_user and _desk_user.get("isAdmin")):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                try:
+                    _desk_days = max(1, min(180, int(str((parse_qs(parsed.query or "").get("days") or ["90"])[0]))))
+                except ValueError:
+                    _desk_days = 90
+                self._send_json(HTTPStatus.OK, _momx_bot_desk(_desk_days))
+                return
             if parsed.path == "/api/momx-scanner/bot-truth":
                 # Truth check (2026-11-04): the BOT's virtual mid trades vs the
                 # real Alpaca paper orders on the same signals. Admin only, like
@@ -25200,6 +25213,26 @@ def _momx_bot_truth(days: int) -> dict:
     payload = truth_check.build(base, days)
     with _MOMX_BOT_TRUTH_LOCK:
         _MOMX_BOT_TRUTH[days] = (time.time(), payload)
+    return payload
+
+
+_MOMX_BOT_DESK: dict = {}
+_MOMX_BOT_DESK_LOCK = threading.Lock()
+
+
+def _momx_bot_desk(days: int) -> dict:
+    """The paper accounts' prop-firm style scorecard (momx/bot_desk.py), cached
+    30 s. Read-only: the small paper-mirror day files, never the broker."""
+    with _MOMX_BOT_DESK_LOCK:
+        hit = _MOMX_BOT_DESK.get(days)
+    if hit and time.time() - hit[0] < 30:
+        return hit[1]
+    override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+    base = Path(override) if override else Path(ARTIFACTS_DIR)
+    from momx import bot_desk
+    payload = bot_desk.build(base, days)
+    with _MOMX_BOT_DESK_LOCK:
+        _MOMX_BOT_DESK[days] = (time.time(), payload)
     return payload
 
 
