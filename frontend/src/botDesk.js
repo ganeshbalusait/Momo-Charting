@@ -8,7 +8,7 @@ export const DESK_ACCOUNT_KEY = "bot.deskAccount";
 
 /** The Scorecard is the page a trader lands on; only an explicit choice opens Research. */
 export function readDeskView(stored) {
-  return stored === "research" ? "research" : "desk";
+  return stored === "research" || stored === "ask" ? stored : "desk";
 }
 
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -121,9 +121,204 @@ export function deskAlerts(doc, acct) {
   return out;
 }
 
+export const DESK_CONTROL_URL = "/api/momx-scanner/paper-control";
+
+/** The paper bot's safety strip: is it buying, the Pause / Resume button, and
+ * the daily loss stop. null when the server sent no control state. */
+export function deskControl(acct, doc) {
+  const c = acct && acct.control;
+  if (!c) return null;
+  const stop = c.dailyStop || {};
+  const when = (stamp) => (deskClock(stamp) ? ` at ${deskClock(stamp)}` : "");
+  // Three things can hold buys: the master off switch, this account's Pause,
+  // and today's daily loss stop. The pill never says ON while any of them holds.
+  const off = !!(doc && doc.paused);
+  const hit = !!stop.hit;
+  return {
+    paused: !!c.paused,
+    tone: off || hit ? "bad" : c.paused ? "warn" : "on",
+    state: off ? "Paper bot is switched OFF · no buys"
+      : c.paused ? `New buys PAUSED${when(c.pausedAt)}`
+      : hit ? "New buys HELD by the daily loss stop"
+      : "New buys are ON",
+    action: c.paused ? "resume" : "pause",
+    button: c.paused ? "Resume buying" : "Pause new buys",
+    done: !c.paused ? "Paused. No new buys; positions already held still sell on their plan."
+      : off ? "Pause lifted, but the paper bot is switched OFF, so it still places no buys."
+      : hit ? "Pause lifted, but the daily loss stop still holds new buys until tomorrow."
+      : "Buying is back on from the next signal.",
+    stopHit: hit,
+    stop: stop.hit
+      ? `Daily loss stop HIT${when(stop.hitAt)} · no new buys until tomorrow`
+      : `Daily loss stop ${deskDollars(stop.limit)} · today ${deskMoney(stop.todayPnl)}`,
+  };
+}
+
+/** "CCJ   261106P00072000" -> "CCJ $72 put · expires 11-06". Unknown shapes pass through. */
+export function deskContract(contract, symbol = "") {
+  const m = /^([A-Z.]+)\s*\d{2}(\d{2})(\d{2})([CP])(\d{8})$/.exec(String(contract || "").trim());
+  if (!m) return String(contract || symbol || "").trim();
+  const strike = Number(m[5]) / 1000;
+  return `${m[1]} $${Number.isInteger(strike) ? strike : strike.toFixed(2).replace(/0$/, "")} ${m[4] === "P" ? "put" : "call"} · expires ${m[2]}-${m[3]}`;
+}
+
+/** The stuck orders, one line each, for the Remove buttons. Rows the server
+ * could not name (no key) are left out: a button that cannot work is worse than none. */
+export function deskStuckRows(acct) {
+  const rows = (acct && acct.orders && acct.orders.stuckRows) || [];
+  return rows.filter((r) => r && typeof r.key === "string" && r.key).map((r) => ({
+    key: r.key,
+    symbol: String(r.symbol || ""),
+    title: deskContract(r.contract, r.symbol),
+    detail: (deskClock(r.buyAt) ? `sent ${deskClock(r.buyAt)}` : "sent earlier")
+      + (/order not found|40410000/i.test(r.note || "") ? " · the broker has no record of it" : " · never confirmed by the broker"),
+  }));
+}
+
+/** The fresh-evaluation line (2026-11-09: "start fresh scoreboard with 10k account size"):
+ * when it started, what the paper bot trades, and the account balance now. */
+export function deskEvaluation(doc, acct) {
+  if (!doc || !doc.startDay) return "";
+  const size = doc.limits && doc.limits.accountSize;
+  const balance = acct && isNum(acct.balance) ? acct.balance : size;
+  return `Evaluation started ${doc.startDay.slice(5)}`
+    + (doc.strategy ? ` · trades only ${doc.strategy}` : "")
+    + ` · ${deskDollars(size)} account · balance now ${deskDollars(balance)}`;
+}
+
+/** The truth-check read for the claim card covers the same days as the evaluation
+ * (1-30), so the BOT's claim and the real result are about the same trades. */
+export function deskTruthDays(doc) {
+  const start = Date.parse(String((doc && doc.startDay) || "") + "T00:00:00Z");
+  const now = Date.parse(String((doc && doc.asOf) || "").slice(0, 10) + "T00:00:00Z");
+  if (!Number.isFinite(start) || !Number.isFinite(now)) return 30;
+  const n = Math.round((now - start) / 86400000) + 1;
+  // Before the evaluation starts there is nothing to compare: 0 = do not read.
+  return n < 1 ? 0 : Math.min(30, n);
+}
+
+/** The claim card's time label: "since 11-10" only while the read really covers the whole evaluation. */
+export function deskTruthLabel(doc) {
+  const start = Date.parse(String((doc && doc.startDay) || "") + "T00:00:00Z");
+  const now = Date.parse(String((doc && doc.asOf) || "").slice(0, 10) + "T00:00:00Z");
+  if (!Number.isFinite(start) || !Number.isFinite(now)) return "last 30 days";
+  return Math.round((now - start) / 86400000) + 1 <= 30 ? `since ${doc.startDay.slice(5)}` : "last 30 days";
+}
+
+const STRATEGY_NAMES = { level1: "Level 1", level2: "Level 2", level3: "Level 3" };
+
+/** "What the AI learned from the losing trades" (momx/loss_lessons.py), one row
+ * per strategy and side. A study that has not run yet says so instead of showing nothing. */
+export function deskLessons(doc, ruleLabel = (rule) => STRATEGY_NAMES[rule] || String(rule || "")) {
+  const study = doc && doc.lessons;
+  if (!study || !Array.isArray(study.lessons)) {
+    return { ready: false, note: "The first study runs after the next market close (5:00 PM ET). It reads real losing paper trades only.", rows: [] };
+  }
+  const rows = study.lessons.map((x) => ({
+    key: `${x.side}|${x.rule}`,
+    title: `${ruleLabel(x.rule, x.side)} · ${x.side === "bear" ? "puts" : "calls"}`,
+    counts: `${x.losses ?? 0} losing · ${x.wins ?? 0} winning · ${deskMoney(x.netPnl)}`,
+    basis: x.basis ? `Checked against the counts: ${x.basis}.` : "",
+    lesson: String(x.lesson || ""),
+    change: String(x.proposedChange || ""),
+    test: String(x.howToTest || ""),
+    tag: x.status === "lesson" ? "AI lesson" : x.status === "numbers" ? "numbers only" : "collecting",
+    tone: x.status === "lesson" ? "on" : "",
+  }));
+  return {
+    ready: true, rows,
+    note: rows.length ? `Studied ${deskClock(study.updatedAt)} · each signal counted once across both accounts · ${study.note || "Suggestions only."}`
+      : `Studied ${deskClock(study.updatedAt)} · no closed paper trades in this evaluation yet.`,
+  };
+}
+
+/** "Paper 3 · Rules bot": the account button says how that account chooses. */
+export function deskAccountLabel(name, acct, base) {
+  const mode = acct && acct.mode;
+  return mode && mode.name ? `${base} · ${mode.name}` : base;
+}
+
+/** Rules bot against AI bot: the two accounts side by side and the one-line answer.
+ * A leader is named only when both have enough closed real trades. */
+export function deskVersus(doc, accountLabel = (a) => a) {
+  const v = doc && doc.versus;
+  if (!v || !Array.isArray(v.rows) || v.rows.length < 2) return null;
+  const pct = (x) => (isNum(x) ? (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x).toFixed(1) + "%" : "–");
+  const rows = v.rows.map((r) => ({
+    key: r.account, name: r.name, account: accountLabel(r.account), how: r.how, leader: v.leader === r.account,
+    closed: r.closed || 0, win: r.closed ? deskPct(r.winRatePct) : "–", pnl: r.closed ? deskMoney(r.pnl) : "–",
+    roi: r.closed ? pct(r.roiPct) : "–", perTrade: r.closed ? deskMoney(r.perTrade) : "–",
+    balance: deskDollars(r.balance), tone: r.closed ? deskTone(r.pnl) : "",
+  }));
+  const lead = rows.find((r) => r.leader);
+  let answer;
+  if (!rows.some((r) => r.closed)) answer = "No closed trades yet. Both bots start with the 9:30 AM ET buy window.";
+  else if (lead) answer = `${lead.name} is ahead (${lead.roi} return, ${lead.pnl} on ${lead.closed} closed trades). That is the one to take to real money, once its account passes the checks.`;
+  else if (v.allLosing) answer = "Neither is good so far: both bots have lost money on real fills.";
+  else if (v.enough && !v.aiProven) answer = `Not a fair test yet: the AI chose only ${v.aiChosenClosed || 0} of the AI bot's ${v.aiClosed || 0} closed trades (it needs ${v.need}, and at least half). The rest used the rules order, so both bots traded almost the same way.`;
+  else if (v.tooClose || v.ready) answer = "Too close to call: the gap between the two bots is smaller than one trade can move it.";
+  else answer = `Too early to say. Each bot needs ${v.need} closed real trades; they have ${rows.map((r) => `${r.closed} (${r.name})`).join(" and ")}.`;
+  return { rows, answer, tone: lead ? "on" : v.allLosing ? "bad" : "" };
+}
+
+/** One line for the AI bot: how many of its orders the AI really chose. "" for the rules bot. */
+export function deskAiPicks(acct) {
+  const s = acct && acct.aiPicks;
+  if (!s) return "";
+  const p = s.picked || {};
+  const f = s.fallback || {};
+  if (!p.sent && !f.sent) return "The AI has not chosen an order yet. When it has no answer in time, the rules order is used so a slot is never left waiting.";
+  const part = (x, label) => `${x.sent || 0} ${label}` + (x.closed ? ` (${deskMoney(x.pnl)} on ${x.closed} closed)` : "");
+  return `Orders chosen by the AI: ${part(p, "picked by the AI")} · ${part(f, "on the rules order because the AI had no answer in time")}.`;
+}
+
+const LEVEL_NAMES = { level1: "Level 1", level2: "Level 2", level3: "Level 3" };
+const LEVEL_NEEDS = {
+  level1: "RVOL rising on 3+ timeframes, plus 3+ Setup types",
+  level2: "Level 1 plus a 2h / 4h / Daily squeeze",
+  level3: "Level 2 plus a Skittles box",
+};
+
+/** The three strategies side by side on real fills, and the one-line answer
+ * to "which one is good". Never picks a winner on too few trades. */
+export function deskStrategies(acct) {
+  const s = acct && acct.strategies;
+  if (!s || !Array.isArray(s.rows)) return null;
+  const side = (x) => (x && x.closed ? `${deskMoney(x.pnl)} · ${deskPct(x.winRatePct)} of ${x.closed}` : "–");
+  const rows = s.rows.map((r) => ({
+    key: r.rule,
+    name: LEVEL_NAMES[r.rule] || String(r.rule),
+    needs: LEVEL_NEEDS[r.rule] || "",
+    best: s.best === r.rule,
+    tag: r.sameAs ? `same trades as ${LEVEL_NAMES[r.sameAs] || r.sameAs}` : s.best === r.rule ? "best so far" : r.closed && r.smallSample ? "too few" : "",
+    closed: r.closed || 0,
+    win: r.closed ? deskPct(r.winRatePct) : "–",
+    pnl: r.closed ? deskMoney(r.pnl) : "–",
+    pnlTone: r.closed ? deskTone(r.pnl) : "",
+    roi: isNum(r.roiPct) ? (r.roiPct > 0 ? "+" : r.roiPct < 0 ? "−" : "") + Math.abs(r.roiPct).toFixed(1) + "%" : "–",
+    perTrade: r.closed ? deskMoney(r.perTrade) : "–",
+    calls: side(r.calls),
+    puts: side(r.puts),
+    callsTone: r.calls && r.calls.closed ? deskTone(r.calls.pnl) : "",
+    putsTone: r.puts && r.puts.closed ? deskTone(r.puts.pnl) : "",
+    filled: r.sent ? `${r.filled} of ${r.sent}` : "–",
+  }));
+  const total = rows.reduce((n, r) => Math.max(n, r.closed), 0);
+  const bestRow = rows.find((r) => r.best);
+  let answer;
+  if (!total) answer = "No closed trades yet. The first Level orders go out in the 9:30 AM ET buy window.";
+  else if (bestRow) answer = `Best so far: ${bestRow.name} (${bestRow.roi} return, ${bestRow.pnl} on ${bestRow.closed} closed trades).`;
+  else if (s.allLosing) answer = "None is good so far: every strategy with enough trades has lost money on real fills.";
+  else {
+    const most = s.mostClosed || {};
+    answer = `Too early to pick one. A strategy needs ${s.need} closed real trades; the most so far is ${LEVEL_NAMES[most.rule] || "one"} with ${most.closed || 0}.`;
+  }
+  return { rows, answer, tone: bestRow ? "on" : s.allLosing ? "bad" : "" };
+}
+
 /** One line under the title: what the numbers cover. */
 export function deskCoverage(acct) {
-  if (!acct || !acct.from) return "";
+  if (!acct || !acct.from) return "no paper orders yet in this evaluation";
   const o = acct.orders || {};
   const span = acct.from === acct.through ? acct.from : `${acct.from} to ${acct.through}`;
   return `${span} · ${o.sent} orders sent · ${o.filled} filled · ${o.missed} never filled` + (o.holding ? ` · ${o.holding} open now` : "");

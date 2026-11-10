@@ -271,10 +271,10 @@ class ExperimentLab:
                     return {"ok": False, "error": "Another rule is already active on Paper 5"}
                 day = datetime.fromtimestamp(now, ai_filter.ET).date().isoformat()
                 e.update(state="active", promotedAt=now, monitorAfterDay=day, approvedBy=who, approvedAt=now,
-                         reason="Approved by you; Paper 5 uses this deterministic entry rule")
+                         reason="Approved by you. Advice only: Paper 5 keeps taking every signal and records what this rule would have done")
                 self.state["active"] = e["id"]
             else:
-                e.update(state="rejected", rejectedBy=who, rejectedAt=now, reason="Rejected by you; Paper 5 stays on baseline rules")
+                e.update(state="rejected", rejectedBy=who, rejectedAt=now, reason="Rejected by you; Paper 5 keeps taking every signal")
             self.save()
             self.refresh_policy()
         return {"ok": True, "experiment": {k: e.get(k) for k in ("id", "state", "reason")}}
@@ -351,7 +351,7 @@ class ExperimentLab:
             self._observe()
         except Exception as exc:
             self.last_observed = None
-            self.monitor_error = type(exc).__name__ + ": experiment monitoring unavailable; Paper 5 uses baseline"
+            self.monitor_error = type(exc).__name__ + ": experiment monitoring unavailable; rule advice paused (Paper 5 takes every signal)"
             raise
 
     def _observe(self):
@@ -359,7 +359,7 @@ class ExperimentLab:
         baseline = next((m for m in self.mirrors if m.account == "paper3"), None)
         if baseline is None:
             self.last_observed = None
-            self.monitor_error = "Paper 3 evidence unavailable; Paper 5 uses baseline"
+            self.monitor_error = "Paper 3 evidence unavailable; rule advice paused (Paper 5 takes every signal)"
             return
         rows = [r for d in baseline.history(180) for r in d["rows"]]
         source = {ai_filter.trade_key(side, t): t for side, book in self.books.items() for t in book.trades()}
@@ -400,8 +400,13 @@ class ExperimentLab:
                 if e["state"] == "active":
                     experiment_account = next((m for m in self.mirrors if m.account == "paper5"), None)
                     if experiment_account:
+                        # Only the trades this rule would have taken: since 2026-11-09
+                        # every Paper 5 order carries the id (the rule is advice,
+                        # the trade is always taken). Older rows have no candidateTake
+                        # and were all rule-qualified.
                         actual = [r for d in experiment_account.history(180) for r in d["rows"]
-                                  if r.get("aiDecision", {}).get("experimentId") == e["id"]]
+                                  if (r.get("aiDecision") or {}).get("experimentId") == e["id"]
+                                  and (r.get("aiDecision") or {}).get("candidateTake") is not False]
                         daily = {}
                         for r in actual:
                             result, closed_at = fill_result(r), when(r.get("closedAt"))
@@ -410,7 +415,7 @@ class ExperimentLab:
                                 daily[day] = daily.get(day, 0)+result["gross"]-result["qty"]*FEE_PER_CONTRACT
                         e["actualPaper5DailyNet"] = daily
                         if any(v <= -500 for v in daily.values()):
-                            e.update(state="rolled_back", reason="Candidate Paper 5 closed losses reached the $500 daily rollback threshold", rolledBackAt=now)
+                            e.update(state="rolled_back", reason="The trades this rule would have taken lost $500 or more in one day on Paper 5; the rule's advice is withdrawn (no trade was blocked)", rolledBackAt=now)
                             self.state["active"] = None
                             changed = True
                 if changed or e.get("evaluation"):
@@ -468,22 +473,23 @@ class ExperimentLab:
                 if check["passed"] and not APPROVAL_REQUIRED:
                     e.update(state="active", promotedAt=self.clock(), monitorAfterDay=today.date().isoformat(),
                              approvedBy="automatic (statistics check)",
-                             reason="Passed the forward test and the statistics check; Paper 5 uses this rule automatically")
+                             reason="Passed the forward test and the statistics check. Advice only: AI does not block trades, "
+                                    "so Paper 5 keeps taking every signal and records what this rule would have done")
                     self.state["active"] = e["id"]
                 elif check["passed"]:
                     e.update(state="awaiting_approval", awaitingAt=self.clock(),
-                             reason="Passed the forward test and the statistics check; waiting for your OK. Paper 5 stays on baseline rules until you approve.")
+                             reason="Passed the forward test and the statistics check; waiting for your OK. Advice only either way: Paper 5 takes every signal.")
                 else:
                     e.update(state="rejected", reason="Passed the forward test but not the statistics check: " + check["reason"])
             else:
                 e.update(state="rejected", reason="Fixed forward evaluation did not meet all promotion requirements")
         else:
             if len(matched) < 30 or report["decisionCoverage"] < .95 or report["outcomeCoverage"] < 1 or report["candidateStressNet"] <= 0 or report["improvement"] < 0 or report["candidateDrawdown"] > report["baselineDrawdown"]:
-                e.update(state="rolled_back", reason="Forward monitoring deteriorated or lacked sufficient evidence; Paper 5 returned to baseline", rolledBackAt=self.clock())
+                e.update(state="rolled_back", reason="Forward monitoring deteriorated or lacked sufficient evidence; the rule's advice is withdrawn", rolledBackAt=self.clock())
                 self.state["active"] = None
             else:
                 e["monitorAfterDay"] = today.date().isoformat()
-                e["reason"] = "Monitoring passed; Paper 5 candidate retained"
+                e["reason"] = "Monitoring passed; the rule's advice is kept"
         self.save()
 
     def decision(self, side, trade, now):
@@ -494,8 +500,12 @@ class ExperimentLab:
             return result
         try:
             take = accepts(policy["spec"], inputs(trade))
-            verdict = {**result, "approved": take, "experimentId": policy["id"],
-                    "reason": "Validated Paper 5 rule: " + ("qualified; enter immediately" if take else "signal outside candidate entry rule")}
+            # 2026-11-09 (his "Don't block any trade using AI"): the validated
+            # rule is advice now. Its yes / no is recorded on the order as
+            # candidateTake; the trade is approved either way.
+            verdict = {**result, "approved": True, "candidateTake": take, "experimentId": policy["id"],
+                    "reason": "Validated Paper 5 rule (advice only, never blocks): "
+                              + ("it would take this trade" if take else "it would have skipped this trade")}
             with self.audit_lock:
                 key = policy["id"]+"|"+ai_filter.trade_key(side, trade)
                 if key not in self.execution:

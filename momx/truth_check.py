@@ -67,6 +67,18 @@ def _bot_pnl(t, qty):
     return (exit_ - entry) * 100 * qty, entry * 100 * qty, (exit_ - entry) / entry * 100
 
 
+def _leg(t, leg):
+    """The BOT trade as seen on the contract the paper order bought. Since
+    2026-11-09 paper buys the 0.20-delta contract (row leg "entry"); the BOT
+    records that one under e-prefixed fields. Comparing a 0.20-delta paper fill
+    with the BOT's main contract would compare two different options."""
+    if not t or leg != "entry":
+        return t
+    return {"badQuote": t.get("badQuote"), "entry": t.get("eEntry"), "entryBid": t.get("eEntryBid"),
+            "entryAsk": t.get("eEntryAsk"), "exitPrice": t.get("eExit"), "exitBid": t.get("eExitBid"),
+            "exitAsk": t.get("eExitAsk")}
+
+
 def _stats(rows: list[dict], bot: dict[tuple, dict]) -> dict:
     a = {"orders": 0, "filled": 0, "missed": 0, "open": 0, "unmatched": 0}
     bot_pnl = bot_cost = paper_pnl = paper_cost = missed_pnl = 0.0
@@ -78,17 +90,25 @@ def _stats(rows: list[dict], bot: dict[tuple, dict]) -> dict:
         qty = r.get("qty") if _num(r.get("qty")) and r.get("qty") > 0 else 1
         side = r.get("side") or "bull"
         t = bot.get((side, r.get("rule"), r.get("symbol"), r.get("at")))
-        scored = _bot_pnl(t, qty)
-        rule = rules[(side, r.get("rule"))]
+        scored = _bot_pnl(_leg(t, r.get("leg")), qty)
+        # One Level order counts for every level it qualified for (the same
+        # rule as the Scorecard, momx/bot_desk.strategies); the account totals
+        # below still count it once.
+        levels = r.get("levels")
+        named = [x for x in levels if isinstance(x, str)] if isinstance(levels, list) else []
+        mine = [rules[(side, name)] for name in (named or [r.get("rule")])]
         a["orders"] += 1
-        rule["orders"] += 1
         filled = _num(r.get("buyFill"))
+        for rule in mine:
+            rule["orders"] += 1
         if status == "missed":
             a["missed"] += 1
-            rule["missed"] += 1
+            for rule in mine:
+                rule["missed"] += 1
         elif filled:
             a["filled"] += 1
-            rule["filled"] += 1
+            for rule in mine:
+                rule["filled"] += 1
         if status in LIVE:
             a["open"] += 1
         if scored is None:
@@ -107,10 +127,11 @@ def _stats(rows: list[dict], bot: dict[tuple, dict]) -> dict:
             bot_cost += cost
             paper_pnl += r["pl"]
             paper_cost += fill_cost
-            rule["bp"] += pnl
-            rule["bc"] += cost
-            rule["pp"] += r["pl"]
-            rule["pc"] += fill_cost
+            for rule in mine:
+                rule["bp"] += pnl
+                rule["bc"] += cost
+                rule["pp"] += r["pl"]
+                rule["pc"] += fill_cost
     a["fillRatePct"] = _pct(a["filled"], a["filled"] + a["missed"])
     a["matched"] = {"n": matched, "botPnl": round(bot_pnl, 2), "botRoi": _pct(bot_pnl, bot_cost),
                     "paperPnl": round(paper_pnl, 2), "paperRoi": _pct(paper_pnl, paper_cost)}

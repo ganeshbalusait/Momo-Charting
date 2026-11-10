@@ -1417,6 +1417,11 @@ class OptionTrackBook:
                         entry_ts = datetime.fromisoformat(str(t.get("entryAt") or t.get("at"))).timestamp()
                     except ValueError:
                         continue
+                    # The stock's price now, for the paper accounts' "high OI level
+                    # reached" target (his manual plan, 2026-11-10). In memory only.
+                    stock_now = _num(by_sym[t["symbol"]].get("last"))
+                    if stock_now is not None:
+                        t.update(stockLast=stock_now, stockLastAt=local.replace(microsecond=0).isoformat())
                     why = exit_signal(by_sym[t["symbol"]], entry_ts, self.bear)
                     if why:
                         t.update(exitAt=local.replace(microsecond=0).isoformat(), exitReason=why,
@@ -1650,32 +1655,31 @@ class OptionTrackBook:
                 pass
 
     def _approve_entry(self, trade: dict, candidate: dict, now: float) -> bool:
-        """Stage a quote for scoring without recording an entry before AI approval."""
+        """Ask the AI policy for its opinion and keep it on the trade. Only the
+        two time rules below can refuse an entry; the AI's answer, no answer or
+        an error never does (his "Don't block any trade using AI", 2026-11-09)."""
         if self._ai_policy is None:
             return True
         try:
             local = _et(now)
             if local.weekday() >= 5 or not FROM_MIN <= local.hour * 60 + local.minute <= UNTIL_MIN:
-                trade.update(status="ai_skipped", aiDecision={"approved": False, "reason": "Entry window ended before AI approval"})
+                trade.update(status="ai_skipped", aiDecision={"approved": False, "reason": "Entry window ended (a time rule, not AI)"})
                 trade.pop("aiCandidate", None)
                 return False
             age = now - datetime.fromisoformat(trade["at"]).timestamp()
             if not 0 <= age <= 600:
-                trade.update(status="ai_skipped", aiDecision={"approved": False, "reason": "Signal expired before AI approval"})
+                trade.update(status="ai_skipped", aiDecision={"approved": False, "reason": "Signal older than 10 minutes (a time rule, not AI)"})
                 trade.pop("aiCandidate", None)
                 return False
             trade["aiCandidate"] = dict(candidate)
             result = self._ai_policy("bear" if self.bear else "bull", {**trade, **candidate}, now)
             trade["aiDecision"] = dict(result)
-            if result.get("approved") is True and result.get("enabled") is True:
-                trade.pop("aiCandidate", None)
-                return True
-            if result.get("provider"):
-                trade["status"] = "ai_skipped"
-                trade.pop("aiCandidate", None)
+            if result.get("approved") is False:
+                trade["aiWouldSkip"] = True       # advice, recorded; the trade is taken
         except Exception:
-            trade["aiDecision"] = {"approved": False, "reason": "AI review error; no entry"}
-        return False
+            trade["aiDecision"] = {"approved": True, "enabled": True, "reason": "AI review error; the trade is taken anyway"}
+        trade.pop("aiCandidate", None)
+        return True
 
     def _fast_price(self, symbols: list[str]) -> None:
         self._fast_exits(symbols)
@@ -1726,6 +1730,10 @@ class OptionTrackBook:
                     self._jev_ask(t)
                     e = res.get("e")
                     t.update(dict(e) if isinstance(e, Mapping) else {"eStatus": "none"})
+                    if t.get("eContract"):
+                        # Same reason as lastBid/lastAsk above, for the 0.20-delta
+                        # contract the paper accounts buy since 2026-11-10.
+                        t.update(eLastBid=t.get("eEntryBid"), eLastAsk=t.get("eEntryAsk"))
                     z = _m(res.get("z"))
                     if z.get("contract") and _num(z.get("entry")):
                         t.update(zContract=z["contract"], zStrike=z.get("strike"), zEntry=z["entry"],
@@ -1913,6 +1921,8 @@ class OptionTrackBook:
                             self._jev_ask(t)
                             e = pick_entry_strike(chain, self.bear, pick["expiry"])
                             t.update(e if e else {"eStatus": "none"})
+                            if t.get("eContract"):
+                                t.update(eLastBid=t.get("eEntryBid"), eLastAsk=t.get("eEntryAsk"))
                             z = pick_contract(chain, self.bear, zero_dte=True)
                             if z:
                                 t.update(zContract=z["contract"], zStrike=z["strike"], zEntry=z["entry"],
@@ -1944,6 +1954,9 @@ class OptionTrackBook:
                                 continue
                             sm = contract_mark(chain, t.get(pre + "Contract"))
                             if sm is None:
+                                # No price this pass: do not leave the last bid/ask
+                                # looking fresh under the main contract's lastAt.
+                                t.update({pre + "LastBid": None, pre + "LastAsk": None})
                                 continue
                             s_bid, s_ask = contract_quote(chain, t.get(pre + "Contract"))
                             t.update({pre + "Last": sm, pre + "LastBid": s_bid, pre + "LastAsk": s_ask})

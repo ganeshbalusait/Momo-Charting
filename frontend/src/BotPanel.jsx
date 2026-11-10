@@ -11,8 +11,9 @@ import { RULE_LAB_URL, ruleLabRows, ruleLabSummary } from "./ruleLab.js";
 import { truthAccountLabel, truthGapLabel, truthHeadline, truthMoney, truthNewRulesLine, truthPct } from "./botTruth.js";
 import { Bot, RefreshCw, X } from "lucide-react";
 import BotDesk from "./BotDesk.jsx";
+import BotChat from "./BotChat.jsx";
 import { DESK_VIEW_KEY, readDeskView } from "./botDesk.js";
-import { BOT_RULE_HELP, BOT_RULE_LABELS, BOT_RULE_ORDER, botRuleLabel, BOT_TEST_RULES, botContractLabel, botDailyLog, botEntryStrikeLabel, botNewsBook, botAiBook, isEarlyDayLine, setBotFills, setBotExit, setBotContract, BOT_EXIT_LABELS, BOT_CONTRACT_LABELS, botExitMatrix, botRiskOk, botRiskRoi, botMomentumMatrix, botPeriodMatrix, botReport, formatBotDollars, formatBotPct, nextBotSort, sortBotRows } from "./momxBot.js";
+import { BOT_RULE_HELP, BOT_RULE_LABELS, BOT_RULE_ORDER, botRuleLabel, BOT_TEST_RULES, botContractLabel, botDailyLog, botEntryStrikeLabel, isEarlyDayLine, setBotFills, setBotExit, setBotContract, BOT_EXIT_LABELS, BOT_CONTRACT_LABELS, botExitMatrix, botRiskOk, botRiskRoi, botMomentumMatrix, botPeriodMatrix, botReport, formatBotDollars, formatBotPct, nextBotSort, sortBotRows } from "./momxBot.js";
 
 // Trading days with bot data (his ask 2026-09-28: daily / 2D / 3D / 4D /
 // weekly / 2 week / 3 week ... overall).
@@ -181,7 +182,7 @@ function ExperimentApproval({ awaiting }) {
     fetch(EXPERIMENT_DECISION_URL, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: awaiting.id, decision }) })
       .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
-      .then(({ ok, d }) => setMessage(ok ? (decision === "approve" ? "Approved: Paper 5 uses this rule from its next entry." : "Rejected: Paper 5 keeps its current rules.") : (d?.error || "Could not save your decision")))
+      .then(({ ok, d }) => setMessage(ok ? (decision === "approve" ? "Approved. Advice only: Paper 5 keeps taking every signal and records what this rule would have done." : "Rejected: Paper 5 keeps its current rules.") : (d?.error || "Could not save your decision")))
       .catch(() => setMessage("Could not reach the scanner worker; try again"))
       .finally(() => setBusy(false));
   };
@@ -206,7 +207,7 @@ function ExperimentStatus({ lab }) {
   const e = lab.latest;
   const forward = e?.evaluation;
   const validation = e?.screen?.validation;
-  const phases = { forward: "Future paper evaluation", awaiting_approval: "Waiting for your OK", active: "Active on Paper 5", rejected: "Rejected", rolled_back: "Rolled back" };
+  const phases = { forward: "Future paper evaluation", awaiting_approval: "Waiting for your OK", active: "Advice on Paper 5 (never blocks)", rejected: "Rejected", rolled_back: "Rolled back" };
   const check = e?.statsCheck;
   const spec = e?.screen?.spec;
   const describe = s => s?.kind === "spread_ceiling" ? `Entry spread no wider than ${Math.round(s.value * 100)}% of premium`
@@ -217,8 +218,8 @@ function ExperimentStatus({ lab }) {
   const actual = e?.screen?.version >= 2;
   const data = e?.screen?.dataset;
   return <div className="bot-experiment-status" aria-label="Automated paper experiments">
-    <p><b>Automated paper experiments</b> · Paper 3: baseline · Paper 5: {lab.activeId ? "validated candidate " + lab.activeId : "baseline rules"}</p>
-    {lab.registeredActiveId && !lab.monitorHealthy ? <p role="status">Candidate suspended: waiting for fresh monitoring. New Paper 5 entries use baseline rules.</p> : null}
+    <p><b>Automated paper experiments</b> · Paper 3: Rules bot (newest signal first) · Paper 5: AI bot (AI picks which signal gets a free slot; never blocks) · {lab.activeId ? "every signal taken; advising rule " + lab.activeId : "every signal taken"}</p>
+    {lab.registeredActiveId && !lab.monitorHealthy ? <p role="status">Rule advice paused: waiting for fresh monitoring. Paper 5 keeps taking every signal.</p> : null}
     <p>Monitoring: {lab.monitorHealthy ? "current" : "waiting for a successful check"}. {!lab.busy && !lab.registeredActiveId && e?.state !== "forward" && lab.nextProposalAt ? `Next research eligible: ${new Date(lab.nextProposalAt * 1000).toLocaleString("en-US", { timeZone: "America/New_York" })} ET.` : ""}</p>
     {lab.error ? <p role="status">{lab.error}</p> : null}
     <p>{lab.busy ? "Planner and historical evaluation running…" : e ? `${phases[e.state] || e.state} · ${e.reason}` : "Waiting for a completed agent discussion to propose an experiment."}</p>
@@ -246,7 +247,7 @@ function ExperimentStatus({ lab }) {
       <p>Fees are excluded. Stress testing applies an extra 1% of entry premium. Unused capital stays cash. Future comparisons use Paper 3 fills; Paper 5 fills may differ. Candidate monitoring can revert Paper 5 to baseline after five entry days, or $500 of candidate closed losses in a day. Existing positions keep their exit rules.</p>
       <p>Supported experiments: entry spread, premium floor, opening-time exclusion. Agents cannot execute generated code or change live-money trading.</p>
       {lab.experiments?.map(x => <p key={x.id}>{x.id} · {phases[x.state] || x.state} · {x.reason}</p>)}
-      {lab.recentDecisions?.length ? <p>Recent Paper 5 decisions: {lab.recentDecisions.map(x => `${x.symbol} ${x.qualified ? "qualified" : "outside candidate rule"}`).join(" · ")}</p> : null}
+      {lab.recentDecisions?.length ? <p>Recent rule advice on Paper 5 (every one was traded): {lab.recentDecisions.map(x => `${x.symbol} ${x.qualified ? "rule would take" : "rule would skip"}`).join(" · ")}</p> : null}
     </details> : null}
   </div>;
 }
@@ -305,7 +306,7 @@ function LearningTeamStatus({ onStatus }) {
     </details> : null}
     {team?.error ? <p role="status">{team.error}</p> : null}
     {team?.capture && Object.keys(team.capture).length ? <details><summary>Scanner → BOT capture</summary>
-      <p>Rule-qualified signals received by the BOT, including the scanner's secondary rows. This does not count every market opportunity or prove that an unentered signal would have won. News trade and AI pick are views of the shared virtual book.</p>
+      <p>Rule-qualified signals received by the BOT, including the scanner's secondary rows. This does not count every market opportunity or prove that an unentered signal would have won.</p>
       {Object.entries(team.capture).map(([side, c]) => <div key={side}>
         <p><b>{side.toUpperCase()} · {c.day || "Waiting for scanner"}</b>: {c.signals} recorded signals · {c.entered} entered · {c.pending} waiting for quotes · {c.notEntered} not entered.</p>
         {Object.entries(c.reasons || {}).map(([reason, n]) => <p key={reason}>{n} · {reason}</p>)}
@@ -346,7 +347,7 @@ function LearningTeamStatus({ onStatus }) {
       <p>Saved trade evidence survives restarts. The reviewer, critic and experiment planner receive the same memory snapshot. A loss alone is not a mistake; these patterns need investigation and do not automatically block entries.</p>
       <p>Latest {team.memory.windowEntryDays} captured entry days per source. {team.memory.capturedTrades} unique captured trades; {team.memory.excludedRows} records excluded for missing or invalid evidence. Views of the same virtual trade count once.</p>
       <p>{team.memory.basis} Patterns require at least six trades across four entry days and losses before fees in both chronological halves. This is a research screen, not proof of a trading edge.</p>
-      {Object.entries(team.memory.scopes || {}).map(([scope, s]) => <p key={scope}>{scope === "virtual" ? "Virtual BOT (All trades / News trade / AI pick)" : scope === "paper3" ? "Paper 3" : "Paper 5"}: {s.trades} captured trades across {s.days} entry days{ s.throughDay ? ` · through ${s.throughDay}` : ""}.</p>)}
+      {Object.entries(team.memory.scopes || {}).map(([scope, s]) => <p key={scope}>{scope === "virtual" ? "Virtual BOT (All trades)" : scope === "paper3" ? "Paper 3" : "Paper 5"}: {s.trades} captured trades across {s.days} entry days{ s.throughDay ? ` · through ${s.throughDay}` : ""}.</p>)}
       {team.memory.patterns?.length ? <div className="bot-scroll"><table className="bot-table"><thead><tr><th>Source</th><th>Side / rule</th><th>Trades / days</th><th>Wins / losses</th><th>Earlier net</th><th>Later net</th><th>Next action</th></tr></thead><tbody>
         {team.memory.patterns.map(p => <tr key={`${p.scope}-${p.side}-${p.rule}`}><td>{p.scope}</td><td>{p.side} · {p.rule}</td><td>{p.trades} / {p.days}</td><td>{p.wins} / {p.losses}</td><td className="bot-num is-down">{PAPER_MONEY(p.earlierNet)}</td><td className="bot-num is-down">{PAPER_MONEY(p.laterNet)}</td><td>Investigate; test on unseen trades</td></tr>)}
       </tbody></table></div> : <p>No captured group meets the recurring-loss screen yet.</p>}
@@ -399,7 +400,7 @@ function PaperBook({ account, side, days, team, refreshKey }) {
         {" "}{side === "bear" ? "BEAR (puts)" : "BULL (calls)"} rules: {picked.length ? picked.join(", ") : "every rule"}.
         {" "}When: {doc.rules?.entryTimes || "9:30 AM-3:30 PM ET"}. Size: {doc.rules?.sizing}. Exit: {doc.rules?.exitPlan}. {doc.error ? "Last error: " + doc.error : ""}
       </p>
-      <p className="bot-hint" role="status">Entry policy: {account === "paper5" && team?.experiments?.activeId ? "validated experiment rule, then immediate entry" : "trade first under baseline rules"}. {doc.ai?.enabled ? "ON · experimental" : "OFF"}. {doc.ai?.reason || "Waiting for status"}. Entries never wait for an AI response. The review and critic agents analyze completed trades afterward. Existing risk limits and midpoint exits stay in force.</p>
+      <p className="bot-hint" role="status">Entry policy: {account === "paper5" && team?.experiments?.activeId ? "every signal is taken; the validated rule is advice only" : "every signal is taken; AI never blocks"}. {doc.ai?.enabled ? "ON · experimental" : "OFF"}. {doc.ai?.reason || "Waiting for status"}. Entries never wait for an AI response. The review and critic agents analyze completed trades afterward. Existing risk limits and midpoint exits stay in force.</p>
       </details>
       <section className="bot-kpis" aria-label="Paper totals">
         <Kpi label="Realized P/L · paper" value={pl == null ? "Incomplete" : PAPER_MONEY(pl)} sub={pl == null ? "Missing fill evidence; total withheld" : "Sell fills and confirmed expirations · before fees"} className={tone(pl)} />
@@ -799,7 +800,7 @@ function BotResearch({ viewSwitch }) {
   const [levelStrategy, setLevelStrategy] = useState('all');
   // "Jev BOT" (2026-10-02): the whole page counts only the trades Jev would take.
   const [book, setBookState] = useState(() => {
-    try { const b = window.localStorage.getItem("bot.book"); return ["news", "ai", "paper3", "paper5"].includes(b) ? b : "all"; } catch { return "all"; }
+    try { const b = window.localStorage.getItem("bot.book"); return ["paper3", "paper5"].includes(b) ? b : "all"; } catch { return "all"; }
   });
   const [learningTeam, setLearningTeam] = useState(null);
   const paperMode = book === "paper3" || book === "paper5";
@@ -821,18 +822,14 @@ function BotResearch({ viewSwitch }) {
     setOutcome("all");
     try { window.localStorage.setItem("bot.exit", v); } catch { /* private window */ }
   };
-  const [contractMode, setContractState] = useState(() => {
-    try { const v = window.localStorage.getItem("bot.contract"); return v === "zero" || v === "entry" ? v : "main"; } catch { return "main"; }
-  });
-  const setContractMode = (v) => {
-    setContractState(v);
-    try { window.localStorage.setItem("bot.contract", v); } catch { /* private window */ }
-  };
+  // 2026-11-10 (his "Why still I see Contract: Next week / Same-day?"): the paper
+  // accounts buy only the 0.20-delta contract, so Research follows that same
+  // contract and the Next week / Same-day choices are gone.
+  const contractMode = "entry";
   setBotExit(exitMode);
   setBotContract(contractMode);
   const pick = useCallback(
-    (days) => (book === "news" ? botNewsBook(days)
-      : book === "ai" ? botAiBook(days) : book === "all" ? filterBotLevel(days, levelStrategy) : days),
+    (days) => (book === "all" ? filterBotLevel(days, levelStrategy) : days),
     // fills / exit / contract are read inside botTradeResults; listing them here
     // re-runs every memo built on pick
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -962,11 +959,9 @@ function BotResearch({ viewSwitch }) {
           {viewSwitch}
           <div className="bot-seg" role="group" aria-label="Which bot">
             <button type="button" className={book === "all" ? "is-on" : ""} onClick={() => setBook("all")} title="Every trade the rules took">All trades</button>
-            <button type="button" className={book === "news" ? "is-on is-jev" : ""} onClick={() => setBook("news")}
-              title="The bot's trades on the scanner's NEWS ▲ (BULL) / NEWS ▼ (BEAR) list: scan matches whose news Jev reads bullish / bearish. Paper.">News trade</button>
-            <button type="button" className={book === "ai" ? "is-on is-jev" : ""} onClick={() => setBook("ai")}
-              title="Display filter for trades scored 55%+ by the local model. This score does not block entries; agents review completed trades afterward.">AI pick</button>
           </div>
+          {/* News trade and AI pick are gone from this page (2026-11-10, his "Remove filters also
+              news trade"): the paper accounts trade only the three Level strategies. */}
           {/* Paper accounts as ONE drop-down (2026-10-17, his "Instead of panel use dropdown for paper 3/paper5"). */}
           {book === 'all' ? <label className="bot-level-select">
             <span>Level strategy</span>
@@ -979,8 +974,8 @@ function BotResearch({ viewSwitch }) {
             value={paperMode ? book : ""} onChange={(e) => setBook(e.target.value || "all")}
             title="Alpaca PAPER: trade first using existing rules and midpoint limits. ChatGPT/Ollama agents review completed trades afterward.">
             <option value="">Paper trades ▾</option>
-            <option value="paper3">Paper 3 · Trade first</option>
-            <option value="paper5">Paper 5 · Trade first</option>
+            <option value="paper3">Paper 3 · Rules bot</option>
+            <option value="paper5">Paper 5 · AI bot</option>
           </select>
           <div className="bot-seg" role="group" aria-label="Board">
             {["bull", "bear"].map((s) => (
@@ -990,13 +985,10 @@ function BotResearch({ viewSwitch }) {
             ))}
           </div>
           {paperMode ? null : (<>
-          <div className="bot-seg" role="group" aria-label="Contract" title="Which contract the numbers follow. Same-day and 0.20 delta are bought at the same signal as next week's.">
-            {["main", "zero", "entry"].map((v) => (
-              <button key={v} type="button" className={contractMode === v ? "is-on" : ""} onClick={() => setContractMode(v)}>
-                {v === "main" ? "Contract: " : ""}{BOT_CONTRACT_LABELS[v]}
-              </button>
-            ))}
-          </div>
+          <span className="bot-hint" role="status" aria-label="Contract"
+            title="Every number on this page follows the 0.20-delta contract (out of the money, next week's expiry): the same one the paper accounts buy.">
+            Contract: {BOT_CONTRACT_LABELS[contractMode]}
+          </span>
           <div className="bot-seg bot-exit-options" role="group" aria-label="Exit comparison">
             {["exit", "close", "best"].map((v) => (
               <button key={v} type="button" className={exitMode === v ? "is-on" : ""} aria-pressed={exitMode === v} onClick={() => setExitMode(v)}>
@@ -1041,20 +1033,7 @@ function BotResearch({ viewSwitch }) {
           {exitMode === "best" ? " Best recorded price is hindsight, not an executed exit. Quote gaps can miss the true peak. Use Strategy exit to review the strategy's wins and losses." : ""}
         </p>
       ) : null}
-      {book === "news" ? (
-        <p className="bot-jevbook-note">
-          <b>News trade</b> · paper · the bot buys the scanner's {side === "bear" ? "NEWS ▼ list (puts)" : "NEWS ▲ list (calls)"}: a scan match
-          whose News cell Jev reads as {side === "bear" ? "bearish" : "bullish"} - the same tickers as the scanner with Scan matches only ticked.
-          Starts Oct 8, so earlier days are empty. Not proven yet - compare with All trades.
-        </p>
-      ) : null}
-      {book === "ai" ? (
-        <p className="bot-jevbook-note">
-          <b>AI pick</b> · TEST · only the trades the shadow AI model scored 55% or more - every number below counts these alone.
-          Scores start Oct 17, so earlier days are empty. Calls and puts both - see the AI model tab for each side's score. Not proven yet - compare with All trades.
-        </p>
-      ) : null}
-      <p className="bot-hint">All trades · News trade: eligible signals enter immediately under existing rules. AI pick remains a score-based comparison view, not an entry gate. Configured AI agents review completed trades afterward; historical results remain unchanged.</p>
+      <p className="bot-hint">All trades: eligible signals enter immediately under the existing rules. AI never blocks an entry; AI agents review completed trades afterward.</p>
       <p className="bot-hint">Virtual P/L uses bid/ask midpoints, before fees. A midpoint estimate is not a confirmed fill. Paper orders use midpoint limits and may remain unfilled.</p>
       <section className="bot-kpis" aria-label="Totals">
         <Kpi label={"P/L · " + (exitMode === "exit" && contractMode === "main" ? "strategy exit" : BOT_CONTRACT_LABELS[contractMode] + " · " + BOT_EXIT_LABELS[exitMode])} value={total.priced ? formatBotDollars(total.dollars) : "-"} sub={exitMode === "best" ? "Hindsight only · 1 contract each · before fees" : "Closed " + formatBotDollars(total.realizedDollars) + " · open " + formatBotDollars(total.openDollars) + " · before fees"} className={tone(total.dollars)} />
@@ -1514,6 +1493,8 @@ export default function BotPanel() {
         title="Real paper fills, judged like a prop-firm evaluation">Scorecard</button>
       <button type="button" className={view === "research" ? "is-on" : ""} aria-pressed={view === "research"} onClick={() => setView("research")}
         title="The virtual BOT: every signal scored as if it filled at the mid price">Research</button>
+      <button type="button" className={view === "ask" ? "is-on" : ""} aria-pressed={view === "ask"} onClick={() => setView("ask")}
+        title="Ask about a ticker or the bot: how far it went, why it failed, why it was missed. No AI; answers come from the app's records">Ask</button>
     </div>
   );
   if (view === "research") return <BotResearch viewSwitch={viewSwitch} />;
@@ -1523,12 +1504,12 @@ export default function BotPanel() {
         <div className="bot-title">
           <Bot size={18} aria-hidden="true" />
           <h2>BOT workspace</h2>
-          <span className="bot-badge">REAL PAPER FILLS</span>
+          <span className="bot-badge">{view === "ask" ? "ASK THE APP" : "REAL PAPER FILLS"}</span>
           <span className="bot-badge is-admin">Admin only</span>
         </div>
         <div className="bot-controls">{viewSwitch}</div>
       </header>
-      <BotDesk />
+      {view === "ask" ? <BotChat /> : <BotDesk />}
     </div>
   );
 }

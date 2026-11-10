@@ -2,6 +2,92 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-10T02:15:00-05:00",
+      "heading": "BOT: new Ask tab - ask the app about a ticker or the bot",
+      "subheading": "A chatbot that needs no AI. It answers from the app's own records, so it works without any AI subscription.",
+      "items": [
+        "The Bot page has a third tab, Ask, next to Scorecard and Research. Type a question or tap one of the examples.",
+        "'SPY if I take how much it went up': it finds the signal and tells you what the 0.20-delta option cost, its best price of the day, where the Bot's exit was, the close, whether +100% was reached, and what three contracts would have made. Add a time ('at 10:30'), 'put' or 'call', or a day ('yesterday', '11-06').",
+        "'why AAPL failed': the result of that trade and what the chart showed against it at the signal: wrong side of VWAP or the EMAs, a pivot or a high OI wall just ahead, fading momentum, a wide spread, the market going the other way.",
+        "'why was NVDA missed': the exact step that stopped it: no signal, not a Level signal, outside the buy windows, no 0.20-delta contract, no bid, too cheap or too expensive, all 8 slots in use, the daily buy limit, or the daily loss stop.",
+        "'see TSLA': every signal on file for that ticker and what each paper account did with it. 'what is the bot doing': both bots' results, balance, open and stuck orders, and which is ahead.",
+        "It remembers what you are talking about: after 'NVDA if I take how much it went up' you can just type 'profit or loss' or 'why did it fail' and it continues with NVDA on the same day.",
+        "'How much it went up' is read as the calls and 'went down' as the puts. When the other side also had signals that day, the answer says so and tells you to add 'put' or 'call'.",
+        "Type one- or two-letter tickers, and tickers that are everyday words, in capitals or with a $ (T, GS, $COST).",
+        "Every number comes from a saved record. When something was not recorded it says 'not recorded' instead of guessing. Prices are mid prices unless it says the paper account bought or sold.",
+        "It only reads. It cannot place, change or cancel a trade."
+      ]
+    },
+    {
+      "at": "2026-11-10T01:30:00-05:00",
+      "heading": "Option chains: 30 days of history are now saved",
+      "items": [
+        "Every 30 minutes of the session (9:35 AM to 4:05 PM ET) the app now keeps a copy of each option chain it follows: bid, ask, last, mark, greeks, volume and open interest for every strike and expiry.",
+        "30 days are kept; older days are deleted automatically. Before this the app kept only one line a day per strike (open interest, volume, gamma, delta) and no option prices over time.",
+        "This is the price history the AI agents, back-tests and the coming chatbot need to answer questions like 'if I had taken this SPY call at 10:30, how far did it go'.",
+        "Nothing changes on screen yet. Saving starts with the 11-10 session, so the history builds up from today."
+      ]
+    },
+    {
+      "at": "2026-11-10T01:20:00-05:00",
+      "heading": "BOT: Rules bot against AI bot, trading your manual plan - see which one works before real money",
+      "subheading": "Paper 3 and Paper 5 now trade the same signals and differ in one thing only: which waiting signal gets a free slot.",
+      "items": [
+        "Paper 3 is the Rules bot: when a slot is free, the newest Level signal gets it.",
+        "Paper 5 is the AI bot: an AI looks at the Level signals waiting for a slot and ranks them, and the best-ranked one gets the next free slot. It is shown each signal's 5-minute chart at the signal: price against VWAP and the 9 / 21 / 50 / 200 EMAs, the nearest level ahead and behind (pivots, yesterday's high and low, premarket high and low), relative volume, ADX and squeezes, and the high open-interest walls ahead with their size.",
+        "Everything else is the same on both: the same Level 1 / 2 / 3 signals, the 0.20-delta contract, the same size, the same exit plan, pause and $500 daily loss stop. So a difference in results comes from the choosing.",
+        "Exit plan, both bots, now the way you trade by hand: two thirds of the contracts are sold at +100% OR when the stock reaches the high open-interest level that was ahead of it (3 contracts: 2 sold, 1 left). The rest gets a break-even stop, then +100% once it has been up 200%, and so on. Before, only 20% was sold at +100% and the high OI level was not a target.",
+        "New -50% stop on both bots: a position down 50% is sold. It must show on two checks in a row (20 seconds), so one bad quote cannot stop a trade out. The exit on a 5-minute close below VWAP or the 21 EMA is unchanged.",
+        "The AI never blocks a trade. It only puts the waiting signals in order. If it has no answer in time, the AI bot uses the Rules bot's order, so a slot is never left empty.",
+        "New Scorecard card 'Rules bot against AI bot': both side by side with closed trades, win rate, real P/L, return and balance. A bot is called ahead only when both have 20 closed real trades, the AI really chose at least half of the AI bot's trades, and the gap is bigger than one trade can move it. Otherwise the card says 'too early', 'not a fair test yet' or 'too close to call'.",
+        "On the AI bot the card also shows how many orders the AI really chose and how many used the rules order because the AI had no answer.",
+        "The account buttons now read 'Paper 3 - Rules bot' and 'Paper 5 - AI bot'.",
+        "Real money is still not connected. Nothing on this page can place a real-money order."
+      ]
+    },
+    {
+      "at": "2026-11-10T00:50:00-05:00",
+      "heading": "Scorecard: the three strategies side by side - which one is good",
+      "items": [
+        "New card near the top of the Scorecard: Level 1, Level 2 and Level 3 in one table on real paper fills, with closed trades, win rate, real P/L, return, result per trade, calls and puts apart, and how many orders filled.",
+        "One line above the table answers 'which one is good': it names the best strategy once it has 20 closed real trades and a profit. Before that it says how many trades are still needed, and if every strategy is losing it says none is good.",
+        "All three strategies are always listed, even before the first trade.",
+        "When two levels took exactly the same trades (so far every Level 1 signal has also been a Level 2 signal) the card says so instead of showing them as two different results."
+      ]
+    },
+    {
+      "at": "2026-11-10T00:30:00-05:00",
+      "heading": "BOT: paper accounts now trade only Level 1 / 2 / 3 at 0.20 delta, on a fresh $10,000 Scorecard",
+      "subheading": "From the 11-10 open. AI can no longer block any trade; instead it studies the losing trades every evening.",
+      "items": [
+        "Paper 3 and Paper 5 now buy ONLY the three Level strategies (Level 1, Level 2, Level 3), calls and puts. Every other rule is still tracked on the Research page but places no paper order.",
+        "The paper order is the 0.20-delta contract (out of the money, next week's expiry), not the nearest strike. A signal with no contract under 0.20 delta is skipped rather than swapped for a different one.",
+        "The three levels stack: a Level 3 signal is also a Level 2 and a Level 1 signal (on 11-06 and 11-09 no signal was Level 1 only). So one signal is one paper order, and the Scorecard counts that trade under every level it qualified for: Level 1 shows every Level signal, Level 3 only the strongest. The account balance counts each trade once.",
+        "When there are more signals than free slots (there were 176 Level signals on 11-09 against 8 slots), the newest signal now gets the slot. Before, a freed slot went to a signal about 10 minutes old, and that late order usually missed.",
+        "A buy that was already sent is now re-sent at the ask even when its signal is more than 10 minutes old, as long as the Bot is still in the trade. On 11-09 that age check turned 18 buys into misses.",
+        "An option with a $0.00 bid, or priced under $0.05, is not bought: it could not be sold back. 42 of the 176 Level contracts on 11-09 had no bid.",
+        "Fresh Scorecard: the evaluation starts 11-10 on a $10,000 account. Trades from before that day are not judged. A new line under the verdict shows the start day, what is traded and the balance now.",
+        "Older positions and stuck orders from before the fresh start still show on the Scorecard when they need attention, and they still count toward the $500 daily loss stop.",
+        "AI never blocks a trade. Before, an AI 'no', an AI error, or a Paper 5 test rule could stop a paper buy. Now the AI's opinion is saved on the order and the trade is taken anyway. Time rules (9:30-11:00 and 1:00-3:30 buy windows, 10-minute-old signals) are unchanged.",
+        "New Scorecard card 'What the AI learned from the losing trades': every evening after 5:00 PM ET the AI studies each strategy's losing real paper trades and writes one lesson, one change to try and how to test it. It needs 10 losing trades per strategy first. It only suggests; nothing changes unless you decide.",
+        "Research page: the News trade and AI pick buttons are removed, and so are the 'Next week' and 'Same-day' contract choices. Research now shows All trades on the 0.20-delta contract only, the same contract the paper accounts buy.",
+        "The 'BOT claim against real result' card now compares the same 0.20-delta contract the paper account bought, for the days since the fresh start."
+      ]
+    },
+    {
+      "at": "2026-11-09T23:10:00-05:00",
+      "heading": "BOT: Pause button, daily loss stop, and Remove for stuck orders",
+      "subheading": "The paper bot can now be stopped from the Scorecard, stops itself after a $500 losing day, and no longer lets dead orders block its slots.",
+      "items": [
+        "Scorecard: a new strip under the verdict shows whether the selected paper account is buying. 'Pause new buys' stops new paper buys for that account until you press 'Resume buying'. Paper 3 and Paper 5 are paused separately.",
+        "Daily loss stop: once a paper account is down $500 on the day, it places no new buys until the next day. The strip shows today's result and says when the stop was hit.",
+        "Pause and the daily loss stop hold NEW buys only. Positions already held are still sold on their normal exit plan.",
+        "Stuck orders (a buy the broker never confirmed) are now listed one per line with a 'Remove' button. Remove checks the broker first: if nothing filled, the order is counted as never filled and its slot is free. If the broker says it filled, it is a real position and is not removed.",
+        "The paper bot now clears these dead buys by itself: a buy the broker has no record of 5 minutes after it was sent is counted as never filled instead of holding a slot for days. Five such orders had been blocking Paper 3 since 11-04.",
+        "A buy sent today that is still unconfirmed after 10 minutes now shows as stuck too, not only buys from earlier days."
+      ]
+    },
+    {
       "at": "2026-11-09T18:50:00-05:00",
       "heading": "BOT: new Scorecard page - is the bot ready for real money?",
       "subheading": "The paper accounts are now judged like a prop-firm evaluation, on real paper fills only.",

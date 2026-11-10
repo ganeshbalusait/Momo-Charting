@@ -63,14 +63,14 @@ e2eTest("Closed wins shows only winning closed trades and marks itself pressed",
 e2eTest("the ROI header cycles high-to-low, low-to-high, then off", async () => {
   await withApp({ view: "Bot", fakeReads: reads, storage: { "bot.tab": "trades" } }, async (app) => {
     await openTrades(app);
-    const roi = app.page.locator(`${CARD} th.bot-sortable`, { hasText: /^ROI \(strategy exit\)/ });
+    const roi = app.page.locator(`${CARD} th.bot-sortable`, { hasText: /^ROI \(0\.20 delta · Strategy exit\)/ });
     assert.equal(await roi.getAttribute("aria-sort"), "none");
     await roi.click();
     assert.equal(await roi.getAttribute("aria-sort"), "descending");
-    const high = await cellTexts(app.page, "ROI (strategy exit)");
+    const high = await cellTexts(app.page, "ROI (0.20 delta · Strategy exit)");
     await roi.click();
     assert.equal(await roi.getAttribute("aria-sort"), "ascending");
-    const low = await cellTexts(app.page, "ROI (strategy exit)");
+    const low = await cellTexts(app.page, "ROI (0.20 delta · Strategy exit)");
     assert.deepEqual(low, [...high].reverse());
     await roi.click();
     assert.equal(await roi.getAttribute("aria-sort"), "none");

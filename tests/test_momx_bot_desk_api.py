@@ -33,6 +33,9 @@ def grade(tmp_path, monkeypatch):
     base = tmp_path / "grade"
     monkeypatch.setenv("AGX_MOMX_GRADE_DIR", str(base))
     monkeypatch.setattr(api_server, "_MOMX_BOT_DESK", {})
+    # Judge every seeded order whatever today's date is (the fresh-start day has its own tests).
+    from momx import bot_desk
+    monkeypatch.setattr(bot_desk, "EVALUATION_START", "2026-01-01")
     return base
 
 
@@ -60,6 +63,13 @@ def test_admin_gets_the_scorecard(grade):
     daily = next(o for o in acct["objectives"] if o["key"] == "dailyLoss")
     assert (daily["pass"], daily["breaks"], daily["target"]) == (False, 1, -500)
     assert body["limits"]["profitTarget"] == 1000 and body["paused"] is False
+    # The fresh evaluation, its strategy, the account balance and the loss study (none yet) are served too.
+    assert body["startDay"] == "2026-01-01" and body["strategy"].startswith("Level 1 / 2 / 3")
+    assert acct["balance"] == 8900.0 and body["lessons"] is None and body["limits"]["accountSize"] == 10000
+    # The three strategies are always served, even though this account traded another rule.
+    assert [r["rule"] for r in acct["strategies"]["rows"]] == ["level1", "level2", "level3"]
+    assert acct["strategies"]["best"] is None and acct["strategies"]["need"] == 20
+    assert all(r["closed"] == 0 for r in acct["strategies"]["rows"])
 
 
 def test_non_admin_is_refused(grade):

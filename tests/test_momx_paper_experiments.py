@@ -93,8 +93,11 @@ def test_fixed_future_window_promotes_and_survives_restart(tmp_path):
     assert restored.decision("bull", {"entry": 1, "entryBid": .5, "entryAsk": 1.5}, 1)["approved"] is True
     restored.mirrors = [Mirror([])]
     restored.observe()
-    assert restored.decision("bull", {"entry": 1, "entryBid": .5, "entryAsk": 1.5}, 1)["approved"] is False
-    assert restored.decision("bull", {"entry": 1, "entryBid": .99, "entryAsk": 1.01}, 1)["approved"] is True
+    # Advice only since 2026-11-09: the rule's yes / no is candidateTake; approved is always True.
+    wide = restored.decision("bull", {"entry": 1, "entryBid": .5, "entryAsk": 1.5}, 1)
+    assert wide["approved"] is True and wide["candidateTake"] is False
+    tight = restored.decision("bull", {"entry": 1, "entryBid": .99, "entryAsk": 1.01}, 1)
+    assert tight["approved"] is True and tight["candidateTake"] is True
 
 
 def test_missing_decisions_cannot_be_backfilled_after_close_or_promoted(tmp_path):
@@ -158,7 +161,7 @@ def test_planner_failures_are_durable_and_do_not_change_entry_policy(tmp_path):
     assert not restored.propose("batch",{})
 
 
-def test_promoted_policy_controls_paper5_entry_without_network_and_preserves_mid_limits(tmp_path):
+def test_promoted_policy_advises_paper5_but_never_blocks_and_preserves_mid_limits(tmp_path):
     from test_momx_paper_mirror import FakeClient, Book as MirrorBook, NOW, _trade
     from momx.paper_mirror import PaperMirror
     from momx.paper_learning import trade_first
@@ -171,7 +174,10 @@ def test_promoted_policy_controls_paper5_entry_without_network_and_preserves_mid
     mirror=PaperMirror({"bull":MirrorBook([trade])},tmp_path/"paper5",account="paper5",jev_cut=None,
                        client_factory=lambda:client,off=lambda:False,ai_policy=lab.decision)
     mirror.tick(NOW)
-    assert not client.calls and not lab.execution[next(iter(lab.execution))]["qualified"]
+    # The rule would have skipped it; the buy goes out anyway and the advice is kept.
+    assert client.calls[0][3] == 1.2 and not lab.execution[next(iter(lab.execution))]["qualified"]
+    advice = mirror.status()["rows"][0]["aiDecision"]
+    assert advice["approved"] is True and advice["candidateTake"] is False and "never blocks" in advice["reason"]
     baseline=FakeClient()
     ordinary=PaperMirror({"bull":MirrorBook([trade])},tmp_path/"paper3",account="paper3",jev_cut=None,
                         client_factory=lambda:baseline,off=lambda:False,ai_policy=trade_first)
@@ -238,14 +244,17 @@ def test_stale_or_failed_monitor_restores_baseline_without_network_in_decision(t
     lab.state.update(experiments=[e],active=e["id"])
     lab.observe()
     trade = {"entry":1,"entryBid":.5,"entryAsk":1.5}
-    assert not lab.decision("bull",trade,1000)["approved"]
+    assert lab.decision("bull",trade,1000)["candidateTake"] is False
     now[0] += 121
-    assert lab.decision("bull",trade,1121)["approved"] and lab.status()["activeId"] is None
+    stale = lab.decision("bull",trade,1121)
+    assert stale["approved"] and "candidateTake" not in stale and lab.status()["activeId"] is None
     lab.observe()
-    assert not lab.decision("bull",trade,1121)["approved"]
+    assert lab.decision("bull",trade,1121)["candidateTake"] is False
     mirror.history = lambda _: (_ for _ in ()).throw(OSError("private error"))
     with pytest.raises(OSError): lab.observe()
-    assert lab.decision("bull",trade,1121)["approved"]
+    failed = lab.decision("bull",trade,1121)
+    assert failed["approved"] and "candidateTake" not in failed
+    assert all(lab.decision("bull",trade,t)["approved"] is True for t in (1000, 1121))    # never a veto
     assert "private error" not in lab.status()["error"]
 
 

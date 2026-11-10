@@ -123,36 +123,45 @@ def test_research_snapshot_uses_order_quote_and_is_saved_before_fill(tmp_path):
     assert restored.status()["rows"][0]["entryInputs"] == row["entryInputs"]
 
 
-def test_ai_pending_blocks_entry_approval_preserves_mid_and_exits_never_wait(tmp_path):
+def test_an_ai_no_never_stops_the_buy_and_its_advice_is_kept_on_the_order(tmp_path):
+    """2026-11-09, his "Don't block any trade using AI": a "no" is recorded, the buy still goes out."""
     client = FakeClient()
     trades = [_trade()]
-    verdict = {"approved": False, "enabled": True, "reason": "pending"}
+    verdict = {"approved": False, "enabled": True, "provider": "ollama", "reason": "weak setup"}
     mirror = pm.PaperMirror({"bull": Book(trades)}, tmp_path, client_factory=lambda: client,
                             off=lambda: False, ai_policy=lambda *args: dict(verdict))
     mirror.tick(NOW)
-    assert not client.calls
-    verdict.update(approved=True, provider="ollama", probability=.65)
-    mirror.tick(NOW + timedelta(seconds=10))
     assert client.calls == [("limit", trades[0]["contract"], 3, 1.2, "buy_to_open")]
-    assert mirror.status()["rows"][0]["aiDecision"]["provider"] == "ollama"
+    row = mirror.status()["rows"][0]
+    assert row["aiDecision"]["approved"] is False and row["aiDecision"]["reason"] == "weak setup"
+    assert row["aiWouldSkip"] is True
     mirror.tick(NOW + timedelta(seconds=20))
-    verdict.update(approved=False)
     trades[0].update(exitPrice=.6, exitBid=.5, exitAsk=.7, exitReason="strategy exit")
     mirror.tick(NOW + timedelta(seconds=30))
     assert client.calls[-1] == ("limit", trades[0]["contract"], 3, .6, "sell_to_close")
 
 
-def test_ai_error_and_stale_quote_cannot_place_entry(tmp_path):
+def test_an_ai_error_never_stops_the_buy_but_a_stale_quote_still_does(tmp_path):
     client = FakeClient()
     def failed(*args):
         raise RuntimeError("provider down")
-    mirror = pm.PaperMirror({"bull": Book([_trade()])}, tmp_path, client_factory=lambda: client,
+    mirror = pm.PaperMirror({"bull": Book([_trade()])}, tmp_path / "a", client_factory=lambda: client,
                             off=lambda: False, ai_policy=failed)
     mirror.tick(NOW)
-    assert not client.calls and mirror.status()["ai"]["approved"] is False
-    mirror._ai_policy = lambda *args: {"approved": True, "enabled": True}
-    mirror.tick(NOW + timedelta(seconds=121))
-    assert not client.calls
+    assert len(client.calls) == 1 and client.calls[0][4] == "buy_to_open"
+    assert mirror.status()["ai"]["approved"] is True and "taken anyway" in mirror.status()["ai"]["reason"]
+    assert "aiWouldSkip" not in mirror.status()["rows"][0]
+    for answer in (None, "yes", 1):                                   # an answer that is not a verdict
+        other = FakeClient()
+        odd = pm.PaperMirror({"bull": Book([_trade()])}, tmp_path / ("odd-%s" % answer), client_factory=lambda: other,
+                             off=lambda: False, ai_policy=lambda *args: answer)
+        odd.tick(NOW)
+        assert len(other.calls) == 1
+    stale = FakeClient()                                               # the quote rule is not AI and still applies
+    late = pm.PaperMirror({"bull": Book([_trade()])}, tmp_path / "b", client_factory=lambda: stale,
+                          off=lambda: False, ai_policy=lambda *args: {"approved": True, "enabled": True})
+    late.tick(NOW + timedelta(seconds=121))
+    assert not stale.calls
 
 
 def test_skips_low_jev_stale_expensive_and_non_paper(tmp_path):
@@ -239,25 +248,25 @@ def test_all_trades_book_ignores_jev_and_accounts_get_distinct_order_ids(tmp_pat
     assert m3._cid("k", "b") != m5._cid("k", "b")
 
 
-def test_accounts_map_is_his_split():
-    assert pm.ACCOUNTS["paper3"][1] is None and pm.ACCOUNTS["paper5"][1] is None
-    assert pm.ACCOUNT_RULES["paper5"] == pm.PICKED_RULES
+def test_both_accounts_trade_only_the_three_level_strategies_at_020_delta():
+    """2026-11-09, his "use only 3 strategies trades and 0.2 delta from tomorrow"."""
+    assert pm.ACCOUNTS["paper3"][1] is None and pm.ACCOUNTS["paper5"][1] is None        # no Jev cut
+    for account in ("paper3", "paper5"):
+        assert pm.ACCOUNT_RULES[account] == {"bull": frozenset({"level1", "level2", "level3"}),
+                                             "bear": frozenset({"level1", "level2", "level3"})}
+    assert pm.PAPER_LEG == "entry"
 
 
-def test_both_accounts_require_enabled_ai_and_paper5_no_longer_needs_jev(tmp_path):
+def test_neither_account_waits_for_ai_to_be_switched_on_or_for_a_jev_score(tmp_path):
     for account in ("paper3", "paper5"):
         client = FakeClient()
-        verdict = {"approved": True, "enabled": False}
-        mirror = pm.PaperMirror({"bull": Book([_trade(rule="zs2", jevP=None)])}, tmp_path / account,
+        mirror = pm.PaperMirror({"bull": Book([_trade(rule="level2", jevP=None, virtualOnly=True)])}, tmp_path / account,
                                 client_factory=lambda: client, off=lambda: False, account=account,
                                 jev_cut=pm.ACCOUNTS[account][1], rules=pm.ACCOUNT_RULES[account],
-                                ai_policy=lambda *args: dict(verdict))
+                                ai_policy=lambda *args: {"approved": True, "enabled": False})
         mirror.tick(NOW)
-        assert not client.calls
-        verdict.update(enabled=True, provider="openclaw", probability=.7, reason="approved")
-        mirror.tick(NOW + timedelta(seconds=10))
         assert len(client.calls) == 1 and client.calls[0][3] == 1.2
-        assert mirror.status()["rows"][0]["aiDecision"]["provider"] == "openclaw"
+        assert mirror.status()["rows"][0]["aiDecision"]["enabled"] is False
 
 
 def test_paper3_trades_only_the_picked_rules(tmp_path):
@@ -272,14 +281,15 @@ def test_paper3_trades_only_the_picked_rules(tmp_path):
     assert "mom" not in pm.PICKED_RULES["bull"] and "rvol" in pm.PICKED_RULES["bull"]
 
 
-def test_retired_paper5_takes_no_new_entries(tmp_path):
+def test_paper5_trades_without_any_ai_policy(tmp_path):
+    """It used to place nothing unless an AI policy was wired; AI is no longer a condition."""
     c = FakeClient()
     bull = [_trade(rule="adx", symbol="A", contract="AC"), _trade(rule="go", symbol="B", contract="BC")]
     bear = [_trade(rule="go", symbol="C", contract="CC"), _trade(rule="star1", symbol="D", contract="DC")]
     m = pm.PaperMirror({"bull": Book(bull), "bear": Book(bear)}, tmp_path, client_factory=lambda: c,
                        off=lambda: False, account="paper5", jev_cut=0.10, rules=pm.PAPER5_RULES)
     m.tick(NOW)
-    assert c.calls == []
+    assert sorted(call[1] for call in c.calls) == ["AC", "CC"]          # the rules it is given, nothing else
 
 
 def test_his_sizing_by_price():
@@ -294,7 +304,8 @@ def test_his_stop_ladder():
     assert pm.stop_for(1.0, 2.0) == 2.0 and pm.stop_for(1.0, 3.4) == 3.0      # +200% -> +100%, +300% -> +200%
 
 
-def test_plus_100_sells_20_percent_then_break_even_stop_sells_the_rest(tmp_path):
+def test_plus_100_sells_two_thirds_then_break_even_stop_sells_the_rest(tmp_path):
+    """2026-11-10, how he trades by hand: "took 3 cons, 2 cons exit at 100% ... 1 cons move to BE"."""
     c = FakeClient()
     trades = [_trade(lastBid=0.24, lastAsk=0.26)]            # mid 0.25 -> 12 contracts
     m = _mirror(tmp_path, trades, c)
@@ -304,16 +315,16 @@ def test_plus_100_sells_20_percent_then_break_even_stop_sells_the_rest(tmp_path)
     assert row["held"] == 12 and row["buyFill"] == 0.25
     trades[0].update(lastBid=0.49, lastAsk=0.51, lastAt=(NOW + timedelta(seconds=15)).isoformat())   # +100%
     m.tick(NOW + timedelta(seconds=20))
-    assert c.calls[-1] == ("limit", "AAPL261023C00250000", 2, 0.5, "sell_to_close")                  # 20% of 12
+    assert c.calls[-1] == ("limit", "AAPL261023C00250000", 8, 0.5, "sell_to_close")                  # two thirds of 12
     m.tick(NOW + timedelta(seconds=30))
     row = m.status()["rows"][0]
-    assert row["held"] == 10 and row["partialDone"] and row["stop"] == 0.25
+    assert row["held"] == 4 and row["partialDone"] and row["stop"] == 0.25
     trades[0].update(lastBid=0.24, lastAsk=0.26, lastAt=(NOW + timedelta(seconds=35)).isoformat())   # back to BE
     m.tick(NOW + timedelta(seconds=40))
-    assert c.calls[-1] == ("limit", "AAPL261023C00250000", 10, 0.25, "sell_to_close")
+    assert c.calls[-1] == ("limit", "AAPL261023C00250000", 4, 0.25, "sell_to_close")
     m.tick(NOW + timedelta(seconds=50))
     s = m.status()
-    assert s["rows"][0]["status"] == "closed" and s["totals"]["pl"] == 50.0           # 2 x $0.25 profit
+    assert s["rows"][0]["status"] == "closed" and s["totals"]["pl"] == 200.0          # 8 x $0.25 profit, 4 at break-even
 
 
 def test_ladder_moves_stop_to_plus_100_after_plus_200(tmp_path):
@@ -328,7 +339,7 @@ def test_ladder_moves_stop_to_plus_100_after_plus_200(tmp_path):
     assert m.status()["rows"][0]["stop"] == 0.5
     trades[0].update(lastBid=0.49, lastAsk=0.51, lastAt=(NOW + timedelta(seconds=35)).isoformat())   # falls to +100%
     m.tick(NOW + timedelta(seconds=40))
-    assert c.calls[-1][2] == 10 and c.calls[-1][4] == "sell_to_close"
+    assert c.calls[-1][2] == 4 and c.calls[-1][4] == "sell_to_close"                  # the third left after 8 of 12 came off
 
 
 def test_history_reads_saved_days_newest_first(tmp_path):
@@ -600,3 +611,92 @@ def test_legacy_rows_without_exec_are_never_resent(tmp_path):
     q.move(1.17, 1.25, t1)
     m.tick(t1)
     assert m.status()["rows"][0]["status"] == "missed" and len(c.calls) == 1
+
+
+# ---- his manual plan, 2026-11-10: 2 of 3 off at +100% or the high OI level; -50% stop
+def test_three_contracts_two_come_off_and_one_runs():
+    assert [pm.partial_qty(q, q) for q in (3, 5, 12, 60)] == [2, 3, 8, 40]
+    assert pm.partial_qty(3, 2) == 1 and pm.partial_qty(3, 1) == 0 and pm.partial_qty(1, 1) == 0     # always one left to run
+
+
+def test_the_target_is_the_nearest_high_oi_wall_ahead_of_the_stock():
+    walls = {"spot": 100.0, "callWalls": [{"strike": 110.0, "oi": 9}, {"strike": 103.0, "oi": 5}, {"strike": 95.0, "oi": 7}],
+             "putWalls": [{"strike": 90.0, "oi": 9}, {"strike": 97.0, "oi": 5}, {"strike": 104.0, "oi": 1}]}
+    assert pm.oi_target("bull", walls) == 103.0 and pm.oi_target("bear", walls) == 97.0
+    assert pm.oi_target("bull", {"spot": 100.0, "callWalls": [{"strike": 99.0}]}) is None            # no wall ahead
+    assert pm.oi_target("bull", {"callWalls": [{"strike": 103.0}]}) is None                          # no stock price
+
+
+def _held(tmp_path, client, **trade):
+    trades = [_trade(lastBid=0.99, lastAsk=1.01, spot=100.0, callWalls=[{"strike": 103.0, "oi": 5000}], **trade)]   # $1.00 -> 3 contracts
+    m = _mirror(tmp_path, trades, client)
+    m.tick(NOW)
+    m.tick(NOW + timedelta(seconds=10))
+    row = m.status()["rows"][0]
+    assert row["held"] == 3 and row["targetStrike"] == 103.0
+    return m, trades
+
+
+def test_the_stock_reaching_the_high_oi_level_sells_two_of_three_and_moves_the_rest_to_break_even(tmp_path):
+    c = FakeClient()
+    m, trades = _held(tmp_path, c)
+    at = NOW + timedelta(seconds=15)
+    trades[0].update(lastBid=1.39, lastAsk=1.41, lastAt=at.isoformat(), stockLast=102.9, stockLastAt=at.isoformat())   # +40%, not there yet
+    m.tick(NOW + timedelta(seconds=20))
+    assert not [x for x in c.calls if x[4] == "sell_to_close"]
+    at = NOW + timedelta(seconds=25)
+    trades[0].update(lastAt=at.isoformat(), stockLast=103.05, stockLastAt=at.isoformat())                              # the wall is reached
+    m.tick(NOW + timedelta(seconds=30))
+    assert c.calls[-1] == ("limit", "AAPL261023C00250000", 2, 1.4, "sell_to_close")
+    m.tick(NOW + timedelta(seconds=40))
+    row = m.status()["rows"][0]
+    assert row["held"] == 1 and row["partialDone"] and row["stop"] == 1.0 and row["sells"][0]["why"] == pm.TARGET_WHY
+    at = NOW + timedelta(seconds=45)
+    trades[0].update(lastBid=0.99, lastAsk=1.01, lastAt=at.isoformat())                                                # back to the buy price
+    m.tick(NOW + timedelta(seconds=50))
+    assert c.calls[-1] == ("limit", "AAPL261023C00250000", 1, 1.0, "sell_to_close")                                    # the runner is not allowed to lose
+
+
+def test_an_old_stock_price_does_not_count_as_reaching_the_level(tmp_path):
+    c = FakeClient()
+    m, trades = _held(tmp_path, c)
+    stale = NOW - timedelta(seconds=pm.STOCK_FRESH_SECONDS + 60)
+    trades[0].update(lastAt=(NOW + timedelta(seconds=15)).isoformat(), stockLast=104.0, stockLastAt=stale.isoformat())
+    m.tick(NOW + timedelta(seconds=20))
+    assert not [x for x in c.calls if x[4] == "sell_to_close"]
+
+
+def test_down_fifty_percent_for_two_ticks_sells_everything(tmp_path):
+    """His "Exit -50%". One bad quote is not enough; the second tick in a row sells."""
+    c = FakeClient()
+    m, trades = _held(tmp_path, c)
+    trades[0].update(lastBid=0.48, lastAsk=0.50, lastAt=(NOW + timedelta(seconds=15)).isoformat())     # -51%
+    m.tick(NOW + timedelta(seconds=20))
+    assert not [x for x in c.calls if x[4] == "sell_to_close"] and m.status()["rows"][0]["lossTicks"] == 1
+    trades[0].update(lastAt=(NOW + timedelta(seconds=25)).isoformat())
+    m.tick(NOW + timedelta(seconds=30))
+    assert c.calls[-1] == ("limit", "AAPL261023C00250000", 3, 0.49, "sell_to_close")
+    m.tick(NOW + timedelta(seconds=40))
+    row = m.status()["rows"][0]
+    assert row["status"] == "closed" and row["sells"][0]["why"] == pm.STOP_LOSS_WHY and row["pl"] == -153.0
+
+
+def test_one_bad_quote_does_not_stop_a_position_out(tmp_path):
+    c = FakeClient()
+    m, trades = _held(tmp_path, c)
+    trades[0].update(lastBid=0.40, lastAsk=0.44, lastAt=(NOW + timedelta(seconds=15)).isoformat())     # -58% for one tick
+    m.tick(NOW + timedelta(seconds=20))
+    trades[0].update(lastBid=0.94, lastAsk=0.96, lastAt=(NOW + timedelta(seconds=25)).isoformat())     # the quote comes back
+    m.tick(NOW + timedelta(seconds=30))
+    row = m.status()["rows"][0]
+    assert row["status"] == "open" and row["lossTicks"] == 0 and not [x for x in c.calls if x[4] == "sell_to_close"]
+
+
+def test_down_forty_nine_percent_is_held(tmp_path):
+    c = FakeClient()
+    m, trades = _held(tmp_path, c)
+    for i in range(3):
+        trades[0].update(lastBid=0.50, lastAsk=0.52, lastAt=(NOW + timedelta(seconds=15 + 10 * i)).isoformat())   # -49%
+        m.tick(NOW + timedelta(seconds=20 + 10 * i))
+    assert m.status()["rows"][0]["status"] == "open" and not m.status()["rows"][0].get("lossTicks")
+    assert "sell 2 of 3" in m.status()["rules"]["exitPlan"] and "-50%" in m.status()["rules"]["exitPlan"]

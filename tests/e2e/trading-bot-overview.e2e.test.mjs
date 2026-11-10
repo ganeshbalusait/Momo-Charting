@@ -41,7 +41,8 @@ e2eTest("the live Bot page opens with its seven totals and writes nothing", asyn
     assert.equal(await app.page.locator(`${TOTALS} .bot-kpi`).count(), 7);
     const labels = (await app.page.locator(`${TOTALS} .bot-kpi-label`).allInnerTexts()).map((s) => s.trim());
     assert.deepEqual(labels.slice(1), ["ROI", "Closed wins / losses", "Avg trade", "Trades", "Best rule", "Worst rule"]);
-    assert.match(labels[0], /^P\/L · strategy exit$/);
+    // Research follows the 0.20-delta contract only (2026-11-10). The label is drawn in capitals.
+    assert.match(labels[0], /^P\/L · 0\.20 delta · Strategy exit$/i);
     assert.equal(await group(app.page, "Range").locator("button.is-on").innerText(), "Today");
     assert.ok(app.reads.some((read) => read.path === "/api/momx-scanner/bot" && read.search === "?days=1"));
     assert.deepEqual(app.writes, []);
@@ -76,29 +77,27 @@ e2eTest("tapping Today then 1W: the slower Today answer never paints over 1W", a
   });
 });
 
-e2eTest("News trade and AI pick explain themselves, follow BULL / BEAR, and survive a reload", async () => {
-  await withApp({ view: "Bot", fakeReads: canned() }, async (app) => {
+const FILTER = "select.bot-paper-select[aria-label='Trade filter']";
+
+e2eTest("Research shows All trades only: no News trade or AI pick, and an old saved choice opens All trades", async () => {
+  // 2026-11-10, his "Remove filters also news trade": the paper accounts trade only the three Level strategies.
+  await withApp({ view: "Bot", storage: { "bot.book": "news" }, fakeReads: canned() }, async (app) => {
     await openBot(app);
-    const books = group(app.page, "Which bot");
-    await books.locator("button", { hasText: "News trade" }).click();
-    assert.match(await books.locator("button", { hasText: "News trade" }).getAttribute("class"), /\bis-on\b.*\bis-jev\b/);
-    const note = app.page.locator("p.bot-jevbook-note", { hasText: "News trade" });
-    assert.match(await note.innerText(), /NEWS ▲ list \(calls\)/);
-    assert.match(await tradesKpiSub(app.page), /^1 day · /);
-    assert.equal((await app.page.locator(`${TOTALS} .bot-kpi`, { has: app.page.locator(".bot-kpi-label", { hasText: /^Trades$/ }) }).locator(".bot-kpi-value").innerText()).trim(), "1");
-    await group(app.page, "Board").locator("button", { hasText: "BEAR · puts" }).click();
-    assert.match(await note.innerText(), /NEWS ▼ list \(puts\)/);
-    await app.page.reload({ waitUntil: "domcontentloaded" });
-    await openBot(app);
-    assert.match(await group(app.page, "Which bot").locator("button", { hasText: "News trade" }).getAttribute("class"), /\bis-on\b/);
-    await group(app.page, "Which bot").locator("button", { hasText: "AI pick" }).click();
-    assert.match(await app.page.locator("p.bot-jevbook-note", { hasText: "AI pick" }).innerText(), /scored 55% or more/);
+    assert.deepEqual((await group(app.page, "Which bot").locator("button").allTextContents()).map((s) => s.trim()), ["All trades"]);
+    assert.match(await group(app.page, "Which bot").locator("button").getAttribute("class"), /\bis-on\b/);
+    assert.equal(await app.page.locator(FILTER).count(), 0);
+    assert.equal(await app.page.locator("p.bot-jevbook-note", { hasText: /News trade|AI pick/ }).count(), 0);
+    assert.match(await app.page.locator("p.bot-jevbook-note").innerText(), /0\.20-delta contract sold at strategy exit/);
+    assert.equal(await app.page.getByText("News trade", { exact: true }).count(), 0);
+    assert.equal(await app.page.getByText("AI pick", { exact: true }).count(), 0);
+    await app.page.locator("select.bot-paper-select[aria-label='Level strategy']").waitFor({ state: "visible", timeout: 15_000 });
+    assert.equal((await app.page.locator(`${TOTALS} .bot-kpi`, { has: app.page.locator(".bot-kpi-label", { hasText: /^Trades$/ }) }).locator(".bot-kpi-value").innerText()).trim(), "4");
     assert.deepEqual(app.writes, []);
     assert.deepEqual(app.pageErrors, []);
   });
 });
 
-e2eTest("the Level strategy select shows for All trades on both boards (bear Level puts, 2026-11-05) and hides for other bots", async () => {
+e2eTest("the Level strategy select shows for All trades on both boards (bear Level puts, 2026-11-05) and hides for a paper account", async () => {
   await withApp({ view: "Bot", fakeReads: canned() }, async (app) => {
     await openBot(app);
     const level = app.page.locator("select.bot-paper-select[aria-label='Level strategy']");
@@ -108,7 +107,7 @@ e2eTest("the Level strategy select shows for All trades on both boards (bear Lev
     await level.waitFor({ state: "visible", timeout: 10_000 });
     await group(app.page, "Board").locator("button", { hasText: "BULL · calls" }).click();
     await level.waitFor({ state: "visible", timeout: 10_000 });
-    await group(app.page, "Which bot").locator("button", { hasText: "News trade" }).click();
+    await app.page.locator("select.bot-paper-select[aria-label='Alpaca paper account']").selectOption("paper3");
     await level.waitFor({ state: "detached", timeout: 10_000 });
     assert.deepEqual(app.pageErrors, []);
   });
@@ -158,21 +157,23 @@ e2eTest("a refused Bot read shows the admin-only message", async () => {
   });
 });
 
-e2eTest("Same-day + Hold to close re-labels the totals; Best price hides Open P/L; only the contract is remembered", async () => {
-  await withApp({ view: "Bot", fakeReads: canned(), storage: { "bot.tab": "trades" } }, async (app) => {
+e2eTest("the page follows the 0.20-delta contract only; Hold to close re-labels the totals; Best price hides Open P/L", async () => {
+  // 2026-11-10, his "Why still I see Contract: Next week / Same-day?": those choices are gone, even when one was saved.
+  await withApp({ view: "Bot", fakeReads: canned(), storage: { "bot.tab": "trades", "bot.contract": "zero" } }, async (app) => {
     await openBot(app);
-    await group(app.page, "Contract").locator("button", { hasText: /^Same-day$/ }).click();
+    assert.equal((await app.page.locator("[role='status'][aria-label='Contract']").innerText()).trim(), "Contract: 0.20 delta");
+    assert.equal(await app.page.getByRole("button", { name: /Next week|Same-day/ }).count(), 0);
     await group(app.page, "Exit comparison").getByRole("button", { name: /^Hold to close/ }).click();
-    assert.match(await app.page.locator("p.bot-jevbook-note", { hasText: "Same-day · Hold to close" }).innerText(), /same-day \(0DTE\) contract held to the 3:50 PM close/);
-    assert.equal((await app.page.locator(`${TOTALS} .bot-kpi-label`).first().innerText()).trim(), "P/L · Same-day · Hold to close");
+    assert.match(await app.page.locator("p.bot-jevbook-note", { hasText: "0.20 delta · Hold to close" }).innerText(), /0\.20-delta contract held to the 3:50 PM close/);
+    assert.match((await app.page.locator(`${TOTALS} .bot-kpi-label`).first().innerText()).trim(), /^P\/L · 0\.20 delta · Hold to close$/i);
     await group(app.page, "Exit comparison").getByRole("button", { name: /^Best price/ }).click();
     assert.equal(await group(app.page, "Exit comparison").getByRole("button", { name: /^Best price/ }).getAttribute("aria-pressed"), "true");
     const outcomes = (await group(app.page, "Trade outcome").locator("button").allInnerTexts()).map((s) => s.trim());
     assert.deepEqual(outcomes, ["All outcomes", "Losses", "Wins", "Unpriced"]);
-    assert.ok((await app.page.locator(`${TOTALS} .bot-kpi-label`).allInnerTexts()).includes("Hindsight gains / break-even"));
+    assert.ok((await app.page.locator(`${TOTALS} .bot-kpi-label`).allInnerTexts()).some((s) => /^Hindsight gains \/ break-even$/i.test(s.trim())));
     await app.page.reload({ waitUntil: "domcontentloaded" });
     await openBot(app);
-    assert.equal((await group(app.page, "Contract").locator("button.is-on").innerText()).trim(), "Same-day");
+    assert.equal((await app.page.locator("[role='status'][aria-label='Contract']").innerText()).trim(), "Contract: 0.20 delta");
     assert.equal(await group(app.page, "Exit comparison").getByRole("button", { name: /^Strategy exit/ }).getAttribute("aria-pressed"), "true");
     assert.deepEqual(app.pageErrors, []);
   });

@@ -434,6 +434,14 @@ class Handler(BaseHTTPRequestHandler):
                 from momx import rule_lab
                 self._json(HTTPStatus.OK, rule_lab.status())
                 return
+            if path == "/api/momx-scanner/chain-history":
+                # What the 30-day option chain history holds (2026-11-10) - admin only.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import chain_history
+                self._json(HTTPStatus.OK, chain_history.book().status())
+                return
             if path == "/api/momx-scanner/paper-mirror":
                 # Alpaca PAPER fills of the Jev BOT trades (2026-10-16) - admin only.
                 if not viewer_is_admin(self.headers.get("X-AGX-User")):
@@ -704,6 +712,41 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/momx-scanner/movers/refresh":
                 self._json(HTTPStatus.OK, _movers_refresh())
                 return
+            if path == "/api/momx-scanner/paper-control":
+                # Scorecard buttons (2026-11-09, his "Yes" + "stuck orders give
+                # me button to remove"): pause / resume one paper account's NEW
+                # buys, or remove a stuck buy. Admin only, re-checked here.
+                who = self.headers.get("X-AGX-User")
+                if not viewer_is_admin(who):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                if not isinstance(body, dict):
+                    body = {}                     # a list or a bare string: the 400 below explains
+                action, account = body.get("action"), body.get("account")
+                if (action not in ("pause", "resume", "remove") or not isinstance(account, str)
+                        or (action == "remove" and not isinstance(body.get("key"), str))):
+                    self._json(HTTPStatus.BAD_REQUEST,
+                               {"error": "Send account and action: pause, resume or remove (with the order key)"})
+                    return
+                from datetime import datetime as _pc_datetime
+                from momx import paper_control, paper_mirror
+                mirror = next((m for m in paper_mirror.current() if m.account == account), None)
+                if mirror is None:
+                    self._json(HTTPStatus.CONFLICT,
+                               {"ok": False, "error": "That paper account is not running on the scanner worker."})
+                    return
+                if action == "remove":
+                    result = mirror.remove_stuck(body["key"], str(who or ""))
+                else:
+                    stamp = _pc_datetime.now(paper_mirror.ET).replace(microsecond=0).isoformat()
+                    try:
+                        paper_control.set_paused(mirror.directory.parent, account, action == "pause", str(who or ""), stamp)
+                        result = {"ok": True, "account": account, "paused": action == "pause", "at": stamp}
+                    except OSError as exc:
+                        # Never report a pause that was not saved.
+                        result = {"ok": False, "error": f"Could not save the change: {exc}"}
+                self._json(HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT, result)
+                return
             if path == "/api/momx-scanner/paper-experiment-decision":
                 # His Approve / Reject for a Paper 5 rule that passed the
                 # forward test and the statistics check (2026-11-05). Used only
@@ -827,6 +870,10 @@ def main() -> int:
         from momx import paper_mirror
         paper_mirror.start({"bull": service._OPTION_TRACK, "bear": service._BEAR_OPTION_TRACK},
                            Path(ARTIFACTS_DIR) / "momx_paper_mirror")
+        # The AI bot (2026-11-10): an AI ranks the signals waiting for one of
+        # Paper 5's slots. It only reorders; with no answer the rules order applies.
+        from momx import paper_picker
+        paper_picker.start(paper_mirror.current())
     except Exception as exc:  # noqa: BLE001 - the scanner must start regardless
         print(f"[paper-mirror] not started: {type(exc).__name__}: {exc}", flush=True)
     # Shadow AI filter (2026-10-17): scores every Bot trade, retrains nightly
@@ -838,6 +885,23 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"[ai-filter] not started: {type(exc).__name__}: {exc}", flush=True)
     start_learning_background({"bull": service._OPTION_TRACK, "bear": service._BEAR_OPTION_TRACK})
+    # Loss lessons (2026-11-09): each evening the AI studies the paper bot's
+    # losing real fills per strategy and writes a suggestion for the Scorecard.
+    # It reads the paper files only and can never block or place a trade.
+    try:
+        from pathlib import Path
+        from config import ARTIFACTS_DIR
+        from momx import bot_desk, loss_lessons
+        loss_lessons.start(Path(ARTIFACTS_DIR), lambda: bot_desk.EVALUATION_START)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[loss-lessons] not started: {type(exc).__name__}: {exc}", flush=True)
+    # 30 days of option chains (2026-11-10): a copy of the chain files every
+    # 30 minutes of the session, for the AI agents, back-tests and the chatbot.
+    try:
+        from momx import chain_history
+        chain_history.start()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[chain-history] not started: {type(exc).__name__}: {exc}", flush=True)
     # Spread column (2026-11-03): reads saved chain files 10:00-15:30 ET only.
     try:
         from momx import option_spread

@@ -17,14 +17,19 @@ function trade(day, n, { rule = "go", symbol = "NVDA", outcome = "win", ...extra
     ...ENTRY, best: 1.6, holdBest: 1.8, holdDone: true,
   };
   if (outcome === "open") {
-    return { ...base, status: "open", riskOk: undefined, last: 1.2, lastBid: 1.15, lastAsk: 1.25, lastAt: at, ...extra };
+    // The 0.20-delta contract is marked too: Research follows that contract only (2026-11-10).
+    return { ...base, status: "open", riskOk: undefined, last: 1.2, lastBid: 1.15, lastAsk: 1.25, lastAt: at,
+      eStatus: "open", eLast: 0.36, eLastBid: 0.34, eLastAsk: 0.38, ...extra };
   }
   const exit = outcome === "win" ? 1.4 : 0.6;
   return {
     ...base, exitPrice: exit, exitBid: exit - 0.05, exitAsk: exit + 0.05, exitAt: `${day}T15:10:00-04:00`,
     exitReason: "5m close below VWAP", close: exit + 0.1, closeBid: exit + 0.05, closeAsk: exit + 0.15,
     zExit: outcome === "win" ? 0.9 : 0.2, zExitBid: outcome === "win" ? 0.85 : 0.15, zExitAsk: outcome === "win" ? 0.95 : 0.25,
-    zClose: 0.7, zCloseBid: 0.65, zCloseAsk: 0.75, eExit: 0.5, eExitBid: 0.48, eExitAsk: 0.52, ...extra,
+    zClose: 0.7, zCloseBid: 0.65, zCloseAsk: 0.75,
+    // The 0.20-delta contract wins and loses with the trade, like the other two.
+    eStatus: "closed", eExit: outcome === "win" ? 0.5 : 0.15, eExitBid: outcome === "win" ? 0.48 : 0.13, eExitAsk: outcome === "win" ? 0.52 : 0.17,
+    eClose: 0.4, eCloseBid: 0.38, eCloseAsk: 0.42, eBest: 0.55, ...extra,
   };
 }
 

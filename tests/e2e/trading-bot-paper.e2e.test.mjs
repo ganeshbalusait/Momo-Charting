@@ -170,19 +170,14 @@ e2eTest("the AI model tab opens with its score chart and folds on a tap", async 
   });
 });
 
-e2eTest("AI pick counts no more trades than All trades, and with no trained model the AI tab is empty", async () => {
+e2eTest("with no trained model the AI model tab is empty", async () => {
   await withApp({ view: "Bot", fakeReads: canned({ [AI_READ]: { json: { latest: {}, history: [], paper: {} } } }) }, async (app) => {
     await openBot(app);
     const tradesValue = async () => Number((await app.page.locator("section.bot-kpis[aria-label='Totals'] .bot-kpi", {
       has: app.page.locator(".bot-kpi-label", { hasText: /^Trades$/ }),
     }).locator(".bot-kpi-value").innerText()).trim());
     await app.page.locator("section.bot-kpis[aria-label='Totals'] .bot-kpi").first().waitFor({ timeout: 30_000 });
-    const all = await tradesValue();
-    await app.page.locator("[role='group'][aria-label='Which bot'] button", { hasText: "AI pick" }).click();
-    await app.page.locator("p.bot-jevbook-note", { hasText: "AI pick" }).waitFor({ timeout: 10_000 });
-    const picked = await tradesValue();
-    assert.equal(all, 4);
-    assert.equal(picked, 1);
+    assert.equal(await tradesValue(), 4);
     await app.page.locator("nav.bot-tabs button.bot-tab", { hasText: "AI model" }).click();
     await app.page.locator("button.bot-tab[aria-selected='true']", { hasText: "AI model" }).waitFor({ timeout: 10_000 });
     await new Promise((resolve) => setTimeout(resolve, 1_500));

@@ -23992,6 +23992,27 @@ class ApiHandler(BaseHTTPRequestHandler):
                 _pf_payload["ran"] = _pf_result
                 self._send_json(HTTPStatus.OK, _pf_payload)
                 return
+            if parsed.path == "/api/bot-chat":
+                # Ask the app (2026-11-10): the no-AI chatbot (momx/chatbot.py).
+                # It answers from the saved Bot / paper / Scorecard files only
+                # and never writes; a POST so the question stays out of the URL.
+                # Admin only: the answers are the owner's trades.
+                if self._require_admin_user() is None:
+                    return
+                _chat_q = body.get("question") if isinstance(body, dict) else None
+                if not isinstance(_chat_q, str) or not _chat_q.strip():
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Send a question"})
+                    return
+                _chat_override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+                from momx import chatbot as _chatbot
+                try:
+                    _chat_out = _chatbot.ask(_chat_q, Path(_chat_override) if _chat_override else Path(ARTIFACTS_DIR),
+                                             context=body.get("context") if isinstance(body.get("context"), dict) else None)
+                except Exception as exc:  # noqa: BLE001 - a question must never take the server down
+                    _chat_out = {"intent": "error", "ticker": None, "day": None, "suggest": [],
+                                 "lines": [f"I could not read the records for that question ({type(exc).__name__}). Nothing was changed."]}
+                self._send_json(HTTPStatus.OK, _chat_out)
+                return
             if parsed.path.startswith("/api/momx-scanner"):
                 # PROXY every momx POST (/universe, /rebuild, whatever comes
                 # next) to the worker on :3010, mirroring the GET proxy above.
@@ -24004,10 +24025,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # momx machinery inside the CPU-saturated chart process. It is
                 # also why POST /rebuild 404'd through the browser while
                 # working against :3010 directly (verify agent, 2026-08-30).
-                if parsed.path in ("/api/momx-scanner/data-source", "/api/momx-scanner/paper-experiment-decision"):
+                if parsed.path in ("/api/momx-scanner/data-source", "/api/momx-scanner/paper-experiment-decision",
+                                   "/api/momx-scanner/paper-control"):
                     # The "TOS" checkbox switches the scanner's data source for
                     # EVERY viewer (2026-09-30) - admin only, like preflight.
                     # Paper 5 rule Approve / Reject (2026-11-05) - admin only.
+                    # Scorecard Pause / Resume / Remove stuck order (2026-11-09) - admin only.
                     # The worker re-checks the forwarded X-AGX-User too.
                     if self._require_admin_user() is None:
                         return
@@ -24026,8 +24049,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                     method="POST",
                 )
                 try:
-                    with _mx_req.urlopen(_mx_req_obj, timeout=20) as _mx_res:
-                        _mx_body = _mx_res.read()
+                    # Removing a stuck order may wait for the paper bot's
+                    # tick and then ask the broker about each try of the buy.
+                    _mx_timeout = 45 if parsed.path == "/api/momx-scanner/paper-control" else 20
+                    try:
+                        with _mx_req.urlopen(_mx_req_obj, timeout=_mx_timeout) as _mx_res:
+                            _mx_body = _mx_res.read()
+                    finally:
+                        if parsed.path == "/api/momx-scanner/paper-control":
+                            # The Scorecard re-reads right after a button press
+                            # - done, refused or timed out - and must not get
+                            # the 30 s cached copy from before it.
+                            _momx_bot_desk_clear()
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(_mx_body)))
@@ -25218,6 +25251,16 @@ def _momx_bot_truth(days: int) -> dict:
 
 _MOMX_BOT_DESK: dict = {}
 _MOMX_BOT_DESK_LOCK = threading.Lock()
+#: Bumped by every clear, so a build that started before a Pause / Remove
+#: cannot put its older copy back into the cache after it.
+_MOMX_BOT_DESK_GEN = 0
+
+
+def _momx_bot_desk_clear() -> None:
+    global _MOMX_BOT_DESK_GEN
+    with _MOMX_BOT_DESK_LOCK:
+        _MOMX_BOT_DESK_GEN += 1
+        _MOMX_BOT_DESK.clear()
 
 
 def _momx_bot_desk(days: int) -> dict:
@@ -25225,6 +25268,7 @@ def _momx_bot_desk(days: int) -> dict:
     30 s. Read-only: the small paper-mirror day files, never the broker."""
     with _MOMX_BOT_DESK_LOCK:
         hit = _MOMX_BOT_DESK.get(days)
+        gen = _MOMX_BOT_DESK_GEN
     if hit and time.time() - hit[0] < 30:
         return hit[1]
     override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
@@ -25232,7 +25276,8 @@ def _momx_bot_desk(days: int) -> dict:
     from momx import bot_desk
     payload = bot_desk.build(base, days)
     with _MOMX_BOT_DESK_LOCK:
-        _MOMX_BOT_DESK[days] = (time.time(), payload)
+        if gen == _MOMX_BOT_DESK_GEN:
+            _MOMX_BOT_DESK[days] = (time.time(), payload)
     return payload
 
 

@@ -78,7 +78,9 @@ def test_both_paper_accounts_are_served_with_history_newest_first(tmp_path, monk
     assert [row["buyId"] for row in paper3["rows"]] == ["b2"]
     assert [day["day"] for day in paper3["history"]] == ["2026-10-28", "2026-10-27"]
     assert paper3["history"][1]["rows"][0]["pl"] == 12.5
-    assert paper3["rules"]["orders"] == "limit at mid"
+    # Order rules v2 (a41e0609, 2026-11-05): mid first, then re-sent at the ask.
+    assert paper3["rules"]["orders"] == ("buy: limit at the live mid; unfilled after 120 s, re-sent at the ask "
+                                         "(up to 2 times); sell: limit at mid")
     assert docs["paper5"]["totals"]["closed"] == 1 and docs["paper5"]["totals"]["pl"] == -4.0
 
 

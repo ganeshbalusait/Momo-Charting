@@ -138,3 +138,34 @@ def test_new_order_rules_are_reported_apart():
 def test_no_new_rules_section_before_any_v2_order():
     acct = tc.compare({"paper3": [paper("missed")]}, {})["accounts"]["paper3"]
     assert "newRules" not in acct
+
+
+def test_a_020_delta_paper_fill_is_compared_with_the_bots_020_delta_contract():
+    """2026-11-09: paper buys the 0.20-delta contract, so the BOT's claim must be for that same option."""
+    from momx import truth_check as tc
+    at = "2026-11-10T09:35:00-05:00"
+    bot = {("bull", "level1", "AAPL", at): {"entry": 3.0, "entryBid": 2.9, "entryAsk": 3.1, "exitPrice": 6.0, "exitBid": 5.9,
+                                            "exitAsk": 6.1, "eEntry": 0.5, "eEntryBid": 0.48, "eEntryAsk": 0.52,
+                                            "eExit": 0.4, "eExitBid": 0.38, "eExitAsk": 0.42}}
+    row = {"side": "bull", "rule": "level1", "symbol": "AAPL", "at": at, "qty": 5, "status": "closed", "buyFill": 0.52,
+           "pl": -60.0, "leg": "entry"}
+    m = tc._stats([row], bot)["matched"]
+    assert m["n"] == 1 and m["botPnl"] == -50.0 and m["botRoi"] == -20.0        # (0.40 - 0.50) x 5 contracts
+    old = tc._stats([{**row, "leg": None}], bot)["matched"]
+    assert old["botPnl"] == 1500.0                                               # a main-contract row is unchanged
+
+
+def test_the_research_by_rule_table_counts_a_level_order_under_every_level_like_the_scorecard():
+    from momx import truth_check as tc
+    at = "2026-11-10T09:35:00-05:00"
+    bot = {("bull", "level3", "AAPL", at): {"eEntry": 0.5, "eEntryBid": 0.48, "eEntryAsk": 0.52, "eExit": 0.7, "eExitBid": 0.68, "eExitAsk": 0.72}}
+    rows = [{"side": "bull", "rule": "level3", "symbol": "AAPL", "at": at, "qty": 5, "status": "closed", "buyFill": 0.52,
+             "pl": 80.0, "leg": "entry", "levels": ["level1", "level2", "level3"]},
+            {"side": "bull", "rule": "level2", "symbol": "MSFT", "at": at, "qty": 5, "status": "missed", "leg": "entry",
+             "levels": ["level1", "level2"]}]
+    out = tc._stats(rows, bot)
+    assert (out["orders"], out["filled"], out["missed"], out["matched"]["n"]) == (2, 1, 1, 1)        # the account: each order once
+    by = {r["rule"]: r for r in out["byRule"]}
+    assert (by["level1"]["orders"], by["level1"]["missed"]) == (2, 1)
+    assert (by["level2"]["orders"], by["level2"]["missed"]) == (2, 1)
+    assert (by["level3"]["orders"], by["level3"]["missed"]) == (1, 0) and by["level3"]["fillRatePct"] == 100.0

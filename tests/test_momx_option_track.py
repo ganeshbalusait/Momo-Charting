@@ -92,7 +92,7 @@ def test_the_rules_it_recognises():
 
 @pytest.mark.parametrize("direction", ["bull", "bear"])
 @pytest.mark.parametrize("fast", [False, True])
-def test_every_virtual_book_requires_ai_before_recording_an_entry(tmp_path, direction, fast):
+def test_no_virtual_book_waits_for_ai_before_recording_an_entry(tmp_path, direction, fast):
     clock = Clock(MON.timestamp())
     b, _ = book(tmp_path, {"X": chain()}, direction=direction, clock=clock)
     b._day = MON.date().isoformat()
@@ -104,22 +104,36 @@ def test_every_virtual_book_requires_ai_before_recording_an_entry(tmp_path, dire
     b._quote_fetch = lambda _: {"results": [{"ok": True, "symbol": "X", "pick": pick}]}
     price = (lambda: b._fast_price(["X"])) if fast else (lambda: b._price_symbol("X", False))
     price()
-    assert all(t["status"] == "pending" and "entry" not in t and t["aiCandidate"]["entry"] > 0 for t in b.trades())
-    verdict.update(approved=True, provider="openclaw", reason="consistent entry", probability=.7)
-    clock.t += 30
-    price()
+    # 2026-11-09, his "Don't block any trade using AI": the entry is recorded at
+    # once on the first quote; the AI's "no" is kept as advice only.
     assert all(t["status"] == "open" and t["entry"] == pick["entry"] and "aiCandidate" not in t for t in b.trades())
     assert all(t["entryAt"] == datetime.fromtimestamp(clock.t, ET).isoformat() for t in b.trades())
+    assert all(t["aiDecision"]["approved"] is False and t["aiWouldSkip"] is True for t in b.trades())
+    # The 0.20-delta contract the paper accounts buy has a usable quote from the first second.
+    for t in b.trades():
+        if t.get("eContract"):
+            assert t["eLastBid"] == t["eEntryBid"] and t["eLastAsk"] == t["eEntryAsk"] and t["eLastAsk"] > 0
 
 
-def test_virtual_ai_skip_and_expired_signal_never_get_an_entry(tmp_path):
+def test_an_ai_no_or_error_never_refuses_a_virtual_entry_but_the_time_rules_still_do(tmp_path):
     b, _ = book(tmp_path, {"X": chain()})
     b._ai_policy = lambda *args: {"approved": False, "enabled": True, "provider": "ollama", "reason": "weak setup"}
     t = {"rule": "news", "symbol": "X", "at": MON.isoformat(), "status": "pending"}
-    assert not b._approve_entry(t, ot.pick_contract(chain(), False), MON.timestamp())
-    assert t["status"] == "ai_skipped" and "entry" not in t and "aiCandidate" not in t
+    assert b._approve_entry(t, ot.pick_contract(chain(), False), MON.timestamp()) is True
+    assert t["status"] == "pending" and t["aiWouldSkip"] is True and "aiCandidate" not in t
+    assert t["aiDecision"]["reason"] == "weak setup"
+
+    def down(*args):
+        raise RuntimeError("provider down")
+
+    b._ai_policy = down
+    t2 = {"rule": "news", "symbol": "X", "at": MON.isoformat(), "status": "pending"}
+    assert b._approve_entry(t2, ot.pick_contract(chain(), False), MON.timestamp()) is True
+    assert t2["status"] == "pending" and "taken anyway" in t2["aiDecision"]["reason"] and "aiWouldSkip" not in t2
+
     b._ai_policy = lambda *args: pytest.fail("expired signals must not request AI")
     assert not b._approve_entry(t, {}, MON.timestamp() + 601)
+    assert t["status"] == "ai_skipped" and "time rule" in t["aiDecision"]["reason"]
     late = MON.replace(hour=15, minute=31)
     t.update(at=late.replace(minute=29).isoformat(), status="pending")
     assert not b._approve_entry(t, {}, late.timestamp())

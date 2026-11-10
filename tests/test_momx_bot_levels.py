@@ -56,7 +56,11 @@ def test_capture_three_separate_virtual_rules_once_and_preserve_evidence(tmp_pat
     assert all(t['virtualOnly'] and t['levelSignal']['setupCount']==3 for t in trades)
     assert all('levelSignal' in t for t in book.summary())
     for t in trades:
-        assert not eligible({**t,'status':'open','contract':'X','entryAt':NOW.isoformat()},NOW.timestamp(),None)
+        # 2026-11-09: the paper accounts trade exactly these three strategies, on the 0.20-delta contract.
+        live={**t,'status':'open','contract':'X','entryAt':NOW.isoformat()}
+        assert eligible(live,NOW.timestamp(),None)
+        assert not eligible(live,NOW.timestamp(),None,'entry')              # no 0.20-delta contract recorded
+        assert eligible({**live,'eContract':'XE'},NOW.timestamp(),None,'entry')
         reviewed=evidence('bull',{**t,'status':'closed','entry':1,'exitPrice':.8})
         assert reviewed['levelAtSignal']['highestLevel']==3 and reviewed['rule']==t['rule']
     assert trade_first()['approved'] is True
