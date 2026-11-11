@@ -4,6 +4,8 @@ import { BaselineSeries, CandlestickSeries, CrosshairMode, HistogramSeries, Line
 import { fetchWithNetworkRetry } from "./momxNetworkRetry.js";
 import { timingMark, timingStart } from "./chartLoadTiming.js";
 import { nextChartGapPoll } from "./chartGapRecovery.js";
+import { formatHeatmapSmallNumber, liveDteGridColumns, liveDteGridMinWidth } from "./oiHeatmapLayout.js";
+import "./oiHeatmapCompact.css";
 import { buildChartGamma, chartGammaEmptyMessage, ChartGammaPrimitive, formatGammaDollars } from "./chartGamma.js";
 import {
   Activity,
@@ -3654,7 +3656,7 @@ function OiFinderDteHeatmap({ heatmap, symbol, underlyingPrice, expiryExpectedMo
     {displayMode === "change" ? <div className="oi-finder-heatmap-dominance" aria-live="polite"><span><small>{metricLabel} added this window</small><b className="is-call">Calls {formatLiveDelta(model.dominance.additions.CALL)}</b><b className="is-put">Puts {formatLiveDelta(model.dominance.additions.PUT)}</b></span><strong className={model.dominance.side ? `is-${model.dominance.side.toLowerCase()}` : "is-balanced"}>{model.dominance.totalAdditions > 0 ? `${model.dominance.side} activity ${model.dominance.percent.toFixed(0)}% · ${model.dominance.strength}` : model.dominance.comparedContracts ? "No new contracts in this refresh window" : "Collecting the prior cumulative baseline"}</strong><em>{model.dominance.comparedContracts} exact contracts compared{model.dominance.resetContracts ? ` · ${model.dominance.resetContracts} volume reset${model.dominance.resetContracts === 1 ? "" : "s"} rebased` : ""}</em></div> : null}
     {model.expiries.length && model.strikes.length ? <>
       <div className="oi-finder-heatmap-scroll">
-        <div className="oi-finder-heatmap-grid" style={{ gridTemplateColumns: `96px repeat(${model.expiries.length}, minmax(118px, 1fr))` }}>
+        <div className="oi-finder-heatmap-grid" style={{ gridTemplateColumns: liveDteGridColumns(model.expiries.length), minWidth: liveDteGridMinWidth(model.expiries.length) }}>
           <div className="oi-finder-heatmap-axis">Strike</div>
           {model.expiries.map((expiry) => {
             const move = model.expectedMoves.get(expiry);
@@ -3708,8 +3710,8 @@ function OiFinderDteHeatmap({ heatmap, symbol, underlyingPrice, expiryExpectedMo
                   {marker ? <small className="oi-finder-exp-strike-marker">{marker}</small> : null}
                   {cell ? displayMode === "change" ? <span className={`oi-finder-change-first-metric${comparisonReady ? ` is-change-${changeLeader}` : " is-baseline"}`}>
                     <span><small>{comparisonReady ? "Δ TOTAL" : "NOW"}</small><b>{comparisonReady ? formatLiveDelta(cell.change) : formatCompactNumber(cell.value)}</b></span>
-                    <em><span className="is-call">C {comparisonReady ? formatLiveDelta(cell.call?.change) : formatCompactNumber(cell.call?.value || 0)}</span><i aria-hidden="true">•</i><span className="is-put">P {comparisonReady ? formatLiveDelta(cell.put?.change) : formatCompactNumber(cell.put?.value || 0)}</span></em>
-                    <strong className="oi-finder-cell-current-totals"><span>VOL <b>{formatCompactNumber(cell.volume)}</b></span><i aria-hidden="true">•</i><span>OI <b>{formatCompactNumber(cell.oi)}</b></span></strong>
+                    <em><span className="is-call">C {comparisonReady ? formatLiveDelta(cell.call?.change) : formatHeatmapSmallNumber(cell.call?.value || 0)}</span><i aria-hidden="true">•</i><span className="is-put">P {comparisonReady ? formatLiveDelta(cell.put?.change) : formatHeatmapSmallNumber(cell.put?.value || 0)}</span></em>
+                    <strong className="oi-finder-cell-current-totals" title={`Volume ${formatCompactNumber(cell.volume)}; open interest ${formatCompactNumber(cell.oi)}`}><span>VOL <b>{formatHeatmapSmallNumber(cell.volume)}</b></span><i aria-hidden="true">•</i><span>OI <b>{formatHeatmapSmallNumber(cell.oi)}</b></span></strong>
                     <OiStrengthBadges callStrength={cell.call?.oiStrength} putStrength={cell.put?.oiStrength} compact />
                   </span> : <span className="oi-finder-combined-metric">
                     <span className="oi-finder-combined-single"><small>{combinedDominantSide === "CALL" ? "C" : "P"}</small><b>{formatCompactNumber(cell.value)}</b></span>

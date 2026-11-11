@@ -1,0 +1,28 @@
+/* Compact live 0-31 DTE heatmap (Fast Options -> Heatmap). 2026-11-10.
+   Every rule is scoped to section.oi-finder-strike-heatmap.is-live-dte (one extra
+   type selector) so it beats the equal-specificity index.css rules that load
+   AFTER this file -- without it the rows stay 78px. Scoped so it never touches
+   other heatmaps. */
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-scroll { padding: 6px 8px 2px; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-axis,
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-date { min-height: 44px; padding: 3px 2px; gap: 1px; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-date b { font-size: 0.56rem; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-date small,
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-date em { font-size: 0.44rem; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-strike { min-height: 44px; padding: 0 6px; font-size: 0.62rem; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-cell,
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-cell.is-delta-view,
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-cell.is-exp-high,
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-cell.is-exp-low,
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-cell.is-exp-range { min-height: 44px; padding: 1px; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-change-first-metric { gap: 1px; padding: 12px 1px 3px; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-combined-metric { padding-top: 12px; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-change-first-metric > span:first-child { min-width: 0; gap: 3px; padding: 1px 5px; box-shadow: none; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-change-first-metric small { font-size: 0.42rem; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-change-first-metric b { font-size: 0.66rem; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-change-first-metric em { gap: 3px; font-size: 0.48rem; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-cell-current-totals { gap: 3px; padding-top: 1px; font-size: 0.44rem; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-cell-current-totals b { font-size: 0.5rem !important; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-exp-strike-marker { top: 1px; left: 1px; padding: 0 2px; font-size: 0.34rem; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-cell .oi-level-strength-badges { position: absolute; top: 1px; right: 1px; }
+section.oi-finder-strike-heatmap.is-live-dte .oi-finder-heatmap-live-price::before { left: 64px; }
