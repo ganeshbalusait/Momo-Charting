@@ -16284,7 +16284,8 @@ button.avatar {
    pair from .oi-finder-today-change so the rail matches the chart headers. */
 .oi-chart-quick-tickers button,
 .oi-finder-quick-symbols button,
-.mobile-chart-quick-tickers button {
+.mobile-chart-quick-tickers button,
+.oi-finder-chart-quick-row button {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
@@ -16309,6 +16310,17 @@ button.avatar {
   .mobile-chart-quick-tickers button,
   .oi-finder-quick-symbols button {
     gap: 4px;
+  }
+
+  /* The phone chart card's own ticker row (what the phone actually shows on
+     the chart tab) had symbol-only buttons; the badge needs a little side
+     padding so the percentage does not touch the button border. */
+  .app-shell.charts-workstation.is-chart-tab .oi-finder-chart-quick-row button {
+    align-items: baseline;
+    justify-content: center;
+    gap: 3px;
+    padding: 0 5px;
+    line-height: 24px;
   }
 
   .ticker-day-move {

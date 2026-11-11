@@ -48,14 +48,36 @@ e2eTest("the in-card quick tickers switch the ticker and the timeframe select sw
     const card = await chartCard(app.page, "AAPL");
     const quick = card.locator('.oi-finder-chart-quick-row[aria-label="Quick tickers"]');
     await quick.waitFor({ state: "visible", timeout: 30_000 });
-    assert.match(await quick.locator("button", { hasText: /^AAPL$/ }).getAttribute("class"), /\bis-active\b/);
-    await quick.locator("button", { hasText: /^SPY$/ }).click();
+    assert.match(await quick.locator("button", { hasText: /^AAPL(?![A-Z])/ }).getAttribute("class"), /\bis-active\b/);
+    await quick.locator("button", { hasText: /^SPY(?![A-Z])/ }).click();
     const spy = await chartCard(app.page, "SPY");
     const select = spy.locator('select.oi-finder-timeframe-select[aria-label="Chart timeframe"]');
     await select.waitFor({ state: "visible", timeout: 30_000 });
     assert.equal(await select.inputValue(), "5m");
     await select.selectOption("15m");
     await chartCard(app.page, "SPY", { timeframe: "15m" });
+    assert.equal(await overflowsSideways(app.page), false);
+    noPageErrors(app);
+  });
+});
+
+e2eTest("the in-card quick tickers show each ticker's day move, with no FAV TICKERS label", async () => {
+  // 2026-11-11: the phone row was symbol-only. Quotes are faked so the numbers
+  // are known; a ticker with no reported move must show no badge, not 0.00%.
+  const rows = [
+    { symbol: "SPY", changePercent: 0.97 },
+    { symbol: "NFLX", changePercent: -0.34 },
+    { symbol: "USO", changePercent: null },
+  ];
+  await withApp(phone({ fakeReads: { "GET /api/live-chart-quotes": { json: { rows } } } }), async (app) => {
+    const card = await chartCard(app.page, "AAPL");
+    const quick = card.locator('.oi-finder-chart-quick-row[aria-label="Quick tickers"]');
+    await quick.waitFor({ state: "visible", timeout: 30_000 });
+    const spy = quick.locator("button", { hasText: /^SPY(?![A-Z])/ });
+    await spy.locator("em.ticker-day-move.is-up", { hasText: "+0.97%" }).waitFor({ timeout: 30_000 });
+    assert.equal((await quick.locator("button", { hasText: /^NFLX/ }).locator("em.ticker-day-move.is-down").innerText()).trim(), "-0.34%");
+    assert.equal(await quick.locator("button", { hasText: /^USO/ }).locator("em.ticker-day-move").count(), 0);
+    assert.equal(await app.page.getByText("FAV TICKERS", { exact: true }).count(), 0);
     assert.equal(await overflowsSideways(app.page), false);
     noPageErrors(app);
   });

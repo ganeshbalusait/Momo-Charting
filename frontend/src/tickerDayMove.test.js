@@ -66,3 +66,19 @@ test("the rail polls on its own slow timer, not the 1s chart poller", () => {
     "the rail must not join the 1s chart quote poller",
   );
 });
+
+test("no ticker row carries a FAV TICKERS label", () => {
+  // 2026-11-11: the label took room the tickers needed - on the chart toolbar
+  // USO was cut off behind it. The rows are self-explanatory without it.
+  assert.equal(appSource.includes("FAV TICKERS</span>"), false);
+});
+
+test("the phone chart card's ticker row shows each ticker's day move", () => {
+  // The phone chart tab uses the row INSIDE the chart card, not the toolbar
+  // rail, and that row was symbol-only - so the phone showed no % at all.
+  const row = lift(/<div className="oi-finder-chart-quick-row"[\s\S]*?<\/div>/, "the card quick row");
+  assert.match(row, /<TickerDayMoveBadge percent=\{cardQuickMoves\[quickSymbol\]\} \/>/);
+  // Polled only on a phone, where the row is visible: a desktop grid of six
+  // charts must not start six polls for badges nobody can see.
+  assert.match(appSource, /const cardQuickMoves = useTickerDayMoves\(isPhoneChartViewport\(\) \? OI_FINDER_QUICK_TICKERS : \[\]\);/);
+});

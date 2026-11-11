@@ -14220,7 +14220,6 @@ function OiFinderMultiChart({
         </div>
         {quickTickers?.length ? (
           <nav className="oi-chart-quick-tickers" aria-label="Quick-access OI Finder tickers">
-            <span>FAV TICKERS</span>
             {quickTickers.map((symbol) => {
               const normalized = normalizeOiChartSymbol(symbol);
               const isActive = normalized === normalizeOiChartSymbol(panelConfigs[activePanel]?.symbol, baseSymbol);
@@ -15183,6 +15182,10 @@ function OiFinderCandleChart({
   const [chartStudiesPending, setChartStudiesPending] = useState(false);
   // Why the 04:00-07:00 band is empty, when it is. Blank when it filled.
   const [chartPremarketGapNote, setChartPremarketGapNote] = useState("");
+  // Day move for the phone card's quick-ticker row. Polled only on a phone:
+  // that row is CSS-hidden elsewhere, and a desktop 6-chart grid would
+  // otherwise start six identical polls for badges nobody can see.
+  const cardQuickMoves = useTickerDayMoves(isPhoneChartViewport() ? OI_FINDER_QUICK_TICKERS : []);
   const [chartPremarketGapState, setChartPremarketGapState] = useState("");
   const mobileDeepHistoryRequestedRef = useRef(false);
   const latestRawBarTimeRef = useRef(0);
@@ -23385,7 +23388,10 @@ function OiFinderCandleChart({
                 className={quickSymbol === symbol ? "is-active" : ""}
                 type="button"
                 onClick={() => chooseChartTicker(quickSymbol)}
-              >{quickSymbol}</button>
+              >
+                {quickSymbol}
+                <TickerDayMoveBadge percent={cardQuickMoves[quickSymbol]} />
+              </button>
             ))}
           </div>
         </div>
@@ -29736,7 +29742,6 @@ function TradingWorkspace({ authUser, onLogout }) {
             chartless OI surfaces keep the standalone row. */}
         {roiCalcPageActive || oiLevelScriptPageActive ? (
           <nav className="oi-finder-quick-symbols oi-finder-quick-symbols-row" aria-label="Quick-access OI Finder tickers">
-            <span>FAV TICKERS</span>
             {OI_FINDER_QUICK_TICKERS.map((symbol) => (
               <button
                 aria-current={symbol === oiFinderSymbol ? "true" : undefined}
@@ -29756,7 +29761,6 @@ function TradingWorkspace({ authUser, onLogout }) {
 
         {chartsAndOiPageActive ? (
           <nav className="mobile-chart-quick-tickers" aria-label="Mobile quick chart and chain tickers">
-            <span>FAV TICKERS</span>
             <div>
               {OI_FINDER_QUICK_TICKERS.map((symbol) => (
                 <button

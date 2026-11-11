@@ -1,5 +1,5 @@
 // Charts & OI: switching tickers (2026-11-04 coverage). Typing a ticker, the
-// FAV TICKERS rail, linked vs independent panels, a fast back-and-forth that
+// quick-ticker rail, linked vs independent panels, a fast back-and-forth that
 // must never leave the previous ticker's candles on screen (data-chart-owner),
 // and the identity strip above the chart. Tickers: AAPL and NVDA only.
 
@@ -47,12 +47,14 @@ e2eTest("an unknown typed ticker offers 'Search option chain' instead of loading
   });
 }, { timeout: 180_000 });
 
-e2eTest("a FAV TICKERS click switches the active panel and marks that ticker current", async () => {
+e2eTest("a quick-ticker click switches the active panel and marks that ticker current", async () => {
   await withCharts({ workspace: { symbols: ["AAPL"] } }, async (app) => {
     const { page } = app;
     await waitForTape(page, { symbol: "AAPL" });
     const rail = page.locator('nav.oi-chart-quick-tickers[aria-label="Quick-access OI Finder tickers"]');
     await rail.waitFor({ state: "visible", timeout: 30_000 });
+    // 2026-11-11: the rail has no "FAV TICKERS" label any more - it hid USO.
+    assert.equal(await rail.getByText("FAV TICKERS", { exact: true }).count(), 0);
     assert.equal(await rail.locator("button", { hasText: /^AAPL/ }).getAttribute("aria-current"), "true");
     await rail.locator("button", { hasText: /^NVDA/ }).click();
     await waitForTape(page, { symbol: "NVDA" });
