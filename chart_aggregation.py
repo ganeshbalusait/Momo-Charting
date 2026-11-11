@@ -27,6 +27,8 @@ import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from chart_bad_prints import remove_extended_hours_bad_prints
+
 EASTERN = ZoneInfo("America/New_York")
 
 _DAY_MINUTES = 1440
@@ -214,7 +216,9 @@ def build_chart_display_bars(
     just not the ones the trader was looking at.
     """
     minutes = max(int(aggregation_minutes or 1), 1)
-    live = normalize_chart_candle_bars(live_bars)
+    # Off-market extended-hours prints are dropped before any candle is built
+    # (chart_bad_prints.py, the port of chartBadPrints.js).
+    live = remove_extended_hours_bad_prints(normalize_chart_candle_bars(live_bars))
     if minutes >= 1440:
         # D/W/M draw from the daily seed (decades) rather than the short
         # one-minute tape. Both use Eastern-midnight epochs, so the live tape's
@@ -225,7 +229,7 @@ def build_chart_display_bars(
             return aggregate_chart_bars(
                 _merge_by_time(seed, aggregate_chart_bars(live, 1440)), minutes,
             )
-    study = normalize_chart_candle_bars(study_bars)
+    study = remove_extended_hours_bad_prints(normalize_chart_candle_bars(study_bars))
     study_cadence = chart_source_bar_spacing_minutes(study)
     uses_study_history = bool(study) and (
         # 4H has always merged the study tape regardless of its cadence.
@@ -241,7 +245,7 @@ def build_chart_display_bars(
         # Measured 2026-08-12: the server's five-minute tape covered two days
         # while the client's one-minute tape covered two weeks, so using it
         # unconditionally would have SHORTENED the chart.
-        fine = normalize_chart_candle_bars(fine_study_bars)
+        fine = remove_extended_hours_bad_prints(normalize_chart_candle_bars(fine_study_bars))
         fine_cadence = chart_source_bar_spacing_minutes(fine)
         earliest = lambda rows: int(rows[0]["time"]) if rows else 0  # noqa: E731
         fine_reaches_further = bool(fine) and (not live or earliest(fine) < earliest(live))

@@ -1,3 +1,4 @@
+import { withoutExtendedHoursBadPrints } from "./chartBadPrints.js";
 const EASTERN_BUCKET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   year: "numeric",
@@ -373,9 +374,11 @@ export function buildChartDisplayBars({
   sourcesNormalized = false,
 } = {}) {
   const minutes = Math.max(Number(aggregationMinutes || 1), 1);
-  const live = sourcesNormalized && Array.isArray(liveBars)
+  // Off-market extended-hours prints are dropped before any candle is built
+  // (see chartBadPrints.js): SPY 2026-11-11 16:55 drew a $711-$760 candle.
+  const live = withoutExtendedHoursBadPrints(sourcesNormalized && Array.isArray(liveBars)
     ? liveBars
-    : normalizedChartSourceBars(liveBars);
+    : normalizedChartSourceBars(liveBars));
   if (minutes >= 1440) {
     // D/W/M views draw from the long daily seed (decades) instead of the
     // short one-minute tape. Both use Eastern-midnight epoch timestamps, so
@@ -389,9 +392,9 @@ export function buildChartDisplayBars({
       return aggregateChartBars(overlayLiveOnHistorical(seed, liveDaily), minutes);
     }
   }
-  const normalizedStudyBars = sourcesNormalized && Array.isArray(studyBars)
+  const normalizedStudyBars = withoutExtendedHoursBadPrints(sourcesNormalized && Array.isArray(studyBars)
     ? studyBars
-    : normalizedChartSourceBars(studyBars);
+    : normalizedChartSourceBars(studyBars));
   // The study tape is usable for ANY timeframe at least as coarse as its own
   // cadence, not just 4H. Only 240 took this path before, so 1h and 2h were
   // aggregated from the one-minute live tape - capped at ~5 days by the
@@ -413,9 +416,9 @@ export function buildChartDisplayBars({
     // which therefore ran out about two weeks back. The 5m tape is finer than
     // any of these buckets, so it reconstructs them exactly; the live tape is
     // still merged on top so the forming candle keeps ticking.
-    const fine = sourcesNormalized && Array.isArray(fineStudyBars)
+    const fine = withoutExtendedHoursBadPrints(sourcesNormalized && Array.isArray(fineStudyBars)
       ? fineStudyBars
-      : normalizedChartSourceBars(fineStudyBars);
+      : normalizedChartSourceBars(fineStudyBars));
     const fineCadence = chartSourceBarSpacingMinutes(fine);
     // Only prefer the fine tape when it actually reaches FURTHER BACK than the
     // live tape. Measured 2026-08-12: the server's five-minute tape covered
