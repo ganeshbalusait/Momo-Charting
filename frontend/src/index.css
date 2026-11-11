@@ -23445,3 +23445,82 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
   .roi-option-ladder-row { grid-template-columns: minmax(54px, 1fr) minmax(52px, 1fr) minmax(52px, 1fr) 46px; gap: 6px; padding: 7px 9px; font-size: .7rem; }
   .roi-option-ladder > header { flex-wrap: wrap; }
 }
+
+/* Chart Project ROI card (2026-11-11): the ROI button in the chart toolbar and
+   the card that floats over the top-left of the chart. The Entry / Target /
+   Stop lines are price lines on the candle series (ChartProjectRoiCard.jsx). */
+.app-shell .oi-finder-chart-card .oi-finder-chart-roi {
+  display: inline-flex; flex: 0 0 auto; min-height: 27px; align-items: center; justify-content: center;
+  border: 1px solid rgba(61, 255, 138, .55); border-radius: 5px; padding: 4px 8px;
+  background: rgba(10, 60, 32, .4); color: #8dffbd; font: inherit; font-size: .6rem; font-weight: 950;
+  letter-spacing: .04em; cursor: pointer; white-space: nowrap;
+}
+.app-shell .oi-finder-chart-card .oi-finder-chart-roi:hover,
+.app-shell .oi-finder-chart-card .oi-finder-chart-roi.is-active { border-color: #3dff8a; background: rgba(18, 104, 54, .65); color: #eafff2; }
+.oi-finder-candle-chart > .chart-project-roi {
+  position: absolute; z-index: 30; top: 8px; left: 8px;
+  width: min(300px, calc(100% - 16px)); max-height: calc(100% - 16px); overflow: auto; overscroll-behavior: contain;
+  display: grid; gap: 6px; padding: 9px 10px 10px; box-sizing: border-box;
+  border: 1px solid rgba(255, 213, 79, .35); border-radius: 8px;
+  background: rgba(10, 13, 20, .94); box-shadow: 0 10px 30px rgba(0, 0, 0, .55);
+  color: #dfe7f2; font-size: .72rem; line-height: 1.3;
+}
+.chart-project-roi > header { display: flex; align-items: center; justify-content: space-between; }
+.chart-project-roi > header b { color: #ffd54f; font-size: .66rem; font-weight: 950; letter-spacing: .12em; text-transform: uppercase; }
+.chart-project-roi-close { border: 0; background: none; color: #aab4c3; font-size: 1.05rem; line-height: 1; cursor: pointer; padding: 0 2px; }
+.chart-project-roi-title b { color: #fff; font-weight: 900; }
+.chart-project-roi-title small { display: block; color: #a6b0bf; font-size: .66rem; }
+.chart-project-roi-hero { display: flex; align-items: baseline; gap: 8px; }
+.chart-project-roi-hero strong { font-size: 1.7rem; font-weight: 950; line-height: 1.05; }
+.chart-project-roi-hero span { font-size: .85rem; font-weight: 900; }
+.chart-project-roi-hero.is-gain strong, .chart-project-roi-hero.is-gain span { color: #3dff8a; }
+.chart-project-roi-hero.is-loss strong, .chart-project-roi-hero.is-loss span { color: #ff5a6a; }
+.chart-project-roi-if { margin: 0; color: #c6cfdb; }
+.chart-project-roi-slider { width: 100%; margin: 2px 0; accent-color: #ffd54f; }
+.chart-project-roi-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.chart-project-roi-count { display: inline-flex; align-items: center; gap: 6px; }
+.chart-project-roi-count small { color: #a6b0bf; }
+.chart-project-roi button { font: inherit; }
+.chart-project-roi-count button,
+.chart-project-roi-side button,
+.chart-project-roi-expiries button,
+.chart-project-roi-ask,
+.chart-project-roi-delete {
+  min-height: 26px; border: 1px solid rgba(255, 255, 255, .18); border-radius: 13px; padding: 2px 10px;
+  background: rgba(255, 255, 255, .05); color: #dfe7f2; font-size: .7rem; font-weight: 800; cursor: pointer;
+}
+.chart-project-roi-count button { min-width: 26px; padding: 2px 6px; }
+.chart-project-roi-side { display: inline-flex; gap: 4px; }
+.chart-project-roi-side button.is-active,
+.chart-project-roi-expiries button.is-active { border-color: #3ddcff; color: #fff; background: rgba(61, 220, 255, .16); }
+.chart-project-roi-expiries { display: flex; gap: 5px; flex-wrap: wrap; }
+.chart-project-roi-ladder-note { color: #a6b0bf; font-size: .66rem; }
+.chart-project-roi-ladder { display: grid; gap: 3px; }
+.chart-project-roi-strike {
+  display: grid; grid-template-columns: 1fr 1fr 1fr 48px; align-items: center; gap: 4px;
+  min-height: 26px; border: 1px solid rgba(255, 255, 255, .14); border-radius: 5px; padding: 2px 8px;
+  background: rgba(255, 255, 255, .03); color: #dfe7f2; font-family: ui-monospace, Consolas, monospace; font-size: .7rem; text-align: left; cursor: pointer;
+}
+.chart-project-roi-strike b { color: #b9c6ff; }
+.chart-project-roi-strike em { color: #ffd54f; font-style: normal; font-size: .6rem; text-align: right; }
+.chart-project-roi-strike.is-picked { border-color: #3ddcff; background: rgba(61, 220, 255, .12); }
+.chart-project-roi-strike.is-picked em { color: #3ddcff; }
+.chart-project-roi-fields { display: grid; gap: 5px; }
+.chart-project-roi-fields label { display: grid; grid-template-columns: 46px 86px auto 1fr; align-items: center; gap: 6px; }
+.chart-project-roi-fields label > span { color: #c6cfdb; }
+.chart-project-roi-fields input {
+  width: 100%; box-sizing: border-box; min-height: 26px; border: 1px solid rgba(255, 255, 255, .22); border-radius: 4px;
+  padding: 2px 6px; background: rgba(0, 0, 0, .35); color: #fff; font: inherit; font-family: ui-monospace, Consolas, monospace; font-size: 16px;
+}
+.chart-project-roi-fields input[readonly] { color: #ffb3bb; }
+.chart-project-roi-fields small { color: #a6b0bf; font-size: .64rem; }
+.chart-project-roi-fields label:not(:first-child) > small { grid-column: 3 / 5; }
+.chart-project-roi-line { margin: 0; font-family: ui-monospace, Consolas, monospace; font-size: .7rem; font-weight: 800; }
+.chart-project-roi-line.is-gain { color: #3dff8a; }
+.chart-project-roi-line.is-loss, .chart-project-roi-line.is-stop { color: #ff5a6a; }
+.chart-project-roi-note { margin: 0; color: #7f8a9a; font-size: .6rem; }
+.chart-project-roi-empty { margin: 0; color: #a6b0bf; }
+.chart-project-roi-delete { justify-self: start; border-radius: 6px; }
+@media (min-width: 761px) {
+  .chart-project-roi-fields input { font-size: .72rem; }
+}

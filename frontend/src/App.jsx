@@ -246,6 +246,7 @@ import {
 import { OI_WALLS_PER_SIDE_OPTIONS, useOiWallsPerSide, writeOiWallsPerSide } from "./oiWallsPerSide";
 import { buildHighOiContractList, expectedMoveFromExpiries, formatCompactVolume, formatDelta, formatMark, resolveExpectedMove } from "./highOiContractList";
 import { buildRoiAutofill, roiAutoTargets, roiEntryPrice, roiStopLevel } from "./roiCalcAutofill";
+import ChartProjectRoiCard from "./ChartProjectRoiCard";
 import {
   OI_AUTO_ALERT_MIRROR_SOURCE,
   activeLevelsForPrice,
@@ -16525,6 +16526,10 @@ function OiFinderCandleChart({
   // (empty) series must receive the studies again, so the ladder restarts and
   // re-applies them one stage at a time instead of in one full-cost pass.
   const [chartSeriesResetVersion, setChartSeriesResetVersion] = useState(0);
+  // Project ROI card (2026-11-11). Only open/closed lives here; the plan and
+  // its Entry / Target / Stop lines live in ChartProjectRoiCard so a slider
+  // drag never re-renders this component.
+  const [projectRoiOpen, setProjectRoiOpen] = useState(false);
   // Which symbol the current Lightweight Charts tree was built for. The tree
   // is torn down and rebuilt whenever an indicator activates, and only a
   // genuine symbol change should reset the viewport - see the rebuild branch.
@@ -23703,6 +23708,17 @@ function OiFinderCandleChart({
             {/* Icon only - the title and aria-label carry the meaning. */}
             <Bell size={14} />
           </button>
+          <button
+            className={`oi-finder-chart-roi${projectRoiOpen ? " is-active" : ""}`}
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              setProjectRoiOpen((current) => !current);
+            }}
+            title={`Project ROI: pick a ${normalizeOiChartSymbol(symbol)} option and see Entry / Target / Stop on the chart`}
+            aria-label={`Project ROI for ${normalizeOiChartSymbol(symbol)}`}
+            aria-pressed={projectRoiOpen}
+          >ROI</button>
           <details
             className="oi-finder-indicators-menu"
             open={indicatorMenuOpen}
@@ -24384,6 +24400,18 @@ function OiFinderCandleChart({
           } : undefined}
         >
           <div className="oi-finder-chart-canvas" ref={chartRef} />
+          <ChartProjectRoiCard
+            symbol={normalizedChartSymbol}
+            rows={selectedChainRows}
+            spot={chartReferencePrice}
+            defaultExpiry={currentAtm?.expiry}
+            expectedMove={currentAtm?.expectedMove}
+            walls={wallLevels}
+            seriesRef={chartSeriesRef}
+            seriesVersion={chartSeriesResetVersion}
+            open={projectRoiOpen}
+            onClose={() => setProjectRoiOpen(false)}
+          />
           <ProfiledOiChartScrollbar
             applyRef={chartScrollbarApplyRef}
             label={normalizeOiChartSymbol(symbol)}
