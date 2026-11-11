@@ -245,6 +245,7 @@ import {
 } from "./oiChartLevels";
 import { OI_WALLS_PER_SIDE_OPTIONS, useOiWallsPerSide, writeOiWallsPerSide } from "./oiWallsPerSide";
 import { buildHighOiContractList, expectedMoveFromExpiries, formatCompactVolume, formatDelta, formatMark, resolveExpectedMove } from "./highOiContractList";
+import { buildRoiAutofill, roiAutoTargets, roiEntryPrice, roiStopLevel } from "./roiCalcAutofill";
 import {
   OI_AUTO_ALERT_MIRROR_SOURCE,
   activeLevelsForPrice,
@@ -5075,37 +5076,34 @@ function PremarketMag7Plan({ plan, onRefresh }) {
 }
 
 function RoiCalc({ data, loading = false }) {
-  const [itmPremiumInput, setItmPremiumInput] = useState("3.09");
-  const [expectedMoveInput, setExpectedMoveInput] = useState("1.50");
+  // Every box fills itself from the selected ticker's live chain. A typed
+  // value overrides the live one until "Live" is clicked, or until the ticker
+  // (all boxes) or the side / expiry (strike, entry, targets) changes.
+  const [overrides, setOverrides] = useState({});
   const [manualSide, setManualSide] = useState("CALL");
   const [manualExpiry, setManualExpiry] = useState("");
-  const [manualStrikeInput, setManualStrikeInput] = useState("");
-  const [manualEntryInput, setManualEntryInput] = useState("");
-  const [manualTargets, setManualTargets] = useState([
-    { stockTarget: "" },
-    { stockTarget: "" },
-    { stockTarget: "" },
-  ]);
   const [manualGammaResults, setManualGammaResults] = useState({});
   const manualSymbol = String(data?.symbol || "").trim().toUpperCase();
   useEffect(() => {
     setManualExpiry("");
-    setManualStrikeInput("");
-    setManualEntryInput("");
-    setManualTargets([{ stockTarget: "" }, { stockTarget: "" }, { stockTarget: "" }]);
+    setOverrides({});
     setManualGammaResults({});
   }, [manualSymbol]);
-  const itmPremium = Math.max(0, Number.parseFloat(itmPremiumInput) || 0);
-  const expectedMove = Math.max(0, Number.parseFloat(expectedMoveInput) || 0);
-  const targets = [
-    { label: "100% ROI", multiple: 2, tone: "is-blue" },
-    { label: "200% ROI", multiple: 3, tone: "is-green" },
-  ].map((target) => {
-    const premiumCeiling = itmPremium / target.multiple;
-    const gap = expectedMove - premiumCeiling;
-    return { ...target, premiumCeiling, gap, passes: expectedMove > 0 && premiumCeiling <= expectedMove };
+  const pickFields = ["strike", "entry", "target0", "target1", "target2"];
+  const setOverride = (field, value) => setOverrides((current) => ({ ...current, [field]: value }));
+  const clearOverrides = (fields) => setOverrides((current) => {
+    const next = { ...current };
+    fields.forEach((field) => { delete next[field]; });
+    return next;
   });
-  const chainRows = Array.isArray(data?.selectedExpiryChainRows) ? data.selectedExpiryChainRows : [];
+  const fieldValue = (field, live) => (overrides[field] != null ? overrides[field] : live);
+  const liveTag = (field) => (overrides[field] != null
+    ? <button className="roi-live-reset" onClick={() => clearOverrides([field])} type="button">↺ Live</button>
+    : <em className="roi-auto-tag">Auto</em>);
+  const chainRows = useMemo(
+    () => (Array.isArray(data?.selectedExpiryChainRows) ? data.selectedExpiryChainRows : []),
+    [data?.selectedExpiryChainRows],
+  );
   const chainExpiries = [...new Map(chainRows
     .filter((row) => row?.expiry)
     .map((row) => [String(row.expiry), {
@@ -5119,6 +5117,39 @@ function RoiCalc({ data, loading = false }) {
     && String(row?.side || "").toUpperCase() === manualSide
   ));
   const manualSpot = Math.max(0, Number(data?.underlyingPrice || 0));
+  const autofill = useMemo(() => buildRoiAutofill({
+    rows: chainRows,
+    spot: manualSpot,
+    side: manualSide,
+    expiry: activeManualExpiry,
+    expiryExpectedMoves: data?.expiryExpectedMoves,
+  }), [chainRows, manualSpot, manualSide, activeManualExpiry, data?.expiryExpectedMoves]);
+  const sideLetter = manualSide === "PUT" ? "P" : "C";
+  const itmPremiumInput = fieldValue("itm", autofill.itmPremium > 0 ? autofill.itmPremium.toFixed(2) : "");
+  const expectedMoveInput = fieldValue("em", autofill.expectedMove > 0 ? autofill.expectedMove.toFixed(2) : "");
+  const manualStrikeInput = fieldValue("strike", autofill.defaultStrike > 0 ? String(autofill.defaultStrike) : "");
+  const pickedStrike = Number.parseFloat(manualStrikeInput) || 0;
+  const pickedContract = manualContracts.find((row) => Number(row.strike) === pickedStrike) || null;
+  const autoEntry = pickedContract ? roiEntryPrice(pickedContract) : 0;
+  const manualEntryInput = fieldValue("entry", autoEntry > 0 ? autoEntry.toFixed(2) : "");
+  const autoTargets = roiAutoTargets({
+    rows: chainRows,
+    spot: manualSpot,
+    side: manualSide,
+    expiry: activeManualExpiry,
+    expectedMove: autofill.expectedMove,
+  });
+  const manualTargets = [0, 1, 2].map((index) => ({ stockTarget: fieldValue(`target${index}`, autoTargets[index]) }));
+  const itmPremium = Math.max(0, Number.parseFloat(itmPremiumInput) || 0);
+  const expectedMove = Math.max(0, Number.parseFloat(expectedMoveInput) || 0);
+  const targets = [
+    { label: "100% ROI", multiple: 2, tone: "is-blue" },
+    { label: "200% ROI", multiple: 3, tone: "is-green" },
+  ].map((target) => {
+    const premiumCeiling = itmPremium / target.multiple;
+    const gap = expectedMove - premiumCeiling;
+    return { ...target, premiumCeiling, gap, passes: expectedMove > 0 && premiumCeiling <= expectedMove };
+  });
   const manualStrike = Math.max(0, Number.parseFloat(manualStrikeInput) || 0);
   const manualEntry = Math.max(0, Number.parseFloat(manualEntryInput) || 0);
   const liveEntryContract = manualContracts
@@ -5126,7 +5157,9 @@ function RoiCalc({ data, loading = false }) {
     .slice()
     .sort((left, right) => Math.abs(Number(left.strike) - manualStrike) - Math.abs(Number(right.strike) - manualStrike))[0];
   const liveEntryMark = liveEntryContract ? optionChainMark(liveEntryContract) : 0;
-  const currentPnlReady = manualStrike > 0 && manualEntry > 0 && liveEntryMark > 0;
+  // P&L needs the trader's own fill; the auto entry is today's ask, so a
+  // P&L against it would only show the spread.
+  const currentPnlReady = overrides.entry != null && manualStrike > 0 && manualEntry > 0 && liveEntryMark > 0;
   const currentPnlPerContract = currentPnlReady ? (liveEntryMark - manualEntry) * 100 : null;
   const currentPnlPercent = currentPnlReady ? ((liveEntryMark - manualEntry) / manualEntry) * 100 : null;
   const currentPnlTone = !currentPnlReady ? "" : currentPnlPerContract >= 0 ? "is-positive" : "is-negative";
@@ -5204,10 +5237,14 @@ function RoiCalc({ data, loading = false }) {
       gamma: liveEntryContract?.gamma,
     });
     const gammaEstimate = manualGammaResults[index] || localGammaEstimate;
-    const gammaEstimatedExitPrice = directionValid ? Number(gammaEstimate?.estimatedExitPrice || 0) : 0;
-    const gammaRoi = directionValid && gammaEstimatedExitPrice > 0 ? Number(gammaEstimate?.roiPercent || 0) : null;
-    const gammaProfitPerContract = directionValid && gammaEstimatedExitPrice > 0 ? Number(gammaEstimate?.profitPerContract || 0) : null;
-    const gammaReady = manualSpot > 0 && manualStrike > 0 && manualEntry > 0 && stockTarget > 0 && gammaEstimatedExitPrice > 0 && directionValid;
+    // Gamma ROI projects the entry contract itself, so any target in the
+    // trade's direction is valid - including one past the strike (the
+    // full-move and OI-level auto targets usually are).
+    const gammaDirectionValid = manualSide === "CALL" ? stockTarget > manualSpot : stockTarget > 0 && stockTarget < manualSpot;
+    const gammaEstimatedExitPrice = gammaDirectionValid ? Number(gammaEstimate?.estimatedExitPrice || 0) : 0;
+    const gammaRoi = gammaDirectionValid && gammaEstimatedExitPrice > 0 ? Number(gammaEstimate?.roiPercent || 0) : null;
+    const gammaProfitPerContract = gammaDirectionValid && gammaEstimatedExitPrice > 0 ? Number(gammaEstimate?.profitPerContract || 0) : null;
+    const gammaReady = manualSpot > 0 && manualStrike > 0 && manualEntry > 0 && stockTarget > 0 && gammaEstimatedExitPrice > 0 && gammaDirectionValid;
     return {
       ...target,
       index,
@@ -5229,19 +5266,32 @@ function RoiCalc({ data, loading = false }) {
       gamma: Math.abs(Number(liveEntryContract?.gamma || 0)),
     };
   });
-  const updateManualTarget = (index, field, value) => {
-    setManualTargets((current) => current.map((target, targetIndex) => (
-      targetIndex === index ? { ...target, [field]: value } : target
-    )));
-  };
+  const updateManualTarget = (index, field, value) => setOverride(`target${index}`, value);
+  const pickStrike = (strike) => setOverrides((current) => {
+    const next = { ...current, strike: String(strike) };
+    delete next.entry;
+    return next;
+  });
+  const changeSide = (side) => { setManualSide(side); clearOverrides(pickFields); };
+  const changeExpiry = (expiry) => { setManualExpiry(expiry); clearOverrides(pickFields); };
+  const stop = roiStopLevel({
+    side: manualSide,
+    spot: manualSpot,
+    entry: manualEntry,
+    delta: liveEntryContract?.delta,
+    gamma: liveEntryContract?.gamma,
+  });
+  const stopLossPerContract = stop ? (stop.stopPremium - manualEntry) * 100 : null;
+  const headline = manualResults[1];
+  const expiryLabel = activeManualExpiry ? formatExpiryEastern(activeManualExpiry) : "";
 
   return (
     <section className="roi-calc-page" data-testid="roi-calc-view">
       <section className="roi-calc-hero">
         <div>
-          <span>MANUAL OPTIONS SCREEN</span>
+          <span>AUTO OPTIONS SCREEN · {manualSymbol || "TICKER"}</span>
           <h2>ROI Calc</h2>
-          <p>Compare your option-premium ceiling for a target ROI with the expected move you enter.</p>
+          <p>Every box fills itself from {manualSymbol || "the ticker"}&rsquo;s live option chain. Type in any box to use your own number; &ldquo;↺ Live&rdquo; puts the live one back.</p>
         </div>
         <div className="roi-calc-rule"><b>Quick rule</b><strong>ROI premium ceiling ≤ Expected Move</strong></div>
       </section>
@@ -5249,13 +5299,13 @@ function RoiCalc({ data, loading = false }) {
       <section className="roi-calc-inputs data-card">
         <label>
           ITM option premium
-          <div><span>$</span><input aria-label="ITM option premium" inputMode="decimal" min="0" onChange={(event) => setItmPremiumInput(event.target.value)} step="0.01" type="number" value={itmPremiumInput} /></div>
-          <small>Example: 3.09</small>
+          <div><span>$</span><input aria-label="ITM option premium" inputMode="decimal" min="0" onChange={(event) => setOverride("itm", event.target.value)} step="0.01" type="number" value={itmPremiumInput} /></div>
+          <small>{liveTag("itm")}{autofill.itmContract ? `${formatOptionStrike(autofill.itmContract.strike)}${sideLetter} · first ITM ${manualSide.toLowerCase()} · ${expiryLabel}` : loading ? "Loading chain…" : "No ITM contract in the chain yet"}</small>
         </label>
         <label>
           Expected move
-          <div><span>$</span><input aria-label="Expected move" inputMode="decimal" min="0" onChange={(event) => setExpectedMoveInput(event.target.value)} step="0.01" type="number" value={expectedMoveInput} /></div>
-          <small>Enter the dollar expected move for the selected expiry.</small>
+          <div><span>$</span><input aria-label="Expected move" inputMode="decimal" min="0" onChange={(event) => setOverride("em", event.target.value)} step="0.01" type="number" value={expectedMoveInput} /></div>
+          <small>{liveTag("em")}{autofill.expectedMove > 0 ? `±${formatCurrency(autofill.expectedMove)} · ${expiryLabel} straddle` : loading ? "Loading chain…" : "No expected move for this expiry yet"}</small>
         </label>
         <div className="roi-calc-formula">
           <b>Your shortcut</b>
@@ -5279,7 +5329,7 @@ function RoiCalc({ data, loading = false }) {
       <section className="roi-calc-guide data-card">
         <h3>How to use it</h3>
         <ol>
-          <li>Enter the ITM premium you are using as your reference and the selected expiry’s expected move.</li>
+          <li>The ITM premium and expected move fill in from the live chain for the expiry and side picked below; type over either one to use your own.</li>
           <li>The calculator divides that premium by 2 for a 100% target, or by 3 for a 200% target.</li>
           <li>A pass means the calculated premium ceiling is no larger than your entered expected move. It is a quick screen only, not a trade signal or ROI guarantee.</li>
         </ol>
@@ -5290,12 +5340,12 @@ function RoiCalc({ data, loading = false }) {
         <header>
           <div>
             <span>OPTION TARGET ROI</span>
-            <h3>{String(data?.symbol || "Ticker").toUpperCase()} live-chain calculation</h3>
-            <p>Enter your option entry and stock targets. Chain ROI uses the live target-strike Mark; Gamma ROI projects the same entry contract using Delta + Gamma.</p>
+            <h3>{manualSymbol || "Ticker"} live-chain calculation</h3>
+            <p>Strike, entry and targets fill in automatically: pick a strike from the ladder, or type your own. Chain ROI uses the live target-strike Mark; Gamma ROI projects the same entry contract using Delta + Gamma.</p>
           </div>
           <div className="roi-option-side" role="group" aria-label="Option side">
-            <button className={manualSide === "CALL" ? "is-active is-call" : ""} onClick={() => setManualSide("CALL")} type="button">Call</button>
-            <button className={manualSide === "PUT" ? "is-active is-put" : ""} onClick={() => setManualSide("PUT")} type="button">Put</button>
+            <button className={manualSide === "CALL" ? "is-active is-call" : ""} onClick={() => changeSide("CALL")} type="button">Call</button>
+            <button className={manualSide === "PUT" ? "is-active is-put" : ""} onClick={() => changeSide("PUT")} type="button">Put</button>
           </div>
         </header>
 
@@ -5307,34 +5357,57 @@ function RoiCalc({ data, loading = false }) {
           </div>
           <label>
             Expiry
-            <select aria-label="Option expiry" onChange={(event) => setManualExpiry(event.target.value)} value={activeManualExpiry}>
+            <select aria-label="Option expiry" onChange={(event) => changeExpiry(event.target.value)} value={activeManualExpiry}>
               {chainExpiries.length ? chainExpiries.map((item) => <option key={item.expiry} value={item.expiry}>{formatExpiryEastern(item.expiry)} · {item.dte} DTE</option>) : <option value="">Waiting for chain</option>}
             </select>
           </label>
           <label>
             Entry option strike
-            <div><span>$</span><input aria-label="Entry option strike" inputMode="decimal" min="0" onChange={(event) => setManualStrikeInput(event.target.value)} step="0.01" type="number" value={manualStrikeInput} /></div>
-            <small>{manualStrike > 0 && liveEntryContract ? `Nearest chain strike ${formatOptionStrike(liveEntryContract.strike)} · live Mark ${formatCurrency(optionChainMark(liveEntryContract))}` : "Enter your purchased option strike"}</small>
+            <div><span>$</span><input aria-label="Entry option strike" inputMode="decimal" min="0" onChange={(event) => setOverride("strike", event.target.value)} step="0.01" type="number" value={manualStrikeInput} /></div>
+            <small>{liveTag("strike")}{manualStrike > 0 && liveEntryContract ? `Chain strike ${formatOptionStrike(liveEntryContract.strike)} · live Mark ${formatCurrency(optionChainMark(liveEntryContract))}` : "Pick a strike from the ladder"}</small>
           </label>
           <label>
             Entry premium
-            <div><span>$</span><input aria-label="Entry option premium" inputMode="decimal" min="0" onChange={(event) => setManualEntryInput(event.target.value)} step="0.01" type="number" value={manualEntryInput} /></div>
-            <small>Enter your actual fill price</small>
+            <div><span>$</span><input aria-label="Entry option premium" inputMode="decimal" min="0" onChange={(event) => setOverride("entry", event.target.value)} step="0.01" type="number" value={manualEntryInput} /></div>
+            <small>{liveTag("entry")}{overrides.entry != null ? "Your fill price" : autoEntry > 0 ? "Live ask - type your fill once you are in" : "No live ask for this strike"}</small>
           </label>
           <div className={`roi-option-current-pnl ${currentPnlTone}`} aria-live="polite">
             <span>Current P&amp;L / contract</span>
             <strong>{currentPnlReady ? `${currentPnlPerContract > 0 ? "+" : ""}${formatCurrency(currentPnlPerContract)}` : "--"}</strong>
-            <small>{currentPnlReady ? `${currentPnlPercent >= 0 ? "+" : ""}${currentPnlPercent.toFixed(1)}% · live Mark ${formatCurrency(liveEntryMark)}` : "Enter your strike and actual fill price"}</small>
+            <small>{currentPnlReady ? `${currentPnlPercent >= 0 ? "+" : ""}${currentPnlPercent.toFixed(1)}% · live Mark ${formatCurrency(liveEntryMark)}` : "Type your fill price in Entry premium"}</small>
+          </div>
+        </div>
+
+        <div className="roi-option-ladder" aria-label="Strike ladder">
+          <header><b>ATM + OTM inside ±{autofill.expectedMove > 0 ? formatCurrency(autofill.expectedMove) : "EM"}</b><span>{expiryLabel}</span></header>
+          {autofill.ladder.length ? <div className="roi-option-ladder-rows">
+            {autofill.ladder.map((item) => <button
+              aria-pressed={item.strike === manualStrike}
+              className={`roi-option-ladder-row ${item.strike === manualStrike ? "is-picked" : ""}`}
+              key={item.strike}
+              onClick={() => pickStrike(item.strike)}
+              type="button"
+            >
+              <b>{formatOptionStrike(item.strike)}{sideLetter}</b>
+              <span>{item.price > 0 ? formatCurrency(item.price) : "--"}</span>
+              <span className={item.distance >= 0 ? "is-up" : "is-down"}>{item.distance >= 0 ? "+" : ""}{item.distance.toFixed(2)}</span>
+              <em>{item.strike === manualStrike ? "picked" : item.isAtm ? "ATM" : ""}</em>
+            </button>)}
+          </div> : <p>{loading ? "Loading the chain…" : "No strikes for this expiry yet."}</p>}
+          <div className="roi-option-projection" aria-live="polite">
+            {headline?.gammaReady ? <p className={headline.gammaRoi >= 0 ? "is-positive" : "is-negative"}><b>{headline.gammaRoi >= 0 ? "+" : ""}{Math.round(headline.gammaRoi)}% ({headline.gammaProfitPerContract >= 0 ? "+" : ""}{formatCurrency(headline.gammaProfitPerContract)})</b> if {manualSymbol} tags {formatCurrency(headline.stockTarget)} (Target 2)</p> : null}
+            {stop?.stopStock ? <p className="is-negative"><b>−50% ({formatCurrency(stopLossPerContract)})</b> if {manualSymbol} tags {formatCurrency(stop.stopStock)} · stop premium {formatCurrency(stop.stopPremium)}</p> : null}
           </div>
         </div>
 
         <div className="roi-option-target-grid">
           {manualResults.map((target) => <article className={`roi-option-target-card ${target.ready ? "is-ready" : ""}`} key={target.index}>
-            <header><b>Target {target.index + 1}</b>{target.ready ? <strong>{Math.round(target.roi)}% ROI</strong> : <span>Enter target and Mark</span>}</header>
+            <header><b>Target {target.index + 1}</b>{target.ready ? <strong>{Math.round(target.roi)}% ROI</strong> : target.gammaReady ? <strong>{Math.round(target.gammaRoi)}% Γ ROI</strong> : <span>Enter target and Mark</span>}</header>
             <div className="roi-option-target-inputs">
               <label>
                 Target stock price
                 <div><span>$</span><input aria-label={`Target ${target.index + 1} stock price`} inputMode="decimal" min="0" onChange={(event) => updateManualTarget(target.index, "stockTarget", event.target.value)} step="0.01" type="number" value={target.stockTargetInput} /></div>
+                <small>{liveTag(`target${target.index}`)}{["Half the expected move", "Full expected move", "Biggest OI level past the move"][target.index]}</small>
               </label>
               <div className="roi-option-fetched-mark">
                 <span>OI-chain Mark</span>
@@ -5360,7 +5433,7 @@ function RoiCalc({ data, loading = false }) {
               </span>
               <span>Profit / contract <b className={target.ready && target.profitPerContract >= 0 ? "is-positive" : target.ready ? "is-negative" : ""}>{target.ready ? formatCurrency(target.profitPerContract) : "--"}</b></span>
             </div>
-            {!target.directionValid && target.stockTarget > 0 && manualSpot > 0 && manualStrike > 0 ? <small>For an OTM {manualSide.toLowerCase()} exit, enter a stock target between the current price and the entry strike.</small> : <small>The entered target strike and its live OI-chain Mark are used; the nearest listed strike is used only when there is no exact match.</small>}
+            {!target.directionValid && target.gammaReady ? <small>This target is past the {formatOptionStrike(manualStrike)} strike, so the chain Mark cannot price it; the Gamma ROI projects your contract instead.</small> : !target.directionValid && target.stockTarget > 0 && manualSpot > 0 && manualStrike > 0 ? <small>For an OTM {manualSide.toLowerCase()} exit, enter a stock target between the current price and the entry strike.</small> : <small>The entered target strike and its live OI-chain Mark are used; the nearest listed strike is used only when there is no exact match.</small>}
           </article>)}
         </div>
         <footer>Chain ROI uses the current target-strike Mark. Gamma ROI uses Delta + Gamma for an immediate move with constant Gamma, unchanged IV, and no theta. Current P&amp;L excludes fees; neither ROI is a guaranteed future quote.</footer>

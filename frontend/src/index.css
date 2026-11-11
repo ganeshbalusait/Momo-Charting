@@ -23406,3 +23406,42 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
   .chat-a { max-width: 100%; }
   .chat-input { font-size: 16px; }
 }
+
+/* ROI Calc auto-fill (2026-11-11): Auto / Live tags, the strike ladder and the
+   projected ROI / -50% stop lines. Kept at the end of the file so the phone
+   rules below win on source order (see the .charts-workstation cascade). */
+.roi-auto-tag, .roi-live-reset { display: inline-flex; align-items: center; margin-right: 6px; padding: 1px 6px; border-radius: 999px; font-size: .52rem; font-style: normal; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; vertical-align: 1px; }
+.roi-auto-tag { border: 1px solid rgba(72, 231, 168, .45); background: rgba(13, 51, 41, .35); color: #54e8af; }
+.roi-live-reset { border: 1px solid rgba(86, 223, 255, .55); background: rgba(4, 42, 57, .7); color: #9eeeff; font-family: inherit; cursor: pointer; }
+.roi-live-reset:hover { border-color: #8ceeff; color: #e4fbff; }
+.roi-option-ladder { display: grid; gap: 7px; min-width: 0; }
+.roi-option-ladder > header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: #afafb8; font-size: .62rem; }
+.roi-option-ladder > header b { color: #d8edf8; font-weight: 900; letter-spacing: .03em; text-transform: uppercase; }
+.roi-option-ladder > p { margin: 0; color: #828290; font-size: .64rem; }
+.roi-option-ladder-rows { display: grid; gap: 5px; }
+.roi-option-ladder-row { display: grid; grid-template-columns: minmax(64px, 1fr) minmax(56px, 1fr) minmax(56px, 1fr) 52px; align-items: center; gap: 8px; min-height: 38px; padding: 7px 11px; border: 1px solid #34343b; border-radius: 7px; background: #111114; color: #e9e9ec; font: inherit; font-size: .74rem; text-align: left; cursor: pointer; }
+.roi-option-ladder-row:hover { border-color: #55555f; background: #17171b; }
+.roi-option-ladder-row.is-picked { border-color: #41d5ff; box-shadow: 0 0 0 1px rgba(65, 213, 255, .35); background: rgba(6, 40, 52, .55); }
+.roi-option-ladder-row b { color: #f5f5f7; font-weight: 900; }
+.roi-option-ladder-row .is-up { color: #54e8af; }
+.roi-option-ladder-row .is-down { color: #ff8398; }
+.roi-option-ladder-row em { justify-self: end; color: #f1be3a; font-size: .6rem; font-style: normal; font-weight: 900; text-transform: uppercase; }
+.roi-option-ladder-row.is-picked em { color: #7fe3ff; }
+.roi-option-projection { display: grid; gap: 4px; }
+.roi-option-projection p { margin: 0; color: #c9c9d0; font-size: .7rem; line-height: 1.4; }
+.roi-option-projection p.is-positive b { color: #54e8af; }
+.roi-option-projection p.is-negative b { color: #ff8398; }
+.roi-calc-inputs small, .roi-option-setup label > small, .roi-option-target-inputs label > small { overflow-wrap: anywhere; }
+/* ROI Calc owns its scroll container (main.workspace is overflow:hidden), or
+   on the phone nothing below the first screen - targets, the live-chain
+   calculator - can be reached. Same contract as .learn-view. */
+.app-shell .workspace > .roi-calc-page { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; align-content: start; grid-auto-rows: max-content; padding-bottom: 24px; }
+@media (max-width: 620px) {
+  .roi-calc-hero { gap: 10px; padding: 14px; }
+  .roi-calc-target { padding: 13px; }
+  .roi-calc-target > strong { font-size: 1.35rem; }
+  .roi-option-target-manual { padding: 13px; gap: 12px; }
+  .roi-option-target-results { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .roi-option-ladder-row { grid-template-columns: minmax(54px, 1fr) minmax(52px, 1fr) minmax(52px, 1fr) 46px; gap: 6px; padding: 7px 9px; font-size: .7rem; }
+  .roi-option-ladder > header { flex-wrap: wrap; }
+}
