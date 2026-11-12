@@ -23524,3 +23524,12 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 @media (min-width: 761px) {
   .chart-project-roi-fields input { font-size: .72rem; }
 }
+
+/* Chart toolbar overlap (2026-11-11): at 1440 px with the option chain open
+   the layout buttons (Mag7, layout picker, count, ...) shrank into a 274 px
+   box; right-aligned, the rest spilled LEFT under the quick-ticker row, so the
+   layout picker could not be clicked. The buttons keep their width; the ticker
+   row (overflow-x: auto) is the part that gives way and scrolls. */
+@media (min-width: 761px) {
+  .app-shell .oi-chart-layout-toolbar > .oi-chart-layout-actions { flex-shrink: 0; }
+}

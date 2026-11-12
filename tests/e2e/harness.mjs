@@ -201,7 +201,16 @@ export async function openApp({
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text().slice(0, 300));
   });
+  // Seed once per tab. An init script runs on EVERY navigation, so without the
+  // guard a page.reload() re-wrote the seeded keys over what the app had just
+  // saved, and every "survives a reload" check tested the seed instead of the
+  // app (2026-11-11: chosen layout and two-chart split "lost" on reload).
+  // sessionStorage lives through a reload of the same tab.
   await page.addInitScript((state) => {
+    try {
+      if (window.sessionStorage.getItem("__e2eSeeded") === "1") return;
+      window.sessionStorage.setItem("__e2eSeeded", "1");
+    } catch { /* no sessionStorage: seed every load, as before */ }
     for (const [key, value] of Object.entries(state)) {
       try { window.localStorage.setItem(key, value); } catch { /* blocked storage */ }
     }

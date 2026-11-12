@@ -6,8 +6,9 @@
 // MAG7 is left out on purpose: it opens seven tickers (spec limit is two).
 
 import assert from "node:assert/strict";
+import test from "node:test";
 
-import { DESKTOP, e2eTest } from "./harness.mjs";
+import { DESKTOP, e2eTest, marketHoursBlock } from "./harness.mjs";
 import { card, waitForTape, withCharts } from "./charts-core.helpers.mjs";
 
 const LAYOUTS = [
@@ -39,7 +40,9 @@ e2eTest("every layout in the picker builds a grid with that many chart slots", a
     for (const [id, label, count] of LAYOUTS) {
       await chooseLayout(page, label);
       await waitForLayout(page, id, count);
-      const pressed = page.locator(".oi-chart-layout-menu").getByRole("button", { name: label, exact: true });
+      // The menu closes after a pick; its buttons stay in the page but are
+      // hidden, which getByRole skips unless told to include them.
+      const pressed = page.locator(".oi-chart-layout-menu").getByRole("button", { name: label, exact: true, includeHidden: true });
       assert.equal(await pressed.getAttribute("aria-pressed"), "true", label);
       await page.waitForFunction(({ selector, wanted }) => document.querySelectorAll(selector).length === wanted,
         { selector: SLOTS, wanted: count }, { timeout: 30_000 });
@@ -53,7 +56,18 @@ e2eTest("every layout in the picker builds a grid with that many chart slots", a
   });
 }, { timeout: 600_000 });
 
-e2eTest("6 across at 1440 px keeps every chart at the 320 px floor", async () => {
+// KNOWN FAILURE (2026-11-11), kept as a todo: with the option chain open at
+// 1440 px the six columns get ~150 px each. A fixed 320 px chart floor was
+// REMOVED on purpose on 2026-08-24 (it clipped the right price scale, where the
+// strike labels are, off the panel), so the app fits charts to the space
+// instead of scrolling sideways. Whether 6 across should scroll sideways at a
+// 320 px minimum is Ganesh's call; until then the next test checks what the
+// August fix guarantees - the price scale stays inside every panel.
+test("6 across at 1440 px keeps every chart at the 320 px floor", {
+  skip: marketHoursBlock() || false,
+  todo: "no 320 px floor by design since 2026-08-24 (fit-to-host); 6 across with the chain open gives ~150 px panels - waiting on Ganesh",
+  timeout: 300_000,
+}, async () => {
   await withCharts({ viewport: DESKTOP, workspace: { layoutId: "six-columns", symbols: ["AAPL"], timeframes: ["5m"] } }, async (app) => {
     const { page } = app;
     await waitForLayout(page, "six-columns", 6);
@@ -67,7 +81,56 @@ e2eTest("6 across at 1440 px keeps every chart at the 320 px floor", async () =>
     assert.ok(widths.every((width) => width >= 319), `chart widths ${widths.join(",")} fall under the 320 px floor`);
     assert.deepEqual(app.pageErrors, []);
   });
+});
+
+e2eTest("6 across at 1440 px keeps each chart's price scale inside its panel", async () => {
+  await withCharts({ viewport: DESKTOP, workspace: { layoutId: "six-columns", symbols: ["AAPL"], timeframes: ["5m"] } }, async (app) => {
+    const { page } = app;
+    await waitForLayout(page, "six-columns", 6);
+    await page.waitForFunction(() => document.querySelectorAll(".oi-chart-progressive-placeholder").length === 0, null, { timeout: 120_000 });
+    await waitForTape(page, { index: 5, symbol: "AAPL", timeout: 120_000 });
+    const panels = await page.locator("section.oi-finder-chart-card[data-tape-length] .oi-finder-candle-chart").evaluateAll(
+      (nodes) => nodes.map((node) => {
+        const host = node.getBoundingClientRect();
+        const canvas = node.querySelector(".tv-lightweight-charts")?.getBoundingClientRect();
+        return { hostRight: host.right, canvasRight: canvas ? canvas.right : null };
+      }),
+    );
+    assert.equal(panels.length, 6);
+    panels.forEach((panel, index) => {
+      assert.ok(panel.canvasRight != null, `panel ${index + 1} has no chart canvas`);
+      assert.ok(panel.canvasRight <= panel.hostRight + 1, `panel ${index + 1}: price scale clipped (canvas ends ${Math.round(panel.canvasRight)} px, panel ${Math.round(panel.hostRight)} px)`);
+    });
+    assert.deepEqual(app.pageErrors, []);
+  });
 }, { timeout: 300_000 });
+
+// 2026-11-11: at 1440 px with the option chain open, the toolbar's layout
+// buttons (Mag7, layout picker, count...) shrank into a 274 px box. Being
+// right-aligned, the overflow spilled LEFT under the quick-ticker row, so the
+// layout picker sat beneath the NFLX button and could not be clicked. The
+// ticker row is the part that should give way (it scrolls).
+e2eTest("at 1440 px the ticker row never covers the layout buttons", async () => {
+  await withCharts({ viewport: DESKTOP, workspace: { layoutId: "six-columns", symbols: ["AAPL"], timeframes: ["5m"] } }, async (app) => {
+    const { page } = app;
+    await waitForLayout(page, "six-columns", 6);
+    await waitForTape(page, { symbol: "AAPL", timeout: 120_000 });
+    const layout = await page.evaluate(() => {
+      const nav = document.querySelector("nav.oi-chart-quick-tickers").getBoundingClientRect();
+      const actions = [...document.querySelectorAll(".oi-chart-layout-actions > *")]
+        .map((node) => ({ name: String(node.className).split(" ")[0], left: node.getBoundingClientRect().left }));
+      return { navRight: nav.right, actions };
+    });
+    for (const action of layout.actions) {
+      assert.ok(action.left >= layout.navRight - 1, `${action.name} starts at ${Math.round(action.left)} px, under the ticker row (ends ${Math.round(layout.navRight)} px)`);
+    }
+    // The pop-up toasts (Schwab login, alerts) close themselves; wait them out.
+    await page.locator(".global-price-alert-toast").waitFor({ state: "detached", timeout: 15_000 }).catch(() => {});
+    await chooseLayout(page, "4 grid");
+    await waitForLayout(page, "quad", 4);
+    assert.deepEqual(app.pageErrors, []);
+  });
+}, { timeout: 240_000 });
 
 e2eTest("the quick count select switches to 2 charts", async () => {
   await withCharts({ workspace: { symbols: ["AAPL"], timeframes: ["5m"] } }, async (app) => {
