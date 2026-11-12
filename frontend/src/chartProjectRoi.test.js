@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import {
   buildProjectRoi,
   projectRoiChartLines,
+  projectRoiOtherPlan,
+  projectRoiQuoteSpot,
+  projectRoiPlanLines,
+  projectRoiSwapSide,
   projectRoiExpiries,
   projectRoiFirstLiveExpiry,
   projectRoiOptionValue,
@@ -172,4 +176,69 @@ test("an expired 0DTE is never offered after the close", () => {
   const after = buildProjectRoi({ now: new Date("2026-11-11T23:00:00Z"), rows: today, spot: SPOT, defaultExpiry: "2026-11-11" });
   assert.equal(after.expiry, DAY1);
   assert.deepEqual(after.expiries.map((item) => item.expiry), [DAY1, DAY2]);
+});
+
+test("both sides: switching Call <-> Put keeps each side's strike, fill and target", () => {
+  const plan = { side: "CALL", both: true, strike: 210, entry: 0.9, target: 207, contracts: 2, entrySpot: 200.4 };
+  const put = projectRoiSwapSide(plan, "PUT");
+  assert.equal(put.side, "PUT");
+  assert.deepEqual([put.strike, put.entry, put.target], [null, null, null], "the put side starts on live values");
+  assert.deepEqual(put.other, { strike: 210, entry: 0.9, target: 207 });
+  assert.equal(put.contracts, 2);
+  assert.equal(put.both, true);
+  const back = projectRoiSwapSide({ ...put, strike: 195, entry: 1.5 }, "CALL");
+  assert.deepEqual([back.side, back.strike, back.entry, back.target], ["CALL", 210, 0.9, 207]);
+  assert.deepEqual(back.other, { strike: 195, entry: 1.5, target: null });
+  assert.equal(projectRoiSwapSide(plan, "CALL"), plan, "same side is a no-op");
+  const other = projectRoiOtherPlan(back);
+  assert.deepEqual([other.side, other.strike, other.entry], ["PUT", 195, 1.5]);
+  assert.equal(other.other, undefined);
+});
+
+test("both sides on the chart: one Entry naming both contracts, call targets up, put targets down", () => {
+  const plan = { side: "CALL", both: true, entrySpot: 200.4 };
+  const call = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan });
+  const put = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: projectRoiOtherPlan(plan) });
+  const lines = projectRoiPlanLines(call, put);
+  assert.deepEqual(lines.map((line) => line.key), ["entry", "c-t1", "c-target", "c-t3", "c-stop", "p-t1", "p-target", "p-t3", "p-stop"]);
+  assert.match(lines[0].title, /^Entry 200\.40 {2}205C \$\d+\.\d\d · 195P \$\d+\.\d\d$/);
+  const byKey = Object.fromEntries(lines.map((line) => [line.key, line]));
+  ["c-t1", "c-target", "c-t3"].forEach((key) => assert.ok(byKey[key].price > SPOT && / 205C \$/.test(byKey[key].title), key));
+  ["p-t1", "p-target", "p-t3"].forEach((key) => assert.ok(byKey[key].price < SPOT && / 195P \$/.test(byKey[key].title), key));
+  assert.ok(byKey["c-stop"].price < SPOT && byKey["p-stop"].price > SPOT, "each stop is on its losing side");
+  // The put side's order does not change which is primary.
+  assert.deepEqual(projectRoiPlanLines(put, call).map((line) => line.key), lines.map((line) => line.key));
+  // One side only, or no second side: the single-side keys.
+  assert.deepEqual(projectRoiPlanLines(call, null).map((line) => line.key), ["entry", "t1", "target", "t3", "stop"]);
+});
+
+test("quotes from the close: the stock the quotes imply drives the value, and the card warns", () => {
+  // The fixture prices every contract around spot 200.40: parity agrees.
+  assert.ok(Math.abs(projectRoiQuoteSpot({ rows: ROWS, expiry: DAY1, spot: SPOT }) - SPOT) < 0.5);
+  const calm = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, defaultExpiry: DAY1 });
+  assert.equal(calm.quoteMismatch, false);
+  // Overnight the live price drops 6% but the quotes still belong to 200.40.
+  const dropped = SPOT * 0.94;
+  const stale = buildProjectRoi({ now: NOW, rows: ROWS, spot: dropped, defaultExpiry: DAY1 });
+  assert.equal(stale.quoteMismatch, true);
+  assert.ok(Math.abs(stale.quoteSpot - SPOT) < 0.5);
+  // Each target is valued from the stock price the quote belongs to (not the
+  // live price): the quote is a snapshot of that moment. The entry itself is
+  // stale, which is why the card warns instead of pretending the % is real.
+  const put = buildProjectRoi({ now: NOW, rows: ROWS, spot: dropped, defaultExpiry: DAY1, plan: { side: "PUT" } });
+  const row = ROWS.find((item) => item.side === "PUT" && item.strike === put.strike && item.expiry === put.expiry);
+  put.targets.forEach((level) => {
+    assert.equal(level.value, projectRoiOptionValue({
+      side: "PUT", spot: put.quoteSpot, price: row.mark, delta: row.delta, gamma: row.gamma, strike: row.strike, target: level.stock,
+    }));
+  });
+  assert.match(projectRoiChartLines(stale)[0].title, /⚠ quotes old$/);
+  assert.doesNotMatch(projectRoiChartLines(calm)[0].title, /quotes old/);
+  assert.equal(projectRoiQuoteSpot({ rows: ROWS.filter((row) => row.side === "CALL"), expiry: DAY1, spot: SPOT }), 0, "no puts: no parity");
+});
+
+test("the result carries the live spot the card's stale-quote warning prints", () => {
+  const stale = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT * 0.94, defaultExpiry: DAY1 });
+  assert.equal(stale.spot, Math.round(SPOT * 0.94 * 100) / 100);
+  assert.equal(typeof stale.quoteSpot.toFixed, "function");
 });

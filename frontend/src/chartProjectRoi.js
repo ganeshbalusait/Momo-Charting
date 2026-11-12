@@ -60,6 +60,33 @@ export function projectRoiExpiries(rows = [], now = new Date()) {
     .sort((left, right) => left.dte - right.dte || left.expiry.localeCompare(right.expiry));
 }
 
+// The stock price the option quotes were taken at, from put-call parity
+// (strike + call - put) on the strikes nearest spot, median of up to five.
+// Overnight the app's live price moves (NVDA 2026-11-11: $158.76, -6%) while
+// the option quotes still belong to the close (parity said ~$174), and mixing
+// the two priced a put at +8,471%.
+export function projectRoiQuoteSpot({ rows = [], expiry = "", spot = 0 } = {}) {
+  const key = String(expiry || "").slice(0, 10);
+  const byStrike = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (String(row?.expiry || "").slice(0, 10) !== key) return;
+    const strike = Number(row?.strike);
+    const mark = roiContractPrice(row);
+    if (!(strike > 0) || !(mark > 0)) return;
+    const entry = byStrike.get(strike) || {};
+    entry[sideOf(row?.side)] = mark;
+    byStrike.set(strike, entry);
+  });
+  const implied = [...byStrike.entries()]
+    .filter(([, pair]) => pair.CALL > 0 && pair.PUT > 0)
+    .sort((left, right) => Math.abs(left[0] - spot) - Math.abs(right[0] - spot))
+    .slice(0, 5)
+    .map(([strike, pair]) => strike + pair.CALL - pair.PUT)
+    .sort((left, right) => left - right);
+  if (!implied.length) return 0;
+  return round2(implied[Math.floor(implied.length / 2)]);
+}
+
 // Option value when the stock moves from `spot` to `target`: today's price
 // plus the average of the start and end delta times the move, never below
 // intrinsic value at the target and never below one cent.
@@ -173,7 +200,13 @@ export function buildProjectRoi({
   const delta = Number(row?.delta || 0);
   const gamma = Number(row?.gamma || 0);
 
-  const value = row && target ? projectRoiOptionValue({ side, spot: price, price: livePrice, delta, gamma, strike, target }) : 0;
+  // Value the contract from the stock price its quote belongs to. When that
+  // differs from the live price by more than 1.5% (overnight, a halt), the
+  // card warns that the option prices are stale.
+  const quoteSpot = projectRoiQuoteSpot({ rows, expiry, spot: price });
+  const quoteMismatch = Boolean(price && quoteSpot && Math.abs(quoteSpot - price) / price > 0.015);
+  const valueSpot = quoteMismatch ? quoteSpot : price;
+  const value = row && target ? projectRoiOptionValue({ side, spot: valueSpot, price: livePrice, delta, gamma, strike, target }) : 0;
   const roiPercent = entry > 0 && value > 0 ? round2(((value - entry) / entry) * 100) : null;
   const profit = roiPercent == null ? null : round2((value - entry) * 100 * contracts);
 
@@ -185,7 +218,7 @@ export function buildProjectRoi({
   const [halfMove, , wallLevel] = roiAutoTargets({ rows, spot: price, side, expiry, expectedMove });
   const levelAt = (key, stock, reason) => {
     const at = positive(stock);
-    const levelValue = row && at ? projectRoiOptionValue({ side, spot: price, price: livePrice, delta, gamma, strike, target: at }) : 0;
+    const levelValue = row && at ? projectRoiOptionValue({ side, spot: valueSpot, price: livePrice, delta, gamma, strike, target: at }) : 0;
     const levelRoi = entry > 0 && levelValue > 0 ? round2(((levelValue - entry) / entry) * 100) : null;
     return {
       key, stock: round2(at), reason, value: levelValue, roiPercent: levelRoi,
@@ -204,12 +237,15 @@ export function buildProjectRoi({
     .sort((left, right) => sign * (left.stock - right.stock))
     .map((level, index) => ({ ...level, label: `T${index + 1}` }));
   const stopPremium = entry > 0 ? round2(entry * 0.5) : 0;
-  const stopStock = row && stopPremium ? projectRoiStopStock({ side, spot: price, price: livePrice, delta, gamma, strike, stopPremium }) : null;
+  const stopStock = row && stopPremium ? projectRoiStopStock({ side, spot: valueSpot, price: livePrice, delta, gamma, strike, stopPremium }) : null;
   const stopLoss = stopPremium ? round2(-(entry - stopPremium) * 100 * contracts) : null;
   const entrySpot = positive(plan?.entrySpot) || price;
 
   return {
     ready,
+    spot: round2(price),
+    quoteSpot,
+    quoteMismatch,
     side,
     sideLetter: isCall ? "C" : "P",
     expiries: expiries.slice(0, 3),
@@ -239,6 +275,64 @@ export function buildProjectRoi({
   };
 }
 
+// Call AND put on one plan (Ganesh 2026-11-11: "I see only up side, I don't
+// see down side" -> both). The plan's top-level side/strike/entry/target are
+// the side the card is editing; `other` keeps the opposite side's choices, so
+// flipping Call <-> Put never loses either one. `both` draws the two sides.
+// Appended to the Entry box when the option quotes belong to another stock
+// price (see projectRoiQuoteSpot).
+export const STALE_NOTE = "  ⚠ quotes old";
+
+export function projectRoiOppositeSide(side) {
+  return sideOf(side) === "CALL" ? "PUT" : "CALL";
+}
+
+export function projectRoiOtherPlan(plan = {}) {
+  const other = plan?.other || {};
+  return {
+    ...plan,
+    side: projectRoiOppositeSide(plan?.side),
+    strike: other.strike ?? null,
+    entry: other.entry ?? null,
+    target: other.target ?? null,
+    other: undefined,
+  };
+}
+
+export function projectRoiSwapSide(plan = {}, side = "CALL") {
+  const wanted = sideOf(side);
+  if (sideOf(plan?.side) === wanted) return plan;
+  const other = plan?.other || {};
+  return {
+    ...plan,
+    side: wanted,
+    strike: other.strike ?? null,
+    entry: other.entry ?? null,
+    target: other.target ?? null,
+    other: { strike: plan?.strike ?? null, entry: plan?.entry ?? null, target: plan?.target ?? null },
+  };
+}
+
+// Lines for one side, or for both: one Entry box naming both contracts, the
+// call targets/stop keyed "c-...", the put targets/stop keyed "p-...". The
+// contract in each box (222.5C / 210P) tells the sides apart.
+export function projectRoiPlanLines(primary, secondary = null) {
+  const first = projectRoiChartLines(primary);
+  const second = secondary ? projectRoiChartLines(secondary) : [];
+  if (!second.length) return first;
+  if (!first.length) return second;
+  const call = primary.side === "CALL" ? primary : secondary;
+  const put = primary.side === "CALL" ? secondary : primary;
+  const callLines = primary.side === "CALL" ? first : second;
+  const putLines = primary.side === "CALL" ? second : first;
+  const name = (result) => `${formatStrike(result.strike)}${result.sideLetter} $${result.entry.toFixed(2)}`;
+  return [
+    { key: "entry", price: call.entrySpot, color: "#e8f4ff", title: `Entry ${call.entrySpot.toFixed(2)}  ${name(call)} · ${name(put)}${call.quoteMismatch || put.quoteMismatch ? STALE_NOTE : ""}` },
+    ...callLines.filter((line) => line.key !== "entry").map((line) => ({ ...line, key: `c-${line.key}` })),
+    ...putLines.filter((line) => line.key !== "entry").map((line) => ({ ...line, key: `p-${line.key}` })),
+  ];
+}
+
 // The three chart lines. Entry sits at the stock price when the plan was made.
 export function projectRoiChartLines(result) {
   if (!result?.ready || !result.contract) return [];
@@ -247,7 +341,7 @@ export function projectRoiChartLines(result) {
     key: "entry",
     price: result.entrySpot,
     color: "#e8f4ff",
-    title: `Entry ${result.entrySpot.toFixed(2)}  ${contract} $${result.entry.toFixed(2)}`,
+    title: `Entry ${result.entrySpot.toFixed(2)}  ${contract} $${result.entry.toFixed(2)}${result.quoteMismatch ? STALE_NOTE : ""}`,
   }];
   // One box per target: stock level, ROI, and the contract's projected price
   // there - the limit-sell price for the broker (Ganesh 2026-11-11: "target

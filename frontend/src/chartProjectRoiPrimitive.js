@@ -15,6 +15,12 @@ const STYLE = {
   stop: { line: "#ff5a6a", text: "#ff8a95", box: "rgba(48, 10, 16, 0.92)", dash: [] },
 };
 
+// Both-sides plans prefix keys "c-" (call) and "p-" (put); the colors follow
+// the base key.
+const TARGET_KEYS = new Set(["t1", "target", "t3"]);
+const baseKey = (key) => String(key || "").replace(/^[cp]-/, "");
+const styleOf = (key) => STYLE[baseKey(key)] || STYLE.entry;
+
 // Bar the plan starts on: the last bar at or before the plan time; the first
 // bar when the plan is older than the loaded tape.
 export function projectRoiStartTime(bars = [], planTimeSec = 0) {
@@ -118,15 +124,20 @@ export class ChartProjectRoiPrimitive {
         ctx.fillStyle = color;
         ctx.fillRect(x0, Math.min(entry.y, line.y), right - x0, Math.abs(line.y - entry.y));
       };
-      // Green zone up to the farthest target on screen or off it.
-      const farthest = ["t1", "target", "t3"].map((key) => byKey[key]).filter((line) => line && line.y != null)
+      // Green zone to the farthest target in each direction (calls up, puts
+      // down when both sides are drawn). The red stop zone only with one
+      // side: with both, the call stop sits among the put targets.
+      const targets = Object.values(byKey).filter((line) => TARGET_KEYS.has(baseKey(line.key)) && line.y != null);
+      const farthestOn = (above) => targets.filter((line) => (above ? line.y < entry.y : line.y > entry.y))
         .sort((left, right) => Math.abs(right.y - entry.y) - Math.abs(left.y - entry.y))[0];
-      zone(farthest, "rgba(61, 255, 138, 0.12)");
-      zone(byKey.stop, "rgba(255, 90, 106, 0.12)");
+      zone(farthestOn(true), "rgba(61, 255, 138, 0.12)");
+      zone(farthestOn(false), "rgba(61, 255, 138, 0.12)");
+      const bothSides = Object.keys(byKey).some((key) => /^[cp]-/.test(key));
+      if (!bothSides) zone(byKey.stop, "rgba(255, 90, 106, 0.12)");
       // Lines.
       for (const line of Object.values(byKey)) {
         if (line.y == null || line.y < -2 || line.y > height + 2) continue;
-        const style = STYLE[line.key] || STYLE.entry;
+        const style = styleOf(line.key);
         ctx.strokeStyle = style.line;
         ctx.lineWidth = line.key === "entry" ? 1 : 1.5;
         ctx.setLineDash(style.dash);
@@ -158,7 +169,7 @@ export class ChartProjectRoiPrimitive {
         this.onDrawn?.(drawnKeys);
       }
       for (const item of placed) {
-        const style = STYLE[item.key] || STYLE.entry;
+        const style = styleOf(item.key);
         const text = String(item.title || "");
         const boxWidth = Math.ceil(ctx.measureText(text).width) + 12;
         ctx.fillStyle = style.box;

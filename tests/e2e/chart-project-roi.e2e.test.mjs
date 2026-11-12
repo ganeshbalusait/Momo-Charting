@@ -70,22 +70,33 @@ e2eTest("the chart ROI card fills from the live chain and draws Entry / Target /
     assert.equal(await roi.locator(".chart-project-roi-strike.is-picked").count(), 1);
     assert.equal(await roi.locator(".chart-project-roi-fields small").first().innerText(), "live ask");
 
+    // A new plan draws both sides (2026-11-11): one Entry naming the call and
+    // the put, call T1-T3 above it, put T1-T3 below it, a stop for each, and
+    // every target box carries its contract's price for the broker.
     const lines = await drawnLines(chart);
     assert.equal(lines[0].key, "entry");
-    assert.match(lines[0].title, /^Entry \d+\.\d\d {2}\d+(\.\d+)?C \$\d+\.\d\d$/);
-    // At least three targets (T1 half move, T2 full move, T3 OI level), each
-    // with the contract's price there - the limit-sell for the broker.
-    const targets = lines.filter((line) => /^T\d /.test(line.title));
-    assert.ok(targets.length >= 3, `only ${targets.length} targets drawn`);
-    targets.forEach((line, index) => {
-      assert.match(line.title, new RegExp(`^T${index + 1} \\d+\\.\\d\\d {2}[+−]\\d+% {2}\\d+(\\.\\d+)?C \\$\\d+\\.\\d\\d$`));
-      if (index) assert.ok(line.price > targets[index - 1].price, "call targets climb T1 < T2 < T3");
-    });
-    const stop = lines.find((line) => line.key === "stop");
-    if (stop) assert.match(stop.title, /^Stop \d+\.\d\d {2}−50% {2}\d+(\.\d+)?C \$\d+\.\d\d$/);
+    assert.match(lines[0].title, /^Entry \d+\.\d\d {2}\d+(\.\d+)?C \$\d+\.\d\d · \d+(\.\d+)?P \$\d+\.\d\d( {2}⚠ quotes old)?$/);
+    const sideTargets = (prefix, letter) => {
+      const found = lines.filter((line) => line.key.startsWith(prefix) && !line.key.endsWith("stop"));
+      assert.ok(found.length >= 3, `only ${found.length} ${prefix} targets drawn`);
+      found.forEach((line, index) => {
+        assert.match(line.title, new RegExp(`^T${index + 1} \\d+\\.\\d\\d {2}[+−]\\d+% {2}\\d+(\\.\\d+)?${letter} \\$\\d+\\.\\d\\d$`));
+      });
+      return found;
+    };
+    const callTargets = sideTargets("c-", "C");
+    const putTargets = sideTargets("p-", "P");
+    assert.ok(callTargets.every((line) => line.price > lines[0].price), "call targets sit above the entry");
+    assert.ok(putTargets.every((line) => line.price < lines[0].price), "put targets sit below the entry");
+    const stops = lines.filter((line) => line.key.endsWith("stop"));
+    stops.forEach((line) => assert.match(line.title, /^Stop \d+\.\d\d {2}−50% {2}\d+(\.\d+)?[CP] \$\d+\.\d\d$/));
+    // The card: broker prices for the side being edited and for the other side.
     const orders = roi.locator(".chart-project-roi-orders");
-    assert.match(await orders.innerText(), /Buy\s*\$\d+\.\d\d[\s\S]*Stop\s*\$\d+\.\d\d[\s\S]*Sell T1\s*\$\d+\.\d\d[\s\S]*Sell T2\s*\$\d+\.\d\d[\s\S]*Sell T3\s*\$\d+\.\d\d/);
-    assert.equal(await roi.locator(".chart-project-roi-line.is-gain, .chart-project-roi-line.is-loss").count() >= 3, true);
+    assert.equal(await orders.count(), 2);
+    for (const text of await orders.allInnerTexts()) {
+      assert.match(text, /Buy\s*\$\d+\.\d\d[\s\S]*Stop\s*\$\d+\.\d\d[\s\S]*Sell T1\s*\$\d+\.\d\d[\s\S]*Sell T2\s*\$\d+\.\d\d[\s\S]*Sell T3\s*\$\d+\.\d\d/);
+    }
+    assert.equal(await roi.locator(".chart-project-roi-both").getAttribute("aria-pressed"), "true");
     await waitAllLabelsDrawn(page, chart);
 
     // A ladder tap picks that strike.
@@ -95,21 +106,34 @@ e2eTest("the chart ROI card fills from the live chain and draws Entry / Target /
     assert.match(await roi.locator(".chart-project-roi-title b").innerText(), new RegExp(`^AAPL ${otherStrike.replace(".", "\\.")} `));
 
     // A typed fill sticks, moves the Entry label, and "↺ ask" puts the ask back.
+    const linesTag = `section.oi-finder-chart-card[data-chart-symbol="AAPL"] ${LINES}`;
     const entry = roi.locator('input[aria-label="Entry option price"]');
     await entry.fill("1.23");
     await entry.press("Enter");
     await roi.locator(".chart-project-roi-fields small", { hasText: "your fill" }).waitFor();
     assert.equal((await plans(page)).AAPL.entry, 1.23);
-    await page.waitForFunction((sel) => /\$1\.23$/.test(document.querySelector(sel)?.dataset.lines?.split("|")[0] || ""), `${'section.oi-finder-chart-card[data-chart-symbol="AAPL"]'} ${LINES}`);
+    await page.waitForFunction((sel) => /C \$1\.23 · /.test(document.querySelector(sel)?.dataset.lines?.split("|")[0] || ""), linesTag);
     await roi.locator(".chart-project-roi-ask").click();
     await roi.locator(".chart-project-roi-fields small", { hasText: "live ask" }).waitFor();
 
-    // Puts mirror the target below spot.
+    // Put edits the put side; the call keeps its picked strike.
     await roi.locator(".chart-project-roi-side button", { hasText: "Put" }).click();
     assert.match(await roi.locator(".chart-project-roi-title b").innerText(), /P \d+\/\d+$/);
+    const saved = (await plans(page)).AAPL;
+    assert.equal(saved.side, "PUT");
+    assert.equal(String(saved.other.strike), otherStrike.replace(/C$/, ""));
+
+    // Both off: only the put side is drawn, with the single-side keys.
+    await roi.locator(".chart-project-roi-both").click();
+    await page.waitForFunction((sel) => {
+      const keys = String(document.querySelector(sel)?.dataset.lines || "").split("|").map((item) => item.split(":")[0]);
+      return keys.length > 1 && !keys.some((key) => key.startsWith("c-") || key.startsWith("p-"));
+    }, linesTag);
     const putLines = await drawnLines(chart);
-    const putTargets = putLines.filter((line) => /^T\d /.test(line.title));
-    assert.ok(putTargets.length >= 3 && putTargets.every((line) => line.price < putLines[0].price), "put targets sit below the entry price");
+    const onlyPut = putLines.filter((line) => /^T\d /.test(line.title));
+    assert.ok(onlyPut.length >= 3 && onlyPut.every((line) => line.price < putLines[0].price && / \d+(\.\d+)?P \$/.test(line.title)), "put targets sit below the entry price");
+    assert.equal(await roi.locator(".chart-project-roi-orders").count(), 1);
+    await roi.locator(".chart-project-roi-both").click();
 
     // Close keeps the lines; a reload keeps the plan; Delete clears both.
     await roi.locator(".chart-project-roi-close").click();
@@ -162,7 +186,7 @@ e2eTest("two AAPL charts share one plan: a fill typed in one moves the other's E
     await entry.press("Enter");
     await second.locator(LINES).waitFor({ state: "attached", timeout: 30_000 });
     await page.waitForFunction(
-      (sel) => /\$2\.34$/.test(document.querySelectorAll(sel)[1]?.querySelector('[data-testid="chart-project-roi-lines"]')?.dataset.lines?.split("|")[0] || ""),
+      (sel) => /C \$2\.34( · |$| {2}⚠)/.test(document.querySelectorAll(sel)[1]?.querySelector('[data-testid="chart-project-roi-lines"]')?.dataset.lines?.split("|")[0] || ""),
       "section.oi-finder-chart-card[data-tape-length]",
       { timeout: 10_000 },
     );

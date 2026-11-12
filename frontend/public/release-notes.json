@@ -2,6 +2,16 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-11T23:59:00-05:00",
+      "heading": "Project ROI: up side and down side together",
+      "items": [
+        "New 'Both' button (on by default for new plans): the chart draws the call plan above the price and a put plan below it - T1/T2/T3 each way with the contract's sell price, and a stop for each side.",
+        "The Entry box names both contracts and their prices, e.g. 'Entry 217.30  222.5C $1.31 · 212.5P $1.10'.",
+        "Call / Put now choose which side you are editing; each side keeps its own strike, fill and target. The card lists both sides' targets and Broker orders.",
+        "Overnight, when the option prices still belong to the close (the stock moved or printed a bad tick), the card warns 'Option prices were quoted with … near $X' and the Entry box shows '⚠ quotes old' - the numbers reprice at the open."
+      ]
+    },
+    {
       "at": "2026-11-11T23:20:00-05:00",
       "heading": "Project ROI: three targets (T1, T2, T3) with sell prices",
       "items": [

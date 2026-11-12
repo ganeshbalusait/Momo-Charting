@@ -13,7 +13,9 @@ import {
   formatPercent,
   formatStrike,
   PROJECT_ROI_STORAGE_KEY,
-  projectRoiChartLines,
+  projectRoiOtherPlan,
+  projectRoiPlanLines,
+  projectRoiSwapSide,
   readProjectRoiPlans,
   writeProjectRoiPlans,
 } from "./chartProjectRoi.js";
@@ -79,7 +81,7 @@ export default function ChartProjectRoiCard({
   useEffect(() => {
     if (!open || !ticker || savedPlan || !(Number(spot) > 0) || !rows.length) return;
     if (getPlans()[ticker]) return;
-    savePlans({ ...getPlans(), [ticker]: { side: "CALL", contracts: 1, entrySpot: Math.round(Number(spot) * 100) / 100, createdAt: Date.now() } });
+    savePlans({ ...getPlans(), [ticker]: { side: "CALL", both: true, contracts: 1, entrySpot: Math.round(Number(spot) * 100) / 100, createdAt: Date.now() } });
   }, [open, ticker, savedPlan, spot, rows.length]);
 
   useEffect(() => {
@@ -89,8 +91,15 @@ export default function ChartProjectRoiCard({
 
   const updatePlan = (changes) => {
     const current = getPlans();
-    const base = current[ticker] || { side: "CALL", contracts: 1, entrySpot: Math.round((Number(spot) || 0) * 100) / 100, createdAt: Date.now() };
+    const base = current[ticker] || { side: "CALL", both: true, contracts: 1, entrySpot: Math.round((Number(spot) || 0) * 100) / 100, createdAt: Date.now() };
     savePlans({ ...current, [ticker]: { ...base, ...changes } });
+  };
+  // Call <-> Put switches the side being edited; the other side's strike,
+  // fill and target are kept (projectRoiSwapSide).
+  const editSide = (side) => {
+    const current = getPlans();
+    if (!current[ticker]) return;
+    savePlans({ ...current, [ticker]: projectRoiSwapSide(current[ticker], side) });
   };
   const deletePlan = () => {
     const next = { ...getPlans() };
@@ -107,7 +116,11 @@ export default function ChartProjectRoiCard({
     rows, spot, walls, defaultExpiry, expiryExpectedMoves, plan: savedPlan || {},
   }) : null), [savedPlan, open, rows, spot, walls, defaultExpiry, expiryExpectedMoves]);
 
-  const lines = useMemo(() => (savedPlan && result ? projectRoiChartLines(result) : []), [savedPlan, result]);
+  // With "Both" on, the opposite side is built from the plan's `other` choices.
+  const otherResult = useMemo(() => (savedPlan?.both ? buildProjectRoi({
+    rows, spot, walls, defaultExpiry, expiryExpectedMoves, plan: projectRoiOtherPlan(savedPlan),
+  }) : null), [savedPlan, rows, spot, walls, defaultExpiry, expiryExpectedMoves]);
+  const lines = useMemo(() => (savedPlan && result ? projectRoiPlanLines(result, otherResult) : []), [savedPlan, result, otherResult]);
   // Which lines exist decides create/remove; their price and label are
   // updated in place, so a live tick never removes and redraws them.
   const lineSet = lines.map((line) => line.key).join("|");
@@ -197,6 +210,35 @@ export default function ChartProjectRoiCard({
   const gain = result.roiPercent != null && result.roiPercent >= 0;
   const step = result.expectedMove > 0 ? Math.max(0.01, Math.round(result.expectedMove / 50 * 100) / 100) : 0.01;
 
+  // Targets, stop and broker prices for one side. With "Both" on, the card
+  // shows the edited side first, then the other side's (2026-11-11).
+  const sidePlan = (side, heading = "") => <div className="chart-project-roi-sideplan" key={side.side} data-side={side.side}>
+    {heading ? <b className="chart-project-roi-side-heading">{heading}</b> : null}
+          {/* One line per target, nearest first (his ask: "at least 3 target"). */}
+          {side.roiPercent == null ? <p className="chart-project-roi-line is-loss">No price for this contract yet</p>
+            : side.targets.map((level) => <p
+              key={level.key}
+              className={`chart-project-roi-line ${level.roiPercent != null && level.roiPercent >= 0 ? "is-gain" : "is-loss"}`}
+              title={level.reason}
+            >
+              {level.label} {level.roiPercent == null ? "—" : formatPercent(level.roiPercent)} ({level.profit == null ? "—" : formatDollars(level.profit)}) if {ticker} tags {level.stock.toFixed(2)}
+            </p>)}
+          {side.stopStock ? <p className="chart-project-roi-line is-stop">
+            −50% ({formatDollars(side.stopLoss)}) if {ticker} tags {side.stopStock.toFixed(2)}
+          </p> : null}
+          {/* The contract prices to type into the broker (his ask, 2026-11-11):
+              buy at the entry, limit-sell at the projected target price, stop
+              at half the entry. */}
+          {side.contract ? <div className="chart-project-roi-orders" aria-label="Broker order prices">
+            <b>Broker orders · {ticker} {formatStrike(side.strike)}{side.sideLetter} {shortExpiry(side.expiry)}</b>
+            <span>Buy <em>${side.entry.toFixed(2)}</em></span>
+            <span className="is-stop">Stop <em>${side.stopPremium.toFixed(2)}</em></span>
+            {side.targets.map((level) => <span key={level.key} className="is-gain" title={`${level.reason} · ${ticker} ${level.stock.toFixed(2)}`}>
+              Sell {level.label} <em>{level.value > 0 ? `$${level.value.toFixed(2)}` : "—"}</em>
+            </span>)}
+          </div> : null}
+  </div>;
+
   return (
     <>{marker}<aside className="chart-project-roi" aria-label={`Project ROI for ${ticker}`} data-testid="chart-project-roi" onPointerDown={(event) => event.stopPropagation()}>
       <header>
@@ -208,6 +250,9 @@ export default function ChartProjectRoiCard({
           <b>{contractName}</b> entry ${result.entry.toFixed(2)}
           <small>{result.strikeReason}</small>
         </div>
+        {result.quoteMismatch ? <p className="chart-project-roi-warn" role="status">
+          ⚠ Option prices were quoted with {ticker} near ${result.quoteSpot.toFixed(2)}; it is ${result.spot.toFixed(2)} now (overnight move or a bad print). They reprice at the open - treat these numbers as rough.
+        </p> : null}
         <div className={`chart-project-roi-hero ${gain ? "is-gain" : "is-loss"}`}>
           <strong>{result.roiPercent == null ? "—" : formatPercent(result.roiPercent)}</strong>
           <span>{result.profit == null ? "" : formatDollars(result.profit)}</span>
@@ -236,8 +281,16 @@ export default function ChartProjectRoiCard({
               type="button"
               className={result.side === side ? "is-active" : ""}
               aria-pressed={result.side === side}
-              onClick={() => { setEntryDraft(null); setTargetDraft(null); updatePlan({ side, strike: null, entry: null, target: null }); }}
+              title={savedPlan?.both ? `Edit the ${side === "CALL" ? "call" : "put"} side` : `Plan a ${side === "CALL" ? "call" : "put"}`}
+              onClick={() => { setEntryDraft(null); setTargetDraft(null); editSide(side); }}
             >{side === "CALL" ? "Call" : "Put"}</button>)}
+            <button
+              type="button"
+              className={`chart-project-roi-both${savedPlan?.both ? " is-active" : ""}`}
+              aria-pressed={Boolean(savedPlan?.both)}
+              title="Draw the call plan (up) and the put plan (down) together"
+              onClick={() => updatePlan({ both: !savedPlan?.both })}
+            >Both</button>
           </span>
         </div>
         {result.expiries.length > 1 ? <div className="chart-project-roi-expiries" role="group" aria-label="Expiry">
@@ -246,7 +299,7 @@ export default function ChartProjectRoiCard({
             type="button"
             className={item.expiry === result.expiry ? "is-active" : ""}
             aria-pressed={item.expiry === result.expiry}
-            onClick={() => { setEntryDraft(null); updatePlan({ expiry: item.expiry, strike: null, entry: null }); }}
+            onClick={() => { setEntryDraft(null); updatePlan({ expiry: item.expiry, strike: null, entry: null, other: { ...(savedPlan?.other || {}), strike: null, entry: null } }); }}
           >{shortExpiry(item.expiry)}</button>)}
         </div> : null}
         <small className="chart-project-roi-ladder-note">ATM + OTM inside ±{result.expectedMove > 0 ? result.expectedMove.toFixed(2) : "—"} · {shortExpiry(result.expiry)}</small>
@@ -308,29 +361,8 @@ export default function ChartProjectRoiCard({
             <small>auto −50%</small>
           </label>
         </div>
-        {/* One line per target, nearest first (his ask: "at least 3 target"). */}
-        {result.roiPercent == null ? <p className="chart-project-roi-line is-loss">No price for this contract yet</p>
-          : result.targets.map((level) => <p
-            key={level.key}
-            className={`chart-project-roi-line ${level.roiPercent != null && level.roiPercent >= 0 ? "is-gain" : "is-loss"}`}
-            title={level.reason}
-          >
-            {level.label} {level.roiPercent == null ? "—" : formatPercent(level.roiPercent)} ({level.profit == null ? "—" : formatDollars(level.profit)}) if {ticker} tags {level.stock.toFixed(2)}
-          </p>)}
-        {result.stopStock ? <p className="chart-project-roi-line is-stop">
-          −50% ({formatDollars(result.stopLoss)}) if {ticker} tags {result.stopStock.toFixed(2)}
-        </p> : null}
-        {/* The contract prices to type into the broker (his ask, 2026-11-11):
-            buy at the entry, limit-sell at the projected target price, stop
-            at half the entry. */}
-        {result.contract ? <div className="chart-project-roi-orders" aria-label="Broker order prices">
-          <b>Broker orders · {ticker} {formatStrike(result.strike)}{result.sideLetter} {shortExpiry(result.expiry)}</b>
-          <span>Buy <em>${result.entry.toFixed(2)}</em></span>
-          <span className="is-stop">Stop <em>${result.stopPremium.toFixed(2)}</em></span>
-          {result.targets.map((level) => <span key={level.key} className="is-gain" title={`${level.reason} · ${ticker} ${level.stock.toFixed(2)}`}>
-            Sell {level.label} <em>{level.value > 0 ? `$${level.value.toFixed(2)}` : "—"}</em>
-          </span>)}
-        </div> : null}
+        {sidePlan(result)}
+        {otherResult?.ready && otherResult.contract ? sidePlan(otherResult, `${otherResult.side === "CALL" ? "Call" : "Put"} side · ${ticker} ${formatStrike(otherResult.strike)}${otherResult.sideLetter} entry $${otherResult.entry.toFixed(2)}`) : null}
         <p className="chart-project-roi-note">Estimate from the contract's live price, delta and gamma - not a promise. Time decay is not included.</p>
       </>}
       <button type="button" className="chart-project-roi-delete" onClick={deletePlan}>Delete</button>

@@ -166,3 +166,30 @@ test("three targets: three green boxes, and the green zone reaches the farthest 
   assert.deepEqual([green.y, green.h], [20, 130], "the zone runs from entry (150) to T3 (20)");
   assert.deepEqual(calls.texts.map((item) => item.text.split(" ")[0]), ["T3", "T2", "T1", "Entry", "Stop"]);
 });
+
+test("both sides: green zones up to the farthest call target and down to the farthest put target, no red zone", () => {
+  const prices = { 100: 150, 110: 50, 116: 20, 90: 250, 84: 280, 96: 180, 104: 120 };
+  const primitive = new ChartProjectRoiPrimitive();
+  primitive.attached({
+    chart: { timeScale: () => ({ timeToCoordinate: (time) => (time === 700 ? 200 : null) }) },
+    series: { priceToCoordinate: (price) => prices[price] ?? null, data: () => BARS },
+    requestUpdate() {},
+  });
+  primitive.setModel({ planTimeSec: 750, lines: [
+    { key: "entry", price: 100, title: "Entry 100.00  105C $1.20 · 95P $1.10" },
+    { key: "c-target", price: 110, title: "T2 110.00  +250%  105C $4.20" },
+    { key: "c-t3", price: 116, title: "T3 116.00  +500%  105C $7.20" },
+    { key: "c-stop", price: 96, title: "Stop 96.00  −50%  105C $0.60" },
+    { key: "p-target", price: 90, title: "T2 90.00  +240%  95P $3.70" },
+    { key: "p-t3", price: 84, title: "T3 84.00  +480%  95P $6.40" },
+    { key: "p-stop", price: 104, title: "Stop 104.00  −50%  95P $0.55" },
+  ] });
+  const { calls, target } = fakeTarget();
+  primitive.views[0].renderer().draw(target);
+  const green = calls.rects.filter((rect) => rect.fill === "rgba(61, 255, 138, 0.12)").map((rect) => [rect.y, rect.h]);
+  assert.deepEqual(green, [[20, 130], [150, 130]], "up to the call T3 (20) and down to the put T3 (280)");
+  assert.equal(calls.rects.filter((rect) => rect.fill === "rgba(255, 90, 106, 0.12)").length, 0);
+  assert.equal(calls.texts.length, 7);
+  const stopText = calls.texts.find((item) => item.text.startsWith("Stop 104"));
+  assert.equal(stopText.fill, "#ff8a95", "a prefixed stop keeps the stop color");
+});
