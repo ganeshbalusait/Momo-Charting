@@ -1,14 +1,13 @@
 // Charts & OI: multi-chart layouts (2026-11-04 coverage). Every layout in the
-// picker builds its grid, 6 across keeps the 320px width floor (the strike
-// labels were clipped below it), the quick count, the keyboard resize handle,
+// picker builds its grid, 6 across fits the screen with every price scale
+// (strike labels) inside its panel, the quick count, the keyboard resize handle,
 // Widen panel, and the layout surviving a reload. Every panel shows AAPL with
 // the ticker linked, so a 10-panel grid still costs one chart build.
 // MAG7 is left out on purpose: it opens seven tickers (spec limit is two).
 
 import assert from "node:assert/strict";
-import test from "node:test";
 
-import { DESKTOP, e2eTest, marketHoursBlock } from "./harness.mjs";
+import { DESKTOP, e2eTest } from "./harness.mjs";
 import { card, waitForTape, withCharts } from "./charts-core.helpers.mjs";
 
 const LAYOUTS = [
@@ -56,33 +55,10 @@ e2eTest("every layout in the picker builds a grid with that many chart slots", a
   });
 }, { timeout: 600_000 });
 
-// KNOWN FAILURE (2026-11-11), kept as a todo: with the option chain open at
-// 1440 px the six columns get ~150 px each. A fixed 320 px chart floor was
-// REMOVED on purpose on 2026-08-24 (it clipped the right price scale, where the
-// strike labels are, off the panel), so the app fits charts to the space
-// instead of scrolling sideways. Whether 6 across should scroll sideways at a
-// 320 px minimum is Ganesh's call; until then the next test checks what the
-// August fix guarantees - the price scale stays inside every panel.
-test("6 across at 1440 px keeps every chart at the 320 px floor", {
-  skip: marketHoursBlock() || false,
-  todo: "no 320 px floor by design since 2026-08-24 (fit-to-host); 6 across with the chain open gives ~150 px panels - waiting on Ganesh",
-  timeout: 300_000,
-}, async () => {
-  await withCharts({ viewport: DESKTOP, workspace: { layoutId: "six-columns", symbols: ["AAPL"], timeframes: ["5m"] } }, async (app) => {
-    const { page } = app;
-    await waitForLayout(page, "six-columns", 6);
-    assert.equal(await page.locator(`${MULTI}.is-dense`).count(), 1);
-    await page.waitForFunction(() => document.querySelectorAll(".oi-chart-progressive-placeholder").length === 0, null, { timeout: 120_000 });
-    await waitForTape(page, { index: 5, symbol: "AAPL", timeout: 120_000 });
-    const widths = await page.locator("section.oi-finder-chart-card[data-tape-length]").evaluateAll(
-      (nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().width)),
-    );
-    assert.equal(widths.length, 6);
-    assert.ok(widths.every((width) => width >= 319), `chart widths ${widths.join(",")} fall under the 320 px floor`);
-    assert.deepEqual(app.pageErrors, []);
-  });
-});
-
+// 6 across fits the screen (Ganesh, 2026-11-11: "Keep fit-to-screen"). There
+// is no 320 px minimum width - a forced floor pushed the right price scale,
+// where the strike labels are, off the panel (removed 2026-08-24). What must
+// hold instead: every panel keeps its price scale inside the panel.
 e2eTest("6 across at 1440 px keeps each chart's price scale inside its panel", async () => {
   await withCharts({ viewport: DESKTOP, workspace: { layoutId: "six-columns", symbols: ["AAPL"], timeframes: ["5m"] } }, async (app) => {
     const { page } = app;
