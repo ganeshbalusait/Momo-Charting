@@ -69,6 +69,11 @@ e2eTest("the chart ROI card fills from the live chain and draws Entry / Target /
     assert.deepEqual(lines.map((line) => line.key).slice(0, 2), ["entry", "target"]);
     assert.match(lines[0].title, /^Entry \d+\.\d\d {2}\d+(\.\d+)?C \$\d+\.\d\d$/);
     assert.match(lines[1].title, /^Target \d+\.\d\d/);
+    // Broker prices: the target and stop boxes carry the contract's price.
+    assert.match(lines[1].title, /\d+(\.\d+)?C \$\d+\.\d\d$/);
+    if (lines[2]) assert.match(lines[2].title, /^Stop \d+\.\d\d {2}−50% {2}\d+(\.\d+)?C \$\d+\.\d\d$/);
+    const orders = roi.locator(".chart-project-roi-orders");
+    assert.match(await orders.innerText(), /Buy\s*\$\d+\.\d\d[\s\S]*Sell \(target\)\s*\$\d+\.\d\d[\s\S]*Stop\s*\$\d+\.\d\d/);
     await waitAllLabelsDrawn(page, chart);
 
     // A ladder tap picks that strike.

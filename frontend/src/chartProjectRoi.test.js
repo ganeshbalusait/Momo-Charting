@@ -122,8 +122,13 @@ test("chart lines carry the entry, target and stop labels", () => {
   assert.deepEqual(lines.map((line) => line.key), ["entry", "target", "stop"]);
   assert.equal(lines[0].price, 200.1);
   assert.match(lines[0].title, /^Entry 200\.10 {2}205C \$\d+\.\d\d$/);
-  assert.match(lines[1].title, /^Target 205\.40 {2}[+−]\d+%$/);
-  assert.match(lines[2].title, /^Stop \d+\.\d\d {2}−50%$/);
+  // Target and stop boxes carry the contract price to type into the broker:
+  // the projected price at the target, and half the entry at the stop.
+  assert.match(lines[1].title, /^Target 205\.40 {2}[+−]\d+% {2}205C \$\d+\.\d\d$/);
+  assert.ok(lines[1].title.endsWith(`$${result.projectedValue.toFixed(2)}`));
+  assert.match(lines[2].title, /^Stop \d+\.\d\d {2}−50% {2}205C \$\d+\.\d\d$/);
+  assert.ok(lines[2].title.endsWith(`$${result.stopPremium.toFixed(2)}`));
+  assert.equal(result.stopPremium, Math.round(result.entry * 50) / 100);
 });
 
 test("formatters and saved plans", () => {

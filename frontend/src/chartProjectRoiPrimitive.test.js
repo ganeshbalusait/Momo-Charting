@@ -74,7 +74,9 @@ test("a plan older than the window starts at the left edge; labels never run off
   primitive.setModel({ lines: LINES, planTimeSec: 750 });
   const { calls, target } = fakeTarget();
   primitive.views[0].renderer().draw(target);
-  assert.ok(calls.texts.every((item) => item.x <= 600 - 190 + 10));
+  // fake measureText: 7 px a character, +12 padding; text sits 6 px inside its box.
+  const widest = Math.max(...LINES.map((line) => line.title.length * 7 + 12));
+  assert.ok(calls.texts.every((item) => item.x - 6 + widest <= 600 - 4), "a box runs off the right edge");
 
   const older = new ChartProjectRoiPrimitive();
   older.attached({
@@ -112,4 +114,33 @@ test("reports which label boxes it drew inside the pane, only when that changes"
   // A pane too short for the stop (y 200): only target and entry.
   primitive.views[0].renderer().draw(fakeTarget(600, 180).target);
   assert.deepEqual(seen, ["target|entry|stop", "target|entry"]);
+});
+
+test("on a narrow phone pane the long broker-price boxes shrink their font and stay inside", () => {
+  const long = [
+    { key: "entry", price: 100, title: "Entry 217.30  222.5C $1.31" },
+    { key: "target", price: 110, title: "Target 222.80  +158%  222.5C $3.38" },
+    { key: "stop", price: 95, title: "Stop 214.84  −50%  222.5C $0.66" },
+  ];
+  const primitive = new ChartProjectRoiPrimitive();
+  attached(primitive, { startX: 200 });
+  primitive.setModel({ lines: long, planTimeSec: 750 });
+  const fonts = [];
+  const { calls, target } = fakeTarget(220, 300);
+  const ctx = {};
+  const realDraw = target.useMediaCoordinateSpace;
+  target.useMediaCoordinateSpace = (fn) => realDraw((scope) => {
+    // Width per character follows the font size, like a real canvas.
+    let size = 11;
+    Object.defineProperty(scope.context, "font", { set(value) { size = Number(/(\d+)px/.exec(value)[1]); fonts.push(size); }, get() { return `${size}px`; } });
+    scope.context.measureText = (text) => ({ width: String(text).length * size * 0.62 });
+    fn(scope);
+  });
+  primitive.views[0].renderer().draw(target);
+  assert.ok(fonts.at(-1) < 11, "the font did not step down on a narrow pane");
+  const boxes = calls.rects.filter((rect) => rect.h === 18);
+  assert.equal(boxes.length, 3);
+  assert.ok(boxes.every((box) => box.x >= 0 && box.x + box.w <= 220), "a box runs off the pane");
+  assert.ok(calls.texts.some((item) => item.text.endsWith("222.5C $3.38")));
+  void ctx;
 });

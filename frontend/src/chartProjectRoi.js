@@ -226,11 +226,15 @@ export function projectRoiChartLines(result) {
       key: "target",
       price: result.target,
       color: "#3dff8a",
-      title: `Target ${result.target.toFixed(2)}${result.roiPercent == null ? "" : `  ${formatPercent(result.roiPercent)}`}`,
+      // Stock target, ROI, and the contract's projected price there - the
+      // limit-sell price for the broker (Ganesh 2026-11-11: "target and exit
+      // price to set my broker").
+      title: `Target ${result.target.toFixed(2)}${result.roiPercent == null ? "" : `  ${formatPercent(result.roiPercent)}`}${result.projectedValue > 0 ? `  ${contract} $${result.projectedValue.toFixed(2)}` : ""}`,
     });
   }
   if (result.stopStock > 0) {
-    lines.push({ key: "stop", price: result.stopStock, color: "#ff5a6a", title: `Stop ${result.stopStock.toFixed(2)}  −50%` });
+    // Stock stop and the contract's stop price (half the entry) for the broker.
+    lines.push({ key: "stop", price: result.stopStock, color: "#ff5a6a", title: `Stop ${result.stopStock.toFixed(2)}  −50%  ${contract} $${result.stopPremium.toFixed(2)}` });
   }
   return lines;
 }

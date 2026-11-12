@@ -314,6 +314,15 @@ export default function ChartProjectRoiCard({
         {result.stopStock ? <p className="chart-project-roi-line is-stop">
           −50% ({formatDollars(result.stopLoss)}) if {ticker} tags {result.stopStock.toFixed(2)}
         </p> : null}
+        {/* The contract prices to type into the broker (his ask, 2026-11-11):
+            buy at the entry, limit-sell at the projected target price, stop
+            at half the entry. */}
+        {result.contract ? <div className="chart-project-roi-orders" aria-label="Broker order prices">
+          <b>Broker orders · {ticker} {formatStrike(result.strike)}{result.sideLetter} {shortExpiry(result.expiry)}</b>
+          <span>Buy <em>${result.entry.toFixed(2)}</em></span>
+          <span className="is-gain">Sell (target) <em>{result.projectedValue > 0 ? `$${result.projectedValue.toFixed(2)}` : "—"}</em></span>
+          <span className="is-stop">Stop <em>${result.stopPremium.toFixed(2)}</em></span>
+        </div> : null}
         <p className="chart-project-roi-note">Estimate from the contract's live price, delta and gamma - not a promise. Time decay is not included.</p>
       </>}
       <button type="button" className="chart-project-roi-delete" onClick={deletePlan}>Delete</button>

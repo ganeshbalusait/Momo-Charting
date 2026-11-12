@@ -23533,3 +23533,16 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 @media (min-width: 761px) {
   .app-shell .oi-chart-layout-toolbar > .oi-chart-layout-actions { flex-shrink: 0; }
 }
+
+/* Project ROI broker order prices (2026-11-11): buy / sell-at-target / stop
+   prices of the contract, to type into the broker. */
+.chart-project-roi-orders {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 6px;
+  padding: 6px 8px; border: 1px solid rgba(255, 213, 79, .3); border-radius: 6px; background: rgba(255, 213, 79, .05);
+  font-family: ui-monospace, Consolas, monospace; font-size: .68rem;
+}
+.chart-project-roi-orders > b { grid-column: 1 / -1; color: #ffd54f; font-size: .64rem; letter-spacing: .04em; }
+.chart-project-roi-orders > span { display: grid; color: #a6b0bf; }
+.chart-project-roi-orders em { color: #fff; font-style: normal; font-weight: 900; font-size: .8rem; }
+.chart-project-roi-orders .is-gain em { color: #3dff8a; }
+.chart-project-roi-orders .is-stop em { color: #ff8a95; }

@@ -92,10 +92,10 @@ export class ChartProjectRoiPrimitive {
     const bars = typeof this.series?.data === "function" ? this.series.data() : [];
     const start = projectRoiStartTime(bars, this.model?.planTimeSec);
     const x = start == null ? null : timeScale?.timeToCoordinate?.(start);
-    // Older than the visible window: start at the left edge. Leave room for
-    // the widest label so it never runs off the right side.
+    // Older than the visible window: start at the left edge. Never so far
+    // right that the zones vanish; the label boxes clamp separately.
     const left = x == null || !Number.isFinite(x) ? 0 : x;
-    return Math.max(0, Math.min(left, width - 190));
+    return Math.max(0, Math.min(left, width - 40));
   }
 
   draw(target) {
@@ -132,8 +132,18 @@ export class ChartProjectRoiPrimitive {
       ctx.setLineDash([]);
       // Label boxes at the left end of each line, never overlapping.
       const boxHeight = 18;
-      ctx.font = "bold 11px ui-monospace, Consolas, monospace";
       ctx.textBaseline = "middle";
+      // The boxes carry the contract prices for the broker, so they are long;
+      // on a narrow phone pane step the font down until the widest one fits,
+      // then keep every box inside the pane.
+      const titles = Object.values(byKey).map((line) => String(line.title || ""));
+      let widest = 0;
+      for (const size of [11, 10, 9]) {
+        ctx.font = `bold ${size}px ui-monospace, Consolas, monospace`;
+        widest = Math.max(0, ...titles.map((text) => Math.ceil(ctx.measureText(text).width) + 12));
+        if (widest <= width - 8) break;
+      }
+      const boxX = Math.max(2, Math.min(x0 + 4, width - widest - 4));
       const visible = Object.values(byKey).filter((line) => line.y != null && line.y > -boxHeight && line.y < height + boxHeight);
       const placed = layoutProjectRoiLabels(visible, { height: boxHeight, gap: 2, top: 2, bottom: height - 2 });
       const drawnKeys = placed.filter((item) => item.y >= 0 && item.y <= height).map((item) => item.key).join("|");
@@ -145,7 +155,6 @@ export class ChartProjectRoiPrimitive {
         const style = STYLE[item.key] || STYLE.entry;
         const text = String(item.title || "");
         const boxWidth = Math.ceil(ctx.measureText(text).width) + 12;
-        const boxX = x0 + 4;
         ctx.fillStyle = style.box;
         ctx.fillRect(boxX, item.boxY, boxWidth, boxHeight);
         ctx.strokeStyle = style.line;
