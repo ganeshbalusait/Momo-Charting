@@ -81,7 +81,7 @@ export default function ChartProjectRoiCard({
   useEffect(() => {
     if (!open || !ticker || savedPlan || !(Number(spot) > 0) || !rows.length) return;
     if (getPlans()[ticker]) return;
-    savePlans({ ...getPlans(), [ticker]: { side: "CALL", both: true, contracts: 1, entrySpot: Math.round(Number(spot) * 100) / 100, createdAt: Date.now() } });
+    savePlans({ ...getPlans(), [ticker]: { side: "CALL", both: false, contracts: 1, entrySpot: Math.round(Number(spot) * 100) / 100, createdAt: Date.now() } });
   }, [open, ticker, savedPlan, spot, rows.length]);
 
   useEffect(() => {
@@ -91,7 +91,7 @@ export default function ChartProjectRoiCard({
 
   const updatePlan = (changes) => {
     const current = getPlans();
-    const base = current[ticker] || { side: "CALL", both: true, contracts: 1, entrySpot: Math.round((Number(spot) || 0) * 100) / 100, createdAt: Date.now() };
+    const base = current[ticker] || { side: "CALL", both: false, contracts: 1, entrySpot: Math.round((Number(spot) || 0) * 100) / 100, createdAt: Date.now() };
     savePlans({ ...current, [ticker]: { ...base, ...changes } });
   };
   // Call <-> Put switches the side being edited; the other side's strike,
@@ -117,10 +117,18 @@ export default function ChartProjectRoiCard({
   }) : null), [savedPlan, open, rows, spot, walls, defaultExpiry, expiryExpectedMoves]);
 
   // With "Both" on, the opposite side is built from the plan's `other` choices.
-  const otherResult = useMemo(() => (savedPlan?.both ? buildProjectRoi({
+  // One side by default; Both only when picked on the toolbar (his call,
+  // 2026-11-11: "I don't default both ... next to ROI just add call, put,
+  // both").
+  const showBoth = savedPlan?.both === true;
+  const otherResult = useMemo(() => (showBoth ? buildProjectRoi({
     rows, spot, walls, defaultExpiry, expiryExpectedMoves, plan: projectRoiOtherPlan(savedPlan),
-  }) : null), [savedPlan, rows, spot, walls, defaultExpiry, expiryExpectedMoves]);
-  const lines = useMemo(() => (savedPlan && result ? projectRoiPlanLines(result, otherResult) : []), [savedPlan, result, otherResult]);
+  }) : null), [savedPlan, showBoth, rows, spot, walls, defaultExpiry, expiryExpectedMoves]);
+  // ROI on/off (his ask, 2026-11-11: "give switch ROI on/off"): off hides
+  // every line, box and zone and lets the price range forget the plan, but
+  // keeps the plan itself, so On brings it back unchanged.
+  const roiOn = savedPlan?.hidden !== true;
+  const lines = useMemo(() => (savedPlan && result && roiOn ? projectRoiPlanLines(result, otherResult) : []), [savedPlan, result, otherResult, roiOn]);
   // Which lines exist decides create/remove; their price and label are
   // updated in place, so a live tick never removes and redraws them.
   const lineSet = lines.map((line) => line.key).join("|");
@@ -281,17 +289,23 @@ export default function ChartProjectRoiCard({
               type="button"
               className={result.side === side ? "is-active" : ""}
               aria-pressed={result.side === side}
-              title={savedPlan?.both ? `Edit the ${side === "CALL" ? "call" : "put"} side` : `Plan a ${side === "CALL" ? "call" : "put"}`}
+              title={showBoth ? `Edit the ${side === "CALL" ? "call" : "put"} side` : `Plan a ${side === "CALL" ? "call" : "put"}`}
               onClick={() => { setEntryDraft(null); setTargetDraft(null); editSide(side); }}
             >{side === "CALL" ? "Call" : "Put"}</button>)}
-            <button
-              type="button"
-              className={`chart-project-roi-both${savedPlan?.both ? " is-active" : ""}`}
-              aria-pressed={Boolean(savedPlan?.both)}
-              title="Draw the call plan (up) and the put plan (down) together"
-              onClick={() => updatePlan({ both: !savedPlan?.both })}
-            >Both</button>
           </span>
+        </div>
+        {/* How many targets each side draws, 1-6 (his ask, 2026-11-11:
+            "I use 1,2,3,4,5,6 give switch"); T4-T6 are runners past T3. */}
+        <div className="chart-project-roi-count-targets" role="group" aria-label="Number of targets">
+          <small>Targets</small>
+          {[1, 2, 3, 4, 5, 6].map((count) => <button
+            key={count}
+            type="button"
+            className={result.targetCount === count ? "is-active" : ""}
+            aria-pressed={result.targetCount === count}
+            aria-label={`Show ${count} target${count === 1 ? "" : "s"}`}
+            onClick={() => updatePlan({ targetCount: count })}
+          >{count}</button>)}
         </div>
         {result.expiries.length > 1 ? <div className="chart-project-roi-expiries" role="group" aria-label="Expiry">
           {result.expiries.map((item) => <button
@@ -336,8 +350,8 @@ export default function ChartProjectRoiCard({
               }}
               onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
             />
-            <button type="button" className="chart-project-roi-ask" onClick={() => { setEntryDraft(null); updatePlan({ entry: null }); }} title="Use the live ask">↺ ask</button>
-            <small>{result.entryTyped ? "your fill" : "live ask"}</small>
+            <button type="button" className="chart-project-roi-ask" onClick={() => { setEntryDraft(null); updatePlan({ entry: null }); }} title="Use the chain price (bid/ask middle, same as the Options chain)">↺ live</button>
+            <small>{result.entryTyped ? "your fill" : "chain price"}</small>
           </label>
           <label>
             <span>Target</span>
@@ -368,4 +382,80 @@ export default function ChartProjectRoiCard({
       <button type="button" className="chart-project-roi-delete" onClick={deletePlan}>Delete</button>
     </aside></>
   );
+}
+
+// Toolbar controls next to the chart's ROI button (his ask, 2026-11-11:
+// "next to ROI just add call, put, both ... ROI select then ON else OFF").
+//  - ROI: selected = the plan's lines are ON for this ticker; tap again = OFF
+//    (the plan is kept, so ON brings it back unchanged).
+//  - Call / Put / Both (shown while ROI is on): which side the chart draws.
+//    Tapping the side already picked opens or closes the card.
+export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false, onCardOpenChange }) {
+  const ticker = String(symbol || "").trim().toUpperCase();
+  const plans = useSyncExternalStore(subscribePlans, getPlans);
+  const plan = plans[ticker] || null;
+  const on = Boolean(plan) && plan.hidden !== true;
+  const view = !plan ? "" : plan.both === true ? "BOTH" : sideOfPlan(plan);
+  const save = (next) => savePlans({ ...getPlans(), [ticker]: next });
+  const fresh = () => ({ side: "CALL", both: false, contracts: 1, entrySpot: Math.round((Number(spot) || 0) * 100) / 100, createdAt: Date.now() });
+
+  const toggleRoi = () => {
+    if (!ticker) return;
+    if (on) {
+      save({ ...plan, hidden: true });
+      onCardOpenChange?.(false);
+      return;
+    }
+    save(plan ? { ...plan, hidden: false } : fresh());
+    onCardOpenChange?.(true);
+  };
+  const pick = (wanted) => {
+    if (!plan) return;
+    if (wanted === view) {
+      onCardOpenChange?.(!cardOpen);
+      return;
+    }
+    if (wanted === "BOTH") save({ ...plan, both: true, hidden: false });
+    else save({ ...projectRoiSwapSide(plan, wanted), both: false, hidden: false });
+  };
+
+  return (
+    <span className={`oi-finder-chart-roi-group${on ? " is-on" : ""}`} role="group" aria-label={`Project ROI for ${ticker}`}>
+      <button
+        className={`oi-finder-chart-roi${on ? " is-active" : ""}`}
+        type="button"
+        onClick={(event) => { event.stopPropagation(); toggleRoi(); }}
+        title={on ? `ROI on for ${ticker}: tap to turn the lines off (the plan is kept)` : `ROI off: tap to show Entry / Targets / Stop for a ${ticker} option`}
+        aria-label={`Project ROI for ${ticker}`}
+        aria-pressed={on}
+      >ROI</button>
+      {on ? [["CALL", "Call"], ["PUT", "Put"], ["BOTH", "Both"]].map(([value, label]) => <button
+        key={value}
+        className={`oi-finder-chart-roi-side${view === value ? " is-active" : ""}`}
+        type="button"
+        onClick={(event) => { event.stopPropagation(); pick(value); }}
+        title={view === value ? `${label} is drawn: tap to ${cardOpen ? "close" : "open"} the ROI card` : `Draw the ${label.toLowerCase()} plan`}
+        aria-label={`ROI ${label.toLowerCase()} side`}
+        aria-pressed={view === value}
+      >{label}</button>) : null}
+      {/* Phone (CSS shows this and hides the three above): the toolbar row has
+          room for one more 24 px button, not three - three pushed the row
+          into a sideways scroll that slid it under the ticker box. One tap
+          steps Call -> Put -> Both. */}
+      {on ? <button
+        className="oi-finder-chart-roi-cycle"
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          pick(view === "CALL" ? "PUT" : view === "PUT" ? "BOTH" : "CALL");
+        }}
+        title={`ROI side: ${view === "BOTH" ? "Both" : view === "PUT" ? "Put" : "Call"} (tap for ${view === "CALL" ? "Put" : view === "PUT" ? "Both" : "Call"})`}
+        aria-label={`ROI side ${view === "BOTH" ? "both" : view === "PUT" ? "put" : "call"}, tap to change`}
+      >{view === "BOTH" ? "B" : view === "PUT" ? "P" : "C"}</button> : null}
+    </span>
+  );
+}
+
+function sideOfPlan(plan) {
+  return String(plan?.side || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
 }

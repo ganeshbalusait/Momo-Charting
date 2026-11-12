@@ -87,6 +87,53 @@ export function projectRoiQuoteSpot({ rows = [], expiry = "", spot = 0 } = {}) {
   return round2(implied[Math.floor(implied.length / 2)]);
 }
 
+// The Options chain's contract price (App.jsx optionSnapshotPrice): the
+// bid/ask middle, else the mark, else the last trade.
+export function projectRoiChainPrice(row) {
+  if (!row) return 0;
+  const bid = Number(row.bid || 0);
+  const ask = Number(row.ask || 0);
+  if (bid > 0 && ask > 0) return (bid + ask) / 2;
+  const mark = Number(row.mark || 0);
+  if (mark > 0) return mark;
+  const last = Number(row.last || 0);
+  return last > 0 ? last : 0;
+}
+
+// The ENTRY contract the Options chain marks (App.jsx buildOptionRoiEstimates):
+// the server's own "entry" estimate when the chain carries one, else the OTM
+// contract with |delta| below 0.20 closest to 0.20 (ties: nearest spot).
+export function projectRoiChainEntry({ rows = [], spot = 0, side = "CALL", expiry = "", threshold = 0.2 } = {}) {
+  const price = positive(spot);
+  if (!price) return null;
+  const isCall = sideOf(side) === "CALL";
+  const key = String(expiry || "").slice(0, 10);
+  const otm = (Array.isArray(rows) ? rows : []).filter((row) => {
+    const strike = Number(row?.strike);
+    return String(row?.expiry || "").slice(0, 10) === key
+      && sideOf(row?.side) === sideOf(side)
+      && (isCall ? strike > price : strike < price)
+      && projectRoiChainPrice(row) > 0;
+  });
+  const marked = otm.find((row) => row?.roiEstimate?.kind === "entry"
+    && (row.roiEstimate.source === "chain-mark" || row.roiEstimate.model === "live target-strike mark"));
+  if (marked) {
+    const strike = Number(marked.roiEstimate.entryStrike ?? marked.strike);
+    const price2 = Number(marked.roiEstimate.entryPrice ?? projectRoiChainPrice(marked));
+    return { strike, price: round2(price2), delta: Math.abs(Number(marked.roiEstimate.entryDelta ?? marked.delta ?? 0)) };
+  }
+  const best = otm
+    .filter((row) => {
+      const delta = Math.abs(Number(row.delta || 0));
+      return delta > 0 && delta < threshold;
+    })
+    .sort((left, right) => {
+      const gap = Math.abs(threshold - Math.abs(Number(left.delta || 0))) - Math.abs(threshold - Math.abs(Number(right.delta || 0)));
+      return gap || Math.abs(Number(left.strike) - price) - Math.abs(Number(right.strike) - price);
+    })[0];
+  return best ? { strike: Number(best.strike), price: round2(projectRoiChainPrice(best)), delta: Math.abs(Number(best.delta || 0)) } : null;
+}
+
 // Option value when the stock moves from `spot` to `target`: today's price
 // plus the average of the start and end delta times the move, never below
 // intrinsic value at the target and never below one cent.
@@ -187,6 +234,14 @@ export function buildProjectRoi({
     const wallOi = String(wall.title || "").trim();
     strikeReason = `strike from ${wallName}${wallOi ? ` ${wallOi}` : ""} wall — the OI / level nearest your exit`;
   }
+  // First choice: the same ENTRY the Options chain marks (Ganesh 2026-11-11:
+  // "I need same entry price/strike price in chart"), so the chart and the
+  // chain never disagree. The wall rule above is the fallback.
+  const chainEntry = ready ? projectRoiChainEntry({ rows, spot: price, side, expiry }) : null;
+  if (chainEntry) {
+    autoStrike = chainEntry.strike;
+    strikeReason = "chain ENTRY · nearest 0.20 delta (same as the Options chain)";
+  }
   const strike = positive(plan?.strike) || autoStrike;
   if (positive(plan?.strike)) strikeReason = "your pick";
   const row = (Array.isArray(rows) ? rows : []).find((item) => (
@@ -195,7 +250,10 @@ export function buildProjectRoi({
     && Number(item?.strike) === strike
   )) || null;
   const livePrice = roiContractPrice(row);
-  const askEntry = round2(roiEntryPrice(row));
+  // Entry price: the chain's price for that contract (bid/ask middle, as the
+  // Options chain shows it) until the trader types a fill. `askEntry` keeps
+  // its old name for the "↺ live" reset.
+  const askEntry = round2(projectRoiChainPrice(row));
   const entry = positive(plan?.entry) || askEntry;
   const delta = Number(row?.delta || 0);
   const gamma = Number(row?.gamma || 0);
@@ -232,9 +290,29 @@ export function buildProjectRoi({
   ].filter((level) => level.stock > 0);
   // Nearest first; a level that repeats another (a slider target dragged
   // onto the half move) is shown once.
-  const targets = candidates
+  const nearTargets = candidates
     .filter((level, index) => candidates.findIndex((other) => Math.abs(other.stock - level.stock) < 0.005) === index)
-    .sort((left, right) => sign * (left.stock - right.stock))
+    .sort((left, right) => sign * (left.stock - right.stock));
+  // How many targets to show: 1-6 (Ganesh 2026-11-11: "I use 1,2,3,4,5,6
+  // give switch"), default 3. T4-T6 are runner levels past T3 ("if it
+  // reaches T3, where is T4, T5?"): 2x, 2.5x and 3x the expected move, or
+  // half a move past the previous target when T3 is already out there.
+  const wantedCount = Math.round(Number(plan?.targetCount) || 3);
+  const targetCount = Math.min(6, Math.max(1, wantedCount));
+  const runners = [];
+  if (targetCount > nearTargets.length && expectedMove > 0 && price > 0 && nearTargets.length) {
+    let farthest = nearTargets.at(-1).stock;
+    [[2, "t4"], [2.5, "t5"], [3, "t6"]].slice(0, targetCount - nearTargets.length).forEach(([moves, key]) => {
+      const byMove = round2(price + sign * moves * expectedMove);
+      const minimum = round2(farthest + sign * expectedMove * 0.5);
+      const stock = sign * (byMove - minimum) >= 0 ? byMove : minimum;
+      if (!(stock > 0)) return;
+      runners.push(levelAt(key, stock, `runner: ${moves}x the expected move`));
+      farthest = stock;
+    });
+  }
+  const targets = [...nearTargets, ...runners]
+    .slice(0, targetCount)
     .map((level, index) => ({ ...level, label: `T${index + 1}` }));
   const stopPremium = entry > 0 ? round2(entry * 0.5) : 0;
   const stopStock = row && stopPremium ? projectRoiStopStock({ side, spot: valueSpot, price: livePrice, delta, gamma, strike, stopPremium }) : null;
@@ -251,7 +329,18 @@ export function buildProjectRoi({
     expiries: expiries.slice(0, 3),
     expiry,
     expectedMove,
-    ladder: fill.ladder,
+    // The picked contract is always in the ladder, even past the expected move
+    // (the chain's 0.20-delta ENTRY often is), so it shows as "picked".
+    ladder: !row || fill.ladder.some((item) => item.strike === strike) ? fill.ladder : [...fill.ladder, {
+      strike,
+      price: roiContractPrice(row),
+      entry: projectRoiChainPrice(row),
+      delta: Number(row.delta || 0),
+      gamma: Number(row.gamma || 0),
+      openInterest: Number(row.open_interest || 0),
+      distance: round2(strike - price),
+      isAtm: false,
+    }],
     strike,
     strikeReason,
     contract: row,
@@ -269,6 +358,7 @@ export function buildProjectRoi({
     roiPercent,
     profit,
     targets,
+    targetCount,
     stopPremium,
     stopStock,
     stopLoss,

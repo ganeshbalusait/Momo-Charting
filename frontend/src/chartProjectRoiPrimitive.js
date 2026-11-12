@@ -6,18 +6,24 @@
 // Bounded overlay: no extra series, timers or network; native coordinates
 // keep it aligned through pan, zoom and pane resize.
 
+// Label box size, shared with the tests.
+export const PROJECT_ROI_LABEL = { height: 14, padX: 4 };
+
 const STYLE = {
   // Three targets (t1 nearest, target = the slider target, t3 farthest).
   t1: { line: "#9dffc4", text: "#9dffc4", box: "rgba(6, 40, 20, 0.92)", dash: [3, 4] },
   target: { line: "#3dff8a", text: "#3dff8a", box: "rgba(6, 40, 20, 0.92)", dash: [6, 4] },
   t3: { line: "#00e676", text: "#00e676", box: "rgba(6, 40, 20, 0.92)", dash: [10, 4] },
+  // Runner targets past T3 (T4-T6): teal, long dash.
+  t4: { line: "#26c6da", text: "#7fe7f2", box: "rgba(4, 34, 40, 0.92)", dash: [14, 5] },
+  t5: { line: "#00acc1", text: "#5fd8e6", box: "rgba(4, 34, 40, 0.92)", dash: [18, 6] },
+  t6: { line: "#0097a7", text: "#4fc3d1", box: "rgba(4, 34, 40, 0.92)", dash: [22, 6] },
   entry: { line: "#e8f4ff", text: "#e8f4ff", box: "rgba(16, 26, 44, 0.92)", dash: [] },
   stop: { line: "#ff5a6a", text: "#ff8a95", box: "rgba(48, 10, 16, 0.92)", dash: [] },
 };
 
 // Both-sides plans prefix keys "c-" (call) and "p-" (put); the colors follow
 // the base key.
-const TARGET_KEYS = new Set(["t1", "target", "t3"]);
 const baseKey = (key) => String(key || "").replace(/^[cp]-/, "");
 const styleOf = (key) => STYLE[baseKey(key)] || STYLE.entry;
 
@@ -118,22 +124,8 @@ export class ChartProjectRoiPrimitive {
       const x0 = this.startX(width);
       const right = Math.max(x0, width);
       ctx.save();
-      // Zones: entry -> target green, entry -> stop red.
-      const zone = (line, color) => {
-        if (!line || line.y == null) return;
-        ctx.fillStyle = color;
-        ctx.fillRect(x0, Math.min(entry.y, line.y), right - x0, Math.abs(line.y - entry.y));
-      };
-      // Green zone to the farthest target in each direction (calls up, puts
-      // down when both sides are drawn). The red stop zone only with one
-      // side: with both, the call stop sits among the put targets.
-      const targets = Object.values(byKey).filter((line) => TARGET_KEYS.has(baseKey(line.key)) && line.y != null);
-      const farthestOn = (above) => targets.filter((line) => (above ? line.y < entry.y : line.y > entry.y))
-        .sort((left, right) => Math.abs(right.y - entry.y) - Math.abs(left.y - entry.y))[0];
-      zone(farthestOn(true), "rgba(61, 255, 138, 0.12)");
-      zone(farthestOn(false), "rgba(61, 255, 138, 0.12)");
-      const bothSides = Object.keys(byKey).some((key) => /^[cp]-/.test(key));
-      if (!bothSides) zone(byKey.stop, "rgba(255, 90, 106, 0.12)");
+      // No shaded zones (his call, 2026-11-11: "no need background color"):
+      // only the lines and their label boxes are drawn.
       // Lines.
       for (const line of Object.values(byKey)) {
         if (line.y == null || line.y < -2 || line.y > height + 2) continue;
@@ -148,21 +140,24 @@ export class ChartProjectRoiPrimitive {
       }
       ctx.setLineDash([]);
       // Label boxes at the left end of each line, never overlapping.
-      const boxHeight = 18;
+      // Compact boxes (his ask, 2026-11-11: "reduce the font and space for
+      // target and stop"): 14 px tall, 4 px side padding, 1 px apart.
+      const boxHeight = PROJECT_ROI_LABEL.height;
+      const padX = PROJECT_ROI_LABEL.padX;
       ctx.textBaseline = "middle";
       // The boxes carry the contract prices for the broker, so they are long;
       // on a narrow phone pane step the font down until the widest one fits,
       // then keep every box inside the pane.
       const titles = Object.values(byKey).map((line) => String(line.title || ""));
       let widest = 0;
-      for (const size of [11, 10, 9]) {
+      for (const size of [9, 8, 7]) {
         ctx.font = `bold ${size}px ui-monospace, Consolas, monospace`;
-        widest = Math.max(0, ...titles.map((text) => Math.ceil(ctx.measureText(text).width) + 12));
+        widest = Math.max(0, ...titles.map((text) => Math.ceil(ctx.measureText(text).width) + padX * 2));
         if (widest <= width - 8) break;
       }
       const boxX = Math.max(2, Math.min(x0 + 4, width - widest - 4));
       const visible = Object.values(byKey).filter((line) => line.y != null && line.y > -boxHeight && line.y < height + boxHeight);
-      const placed = layoutProjectRoiLabels(visible, { height: boxHeight, gap: 2, top: 2, bottom: height - 2 });
+      const placed = layoutProjectRoiLabels(visible, { height: boxHeight, gap: 1, top: 2, bottom: height - 2 });
       const drawnKeys = placed.filter((item) => item.y >= 0 && item.y <= height).map((item) => item.key).join("|");
       if (drawnKeys !== this.drawnKeys) {
         this.drawnKeys = drawnKeys;
@@ -171,14 +166,14 @@ export class ChartProjectRoiPrimitive {
       for (const item of placed) {
         const style = styleOf(item.key);
         const text = String(item.title || "");
-        const boxWidth = Math.ceil(ctx.measureText(text).width) + 12;
+        const boxWidth = Math.ceil(ctx.measureText(text).width) + padX * 2;
         ctx.fillStyle = style.box;
         ctx.fillRect(boxX, item.boxY, boxWidth, boxHeight);
         ctx.strokeStyle = style.line;
         ctx.lineWidth = 1;
         ctx.strokeRect(boxX + 0.5, item.boxY + 0.5, boxWidth - 1, boxHeight - 1);
         ctx.fillStyle = style.text;
-        ctx.fillText(text, boxX + 6, item.boxY + boxHeight / 2 + 0.5);
+        ctx.fillText(text, boxX + padX, item.boxY + boxHeight / 2 + 0.5);
       }
       ctx.restore();
     });

@@ -5,6 +5,8 @@ import {
   projectRoiChartLines,
   projectRoiOtherPlan,
   projectRoiQuoteSpot,
+  projectRoiChainEntry,
+  projectRoiChainPrice,
   projectRoiPlanLines,
   projectRoiSwapSide,
   projectRoiExpiries,
@@ -44,19 +46,21 @@ test("expiries are listed nearest first", () => {
   assert.deepEqual(projectRoiExpiries(ROWS, NOW).map((item) => item.expiry), [DAY1, DAY2]);
 });
 
-test("auto plan: full-move target, strike from the wall nearest the exit, entry at the ask", () => {
+test("auto plan without a 0.20-delta contract: full-move target, strike from the wall nearest the exit, entry at the chain price", () => {
   const result = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, expiryExpectedMoves: { [DAY1]: MOVE } });
   assert.equal(result.ready, true);
   assert.equal(result.expiry, DAY1);
   assert.equal(result.target, 205.4);
   assert.equal(result.strike, 205);
   assert.equal(result.strikeReason, "strike from 205C 9K wall — the OI / level nearest your exit");
-  assert.equal(result.entry, row("CALL", 205).ask);
+  // Entry = the chain price (bid/ask middle), the same number the Options chain shows.
+  const mid205 = Math.round(((row("CALL", 205).bid + row("CALL", 205).ask) / 2) * 100) / 100;
+  assert.equal(result.entry, mid205);
   assert.equal(result.entryTyped, false);
   assert.deepEqual(result.ladder.map((item) => item.strike), [200, 205, 210, 215]);
   assert.ok(result.roiPercent > 0, "a call that reaches the full move gains");
   assert.ok(result.stopStock < SPOT, "a call stop sits below spot");
-  assert.equal(result.stopPremium, Math.round(row("CALL", 205).ask * 50) / 100);
+  assert.equal(result.stopPremium, Math.round(mid205 * 50) / 100);
 });
 
 test("puts mirror: target below spot, wall below spot, stop above spot", () => {
@@ -147,7 +151,8 @@ test("puts get three targets below spot, nearest first; a dragged target equal t
   assert.deepEqual(put.targets.map((level) => level.stock), [197.9, 195.4, 195]); // 190 is past two moves (190.4); 195 is the OI level past the move
   assert.deepEqual(put.targets.map((level) => level.label), ["T1", "T2", "T3"]);
   const dragged = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: { target: 202.9 } });
-  assert.deepEqual(dragged.targets.map((level) => level.stock), [202.9, 210]);
+  // Two distinct levels, three wanted: the first runner fills the third slot.
+  assert.deepEqual(dragged.targets.map((level) => level.stock), [202.9, 210, 212.5]);
   // A target dragged past the OI level becomes T3, the OI level T2.
   const far = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: { target: 212 } });
   assert.deepEqual(far.targets.map((level) => [level.label, level.key, level.stock]), [["T1", "t1", 202.9], ["T2", "t3", 210], ["T3", "target", 212]]);
@@ -241,4 +246,60 @@ test("the result carries the live spot the card's stale-quote warning prints", (
   const stale = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT * 0.94, defaultExpiry: DAY1 });
   assert.equal(stale.spot, Math.round(SPOT * 0.94 * 100) / 100);
   assert.equal(typeof stale.quoteSpot.toFixed, "function");
+});
+
+test("target switch 1-6: default 3, runners T4-T6 past T3", () => {
+  const plan = { entrySpot: 200.4 };
+  const build = (extra = {}) => buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: { ...plan, ...extra } });
+  const three = build();
+  assert.equal(three.targetCount, 3, "default is three targets");
+  assert.deepEqual(three.targets.map((level) => level.stock), [202.9, 205.4, 210]);
+  assert.deepEqual(build({ targetCount: 1 }).targets.map((level) => [level.label, level.stock]), [["T1", 202.9]]);
+  assert.deepEqual(build({ targetCount: 2 }).targets.map((level) => level.label), ["T1", "T2"]);
+  // T3 is the OI level at 210. Runners: 2x the move (210.40) is only 0.40
+  // past T3, so T4 = T3 + half a move = 212.50; 2.5x (212.90) is only 0.40
+  // past T4, so T5 = 215; 3x (215.40) likewise, so T6 = 217.50.
+  const six = build({ targetCount: 6 });
+  assert.equal(six.targetCount, 6);
+  assert.deepEqual(six.targets.map((level) => [level.label, level.key, level.stock]), [
+    ["T1", "t1", 202.9], ["T2", "target", 205.4], ["T3", "t3", 210],
+    ["T4", "t4", 212.5], ["T5", "t5", 215], ["T6", "t6", 217.5],
+  ]);
+  const values = six.targets.map((level) => level.value);
+  assert.ok(values.every((value, index) => !index || value > values[index - 1]), "each farther call target pays more");
+  assert.deepEqual(projectRoiChartLines(six).map((line) => line.key), ["entry", "t1", "target", "t3", "t4", "t5", "t6", "stop"]);
+  assert.match(projectRoiChartLines(six)[6].title, /^T6 217\.50 {2}\+\d+% {2}205C \$\d+\.\d\d$/);
+  assert.deepEqual(build({ targetCount: 5 }).targets.map((level) => level.label), ["T1", "T2", "T3", "T4", "T5"]);
+  assert.equal(build({ targetCount: 9 }).targetCount, 6, "capped at six");
+  assert.equal(build({ targetCount: 0 }).targetCount, 3, "nonsense falls back to three");
+  // Puts: runners below T3 (195). 2x = 190.40, 2.5x = 187.90, 3x = 185.40.
+  const put = build({ side: "PUT", targetCount: 6 });
+  assert.deepEqual(put.targets.map((level) => level.stock), [197.9, 195.4, 195, 190.4, 187.9, 185.4]);
+});
+
+test("the chart picks the same ENTRY as the Options chain: OTM, delta just under 0.20, bid/ask middle", () => {
+  // CRM-like chain: calls 217.5-227.5, deltas falling with the strike.
+  const crm = [
+    [217.5, 0.53, 3.10, 3.26], [220, 0.40, 1.95, 2.07], [222.5, 0.27, 1.15, 1.23],
+    [225, 0.17, 0.63, 0.71], [227.5, 0.10, 0.31, 0.37],
+  ].map(([strike, delta, bid, ask]) => ({ side: "CALL", strike, expiry: DAY1, days_to_expiration: 1, bid, ask, mark: (bid + ask) / 2, delta, gamma: 0.03, open_interest: 300, expected_move: 5.5 }));
+  const puts = [
+    [215, -0.34, 0.33, 0.37], [212.5, -0.24, 0.22, 0.26], [210, -0.16, 0.14, 0.18], [207.5, -0.09, 0.08, 0.12],
+  ].map(([strike, delta, bid, ask]) => ({ side: "PUT", strike, expiry: DAY1, days_to_expiration: 1, bid, ask, mark: (bid + ask) / 2, delta, gamma: 0.03, open_interest: 300, expected_move: 5.5 }));
+  const rows = [...crm, ...puts];
+  assert.deepEqual(projectRoiChainEntry({ rows, spot: 217.3, side: "CALL", expiry: DAY1 }), { strike: 225, price: 0.67, delta: 0.17 });
+  assert.deepEqual(projectRoiChainEntry({ rows, spot: 217.3, side: "PUT", expiry: DAY1 }), { strike: 210, price: 0.16, delta: 0.16 });
+  const call = buildProjectRoi({ now: NOW, rows, spot: 217.3, walls: [{ price: 222.5, side: "C", title: "188" }], defaultExpiry: DAY1 });
+  assert.equal(call.strike, 225, "the chain ENTRY beats the wall rule");
+  assert.equal(call.entry, 0.67);
+  assert.match(call.strikeReason, /chain ENTRY/);
+  assert.ok(call.ladder.some((item) => item.strike === 225), "the ENTRY strike is in the ladder even past the move");
+  // A typed strike or fill still wins.
+  const typed = buildProjectRoi({ now: NOW, rows, spot: 217.3, defaultExpiry: DAY1, plan: { strike: 222.5, entry: 1.1 } });
+  assert.deepEqual([typed.strike, typed.entry, typed.strikeReason], [222.5, 1.1, "your pick"]);
+  // The server's own ENTRY mark, when the chain carries one, is used as-is.
+  const marked = rows.map((item) => (item.side === "CALL" && item.strike === 227.5
+    ? { ...item, roiEstimate: { kind: "entry", source: "chain-mark", entryStrike: 227.5, entryPrice: 0.33, entryDelta: 0.1 } } : item));
+  assert.deepEqual(projectRoiChainEntry({ rows: marked, spot: 217.3, side: "CALL", expiry: DAY1 }), { strike: 227.5, price: 0.33, delta: 0.1 });
+  assert.equal(projectRoiChainPrice({ bid: 0, ask: 0, mark: 0, last: 0.4 }), 0.4);
 });

@@ -246,7 +246,7 @@ import {
 import { OI_WALLS_PER_SIDE_OPTIONS, useOiWallsPerSide, writeOiWallsPerSide } from "./oiWallsPerSide";
 import { buildHighOiContractList, expectedMoveFromExpiries, formatCompactVolume, formatDelta, formatMark, resolveExpectedMove } from "./highOiContractList";
 import { buildRoiAutofill, roiAutoTargets, roiEntryPrice, roiStopLevel } from "./roiCalcAutofill";
-import ChartProjectRoiCard from "./ChartProjectRoiCard";
+import ChartProjectRoiCard, { ChartProjectRoiToolbar } from "./ChartProjectRoiCard";
 import {
   OI_AUTO_ALERT_MIRROR_SOURCE,
   activeLevelsForPrice,
@@ -23722,17 +23722,13 @@ function OiFinderCandleChart({
             {/* Icon only - the title and aria-label carry the meaning. */}
             <Bell size={14} />
           </button>
-          <button
-            className={`oi-finder-chart-roi${projectRoiOpen ? " is-active" : ""}`}
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              setProjectRoiOpen((current) => !current);
-            }}
-            title={`Project ROI: pick a ${normalizeOiChartSymbol(symbol)} option and see Entry / Target / Stop on the chart`}
-            aria-label={`Project ROI for ${normalizeOiChartSymbol(symbol)}`}
-            aria-pressed={projectRoiOpen}
-          >ROI</button>
+          {/* ROI on/off + Call / Put / Both (ChartProjectRoiCard.jsx). */}
+          <ChartProjectRoiToolbar
+            symbol={normalizedChartSymbol}
+            spot={chartReferencePrice}
+            cardOpen={projectRoiOpen}
+            onCardOpenChange={setProjectRoiOpen}
+          />
           <details
             className="oi-finder-indicators-menu"
             open={indicatorMenuOpen}

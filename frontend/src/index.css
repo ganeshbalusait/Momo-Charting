@@ -23555,3 +23555,48 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .chart-project-roi-sideplan + .chart-project-roi-sideplan { padding-top: 6px; border-top: 1px dashed rgba(255, 255, 255, .14); }
 .chart-project-roi-side-heading { color: #ffd54f; font-size: .66rem; letter-spacing: .04em; }
 .chart-project-roi-warn { margin: 0; padding: 5px 7px; border: 1px solid rgba(255, 179, 0, .55); border-radius: 5px; background: rgba(255, 179, 0, .1); color: #ffcf66; font-size: .66rem; line-height: 1.35; }
+
+/* Project ROI target count (2026-11-11): 1-6 targets (T4-T6 are runners past T3). */
+.chart-project-roi-count-targets { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.chart-project-roi-count-targets small { color: #a6b0bf; font-size: .66rem; }
+.chart-project-roi-count-targets button { min-width: 28px; min-height: 26px; border: 1px solid rgba(255, 255, 255, .18); border-radius: 13px; padding: 2px 6px; background: rgba(255, 255, 255, .05); color: #dfe7f2; font: inherit; font-size: .7rem; font-weight: 800; cursor: pointer; }
+.chart-project-roi-count-targets button.is-active { border-color: #26c6da; color: #fff; background: rgba(38, 198, 218, .16); }
+
+/* Project ROI toolbar (2026-11-11): ROI on/off with Call / Put / Both next to
+   it, and a slightly smaller card ("reduce little small font"). */
+.app-shell .oi-finder-chart-card .oi-finder-chart-roi-group { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; }
+.app-shell .oi-finder-chart-card .oi-finder-chart-roi-side {
+  min-height: 27px; border: 1px solid rgba(255, 255, 255, .2); border-radius: 5px; padding: 3px 7px;
+  background: rgba(255, 255, 255, .04); color: #c6cfdb; font: inherit; font-size: .58rem; font-weight: 900; cursor: pointer; white-space: nowrap;
+}
+.app-shell .oi-finder-chart-card .oi-finder-chart-roi-side.is-active { border-color: #3ddcff; color: #fff; background: rgba(61, 220, 255, .18); }
+.oi-finder-candle-chart > .chart-project-roi { font-size: .64rem; gap: 5px; padding: 8px 9px 9px; width: min(280px, calc(100% - 16px)); }
+.chart-project-roi-hero strong { font-size: 1.35rem; }
+.chart-project-roi-hero span { font-size: .74rem; }
+.chart-project-roi-strike, .chart-project-roi-line { font-size: .62rem; }
+.chart-project-roi-strike { min-height: 22px; }
+.chart-project-roi-count button, .chart-project-roi-side button, .chart-project-roi-expiries button,
+.chart-project-roi-ask, .chart-project-roi-delete, .chart-project-roi-count-targets button { min-height: 22px; font-size: .62rem; }
+.chart-project-roi-orders { font-size: .6rem; }
+.chart-project-roi-orders em { font-size: .7rem; }
+.chart-project-roi-fields input { min-height: 22px; }
+@media (min-width: 761px) {
+  .chart-project-roi-fields input { font-size: .66rem; }
+}
+
+/* Phone toolbar fit (2026-11-11): Call / Put / Both added ~120 px to a row
+   that is a sideways scroller only just wide enough, so it overflowed and the
+   iPhone slid the row up under the ticker box. Phone: one C / P / B button
+   that steps the side; the row never scrolls vertically. Desktop: all three. */
+.app-shell .oi-finder-chart-card .oi-finder-chart-roi-cycle { display: none; }
+@media (max-width: 760px) {
+  .app-shell .oi-finder-chart-card .oi-finder-chart-roi-side { display: none; }
+  .app-shell .oi-finder-chart-card .oi-finder-chart-roi-cycle {
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 22px; min-height: 27px; padding: 0; border: 1px solid #3ddcff; border-radius: 5px;
+    background: rgba(61, 220, 255, .18); color: #fff; font: inherit; font-size: .62rem; font-weight: 950; cursor: pointer;
+  }
+  .app-shell .oi-finder-chart-card .oi-finder-chart-roi-group { gap: 2px; }
+  .app-shell .oi-finder-chart-card .oi-finder-chart-actions { overflow-y: hidden; }
+  .app-shell .oi-finder-chart-card .oi-finder-chart-roi-group .oi-finder-chart-roi { padding-left: 5px; padding-right: 5px; }
+}

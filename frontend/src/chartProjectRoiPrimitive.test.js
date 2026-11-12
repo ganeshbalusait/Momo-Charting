@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ChartProjectRoiPrimitive, layoutProjectRoiLabels, projectRoiStartTime } from "./chartProjectRoiPrimitive.js";
+import { ChartProjectRoiPrimitive, PROJECT_ROI_LABEL as BOX, layoutProjectRoiLabels, projectRoiStartTime } from "./chartProjectRoiPrimitive.js";
 
 const BARS = [{ time: 100 }, { time: 400 }, { time: 700 }, { time: 1000 }];
 
@@ -53,18 +53,18 @@ const LINES = [
   { key: "stop", price: 95, title: "Stop 95.00  −50%" },
 ];
 
-test("draws a green and a red zone from the plan's bar, three lines and three label boxes", () => {
+test("draws three lines and three label boxes from the plan's bar, no background zone", () => {
   const primitive = new ChartProjectRoiPrimitive();
   attached(primitive);
   primitive.setModel({ lines: LINES, planTimeSec: 750 });
   const { calls, target } = fakeTarget();
   primitive.views[0].renderer().draw(target);
-  const zones = calls.rects.filter((rect) => /rgba\(/.test(rect.fill) && rect.w === 400);
-  assert.equal(zones.length, 2, "one zone to the target, one to the stop");
-  assert.deepEqual(zones.map((zone) => [zone.x, zone.y, zone.h]), [[200, 50, 100], [200, 150, 50]]);
+  // No shaded zones (his call, 2026-11-11): the only fills are the 3 label boxes.
+  assert.equal(calls.rects.length, 3);
+  assert.ok(calls.rects.every((rect) => rect.h === BOX.height), "a background zone was drawn");
   assert.equal(calls.lines, 3);
   assert.deepEqual(calls.texts.map((item) => item.text), ["Target 110.00  +250%", "Entry 100.00  105C $1.20", "Stop 95.00  −50%"]);
-  assert.ok(calls.texts.every((item) => item.x === 210), "labels sit at the left end of the lines");
+  assert.ok(calls.texts.every((item) => item.x === 200 + 4 + BOX.padX), "labels sit at the left end of the lines");
   assert.equal(calls.texts[0].fill, "#3dff8a");
 });
 
@@ -75,8 +75,8 @@ test("a plan older than the window starts at the left edge; labels never run off
   const { calls, target } = fakeTarget();
   primitive.views[0].renderer().draw(target);
   // fake measureText: 7 px a character, +12 padding; text sits 6 px inside its box.
-  const widest = Math.max(...LINES.map((line) => line.title.length * 7 + 12));
-  assert.ok(calls.texts.every((item) => item.x - 6 + widest <= 600 - 4), "a box runs off the right edge");
+  const widest = Math.max(...LINES.map((line) => line.title.length * 7 + BOX.padX * 2));
+  assert.ok(calls.texts.every((item) => item.x - BOX.padX + widest <= 600 - 4), "a box runs off the right edge");
 
   const older = new ChartProjectRoiPrimitive();
   older.attached({
@@ -87,7 +87,7 @@ test("a plan older than the window starts at the left edge; labels never run off
   older.setModel({ lines: LINES, planTimeSec: 750 });
   const drawn = fakeTarget();
   older.views[0].renderer().draw(drawn.target);
-  assert.ok(drawn.calls.texts.every((item) => item.x === 10));
+  assert.ok(drawn.calls.texts.every((item) => item.x === 4 + BOX.padX));
 });
 
 test("no plan or no series draws nothing; autoscale stays with App.jsx", () => {
@@ -138,14 +138,14 @@ test("on a narrow phone pane the long broker-price boxes shrink their font and s
   });
   primitive.views[0].renderer().draw(target);
   assert.ok(fonts.at(-1) < 11, "the font did not step down on a narrow pane");
-  const boxes = calls.rects.filter((rect) => rect.h === 18);
+  const boxes = calls.rects.filter((rect) => rect.h === BOX.height);
   assert.equal(boxes.length, 3);
   assert.ok(boxes.every((box) => box.x >= 0 && box.x + box.w <= 220), "a box runs off the pane");
   assert.ok(calls.texts.some((item) => item.text.endsWith("222.5C $3.38")));
   void ctx;
 });
 
-test("three targets: three green boxes, and the green zone reaches the farthest one", () => {
+test("three targets: three green boxes, no background zone", () => {
   const prices = { 100: 150, 104: 110, 110: 50, 116: 20, 95: 200 };
   const primitive = new ChartProjectRoiPrimitive();
   primitive.attached({
@@ -162,12 +162,11 @@ test("three targets: three green boxes, and the green zone reaches the farthest 
   ] });
   const { calls, target } = fakeTarget();
   primitive.views[0].renderer().draw(target);
-  const green = calls.rects.find((rect) => rect.fill === "rgba(61, 255, 138, 0.12)");
-  assert.deepEqual([green.y, green.h], [20, 130], "the zone runs from entry (150) to T3 (20)");
+  assert.equal(calls.rects.filter((rect) => rect.h !== BOX.height).length, 0, "a background zone was drawn");
   assert.deepEqual(calls.texts.map((item) => item.text.split(" ")[0]), ["T3", "T2", "T1", "Entry", "Stop"]);
 });
 
-test("both sides: green zones up to the farthest call target and down to the farthest put target, no red zone", () => {
+test("both sides: seven boxes, no background zone, prefixed keys keep their colors", () => {
   const prices = { 100: 150, 110: 50, 116: 20, 90: 250, 84: 280, 96: 180, 104: 120 };
   const primitive = new ChartProjectRoiPrimitive();
   primitive.attached({
@@ -186,9 +185,8 @@ test("both sides: green zones up to the farthest call target and down to the far
   ] });
   const { calls, target } = fakeTarget();
   primitive.views[0].renderer().draw(target);
-  const green = calls.rects.filter((rect) => rect.fill === "rgba(61, 255, 138, 0.12)").map((rect) => [rect.y, rect.h]);
-  assert.deepEqual(green, [[20, 130], [150, 130]], "up to the call T3 (20) and down to the put T3 (280)");
-  assert.equal(calls.rects.filter((rect) => rect.fill === "rgba(255, 90, 106, 0.12)").length, 0);
+  // No shaded zones ("no need background color"): only the 7 label boxes fill.
+  assert.equal(calls.rects.filter((rect) => rect.h !== BOX.height).length, 0, "a background zone was drawn");
   assert.equal(calls.texts.length, 7);
   const stopText = calls.texts.find((item) => item.text.startsWith("Stop 104"));
   assert.equal(stopText.fill, "#ff8a95", "a prefixed stop keeps the stop color");
