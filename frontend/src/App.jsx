@@ -16530,6 +16530,10 @@ function OiFinderCandleChart({
   // its Entry / Target / Stop lines live in ChartProjectRoiCard so a slider
   // drag never re-renders this component.
   const [projectRoiOpen, setProjectRoiOpen] = useState(false);
+  // Entry / target / stop prices of this panel's Project ROI plan. Unlike a
+  // distant wall or alert, a plan the trader made is always kept in view by
+  // the price-range fit below (his reference card shows target and stop).
+  const projectRoiAutoscaleRef = useRef([]);
   // Which symbol the current Lightweight Charts tree was built for. The tree
   // is torn down and rebuilt whenever an indicator activates, and only a
   // genuine symbol change should reset the viewport - see the rebuild branch.
@@ -19559,6 +19563,12 @@ function OiFinderCandleChart({
         minValue = Math.min(minValue, price);
         maxValue = Math.max(maxValue, price);
       });
+      (projectRoiAutoscaleRef.current || []).forEach((value) => {
+        const price = Number(value);
+        if (!(price > 0)) return;
+        minValue = Math.min(minValue, price);
+        maxValue = Math.max(maxValue, price);
+      });
       return {
         priceRange: { minValue, maxValue },
         margins: nativeScale?.margins || { above: 10, below: 10 },
@@ -20448,8 +20458,12 @@ function OiFinderCandleChart({
       // only. OI walls, bubbles, and levels stay drawn but never inflate the
       // scale — the earlier wall/signal expansion (even clamped at 3x) is
       // what squeezed candles into a thin band on wall-heavy tickers.
-      const visibleLow = candleLow;
-      const visibleHigh = candleHigh;
+      // One exception: the trader's own Project ROI plan. Its entry, target
+      // and stop stay on screen (his reference card shows all three) - it is
+      // a trade he set up, not a passive level.
+      const roiPlanPrices = (projectRoiAutoscaleRef.current || []).map(Number).filter((price) => price > 0);
+      const visibleLow = Math.min(candleLow, ...roiPlanPrices);
+      const visibleHigh = Math.max(candleHigh, ...roiPlanPrices);
       const pricePadding = pricePaddingFor(candleSpan, isPhoneChartViewport());
       const nextPriceRange = {
         from: visibleLow - pricePadding,
@@ -24409,6 +24423,8 @@ function OiFinderCandleChart({
             walls={wallLevels}
             seriesRef={chartSeriesRef}
             seriesVersion={chartSeriesResetVersion}
+            autoscaleRef={projectRoiAutoscaleRef}
+            onPlanPricesChange={() => fitVisibleCandlePriceRangeRef.current?.()}
             open={projectRoiOpen}
             onClose={() => setProjectRoiOpen(false)}
           />

@@ -17,6 +17,7 @@ import {
   readProjectRoiPlans,
   writeProjectRoiPlans,
 } from "./chartProjectRoi.js";
+import { ChartProjectRoiPrimitive } from "./chartProjectRoiPrimitive.js";
 
 // One copy of the saved plans for the whole page. Every chart panel showing
 // the same ticker (multi-chart, big screen, the maximized chart) reads and
@@ -60,6 +61,9 @@ export default function ChartProjectRoiCard({
   walls = [],
   seriesRef,
   seriesVersion = 0,
+  // App.jsx's price-range fit reads this, so target and stop stay on screen.
+  autoscaleRef = null,
+  onPlanPricesChange,
   open = false,
   onClose,
 }) {
@@ -107,6 +111,9 @@ export default function ChartProjectRoiCard({
   // Which lines exist decides create/remove; their price and label are
   // updated in place, so a live tick never removes and redraws them.
   const lineSet = lines.map((line) => line.key).join("|");
+  const planTimeSec = savedPlan?.createdAt ? Math.floor(Number(savedPlan.createdAt) / 1000) : 0;
+  const planTimeRef = useRef(planTimeSec);
+  planTimeRef.current = planTimeSec;
   const drawnRef = useRef(new Map());
   const linesRef = useRef(lines);
   linesRef.current = lines;
@@ -118,12 +125,14 @@ export default function ChartProjectRoiCard({
       drawn.set(line.key, series.createPriceLine({
         price: line.price,
         color: line.color,
-        lineWidth: line.key === "entry" ? 1 : 2,
-        lineStyle: line.key === "entry" ? 0 : 2,
+        // The line and its label box are drawn by ChartProjectRoiPrimitive
+        // (zones + boxes at the plan's start); this keeps only the colored
+        // price tag on the right axis.
+        lineVisible: false,
         axisLabelVisible: true,
         axisLabelColor: line.color,
         axisLabelTextColor: "#05070c",
-        title: line.title,
+        title: "",
       }));
     });
     drawnRef.current = drawn;
@@ -137,13 +146,51 @@ export default function ChartProjectRoiCard({
   const linesKey = lines.map((line) => `${line.key}:${line.price}:${line.title}`).join("|");
   useEffect(() => {
     linesRef.current.forEach((line) => {
-      try { drawnRef.current.get(line.key)?.applyOptions({ price: line.price, title: line.title }); } catch { /* Rebuild in progress. */ }
+      try { drawnRef.current.get(line.key)?.applyOptions({ price: line.price }); } catch { /* Rebuild in progress. */ }
     });
-  }, [linesKey]);
+    if (autoscaleRef) autoscaleRef.current = linesRef.current.map((line) => line.price);
+    const pricesKey = linesRef.current.map((line) => line.price).join("|");
+    if (pricesKey !== fittedPricesRef.current) {
+      fittedPricesRef.current = pricesKey;
+      onPlanPricesChangeRef.current?.();
+    }
+    primitiveRef.current?.setModel(linesRef.current.length ? { lines: linesRef.current, planTimeSec: planTimeSec } : null);
+  }, [linesKey, planTimeSec, autoscaleRef]);
+
+  // Zones, lines and label boxes like the reference card, on the candle pane.
+  const primitiveRef = useRef(null);
+  const markerRef = useRef(null);
+  const fittedPricesRef = useRef("");
+  const onPlanPricesChangeRef = useRef(onPlanPricesChange);
+  onPlanPricesChangeRef.current = onPlanPricesChange;
+  useEffect(() => {
+    const series = seriesRef?.current?.candleSeries;
+    if (!series || !lineSet) return undefined;
+    const primitive = new ChartProjectRoiPrimitive({
+      onDrawn: (keys) => { if (markerRef.current) markerRef.current.dataset.drawn = keys; },
+    });
+    primitive.setModel({ lines: linesRef.current, planTimeSec: planTimeRef.current });
+    series.attachPrimitive(primitive);
+    primitiveRef.current = primitive;
+    return () => {
+      try { series.detachPrimitive(primitive); } catch { /* Chart teardown already detached it. */ }
+      if (primitiveRef.current === primitive) primitiveRef.current = null;
+    };
+  }, [seriesRef, seriesVersion, lineSet]);
+  useEffect(() => () => { if (autoscaleRef) autoscaleRef.current = []; }, [autoscaleRef]);
+  useEffect(() => {
+    if (lineSet || !autoscaleRef) return;
+    autoscaleRef.current = [];
+    if (fittedPricesRef.current) {
+      fittedPricesRef.current = "";
+      onPlanPricesChangeRef.current?.();
+    }
+  }, [lineSet, autoscaleRef]);
 
   // Read by tests: the chart draws the lines on a canvas, so this hidden tag
   // lists what was drawn (key:price:label) for the panel.
-  const marker = lines.length ? <i hidden data-testid="chart-project-roi-lines" data-lines={linesKey} /> : null;
+  // data-drawn: label boxes the overlay drew inside the pane (target|entry|stop).
+  const marker = lines.length ? <i hidden ref={markerRef} data-testid="chart-project-roi-lines" data-lines={linesKey} /> : null;
   if (!open || !result) return marker;
 
   const contractName = result.contract ? `${ticker} ${formatStrike(result.strike)}${result.sideLetter} ${shortExpiry(result.expiry)}` : ticker;

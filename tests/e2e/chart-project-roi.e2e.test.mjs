@@ -36,6 +36,17 @@ async function drawnLines(chart) {
   });
 }
 
+// The overlay reports which label boxes it drew inside the pane. Target,
+// entry and stop must all be on screen - the chart keeps the plan in view.
+async function waitAllLabelsDrawn(page, chart) {
+  const handle = await chart.locator(LINES).elementHandle();
+  await page.waitForFunction(
+    (node) => String(node?.dataset.drawn || "").split("|").sort().join("|") === "entry|stop|target",
+    handle,
+    { timeout: 20_000 },
+  );
+}
+
 async function plans(page) {
   return JSON.parse((await readStorage(page, PLAN_KEY)) || "{}");
 }
@@ -58,6 +69,7 @@ e2eTest("the chart ROI card fills from the live chain and draws Entry / Target /
     assert.deepEqual(lines.map((line) => line.key).slice(0, 2), ["entry", "target"]);
     assert.match(lines[0].title, /^Entry \d+\.\d\d {2}\d+(\.\d+)?C \$\d+\.\d\d$/);
     assert.match(lines[1].title, /^Target \d+\.\d\d/);
+    await waitAllLabelsDrawn(page, chart);
 
     // A ladder tap picks that strike.
     const other = ladder.filter({ hasNot: page.locator(".is-picked") }).filter({ hasNotText: "ATM" }).first();
@@ -106,6 +118,7 @@ e2eTest("on a phone the ROI card fits the screen and scrolls inside itself", asy
     const box = await roi.boundingBox();
     assert.ok(box.x >= 0 && box.x + box.width <= PHONE.width, "the card stays inside the screen");
     assert.equal(await overflowsSideways(page), false);
+    await waitAllLabelsDrawn(page, chart);
     const scrollable = await roi.evaluate((node) => node.scrollHeight > node.clientHeight);
     if (scrollable) {
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
