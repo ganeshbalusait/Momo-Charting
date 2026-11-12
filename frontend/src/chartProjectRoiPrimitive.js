@@ -7,7 +7,10 @@
 // keep it aligned through pan, zoom and pane resize.
 
 const STYLE = {
+  // Three targets (t1 nearest, target = the slider target, t3 farthest).
+  t1: { line: "#9dffc4", text: "#9dffc4", box: "rgba(6, 40, 20, 0.92)", dash: [3, 4] },
   target: { line: "#3dff8a", text: "#3dff8a", box: "rgba(6, 40, 20, 0.92)", dash: [6, 4] },
+  t3: { line: "#00e676", text: "#00e676", box: "rgba(6, 40, 20, 0.92)", dash: [10, 4] },
   entry: { line: "#e8f4ff", text: "#e8f4ff", box: "rgba(16, 26, 44, 0.92)", dash: [] },
   stop: { line: "#ff5a6a", text: "#ff8a95", box: "rgba(48, 10, 16, 0.92)", dash: [] },
 };
@@ -115,7 +118,10 @@ export class ChartProjectRoiPrimitive {
         ctx.fillStyle = color;
         ctx.fillRect(x0, Math.min(entry.y, line.y), right - x0, Math.abs(line.y - entry.y));
       };
-      zone(byKey.target, "rgba(61, 255, 138, 0.12)");
+      // Green zone up to the farthest target on screen or off it.
+      const farthest = ["t1", "target", "t3"].map((key) => byKey[key]).filter((line) => line && line.y != null)
+        .sort((left, right) => Math.abs(right.y - entry.y) - Math.abs(left.y - entry.y))[0];
+      zone(farthest, "rgba(61, 255, 138, 0.12)");
       zone(byKey.stop, "rgba(255, 90, 106, 0.12)");
       // Lines.
       for (const line of Object.values(byKey)) {

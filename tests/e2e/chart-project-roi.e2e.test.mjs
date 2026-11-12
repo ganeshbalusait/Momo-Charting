@@ -36,12 +36,17 @@ async function drawnLines(chart) {
   });
 }
 
-// The overlay reports which label boxes it drew inside the pane. Target,
-// entry and stop must all be on screen - the chart keeps the plan in view.
+// The overlay reports which label boxes it drew inside the pane. Every line
+// of the plan (entry, each target, stop) must be on screen - the chart keeps
+// the plan in view.
 async function waitAllLabelsDrawn(page, chart) {
   const handle = await chart.locator(LINES).elementHandle();
   await page.waitForFunction(
-    (node) => String(node?.dataset.drawn || "").split("|").sort().join("|") === "entry|stop|target",
+    (node) => {
+      const planned = String(node?.dataset.lines || "").split("|").map((item) => item.split(":")[0]).sort().join("|");
+      const drawn = String(node?.dataset.drawn || "").split("|").sort().join("|");
+      return Boolean(planned) && planned === drawn;
+    },
     handle,
     { timeout: 20_000 },
   );
@@ -66,14 +71,21 @@ e2eTest("the chart ROI card fills from the live chain and draws Entry / Target /
     assert.equal(await roi.locator(".chart-project-roi-fields small").first().innerText(), "live ask");
 
     const lines = await drawnLines(chart);
-    assert.deepEqual(lines.map((line) => line.key).slice(0, 2), ["entry", "target"]);
+    assert.equal(lines[0].key, "entry");
     assert.match(lines[0].title, /^Entry \d+\.\d\d {2}\d+(\.\d+)?C \$\d+\.\d\d$/);
-    assert.match(lines[1].title, /^Target \d+\.\d\d/);
-    // Broker prices: the target and stop boxes carry the contract's price.
-    assert.match(lines[1].title, /\d+(\.\d+)?C \$\d+\.\d\d$/);
-    if (lines[2]) assert.match(lines[2].title, /^Stop \d+\.\d\d {2}−50% {2}\d+(\.\d+)?C \$\d+\.\d\d$/);
+    // At least three targets (T1 half move, T2 full move, T3 OI level), each
+    // with the contract's price there - the limit-sell for the broker.
+    const targets = lines.filter((line) => /^T\d /.test(line.title));
+    assert.ok(targets.length >= 3, `only ${targets.length} targets drawn`);
+    targets.forEach((line, index) => {
+      assert.match(line.title, new RegExp(`^T${index + 1} \\d+\\.\\d\\d {2}[+−]\\d+% {2}\\d+(\\.\\d+)?C \\$\\d+\\.\\d\\d$`));
+      if (index) assert.ok(line.price > targets[index - 1].price, "call targets climb T1 < T2 < T3");
+    });
+    const stop = lines.find((line) => line.key === "stop");
+    if (stop) assert.match(stop.title, /^Stop \d+\.\d\d {2}−50% {2}\d+(\.\d+)?C \$\d+\.\d\d$/);
     const orders = roi.locator(".chart-project-roi-orders");
-    assert.match(await orders.innerText(), /Buy\s*\$\d+\.\d\d[\s\S]*Sell \(target\)\s*\$\d+\.\d\d[\s\S]*Stop\s*\$\d+\.\d\d/);
+    assert.match(await orders.innerText(), /Buy\s*\$\d+\.\d\d[\s\S]*Stop\s*\$\d+\.\d\d[\s\S]*Sell T1\s*\$\d+\.\d\d[\s\S]*Sell T2\s*\$\d+\.\d\d[\s\S]*Sell T3\s*\$\d+\.\d\d/);
+    assert.equal(await roi.locator(".chart-project-roi-line.is-gain, .chart-project-roi-line.is-loss").count() >= 3, true);
     await waitAllLabelsDrawn(page, chart);
 
     // A ladder tap picks that strike.
@@ -96,7 +108,8 @@ e2eTest("the chart ROI card fills from the live chain and draws Entry / Target /
     await roi.locator(".chart-project-roi-side button", { hasText: "Put" }).click();
     assert.match(await roi.locator(".chart-project-roi-title b").innerText(), /P \d+\/\d+$/);
     const putLines = await drawnLines(chart);
-    assert.ok(putLines[1].price < putLines[0].price, "a put target sits below the entry price");
+    const putTargets = putLines.filter((line) => /^T\d /.test(line.title));
+    assert.ok(putTargets.length >= 3 && putTargets.every((line) => line.price < putLines[0].price), "put targets sit below the entry price");
 
     // Close keeps the lines; a reload keeps the plan; Delete clears both.
     await roi.locator(".chart-project-roi-close").click();

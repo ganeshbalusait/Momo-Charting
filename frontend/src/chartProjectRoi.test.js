@@ -119,16 +119,34 @@ test("stop stock: where the contract is worth half; already below gives spot", (
 test("chart lines carry the entry, target and stop labels", () => {
   const result = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: { entrySpot: 200.1 } });
   const lines = projectRoiChartLines(result);
-  assert.deepEqual(lines.map((line) => line.key), ["entry", "target", "stop"]);
+  // Three targets: half the move (202.90), the full move (205.40), and the
+  // biggest-OI strike past the move within two moves (210).
+  assert.deepEqual(lines.map((line) => line.key), ["entry", "t1", "target", "t3", "stop"]);
+  assert.deepEqual(result.targets.map((level) => [level.label, level.stock]), [["T1", 202.9], ["T2", 205.4], ["T3", 210]]);
   assert.equal(lines[0].price, 200.1);
   assert.match(lines[0].title, /^Entry 200\.10 {2}205C \$\d+\.\d\d$/);
   // Target and stop boxes carry the contract price to type into the broker:
-  // the projected price at the target, and half the entry at the stop.
-  assert.match(lines[1].title, /^Target 205\.40 {2}[+−]\d+% {2}205C \$\d+\.\d\d$/);
-  assert.ok(lines[1].title.endsWith(`$${result.projectedValue.toFixed(2)}`));
-  assert.match(lines[2].title, /^Stop \d+\.\d\d {2}−50% {2}205C \$\d+\.\d\d$/);
-  assert.ok(lines[2].title.endsWith(`$${result.stopPremium.toFixed(2)}`));
+  // the projected price at each target, and half the entry at the stop.
+  assert.match(lines[1].title, /^T1 202\.90 {2}[+−]\d+% {2}205C \$\d+\.\d\d$/);
+  assert.match(lines[2].title, /^T2 205\.40 {2}[+−]\d+% {2}205C \$\d+\.\d\d$/);
+  assert.ok(lines[2].title.endsWith(`$${result.projectedValue.toFixed(2)}`));
+  assert.match(lines[3].title, /^T3 210\.00 {2}[+−]\d+% {2}205C \$\d+\.\d\d$/);
+  const values = result.targets.map((level) => level.value);
+  assert.ok(values[0] < values[1] && values[1] < values[2], "a farther call target is worth more");
+  assert.match(lines[4].title, /^Stop \d+\.\d\d {2}−50% {2}205C \$\d+\.\d\d$/);
+  assert.ok(lines[4].title.endsWith(`$${result.stopPremium.toFixed(2)}`));
   assert.equal(result.stopPremium, Math.round(result.entry * 50) / 100);
+});
+
+test("puts get three targets below spot, nearest first; a dragged target equal to T1 shows once", () => {
+  const put = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: { side: "PUT" } });
+  assert.deepEqual(put.targets.map((level) => level.stock), [197.9, 195.4, 195]); // 190 is past two moves (190.4); 195 is the OI level past the move
+  assert.deepEqual(put.targets.map((level) => level.label), ["T1", "T2", "T3"]);
+  const dragged = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: { target: 202.9 } });
+  assert.deepEqual(dragged.targets.map((level) => level.stock), [202.9, 210]);
+  // A target dragged past the OI level becomes T3, the OI level T2.
+  const far = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: { target: 212 } });
+  assert.deepEqual(far.targets.map((level) => [level.label, level.key, level.stock]), [["T1", "t1", 202.9], ["T2", "t3", 210], ["T3", "target", 212]]);
 });
 
 test("formatters and saved plans", () => {

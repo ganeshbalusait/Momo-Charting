@@ -14,7 +14,7 @@
 // price when it was made) is saved per ticker so the Entry / Target / Stop
 // lines stay on the chart after a reload.
 
-import { buildRoiAutofill, roiEntryPrice, roiContractPrice, roiExpiryExpectedMove } from "./roiCalcAutofill.js";
+import { buildRoiAutofill, roiAutoTargets, roiEntryPrice, roiContractPrice, roiExpiryExpectedMove } from "./roiCalcAutofill.js";
 
 export const PROJECT_ROI_STORAGE_KEY = "agx.chartProjectRoi.v1";
 
@@ -176,6 +176,33 @@ export function buildProjectRoi({
   const value = row && target ? projectRoiOptionValue({ side, spot: price, price: livePrice, delta, gamma, strike, target }) : 0;
   const roiPercent = entry > 0 && value > 0 ? round2(((value - entry) / entry) * 100) : null;
   const profit = roiPercent == null ? null : round2((value - entry) * 100 * contracts);
+
+  // Three targets (Ganesh 2026-11-11: "give me at least 3 target"), picked
+  // the same way as ROI Calc: half the expected move, the target on the
+  // slider (the full move unless he moved it), and the biggest-OI strike
+  // past the full move (1.5x the move without OI). Each carries the
+  // contract's projected price there - the limit-sell for the broker.
+  const [halfMove, , wallLevel] = roiAutoTargets({ rows, spot: price, side, expiry, expectedMove });
+  const levelAt = (key, stock, reason) => {
+    const at = positive(stock);
+    const levelValue = row && at ? projectRoiOptionValue({ side, spot: price, price: livePrice, delta, gamma, strike, target: at }) : 0;
+    const levelRoi = entry > 0 && levelValue > 0 ? round2(((levelValue - entry) / entry) * 100) : null;
+    return {
+      key, stock: round2(at), reason, value: levelValue, roiPercent: levelRoi,
+      profit: levelRoi == null ? null : round2((levelValue - entry) * 100 * contracts),
+    };
+  };
+  const candidates = [
+    levelAt("t1", halfMove, "half the expected move"),
+    levelAt("target", target, positive(plan?.target) ? "your target" : "full expected move"),
+    levelAt("t3", wallLevel, "OI level past the move"),
+  ].filter((level) => level.stock > 0);
+  // Nearest first; a level that repeats another (a slider target dragged
+  // onto the half move) is shown once.
+  const targets = candidates
+    .filter((level, index) => candidates.findIndex((other) => Math.abs(other.stock - level.stock) < 0.005) === index)
+    .sort((left, right) => sign * (left.stock - right.stock))
+    .map((level, index) => ({ ...level, label: `T${index + 1}` }));
   const stopPremium = entry > 0 ? round2(entry * 0.5) : 0;
   const stopStock = row && stopPremium ? projectRoiStopStock({ side, spot: price, price: livePrice, delta, gamma, strike, stopPremium }) : null;
   const stopLoss = stopPremium ? round2(-(entry - stopPremium) * 100 * contracts) : null;
@@ -205,6 +232,7 @@ export function buildProjectRoi({
     projectedValue: value,
     roiPercent,
     profit,
+    targets,
     stopPremium,
     stopStock,
     stopLoss,
@@ -221,17 +249,17 @@ export function projectRoiChartLines(result) {
     color: "#e8f4ff",
     title: `Entry ${result.entrySpot.toFixed(2)}  ${contract} $${result.entry.toFixed(2)}`,
   }];
-  if (result.target > 0) {
+  // One box per target: stock level, ROI, and the contract's projected price
+  // there - the limit-sell price for the broker (Ganesh 2026-11-11: "target
+  // and exit price to set my broker", "give me at least 3 target").
+  (result.targets || []).forEach((level) => {
     lines.push({
-      key: "target",
-      price: result.target,
+      key: level.key,
+      price: level.stock,
       color: "#3dff8a",
-      // Stock target, ROI, and the contract's projected price there - the
-      // limit-sell price for the broker (Ganesh 2026-11-11: "target and exit
-      // price to set my broker").
-      title: `Target ${result.target.toFixed(2)}${result.roiPercent == null ? "" : `  ${formatPercent(result.roiPercent)}`}${result.projectedValue > 0 ? `  ${contract} $${result.projectedValue.toFixed(2)}` : ""}`,
+      title: `${level.label} ${level.stock.toFixed(2)}${level.roiPercent == null ? "" : `  ${formatPercent(level.roiPercent)}`}${level.value > 0 ? `  ${contract} $${level.value.toFixed(2)}` : ""}`,
     });
-  }
+  });
   if (result.stopStock > 0) {
     // Stock stop and the contract's stop price (half the entry) for the broker.
     lines.push({ key: "stop", price: result.stopStock, color: "#ff5a6a", title: `Stop ${result.stopStock.toFixed(2)}  −50%  ${contract} $${result.stopPremium.toFixed(2)}` });

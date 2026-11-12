@@ -308,9 +308,15 @@ export default function ChartProjectRoiCard({
             <small>auto −50%</small>
           </label>
         </div>
-        <p className={`chart-project-roi-line ${gain ? "is-gain" : "is-loss"}`}>
-          {result.roiPercent == null ? "No price for this contract yet" : `${formatPercent(result.roiPercent)} (${formatDollars(result.profit)}) if ${ticker} tags ${result.target.toFixed(2)}`}
-        </p>
+        {/* One line per target, nearest first (his ask: "at least 3 target"). */}
+        {result.roiPercent == null ? <p className="chart-project-roi-line is-loss">No price for this contract yet</p>
+          : result.targets.map((level) => <p
+            key={level.key}
+            className={`chart-project-roi-line ${level.roiPercent != null && level.roiPercent >= 0 ? "is-gain" : "is-loss"}`}
+            title={level.reason}
+          >
+            {level.label} {level.roiPercent == null ? "—" : formatPercent(level.roiPercent)} ({level.profit == null ? "—" : formatDollars(level.profit)}) if {ticker} tags {level.stock.toFixed(2)}
+          </p>)}
         {result.stopStock ? <p className="chart-project-roi-line is-stop">
           −50% ({formatDollars(result.stopLoss)}) if {ticker} tags {result.stopStock.toFixed(2)}
         </p> : null}
@@ -320,8 +326,10 @@ export default function ChartProjectRoiCard({
         {result.contract ? <div className="chart-project-roi-orders" aria-label="Broker order prices">
           <b>Broker orders · {ticker} {formatStrike(result.strike)}{result.sideLetter} {shortExpiry(result.expiry)}</b>
           <span>Buy <em>${result.entry.toFixed(2)}</em></span>
-          <span className="is-gain">Sell (target) <em>{result.projectedValue > 0 ? `$${result.projectedValue.toFixed(2)}` : "—"}</em></span>
           <span className="is-stop">Stop <em>${result.stopPremium.toFixed(2)}</em></span>
+          {result.targets.map((level) => <span key={level.key} className="is-gain" title={`${level.reason} · ${ticker} ${level.stock.toFixed(2)}`}>
+            Sell {level.label} <em>{level.value > 0 ? `$${level.value.toFixed(2)}` : "—"}</em>
+          </span>)}
         </div> : null}
         <p className="chart-project-roi-note">Estimate from the contract's live price, delta and gamma - not a promise. Time decay is not included.</p>
       </>}
