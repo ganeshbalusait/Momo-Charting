@@ -872,3 +872,96 @@ body {
 :root .app-shell.charts-workstation .oi-chart-scrollbar-arrow {
   background: #1c1c1f !important;
 }
+
+/* ================================================================ Options
+   2026-11-13: the Quick / Fast Options page in the dark Apple-style look.
+   Colours, corners and letter case of the page title only; no sizes. The
+   chain panel shares the Charts & OI rules above. */
+
+:root .app-shell.charts-workstation .mobile-quick-options-view {
+  background: #050506 !important;
+}
+
+:root .app-shell.charts-workstation .mobile-quick-options-header {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  border-radius: 16px !important;
+  background: #141416 !important;
+}
+
+:root .app-shell.charts-workstation .mobile-quick-options-title > span {
+  color: #8e8e93 !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+
+:root .app-shell.charts-workstation .mobile-quick-options-title b {
+  color: #f5f5f7 !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+
+/* ticker box and buttons */
+:root .app-shell.charts-workstation .mobile-quick-options-search :is(input, button) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 10px !important;
+  background: #1c1c1f !important;
+}
+
+:root .app-shell.charts-workstation .mobile-quick-options-search > button:not(.is-refresh) {
+  border-color: #0a84ff !important;
+  background: #0a84ff !important;
+  color: #ffffff !important;
+}
+
+/* ticker chips: the chosen one is a blue pill */
+:root .app-shell.charts-workstation .mobile-quick-options-tickers button {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 9px !important;
+  background: #1c1c1f !important;
+  color: #d1d1d6 !important;
+}
+
+:root .app-shell.charts-workstation .mobile-quick-options-tickers button.is-active {
+  border-color: #0a84ff !important;
+  background: rgba(10, 132, 255, 0.22) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+/* Chain / Heatmap / Flow / C/P Levels / News: an iPhone-style switch */
+:root .app-shell.charts-workstation .mobile-options-sections {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  border-radius: 14px !important;
+  background: #141416 !important;
+}
+
+:root .app-shell.charts-workstation .mobile-options-sections button {
+  border-color: transparent !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  color: #a1a1a6 !important;
+  box-shadow: none !important;
+}
+
+:root .app-shell.charts-workstation .mobile-options-sections button.is-active {
+  background: #3a3a3c !important;
+  color: #ffffff !important;
+}
+
+/* the chain card */
+:root .app-shell.charts-workstation .mobile-full-option-chain {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  border-radius: 16px !important;
+}
+
+:root .app-shell.charts-workstation .mobile-full-option-chain > header {
+  border-radius: 16px 16px 0 0 !important;
+  background: #141416 !important;
+}
+
+/* research buttons under the chain */
+:root .app-shell.charts-workstation .mobile-options-research-launcher button {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 999px !important;
+  background: #1c1c1f !important;
+}
