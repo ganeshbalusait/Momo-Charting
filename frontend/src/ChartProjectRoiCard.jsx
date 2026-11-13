@@ -345,7 +345,13 @@ export default function ChartProjectRoiCard({
               onChange={(event) => setEntryDraft(event.target.value)}
               onBlur={() => {
                 const value = Number.parseFloat(entryDraft);
-                if (entryDraft != null) updatePlan({ entry: value > 0 ? Math.round(value * 100) / 100 : null });
+                // A typed fill pins the Entry line (and the stop) to the stock
+                // price at the moment it was typed.
+                if (entryDraft != null) {
+                  updatePlan(value > 0
+                    ? { entry: Math.round(value * 100) / 100, entrySpot: Math.round((Number(spot) || 0) * 100) / 100 }
+                    : { entry: null });
+                }
                 setEntryDraft(null);
               }}
               onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}

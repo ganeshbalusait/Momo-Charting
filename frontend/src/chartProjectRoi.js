@@ -314,10 +314,21 @@ export function buildProjectRoi({
   const targets = [...nearTargets, ...runners]
     .slice(0, targetCount)
     .map((level, index) => ({ ...level, label: `T${index + 1}` }));
+  // Entry and stop share one starting point (SPY 2026-11-12: the Entry line
+  // sat at the 754.30 the plan was made at while the stop was measured from
+  // the live 757.61, so the stop drew ABOVE the entry).
+  //  - No typed fill: the entry is the live chain price, so the Entry line is
+  //    the live stock price and the stop is measured from there.
+  //  - Typed fill: the Entry line is the stock price when the fill was typed
+  //    (`entrySpot`, saved by the card) and the stop is measured from that
+  //    point with the fill price, so it always sits on the losing side.
+  const entryTyped = positive(plan?.entry) > 0;
+  const entrySpot = entryTyped ? (positive(plan?.entrySpot) || price) : price;
   const stopPremium = entry > 0 ? round2(entry * 0.5) : 0;
-  const stopStock = row && stopPremium ? projectRoiStopStock({ side, spot: valueSpot, price: livePrice, delta, gamma, strike, stopPremium }) : null;
+  const stopStock = row && stopPremium ? projectRoiStopStock(entryTyped
+    ? { side, spot: entrySpot, price: entry, delta, gamma, strike, stopPremium }
+    : { side, spot: valueSpot, price: livePrice, delta, gamma, strike, stopPremium }) : null;
   const stopLoss = stopPremium ? round2(-(entry - stopPremium) * 100 * contracts) : null;
-  const entrySpot = positive(plan?.entrySpot) || price;
 
   return {
     ready,

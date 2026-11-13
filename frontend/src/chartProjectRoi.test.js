@@ -131,8 +131,10 @@ test("chart lines carry the entry, target and stop labels", () => {
   // biggest-OI strike past the move within two moves (210).
   assert.deepEqual(lines.map((line) => line.key), ["entry", "t1", "target", "t3", "stop"]);
   assert.deepEqual(result.targets.map((level) => [level.label, level.stock]), [["T1", 202.9], ["T2", 205.4], ["T3", 210]]);
-  assert.equal(lines[0].price, 200.1);
-  assert.match(lines[0].title, /^Entry 200\.10 {2}205C \$\d+\.\d\d$/);
+  // No fill typed: the entry is the live chain price, so the Entry line is the
+  // live stock price (200.40), not the 200.10 the plan was made at.
+  assert.equal(lines[0].price, SPOT);
+  assert.match(lines[0].title, /^Entry 200\.40 {2}205C \$\d+\.\d\d$/);
   // Target and stop boxes carry the contract price to type into the broker:
   // the projected price at each target, and half the entry at the stop.
   assert.match(lines[1].title, /^T1 202\.90 {2}[+−]\d+% {2}205C \$\d+\.\d\d$/);
@@ -302,4 +304,25 @@ test("the chart picks the same ENTRY as the Options chain: OTM, delta just under
     ? { ...item, roiEstimate: { kind: "entry", source: "chain-mark", entryStrike: 227.5, entryPrice: 0.33, entryDelta: 0.1 } } : item));
   assert.deepEqual(projectRoiChainEntry({ rows: marked, spot: 217.3, side: "CALL", expiry: DAY1 }), { strike: 227.5, price: 0.33, delta: 0.1 });
   assert.equal(projectRoiChainPrice({ bid: 0, ask: 0, mark: 0, last: 0.4 }), 0.4);
+});
+
+test("the stop is never on the wrong side of the entry (SPY 2026-11-12: stop drew above entry)", () => {
+  // Plan made at 198.00, stock has since risen to 200.40.
+  const old = { createdAt: 1, entrySpot: 198 };
+  for (const side of ["CALL", "PUT"]) {
+    const live = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: { ...old, side } });
+    assert.equal(live.entrySpot, SPOT, `${side}: with no fill typed the entry follows the live price`);
+    if (side === "CALL") assert.ok(live.stopStock < live.entrySpot, `call stop ${live.stopStock} above entry ${live.entrySpot}`);
+    else assert.ok(live.stopStock > live.entrySpot, `put stop ${live.stopStock} below entry ${live.entrySpot}`);
+    // A typed fill keeps the stock price it was typed at, and the stop is
+    // measured from that same point with the fill price.
+    const filled = buildProjectRoi({ now: NOW, rows: ROWS, spot: SPOT, walls: WALLS, defaultExpiry: DAY1, plan: { ...old, side, entry: 1.2 } });
+    assert.equal(filled.entrySpot, 198);
+    if (side === "CALL") assert.ok(filled.stopStock < 198, `call stop ${filled.stopStock} above the fill's 198`);
+    else assert.ok(filled.stopStock > 198, `put stop ${filled.stopStock} below the fill's 198`);
+    const lines = projectRoiChartLines(filled);
+    const entryLine = lines.find((line) => line.key === "entry");
+    const stopLine = lines.find((line) => line.key === "stop");
+    assert.ok(side === "CALL" ? stopLine.price < entryLine.price : stopLine.price > entryLine.price, `${side} stop line on the wrong side`);
+  }
 });
