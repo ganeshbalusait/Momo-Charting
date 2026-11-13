@@ -613,39 +613,22 @@
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-ticker.is-up b { color: #22d3ee; }
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-ticker.is-down b { color: #f472d0; }
 
-/* Phone: one swipe row of cards, each ticker list on one line, so the board
-   keeps its rows. */
+/* Phone: the cards stack, one under the other, each as wide as the screen,
+   so every sector is visible without any sideways swipe. Line 1: name and
+   average; line 2: its tickers (they wrap, no inner scrolling). */
 @media (max-width: 760px) {
   :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sectors {
     display: flex;
-    flex-direction: row;
-    align-items: flex-start;
-    gap: 8px;
+    flex-direction: column;
+    gap: 6px;
   }
 
   :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector {
-    flex: 0 0 340px;
-    flex-wrap: nowrap;
-    padding: 6px 10px;
+    width: 100%;
+    padding: 8px 12px;
   }
 
-  /* one line: name, average, then the tickers (swipe inside the card) */
-  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-count {
-    display: none;
-  }
-
-  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-avg {
-    margin-left: 0;
-  }
-
-  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-tickers {
-    flex: 1 1 auto;
-    flex-basis: auto;
-    min-width: 0;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-  }
-
+  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-count,
   :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-rs,
   :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-leaders {
     display: none;
@@ -723,4 +706,13 @@ body {
 :is(.momx-scanner-panel, .momx-setup-picker) .momx-strategy-tag {
   border-radius: 6px;
   font-weight: 600;
+}
+
+/* Apple-style labels: normal case and normal spacing everywhere in the Scanner
+   (Tickers, Matches, Updated, New / Lost chips, Industries, Sectors...). The
+   table's group headings (RVOL, SQZ, SKIT) stay as they are. */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel > :not(.momx-table-scroll),
+:root[data-agx-skin~="scanner"] .momx-scanner-panel > :not(.momx-table-scroll) * {
+  text-transform: none !important;
+  letter-spacing: 0 !important;
 }

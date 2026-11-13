@@ -21,7 +21,9 @@ const MONITOR = { width: 1920, height: 1080 };
 // (were 23) and the sector cards list their tickers. Measured after: 25 rows on
 // a 1920x1080 monitor (30 before), 6 on a 375px phone (8 before). These floors
 // catch anything that costs MORE rows than that.
-const ROWS_BEFORE = { monitor: 24, phone: 6 };
+// Phone: the sector cards stack (every sector visible, Ganesh 2026-11-13),
+// one card costs about one row; Sectors can be folded away.
+const ROWS_BEFORE = { monitor: 24, phone: 5 };
 const LIVE_TABLE = "table.momx-table:not(.momx-history-table):not(.momx-find-table)";
 
 const cardReads = () => ({
