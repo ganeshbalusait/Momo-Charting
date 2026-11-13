@@ -23600,3 +23600,10 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
   .app-shell .oi-finder-chart-card .oi-finder-chart-actions { overflow-y: hidden; }
   .app-shell .oi-finder-chart-card .oi-finder-chart-roi-group .oi-finder-chart-roi { padding-left: 5px; padding-right: 5px; }
 }
+
+/* Narrow phones (375 px, iPhone SE / mini, 2026-11-12): the toolbar row with
+   ROI + C/P/B was 14 px too wide there. Tighter gaps fit it. */
+@media (max-width: 400px) {
+  .app-shell .oi-finder-chart-card .oi-finder-chart-actions { column-gap: 2px !important; }
+  .app-shell .oi-finder-chart-card .oi-finder-chart-roi-group { gap: 1px; }
+}

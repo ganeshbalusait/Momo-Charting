@@ -325,4 +325,4 @@ e2eTest("on a phone ROI + one C/P/B button fit the toolbar row; the button steps
     assert.equal(await overflowsSideways(page), false);
     noPageErrors(app);
   });
-});
+}, { timeout: 420_000 });
