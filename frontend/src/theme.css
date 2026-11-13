@@ -965,3 +965,36 @@ body {
   border-radius: 999px !important;
   background: #1c1c1f !important;
 }
+
+/* ---------------------------------------------------------------------
+   Call / put rows of the option chain panel (High OI view), new look.
+   Ganesh 2026-11-13: "Options colors looks good but call and puts same as
+   it is". Calls cyan, puts magenta (the app's call/put colours), softer row
+   tints, rounded OI bars, calmer separators. Rows flagged by the sheet's
+   green / red TONE keep their own colours: those carry meaning.
+   Colours and corners only; no size changes.
+   --------------------------------------------------------------------- */
+:root .app-shell .high-oi-row.is-call:not(.is-tone-green):not(.is-tone-red) { background: rgba(34, 211, 238, 0.045) !important; }
+:root .app-shell .high-oi-row.is-put:not(.is-tone-green):not(.is-tone-red) { background: rgba(244, 114, 208, 0.045) !important; }
+:root .app-shell .high-oi-row.is-inside-em.is-call:not(.is-tone-green):not(.is-tone-red) { background: rgba(34, 211, 238, 0.10) !important; }
+:root .app-shell .high-oi-row.is-inside-em.is-put:not(.is-tone-green):not(.is-tone-red) { background: rgba(244, 114, 208, 0.10) !important; }
+:root .app-shell .high-oi-row.is-leader.is-call:not(.is-tone-green):not(.is-tone-red) { background: rgba(34, 211, 238, 0.16) !important; }
+:root .app-shell .high-oi-row.is-leader.is-put:not(.is-tone-green):not(.is-tone-red) { background: rgba(244, 114, 208, 0.16) !important; }
+:root .app-shell .high-oi-row.is-leader.is-call { box-shadow: inset 3px 0 #22d3ee !important; }
+:root .app-shell .high-oi-row.is-leader.is-put { box-shadow: inset 3px 0 #f472d0 !important; }
+:root .app-shell .high-oi-row.is-call .high-oi-side { color: #22d3ee !important; }
+:root .app-shell .high-oi-row.is-put .high-oi-side { color: #f472d0 !important; }
+:root .app-shell .high-oi-row td { border-bottom-color: rgba(255, 255, 255, 0.05) !important; }
+:root .app-shell .high-oi-oi > i { border-radius: 4px !important; }
+:root .app-shell .high-oi-row.is-call:not(.is-tone-green):not(.is-tone-red) .high-oi-oi > i { background: rgba(34, 211, 238, 0.40) !important; }
+:root .app-shell .high-oi-row.is-put:not(.is-tone-green):not(.is-tone-red) .high-oi-oi > i { background: rgba(244, 114, 208, 0.40) !important; }
+/* +EM / Last / -EM lines: same colours, quieter bar */
+:root .app-shell .high-oi-em td { background: #141416 !important; letter-spacing: 0 !important; font-weight: 700 !important; }
+
+/* controls above the table */
+:root .app-shell .high-oi-controls input { border-color: transparent !important; border-radius: 8px !important; background: #1c1c1f !important; }
+:root .app-shell .high-oi-controls > button { border-color: transparent !important; border-radius: 999px !important; background: rgba(10, 132, 255, 0.18) !important; color: #4da3ff !important; }
+:root .app-shell .high-oi-controls > button:not(.is-active) { background: #1c1c1f !important; color: #a1a1a6 !important; }
+:root .app-shell .charts-oi-walls-picker button { border-color: transparent !important; border-radius: 7px !important; background: #1c1c1f !important; color: #a1a1a6 !important; }
+:root .app-shell .charts-oi-walls-picker button.is-active { background: #3a3a3c !important; color: #f5f5f7 !important; }
+:root .app-shell .charts-oi-walls-picker > span { color: #a1a1a6 !important; }
