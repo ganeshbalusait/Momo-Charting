@@ -716,3 +716,159 @@ body {
   text-transform: none !important;
   letter-spacing: 0 !important;
 }
+
+/* ============================================================ Charts & OI
+   2026-11-13: the dark Apple-style look around the charts. Colours, corners and
+   borders ONLY: no size, padding, font size, weight or letter case changes, so
+   no chart moves, resizes or redraws (checked: chart and canvas boxes are
+   identical before and after). The chart drawing area itself is not touched.
+   !important because the old chart rules are written at very high strength
+   (.oi-chart-multilayout x3 ...); every value here is a colour or a radius. */
+
+:root .app-shell.charts-workstation .oi-chart-layout-toolbar {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  background: #0b0b0d !important;
+}
+
+:root .app-shell.charts-workstation .oi-chart-layout-grid,
+:root .app-shell.charts-workstation .charts-oi-resize-handle {
+  background: #0b0b0d !important;
+}
+
+:root .app-shell.charts-workstation .oi-finder-chart-card {
+  border-color: rgba(255, 255, 255, 0.07) !important;
+}
+
+/* quick ticker strip: the chosen ticker is a soft blue pill */
+:root .app-shell.charts-workstation :is(.oi-chart-quick-tickers, .oi-finder-quick-symbols) button {
+  border-radius: 8px !important;
+}
+
+:root .app-shell.charts-workstation :is(.oi-chart-quick-tickers, .oi-finder-quick-symbols) button:hover {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #1c1c1f !important;
+}
+
+:root .app-shell.charts-workstation :is(.oi-chart-quick-tickers, .oi-finder-quick-symbols) button.is-active {
+  border-color: #0a84ff !important;
+  background: rgba(10, 132, 255, 0.22) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+/* timeframes: an iPhone-style segmented switch */
+:root .app-shell.charts-workstation .oi-finder-timeframes button {
+  border-radius: 7px !important;
+}
+
+:root .app-shell.charts-workstation .oi-finder-timeframes button.is-active {
+  background: #3a3a3c !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+/* round grey buttons (toolbar, chart actions, chain) */
+:root .app-shell.charts-workstation :is(.oi-chart-workspace-toggle, .oi-finder-chart-control, .chart-icon-action, .oi-finder-candle-countdown, .charts-oi-chain-side-toggle, .oi-finder-chart-actions > button),
+:root .app-shell.charts-workstation .oi-chart-layout-toolbar :is(summary, select),
+:root .app-shell.charts-workstation .charts-oi-tos-chain header button {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 9px !important;
+  background: #2c2c2e !important;
+}
+
+:root .app-shell.charts-workstation :is(.oi-chart-workspace-toggle, .oi-finder-chart-control, .chart-icon-action, .charts-oi-chain-side-toggle, .oi-finder-chart-actions > button):hover {
+  border-color: rgba(10, 132, 255, 0.6) !important;
+  background: #3a3a3c !important;
+}
+
+:root .app-shell.charts-workstation .oi-chart-workspace-toggle.is-active {
+  border-color: #0a84ff !important;
+  background: rgba(10, 132, 255, 0.22) !important;
+  box-shadow: none !important;
+}
+
+/* the coloured action buttons (Mag7, alert, ROI, save) keep their colour */
+:root .app-shell.charts-workstation :is(.oi-chart-mag7-preset, .oi-finder-chart-alert, .oi-finder-chart-roi, .oi-chart-workspace-save) {
+  border-radius: 9px !important;
+}
+
+:root .app-shell.charts-workstation .oi-finder-chart-actions > .oi-finder-chart-alert {
+  background: rgba(72, 53, 11, 0.4) !important;
+}
+
+:root .app-shell.charts-workstation .oi-finder-chart-actions > .oi-finder-chart-roi {
+  background: rgba(10, 60, 32, 0.55) !important;
+}
+
+:root .app-shell.charts-workstation :is(.oi-chart-layout-menu, .charts-oi-chain-add-menu) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 14px !important;
+  background: #1c1c1f !important;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* chart header: ticker box and name strip */
+:root .app-shell.charts-workstation .oi-finder-chart-card input {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 8px !important;
+  background: #1c1c1f !important;
+}
+
+:root .app-shell.charts-workstation .ticker-identity-strip {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  border-radius: 8px !important;
+  background: #1c1c1f !important;
+}
+
+/* option chain beside the chart */
+:root .app-shell.charts-workstation .charts-oi-tos-chain,
+:root .app-shell.charts-workstation .high-oi-panel {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  background: #0b0b0d !important;
+}
+
+:root .app-shell.charts-workstation :is(.charts-oi-chain-view-tabs, .high-oi-stats) {
+  background: #141416 !important;
+}
+
+:root .app-shell.charts-workstation .charts-oi-chain-view-tabs button {
+  border-color: transparent !important;
+  border-radius: 8px !important;
+  background: #2c2c2e !important;
+}
+
+:root .app-shell.charts-workstation .charts-oi-chain-view-tabs button.is-active {
+  border-color: #0a84ff !important;
+  background: rgba(10, 132, 255, 0.22) !important;
+  color: #ffffff !important;
+}
+
+:root .app-shell.charts-workstation :is(.charts-oi-tos-chain, .high-oi-panel) th {
+  background: #141416 !important;
+  color: #8e8e93 !important;
+}
+
+:root .app-shell.charts-workstation .high-oi-panel td {
+  border-color: rgba(255, 255, 255, 0.04) !important;
+}
+
+/* OI levels bar under the chart */
+:root .app-shell.charts-workstation .oi-finder-oi-level-overlay {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 12px !important;
+  background: rgba(28, 28, 31, 0.95) !important;
+}
+
+:root .app-shell.charts-workstation .oi-finder-oi-level-strip > span {
+  border-radius: 10px !important;
+}
+
+/* chart scrollbar */
+:root .app-shell.charts-workstation .oi-chart-scrollbar {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  background: #0b0b0d !important;
+}
+
+:root .app-shell.charts-workstation .oi-chart-scrollbar-arrow {
+  background: #1c1c1f !important;
+}
