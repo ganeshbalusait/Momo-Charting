@@ -32,7 +32,7 @@ e2eTest("C/P Levels shows the LIVE ticker, ATM STRIKE and EXP RANGE banner", asy
   await withApp({ view: "Quick Options", fakeReads }, async (app) => {
     const title = app.page.locator('[data-testid="mobile-quick-options"] .mobile-quick-options-title b');
     await title.waitFor({ state: "visible", timeout: 60_000 });
-    const symbol = (await title.innerText()).replace(" LIVE CHAIN", "").trim();
+    const symbol = (await title.innerText()).replace(/ live chain$/i, "").trim();
     await app.page.locator('[data-testid="mobile-options-section-levels"]').click();
     const banner = app.page.locator(BANNER);
     await banner.waitFor({ state: "visible", timeout: 30_000 });

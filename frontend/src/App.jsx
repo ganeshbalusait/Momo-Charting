@@ -5533,8 +5533,8 @@ function MobileQuickOptionsBoard({
     <section className="mobile-quick-options" data-testid="mobile-quick-options" aria-label={`${requestedTicker || "Ticker"} fast option chain`}>
       <header className="mobile-quick-options-header">
         <div className="mobile-quick-options-title">
-          <span>FAST OPTIONS</span>
-          <div><b>{requestedTicker || "TICKER"} LIVE CHAIN</b><i className={isChainFeedFresh(data) ? "is-live" : ""} /></div>
+          <span>Fast options</span>
+          <div><b>{requestedTicker || "Ticker"} live chain</b><i className={isChainFeedFresh(data) ? "is-live" : ""} /></div>
           <small>{expiry ? `${formatExpiryEastern(expiry)} · ${currentAtm?.daysToExpiration ?? "--"} DTE` : "Loading nearest expiry"}</small>
         </div>
         <div className="mobile-quick-options-search" role="search">

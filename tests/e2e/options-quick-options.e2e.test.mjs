@@ -14,7 +14,7 @@ const RAIL = `${BOARD} nav[aria-label="Fast option tickers"]`;
 const FAST_INPUT = `${BOARD} input[aria-label="Fast option ticker"]`;
 const RESEARCH = { "GET /api/oi-finder": (read) => chainReply(read, { researchSection: new URLSearchParams(read.search).get("section") || "" }) };
 
-const heading = async (page) => (await page.locator(TITLE).innerText()).replace(" LIVE CHAIN", "").trim();
+const heading = async (page) => (await page.locator(TITLE).innerText()).replace(/ live chain$/i, "").trim();
 
 async function ready(page) {
   await page.locator(TITLE).waitFor({ state: "visible", timeout: 60_000 });
@@ -24,7 +24,7 @@ async function ready(page) {
 e2eTest("on a phone Quick Options opens on the live chain with the active rail ticker marked", async () => {
   await withApp({ view: "Quick Options", viewport: PHONE, fakeReads: { ...CHAIN_READS, ...RESEARCH } }, async (app) => {
     await ready(app.page);
-    assert.equal(await app.page.locator(`${BOARD} .mobile-quick-options-title span`).innerText(), "FAST OPTIONS");
+    assert.equal(await app.page.locator(`${BOARD} .mobile-quick-options-title span`).innerText(), "Fast options");
     const symbol = await heading(app.page);
     assert.match(await app.page.locator(`${BOARD} .mobile-quick-options-title small`).innerText(), / · 2 DTE$/);
     const active = app.page.locator(`${RAIL} button[aria-current="true"]`);
