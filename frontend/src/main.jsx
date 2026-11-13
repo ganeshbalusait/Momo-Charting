@@ -6,6 +6,8 @@ import { installPhoneLayoutDiagnostics, isDiagnosticsRequested } from "./phoneLa
 import { installUpdateWatch } from "./appVersion";
 import "./index.css";
 import "./theme.css";
+// Marks <html> with the screens that have the new look (the Scanner).
+import "./theme.js";
 
 // Register the network-only worker so Chrome offers "Install AGX" again
 // (trader, 2026-09-01: the address-bar install button had disappeared).

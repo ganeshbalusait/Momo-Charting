@@ -272,7 +272,6 @@ import {
   updateChartPayloadWithQuote,
 } from "./oiChartDelta";
 import { createChartRequestOwners } from "./chartRequestOwners.js";
-import ThemeSwitch from "./ThemeSwitch.jsx";
 import { optionExpiryDte } from "./optionExpiry";
 import { latestUsableHeatmapDay } from "./oiHeatmapDay";
 import { mergeDailyAndChartOhlcDays, pivotPointsSourcePeriod } from "./pivotPeriods";
@@ -29731,7 +29730,6 @@ function TradingWorkspace({ authUser, onLogout }) {
               {!authUser.mustChangePassword && (
                 <button className="header-icon-button" onClick={() => setActiveView("Learn + Setup")} title="Learn how to use AGX" aria-label="Learn how to use AGX" type="button"><HelpCircle size={18} /></button>
               )}
-              <ThemeSwitch />
               <button className="header-icon-button" onClick={() => setActiveView("Settings")} title="Settings" aria-label="Settings" type="button"><Settings size={18} /></button>
               <GlobalPriceAlertCenter
                 defaultSymbol={oiFinderSymbol || selectedSymbol}
@@ -32546,7 +32544,6 @@ function TradingWorkspace({ authUser, onLogout }) {
                   </button>
                 );
               })}
-              <ThemeSwitch variant="menu" />
             </div>
           </div>
         </div>

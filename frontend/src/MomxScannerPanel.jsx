@@ -7331,6 +7331,17 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
                     : <>{sector.up} of {sector.total} up &ge;{SECTOR_MOVE_PCT}%</>}
                 </span>
                 <span className="momx-sector-avg">avg {avg}</span>
+                {/* Every ticker of the sector with its move (2026-11-13), so
+                    the card says which sector AND which tickers. */}
+                {Array.isArray(sector.members) && sector.members.length > 0 ? (
+                  <span className="momx-sector-tickers" data-testid="momx-sector-tickers">
+                    {(bear ? [...sector.members].reverse() : sector.members).map((member) => (
+                      <span key={member.symbol} className={"momx-sector-ticker " + (member.pct >= 0 ? "is-up" : "is-down")}>
+                        {member.symbol} <b>{(member.pct >= 0 ? "+" : "") + member.pct.toFixed(1)}</b>
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
                 {sector.cooled ? (
                   <span className="momx-sector-rs is-cooled">
                     was 🔥 · now {sector.today !== null ? (sector.today >= 0 ? "+" : "") + sector.today.toFixed(1) + "%" : "negative"} - cooled, no longer a bull sector today

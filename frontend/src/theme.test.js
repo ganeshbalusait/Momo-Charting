@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { THEME_COLORS, THEME_KEY, applyTheme, currentTheme, normalizeTheme, readStoredTheme, setTheme, subscribeTheme } from "./theme.js";
+import { SKIN_PREVIEW_PREFIX, THEME_COLORS, THEME_KEY, activeSkins, applySkins, applyTheme, currentTheme, normalizeTheme, readStoredTheme, setTheme, subscribeTheme } from "./theme.js";
 
 const memory = (seed = {}) => {
   const m = { ...seed };
@@ -109,4 +109,22 @@ test("a switch that mounts later reads the theme off the page, so blocked storag
 test("subscribing without a window is harmless", () => {
   const stop = subscribeTheme(() => {}, null);
   assert.doesNotThrow(stop);
+});
+
+// A screen's new look is switched on by a word in data-agx-skin on <html>.
+// 2026-11-13: the Scanner's dark look is live for everyone, whatever the
+// browser stored.
+test("the scanner look is on for every browser, whatever it stored", () => {
+  assert.equal(SKIN_PREVIEW_PREFIX, "agx.skin.");
+  for (const storage of [memory(), memory({ "agx.skin.scanner": "0" }), memory({ "agx.skin.scanner": "1" }), throwing, undefined]) {
+    assert.deepEqual(activeSkins(storage), ["scanner"]);
+  }
+  assert.deepEqual(activeSkins(memory({ "agx.skin.nonsense": "1" })), ["scanner"]);
+});
+
+test("applying skins writes the words on the page", () => {
+  const on = fakeDoc();
+  assert.deepEqual(applySkins({ doc: on, storage: memory() }), ["scanner"]);
+  assert.equal(on.attrs["data-agx-skin"], "scanner");
+  assert.deepEqual(applySkins({ doc: undefined, storage: memory() }), ["scanner"]);
 });

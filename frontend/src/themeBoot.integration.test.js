@@ -1,12 +1,13 @@
-// The start-up page sets the theme before the app loads, so there is no flash of
-// the wrong colours. This runs the real script out of index.html and checks it
-// agrees with theme.js on every input.
+// The start-up page marks the theme before the app loads, so there is no flash
+// of the wrong colours. Since 2026-11-13 the app is dark only: the script always
+// picks dark and forgets a Light choice made with the old switch. This runs the
+// real script out of index.html.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { THEME_COLORS, THEME_KEY, normalizeTheme } from "./theme.js";
+import { THEME_COLORS, THEME_KEY } from "./theme.js";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const match = html.match(/<script data-agx-theme-boot>([\s\S]*?)<\/script>/);
@@ -20,39 +21,36 @@ function boot({ stored, storageThrows = false, withMeta = true } = {}) {
     documentElement: { setAttribute: (k, v) => { attrs[k] = v; } },
     querySelector: (s) => (withMeta && s === 'meta[name="theme-color"]' ? meta : null),
   };
+  const store = stored === undefined ? {} : { [THEME_KEY]: stored };
   const localStorage = {
-    getItem(key) {
-      if (storageThrows) throw new Error("blocked");
-      return key === THEME_KEY && stored !== undefined ? stored : null;
-    },
+    getItem(key) { if (storageThrows) throw new Error("blocked"); return key in store ? store[key] : null; },
+    removeItem(key) { if (storageThrows) throw new Error("blocked"); delete store[key]; },
   };
   new Function("localStorage", "document", code)(localStorage, document);
-  return { theme: attrs["data-theme"], color: meta.content };
+  return { theme: attrs["data-theme"], color: meta.content, left: store[THEME_KEY] };
 }
 
-test("a stored light choice opens light with the light status bar", () => {
-  assert.deepEqual(boot({ stored: "light" }), { theme: "light", color: THEME_COLORS.light });
-});
-
-test("nothing stored opens dark", () => {
-  assert.deepEqual(boot(), { theme: "dark", color: THEME_COLORS.dark });
-});
-
-test("a stored value that is not a theme opens the same way theme.js reads it", () => {
-  for (const stored of ["LIGHT", "", "blue", "dark"]) {
-    assert.equal(boot({ stored }).theme, normalizeTheme(stored), `stored ${JSON.stringify(stored)}`);
+test("every start opens dark with the dark status bar, whatever was stored", () => {
+  for (const stored of [undefined, "light", "dark", "LIGHT", "", "blue"]) {
+    const seen = boot({ stored });
+    assert.equal(seen.theme, "dark", `stored ${JSON.stringify(stored)}`);
+    assert.equal(seen.color, THEME_COLORS.dark);
   }
 });
 
+test("a Light choice made with the old switch is forgotten", () => {
+  assert.equal(boot({ stored: "light" }).left, undefined);
+});
+
 test("blocked storage opens dark without an error", () => {
-  assert.deepEqual(boot({ storageThrows: true }), { theme: "dark", color: THEME_COLORS.dark });
+  assert.deepEqual(boot({ storageThrows: true }), { theme: "dark", color: THEME_COLORS.dark, left: undefined });
 });
 
-test("a page without the status-bar tag still gets its theme", () => {
-  assert.equal(boot({ stored: "light", withMeta: false }).theme, "light");
+test("a page without the status-bar tag still opens dark", () => {
+  assert.equal(boot({ withMeta: false }).theme, "dark");
 });
 
-test("the script reads the same storage key as theme.js", () => {
+test("the script clears the same storage key theme.js uses", () => {
   assert.ok(code && code.includes(`"${THEME_KEY}"`));
 });
 

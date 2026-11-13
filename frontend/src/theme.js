@@ -72,3 +72,40 @@ export function subscribeTheme(listener, win = globalThis.window) {
     win?.removeEventListener?.("storage", onStorage);
   };
 }
+
+// ---- per-screen skins (clean look, release 2 onwards) -----------------------
+// A screen's new look is switched on by its word in data-agx-skin on <html>
+// (theme.css: :root[data-agx-skin~="scanner"] ...). The mark sits on <html>, not
+// on the screen's own element, because a screen's menus and dialogs are drawn
+// outside it (portals) and must follow the same switch.
+//  - LIVE_SKINS: screens whose new look everyone gets.
+//  - PREVIEW_SKINS: screens still being built; on only in a browser that stored
+//    agx.skin.<name> = "1". Going live = moving the word to LIVE_SKINS.
+export const SKIN_PREVIEW_PREFIX = "agx.skin.";
+// 2026-11-13: the dark Scanner look is on for everyone (Ganesh: "Build it now").
+const LIVE_SKINS = ["scanner"];
+const PREVIEW_SKINS = [];
+
+export function activeSkins(storage = defaultStorage()) {
+  const previews = PREVIEW_SKINS.filter((name) => {
+    try {
+      return storage?.getItem(SKIN_PREVIEW_PREFIX + name) === "1";
+    } catch {
+      return false;
+    }
+  });
+  return [...LIVE_SKINS, ...previews];
+}
+
+export function applySkins({ doc = globalThis.document, storage = defaultStorage() } = {}) {
+  const skins = activeSkins(storage);
+  const root = doc?.documentElement;
+  if (!root) return skins;
+  if (skins.length) root.setAttribute("data-agx-skin", skins.join(" "));
+  else root.removeAttribute?.("data-agx-skin");
+  return skins;
+}
+
+// Marked once, as soon as the app's code loads (before the first paint of any
+// screen). No page in a unit test, so this is a no-op there.
+if (typeof document !== "undefined") applySkins();

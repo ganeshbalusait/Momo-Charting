@@ -225,3 +225,30 @@ test("sector boxes carry the sector's own today / 3-day move (no SPY)", () => {
     sectorRotation: { hot: false, late: true, rs3: 3.9, ret3: 4.7, today: 3.2, up: 5, total: 6 } }]);
   expect([g.late, g.today, g.ret3]).toEqual([true, 3.2, 4.7]);
 });
+
+// 2026-11-13 (clean look): every sector card lists its tickers, so he can see
+// which sector and which tickers at a glance.
+describe("sectorRollup members", () => {
+  test("lists every priced ticker of the sector with its move, strongest first", () => {
+    const [group] = sectorRollup([
+      { symbol: "AMD", industry: "Semis", pctChange: 2.4 },
+      { symbol: "INTC", industry: "Semis", pctChange: -0.6 },
+      { symbol: "NVDA", industry: "Semis", pctChange: 3.1 },
+      { symbol: "MU", industry: "Semis", pctChange: null },
+    ]);
+    expect(group.members).toEqual([
+      { symbol: "NVDA", pct: 3.1 },
+      { symbol: "AMD", pct: 2.4 },
+      { symbol: "INTC", pct: -0.6 },
+    ]);
+  });
+
+  test("a ticker listed twice on the board appears once", () => {
+    const [group] = sectorRollup([
+      { symbol: "NVDA", industry: "Semis", pctChange: 3.1 },
+      { symbol: "NVDA", industry: "Semis", pctChange: 3.1 },
+      { symbol: "AMD", industry: "Semis", pctChange: 2.4 },
+    ]);
+    expect(group.members.map((m) => m.symbol)).toEqual(["NVDA", "AMD"]);
+  });
+});

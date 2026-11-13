@@ -33,10 +33,10 @@
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" />
     <meta name="theme-color" content="#0c0c0d" />
-    <!-- Dark / Light theme. Must stay ahead of the app bundle: it marks the page
-         before anything paints, so a Light choice never flashes dark first.
-         Same key and rule as src/theme.js (themeBoot.integration.test.js). -->
-    <script data-agx-theme-boot>(function(){var t="dark";try{if(localStorage.getItem("agx.theme")==="light")t="light";}catch(e){}document.documentElement.setAttribute("data-theme",t);var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute("content",t==="light"?"#f5f5f7":"#000000");})();</script>
+    <!-- Dark only (2026-11-13: Ganesh dropped Light). Marks the page dark before
+         anything paints and forgets a Light choice made with the old switch.
+         Checked by src/themeBoot.integration.test.js. -->
+    <script data-agx-theme-boot>(function(){try{localStorage.removeItem("agx.theme");}catch(e){}document.documentElement.setAttribute("data-theme","dark");var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute("content","#000000");})();</script>
 
     <!-- iOS reads these, not the manifest, to decide standalone. Status bar is
          "black" rather than "black-translucent" deliberately: translucent draws

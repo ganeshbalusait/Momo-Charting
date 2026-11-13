@@ -540,7 +540,7 @@ export function sectorRollup(rows, options) {
     if (raw === null || raw === undefined || raw === "") continue;
     const change = Number(raw);
     if (!Number.isFinite(change)) continue;
-    const group = groups.get(name) || { name, total: 0, up: 0, sum: 0, rotation: null };
+    const group = groups.get(name) || { name, total: 0, up: 0, sum: 0, rotation: null, members: new Map() };
     // The scanner's sector-rotation verdict (momx/sectors.py) rides on every
     // row of the group; it is judged on the WHOLE universe, not just the rows
     // on screen, so it is copied, never recomputed here.
@@ -549,6 +549,8 @@ export function sectorRollup(rows, options) {
     }
     group.total += 1;
     group.sum += change;
+    // Every ticker of the sector, for the sector card (2026-11-13).
+    if (typeof row.symbol === "string" && row.symbol && !group.members.has(row.symbol)) group.members.set(row.symbol, change);
     if (change >= threshold) group.up += 1;
     groups.set(name, group);
   }
@@ -572,6 +574,7 @@ export function sectorRollup(rows, options) {
         rs3: Number.isFinite(rs3) ? rs3 : null,
         volUp: rotation && Number.isFinite(Number(rotation.volUp)) ? Number(rotation.volUp) : null,
         leaders: rotation && Array.isArray(rotation.leaders) ? rotation.leaders : [],
+        members: [...group.members].map(([symbol, pct]) => ({ symbol, pct })).sort((a, b) => b.pct - a.pct),
         // The sector's OWN moves (no SPY), the way his Sector ETFs sheet reads.
         ret3: rotation && rotation.ret3 !== null && Number.isFinite(Number(rotation.ret3)) ? Number(rotation.ret3) : null,
         today: rotation && rotation.today !== null && Number.isFinite(Number(rotation.today)) ? Number(rotation.today) : null,

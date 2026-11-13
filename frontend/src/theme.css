@@ -14,6 +14,9 @@
    rule for them is !important.
    ===================================================================== */
 
+/* The MomX Scanner's colours, written by scripts/gen_scanner_light_skin.mjs. */
+@import "./theme.scanner.dark.css";
+
 :root {
   --agx-bg: #000000;
   --agx-card: #1c1c1e;
@@ -214,4 +217,437 @@
    their own dark background until they are converted. */
 :root[data-theme="light"] body:not(.is-trading-popout) {
   background: var(--agx-bg);
+}
+
+/* ================================================================== scanner
+   MomX Scanner (release 2). Switched on by the word "scanner" in data-agx-skin
+   on <html> (theme.js), which also reaches the scanner's menus and dialogs that
+   are drawn outside the panel.
+
+   Row height, paddings and column widths are NOT touched here: the number of
+   rows on screen must stay what it was (30 at 1920x1080, 8 on a 375 px phone).
+
+   Signal colours (cyan / magenta cells, grades, RVOL / SQZ / Skittles fills)
+   keep today's values in dark. In light, a signal colour used as TEXT gets a
+   darker shade of the same hue; solid fills keep their fill.
+   ========================================================================== */
+
+:root {
+  --agx-sig-up: #22d3ee;
+  --agx-sig-down: #f472d0;
+  --agx-sig-amber: #fbbf24;
+}
+
+:root[data-theme="light"] {
+  --agx-sig-up: #0e7490;
+  --agx-sig-down: #a21caf;
+  --agx-sig-amber: #8a5a00;
+}
+
+/* The scanner's own short colour list, re-pointed at the shared one. Most of
+   the scanner's rules read these names, so this block does most of the work. */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel,
+:root[data-agx-skin~="scanner"] .momx-picker-overlay,
+:root[data-agx-skin~="scanner"] .momx-news-overlay,
+:root[data-agx-skin~="scanner"] .momx-filters-overlay,
+:root[data-agx-skin~="scanner"] .momo-settings-overlay,
+:root[data-agx-skin~="scanner"] .momx-setup-picker,
+:root[data-agx-skin~="scanner"] .momx-colmenu,
+:root[data-agx-skin~="scanner"] .momx-popout-window {
+  --momx-ui-font: var(--agx-font);
+  --momx-num-font: var(--agx-font);
+  --momx-line: var(--agx-line-soft);
+  --momx-line-strong: var(--agx-line);
+  --momx-surface: var(--agx-card);
+  --momx-row: var(--agx-card);
+  --momx-row-alt: var(--agx-card);
+  --momx-row-hover: var(--agx-raised);
+  --momx-ink: var(--agx-text);
+  --momx-ink-dim: var(--agx-text-2);
+  --momx-up: var(--agx-sig-up);
+  --momx-down: var(--agx-sig-down);
+  font-variant-numeric: tabular-nums;
+}
+
+/* What shows around the scanner panel. */
+:root[data-theme="light"][data-agx-skin~="scanner"] .momx-scanner-view {
+  background: var(--agx-bg);
+}
+
+/* The page area around the scanner (the app's dark frame shows as a strip
+   beside and under the view otherwise). */
+:root[data-theme="light"][data-agx-skin~="scanner"] .app-shell.charts-workstation > .workspace:has(> .momx-scanner-view) {
+  background: var(--agx-bg);
+}
+
+/* Industry pills take their colour from the industry (set per row). On white
+   the pastel is mixed toward black so the name stays readable. */
+:root[data-theme="light"][data-agx-skin~="scanner"] .momx-scanner-panel .momx-industry-pill {
+  color: color-mix(in srgb, var(--momx-pill, #4cc9f0) 38%, #000);
+  border-color: color-mix(in srgb, var(--momx-pill, #4cc9f0) 55%, #000 20%);
+}
+
+/* Small count badges sit on a tinted button: plain ink reads best. */
+:root[data-theme="light"][data-agx-skin~="scanner"] .momx-scanner-panel .momx-bull .momx-side-count,
+:root[data-theme="light"][data-agx-skin~="scanner"] .momx-scanner-panel .momx-bull .momx-side-count-other,
+:root[data-theme="light"][data-agx-skin~="scanner"] .momx-scanner-panel .momx-bolt-count,
+:root[data-theme="light"][data-agx-skin~="scanner"] .momx-scanner-panel .momx-news-count {
+  color: var(--agx-text);
+  opacity: 1;
+}
+
+/* One font for the scanner and everything it opens. Several of its dialogs
+   name their own font, so this is said once, firmly, for all of them. */
+:root[data-agx-skin~="scanner"] :is(.momx-scanner-panel, .momx-picker-overlay, .momx-news-overlay, .momx-filters-overlay, .momo-settings-overlay, .momx-popout-window, .momx-colmenu, .momx-picker, .momx-setup-picker, .momx-filters, .momo-alert-banner, .scanner-day-nav),
+:root[data-agx-skin~="scanner"] :is(.momx-scanner-panel, .momx-picker-overlay, .momx-news-overlay, .momx-filters-overlay, .momo-settings-overlay, .momx-popout-window, .momx-colmenu, .momx-picker, .momx-setup-picker, .momx-filters, .momo-alert-banner, .scanner-day-nav) * {
+  font-family: var(--agx-font) !important;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Quiet labels that were too faint to read (footnote, "since" time, empty
+   spread, sector arrow, list count, the card's drag hint): the shared second
+   text colour, in both themes. */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-footnote,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-since,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-cell.momx-spreadcol.is-none,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-mark,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-tab-count,
+:root[data-agx-skin~="scanner"] .momx-popout-titlebar > span,
+:root[data-agx-skin~="scanner"] .scanner-day-nav .scanner-day-count {
+  color: var(--agx-text-2);
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector.is-clean .momx-sector-mark {
+  color: var(--agx-sig-amber);
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-filters-badge {
+  color: var(--agx-text);
+}
+
+/* NEW sits on the cyan signal fill, which is darker in light. */
+:root[data-theme="light"][data-agx-skin~="scanner"] .momx-scanner-panel .momx-new-tag {
+  color: #ffffff;
+}
+
+:root[data-theme="light"][data-agx-skin~="scanner"] .momx-filters .momx-filters-gcount {
+  color: var(--agx-text);
+}
+
+/* ======================================================= scanner, dark modern
+   2026-11-13: Ganesh wants dark only, with a clearly new look (mock-up "AGX
+   Dark Modern"). Near-black page, soft grey cards with rounded corners, pill
+   buttons, iPhone-style switches, Inter. Sizes and row height are NOT changed
+   (rows on screen must not drop). Signal colours are untouched. */
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel,
+:root[data-agx-skin~="scanner"] .momx-picker-overlay,
+:root[data-agx-skin~="scanner"] .momx-news-overlay,
+:root[data-agx-skin~="scanner"] .momx-filters-overlay,
+:root[data-agx-skin~="scanner"] .momo-settings-overlay,
+:root[data-agx-skin~="scanner"] .momx-setup-picker,
+:root[data-agx-skin~="scanner"] .momx-colmenu,
+:root[data-agx-skin~="scanner"] .momx-popout-window {
+  --agx-font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --momx-ui-font: var(--agx-font);
+  --momx-num-font: var(--agx-font);
+  --momx-surface: #050506;
+  --momx-row: #141416;
+  --momx-row-alt: #141416;
+  --momx-row-hover: #1c1c1f;
+  --momx-line: rgba(255, 255, 255, 0.05);
+  --momx-line-strong: rgba(255, 255, 255, 0.09);
+  --momx-ink: #f5f5f7;
+  --momx-ink-dim: #8e8e93;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-view,
+:root[data-agx-skin~="scanner"] .app-shell.charts-workstation > .workspace:has(> .momx-scanner-view) {
+  background: #050506;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel {
+  border-color: transparent;
+  background: #050506;
+}
+
+/* the board itself: one soft card */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-table-scroll {
+  border-color: rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  background: #141416;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-group-row th {
+  background: #141416;
+  color: #636366;
+  letter-spacing: 0.12em;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-group-label {
+  color: #8e8e93;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th.momx-col-symbol {
+  background: #141416;
+  color: #8e8e93;
+  font-weight: 600;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th.is-sortable:hover {
+  color: #f5f5f7;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th.is-sorted {
+  color: #4da3ff;
+}
+
+/* iPhone-style switches (Live / History, Bull / Bear, timeframes) */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-seg {
+  border-color: transparent;
+  border-radius: 10px;
+  background: #1c1c1f;
+  padding: 2px;
+  gap: 2px;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-segbtn {
+  border-radius: 8px;
+  background: transparent;
+  color: #a1a1a6;
+  font-weight: 600;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-segbtn.is-active {
+  background: #3a3a3c;
+  color: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* list picker, buttons, inputs */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-listbtn {
+  border-color: transparent;
+  border-radius: 10px;
+  background: #1c1c1f;
+  color: #f5f5f7;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-listbtn.is-open,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-listbtn:hover {
+  border-color: rgba(10, 132, 255, 0.45);
+  color: #ffffff;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-btn,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-news-btn,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-find-btn,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-industry-toggle,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-bolt-view {
+  border-radius: 999px;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-btn,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-icon-btn,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-industry-toggle {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #1c1c1f;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-icon-btn {
+  border-radius: 9px;
+  color: #a1a1a6;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-btn:hover:not(:disabled),
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-icon-btn:hover:not(:disabled) {
+  border-color: rgba(10, 132, 255, 0.45);
+  background: #232326;
+  color: #ffffff;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-btn.is-primary {
+  border-color: rgba(10, 132, 255, 0.45);
+  background: rgba(10, 132, 255, 0.16);
+  color: #7cbcff;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-universe-input {
+  border-color: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: #141416;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-universe-input:focus {
+  border-color: #0a84ff;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-toggle input {
+  accent-color: #30d158;
+}
+
+/* sector strip */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector {
+  border-radius: 10px;
+  background: #141416;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector:hover,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector.is-active {
+  background: #1c1c1f;
+}
+
+/* dialogs and the ticker card: the same soft card */
+:root[data-agx-skin~="scanner"] .momx-picker,
+:root[data-agx-skin~="scanner"] .momx-filters,
+:root[data-agx-skin~="scanner"] .momx-colmenu,
+:root[data-agx-skin~="scanner"] .momx-setup-picker,
+:root[data-agx-skin~="scanner"] .momx-popout-window {
+  border-color: rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: #141416;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+/* An empty spread cell shows "-": quiet, but readable on the card. */
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel td.momx-cell.momx-spreadcol.is-none {
+  color: #8e8e93;
+}
+
+/* Inter is a little wider than the old font; Apple-style buttons use normal
+   letter spacing, which also gives the ticker box its room back. */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel :is(.momx-btn, .momx-universe-label, .momx-universe-input) {
+  letter-spacing: 0;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-btn {
+  font-weight: 600;
+}
+
+/* ---- sector cards (2026-11-13): one card per sector, its tickers inside ---- */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sectors {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 10px;
+  margin: 6px 0 4px;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background: #141416;
+  font-size: 13px;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector:hover {
+  background: #1c1c1f;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector.is-active {
+  border-color: #0a84ff;
+  background: #1c1c1f;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector.is-hot {
+  border-color: rgba(255, 159, 10, 0.6);
+  box-shadow: 0 0 0 1px rgba(255, 159, 10, 0.25);
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector.is-late {
+  border-style: dashed;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-mark { order: 0; }
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-name {
+  order: 1;
+  color: #f5f5f7;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-avg {
+  order: 3;
+  margin-left: auto;
+  color: #f5f5f7;
+  font-weight: 700;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-count {
+  order: 2;
+  color: #8e8e93;
+  font-size: 12px;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-rs { order: 4; flex-basis: 100%; }
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-leaders { order: 5; flex-basis: 100%; }
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-tickers {
+  order: 6;
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-ticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 7px;
+  background: #1f1f22;
+  color: #f5f5f7;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-ticker b { font-weight: 600; }
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-ticker.is-up b { color: #22d3ee; }
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-ticker.is-down b { color: #f472d0; }
+
+/* Phone: one swipe row of cards, each ticker list on one line, so the board
+   keeps its rows. */
+@media (max-width: 760px) {
+  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sectors {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector {
+    flex: 0 0 340px;
+    flex-wrap: nowrap;
+    padding: 6px 10px;
+  }
+
+  /* one line: name, average, then the tickers (swipe inside the card) */
+  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-count {
+    display: none;
+  }
+
+  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-avg {
+    margin-left: 0;
+  }
+
+  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-tickers {
+    flex: 1 1 auto;
+    flex-basis: auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+
+  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-rs,
+  :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-leaders {
+    display: none;
+  }
 }
