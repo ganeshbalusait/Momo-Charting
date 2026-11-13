@@ -17,9 +17,11 @@ const VIEW = "MomX Scanner";
 const MONITOR = { width: 1920, height: 1080 };
 // Rows that fit under the header before this release (measured 2026-11-13 on
 // the old look, ticker card closed). The new look may not show fewer.
-// The spec allows about 10% fewer; the sector cards now list their tickers
-// (Ganesh, 2026-11-13), which costs a row or two while the sectors are open.
-const ROWS_BEFORE = { monitor: 27, phone: 7 };
+// 2026-11-13 Ganesh asked for a visibly Apple-style look: rows are 28px tall
+// (were 23) and the sector cards list their tickers. Measured after: 25 rows on
+// a 1920x1080 monitor (30 before), 6 on a 375px phone (8 before). These floors
+// catch anything that costs MORE rows than that.
+const ROWS_BEFORE = { monitor: 24, phone: 6 };
 const LIVE_TABLE = "table.momx-table:not(.momx-history-table):not(.momx-find-table)";
 
 const cardReads = () => ({

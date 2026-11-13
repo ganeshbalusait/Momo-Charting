@@ -651,3 +651,76 @@
     display: none;
   }
 }
+
+/* =========================================================== Apple style, app-wide
+   2026-11-13 ("Where is apple style?"): visible changes everywhere, dark only.
+   1. One font for the whole app: Inter (Apple's SF where it exists), with
+      even-width numbers so prices and strikes still line up. Replaces the
+      typewriter-style Cascadia Mono. The chart's own drawing is not affected. */
+:root {
+  --terminal-font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --momox-ui-font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --momox-mono-font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --agx-font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+}
+
+body {
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 2. Left menu: the page you are on is a soft blue tile. */
+.app-shell.charts-workstation .sidebar.agx-skin nav .nav-item {
+  border-radius: 12px;
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin nav .nav-item.nav-active {
+  background: rgba(10, 132, 255, 0.18);
+  color: #4da3ff;
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin nav .nav-item.nav-active .nav-icon {
+  color: #4da3ff;
+}
+
+/* 3. Scanner: more air, sentence-case rounded buttons, softer tags. */
+:root[data-agx-skin~="scanner"] .momx-scanner-panel {
+  --momx-row-height: 28px;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-table td {
+  font-size: 12.5px;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel :is(.momx-toolbar, .momx-toolbar-stats, .momx-universe-form, .momx-industry-bar) :is(button, label, span, b) {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel :is(.momx-toolbar, .momx-universe-form, .momx-toolbar-stats) button {
+  min-height: 28px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-industry-toggle {
+  min-height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th,
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-group-row th {
+  text-transform: none;
+}
+
+:root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th {
+  font-size: 11.5px;
+}
+
+:is(.momx-scanner-panel, .momx-setup-picker) .momx-strategy-tag {
+  border-radius: 6px;
+  font-weight: 600;
+}
