@@ -272,6 +272,7 @@ import {
   updateChartPayloadWithQuote,
 } from "./oiChartDelta";
 import { createChartRequestOwners } from "./chartRequestOwners.js";
+import ThemeSwitch from "./ThemeSwitch.jsx";
 import { optionExpiryDte } from "./optionExpiry";
 import { latestUsableHeatmapDay } from "./oiHeatmapDay";
 import { mergeDailyAndChartOhlcDays, pivotPointsSourcePeriod } from "./pivotPeriods";
@@ -29567,7 +29568,7 @@ function TradingWorkspace({ authUser, onLogout }) {
     // charts-workstation is applied on every view: the whole product uses the
     // compact MomoX3-style terminal chrome, not just the chart pages.
     <div className={`app-shell charts-workstation${sidebarCollapsed ? " sidebar-collapsed" : ""}${chartsAndOiPageActive ? " is-chart-view" : ""}${quickOptionsPageActive ? " is-fast-options-view" : ""}${chartsAndOiPageActive && mobileChartSection === "chart" ? " is-chart-tab" : ""}${chartsAndOiPageActive && mobileChartSection === "options" ? " is-options-tab" : ""}`} data-testid="app-shell">
-      <aside className="sidebar" data-testid="primary-navigation" aria-label="Primary navigation">
+      <aside className="sidebar agx-skin" data-testid="primary-navigation" aria-label="Primary navigation">
         <div className="brand">
           <div className="brand-mark"><AgxMark size={18} /></div>
           <div className="brand-copy">
@@ -29646,7 +29647,7 @@ function TradingWorkspace({ authUser, onLogout }) {
       />
 
       <main className="workspace">
-        <header className="topbar trading-header">
+        <header className="topbar trading-header agx-skin">
           <div className="market-strip">
             <span className={`market-open-pill tone-${statusTone(dashboard.status.marketStatus)}`}>
               <i />{`MARKET ${String(dashboard.status.marketStatus || "Closed").toUpperCase()}`}
@@ -29730,6 +29731,7 @@ function TradingWorkspace({ authUser, onLogout }) {
               {!authUser.mustChangePassword && (
                 <button className="header-icon-button" onClick={() => setActiveView("Learn + Setup")} title="Learn how to use AGX" aria-label="Learn how to use AGX" type="button"><HelpCircle size={18} /></button>
               )}
+              <ThemeSwitch />
               <button className="header-icon-button" onClick={() => setActiveView("Settings")} title="Settings" aria-label="Settings" type="button"><Settings size={18} /></button>
               <GlobalPriceAlertCenter
                 defaultSymbol={oiFinderSymbol || selectedSymbol}
@@ -32544,6 +32546,7 @@ function TradingWorkspace({ authUser, onLogout }) {
                   </button>
                 );
               })}
+              <ThemeSwitch variant="menu" />
             </div>
           </div>
         </div>

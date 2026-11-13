@@ -1,0 +1,217 @@
+/* =====================================================================
+   AGX clean look (2026-11-12). One short colour list and one font, in a
+   dark and a light value, chosen by data-theme on <html> (set in index.html
+   before the app mounts, kept in step by theme.js).
+
+   THE RULE: the new look applies only inside an element carrying .agx-skin.
+   Nothing outside it may change in either theme: do not set color,
+   background or font-family on :root or body here (the one exception is the
+   light page background at the bottom). Screens are converted one at a time
+   by adding .agx-skin to their root and their rules to this file.
+
+   Selectors start with .app-shell.charts-workstation because index.css
+   restyles the strip and rail at that strength (0,3,0 and up), and its font
+   rule for them is !important.
+   ===================================================================== */
+
+:root {
+  --agx-bg: #000000;
+  --agx-card: #1c1c1e;
+  --agx-raised: #2c2c2e;
+  --agx-line: #38383a;
+  --agx-line-soft: #2a2a2c;
+  --agx-text: #f5f5f7;
+  --agx-text-2: #a1a1a6;
+  --agx-accent: #0071e3;
+  --agx-up: #30d158;
+  --agx-down: #ff453a;
+  --agx-warn: #ffd60a;
+  --agx-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+}
+
+:root[data-theme="light"] {
+  --agx-bg: #f5f5f7;
+  --agx-card: #ffffff;
+  --agx-raised: #ececf0;
+  --agx-line: #d9d9de;
+  --agx-line-soft: #ececf0;
+  --agx-text: #1d1d1f;
+  --agx-text-2: #636366;
+  --agx-up: #1b7f37;
+  --agx-down: #d70015;
+  --agx-warn: #8a5a00;
+}
+
+/* Font. The price-alert panel opens inside the top strip but is not converted
+   yet, so it keeps its own font and colours. */
+.app-shell.charts-workstation .agx-skin,
+.app-shell.charts-workstation .topbar.trading-header.agx-skin,
+.app-shell.charts-workstation .agx-skin *:not(.global-price-alert-center *) {
+  font-family: var(--agx-font) !important;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- top strip */
+
+.app-shell.charts-workstation .topbar.trading-header.agx-skin {
+  border-bottom-color: var(--agx-line);
+  background: var(--agx-bg);
+}
+
+.app-shell.charts-workstation .agx-skin .market-strip {
+  border-bottom-color: var(--agx-line-soft);
+  color: var(--agx-text-2);
+}
+
+.app-shell.charts-workstation .agx-skin .market-open-pill,
+.app-shell.charts-workstation .agx-skin .market-open-pill.tone-negative {
+  border-color: var(--agx-line);
+  border-radius: 999px;
+  background: var(--agx-card);
+  color: var(--agx-text);
+  font-weight: 600;
+}
+
+.app-shell.charts-workstation .agx-skin .market-open-pill i {
+  background: var(--agx-text-2);
+  box-shadow: none;
+}
+
+.app-shell.charts-workstation .agx-skin .market-open-pill.tone-green i {
+  background: var(--agx-up);
+}
+
+.app-shell.charts-workstation .agx-skin .market-open-pill.tone-negative i {
+  background: var(--agx-down);
+}
+
+.app-shell.charts-workstation .agx-skin .market-clock,
+.app-shell.charts-workstation .agx-skin .market-clock * {
+  color: var(--agx-text);
+}
+
+.app-shell.charts-workstation .agx-skin .session-tape span,
+.app-shell.charts-workstation .agx-skin .session-tape b,
+.app-shell.charts-workstation .agx-skin .last-scan-label,
+.app-shell.charts-workstation .agx-skin .connection-state,
+.app-shell.charts-workstation .agx-skin .connection-state .login-countdown {
+  color: var(--agx-text-2);
+}
+
+.app-shell.charts-workstation .agx-skin .session-tape b.is-open {
+  color: var(--agx-up);
+  text-shadow: none;
+}
+
+.app-shell.charts-workstation .agx-skin .last-scan-label b,
+.app-shell.charts-workstation .agx-skin .signed-in-user b {
+  color: var(--agx-text);
+}
+
+.app-shell.charts-workstation .agx-skin .connection-state.is-expiring .login-countdown {
+  color: var(--agx-warn);
+}
+
+/* The alert bell is left alone: its colours carry meaning (alert set, alert
+   fired, the labelled form) and it is converted with the alert panel later. */
+.app-shell.charts-workstation .agx-skin .market-strip-right > .header-icon-button,
+.app-shell.charts-workstation .agx-skin .signed-in-user > .header-icon-button {
+  color: var(--agx-text-2);
+}
+
+.app-shell.charts-workstation .agx-skin .market-strip-right > .header-icon-button:hover,
+.app-shell.charts-workstation .agx-skin .signed-in-user > .header-icon-button:hover {
+  border-color: var(--agx-line);
+  background: var(--agx-raised);
+  color: var(--agx-text);
+}
+
+.app-shell.charts-workstation .agx-skin .signed-in-user .avatar {
+  border-color: var(--agx-line);
+  background: var(--agx-raised);
+  color: var(--agx-text);
+}
+
+.app-shell.charts-workstation .agx-skin .agx-theme-toggle:focus-visible {
+  outline: 2px solid var(--agx-accent);
+  outline-offset: 1px;
+}
+
+/* On a phone the strip has no room (it already hides its other round buttons)
+   and is hidden on the chart screen, so the switch lives in the "More" sheet
+   as .agx-theme-menu-item, which takes the sheet's own button styling. */
+
+/* ---------------------------------------------------------------- left rail */
+
+.app-shell.charts-workstation .sidebar.agx-skin {
+  border-right-color: var(--agx-line);
+  background: var(--agx-card);
+  color: var(--agx-text);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin .brand {
+  border-bottom-color: var(--agx-line-soft);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin .brand-copy b {
+  color: var(--agx-text);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin .brand-copy small {
+  color: var(--agx-text-2);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin nav .nav-item {
+  border-radius: 10px;
+  color: var(--agx-text-2);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin nav .nav-item .nav-icon {
+  color: var(--agx-text-2);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin nav .nav-item:hover {
+  background: var(--agx-raised);
+  color: var(--agx-text);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin nav .nav-item.nav-active {
+  border-color: transparent;
+  background: var(--agx-raised);
+  color: var(--agx-text);
+  box-shadow: none;
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin nav .nav-item.nav-active .nav-icon,
+.app-shell.charts-workstation .sidebar.agx-skin nav .nav-item:hover .nav-icon {
+  color: var(--agx-text);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin .sidebar-toggle {
+  border-color: var(--agx-line);
+  background: var(--agx-card);
+  color: var(--agx-text-2);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin .sidebar-status {
+  border-color: var(--agx-line);
+  border-radius: 10px;
+  background: var(--agx-raised);
+  color: var(--agx-text-2);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin .sidebar-status b {
+  color: var(--agx-text);
+}
+
+.app-shell.charts-workstation .sidebar.agx-skin .sidebar-status small {
+  color: var(--agx-text-2);
+}
+
+/* --------------------------------------------------------------------- page */
+
+/* Only what shows around the converted areas. The screens themselves keep
+   their own dark background until they are converted. */
+:root[data-theme="light"] body:not(.is-trading-popout) {
+  background: var(--agx-bg);
+}

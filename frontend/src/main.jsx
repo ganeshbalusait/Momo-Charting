@@ -5,6 +5,7 @@ import AppErrorBoundary from "./AppErrorBoundary";
 import { installPhoneLayoutDiagnostics, isDiagnosticsRequested } from "./phoneLayoutDiagnostics";
 import { installUpdateWatch } from "./appVersion";
 import "./index.css";
+import "./theme.css";
 
 // Register the network-only worker so Chrome offers "Install AGX" again
 // (trader, 2026-09-01: the address-bar install button had disappeared).
