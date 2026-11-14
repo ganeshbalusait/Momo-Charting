@@ -998,3 +998,44 @@ body {
 :root .app-shell .charts-oi-walls-picker button { border-color: transparent !important; border-radius: 7px !important; background: #1c1c1f !important; color: #a1a1a6 !important; }
 :root .app-shell .charts-oi-walls-picker button.is-active { background: #3a3a3c !important; color: #f5f5f7 !important; }
 :root .app-shell .charts-oi-walls-picker > span { color: #a1a1a6 !important; }
+
+/* Left menu icons, 2026-11-13 ("I want give new icon"): each page gets its own
+   coloured rounded tile with a white symbol, like iPhone Settings. The tile is
+   the existing .nav-icon box, so nothing moves; only colours and corners. */
+:root .app-shell .sidebar.agx-skin nav .nav-item .nav-icon { --nav-tile: #636366; --nav-glyph: #ffffff; border: 0 !important; border-radius: 7px !important; background: var(--nav-tile) !important; color: var(--nav-glyph) !important; box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.10); }
+:root .app-shell .sidebar.agx-skin nav .nav-item .nav-icon > svg { width: 15px; height: 15px; stroke-width: 2px; color: var(--nav-glyph) !important; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Charts & OI"] .nav-icon { --nav-tile: #0a84ff; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Options"] .nav-icon { --nav-tile: #32ade6; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Alerts"] .nav-icon { --nav-tile: #ff453a; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Premarket"] .nav-icon { --nav-tile: #ff9f0a; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="MomX Scanner"] .nav-icon { --nav-tile: #30d158; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Bot"] .nav-icon { --nav-tile: #bf5af2; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="My Trading"] .nav-icon { --nav-tile: #a2845e; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Long Term"] .nav-icon { --nav-tile: #5e5ce6; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Option Paper Trading"] .nav-icon { --nav-tile: #00c7be; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Stock Paper Trading"] .nav-icon { --nav-tile: #64d2ff; --nav-glyph: #0b0b0d; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Learn + Setup"] .nav-icon { --nav-tile: #ff375f; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Watchlist"] .nav-icon { --nav-tile: #ffd60a; --nav-glyph: #1c1c1e; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Sectors"] .nav-icon { --nav-tile: #ff6482; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="News Feed"] .nav-icon { --nav-tile: #e5484d; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Earnings Calendar"] .nav-icon { --nav-tile: #f5f5f7; --nav-glyph: #ff3b30; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Mag7 Watchlist"] .nav-icon { --nav-tile: #c9a227; --nav-glyph: #1c1c1e; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="ROI Calc"] .nav-icon { --nav-tile: #248a3d; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="OI Level Scripts"] .nav-icon { --nav-tile: #5856d6; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Release Notes"] .nav-icon { --nav-tile: #636366; }
+:root .app-shell .sidebar.agx-skin nav .nav-item[title="Settings"] .nav-icon { --nav-tile: #8e8e93; }
+/* The tile now says which page it is, so the page you are on is a calm grey row. */
+:root .app-shell .sidebar.agx-skin nav .nav-item.nav-active { background: rgba(255, 255, 255, 0.10) !important; color: #f5f5f7 !important; }
+/* Same tiles, iPhone finish: each colour lights from the top and deepens to the
+   bottom, with a glass shine on the upper half, a thin light rim and a soft
+   shadow under the tile. Still only colour inside the same 24px box. */
+:root .app-shell .sidebar.agx-skin nav .nav-item .nav-icon {
+  border-radius: 6.5px !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.30) 0%, rgba(255, 255, 255, 0.06) 48%, rgba(255, 255, 255, 0) 52%),
+    linear-gradient(180deg, color-mix(in srgb, var(--nav-tile) 82%, #ffffff) 0%, var(--nav-tile) 55%, color-mix(in srgb, var(--nav-tile) 78%, #000000) 100%) !important;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.45), inset 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 1px 2px rgba(0, 0, 0, 0.55), 0 2px 6px color-mix(in srgb, var(--nav-tile) 28%, transparent) !important;
+}
+:root .app-shell .sidebar.agx-skin nav .nav-item .nav-icon > svg { stroke-width: 2.2px; filter: drop-shadow(0 0.5px 0.5px rgba(0, 0, 0, 0.35)); }
+:root .app-shell .sidebar.agx-skin nav .nav-item:hover .nav-icon { filter: brightness(1.12) saturate(1.08); }
+:root .app-shell .sidebar.agx-skin nav .nav-item.nav-active .nav-icon { box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5), inset 0 0 0 0.5px rgba(255, 255, 255, 0.18), 0 0 0 1.5px rgba(255, 255, 255, 0.85), 0 2px 8px color-mix(in srgb, var(--nav-tile) 45%, transparent) !important; }
