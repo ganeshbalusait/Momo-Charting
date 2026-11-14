@@ -1135,8 +1135,8 @@ body {
   color: #f5f5f7 !important;
 }
 
-/* Sectors: the white Robinhood cards turn dark; the heat colours stay readable. */
-:root .app-shell .sector-heatmap-card { filter: invert(0.93) hue-rotate(180deg); border-radius: 16px !important; }
+/* Sectors keep their Robinhood colours (white cards, red/green heat): 2026-11-14,
+   "not inside the sectors colors revert back same as robinhood". */
 
 /* Release notes: calm headings in the app font. */
 :root .app-shell .release-notes-title { color: #a1a1a6 !important; }
