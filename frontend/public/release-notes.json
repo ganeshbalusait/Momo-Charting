@@ -2,6 +2,16 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-14T07:59:31-05:00",
+      "heading": "Every page in the new dark look",
+      "items": [
+        "All pages (Sectors, Premarket, News, Earnings, Bot, Long Term, My Trading, Alerts, Watchlist, Mag7, ROI Calc, OI Level Scripts, Release Notes, Settings, Learn) now use the same dark Apple-style cards: dark grey with rounded corners and a thin edge.",
+        "Buttons are grey and rounded; the main button on a page (Save, Run, Add, Trade) is blue; the chosen tab is blue.",
+        "Sectors: the white cards are now dark, with the red and green heat colours kept.",
+        "Signal colours (cyan, magenta, green, red and the TOS colours) are unchanged, and nothing moved or changed size, on the phone or the computer."
+      ]
+    },
+    {
       "at": "2026-11-14T07:49:25-05:00",
       "heading": "Phone: iPhone-style bottom bar and More menu",
       "items": [
