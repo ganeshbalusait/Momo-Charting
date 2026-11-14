@@ -32536,6 +32536,7 @@ function TradingWorkspace({ authUser, onLogout }) {
                     className={activeView === item.label ? "is-active" : ""}
                     role="menuitem"
                     type="button"
+                    data-nav={item.label}
                     onClick={() => openMobileOverflowDestination(item.label)}
                     aria-current={activeView === item.label ? "page" : undefined}
                   >
