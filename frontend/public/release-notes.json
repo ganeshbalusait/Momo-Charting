@@ -2,6 +2,13 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-14T08:27:15-05:00",
+      "heading": "iPhone Home Screen: the real app icon",
+      "items": [
+        "An app added to the iPhone Home Screen showed a plain letter A, because the phone fetches the icon without your sign-in and was turned away. The icon is now built into the app itself. To get it, delete the A icon, open the app in Safari, tap Share and then Add to Home Screen."
+      ]
+    },
+    {
       "at": "2026-11-14T08:16:12-05:00",
       "heading": "Phone: glossy icons in the bottom bar",
       "items": [

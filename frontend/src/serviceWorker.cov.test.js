@@ -118,6 +118,9 @@ test("index.html links the manifest WITH credentials and the Home Screen icon", 
   assert.match(INDEX, /<link rel="manifest" href="\/manifest\.webmanifest" crossorigin="use-credentials"\s*\/>/);
   const touch = /<link rel="apple-touch-icon" href="([^"]+)"/.exec(INDEX);
   assert.ok(touch, "no apple-touch-icon link");
-  assert.ok(existsSync(new URL(`../public${touch[1]}`, import.meta.url)), `${touch[1]} is missing`);
+  // 2026-11-14: the icon is inline. iOS fetches a linked icon without the
+  // Access sign-in, got the login page and drew a plain "A" on the Home Screen.
+  // appIcon.test.js checks the inline picture equals public/icons/apple-touch-icon.png.
+  assert.match(touch[1], /^data:image\/png;base64,iVBORw0KGgo/, "the Home Screen icon must be an inline PNG");
   assert.match(INDEX, /viewport-fit=cover/);
 });

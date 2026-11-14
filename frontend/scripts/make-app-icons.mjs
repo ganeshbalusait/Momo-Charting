@@ -24,3 +24,17 @@ for (const [name, size, opts] of jobs) {
   console.log("wrote", name);
 }
 await browser.close();
+
+// The public app sits behind a sign-in gate, and an iPhone fetches the
+// home-screen icon WITHOUT the sign-in, so /icons/apple-touch-icon.png came
+// back as the login page and iOS drew a plain "A" (2026-11-14). The phone
+// icon and the tab icon are therefore written into index.html itself.
+import fs from "node:fs";
+const indexPath = path.resolve(out, "../../index.html");
+const dataUri = (name) => "data:image/png;base64," + fs.readFileSync(path.join(out, name)).toString("base64");
+let html = fs.readFileSync(indexPath, "utf8");
+html = html
+  .replace(/<link rel="apple-touch-icon" href="[^"]*" \/>/, `<link rel="apple-touch-icon" href="${dataUri("apple-touch-icon.png")}" />`)
+  .replace(/<link rel="icon" href="[^"]*" sizes="32x32" \/>/, `<link rel="icon" href="${dataUri("favicon-32.png")}" sizes="32x32" />`);
+fs.writeFileSync(indexPath, html);
+console.log("index.html icons embedded");
