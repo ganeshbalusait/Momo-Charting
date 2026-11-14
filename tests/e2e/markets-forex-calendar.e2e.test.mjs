@@ -60,7 +60,7 @@ const fakes = (payload = calendar(), delayForce = 0) => ({
 async function panel(app) {
   const element = app.page.locator(PANEL);
   await element.waitFor({ state: "visible", timeout: 60_000 });
-  await app.page.locator(`${PANEL} footer span`, { hasText: /CALENDAR/ }).waitFor();
+  await app.page.locator(`${PANEL} footer span`, { hasText: /calendar/i }).waitFor();
   await app.page.waitForFunction((selector) => !/Loading calendar/.test(document.querySelector(`${selector} h2`)?.textContent || ""), PANEL);
   return element;
 }
@@ -69,7 +69,7 @@ e2eTest("the panel names today in ET and says the calendar is live", async () =>
   await withApp({ view: VIEW, fakeReads: fakes() }, async (app) => {
     const element = await panel(app);
     assert.equal((await element.locator(".forex-us-news-head h2").innerText()).trim(), "USD News Today — Testday, Nov 04");
-    assert.match(await element.locator("footer").innerText(), /^LIVE CALENDAR/);
+    assert.match(await element.locator("footer").innerText(), /^Live calendar/);
     const link = element.locator(".forex-us-news-actions a", { hasText: "Forex Factory" });
     assert.equal(await link.getAttribute("href"), "https://www.forexfactory.com/calendar");
     assert.equal(await link.getAttribute("target"), "_blank");
@@ -134,7 +134,7 @@ e2eTest("a calendar outage shows the reason and CALENDAR UNAVAILABLE", async () 
   await withApp({ view: VIEW, fakeReads: fakes(calendar({ errors: [reason], live: false })) }, async (app) => {
     const element = await panel(app);
     assert.equal((await element.locator(".forex-us-news-error").innerText()).trim(), reason);
-    assert.match(await element.locator("footer").innerText(), /^CALENDAR UNAVAILABLE/);
+    assert.match(await element.locator("footer").innerText(), /^Calendar unavailable/);
     assert.equal((await element.locator(".forex-us-news-empty").innerText()).trim(), "No medium or high-impact USD events are scheduled for today.");
     assert.deepEqual(app.pageErrors, []);
   });

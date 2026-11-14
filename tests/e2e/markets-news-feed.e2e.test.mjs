@@ -59,7 +59,7 @@ e2eTest("News Feed opens with the USD panel, the command band, the metric strip 
     for (const selector of ['section.forex-us-news-panel[aria-label="USD economic news today"]', ".news-command-band .news-command-title", 'section.news-metric-strip[aria-label="News summary"]']) {
       assert.equal(await app.page.locator(`section.news-workspace ${selector}`).isVisible(), true, `${selector} is missing`);
     }
-    assert.match(await app.page.locator("section.news-feed-card .table-toolbar").innerText(), /WATCHLIST NEWS FEED · INFO ONLY/);
+    assert.match(await app.page.locator("section.news-feed-card .table-toolbar").innerText(), /Watchlist news feed · info only/);
     assert.deepEqual((await symbols(app.page)).sort(), ["AAPL", "AMD", "NVDA", "PLTR"], "watchlist, last 7 days, undated hidden");
     assert.equal(await metric(app.page, "Visible headlines"), "4");
     assert.equal(await metric(app.page, "Strong catalysts"), "1");
@@ -79,7 +79,7 @@ e2eTest("the MAG7 tab shows only MAG7 tickers", async () => {
     const tabs = app.page.locator('[role="group"][aria-label="News universe"]');
     await tabs.locator("button", { hasText: "MAG7" }).click();
     assert.match(await tabs.locator("button", { hasText: "MAG7" }).getAttribute("class"), /is-active/);
-    assert.match(await app.page.locator("section.news-feed-card .table-toolbar").innerText(), /MAG7 NEWS FEED · INFO ONLY/);
+    assert.match(await app.page.locator("section.news-feed-card .table-toolbar").innerText(), /Mag7 news feed · info only/);
     const shown = await symbols(app.page);
     assert.deepEqual(shown.sort(), ["AAPL", "NVDA", "TSLA"]);
     assert.ok(shown.every((symbol) => MAG7.includes(symbol)));

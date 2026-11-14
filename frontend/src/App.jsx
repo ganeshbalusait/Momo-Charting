@@ -5340,7 +5340,7 @@ function RoiCalc({ data, loading = false }) {
       <section className="roi-option-target-manual data-card" aria-label="Manual option target ROI calculator">
         <header>
           <div>
-            <span>OPTION TARGET ROI</span>
+            <span>Option target ROI</span>
             <h3>{manualSymbol || "Ticker"} live-chain calculation</h3>
             <p>Strike, entry and targets fill in automatically: pick a strike from the ladder, or type your own. Chain ROI uses the live target-strike Mark; Gamma ROI projects the same entry contract using Delta + Gamma.</p>
           </div>
@@ -25083,7 +25083,7 @@ function ForexFactoryUsNewsPanel({ data, loading, onRefresh }) {
           </article>
         ))}
       </div>
-      <footer><span>{data?.live ? "LIVE CALENDAR" : "CALENDAR UNAVAILABLE"}</span><small>{data?.source || "Forex Factory calendar"} · updates every 10 minutes · never changes trade execution</small></footer>
+      <footer><span>{data?.live ? "Live calendar" : "Calendar unavailable"}</span><small>{data?.source || "Forex Factory calendar"} · updates every 10 minutes · never changes trade execution</small></footer>
     </section>
   );
 }
@@ -31507,7 +31507,7 @@ function TradingWorkspace({ authUser, onLogout }) {
 
             <section className="data-card scanner-table news-feed-card">
               <div className="table-toolbar">
-                <span>{newsUniverse === "mag7" ? "MAG7 NEWS FEED · INFO ONLY" : newsUniverse === "all" ? "ALL STORED NEWS · INFO ONLY" : "WATCHLIST NEWS FEED · INFO ONLY"}</span>
+                <span>{newsUniverse === "mag7" ? "Mag7 news feed · info only" : newsUniverse === "all" ? "All stored news · info only" : "Watchlist news feed · info only"}</span>
                 <span>{newsFeedRows.length} matching headlines</span>
               </div>
               <div className="news-filter-row">

@@ -1162,3 +1162,27 @@ body {
 :root .app-shell .mobile-chart-bottom-nav [data-testid="mobile-primary-more"] svg { --nav-tile: #8e8e93; }
 :root .app-shell .mobile-chart-bottom-nav button.is-active { color: #ffffff !important; }
 :root .app-shell .mobile-chart-bottom-nav button.is-active svg { stroke-width: 2.1px; box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5), 0 0 0 1.5px rgba(255, 255, 255, 0.9), 0 2px 8px color-mix(in srgb, var(--nav-tile) 50%, transparent); }
+
+/* Labels in normal letters, 2026-11-14 ("Fix it all"): these were forced to
+   capitals with wide letter gaps by CSS. Text boxes are not touched (a typed
+   ticker still shows in capitals). */
+:root .app-shell :is(.roi-calc-rule > b, .roi-calc-inputs > label, .roi-auto-tag, .roi-calc-formula > b, .roi-option-side > button,
+  .roi-option-live-price > span, .roi-option-setup > label, .roi-option-current-pnl > span, .roi-option-target-inputs > label,
+  .roi-option-fetched-mark > span, .roi-option-gamma-result > span, .roi-option-estimated-exit > small,
+  .news-search-field > span, .release-notes-title, .release-entry-stamp, .oi-finder-chart-search-label) {
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+
+/* Option chain panel, mock-up look (2026-11-14, "Fix it all"): Chain / High OI
+   becomes an iPhone segmented control (grey track, the chosen side a lighter
+   grey with white text), and the Exp move / EM / OI numbers sit on one rounded
+   card. Colour and corners only: the card edge is drawn with clip-path, so the
+   numbers and the table below do not move. */
+:root .app-shell.charts-workstation .charts-oi-chain-view-tabs { background: #0b0b0d !important; }
+:root .app-shell.charts-workstation .charts-oi-chain-view-tabs button { border-color: transparent !important; border-radius: 8px !important; background: #1c1c1f !important; color: #a1a1a6 !important; }
+:root .app-shell.charts-workstation .charts-oi-chain-view-tabs button.is-active { border-color: transparent !important; background: #3a3a3c !important; color: #f5f5f7 !important; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4) !important; }
+:root .app-shell.charts-workstation .high-oi-stats { background: #17171a !important; clip-path: inset(2px 5px round 12px); border-color: transparent !important; }
+:root .app-shell.charts-workstation .high-oi-stats small { color: #8e8e93 !important; }
+:root .app-shell.charts-workstation :is(.charts-oi-tos-chain, .charts-oi-chain) > header b { color: #f5f5f7 !important; }
+:root .app-shell.charts-workstation :is(.charts-oi-tos-chain, .charts-oi-chain) > header small { color: #a1a1a6 !important; }
