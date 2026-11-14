@@ -51,7 +51,7 @@ test("mobile Options opens the lightweight warm chain before lazy research secti
   assert.doesNotMatch(appSource, /useMobileQuickOptionsFeed \? "&fast=true"/);
   assert.match(appSource, /activeView === "Quick Options"[\s\S]*?<MobileQuickOptionsBoard/);
   assert.match(appSource, /activeSection === "chain"[\s\S]*?<FullChartsAndOiBoard[\s\S]*?surfaceMode="mobile-options"/);
-  assert.match(appSource, /surfaceMode === "mobile-options"[\s\S]*?data-testid="mobile-full-option-chain"[\s\S]*?LIVE OPTION CHAIN[\s\S]*?chainViewTabs[\s\S]*?TosChainColorKey[\s\S]*?<TosExpiryAccordion/);
+  assert.match(appSource, /surfaceMode === "mobile-options"[\s\S]*?data-testid="mobile-full-option-chain"[\s\S]*?[Ll]ive option chain[\s\S]*?chainViewTabs[\s\S]*?TosChainColorKey[\s\S]*?<TosExpiryAccordion/);
   assert.match(appSource, /surfaceMode === "mobile-options"[\s\S]*?chainView === "highOi" \? highOiListPanel/);
   assert.match(appSource, /const callContracts = rawCallContracts;[\s\S]*?const putContracts = rawPutContracts;/);
   assert.match(appSource, /All shows every listed strike/);

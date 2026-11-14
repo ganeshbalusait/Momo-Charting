@@ -33,7 +33,7 @@ e2eTest("the chain column shows the live chain with High OI as the default tab",
   await withApp(await options(), async (app) => {
     await chainShown(app.page);
     const header = await app.page.locator(`${CHAIN} > header`).innerText();
-    assert.match(header, /LIVE OPTION CHAIN/);
+    assert.match(header, /Live option chain/);
     assert.match(header, /· 2 DTE/);
     assert.equal(await app.page.locator(`${TABS} [role="tab"][aria-selected="true"]`).innerText(), "High OI");
     assert.ok(app.reads.some((read) => read.path === "/api/oi-finder-chain"), "the chain came from the compact feed");

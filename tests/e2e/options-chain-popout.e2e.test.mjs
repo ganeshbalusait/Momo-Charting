@@ -16,8 +16,8 @@ e2eTest("the chain pop-out renders SPY's chain on its own, titled for the window
     await app.page.locator('[data-testid="chain-popout-root"]').waitFor({ timeout: 60_000 });
     const view = app.page.locator(CHAIN_POPOUT);
     await view.locator(`${POPOUT_CHAIN} > header`, { hasText: "Spot $100" }).waitFor({ timeout: 60_000 });
-    assert.equal(await view.locator(`${POPOUT_CHAIN} > header b`).innerText(), "SPY LIVE OPTION CHAIN");
-    assert.equal(await view.locator(".charts-oi-popout-header span").first().innerText(), "DETACHED LIVE OPTION CHAIN");
+    assert.equal(await view.locator(`${POPOUT_CHAIN} > header b`).innerText(), "SPY live option chain");
+    assert.equal(await view.locator(".charts-oi-popout-header span").first().innerText(), "Detached live option chain");
     assert.equal(await app.page.title(), "SPY Option Chain · Agentic Trading");
     assert.equal(await app.page.locator('[data-testid="primary-navigation"]').count(), 0, "no nav rail in a detached window");
     assert.match(await view.locator(".charts-oi-popout-live").innerText(), /LIVE DATA/);
@@ -47,7 +47,7 @@ e2eTest("the detached chart's Option chain toggle hides and shows its side chain
     await view.waitFor({ timeout: 60_000 });
     assert.equal(await view.locator(".charts-oi-popout-header b").innerText(), "AAPL · 5m");
     assert.equal(await app.page.title(), "AAPL Live Chart · Agentic Trading");
-    await view.locator(`${POPOUT_CHAIN} > header`, { hasText: "AAPL LIVE OPTION CHAIN" }).waitFor({ timeout: 60_000 });
+    await view.locator(`${POPOUT_CHAIN} > header`, { hasText: "AAPL live option chain" }).waitFor({ timeout: 60_000 });
     assert.equal(await view.locator('.charts-oi-resize-handle[aria-label="Resize detached chart and option chain"]').count(), 1);
     await view.locator(".charts-oi-popout-header button", { hasText: "Hide options" }).click();
     await app.page.waitForFunction((selector) => !document.querySelector(selector), `[data-testid="chart-popout-view"] ${POPOUT_CHAIN}`);

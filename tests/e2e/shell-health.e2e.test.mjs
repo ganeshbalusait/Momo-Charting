@@ -18,7 +18,7 @@ e2eTest("/api/health answers through Vite and the gateway, and the header render
     assert.doesNotMatch(JSON.stringify(body).toLowerCase(), /password|client_secret|secret_key/);
     const pill = app.page.locator(".topbar.trading-header .market-open-pill");
     await pill.waitFor({ state: "visible", timeout: 60_000 });
-    assert.match((await pill.innerText()).trim(), /^MARKET \S+/);
+    assert.match((await pill.innerText()).trim(), /^Market \S+/);
     assert.deepEqual(app.pageErrors, []);
   });
 });

@@ -469,7 +469,7 @@ export const LEARN_SECTIONS = Object.freeze([
         rows: [
           { term: "MATCHES", meaning: "How many of the nine tickers cleared the scan this morning, with the scan window printed underneath it." },
           { term: "STRONG", meaning: "How many matches are graded strong. The grade is about the quality of the crosses, not how many hits a row has: the cyan 9x20 cross outranks the yellow 4x8 one, so a cyan and a yellow together, or two cyan, is STRONG; a single cyan or two yellow is MODERATE; one yellow alone is WEAK. A row carrying only squeeze fires never reaches STRONG, because a release says a move is coming without saying which way - though two or more fires do lift a row that already has a cross." },
-          { term: "LIVE TAPES", meaning: "How many of the nine have usable data for today. This is the honesty number: a ticker with no data today cannot be scanned, and the note names it rather than quietly reporting no setups." },
+          { term: "Live tapes", meaning: "How many of the nine have usable data for today. This is the honesty number: a ticker with no data today cannot be scanned, and the note names it rather than quietly reporting no setups." },
           { term: "FEED", meaning: "Whether this morning's data arrived complete or with a hole in it. GAP means part of the pre-market window is missing, so treat the 2-hour and 4-hour reads as partial." },
         ],
       },

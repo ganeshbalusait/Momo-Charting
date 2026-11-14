@@ -5714,7 +5714,7 @@ function OiFinderBoard({
   if (loading && requestedTicker && requestedTicker !== symbol) {
     return (
       <section className="oi-finder-pending" aria-live="polite" aria-label={`Loading ${requestedTicker} option chain`}>
-        <span>OI FINDER - LIVE OPTION CHAIN</span>
+        <span>OI Finder · live option chain</span>
         <b>Loading {requestedTicker} live option flow…</b>
         <small>Fetching the current 0–31 DTE Schwab/TOS option chain. The previous ticker is hidden until this result is ready.</small>
       </section>
@@ -5989,7 +5989,7 @@ function ChartsAndOiBoard({ data, loading }) {
     <div className="charts-oi-layout">
       <section className="charts-oi-chart"><OiFinderMultiChart symbol={symbol} callRows={data?.callRows} putRows={data?.putRows} selectedChainRows={data?.selectedExpiryChainRows} optionSnapshotAt={data?.scannedAt} currentAtm={currentAtm} tosScriptLevels={data?.tosScriptLevels} underlyingPrice={data?.underlyingPrice} /></section>
       <aside className="charts-oi-chain">
-        <header><div><b>LIVE OPTION CHAIN</b><small>0–31 DTE · selected OTM levels</small></div><span>Spot {data?.underlyingPrice ? formatCurrency(data.underlyingPrice) : "--"}</span></header>
+        <header><div><b>Live option chain</b><small>0–31 DTE · selected OTM levels</small></div><span>Spot {data?.underlyingPrice ? formatCurrency(data.underlyingPrice) : "--"}</span></header>
         {renderChain("call")}
         {renderChain("put")}
       </aside>
@@ -6021,7 +6021,7 @@ function OiWallsPerSidePicker() {
   const wallsPerSide = useOiWallsPerSide();
   return (
     <div className="charts-oi-walls-picker" role="group" aria-label="Chart OI walls per side">
-      <span>CHART WALLS / SIDE</span>
+      <span>Chart walls / side</span>
       {OI_WALLS_PER_SIDE_OPTIONS.map((count) => (
         <button
           type="button"
@@ -8134,7 +8134,7 @@ function FullChartsAndOiBoard({
     return <section className="charts-oi-tos-chain mobile-full-option-chain" data-testid="mobile-full-option-chain">
       <header>
         <div>
-          <b>LIVE OPTION CHAIN</b>
+          <b>Live option chain</b>
           <small>{activeExpiry ? `${formatExpiryEastern(activeExpiry)} · ${activeExpiryMeta?.dte ?? "--"} DTE` : "Waiting for nearest expiry"}</small>
         </div>
         <div className="charts-oi-chain-header-actions">
@@ -8225,7 +8225,7 @@ function FullChartsAndOiBoard({
         {chainOpen ? <section className={`charts-oi-tos-chain is-popout-chain${chainFullscreen ? " is-fullscreen" : ""}`}>
           <header>
             <div>
-              <b>{symbol || "Ticker"} LIVE OPTION CHAIN</b>
+              <b>{symbol || "Ticker"} live option chain</b>
               <small>{activeExpiry ? `${formatExpiryEastern(activeExpiry)} · ${activeExpiryMeta?.dte ?? "--"} DTE` : "Waiting for nearest expiry"}</small>
             </div>
             <div className="charts-oi-chain-header-actions">
@@ -8259,7 +8259,7 @@ function FullChartsAndOiBoard({
     return <section className="charts-oi-popout-page is-chain" data-testid="chain-popout-view">
       <header className="charts-oi-popout-header">
         <div>
-          <span>DETACHED LIVE OPTION CHAIN</span>
+          <span>Detached live option chain</span>
           <b>{symbol || "Ticker"} · {activeExpiry ? formatExpiryEastern(activeExpiry) : "Nearest expiry"}</b>
         </div>
         <div>
@@ -8272,7 +8272,7 @@ function FullChartsAndOiBoard({
       <section className={`charts-oi-tos-chain is-popout-chain${chainFullscreen ? " is-fullscreen" : ""}`}>
         <header>
           <div>
-            <b>{symbol || "Ticker"} LIVE OPTION CHAIN</b>
+            <b>{symbol || "Ticker"} live option chain</b>
             <small>{activeExpiry ? `${formatExpiryEastern(activeExpiry)} · ${activeExpiryMeta?.dte ?? "--"} DTE` : "Waiting for nearest expiry"}</small>
           </div>
           <div className="charts-oi-chain-header-actions">
@@ -8348,7 +8348,7 @@ function FullChartsAndOiBoard({
           <section className="charts-oi-tos-chain is-big-screen-chain">
             <header>
               <div>
-                <b>{symbol || "Ticker"} LIVE OPTION CHAIN</b>
+                <b>{symbol || "Ticker"} live option chain</b>
                 <small>{activeExpiry ? `${formatExpiryEastern(activeExpiry)} · ${activeExpiryMeta?.dte ?? "--"} DTE` : "Waiting for nearest expiry"}</small>
               </div>
               <div className="charts-oi-chain-header-actions">
@@ -8412,7 +8412,7 @@ function FullChartsAndOiBoard({
       title="Drag left or right to resize. Double-click to reset."
     ><i /></div> : null}
     {chainOpen ? <section className={`charts-oi-tos-chain${chainFullscreen ? " is-fullscreen" : ""}`} id="charts-oi-option-chain">
-      <header><div><b>LIVE OPTION CHAIN</b><small>{activeExpiry ? `${formatExpiryEastern(activeExpiry)} · ${activeExpiryMeta?.dte ?? "--"} DTE` : "Waiting for nearest expiry"}</small></div><div className="charts-oi-chain-header-actions"><span>Spot {data?.underlyingPrice ? formatCurrency(data.underlyingPrice) : "--"}</span><TosSyncTag group={linkedGroup} /><button type="button" onClick={() => setChainFullscreen((open) => !open)} title="Fill the screen with the option chain, inside the app (Esc to exit)" aria-label="Fill the screen with the option chain"><ExternalLink size={16} /></button><button className="charts-oi-chain-side-toggle" type="button" onClick={() => setChainSide((current) => current === "right" ? "left" : "right")} title={`Move option chain to the ${chainSide === "right" ? "left" : "right"}`} aria-label={`Move option chain to the ${chainSide === "right" ? "left" : "right"}`}><ArrowUpDown size={16} /></button>{dockPanelMenu}<button type="button" onClick={toggleChain} title="Hide option chain" aria-label="Hide option chain"><ChevronDown size={16} /></button></div></header>
+      <header><div><b>Live option chain</b><small>{activeExpiry ? `${formatExpiryEastern(activeExpiry)} · ${activeExpiryMeta?.dte ?? "--"} DTE` : "Waiting for nearest expiry"}</small></div><div className="charts-oi-chain-header-actions"><span>Spot {data?.underlyingPrice ? formatCurrency(data.underlyingPrice) : "--"}</span><TosSyncTag group={linkedGroup} /><button type="button" onClick={() => setChainFullscreen((open) => !open)} title="Fill the screen with the option chain, inside the app (Esc to exit)" aria-label="Fill the screen with the option chain"><ExternalLink size={16} /></button><button className="charts-oi-chain-side-toggle" type="button" onClick={() => setChainSide((current) => current === "right" ? "left" : "right")} title={`Move option chain to the ${chainSide === "right" ? "left" : "right"}`} aria-label={`Move option chain to the ${chainSide === "right" ? "left" : "right"}`}><ArrowUpDown size={16} /></button>{dockPanelMenu}<button type="button" onClick={toggleChain} title="Hide option chain" aria-label="Hide option chain"><ChevronDown size={16} /></button></div></header>
       {dockPanelStack}
       <div className="charts-oi-chain-view-tabs" role="tablist" aria-label="Option chain view">
         <button type="button" role="tab" aria-selected={chainView === "chain"} className={chainView === "chain" ? "is-active" : ""} onClick={() => setChainView("chain")}>Chain</button>
@@ -29649,7 +29649,7 @@ function TradingWorkspace({ authUser, onLogout }) {
         <header className="topbar trading-header agx-skin">
           <div className="market-strip">
             <span className={`market-open-pill tone-${statusTone(dashboard.status.marketStatus)}`}>
-              <i />{`MARKET ${String(dashboard.status.marketStatus || "Closed").toUpperCase()}`}
+              <i />{`Market ${String(dashboard.status.marketStatus || "Closed").toLowerCase()}`}
             </span>
             <MarketClock />
             <div className="session-tape" aria-label="Market sessions">
@@ -30258,21 +30258,21 @@ function TradingWorkspace({ authUser, onLogout }) {
             <section className="scanner-overview-grid" aria-label="Premarket scanner overview">
               <ScannerOverviewCard
                 icon={ScanSearch}
-                label="MATCHES"
+                label="Matches"
                 value={premarketScanner.matchCount || 0}
                 note={premarketScanner.windowLabel || "6:00 AM - 9:30 AM ET"}
                 tone="cyan"
               />
               <ScannerOverviewCard
                 icon={Zap}
-                label="STRONG"
+                label="Strong"
                 value={premarketScannerRows.filter((row) => row.strength === "STRONG").length}
                 note="More than 3 confirmations"
                 tone="hot"
               />
               <ScannerOverviewCard
                 icon={Activity}
-                label="LIVE TAPES"
+                label="Live tapes"
                 value={`${(premarketScanner.readySymbols || []).length}/${(premarketScanner.symbols || []).length || 9}`}
                 // A ticker with no data for today is NOT scannable. Saying so
                 // matters: a stale tape scans yesterday and reports a
@@ -30299,7 +30299,7 @@ function TradingWorkspace({ authUser, onLogout }) {
               />
               <ScannerOverviewCard
                 icon={Database}
-                label="FEED"
+                label="Feed"
                 // Was hardcoded to LIVE / green. It therefore asserted a
                 // healthy feed while the scanner was reading across a
                 // three-hour hole with the only provider that fills it
@@ -30348,7 +30348,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             ) : null}
             <section className="data-card scanner-table premarket-scanner-card">
               <div className="table-toolbar">
-                <span>PREMARKET SCANNER · {premarketScanner.windowLabel || "12:00 AM - 9:30 AM ET"}</span>
+                <span>Premarket scanner · {premarketScanner.windowLabel || "12:00 AM - 9:30 AM ET"}</span>
                 <span>
                   {`TOS AlertX Bull Momo (wider window): 2h cross 7–9:30 AM · 4h cross 5–9:30 AM · last 12 bars · Last ≥ $3 (4/8 yellow · 9/20 cyan) · Cyan D–M from 12 AM · 🔥 shown, not a match · sorted by %Chg · ${(premarketScanner.readySymbols || []).length + (premarketScanner.pendingSymbols || []).length} tickers`}
                 </span>
@@ -30363,7 +30363,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             </section>
             <section className="data-card scanner-table scanner-history-card" data-testid="premarket-scanner-history">
               <div className="table-toolbar">
-                <span>SCANNER HISTORY · LAST 30 DAYS</span>
+                <span>Scanner history · last 30 days</span>
                 <div className="scanner-history-controls">
                   {scannerHistoryOpen ? (
                     <div className="scanner-history-viewtabs" role="tablist" aria-label="History view">

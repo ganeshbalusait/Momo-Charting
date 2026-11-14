@@ -52,16 +52,16 @@ e2eTest("the four cards read the scanner's answer, and FEED says LIVE, GAP or BA
   for (const feed of feeds) {
     await withApp({ view: "Premarket Scanner", fakeReads: { "GET /api/premarket-scanner": scanner({ gapNote: feed.gapNote }) } }, async (app) => {
       const shown = await cards(app.page);
-      assert.deepEqual(Object.keys(shown), ["MATCHES", "STRONG", "LIVE TAPES", "FEED"]);
-      assert.equal(shown.MATCHES.value, "2");
-      assert.match(shown.MATCHES.cls, /\btone-cyan\b/);
-      assert.equal(shown.STRONG.value, "1");
-      assert.equal(shown["LIVE TAPES"].value, "7/9");
-      assert.match(shown["LIVE TAPES"].note, /No data yet today: TSLA/);
-      assert.match(shown["LIVE TAPES"].cls, /\btone-hot\b/);
-      assert.equal(shown.FEED.value, feed.value);
-      assert.match(shown.FEED.cls, new RegExp(`\\b${feed.tone}\\b`));
-      if (feed.value === "GAP") assert.match(shown.FEED.note, /No data 04:00-07:00 ET/);
+      assert.deepEqual(Object.keys(shown), ["Matches", "Strong", "Live tapes", "Feed"]);
+      assert.equal(shown.Matches.value, "2");
+      assert.match(shown.Matches.cls, /\btone-cyan\b/);
+      assert.equal(shown.Strong.value, "1");
+      assert.equal(shown["Live tapes"].value, "7/9");
+      assert.match(shown["Live tapes"].note, /No data yet today: TSLA/);
+      assert.match(shown["Live tapes"].cls, /\btone-hot\b/);
+      assert.equal(shown.Feed.value, feed.value);
+      assert.match(shown.Feed.cls, new RegExp(`\\b${feed.tone}\\b`));
+      if (feed.value === "GAP") assert.match(shown.Feed.note, /No data 04:00-07:00 ET/);
       assert.deepEqual(app.pageErrors, []);
     });
   }
@@ -73,7 +73,7 @@ e2eTest("the table lists the rows in the scanner's %Chg order, or says why it is
     await page.locator(PILLS).nth(1).waitFor({ timeout: 90_000 });
     assert.deepEqual((await page.locator(PILLS).allInnerTexts()).map((t) => t.trim()), ["NVDA", "AAPL"]);
     assert.equal(await page.locator(`${PILLS}[aria-label='Open AAPL on the 5-minute chart']`).count(), 1);
-    assert.match(await page.locator(".premarket-scanner-card .table-toolbar").first().innerText(), /PREMARKET SCANNER/);
+    assert.match(await page.locator(".premarket-scanner-card .table-toolbar").first().innerText(), /Premarket scanner/);
     assert.deepEqual(app.pageErrors, []);
   });
   const quiet = "0 of 7 live tickers match in this premarket window.";
