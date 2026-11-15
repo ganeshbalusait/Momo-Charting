@@ -6,6 +6,7 @@ import { installPhoneLayoutDiagnostics, isDiagnosticsRequested } from "./phoneLa
 import { installUpdateWatch } from "./appVersion";
 import "./index.css";
 import "./theme.css";
+import "./theme.hallmark.css";
 // Marks <html> with the screens that have the new look (the Scanner).
 import "./theme.js";
 

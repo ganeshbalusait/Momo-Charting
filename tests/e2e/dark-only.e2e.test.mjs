@@ -1,6 +1,6 @@
 // The app is dark only (2026-11-13: Ganesh dropped the Light theme). The
-// top strip and the left rail have the clean look (Inter / system font, calm
-// colours); there is no Dark / Light switch anywhere, and a Light choice made
+// top strip and the left rail have the Hallmark Midnight look (Mona Sans,
+// deep navy, 2026-11-14); there is no Dark / Light switch anywhere, and a Light choice made
 // with the old switch is forgotten. The feature makes no server call.
 
 import assert from "node:assert/strict";
@@ -10,7 +10,7 @@ import { DESKTOP, PHONE, e2eTest, overflowsSideways, withApp } from "./harness.m
 const MORE = ".mobile-chart-bottom-nav button[aria-expanded]";
 const STRIP = "header.topbar.trading-header";
 const STATIC_VIEW = "Learn + Setup";
-const NEW_FONT = /^(-apple-system|"?Segoe UI|system-ui|"?Inter)/i;
+const NEW_FONT = /^"?Mona Sans/i;
 const SWITCH = "[data-testid='theme-toggle'], [data-testid='theme-toggle-menu']";
 
 const theme = (page) => page.evaluate(() => document.documentElement.getAttribute("data-theme"));
@@ -117,8 +117,8 @@ e2eTest("the strip and rail have the dark clean-look colours", async () => {
   await withApp({ view: STATIC_VIEW }, async ({ page }) => {
     await ready(page, DESKTOP);
     const bg = (selector) => page.locator(selector).first().evaluate((node) => getComputedStyle(node).backgroundColor);
-    assert.equal(await bg(STRIP), "rgb(0, 0, 0)");
-    assert.equal(await bg("aside.sidebar"), "rgb(28, 28, 30)");
+    assert.equal(await bg(STRIP), "oklch(0.115 0.045 264)");
+    assert.equal(await bg("aside.sidebar"), "oklch(0.115 0.045 264)");
   });
 });
 

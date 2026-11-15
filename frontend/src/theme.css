@@ -351,63 +351,63 @@
   --agx-font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --momx-ui-font: var(--agx-font);
   --momx-num-font: var(--agx-font);
-  --momx-surface: #050506;
-  --momx-row: #141416;
-  --momx-row-alt: #141416;
-  --momx-row-hover: #1c1c1f;
+  --momx-surface: var(--hm-paper-3);
+  --momx-row: var(--hm-paper-2);
+  --momx-row-alt: var(--hm-paper-2);
+  --momx-row-hover: var(--hm-raise);
   --momx-line: rgba(255, 255, 255, 0.05);
   --momx-line-strong: rgba(255, 255, 255, 0.09);
-  --momx-ink: #f5f5f7;
-  --momx-ink-dim: #8e8e93;
+  --momx-ink: var(--hm-ink);
+  --momx-ink-dim: var(--hm-muted);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-view,
 :root[data-agx-skin~="scanner"] .app-shell.charts-workstation > .workspace:has(> .momx-scanner-view) {
-  background: #050506;
+  background: var(--hm-paper-3);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel {
   border-color: transparent;
-  background: #050506;
+  background: var(--hm-paper-3);
 }
 
 /* the board itself: one soft card */
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-table-scroll {
   border-color: rgba(255, 255, 255, 0.06);
   border-radius: 16px;
-  background: #141416;
+  background: var(--hm-paper-2);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-group-row th {
-  background: #141416;
+  background: var(--hm-paper-2);
   color: #636366;
   letter-spacing: 0.12em;
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-group-label {
-  color: #8e8e93;
+  color: var(--hm-muted);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th,
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th.momx-col-symbol {
-  background: #141416;
-  color: #8e8e93;
+  background: var(--hm-paper-2);
+  color: var(--hm-muted);
   font-weight: 600;
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th.is-sortable:hover {
-  color: #f5f5f7;
+  color: var(--hm-ink);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-head-row th.is-sorted {
-  color: #4da3ff;
+  color: var(--hm-cool);
 }
 
 /* iPhone-style switches (Live / History, Bull / Bear, timeframes) */
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-seg {
   border-color: transparent;
   border-radius: 10px;
-  background: #1c1c1f;
+  background: var(--hm-raise);
   padding: 2px;
   gap: 2px;
 }
@@ -415,12 +415,12 @@
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-segbtn {
   border-radius: 8px;
   background: transparent;
-  color: #a1a1a6;
+  color: var(--hm-muted);
   font-weight: 600;
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-segbtn.is-active {
-  background: #3a3a3c;
+  background: var(--hm-raise-2);
   color: #ffffff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
@@ -429,8 +429,8 @@
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-listbtn {
   border-color: transparent;
   border-radius: 10px;
-  background: #1c1c1f;
-  color: #f5f5f7;
+  background: var(--hm-raise);
+  color: var(--hm-ink);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-listbtn.is-open,
@@ -451,12 +451,12 @@
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-icon-btn,
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-industry-toggle {
   border-color: rgba(255, 255, 255, 0.08);
-  background: #1c1c1f;
+  background: var(--hm-raise);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-icon-btn {
   border-radius: 9px;
-  color: #a1a1a6;
+  color: var(--hm-muted);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-btn:hover:not(:disabled),
@@ -475,11 +475,11 @@
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-universe-input {
   border-color: rgba(255, 255, 255, 0.08);
   border-radius: 10px;
-  background: #141416;
+  background: var(--hm-paper-2);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-universe-input:focus {
-  border-color: #0a84ff;
+  border-color: var(--hm-cool);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-toggle input {
@@ -489,12 +489,12 @@
 /* sector strip */
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector {
   border-radius: 10px;
-  background: #141416;
+  background: var(--hm-paper-2);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector:hover,
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector.is-active {
-  background: #1c1c1f;
+  background: var(--hm-raise);
 }
 
 /* dialogs and the ticker card: the same soft card */
@@ -505,13 +505,13 @@
 :root[data-agx-skin~="scanner"] .momx-popout-window {
   border-color: rgba(255, 255, 255, 0.08);
   border-radius: 16px;
-  background: #141416;
+  background: var(--hm-paper-2);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
 }
 
 /* An empty spread cell shows "-": quiet, but readable on the card. */
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel td.momx-cell.momx-spreadcol.is-none {
-  color: #8e8e93;
+  color: var(--hm-muted);
 }
 
 /* Inter is a little wider than the old font; Apple-style buttons use normal
@@ -540,17 +540,17 @@
   padding: 8px 12px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 12px;
-  background: #141416;
+  background: var(--hm-paper-2);
   font-size: 13px;
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector:hover {
-  background: #1c1c1f;
+  background: var(--hm-raise);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector.is-active {
-  border-color: #0a84ff;
-  background: #1c1c1f;
+  border-color: var(--hm-cool);
+  background: var(--hm-raise);
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector.is-hot {
@@ -566,7 +566,7 @@
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-name {
   order: 1;
-  color: #f5f5f7;
+  color: var(--hm-ink);
   font-size: 14px;
   font-weight: 700;
 }
@@ -574,13 +574,13 @@
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-avg {
   order: 3;
   margin-left: auto;
-  color: #f5f5f7;
+  color: var(--hm-ink);
   font-weight: 700;
 }
 
 :root[data-agx-skin~="scanner"] .momx-scanner-panel .momx-sector-count {
   order: 2;
-  color: #8e8e93;
+  color: var(--hm-muted);
   font-size: 12px;
 }
 
@@ -603,7 +603,7 @@
   padding: 0 7px;
   border-radius: 7px;
   background: #1f1f22;
-  color: #f5f5f7;
+  color: var(--hm-ink);
   font-size: 11.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -659,11 +659,11 @@ body {
 
 .app-shell.charts-workstation .sidebar.agx-skin nav .nav-item.nav-active {
   background: rgba(10, 132, 255, 0.18);
-  color: #4da3ff;
+  color: var(--hm-cool);
 }
 
 .app-shell.charts-workstation .sidebar.agx-skin nav .nav-item.nav-active .nav-icon {
-  color: #4da3ff;
+  color: var(--hm-cool);
 }
 
 /* 3. Scanner: more air, sentence-case rounded buttons, softer tags. */
@@ -727,12 +727,12 @@ body {
 
 :root .app-shell.charts-workstation .oi-chart-layout-toolbar {
   border-color: rgba(255, 255, 255, 0.06) !important;
-  background: #0b0b0d !important;
+  background: var(--hm-paper) !important;
 }
 
 :root .app-shell.charts-workstation .oi-chart-layout-grid,
 :root .app-shell.charts-workstation .charts-oi-resize-handle {
-  background: #0b0b0d !important;
+  background: var(--hm-paper) !important;
 }
 
 :root .app-shell.charts-workstation .oi-finder-chart-card {
@@ -746,11 +746,11 @@ body {
 
 :root .app-shell.charts-workstation :is(.oi-chart-quick-tickers, .oi-finder-quick-symbols) button:hover {
   border-color: rgba(255, 255, 255, 0.1) !important;
-  background: #1c1c1f !important;
+  background: var(--hm-raise) !important;
 }
 
 :root .app-shell.charts-workstation :is(.oi-chart-quick-tickers, .oi-finder-quick-symbols) button.is-active {
-  border-color: #0a84ff !important;
+  border-color: var(--hm-cool) !important;
   background: rgba(10, 132, 255, 0.22) !important;
   color: #ffffff !important;
   box-shadow: none !important;
@@ -762,7 +762,7 @@ body {
 }
 
 :root .app-shell.charts-workstation .oi-finder-timeframes button.is-active {
-  background: #3a3a3c !important;
+  background: var(--hm-raise-2) !important;
   color: #ffffff !important;
   box-shadow: none !important;
 }
@@ -773,16 +773,16 @@ body {
 :root .app-shell.charts-workstation .charts-oi-tos-chain header button {
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-radius: 9px !important;
-  background: #2c2c2e !important;
+  background: var(--hm-raise) !important;
 }
 
 :root .app-shell.charts-workstation :is(.oi-chart-workspace-toggle, .oi-finder-chart-control, .chart-icon-action, .charts-oi-chain-side-toggle, .oi-finder-chart-actions > button):hover {
   border-color: rgba(10, 132, 255, 0.6) !important;
-  background: #3a3a3c !important;
+  background: var(--hm-raise-2) !important;
 }
 
 :root .app-shell.charts-workstation .oi-chart-workspace-toggle.is-active {
-  border-color: #0a84ff !important;
+  border-color: var(--hm-cool) !important;
   background: rgba(10, 132, 255, 0.22) !important;
   box-shadow: none !important;
 }
@@ -803,7 +803,7 @@ body {
 :root .app-shell.charts-workstation :is(.oi-chart-layout-menu, .charts-oi-chain-add-menu) {
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-radius: 14px !important;
-  background: #1c1c1f !important;
+  background: var(--hm-raise) !important;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6) !important;
 }
 
@@ -811,41 +811,41 @@ body {
 :root .app-shell.charts-workstation .oi-finder-chart-card input {
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-radius: 8px !important;
-  background: #1c1c1f !important;
+  background: var(--hm-raise) !important;
 }
 
 :root .app-shell.charts-workstation .ticker-identity-strip {
   border-color: rgba(255, 255, 255, 0.06) !important;
   border-radius: 8px !important;
-  background: #1c1c1f !important;
+  background: var(--hm-raise) !important;
 }
 
 /* option chain beside the chart */
 :root .app-shell.charts-workstation .charts-oi-tos-chain,
 :root .app-shell.charts-workstation .high-oi-panel {
   border-color: rgba(255, 255, 255, 0.06) !important;
-  background: #0b0b0d !important;
+  background: var(--hm-paper) !important;
 }
 
 :root .app-shell.charts-workstation :is(.charts-oi-chain-view-tabs, .high-oi-stats) {
-  background: #141416 !important;
+  background: var(--hm-paper-2) !important;
 }
 
 :root .app-shell.charts-workstation .charts-oi-chain-view-tabs button {
   border-color: transparent !important;
   border-radius: 8px !important;
-  background: #2c2c2e !important;
+  background: var(--hm-raise) !important;
 }
 
 :root .app-shell.charts-workstation .charts-oi-chain-view-tabs button.is-active {
-  border-color: #0a84ff !important;
+  border-color: var(--hm-cool) !important;
   background: rgba(10, 132, 255, 0.22) !important;
   color: #ffffff !important;
 }
 
 :root .app-shell.charts-workstation :is(.charts-oi-tos-chain, .high-oi-panel) th {
-  background: #141416 !important;
-  color: #8e8e93 !important;
+  background: var(--hm-paper-2) !important;
+  color: var(--hm-muted) !important;
 }
 
 :root .app-shell.charts-workstation .high-oi-panel td {
@@ -866,11 +866,11 @@ body {
 /* chart scrollbar */
 :root .app-shell.charts-workstation .oi-chart-scrollbar {
   border-color: rgba(255, 255, 255, 0.06) !important;
-  background: #0b0b0d !important;
+  background: var(--hm-paper) !important;
 }
 
 :root .app-shell.charts-workstation .oi-chart-scrollbar-arrow {
-  background: #1c1c1f !important;
+  background: var(--hm-raise) !important;
 }
 
 /* ================================================================ Options
@@ -879,23 +879,23 @@ body {
    chain panel shares the Charts & OI rules above. */
 
 :root .app-shell.charts-workstation .mobile-quick-options-view {
-  background: #050506 !important;
+  background: var(--hm-paper-3) !important;
 }
 
 :root .app-shell.charts-workstation .mobile-quick-options-header {
   border-color: rgba(255, 255, 255, 0.06) !important;
   border-radius: 16px !important;
-  background: #141416 !important;
+  background: var(--hm-paper-2) !important;
 }
 
 :root .app-shell.charts-workstation .mobile-quick-options-title > span {
-  color: #8e8e93 !important;
+  color: var(--hm-muted) !important;
   text-transform: none !important;
   letter-spacing: 0 !important;
 }
 
 :root .app-shell.charts-workstation .mobile-quick-options-title b {
-  color: #f5f5f7 !important;
+  color: var(--hm-ink) !important;
   text-transform: none !important;
   letter-spacing: 0 !important;
 }
@@ -904,12 +904,12 @@ body {
 :root .app-shell.charts-workstation .mobile-quick-options-search :is(input, button) {
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-radius: 10px !important;
-  background: #1c1c1f !important;
+  background: var(--hm-raise) !important;
 }
 
 :root .app-shell.charts-workstation .mobile-quick-options-search > button:not(.is-refresh) {
-  border-color: #0a84ff !important;
-  background: #0a84ff !important;
+  border-color: var(--hm-cool) !important;
+  background: var(--hm-cool) !important;
   color: #ffffff !important;
 }
 
@@ -917,12 +917,12 @@ body {
 :root .app-shell.charts-workstation .mobile-quick-options-tickers button {
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-radius: 9px !important;
-  background: #1c1c1f !important;
+  background: var(--hm-raise) !important;
   color: #d1d1d6 !important;
 }
 
 :root .app-shell.charts-workstation .mobile-quick-options-tickers button.is-active {
-  border-color: #0a84ff !important;
+  border-color: var(--hm-cool) !important;
   background: rgba(10, 132, 255, 0.22) !important;
   color: #ffffff !important;
   box-shadow: none !important;
@@ -932,19 +932,19 @@ body {
 :root .app-shell.charts-workstation .mobile-options-sections {
   border-color: rgba(255, 255, 255, 0.06) !important;
   border-radius: 14px !important;
-  background: #141416 !important;
+  background: var(--hm-paper-2) !important;
 }
 
 :root .app-shell.charts-workstation .mobile-options-sections button {
   border-color: transparent !important;
   border-radius: 10px !important;
   background: transparent !important;
-  color: #a1a1a6 !important;
+  color: var(--hm-muted) !important;
   box-shadow: none !important;
 }
 
 :root .app-shell.charts-workstation .mobile-options-sections button.is-active {
-  background: #3a3a3c !important;
+  background: var(--hm-raise-2) !important;
   color: #ffffff !important;
 }
 
@@ -956,14 +956,14 @@ body {
 
 :root .app-shell.charts-workstation .mobile-full-option-chain > header {
   border-radius: 16px 16px 0 0 !important;
-  background: #141416 !important;
+  background: var(--hm-paper-2) !important;
 }
 
 /* research buttons under the chain */
 :root .app-shell.charts-workstation .mobile-options-research-launcher button {
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-radius: 999px !important;
-  background: #1c1c1f !important;
+  background: var(--hm-raise) !important;
 }
 
 /* ---------------------------------------------------------------------
@@ -989,15 +989,15 @@ body {
 :root .app-shell .high-oi-row.is-call:not(.is-tone-green):not(.is-tone-red) .high-oi-oi > i { background: rgba(34, 211, 238, 0.40) !important; }
 :root .app-shell .high-oi-row.is-put:not(.is-tone-green):not(.is-tone-red) .high-oi-oi > i { background: rgba(244, 114, 208, 0.40) !important; }
 /* +EM / Last / -EM lines: same colours, quieter bar */
-:root .app-shell .high-oi-em td { background: #141416 !important; letter-spacing: 0 !important; font-weight: 700 !important; }
+:root .app-shell .high-oi-em td { background: var(--hm-paper-2) !important; letter-spacing: 0 !important; font-weight: 700 !important; }
 
 /* controls above the table */
-:root .app-shell .high-oi-controls input { border-color: transparent !important; border-radius: 8px !important; background: #1c1c1f !important; }
-:root .app-shell .high-oi-controls > button { border-color: transparent !important; border-radius: 999px !important; background: rgba(10, 132, 255, 0.18) !important; color: #4da3ff !important; }
-:root .app-shell .high-oi-controls > button:not(.is-active) { background: #1c1c1f !important; color: #a1a1a6 !important; }
-:root .app-shell .charts-oi-walls-picker button { border-color: transparent !important; border-radius: 7px !important; background: #1c1c1f !important; color: #a1a1a6 !important; }
-:root .app-shell .charts-oi-walls-picker button.is-active { background: #3a3a3c !important; color: #f5f5f7 !important; }
-:root .app-shell .charts-oi-walls-picker > span { color: #a1a1a6 !important; }
+:root .app-shell .high-oi-controls input { border-color: transparent !important; border-radius: 8px !important; background: var(--hm-raise) !important; }
+:root .app-shell .high-oi-controls > button { border-color: transparent !important; border-radius: 999px !important; background: rgba(10, 132, 255, 0.18) !important; color: var(--hm-cool) !important; }
+:root .app-shell .high-oi-controls > button:not(.is-active) { background: var(--hm-raise) !important; color: var(--hm-muted) !important; }
+:root .app-shell .charts-oi-walls-picker button { border-color: transparent !important; border-radius: 7px !important; background: var(--hm-raise) !important; color: var(--hm-muted) !important; }
+:root .app-shell .charts-oi-walls-picker button.is-active { background: var(--hm-raise-2) !important; color: var(--hm-ink) !important; }
+:root .app-shell .charts-oi-walls-picker > span { color: var(--hm-muted) !important; }
 
 /* Left menu icons, 2026-11-13 ("I want give new icon"): each page gets its own
    coloured rounded tile with a white symbol, like iPhone Settings. The tile is
@@ -1025,7 +1025,7 @@ body {
 :root .app-shell .sidebar.agx-skin nav .nav-item[title="Release Notes"] .nav-icon { --nav-tile: #636366; }
 :root .app-shell .sidebar.agx-skin nav .nav-item[title="Settings"] .nav-icon { --nav-tile: #8e8e93; }
 /* The tile now says which page it is, so the page you are on is a calm grey row. */
-:root .app-shell .sidebar.agx-skin nav .nav-item.nav-active { background: rgba(255, 255, 255, 0.10) !important; color: #f5f5f7 !important; }
+:root .app-shell .sidebar.agx-skin nav .nav-item.nav-active { background: rgba(255, 255, 255, 0.10) !important; color: var(--hm-ink) !important; }
 /* Same tiles, iPhone finish: each colour lights from the top and deepens to the
    bottom, with a glass shine on the upper half, a thin light rim and a soft
    shadow under the tile. Still only colour inside the same 24px box. */
@@ -1045,15 +1045,15 @@ body {
    More sheet gets the same glossy coloured icons as the computer's left menu.
    Colours, corners and the More icons' size only; the bar keeps its height. */
 :root .app-shell .mobile-chart-bottom-nav { background: rgba(22, 22, 24, 0.82) !important; -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border-top: 0.5px solid rgba(255, 255, 255, 0.10) !important; box-shadow: none !important; }
-:root .app-shell .mobile-chart-bottom-nav button { color: #8e8e93 !important; background: transparent !important; box-shadow: none !important; font-weight: 500 !important; letter-spacing: 0 !important; }
-:root .app-shell .mobile-chart-bottom-nav button.is-active { color: #0a84ff !important; background: transparent !important; }
+:root .app-shell .mobile-chart-bottom-nav button { color: var(--hm-muted) !important; background: transparent !important; box-shadow: none !important; font-weight: 500 !important; letter-spacing: 0 !important; }
+:root .app-shell .mobile-chart-bottom-nav button.is-active { color: var(--hm-cool) !important; background: transparent !important; }
 :root .app-shell .mobile-chart-bottom-nav button::before { opacity: 0 !important; }
 :root .app-shell .mobile-chart-bottom-nav button.is-active svg { stroke-width: 2.3px; }
 
-:root .mobile-more-sheet { background: #1c1c1e !important; border-color: rgba(255, 255, 255, 0.08) !important; }
-:root .mobile-more-sheet > header b { color: #f5f5f7 !important; letter-spacing: 0 !important; text-transform: none !important; font-weight: 700 !important; }
-:root .mobile-more-sheet .mobile-more-grid button { border: 0 !important; border-radius: 14px !important; background: #2c2c2e !important; color: #f5f5f7 !important; font-weight: 500 !important; letter-spacing: 0 !important; }
-:root .mobile-more-sheet .mobile-more-grid button.is-active { background: rgba(10, 132, 255, 0.20) !important; box-shadow: inset 0 0 0 1.5px #0a84ff !important; }
+:root .mobile-more-sheet { background: var(--hm-paper-2) !important; border-color: rgba(255, 255, 255, 0.08) !important; }
+:root .mobile-more-sheet > header b { color: var(--hm-ink) !important; letter-spacing: 0 !important; text-transform: none !important; font-weight: 700 !important; }
+:root .mobile-more-sheet .mobile-more-grid button { border: 0 !important; border-radius: 14px !important; background: var(--hm-raise) !important; color: var(--hm-ink) !important; font-weight: 500 !important; letter-spacing: 0 !important; }
+:root .mobile-more-sheet .mobile-more-grid button.is-active { background: rgba(10, 132, 255, 0.20) !important; box-shadow: inset 0 0 0 1.5px var(--hm-cool) !important; }
 :root .mobile-more-sheet .mobile-more-grid button > svg {
   --nav-tile: #636366; --nav-glyph: #ffffff;
   box-sizing: border-box; width: 30px; height: 30px; flex: 0 0 30px; padding: 6px; border-radius: 8px; overflow: visible;
@@ -1086,8 +1086,8 @@ body {
 
 /* ===== All pages, 2026-11-14 ("Change all the panels phone and desktop") =====
    One dark Apple look for every page's cards, toolbars and buttons: cards are
-   #1c1c1e with a hairline edge and 14px corners, plain buttons are grey
-   (#2c2c2e), the main button is blue, the chosen tab is a blue tint. Border
+   var(--hm-paper-2) with a hairline edge and 14px corners, plain buttons are grey
+   (var(--hm-raise)), the main button is blue, the chosen tab is a blue tint. Border
    widths are kept (only made see-through) so nothing changes size. Signal
    colours (cyan/magenta, green/red tags, TOS colours) are not touched. */
 :root .app-shell :is(.data-card, .scanner-overview-card, .no-setups, .watchlist-panel, .watchlist-row-card, .learn-section, .learn-tabs,
@@ -1097,50 +1097,50 @@ body {
   .oi-level-script-card, .oi-level-script-controls, .oi-level-script-output, .release-entry,
   .preflight-headline, .preflight-strip, .preflight-day-detail, .admin-user-list, .admin-device-list, .schwab-auth-steps,
   .schwab-app-key, .personal-provider-card, .table-column-picker-menu) {
-  background: #1c1c1e !important;
+  background: var(--hm-paper-2) !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-radius: 14px !important;
   box-shadow: none !important;
 }
-:root .app-shell :is(.table-toolbar, .table-column-toolbar, .news-filter-row) { background: #1c1c1e !important; border-color: rgba(255, 255, 255, 0.08) !important; }
-:root .app-shell :is(.table-column-option, .tt-side, .bot-seg, .news-universe-tabs, .oi-level-script-platform-tabs) { background: #2c2c2e !important; border-color: transparent !important; border-radius: 10px !important; }
+:root .app-shell :is(.table-toolbar, .table-column-toolbar, .news-filter-row) { background: var(--hm-paper-2) !important; border-color: rgba(255, 255, 255, 0.08) !important; }
+:root .app-shell :is(.table-column-option, .tt-side, .bot-seg, .news-universe-tabs, .oi-level-script-platform-tabs) { background: var(--hm-raise) !important; border-color: transparent !important; border-radius: 10px !important; }
 
 /* Plain buttons */
 :root .app-shell :is(.table-column-move, .table-column-reset, .table-sort-button, .news-refresh-button, .learn-tab, .learn-goto,
   .watchlist-edit-btn, .watchlist-close, .long-term-btn, .mt-btn, .preflight-day, .earnings-image-paste, .oi-level-script-copy,
   .auto-alert-card-refresh, .signal-explain-close, .roi-option-ladder-row) {
-  background: #2c2c2e !important;
+  background: var(--hm-raise) !important;
   border-color: transparent !important;
   border-radius: 10px !important;
-  color: #f5f5f7 !important;
+  color: var(--hm-ink) !important;
   box-shadow: none !important;
 }
 /* The main button on a page */
 :root .app-shell :is(.watchlist-add-button, .preflight-run-button, .schwab-save-button, .config-save-button, .schwab-renew-button, .tt-primary) {
-  background: #0a84ff !important;
+  background: var(--hm-cool) !important;
   border-color: transparent !important;
   border-radius: 10px !important;
   color: #ffffff !important;
   box-shadow: none !important;
 }
 :root .app-shell :is(.learn-tab, .news-universe-tabs button, .oi-level-script-platform-tabs button, .bot-seg button).is-active,
-:root .app-shell .learn-tab[aria-selected="true"] { background: rgba(10, 132, 255, 0.20) !important; color: #4da3ff !important; border-color: transparent !important; }
+:root .app-shell .learn-tab[aria-selected="true"] { background: rgba(10, 132, 255, 0.20) !important; color: var(--hm-cool) !important; border-color: transparent !important; }
 :root .app-shell :is(.watchlist-delete-btn, .is-danger) { border-color: transparent !important; border-radius: 10px !important; }
 
 /* Text boxes and pickers inside those cards */
 :root .app-shell :is(.data-card, .watchlist-panel, .roi-calc-inputs, .oi-level-script-controls, .news-filter-row, .table-toolbar, .tt-card, .schwab-app-key, .personal-provider-card, .earnings-command-band) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) {
-  background: #2c2c2e !important;
+  background: var(--hm-raise) !important;
   border-color: transparent !important;
   border-radius: 10px !important;
-  color: #f5f5f7 !important;
+  color: var(--hm-ink) !important;
 }
 
 /* Sectors keep their Robinhood colours (white cards, red/green heat): 2026-11-14,
    "not inside the sectors colors revert back same as robinhood". */
 
 /* Release notes: calm headings in the app font. */
-:root .app-shell .release-notes-title { color: #a1a1a6 !important; }
-:root .app-shell .release-entry-stamp { color: #8e8e93 !important; }
+:root .app-shell .release-notes-title { color: var(--hm-muted) !important; }
+:root .app-shell .release-entry-stamp { color: var(--hm-muted) !important; }
 
 /* Phone bottom bar, 2026-11-14 ("phone below panels I don't see new looks"):
    the same glossy coloured icons as the More menu and the computer's left
@@ -1179,10 +1179,10 @@ body {
    grey with white text), and the Exp move / EM / OI numbers sit on one rounded
    card. Colour and corners only: the card edge is drawn with clip-path, so the
    numbers and the table below do not move. */
-:root .app-shell.charts-workstation .charts-oi-chain-view-tabs { background: #0b0b0d !important; }
-:root .app-shell.charts-workstation .charts-oi-chain-view-tabs button { border-color: transparent !important; border-radius: 8px !important; background: #1c1c1f !important; color: #a1a1a6 !important; }
-:root .app-shell.charts-workstation .charts-oi-chain-view-tabs button.is-active { border-color: transparent !important; background: #3a3a3c !important; color: #f5f5f7 !important; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4) !important; }
-:root .app-shell.charts-workstation .high-oi-stats { background: #17171a !important; clip-path: inset(2px 5px round 12px); border-color: transparent !important; }
-:root .app-shell.charts-workstation .high-oi-stats small { color: #8e8e93 !important; }
-:root .app-shell.charts-workstation :is(.charts-oi-tos-chain, .charts-oi-chain) > header b { color: #f5f5f7 !important; }
-:root .app-shell.charts-workstation :is(.charts-oi-tos-chain, .charts-oi-chain) > header small { color: #a1a1a6 !important; }
+:root .app-shell.charts-workstation .charts-oi-chain-view-tabs { background: var(--hm-paper) !important; }
+:root .app-shell.charts-workstation .charts-oi-chain-view-tabs button { border-color: transparent !important; border-radius: 8px !important; background: var(--hm-raise) !important; color: var(--hm-muted) !important; }
+:root .app-shell.charts-workstation .charts-oi-chain-view-tabs button.is-active { border-color: transparent !important; background: var(--hm-raise-2) !important; color: var(--hm-ink) !important; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4) !important; }
+:root .app-shell.charts-workstation .high-oi-stats { background: var(--hm-paper-2) !important; clip-path: inset(2px 5px round 12px); border-color: transparent !important; }
+:root .app-shell.charts-workstation .high-oi-stats small { color: var(--hm-muted) !important; }
+:root .app-shell.charts-workstation :is(.charts-oi-tos-chain, .charts-oi-chain) > header b { color: var(--hm-ink) !important; }
+:root .app-shell.charts-workstation :is(.charts-oi-tos-chain, .charts-oi-chain) > header small { color: var(--hm-muted) !important; }

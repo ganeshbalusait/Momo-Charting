@@ -1,0 +1,418 @@
+/* Hallmark · v2.0.0 · theme: midnight (by request, after previews of console, rim, dusk and vantage on the app) · genre: modern-minimal · shape: app screen · redesign: restyle · scope: app
+ * critique: a trading terminal on Apple greys read as a generic dark template; Midnight gives it a navy ground, cool white ink and one light-blue signal that sits beside the cyan calls
+ * built: the project · keeps: every layout, chart drawing, TOS colour key, Sectors heat map, cyan/magenta signals and the glossy page icons (asked for by the owner)
+ * waive 30a/F5: the glossy coloured page icons are the owner's explicit request (2026-11-13/14) · waive 48: index.css keeps its own literal colours, restyled from here */
+
+/* Midnight, from Hallmark (MIT); the file began as Console, the structure is shared. Loaded after theme.css, so these tokens repaint
+   every rule theme.css writes with var(--hm-*). 2026-11-14, "See this repo
+   redesign our app ... check app icons and fonts everything and do it". */
+:root {
+  --hm-paper: oklch(14% 0.048 264);
+  --hm-paper-2: oklch(18.5% 0.052 264);
+  --hm-paper-3: oklch(11.5% 0.045 264);
+  --hm-raise: oklch(23% 0.055 264);
+  --hm-raise-2: oklch(29% 0.058 264);
+  --hm-ink: oklch(95% 0.016 250);
+  --hm-ink-2: oklch(88% 0.05 245);
+  --hm-muted: oklch(73% 0.04 256);
+  --hm-rule: oklch(29% 0.058 264);
+  --hm-rule-2: oklch(40% 0.06 262);
+  --hm-accent: oklch(80% 0.11 230);
+  --hm-accent-ink: oklch(16% 0.05 264);
+  --hm-cool: oklch(84% 0.12 228);
+  --hm-cool-soft: oklch(30% 0.07 240);
+  --hm-font: "Mona Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --hm-radius-card: 10px;
+  --hm-radius-control: 6px;
+
+  /* the app's own names, pointed at the theme */
+  --agx-bg: var(--hm-paper);
+  --agx-card: var(--hm-paper-2);
+  --agx-raised: var(--hm-raise);
+  --agx-line: var(--hm-rule);
+  --agx-line-soft: var(--hm-rule);
+  --agx-text: var(--hm-ink);
+  --agx-text-2: var(--hm-muted);
+  --agx-accent: var(--hm-cool);
+  --agx-font: var(--hm-font);
+  --terminal-font: var(--hm-font);
+  --momox-ui-font: var(--hm-font);
+  --momox-mono-font: var(--hm-font);
+}
+
+/* The scanner skin sets its own font name at a higher strength. */
+:root[data-agx-skin~="scanner"] :is(.momx-scanner-panel, .momx-picker-overlay, .momx-news-overlay, .momx-filters-overlay, .momo-settings-overlay, .momx-setup-picker, .momx-colmenu, .momx-popout-window) {
+  --agx-font: var(--hm-font);
+}
+
+/* Page ground: graphite, not black. */
+:root body,
+:root .app-shell.charts-workstation,
+:root .app-shell.charts-workstation > .workspace {
+  background-color: var(--hm-paper) !important;
+}
+:root .app-shell.charts-workstation .topbar.trading-header.agx-skin,
+:root .app-shell.charts-workstation .sidebar.agx-skin {
+  background: var(--hm-paper-3) !important;
+  border-color: var(--hm-rule) !important;
+}
+
+/* Corners: 10px panels, 6px controls (kept from the first pass). */
+:root .app-shell :is(.data-card, .scanner-overview-card, .no-setups, .watchlist-panel, .watchlist-row-card, .learn-section, .learn-tabs,
+  .bot-head, .tt-card, .auto-alert-card, .auto-alert-latest, .mt-source, .forex-us-news-panel, .news-command-band, .news-metric-strip,
+  .earnings-command-band, .earnings-week-board, .earnings-lane, .earnings-release-card, .earnings-image-import,
+  .roi-calc-hero, .roi-calc-inputs, .roi-calc-formula, .roi-calc-target, .roi-calc-guide, .roi-option-target-card, .roi-option-target-results,
+  .oi-level-script-card, .oi-level-script-controls, .oi-level-script-output, .release-entry,
+  .preflight-headline, .preflight-strip, .preflight-day-detail, .admin-user-list, .admin-device-list, .schwab-auth-steps,
+  .schwab-app-key, .personal-provider-card, .table-column-picker-menu) {
+  border-radius: var(--hm-radius-card) !important;
+  border-color: var(--hm-rule) !important;
+}
+:root .app-shell :is(.table-column-move, .table-column-reset, .table-sort-button, .news-refresh-button, .learn-tab, .learn-goto,
+  .watchlist-edit-btn, .watchlist-close, .long-term-btn, .mt-btn, .preflight-day, .earnings-image-paste, .oi-level-script-copy,
+  .auto-alert-card-refresh, .signal-explain-close, .roi-option-ladder-row) {
+  border-radius: var(--hm-radius-control) !important;
+  border-color: var(--hm-rule-2) !important;
+  background: var(--hm-paper-2) !important;
+}
+
+/* The one primary control per page: light blue, the theme's one signal. */
+:root .app-shell :is(.watchlist-add-button, .preflight-run-button, .schwab-save-button, .config-save-button, .schwab-renew-button, .tt-primary) {
+  background: var(--hm-accent) !important;
+  border-color: var(--hm-accent) !important;
+  color: var(--hm-accent-ink) !important;
+  border-radius: var(--hm-radius-control) !important;
+}
+
+/* Selection is the cool tint (an instrument), never a fill. */
+:root .app-shell.charts-workstation .sidebar.agx-skin nav .nav-item.nav-active,
+:root .app-shell .mobile-more-sheet .mobile-more-grid button.is-active {
+  background: var(--hm-cool-soft) !important;
+}
+:root .app-shell .mobile-chart-bottom-nav button.is-active { color: var(--hm-ink) !important; }
+
+/* Labels: the body face a step smaller, sentence case, untracked (Floor 9,
+   gate 67). Typed tickers, TOS columns and signal tags are left as they are. */
+:root :is(
+  .admin-invite-copy,
+  .app-shell.charts-workstation.is-chart-view .mobile-chart-quick-tickers > span,
+  .auth-brand b,
+  .auth-brand small,
+  .auth-form label,
+  .account-password-grid label,
+  .admin-user-create-grid label,
+  .personal-provider-card label,
+  .auto-alert-card > header > small,
+  .auto-alert-drawer-chips span,
+  .auto-alert-drawer-meta,
+  .auto-alert-drawer-status,
+  .auto-alert-latest > header b,
+  .auto-alert-state,
+  .auto-alert-target span,
+  .backtest-status span,
+  .bot-badge,
+  .bot-chip,
+  .bot-kpi-label,
+  .bot-search,
+  .bot-table th,
+  .brand b,
+  .brand small,
+  .chart-project-roi > header b,
+  .charts-oi-chain th,
+  .charts-oi-chain-color-key,
+  .charts-oi-chain-color-key > b,
+  .chat-from,
+  .chat-kind,
+  .chat-q span,
+  .close-all-button,
+  .dashboard-activity-list b,
+  .dashboard-book header em,
+  .dashboard-engine-list b,
+  .dashboard-eyebrow,
+  .dashboard-hero-kpis span,
+  .dashboard-kpi-strip span,
+  .dashboard-book-stats span,
+  .dashboard-book-balance > span,
+  .dashboard-learning-metrics span,
+  .dashboard-learning-insights span,
+  .desk-check-state,
+  .desk-stamp,
+  .earnings-command-band > div:first-child > span,
+  .earnings-image-import > header span,
+  .earnings-lane > header,
+  .earnings-row span,
+  .earnings-summary-grid span,
+  .earnings-week-toolbar > div:first-child span,
+  .forex-us-event-copy small,
+  .forex-us-news-title span:not(.forex-us-news-icon),
+  .forex-us-week-title,
+  .high-oi-scroll th,
+  .high-oi-stats small,
+  .journal-day-head span,
+  .journal-weekdays span,
+  .journal-week-total small,
+  .learn-defs dt,
+  .learning-daily-explanation-grid article > span,
+  .learning-model-diagnostics span,
+  .learning-verdict,
+  .learn-tab,
+  .long-term-drawer > header > b,
+  .long-term-footer span,
+  .long-term-pill,
+  .long-term-table > thead > tr > th button,
+  .long-term-table > thead > tr > th.is-plain,
+  .long-term-tag,
+  .long-term-tile span,
+  .mag7-level-labels,
+  .mag7-wall-heading > div:first-child > span,
+  .mag7-wall-live,
+  .mag7-wall-table > header > b,
+  .mag7-wall-table-labels,
+  .mobile-card-top span,
+  .mobile-more-sheet > header b,
+  .mobile-options-research-launcher b,
+  .mobile-options-research-loading b,
+  .mobile-quick-options-metrics span,
+  .mobile-quick-options-table-wrap thead th,
+  .mobile-quick-options-title > span,
+  .mobile-quick-options-title b,
+  .momx-card-cell-label,
+  .momx-card-stamp small,
+  .momx-colmenu-title,
+  .momx-industry-toggle,
+  .momx-picker-builtin,
+  .momx-picker-head,
+  .momx-picker-pick,
+  .momx-popout-detach,
+  .momx-reach-walls-head,
+  .momx-scanner-panel .momx-btn,
+  .momx-scanner-panel .momx-bull,
+  .momx-scanner-panel .momx-filters-toggle,
+  .momx-scanner-panel .momx-filters-open,
+  .momx-scanner-panel .momx-find-btn,
+  .momx-scanner-panel .momx-find-headline,
+  .momx-scanner-panel .momx-group-row th,
+  .momx-scanner-panel .momx-head-row th,
+  .momx-scanner-panel .momx-history-dayrow td,
+  .momx-scanner-panel .momx-listbtn,
+  .momx-scanner-panel .momx-news-btn,
+  .momx-scanner-panel .momx-newsfeed-pill,
+  .momx-news-pop .momx-newsfeed-pill,
+  .momx-scanner-panel .momx-newsfeed-sent,
+  .momx-news-pop .momx-newsfeed-sent,
+  .momx-scanner-panel .momx-newsfeed-symbol,
+  .momx-scanner-panel .momx-segbtn,
+  .momx-scanner-panel .momx-session-link,
+  .momx-scanner-panel .momx-stat-label,
+  .momx-scanner-panel .momx-symbol,
+  .momx-scanner-panel .momx-tab,
+  .momx-scanner-panel .momx-tab-state,
+  .momx-scanner-panel .momx-tape-closed,
+  .momx-scanner-panel .momx-tape-note,
+  .momx-scanner-panel .momx-universe-label,
+  .momx-scanner-panel .momx-updating,
+  .momx-scanner-panel button.momx-symbol-link,
+  .momx-to-top,
+  .news-filter-row label,
+  .news-metric-strip span,
+  .oi-chart-multilayout.oi-chart-multilayout.oi-chart-multilayout .oi-finder-chart-search-label,
+  .oi-chart-quick-tickers > span,
+  .oi-chart-symbol-form label,
+  .oi-finder-activity-card > header > span,
+  .oi-finder-activity-tracker-top b,
+  .oi-finder-candle-countdown small,
+  .oi-finder-change-first-metric small,
+  .oi-finder-chart-search-label,
+  .oi-finder-current-atm > header b,
+  .oi-finder-current-atm-feed,
+  .oi-finder-current-atm-meta small,
+  .oi-finder-current-atm-side > b,
+  .oi-finder-current-atm-side small,
+  .oi-finder-daily-trend-sample,
+  .oi-finder-daily-trend-strikes > div > span,
+  .oi-finder-expiry-ladder th,
+  .oi-finder-five-day-build > header > span,
+  .oi-finder-five-day-selectors label,
+  .oi-finder-five-day-table-wrap th,
+  .oi-finder-flow-bucket > header b,
+  .oi-finder-flow-leaders span,
+  .oi-finder-flow-bucket span,
+  .oi-finder-header-atm-title b,
+  .oi-finder-heading > div:first-child > span,
+  .oi-finder-heatmap-activity-cards article > b,
+  .oi-finder-heatmap-activity-record > header > span,
+  .oi-finder-heatmap-axis,
+  .oi-finder-heatmap-date,
+  .oi-finder-heatmap-dominance small,
+  .oi-finder-heatmap-dominance strong,
+  .oi-finder-heatmap-expiry,
+  .oi-finder-heatmap-strike.is-atm small,
+  .oi-finder-ichimoku-status span,
+  .oi-finder-indicator-axis-label.is-live-price [data-live-countdown],
+  .oi-finder-indicator-catalog > b,
+  .oi-finder-live-atm-cell small,
+  .oi-finder-live-volume-leader > span,
+  .oi-finder-live-wall-dominance,
+  .oi-finder-live-wall-levels span,
+  .oi-finder-live-wall-summary span,
+  .oi-finder-oi-level-overlay > summary > span,
+  .oi-finder-oi-level-summary-market small,
+  .oi-finder-pending span,
+  .oi-finder-persistent-activity-counts span,
+  .oi-finder-persistent-classification,
+  .oi-finder-persistent-activity-table th,
+  .oi-finder-price-alert-list > b,
+  .oi-finder-quick-symbols > span,
+  .oi-finder-search label,
+  .oi-finder-side-table .table-scroll th,
+  .oi-finder-side-table > header b,
+  .oi-finder-symbol-dropdown button b,
+  .oi-finder-table-scroll th,
+  .oi-finder-volume-momentum > header > span,
+  .oi-finder-volume-momentum > header b,
+  .oi-finder-volume-momentum-card > span,
+  .oi-level-script-atm span,
+  .oi-level-script-card > header span,
+  .oi-level-script-controls label,
+  .oi-level-script-levels article > header b,
+  .oi-level-script-live,
+  .oi-level-script-tv-builder > header span,
+  .oi-level-script-tv-tickers > span,
+  .option-account-position-head small,
+  .option-account-position-stats span,
+  .paper-bot-banner span,
+  .preflight-autofix,
+  .preflight-autofix-failed,
+  .preflight-check-badge,
+  .preflight-critical,
+  .preflight-strip-head span,
+  .premarket-catalyst-tag,
+  .premarket-mag7-collector b,
+  .premarket-mag7-price small,
+  .premarket-mag7-range > span,
+  .premarket-mag7-status,
+  .premarket-scanner-card .premarket-catalyst-tag,
+  .premarket-scanner-card .table-group-row th,
+  .scanner-history-card .table-group-row th,
+  .premarket-scanner-card .table-sort-button,
+  .scanner-history-card .table-sort-button,
+  .premarket-scanner-card .table-toolbar span:first-child,
+  .scanner-history-card .table-toolbar span:first-child,
+  .premarket-scanner-card td[data-col="symbol"] .symbol-pill,
+  .scanner-history-card td[data-col="symbol"] .symbol-pill,
+  .premarket-scanner-card thead tr:last-child th,
+  .scanner-history-card thead tr:last-child th,
+  .premarket-strength-button,
+  .premarket-strength-pill,
+  .price-alert-auto-tag,
+  .release-entry-stamp,
+  .release-notes-title,
+  .roi-auto-tag,
+  .roi-live-reset,
+  .roi-calc-formula b,
+  .roi-calc-rule b,
+  .roi-option-current-pnl > span,
+  .roi-option-gamma-result > span,
+  .roi-option-live-price > span,
+  .roi-option-fetched-mark > span,
+  .roi-option-target-results .roi-option-estimated-exit small,
+  .scanner-day-card-symbol,
+  .scanner-history-briefing-head,
+  .scanner-history-date,
+  .scanner-history-viewtab,
+  .schwab-auth-steps > div strong,
+  .schwab-credential-grid label,
+  .schwab-expiry-badge,
+  .schwab-oauth-callback label,
+  .sector-heatmap-page > header b,
+  .table-toolbar span:first-child,
+  .top-search span,
+  .why-not-header strong
+) {
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+
+::selection { background: color-mix(in oklab, var(--hm-accent) 25%, transparent); }
+
+/* ---------------------------------------------------------------------------
+   Charts, Options and Scanner chrome (2026-11-14, "I don't see any changes ...
+   in charts, options and scanner"): these pages paint their own toolbars,
+   buttons and panels, so the theme reaches them here. The chart drawing area
+   (candles, studies, axes) is not touched. Colours and corners only. */
+
+/* Charts & OI: page, toolbars, chart frames, controls */
+:root .app-shell :is(.charts-oi-page, .scanner-results-view:has(.charts-oi-page)) { background: var(--hm-paper) !important; }
+:root .app-shell :is(.oi-chart-layout-toolbar, .oi-finder-chart-ohlc, .chart-gamma-panel, .chart-gamma-controls) {
+  background: var(--hm-paper-2) !important;
+  border-color: var(--hm-rule) !important;
+}
+:root .app-shell .oi-chart-layout-grid { background: var(--hm-rule) !important; }
+:root .app-shell .oi-finder-chart-card { border-color: var(--hm-rule) !important; }
+:root .app-shell .oi-finder-chart-card > header,
+:root .app-shell .oi-finder-chart-card .oi-finder-chart-toolbar { background: var(--hm-paper-2) !important; border-color: var(--hm-rule) !important; }
+:root .app-shell :is(.oi-finder-chart-control, .oi-finder-chart-latest, .oi-chart-workspace-toggle, .oi-finder-mobile-draw-toggle,
+  .charts-oi-chain-side-toggle, .oi-chart-layout-picker > summary, .charts-oi-chain-add > summary, .oi-chart-scrollbar-arrow) {
+  background: var(--hm-paper-2) !important;
+  border-color: var(--hm-rule-2) !important;
+  border-radius: var(--hm-radius-control) !important;
+  color: var(--hm-ink-2) !important;
+}
+:root .app-shell :is(.oi-finder-chart-control, .oi-finder-chart-latest, .oi-chart-workspace-toggle, .oi-finder-mobile-draw-toggle, .charts-oi-chain-side-toggle):hover {
+  background: var(--hm-raise) !important;
+  color: var(--hm-ink) !important;
+}
+/* the chosen timeframe / layout / toggle: the cool tint, not a cyan fill */
+:root .app-shell :is(.oi-finder-chart-card, .oi-chart-layout-toolbar, .oi-chart-layout-menu) button.is-active,
+:root .app-shell .oi-chart-workspace-toggle.is-active {
+  background: var(--hm-cool-soft) !important;
+  border-color: var(--hm-cool) !important;
+  color: var(--hm-ink) !important;
+}
+:root .app-shell :is(.oi-chart-layout-menu, .charts-oi-chain-add-menu) {
+  background: var(--hm-paper-2) !important;
+  border-color: var(--hm-rule-2) !important;
+  border-radius: var(--hm-radius-card) !important;
+}
+:root .app-shell .oi-finder-oi-level-overlay.is-external { background: color-mix(in oklab, var(--hm-paper-2) 95%, transparent) !important; border-color: var(--hm-rule) !important; border-radius: var(--hm-radius-card) !important; }
+
+/* Option chain panel (Charts and Options) */
+:root .app-shell :is(.charts-oi-tos-chain, .charts-oi-chain) { border-color: var(--hm-rule) !important; }
+:root .app-shell .charts-oi-tos-chain.mobile-full-option-chain,
+:root .app-shell .charts-oi-tos-chain.mobile-full-option-chain > header { border-radius: var(--hm-radius-card) var(--hm-radius-card) 0 0 !important; }
+:root .app-shell .charts-oi-tos-chain.mobile-full-option-chain { border-radius: var(--hm-radius-card) !important; }
+
+/* Options page: header card, ticker box, Go, chips */
+:root .app-shell.charts-workstation :is(.mobile-quick-options-header, .mobile-options-sections) {
+  background: var(--hm-paper-2) !important;
+  border: 0 solid var(--hm-rule) !important;
+  border-radius: var(--hm-radius-card) !important;
+}
+:root .app-shell .mobile-quick-options-search input { background: var(--hm-paper-3) !important; border-color: var(--hm-rule-2) !important; border-radius: var(--hm-radius-control) !important; }
+:root .app-shell.charts-workstation .mobile-quick-options-search > button:not(.is-refresh) {
+  background: var(--hm-accent) !important;
+  border-color: var(--hm-accent) !important;
+  color: var(--hm-accent-ink) !important;
+  border-radius: var(--hm-radius-control) !important;
+}
+:root .app-shell .mobile-quick-options-search > button.is-refresh { background: var(--hm-paper-2) !important; border-color: var(--hm-rule-2) !important; border-radius: var(--hm-radius-control) !important; }
+:root .app-shell :is(.mobile-quick-options-chips, .mobile-quick-options-symbols, .oi-finder-quick-symbols) button { border-radius: var(--hm-radius-control) !important; border-color: var(--hm-rule-2) !important; background: var(--hm-paper-2) !important; }
+:root .app-shell :is(.mobile-quick-options-chips, .mobile-quick-options-symbols, .oi-finder-quick-symbols) button.is-active,
+:root .app-shell .mobile-options-sections button.is-active { background: var(--hm-cool-soft) !important; border-color: var(--hm-cool) !important; color: var(--hm-ink) !important; }
+
+/* MomX Scanner: square-ish controls, chips keep their meaning colour as ink only */
+:root .app-shell .momx-scanner-panel :is(.momx-btn, .momx-bull, .momx-news-btn, .momx-icon-btn, .momx-bolt-view, .momx-listbtn) {
+  border-radius: var(--hm-radius-control) !important;
+  background: var(--hm-paper-2) !important;
+  border-color: var(--hm-rule-2) !important;
+}
+:root .app-shell .momx-scanner-panel .momx-filters-btn { border-radius: var(--hm-radius-control) !important; background: var(--hm-paper-2) !important; border-color: var(--hm-rule-2) !important; }
+:root .app-shell .momx-scanner-panel .momx-btn.is-primary {
+  background: var(--hm-accent) !important;
+  border-color: var(--hm-accent) !important;
+  color: var(--hm-accent-ink) !important;
+}
+:root .app-shell .momx-scanner-panel .momx-segbtn { border-radius: var(--hm-radius-control) !important; }
+:root .app-shell .momx-scanner-panel .momx-segbtn.is-active { background: var(--hm-cool-soft) !important; color: var(--hm-ink) !important; }
+:root .app-shell .momx-scanner-panel .momx-universe-input { background: var(--hm-paper-3) !important; border-color: var(--hm-rule-2) !important; border-radius: var(--hm-radius-control) !important; }
+:root .app-shell .momx-scanner-panel .momx-table-scroll { border-radius: var(--hm-radius-card) !important; border-color: var(--hm-rule) !important; }
