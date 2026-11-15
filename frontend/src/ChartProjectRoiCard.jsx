@@ -20,6 +20,7 @@ import {
   writeProjectRoiPlans,
 } from "./chartProjectRoi.js";
 import { ChartProjectRoiPrimitive } from "./chartProjectRoiPrimitive.js";
+import ChartTimeMachine, { setOddsOpen, useOddsOpen } from "./ChartTimeMachine.jsx";
 
 // One copy of the saved plans for the whole page. Every chart panel showing
 // the same ticker (multi-chart, big screen, the maximized chart) reads and
@@ -75,6 +76,8 @@ export default function ChartProjectRoiCard({
   const [entryDraft, setEntryDraft] = useState(null);
   const [targetDraft, setTargetDraft] = useState(null);
   const savedPlan = plans[ticker] || null;
+  // Time Machine "Odds" section (2026-11-15), open per ticker.
+  const oddsOpen = useOddsOpen(ticker);
 
   // Opening the card on a ticker with no plan starts one at the live price,
   // so the lines appear at once - the same as the card in his screenshot.
@@ -266,6 +269,8 @@ export default function ChartProjectRoiCard({
           <span>{result.profit == null ? "" : formatDollars(result.profit)}</span>
         </div>
         <p className="chart-project-roi-if">if {ticker} is at {result.target.toFixed(2)}</p>
+        <button type="button" className="chart-project-roi-odds-toggle" aria-pressed={oddsOpen} onClick={() => setOddsOpen(ticker, !oddsOpen)} title="Replay the rest of the day 10,000 times from this stock's own candles: odds of target vs stop">{oddsOpen ? "Hide odds" : "Odds from here"}</button>
+        {oddsOpen ? <ChartTimeMachine ticker={ticker} result={result} /> : null}
         <input
           className="chart-project-roi-slider"
           type="range"
@@ -401,6 +406,7 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
   const plans = useSyncExternalStore(subscribePlans, getPlans);
   const plan = plans[ticker] || null;
   const on = Boolean(plan) && plan.hidden !== true;
+  const oddsOpen = useOddsOpen(ticker);
   const view = !plan ? "" : plan.both === true ? "BOTH" : sideOfPlan(plan);
   const save = (next) => savePlans({ ...getPlans(), [ticker]: next });
   const fresh = () => ({ side: "CALL", both: false, contracts: 1, entrySpot: Math.round((Number(spot) || 0) * 100) / 100, createdAt: Date.now() });
@@ -444,6 +450,21 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
         aria-label={`ROI ${label.toLowerCase()} side`}
         aria-pressed={view === value}
       >{label}</button>) : null}
+      {/* Time Machine (2026-11-15): opens the ROI card with its odds. Desktop
+          only; on a phone the card has the same button. */}
+      {on ? <button
+        className={`oi-finder-chart-roi-odds${oddsOpen && cardOpen ? " is-active" : ""}`}
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          const show = !(oddsOpen && cardOpen);
+          setOddsOpen(ticker, show);
+          if (show) onCardOpenChange?.(true);
+        }}
+        title={`Odds from here: replay the rest of the day 10,000 times from ${ticker}'s own candles`}
+        aria-label={`Odds from here for ${ticker}`}
+        aria-pressed={oddsOpen && cardOpen}
+      >Odds</button> : null}
       {/* Phone (CSS shows this and hides the three above): the toolbar row has
           room for one more 24 px button, not three - three pushed the row
           into a sideways scroll that slid it under the ticker box. One tap

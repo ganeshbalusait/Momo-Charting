@@ -1,0 +1,45 @@
+/* Chart Time Machine, the Odds section of the ROI card (2026-11-15). */
+.chart-time-machine { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--hm-rule, rgba(255, 255, 255, .14)); border-radius: 8px; background: var(--hm-paper-3, rgba(0, 0, 0, .3)); }
+.chart-time-machine > header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.chart-time-machine > header b { color: var(--hm-ink, #fff); font-size: .72rem; font-weight: 700; }
+.chart-time-machine-rerun { min-height: 22px; border: 1px solid var(--hm-rule-2, rgba(255, 255, 255, .25)); border-radius: 6px; padding: 2px 7px; background: var(--hm-paper-2, transparent); color: var(--hm-ink-2, #dfe7f2); font: inherit; font-size: .62rem; cursor: pointer; }
+.chart-time-machine-rerun:disabled { opacity: .55; cursor: default; }
+.chart-time-machine-note { margin: 0; color: var(--hm-muted, #a6b0bf); font-size: .64rem; line-height: 1.35; }
+.chart-time-machine-note.is-error { color: #ffcf66; }
+.chart-time-machine-sub { color: var(--hm-muted, #a6b0bf); font-size: .6rem; }
+.chart-time-machine-fan { display: block; width: 100%; height: auto; border-radius: 6px; background: rgba(0, 0, 0, .25); }
+.chart-time-machine-fan .is-band { fill: oklch(80% 0.11 230 / .1); stroke: none; }
+.chart-time-machine-fan .is-band.is-inner { fill: oklch(80% 0.11 230 / .16); }
+.chart-time-machine-fan .is-path { fill: none; stroke-width: 1; stroke-opacity: .5; }
+.chart-time-machine-fan .is-median { fill: none; stroke: oklch(95% 0.016 250 / .7); stroke-width: 1.2; }
+.chart-time-machine-fan .is-level { stroke-dasharray: 4 3; stroke-width: 1; }
+.chart-time-machine-fan text { font-size: 8.5px; font-weight: 600; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.chart-time-machine-odds { display: grid; gap: 4px; }
+.chart-time-machine-odds > div { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 6px; font-size: .64rem; color: var(--hm-ink-2, #dfe7f2); }
+.chart-time-machine-odds b { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .7rem; }
+.chart-time-machine-odds i { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, .06); overflow: hidden; }
+.chart-time-machine-odds em { display: block; height: 100%; border-radius: 3px; }
+.chart-time-machine-history { display: grid; gap: 4px; }
+.chart-time-machine-history small { color: var(--hm-muted, #a6b0bf); font-size: .6rem; }
+.chart-time-machine-days { display: flex; flex-wrap: wrap; gap: 2px; }
+.chart-time-machine-days i { width: 9px; height: 9px; border-radius: 2px; }
+.chart-time-machine-days i.is-target { background: oklch(78% 0.16 150); }
+.chart-time-machine-days i.is-stop { background: oklch(70% 0.19 25); }
+.chart-time-machine-days i.is-neither { background: oklch(70% 0.03 256); }
+.chart-time-machine-option { display: grid; gap: 2px; margin: 0; font-size: .64rem; color: var(--hm-ink-2, #dfe7f2); }
+.chart-time-machine-option b.is-gain { color: oklch(78% 0.16 150); }
+.chart-time-machine-option b.is-loss { color: oklch(70% 0.19 25); }
+.chart-time-machine-option small { color: var(--hm-muted, #a6b0bf); font-size: .58rem; }
+.chart-time-machine-verdict { margin: 0; padding: 5px 7px; border-left: 3px solid var(--hm-accent, #3ddcff); border-radius: 4px; background: oklch(30% 0.07 240 / .45); font-size: .64rem; color: var(--hm-ink, #fff); }
+.chart-project-roi-odds-toggle { justify-self: start; min-height: 24px; border: 1px solid var(--hm-accent, #3ddcff); border-radius: 6px; padding: 2px 9px; background: oklch(30% 0.07 240 / .6); color: var(--hm-ink, #fff); font: inherit; font-size: .64rem; font-weight: 700; cursor: pointer; }
+.chart-project-roi-odds-toggle[aria-pressed="true"] { background: var(--hm-accent, #3ddcff); color: var(--hm-accent-ink, #05070c); }
+/* Toolbar Odds button: desktop only (the phone row has room for one more
+   button and the C / P / B one uses it); on a phone it is in the ROI card. */
+.app-shell .oi-finder-chart-card .oi-finder-chart-roi-odds {
+  min-height: 27px; border: 1px solid var(--hm-accent, #3ddcff); border-radius: 5px; padding: 3px 7px;
+  background: oklch(30% 0.07 240 / .6); color: #fff; font: inherit; font-size: .58rem; font-weight: 900; cursor: pointer; white-space: nowrap;
+}
+.app-shell .oi-finder-chart-card .oi-finder-chart-roi-odds.is-active { background: var(--hm-accent, #3ddcff); color: var(--hm-accent-ink, #05070c); }
+@media (max-width: 760px) {
+  .app-shell .oi-finder-chart-card .oi-finder-chart-roi-odds { display: none; }
+}

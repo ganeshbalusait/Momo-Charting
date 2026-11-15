@@ -79,6 +79,7 @@ import chart_aggregation
 import chart_profile_store
 import chart_backfill
 from chart_live_history import with_recorded_chart_history
+import time_machine
 from database.repository import TradingRepository
 from email_service import send_user_invite
 from execution.alpaca_paper_trader import AlpacaPaperTrader
@@ -11062,6 +11063,29 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
             "catalystIndex": index,
             "newsFeedMeta": {key: value for key, value in refresh.items() if key != "message"},
         }
+
+    def time_machine_payload(self, symbol: str, side: str = "CALL", spot: float = 0.0,
+                             target: float = 0.0, stop: float = 0.0, paths: int = 0) -> dict:
+        """Chart Time Machine (2026-11-15): odds of target vs stop for the ROI
+        plan, replayed from the chart's own cached 60-day five-minute tape.
+        Read-only; see time_machine.py."""
+        target_symbol = str(symbol or "").strip().upper()
+        if not target_symbol:
+            return {"ok": False, "reason": "No ticker."}
+        frame = self._fine_study_chart_frame(target_symbol)
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            return {"ok": False, "reason": f"No five-minute candles for {target_symbol} yet."}
+        price = float(spot or 0.0)
+        if not price > 0:
+            try:
+                price = float(frame["close"].iloc[-1])
+            except Exception:
+                price = 0.0
+        return time_machine.run_time_machine(
+            frame, side=side, spot=price, target=target, stop=stop,
+            now=datetime.now(ZoneInfo(EASTERN_TZ)), symbol=target_symbol,
+            paths=int(paths) if paths else time_machine.DEFAULT_PATHS,
+        )
 
     def chart_payload(self, symbol: str, timeframe: str = "5Min") -> dict:
         target = (symbol or "").strip().upper() or "AAPL"
@@ -23839,6 +23863,23 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/premarket-plan":
                 self._send_json(HTTPStatus.OK, STATE.premarket_plan_payload(refresh=True))
+                return
+            if parsed.path == "/api/time-machine":
+                # Chart Time Machine (2026-11-15): odds for the ROI plan.
+                query = parse_qs(parsed.query)
+
+                def _number(name: str) -> float:
+                    try:
+                        return float(query.get(name, ["0"])[0])
+                    except (TypeError, ValueError):
+                        return 0.0
+
+                self._send_json(HTTPStatus.OK, STATE.time_machine_payload(
+                    query.get("symbol", [""])[0],
+                    side=str(query.get("side", ["CALL"])[0]),
+                    spot=_number("spot"), target=_number("target"), stop=_number("stop"),
+                    paths=int(_number("paths")),
+                ))
                 return
             if parsed.path == "/api/chart":
                 query = parse_qs(parsed.query)
