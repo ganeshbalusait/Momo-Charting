@@ -48,7 +48,9 @@ async function openScanner({ viewport = MONITOR } = {}, fn) {
 // and are not judged.
 async function unreadable(page) {
   return page.evaluate(() => {
-    const parse = (c) => { const m = c.match(/rgba?\(([^)]+)\)/); if (!m) return null; const p = m[1].split(/[,\s/]+/).filter(Boolean).map(Number); return { r: p[0], g: p[1], b: p[2], a: p[3] === undefined ? 1 : p[3] }; };
+    // Any CSS colour (rgb, oklch, ...) read back as sRGB through a 1px canvas.
+    const paint = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+    const parse = (c) => { if (!c) return null; paint.clearRect(0, 0, 1, 1); paint.fillStyle = "rgba(0, 0, 0, 0)"; paint.fillStyle = String(c); paint.fillRect(0, 0, 1, 1); const [r, g, b, a] = paint.getImageData(0, 0, 1, 1).data; return { r, g, b, a: a / 255 }; };
     const over = (top, under) => ({ r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a), b: top.b * top.a + under.b * (1 - top.a), a: 1 });
     const lum = ({ r, g, b }) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
     const behind = (el) => {
@@ -74,7 +76,7 @@ async function unreadable(page) {
       judged += 1;
       const name = `${el.tagName.toLowerCase()}.${[...el.classList].join(".")} "${text.slice(0, 20)}"`;
       if (ratio < 4.5) bad.push(`${ratio.toFixed(1)} ${name} ${style.color} on rgb(${Math.round(bg.r)},${Math.round(bg.g)},${Math.round(bg.b)})`);
-      if (!/^(Inter|-apple-system)/.test(style.fontFamily)) oldFont.push(name);
+      if (!/^"?Mona Sans/.test(style.fontFamily)) oldFont.push(name);
     }
     return { bad: [...new Set(bad)], oldFont: [...new Set(oldFont)], judged };
   });
@@ -111,8 +113,8 @@ e2eTest("the new look is on with nothing stored: shared font, card surface, and 
   await openScanner({}, async ({ page, pageErrors }) => {
     const seen = await look(page);
     assert.equal(seen.skin, "scanner");
-    assert.equal(seen.panel, "rgb(5, 5, 6)");
-    assert.match(seen.font, /^Inter/);
+    assert.equal(seen.panel, "oklch(0.115 0.045 264)");
+    assert.match(seen.font, /^"?Mona Sans/);
     const after = await signals(page);
     // The old look, in the same page: take the mark off <html>.
     await page.evaluate(() => document.documentElement.removeAttribute("data-agx-skin"));

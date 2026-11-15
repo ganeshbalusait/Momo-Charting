@@ -416,3 +416,8 @@
 :root .app-shell .momx-scanner-panel .momx-segbtn.is-active { background: var(--hm-cool-soft) !important; color: var(--hm-ink) !important; }
 :root .app-shell .momx-scanner-panel .momx-universe-input { background: var(--hm-paper-3) !important; border-color: var(--hm-rule-2) !important; border-radius: var(--hm-radius-control) !important; }
 :root .app-shell .momx-scanner-panel .momx-table-scroll { border-radius: var(--hm-radius-card) !important; border-color: var(--hm-rule) !important; }
+
+/* Rows keep their height. The 28px ticker button sat on the text baseline, and
+   Mona Sans's taller line made every scanner row 1px taller (30 vs 29): a phone
+   showed 4 rows instead of 5. Top-aligned, the button fills the line exactly. */
+:root .app-shell .momx-scanner-panel .momx-table .momx-symbol { vertical-align: top; }

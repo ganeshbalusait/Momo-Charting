@@ -22,12 +22,9 @@ async function ready(page, viewport) {
 // WCAG contrast of each visible text element against the first solid background behind it.
 function readContrasts(page, selector) {
   return page.evaluate((query) => {
-    const parse = (value) => {
-      const m = String(value).match(/rgba?\(([^)]+)\)/);
-      if (!m) return null;
-      const [r, g, b, a = "1"] = m[1].split(/[,\s/]+/).filter(Boolean);
-      return { r: Number(r), g: Number(g), b: Number(b), a: Number(a) };
-    };
+    // Any CSS colour (rgb, oklch, ...) read back as sRGB through a 1px canvas.
+    const paint = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+    const parse = (c) => { if (!c) return null; paint.clearRect(0, 0, 1, 1); paint.fillStyle = "rgba(0, 0, 0, 0)"; paint.fillStyle = String(c); paint.fillRect(0, 0, 1, 1); const [r, g, b, a] = paint.getImageData(0, 0, 1, 1).data; return { r, g, b, a: a / 255 }; };
     const lum = ({ r, g, b }) => {
       const f = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
       return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);

@@ -37,3 +37,7 @@ test("the theme leaves chart drawing, TOS colours, Sectors and signals alone", (
     assert.deepEqual(hits, [], `${selector} must keep its own colours`);
   }
 });
+
+test("scanner rows keep their height: the ticker button is top-aligned", () => {
+  assert.match(css, /\.momx-scanner-panel \.momx-table \.momx-symbol \{ vertical-align: top; \}/);
+});
