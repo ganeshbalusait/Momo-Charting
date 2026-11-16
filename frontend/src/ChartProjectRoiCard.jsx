@@ -237,16 +237,9 @@ export default function ChartProjectRoiCard({
   // lists what was drawn (key:price:label) for the panel.
   // data-drawn: label boxes the overlay drew inside the pane (target|entry|stop).
   const marker = lines.length ? <i hidden ref={markerRef} data-testid="chart-project-roi-lines" data-lines={linesKey} /> : null;
-  // Phone only (CSS): a small Odds button on the chart while ROI is on and the
-  // card is closed; it opens the card with the odds.
-  const oddsFab = savedPlan && roiOn && !shown ? <button
-    type="button"
-    className="chart-project-roi-odds-fab"
-    aria-label={`Odds from here for ${ticker}`}
-    onPointerDown={(event) => event.stopPropagation()}
-    onClick={(event) => { event.stopPropagation(); if (show === "roi") updatePlan({ show: "both" }); setSelfOpen(true); }}
-  >Odds</button> : null;
-  if (!shown || !result) return <>{marker}{oddsFab}</>;
+  // The Odds button is in the toolbar next to ROI, on a phone too (2026-11-16;
+  // it was a floating button at the bottom of the chart).
+  if (!shown || !result) return marker;
 
   const contractName = result.contract ? `${ticker} ${formatStrike(result.strike)}${result.sideLetter} ${shortExpiry(result.expiry)}` : ticker;
   const gain = result.roiPercent != null && result.roiPercent >= 0;
@@ -503,8 +496,8 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
         aria-label={`ROI ${label.toLowerCase()} side`}
         aria-pressed={view === value}
       >{label}</button>) : null}
-      {/* Time Machine (2026-11-15): opens the ROI card with its odds. Desktop
-          only; on a phone the card has the same button. */}
+      {/* Time Machine (2026-11-15): opens the ROI card with its odds. On a
+          phone too, right after ROI (the side buttons are hidden there). */}
       {on ? <button
         className={`oi-finder-chart-roi-odds${show !== "roi" ? " is-active" : ""}`}
         type="button"

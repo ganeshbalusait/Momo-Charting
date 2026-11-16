@@ -139,7 +139,6 @@ e2eTest("phone: the card switch shows the odds without sideways scroll", async (
   await withApp(options(asked, { viewport: PHONE }), async (app) => {
     const { page } = app;
     const chart = await chartCard(page, "AAPL");
-    assert.equal(await chart.locator("button.oi-finder-chart-roi-odds").isVisible(), false, "toolbar Odds is desktop only");
     const roi = await roiOn(chart);
     await pick(roi, "Both").click();
     await checkOdds(roi, asked);
@@ -148,39 +147,61 @@ e2eTest("phone: the card switch shows the odds without sideways scroll", async (
   });
 });
 
-// 2026-11-15 "I don't see in phone": with ROI already on (a saved plan), the
-// phone toolbar shows only ROI and C, and nothing there opens the card. The
-// chart itself has an Odds button on a phone; it opens the card with the odds.
-e2eTest("phone, ROI already on: the Odds button on the chart opens the odds; Odds only stays after closing", async () => {
+// The toolbar row on a phone: every visible button inside, nothing scrolled off.
+async function toolbarRow(chart) {
+  return chart.locator(".oi-finder-chart-actions").first().evaluate((row) => ({
+    fits: row.scrollWidth <= row.clientWidth + 1,
+    size: `${row.scrollWidth}/${row.clientWidth}: ${[...row.children].filter((k) => k.getBoundingClientRect().width > 0).map((k) => `${k.className.split(" ")[0].replace("oi-finder-", "")}=${Math.round(k.getBoundingClientRect().width)}`).join(" ")}`,
+    buttons: [...row.querySelectorAll("button")].filter((b) => b.getBoundingClientRect().width > 0).map((b) => (b.textContent || "").trim()),
+  }));
+}
+
+// 2026-11-16 "I see odds in below chart move it to next to ROI top": the phone
+// Odds button lives in the toolbar beside ROI (it was a floating button at the
+// bottom of the chart). It opens the card with the odds, and the row still fits.
+e2eTest("phone, ROI already on: Odds sits next to ROI in the toolbar, opens the odds; Odds only stays after closing", async () => {
   const asked = [];
   const plan = { AAPL: { side: "CALL", both: false, contracts: 1, entrySpot: 0, createdAt: Date.now() - 60_000 } };
   await withApp(options(asked, { viewport: PHONE, storage: { "agx.chartProjectRoi.v1": JSON.stringify(plan) } }), async (app) => {
     const { page } = app;
     const chart = await chartCard(page, "AAPL");
-    const fab = chart.locator("button.chart-project-roi-odds-fab");
-    await fab.waitFor({ state: "visible", timeout: 60_000 });
+    const oddsButton = chart.locator("button.oi-finder-chart-roi-odds");
+    await oddsButton.waitFor({ state: "visible", timeout: 60_000 });
+    assert.equal(await chart.locator(".chart-project-roi-odds-fab").count(), 0, "no floating Odds button on the chart");
+    let row = await toolbarRow(chart);
+    const at = row.buttons.indexOf("ROI");
+    assert.equal(row.buttons[at + 1], "Odds", `Odds right after ROI: ${row.buttons.join(" | ")}`);
+    assert.ok(row.fits, `375 px: the toolbar row fits without scrolling (${row.size})`);
+    for (const width of [390, 430]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(300);
+      const wide = await toolbarRow(chart);
+      assert.ok(wide.fits, `${width} px: the toolbar row fits (${wide.size})`);
+    }
+    await page.setViewportSize(PHONE);
     assert.equal(await chart.locator(ROI).isVisible(), false, "the card starts closed");
-    await fab.click();
+    await oddsButton.click();
     const roi = chart.locator(ROI);
     await roi.locator(".chart-project-roi-title").waitFor({ state: "visible", timeout: 120_000 });
     await checkOdds(roi, asked);
-    assert.equal(await fab.count(), 0, "the button goes while the card is open");
+    assert.equal(await oddsButton.getAttribute("aria-pressed"), "true");
     await pick(roi, "Odds").click();
     await roi.locator(".chart-project-roi-close").click();
-    await fab.waitFor({ state: "visible", timeout: 10_000 });
     const lines = await waitTitles(page, chart, (all) => all.length === 3 && / · 41% odds$/.test(all[1].title));
     assert.deepEqual(lines.map((line) => line.title.replace(/\d+\.\d\d/, "#").replace(/  [+−]\d+%/, "  %").replace(/  [\d.]+[CP]/, "  K").replace(/  \$\d+\.\d\d/, "  $")), ["Entry #  K  $ · 31% neither", "Target #  %  $ · 41% odds", "Stop #  %  $ · 28% odds"]);
+    row = await toolbarRow(chart);
+    assert.ok(row.fits, `the row still fits with Odds on (${row.size})`);
     assert.equal(await overflowsSideways(page), false);
     noPageErrors(app);
   });
 });
 
-e2eTest("desktop: no floating Odds button (the toolbar has one)", async () => {
+e2eTest("desktop: Odds on the toolbar, no floating Odds button", async () => {
   const plan = { AAPL: { side: "CALL", both: false, contracts: 1, entrySpot: 0, createdAt: Date.now() - 60_000 } };
   await withApp(options([], { storage: { "agx.chartProjectRoi.v1": JSON.stringify(plan) } }), async (app) => {
     const chart = await chartCard(app.page, "AAPL");
     await chart.locator("button.oi-finder-chart-roi-odds").waitFor({ state: "visible", timeout: 60_000 });
-    assert.equal(await chart.locator("button.chart-project-roi-odds-fab").isVisible(), false);
+    assert.equal(await chart.locator(".chart-project-roi-odds-fab").count(), 0);
   });
 });
 
