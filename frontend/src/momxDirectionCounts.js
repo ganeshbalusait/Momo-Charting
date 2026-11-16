@@ -26,6 +26,29 @@ export function otherDirectionUrl(endpoint, listName, direction) {
   return endpoint + "?list=" + encodeURIComponent(listName) + other;
 }
 
+// The other side's table under the board (2026-11-16, "for mag7 show bull and
+// bear scanner below bull so I no need to switch"): that side's scan matches,
+// rows and rest, its own way round - under BULL the bear matches with the
+// biggest losers first, under BEAR the bull matches with the biggest gainers
+// first. Null while there is nothing usable (not read yet, still building, or
+// a stale read for another list).
+export function otherSideRows({ direction, otherPayload, listName }) {
+  const usable = otherPayload && (!otherPayload.list || otherPayload.list === listName) ? otherPayload : null;
+  if (countScanMatches(usable) == null) return null;
+  const all = [...(Array.isArray(usable.rows) ? usable.rows : []), ...(Array.isArray(usable.rest) ? usable.rest : [])];
+  const losersFirst = direction !== "bear";
+  const pct = (row) => {
+    const value = row.pctChange;
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  };
+  return all.filter((row) => row && row.scanPass).sort((a, b) => {
+    const x = pct(a);
+    const y = pct(b);
+    if (x == null || y == null) return x == null ? (y == null ? 0 : 1) : -1;
+    return losersFirst ? x - y : y - x;
+  });
+}
+
 // {bull, bear}: the side on screen uses its own match count, the other side
 // the count read from its board. An other-side board for a different list
 // (a stale read after a switch) is ignored.

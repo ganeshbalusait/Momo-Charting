@@ -35,11 +35,54 @@ e2eTest("Mag7 reads BULL ↑ 2 ↓1, and after the flip BEAR ↓ 1 ↑2", async 
   });
 });
 
+// 2026-11-16 "for mag7 show bull and bear scanner below bull so I no need to
+// switch": the bear matches sit in their own table under the bull board, and
+// flipping to BEAR puts the bull matches underneath instead.
+const OTHER_SIDE = "[data-testid='momx-other-side']";
+async function otherSideSymbols(page) {
+  return page.locator(OTHER_SIDE + " tbody tr").evaluateAll((rows) => rows.map((row) => (row.querySelector(".momx-symbol")?.textContent || row.textContent).trim().split(/\s+/)[0]));
+}
+
+e2eTest("Mag7 shows the BEAR matches in a table under the BULL board; flipped, BULL is underneath", async () => {
+  await withApp({ view: VIEW, storage: BOARD_STORAGE, fakeReads: boardReads() }, async (app) => {
+    const { page } = app;
+    await boardReady(page);
+    await countsRead(page, "2", "↓1");
+    const under = page.locator(OTHER_SIDE);
+    await under.waitFor({ state: "visible", timeout: 20_000 });
+    assert.equal(await under.getAttribute("data-side"), "bear");
+    assert.match(await under.locator(".momx-other-side-title").innerText(), /BEAR ↓\s*1/);
+    await page.waitForFunction((sel) => document.querySelectorAll(sel + " tbody tr .momx-symbol").length === 1, OTHER_SIDE, { timeout: 20_000 });
+    assert.deepEqual(await otherSideSymbols(page), ["SPY"]);
+    // Under the board, not above it.
+    const boardBox = await page.locator("table.momx-table").first().boundingBox();
+    const underBox = await under.boundingBox();
+    assert.ok(underBox.y > boardBox.y + boardBox.height - 1, "the bear table is below the bull board");
+    await page.locator(TOGGLE).click();
+    await page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute("data-side") === "bull", OTHER_SIDE, { timeout: 20_000 });
+    await page.waitForFunction((sel) => document.querySelectorAll(sel + " tbody tr .momx-symbol").length === 2, OTHER_SIDE, { timeout: 20_000 });
+    assert.deepEqual((await otherSideSymbols(page)).sort(), ["AAPL", "NVDA"]);
+    assert.deepEqual(app.writes, []);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("on a phone the bear table fits under the board", async () => {
+  await withApp({ view: VIEW, viewport: PHONE, storage: BOARD_STORAGE, fakeReads: boardReads() }, async (app) => {
+    await boardReady(app.page);
+    await app.page.locator(OTHER_SIDE).waitFor({ state: "visible", timeout: 20_000 });
+    await app.page.waitForFunction((sel) => document.querySelectorAll(sel + " tbody tr .momx-symbol").length === 1, OTHER_SIDE, { timeout: 20_000 });
+    assert.equal(await overflowsSideways(app.page), false);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
 e2eTest("the Watchlist switch shows no counts", async () => {
   await withApp({ view: VIEW, storage: { ...BOARD_STORAGE, "momx.scanner.activeList": "Watchlist" }, fakeReads: boardReads() }, async (app) => {
     await boardReady(app.page);
     await app.page.waitForTimeout(1500);
     assert.equal(await app.page.locator(SHOWN).count(), 0);
+    assert.equal(await app.page.locator(OTHER_SIDE).count(), 0, "no second table on the Watchlist");
     assert.equal((await app.page.locator(TOGGLE).innerText()).trim(), "BULL");
   });
 });

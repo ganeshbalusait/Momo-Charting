@@ -1,7 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { countScanMatches, directionCounts, otherDirectionUrl, showsDirectionCounts } from "./momxDirectionCounts.js";
+import { countScanMatches, directionCounts, otherDirectionUrl, otherSideRows, showsDirectionCounts } from "./momxDirectionCounts.js";
+
+// 2026-11-16 "for mag7 show bull and bear scanner below bull so I no need to switch".
+test("the other side's table: its scan matches (rows and rest), losers first under BULL, gainers first under BEAR", () => {
+  const bear = { list: "Mag7", rows: [
+    { symbol: "SPY", scanPass: true, pctChange: -0.7 },
+    { symbol: "AAPL", scanPass: false, pctChange: -2 },
+    { symbol: "QQQ", scanPass: true, pctChange: -1.5 },
+  ], rest: [{ symbol: "TSLA", scanPass: true, pctChange: -0.2 }] };
+  assert.deepEqual(otherSideRows({ direction: "bull", otherPayload: bear, listName: "Mag7" }).map((row) => row.symbol), ["QQQ", "SPY", "TSLA"]);
+  const bull = { list: "Mag7", rows: [{ symbol: "NVDA", scanPass: true, pctChange: 0.4 }, { symbol: "AAPL", scanPass: true, pctChange: 1.2 }] };
+  assert.deepEqual(otherSideRows({ direction: "bear", otherPayload: bull, listName: "Mag7" }).map((row) => row.symbol), ["AAPL", "NVDA"]);
+  assert.equal(otherSideRows({ direction: "bull", otherPayload: { ...bear, list: "Watchlist" }, listName: "Mag7" }), null, "a stale read for another list");
+  assert.equal(otherSideRows({ direction: "bull", otherPayload: null, listName: "Mag7" }), null, "not read yet");
+  assert.equal(otherSideRows({ direction: "bull", otherPayload: { list: "Mag7", rows: [], warming: true }, listName: "Mag7" }), null, "still building");
+  assert.deepEqual(otherSideRows({ direction: "bull", otherPayload: { list: "Mag7", rows: [{ symbol: "X", scanPass: true }, null] }, listName: "Mag7" }).map((row) => row.symbol), ["X"], "no % change sorts last, junk dropped");
+});
 
 test("only the Mag7 scanner shows the BULL / BEAR pills", () => {
   assert.equal(showsDirectionCounts("Mag7"), true);

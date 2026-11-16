@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { TOS_LINK_GROUPS, sendTickerToCharts, warmTickerForCharts, tosLinkGroup } from "./tosLinkGroups.js";
 import { createScannerRequestScope, isAbortError } from "./scannerRequestScope.js";
 import { readScannerBoard } from "./scannerBoardRead.js";
-import { directionCounts, otherDirectionUrl, showsDirectionCounts } from "./momxDirectionCounts.js";
+import { directionCounts, otherDirectionUrl, otherSideRows, showsDirectionCounts } from "./momxDirectionCounts.js";
 import { createLiveRowProjector, liveQuote } from "./scannerLiveRows.js";
 import { subscribePendingScannerLink, takePendingScannerLink } from "./appLinks.js";
 
@@ -6047,6 +6047,14 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
   const sideCounts = dirCountsOn
     ? directionCounts({ direction, currentMatches: board || allRows.length ? matchCount : null, otherPayload: otherSideBoard, listName: activeList })
     : null;
+  // The other side's table under the board (Mag7, 2026-11-16: "show bull and
+  // bear scanner below bull so I no need to switch"). Same board read as the
+  // count above, so it costs no extra request.
+  const otherSide = bear ? "bull" : "bear";
+  const otherRows = useMemo(
+    () => (dirCountsOn ? otherSideRows({ direction, otherPayload: otherSideBoard, listName: activeList }) : null),
+    [dirCountsOn, direction, otherSideBoard, activeList],
+  );
 
   // Three memos, in this order, so a chip click cannot move the chip counts
   // under the trader's cursor: the counts are taken BEFORE the industry filter.
@@ -7821,6 +7829,73 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
           </tbody>
         </table>
       </div>
+
+      {/* Mag7: the other side's scan matches right under the board, so BULL
+          and BEAR are both on screen without the switch (2026-11-16). */}
+      {dirCountsOn && !newsOnly ? (
+        <div className={"momx-other-side is-" + otherSide} data-testid="momx-other-side" data-side={otherSide}>
+          <p className="momx-other-side-title">
+            <b>{otherSide === "bear" ? "BEAR ↓" : "BULL ↑"}</b>
+            <span className="momx-news-count">{otherRows == null ? "–" : otherRows.length}</span>
+            <small>
+              {activeList} {otherSide === "bear" ? "bear scan · biggest losers first" : "bull scan · biggest gainers first"}
+            </small>
+          </p>
+          <div className="momx-table-scroll">
+            <table className="momx-table momx-other-side-table">
+              <thead>
+                <tr className="momx-head-row">
+                  {liveColumnList.map((column) => (
+                    <th
+                      key={column.key}
+                      scope="col"
+                      data-col={column.key}
+                      className={"momx-th" + (column.kind === "color" ? " momx-col-color" : "") + (column.kind === "symbol" ? " momx-col-symbol" : "")}
+                    >
+                      {column.kind === "color" ? <span className="momx-visually-hidden">COLOR</span> : <span className="momx-th-label">{column.label}</span>}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {!otherRows || otherRows.length === 0 ? (
+                  <tr>
+                    <td className="momx-empty" colSpan={liveColumnList.length}>
+                      <span className="momx-empty-inner">
+                        {otherRows == null
+                          ? "Reading the " + otherSide + " scan..."
+                          : "No " + activeList + " ticker passes the " + otherSide + " scan right now."}
+                      </span>
+                    </td>
+                  </tr>
+                ) : (
+                  otherRows.map((row) => (
+                    <MomxRow
+                      key={row.symbol}
+                      row={row}
+                      sourceWarning={scannerRowFreshness(row, rowClockMs)?.timeText || ""}
+                      liveLast={liveLastBySymbol[row.symbol]}
+                      spread={spreadMap.get(row.symbol)}
+                      onNewsToggle={onNewsToggle}
+                      onOpenCard={onOpenCard}
+                      onOpenGrade={onOpenGrade}
+                      isNew={false}
+                      showNewTag={false}
+                      sinceLabel={null}
+                      columns={liveColumnList}
+                      newsTime={false}
+                      starred={starredSymbols.has(row.symbol)}
+                      earnings={earningsMap.get(row.symbol) || null}
+                      bolt={null}
+                      liveRvol={null}
+                    />
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       <p className="momx-footnote">
         Colours come straight from the thinkScript studies on the server. The scanner re-runs

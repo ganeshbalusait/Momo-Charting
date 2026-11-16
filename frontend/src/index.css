@@ -16906,6 +16906,16 @@ button.avatar {
 .momx-scanner-panel .momx-bull .momx-side-count-other { margin-left: 5px; font-size: 10px; letter-spacing: 0; opacity: 0.85; }
 .momx-scanner-panel .momx-bull .momx-side-count-other.is-bull { color: var(--momx-up); }
 .momx-scanner-panel .momx-bull .momx-side-count-other.is-bear { color: var(--momx-down); }
+/* Mag7: the other side's matches in their own table under the board
+   (2026-11-16, "show bull and bear scanner below bull"). */
+.momx-scanner-panel .momx-other-side { margin-top: 14px; }
+.momx-scanner-panel .momx-other-side-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 13px; }
+.momx-scanner-panel .momx-other-side-title b { font-weight: 800; letter-spacing: .02em; }
+.momx-scanner-panel .momx-other-side.is-bear .momx-other-side-title b { color: var(--momx-down); }
+.momx-scanner-panel .momx-other-side.is-bull .momx-other-side-title b { color: var(--momx-up); }
+.momx-scanner-panel .momx-other-side-title small { color: var(--momx-muted, #8d97a8); font-size: 11px; }
+.momx-scanner-panel .momx-other-side.is-bear .momx-other-side-table { box-shadow: inset 3px 0 0 var(--momx-down); }
+.momx-scanner-panel .momx-other-side.is-bull .momx-other-side-table { box-shadow: inset 3px 0 0 var(--momx-up); }
 
 /* NEWS sits beside BULL and is drawn to the same size and weight, but it IS
    a button: pointer, hover, and a filled "pressed" state so a filter he left
