@@ -116,8 +116,8 @@ e2eTest("desktop: Odds on the toolbar turns the odds on; the card switch picks R
     lines = await waitTitles(page, chart, (all) => all.length === 3);
     assert.deepEqual(lines.map((line) => line.key), ["entry", "target", "stop"]);
     assert.match(lines[0].title, /^Entry \d+\.\d\d · 31% neither$/);
-    assert.match(lines[1].title, /^Target \d+\.\d\d · 41%$/);
-    assert.match(lines[2].title, /^Stop \d+\.\d\d · 28%$/);
+    assert.match(lines[1].title, /^Target \d+\.\d\d  [+−]\d+% · 41% odds$/);
+    assert.match(lines[2].title, /^Stop \d+\.\d\d  −50% · 28% odds$/);
     assert.equal(await savedShow(page), "odds");
     // Run again asks once more.
     const before = asked.length;
@@ -168,8 +168,8 @@ e2eTest("phone, ROI already on: the Odds button on the chart opens the odds; Odd
     await pick(roi, "Odds").click();
     await roi.locator(".chart-project-roi-close").click();
     await fab.waitFor({ state: "visible", timeout: 10_000 });
-    const lines = await waitTitles(page, chart, (all) => all.length === 3 && / · 41%$/.test(all[1].title));
-    assert.deepEqual(lines.map((line) => line.title.replace(/\d+\.\d\d/, "#")), ["Entry # · 31% neither", "Target # · 41%", "Stop # · 28%"]);
+    const lines = await waitTitles(page, chart, (all) => all.length === 3 && / · 41% odds$/.test(all[1].title));
+    assert.deepEqual(lines.map((line) => line.title.replace(/\d+\.\d\d/, "#").replace(/  [+−]\d+%/, "  %")), ["Entry # · 31% neither", "Target #  % · 41% odds", "Stop #  % · 28% odds"]);
     assert.equal(await overflowsSideways(page), false);
     noPageErrors(app);
   });

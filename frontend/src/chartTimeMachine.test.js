@@ -91,18 +91,20 @@ test("the odds go on the Target, Stop and Entry lines of the same plan only", as
 
 test("the chart switch: ROI boxes, only the three odds lines, or both", async () => {
   const { chartPlanLines, oddsOnlyLines } = await import("./chartTimeMachine.js");
-  const result = { ready: true, side: "CALL", spot: 355.4, entrySpot: 355.4, target: 359.55, stopStock: 353.82 };
+  const result = { ready: true, side: "CALL", spot: 355.4, entrySpot: 355.4, target: 359.55, stopStock: 353.82, roiPercent: 327, stopPremium: 0.11 };
   const answer = { ok: true, side: "CALL", target: 359.55, stop: 353.82, odds: { target: 33.2, stop: 60.9, neither: 5.9 } };
   const roi = [{ key: "entry", title: "Entry 355.40  362.5C $0.22" }, { key: "t1", title: "T1" }, { key: "target", title: "T2 359.55" }, { key: "stop", title: "Stop 353.82" }];
   assert.equal(chartPlanLines("roi", roi, result, answer), roi);
   assert.deepEqual(chartPlanLines("odds", roi, result, answer).map((line) => [line.key, line.price, line.title]), [
-    ["entry", 355.4, "Entry 355.40 · 6% neither"], ["target", 359.55, "Target 359.55 · 33%"], ["stop", 353.82, "Stop 353.82 · 61%"],
+    ["entry", 355.4, "Entry 355.40 · 6% neither"], ["target", 359.55, "Target 359.55  +327% · 33% odds"], ["stop", 353.82, "Stop 353.82  −50% · 61% odds"],
   ]);
   assert.deepEqual(chartPlanLines("both", roi, result, answer).map((line) => line.title), [
     "Entry 355.40  362.5C $0.22 · 6% neither", "T1", "T2 359.55 · 33%", "Stop 353.82 · 61%",
   ]);
   // Still asking, or an answer for another target: "odds…" instead of a number.
-  assert.deepEqual(oddsOnlyLines(result, null).map((line) => line.title), ["Entry 355.40 · odds…", "Target 359.55 · odds…", "Stop 353.82 · odds…"]);
+  assert.deepEqual(oddsOnlyLines(result, null).map((line) => line.title), ["Entry 355.40 · odds…", "Target 359.55  +327% · odds…", "Stop 353.82  −50% · odds…"]);
+  // No option price yet: the odds without a %.
+  assert.equal(oddsOnlyLines({ ...result, roiPercent: null, stopPremium: 0 }, answer)[1].title, "Target 359.55 · 33% odds");
   assert.match(oddsOnlyLines({ ...result, target: 360 }, answer)[1].title, /odds…$/);
   assert.deepEqual(oddsOnlyLines({ ...result, stopStock: null }, answer), []);
 });

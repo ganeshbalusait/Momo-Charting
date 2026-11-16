@@ -5,7 +5,7 @@
 // module turns that answer into what the Odds card shows. Read-only: it never
 // places, blocks or changes a trade.
 
-import { projectRoiOptionValue } from "./chartProjectRoi.js";
+import { formatPercent, projectRoiOptionValue } from "./chartProjectRoi.js";
 
 export const TIME_MACHINE_COLORS = {
   target: "oklch(78% 0.16 150)",
@@ -150,18 +150,21 @@ export function withOddsOnLines(lines = [], payload = null, result = null) {
 
 // "Odds" on the chart (2026-11-15, "I want only odds or ROI in chart or
 // both"): just three lines, Entry / Target / Stop, each with its odds and
-// nothing else. While the answer is on its way the lines say "odds…".
+// the option's % there (2026-11-15: "Odds give me percentage also for
+// target and stop loss"). While the answer is on its way: "odds…".
 export function oddsOnlyLines(result = null, payload = null) {
   if (!result?.ready || !(result.target > 0) || !(result.stopStock > 0)) return [];
   const same = (a, b) => Math.abs(Number(a) - Number(b)) < 0.006;
   const fresh = payload?.ok && payload.side === result.side && same(payload.target, result.target) && same(payload.stop, result.stopStock);
   const odds = fresh ? payload.odds || {} : null;
-  const tag = (value, word = "") => (odds ? ` · ${Math.round(value || 0)}%${word}` : " · odds…");
+  const tag = (value, word) => (odds ? ` · ${Math.round(value || 0)}% ${word}` : " · odds…");
   const entry = result.entrySpot > 0 ? result.entrySpot : result.spot;
+  const targetPct = result.roiPercent == null ? "" : `  ${formatPercent(result.roiPercent)}`;
+  const stopPct = result.stopPremium > 0 ? "  −50%" : "";
   return [
-    { key: "entry", price: entry, color: "#e8f4ff", title: `Entry ${Number(entry).toFixed(2)}${tag(odds?.neither, " neither")}` },
-    { key: "target", price: result.target, color: "#3dff8a", title: `Target ${Number(result.target).toFixed(2)}${tag(odds?.target)}` },
-    { key: "stop", price: result.stopStock, color: "#ff5a6a", title: `Stop ${Number(result.stopStock).toFixed(2)}${tag(odds?.stop)}` },
+    { key: "entry", price: entry, color: "#e8f4ff", title: `Entry ${Number(entry).toFixed(2)}${tag(odds?.neither, "neither")}` },
+    { key: "target", price: result.target, color: "#3dff8a", title: `Target ${Number(result.target).toFixed(2)}${targetPct}${tag(odds?.target, "odds")}` },
+    { key: "stop", price: result.stopStock, color: "#ff5a6a", title: `Stop ${Number(result.stopStock).toFixed(2)}${stopPct}${tag(odds?.stop, "odds")}` },
   ];
 }
 

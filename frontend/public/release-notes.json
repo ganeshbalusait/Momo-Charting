@@ -2,6 +2,13 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-15T19:29:22-05:00",
+      "heading": "Odds lines show your option's % too",
+      "items": [
+        "Chart, On chart = Odds: the Target line shows your option's gain there and the Stop line its loss, next to the odds, for example \"Target 359.55 +327% · 33% odds\" and \"Stop 353.82 −50% · 61% odds\"."
+      ]
+    },
+    {
       "at": "2026-11-15T19:19:07-05:00",
       "heading": "Chart: show ROI, Odds or Both",
       "items": [
