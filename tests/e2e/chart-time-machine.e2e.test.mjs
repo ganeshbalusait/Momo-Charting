@@ -183,3 +183,32 @@ e2eTest("desktop: no floating Odds button (the toolbar has one)", async () => {
     assert.equal(await chart.locator("button.chart-project-roi-odds-fab").isVisible(), false);
   });
 });
+
+// 2026-11-15 "Whenever I change the tickers it's disappearing": ROI on and
+// ROI / Odds / Both follow the trader to the next ticker; ROI off does too.
+e2eTest("phone: switching ticker keeps ROI and Odds on; turning ROI off follows too", async () => {
+  const asked = [];
+  const plan = { AAPL: { side: "CALL", both: false, contracts: 1, entrySpot: 0, createdAt: Date.now() - 60_000, show: "odds" } };
+  await withApp(options(asked, { viewport: PHONE, storage: { "agx.chartProjectRoi.v1": JSON.stringify(plan) } }), async (app) => {
+    const { page } = app;
+    let chart = await chartCard(page, "AAPL");
+    await waitTitles(page, chart, (all) => all.length === 3 && / · 41% odds$/.test(all[1].title));
+    // The quick tickers the phone shows (the desktop rail is hidden there).
+    const quick = (symbol) => page.locator("button:visible", { hasText: new RegExp(`^\\s*${symbol}\\b`) }).first();
+    await quick("SPY").click();
+    chart = await chartCard(page, "SPY");
+    assert.equal(await chart.locator("button.oi-finder-chart-roi").getAttribute("aria-pressed"), "true", "ROI stays on for SPY");
+    await chart.locator(LINES).waitFor({ state: "attached", timeout: 120_000 });
+    const lines = await waitTitles(page, chart, (all) => all.length === 3 && / · 41% odds$/.test(all[1].title));
+    assert.deepEqual(lines.map((line) => line.key), ["entry", "target", "stop"], "SPY shows Odds, as AAPL did");
+    assert.ok(asked.some((search) => search.includes("symbol=SPY")), "SPY's odds were asked for");
+    // ROI off on SPY, then back to AAPL: off there too.
+    await chart.locator("button.oi-finder-chart-roi").click();
+    await quick("AAPL").click();
+    chart = await chartCard(page, "AAPL");
+    for (let i = 0; i < 50 && (await chart.locator("button.oi-finder-chart-roi").getAttribute("aria-pressed")) !== "false"; i += 1) await page.waitForTimeout(100);
+    assert.equal(await chart.locator("button.oi-finder-chart-roi").getAttribute("aria-pressed"), "false", "ROI off follows to AAPL");
+    assert.equal(await chart.locator(LINES).count(), 0);
+    noPageErrors(app);
+  });
+});

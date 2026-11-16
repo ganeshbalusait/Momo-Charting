@@ -22,6 +22,7 @@ import {
 import { ChartProjectRoiPrimitive } from "./chartProjectRoiPrimitive.js";
 import ChartTimeMachine, { CHART_SHOW_OPTIONS, chartShowOf, useTimeMachine } from "./ChartTimeMachine.jsx";
 import { chartPlanLines } from "./chartTimeMachine.js";
+import { freshRoiPlan, readRoiCarry, roiCarryFrom, roiCarryFromPlans, roiPlanOnArrival, writeRoiCarry } from "./chartRoiCarry.js";
 
 // One copy of the saved plans for the whole page. Every chart panel showing
 // the same ticker (multi-chart, big screen, the maximized chart) reads and
@@ -32,9 +33,18 @@ const planListeners = new Set();
 function getPlans() {
   return sharedPlans;
 }
-function savePlans(next) {
+// The last ROI choices, carried to every ticker (chartRoiCarry.js, 2026-11-15:
+// "Whenever I change the tickers it's disappearing").
+let carry = readRoiCarry() || roiCarryFromPlans(sharedPlans);
+// `ticker`: the plan the trader just changed; its choices become the ones
+// carried. Left out for changes the app makes on its own.
+function savePlans(next, ticker = "") {
   sharedPlans = next;
   writeProjectRoiPlans(next);
+  if (ticker && next[ticker]) {
+    carry = roiCarryFrom(next[ticker]);
+    writeRoiCarry(carry);
+  }
   planListeners.forEach((listener) => listener());
 }
 function subscribePlans(listener) {
@@ -91,7 +101,7 @@ export default function ChartProjectRoiCard({
   useEffect(() => {
     if (!open || !ticker || savedPlan || !(Number(spot) > 0) || !rows.length) return;
     if (getPlans()[ticker]) return;
-    savePlans({ ...getPlans(), [ticker]: { side: "CALL", both: false, contracts: 1, entrySpot: Math.round(Number(spot) * 100) / 100, createdAt: Date.now() } });
+    savePlans({ ...getPlans(), [ticker]: { ...freshRoiPlan(carry, spot), hidden: false } }, ticker);
   }, [open, ticker, savedPlan, spot, rows.length]);
 
   useEffect(() => {
@@ -102,15 +112,15 @@ export default function ChartProjectRoiCard({
 
   const updatePlan = (changes) => {
     const current = getPlans();
-    const base = current[ticker] || { side: "CALL", both: false, contracts: 1, entrySpot: Math.round((Number(spot) || 0) * 100) / 100, createdAt: Date.now() };
-    savePlans({ ...current, [ticker]: { ...base, ...changes } });
+    const base = current[ticker] || freshRoiPlan(carry, spot);
+    savePlans({ ...current, [ticker]: { ...base, ...changes } }, ticker);
   };
   // Call <-> Put switches the side being edited; the other side's strike,
   // fill and target are kept (projectRoiSwapSide).
   const editSide = (side) => {
     const current = getPlans();
     if (!current[ticker]) return;
-    savePlans({ ...current, [ticker]: projectRoiSwapSide(current[ticker], side) });
+    savePlans({ ...current, [ticker]: projectRoiSwapSide(current[ticker], side) }, ticker);
   };
   const deletePlan = () => {
     const next = { ...getPlans() };
@@ -441,8 +451,18 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
   const on = Boolean(plan) && plan.hidden !== true;
   const show = chartShowOf(plan);
   const view = !plan ? "" : plan.both === true ? "BOTH" : sideOfPlan(plan);
-  const save = (next) => savePlans({ ...getPlans(), [ticker]: next });
-  const fresh = () => ({ side: "CALL", both: false, contracts: 1, entrySpot: Math.round((Number(spot) || 0) * 100) / 100, createdAt: Date.now() });
+  const save = (next) => savePlans({ ...getPlans(), [ticker]: next }, ticker);
+  const fresh = () => ({ ...freshRoiPlan(carry, spot), hidden: false });
+  // A ticker coming on screen takes the last ROI choices: ROI on/off and
+  // ROI / Odds / Both, and a fresh plan when it has none and ROI is on.
+  const spotReady = Number(spot) > 0;
+  useEffect(() => {
+    if (!ticker) return;
+    const next = roiPlanOnArrival(getPlans()[ticker] || null, carry, spot);
+    if (next) savePlans({ ...getPlans(), [ticker]: next });
+    // Only on a ticker change (and once its price is known), not every tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticker, spotReady]);
 
   const toggleRoi = () => {
     if (!ticker) return;

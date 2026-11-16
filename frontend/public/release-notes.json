@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-15T22:09:01-05:00",
+      "heading": "ROI and Odds stay on when you change tickers",
+      "items": [
+        "Charts: ROI on/off and what the chart shows (ROI / Odds / Both) now follow you to every ticker. Before, switching to a ticker without a plan turned ROI off and the lines disappeared.",
+        "A ticker without a plan gets one straight away with your last choices (Call or Put, Both, number of targets, contracts); its strike, entry and target are worked out for that ticker."
+      ]
+    },
+    {
       "at": "2026-11-15T19:40:54-05:00",
       "heading": "Odds lines show the option price",
       "items": [
