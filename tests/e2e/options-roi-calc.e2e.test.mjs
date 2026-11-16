@@ -19,12 +19,27 @@ async function chainReady(page) {
   await page.locator(`${MANUAL} .roi-option-live-price.is-live strong`, { hasText: "$100.00" }).waitFor({ timeout: 60_000 });
 }
 
-e2eTest("the quick rule's defaults: 100% ROI is tight by $0.04, 200% ROI passes at $1.03", async () => {
+// Since b4c68d8e (2026-11-11, release note "ROI Calc fills itself from the
+// ticker") the quick-rule boxes are no longer fixed 3.09 / 1.50 defaults: they
+// fill from the chain (first ITM call's Mark, nearest expiry's straddle) until
+// he types over them. On the fixture that is the 99 call at $4.50 and ±$8.20.
+const ITM = `${PAGE} input[aria-label="ITM option premium"]`;
+const MOVE = `${PAGE} input[aria-label="Expected move"]`;
+async function quickRuleFilled(page) {
+  await page.locator(PAGE).waitFor({ timeout: 60_000 });
+  await page.waitForFunction(([itm, move]) => document.querySelector(itm)?.value === "4.50" && document.querySelector(move)?.value === "8.20",
+    [ITM, MOVE], { timeout: 60_000 });
+}
+
+e2eTest("the quick rule fills from the chain, then 3.09 / 1.50 typed in: 100% ROI is tight by $0.04, 200% ROI passes at $1.03", async () => {
   await withApp(options(), async (app) => {
-    await app.page.locator(PAGE).waitFor({ timeout: 60_000 });
-    assert.equal(await app.page.locator(`${PAGE} input[aria-label="ITM option premium"]`).inputValue(), "3.09");
-    assert.equal(await app.page.locator(`${PAGE} input[aria-label="Expected move"]`).inputValue(), "1.50");
+    await quickRuleFilled(app.page);
+    assert.equal(markFor("CALL", 99, 2).toFixed(2), "4.50", "first ITM call on the fixture");
+    assert.equal(await app.page.locator(`${PAGE} .roi-calc-target.is-pass`).count(), 2, "$4.50 premium inside a ±$8.20 move passes both");
+    await app.page.locator(ITM).fill("3.09");
+    await app.page.locator(MOVE).fill("1.50");
     const hundred = card(app.page, "100% ROI");
+    await app.page.locator(`${PAGE} .roi-calc-target.is-tight`, { hasText: "100% ROI" }).waitFor({ timeout: 10_000 });
     assert.match(await hundred.getAttribute("class"), /\bis-tight\b/);
     assert.equal(await hundred.locator("header b").innerText(), "TIGHT / NO PASS");
     assert.equal(await hundred.locator("strong").innerText(), "$1.55");
@@ -39,8 +54,9 @@ e2eTest("the quick rule's defaults: 100% ROI is tight by $0.04, 200% ROI passes 
 
 e2eTest("a bigger expected move passes both, and a zero move passes neither", async () => {
   await withApp(options(), async (app) => {
-    await app.page.locator(PAGE).waitFor({ timeout: 60_000 });
-    const move = app.page.locator(`${PAGE} input[aria-label="Expected move"]`);
+    await quickRuleFilled(app.page);
+    await app.page.locator(ITM).fill("3.09");               // his own premium, typed over the live one
+    const move = app.page.locator(MOVE);
     await move.fill("2.00");
     await app.page.waitForFunction((selector) => document.querySelectorAll(`${selector} .roi-calc-target.is-pass`).length === 2, PAGE);
     await move.fill("0");

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from momx import paper_mirror as pm
 
 ET = pm.ET
-NOW = datetime(2026, 11, 10, 10, 0, tzinfo=ET)      # Tuesday, inside the first buy window
+NOW = datetime(2026, 11, 10, 10, 10, tzinfo=ET)     # Tuesday, inside the first buy window
 MAIN = "AAPL261113C00270000"
 E_LEG = "AAPL261113C00285000"
 
@@ -54,6 +54,10 @@ def level(rule="level1", symbol="AAPL", now=NOW, **kw):
          "eContract": E_LEG, "eStrike": 285.0, "eDelta": 0.18, "eEntry": 0.60, "eLastBid": 0.58, "eLastAsk": 0.62,
          "eStatus": "open", "lastAt": (now - timedelta(seconds=20)).isoformat()}
     t.update(kw)
+    # A Level signal is bought only when the Bot gave it a chart plan (paper_mirror.has_plan,
+    # 2026-11-13); plan=None in a test = the Bot gave it none.
+    if rule.startswith("level"):
+        t.setdefault("plan", {"strike": t.get("eStrike")})
     return t
 
 
@@ -69,11 +73,12 @@ def buys(client):
     return [c for c in client.calls if c[0] == "buy_to_open"]
 
 
-def test_a_level_signal_is_bought_on_the_020_delta_contract_at_its_own_mid(tmp_path):
+def test_a_level_signal_is_bought_on_the_020_delta_contract_at_its_own_ask(tmp_path):
+    """2026-11-12: the chart plan's entry is the ASK of the 0.20-delta contract (it was its mid)."""
     client = FakeClient()
     m, _ = account(tmp_path, [level()], client)
     m.tick(NOW)
-    assert buys(client) == [("buy_to_open", E_LEG, 5, 0.6)]              # $0.60 mid -> 5 contracts fit in $300
+    assert buys(client) == [("buy_to_open", E_LEG, 4, 0.62)]             # $0.62 ask -> 4 contracts fit in $300
     row = m.status()["rows"][0]
     assert (row["contract"], row["leg"], row["delta"], row["strike"], row["botEntry"]) == (E_LEG, "entry", 0.18, 285.0, 0.60)
     assert row["rule"] == "level1" and row["levelAtSignal"] == 1 and row["levels"] == ["level1"]
@@ -135,7 +140,7 @@ def test_an_unfilled_buy_is_resent_at_the_ask_of_the_020_delta_contract(tmp_path
     later = NOW + timedelta(seconds=pm.BUY_TTL_SECONDS + 10)
     books["bull"].items = [level(lastAt=(later - timedelta(seconds=5)).isoformat(), eLastBid=0.60, eLastAsk=0.66)]
     m.tick(later)
-    assert buys(client) == [("buy_to_open", E_LEG, 5, 0.6), ("buy_to_open", E_LEG, 5, 0.66)]
+    assert buys(client) == [("buy_to_open", E_LEG, 4, 0.62), ("buy_to_open", E_LEG, 4, 0.66)]
 
 
 def test_the_exit_uses_the_020_delta_contracts_exit_quote(tmp_path):
@@ -148,7 +153,7 @@ def test_the_exit_uses_the_020_delta_contracts_exit_quote(tmp_path):
                                  eExit=0.9, eExitBid=0.88, eExitAsk=0.92, lastAt=(later - timedelta(seconds=5)).isoformat())]
     m.tick(later)
     sells = [c for c in client.calls if c[0] == "sell_to_close"]
-    assert sells == [("sell_to_close", E_LEG, 5, 0.9)]                   # not the main contract's $3.40
+    assert sells == [("sell_to_close", E_LEG, 4, 0.9)]                   # not the main contract's $3.40
 
 
 def test_ai_saying_no_does_not_stop_a_level_trade(tmp_path):
@@ -164,7 +169,7 @@ def test_ai_is_shown_the_contract_that_is_really_bought(tmp_path):
     client = FakeClient()
     m, _ = account(tmp_path, [level()], client, ai_policy=lambda side, t, ts: seen.append(t) or {"approved": True, "enabled": True})
     m.tick(NOW)
-    assert (seen[0]["contract"], seen[0]["delta"], seen[0]["strike"], seen[0]["entry"]) == (E_LEG, 0.18, 285.0, 0.6)
+    assert (seen[0]["contract"], seen[0]["delta"], seen[0]["strike"], seen[0]["entry"]) == (E_LEG, 0.18, 285.0, 0.62)
 
 
 def test_an_older_position_on_the_main_contract_is_still_managed_on_that_contract(tmp_path):
@@ -233,7 +238,7 @@ def test_a_buy_already_sent_is_still_resent_at_the_ask_when_the_signal_is_over_t
     books["bull"].items = [level(at=signal_at, entryAt=signal_at, lastAt=(later - timedelta(seconds=5)).isoformat(),
                                  eLastBid=0.60, eLastAsk=0.66)]
     m.tick(later)
-    assert [c[3] for c in buys(client)] == [0.6, 0.66]
+    assert [c[3] for c in buys(client)] == [0.62, 0.66]
     row = m.status()["rows"][0]
     assert row["status"] == "buying" and row["buyTries"] == 1
 
@@ -247,7 +252,7 @@ def test_an_option_nobody_is_bidding_for_or_under_five_cents_is_not_bought(tmp_p
     client = FakeClient()
     m, _ = account(tmp_path / "ok", [level(eLastBid=0.04, eLastAsk=0.06)], client)
     m.tick(NOW)
-    assert buys(client) == [("buy_to_open", E_LEG, 60, 0.05)]                            # $0.05 is the floor: 60 contracts = $300
+    assert buys(client) == [("buy_to_open", E_LEG, 50, 0.06)]                            # mid $0.05 is the floor; bought at the ask $0.06: 50 contracts = $300
     assert pm.sellable(0.04, 0.06) and not pm.sellable(0.0, 0.5) and not pm.sellable(None, None)
 
 
@@ -261,8 +266,11 @@ def test_a_resend_never_goes_out_on_a_zero_bid(tmp_path):
     assert len(buys(client)) == 1 and m.status()["rows"][0]["status"] == "missed"
 
 
-def test_a_later_upgrade_to_level_3_on_the_same_ticker_counts_for_level_3_only(tmp_path):
-    """11-09: 25 of 152 tickers began as Level 2 and were upgraded minutes later (CAT 09:35 -> 09:38)."""
+def test_a_later_level_3_after_the_first_buy_ended_counts_for_every_level(tmp_path):
+    """11-09: 25 of 152 tickers began as Level 2 and were upgraded minutes later (CAT 09:35 -> 09:38).
+    Since his re-entry rule (2026-11-10) an order placed after the ticker's earlier order has ENDED
+    (here it missed) is a fresh signal and counts for all its levels; an upgrade while the earlier
+    order is still live keeps its own level only (test_momx_paper_mirror: _levels_for)."""
     client = FakeClient(fill=False)
     m, books = account(tmp_path, [level("level1"), level("level2")], client)
     m.tick(NOW)
@@ -275,7 +283,7 @@ def test_a_later_upgrade_to_level_3_on_the_same_ticker_counts_for_level_3_only(t
     m.tick(later)
     rows = sorted(m.status()["rows"], key=lambda r: r["buyAt"])
     assert len(buys(client)) == 2 and [r["rule"] for r in rows] == ["level2", "level3"]
-    assert rows[1]["levels"] == ["level3"]                                               # not counted again under Level 1 / 2
+    assert rows[1]["levels"] == ["level1", "level2", "level3"]                           # the first order ended: a fresh signal
 
     restarted, _ = account(tmp_path, [level("level3", now=later, symbol="MSFT", eContract="MSFT261113C00520000")], FakeClient())
     restarted.tick(later + timedelta(seconds=10))                                        # a different ticker, first order today

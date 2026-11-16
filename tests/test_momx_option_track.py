@@ -4,7 +4,7 @@ from __future__ import annotations
 import threading
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from momx import option_track as ot
@@ -370,11 +370,23 @@ def test_exit_signal_reads_completed_candles_after_entry():
     entry = MON.timestamp()
     bar_after = entry - 60            # a candle that CLOSES after the entry
     bar_before = entry - 600          # closed before the entry: ignored
-    assert ot.exit_signal({"m5": m5_bar(98.0, bar_after)}, entry, False) == "below VWAP"
+    assert ot.exit_signal({"m5": m5_bar(98.0, bar_after)}, entry, False) == "below EMA21"
     assert ot.exit_signal({"m5": m5_bar(99.2, bar_after)}, entry, False) == "below EMA21"
     assert ot.exit_signal({"m5": m5_bar(100.0, bar_after)}, entry, False) is None
     assert ot.exit_signal({"m5": m5_bar(98.0, bar_before)}, entry, False) is None
-    assert ot.exit_signal({"m5": m5_bar(101.0, bar_after, vwap=100.5, e21=99.0)}, entry, True) == "above VWAP"
+    assert ot.exit_signal({"m5": m5_bar(101.0, bar_after, vwap=100.5, e21=99.0)}, entry, True) == "above EMA21"
+
+
+def test_a_close_across_vwap_alone_no_longer_exits():
+    """2026-11-10, his "Remove vwap exit strategy in BOT's": the NVDA put was sold on a 5m close above
+    VWAP at 10:00 while still under the 21 EMA. Now that holds; only the 21 EMA ends the trade early."""
+    entry = MON.timestamp()
+    bar_after = entry - 60
+    put_bounce = m5_bar(172.9, bar_after, vwap=172.56, e21=175.75)    # above VWAP, under the EMA21
+    assert ot.exit_signal({"m5": put_bounce}, entry, True) is None
+    call_dip = m5_bar(99.2, bar_after, vwap=99.5, e21=99.0)           # below VWAP, over the EMA21
+    assert ot.exit_signal({"m5": call_dip}, entry, False) is None
+    assert ot.exit_signal({"m5": m5_bar(176.0, bar_after, vwap=172.56, e21=175.75)}, entry, True) == "above EMA21"
 
 
 def test_zero_dte_pick():
@@ -390,13 +402,13 @@ def test_his_exit_the_0dte_leg_and_the_weekly_hold_carry(tmp_path):
     b.apply("Watchlist", {"rows": [row]}, MON)
     t = next(x for x in b.trades() if x["rule"] == "go")
     assert t["zContract"] == "X_C101.0_0928" and t["zStatus"] == "open"
-    # a 5m candle closes below VWAP 20 minutes later -> exit priced right away
+    # a 5m candle closes below the 21 EMA 20 minutes later -> exit priced right away
     clock.t = MON.timestamp() + 1200
     later = datetime.fromtimestamp(clock.t, ET)
     row2 = go_row(m5={"gapGo": {"goAt": GO_AT}, **m5_bar(98.0, clock.t - 300)})
     b.apply("Watchlist", {"rows": [row2]}, later)
     t = next(x for x in b.trades() if x["rule"] == "go")
-    assert t["exitReason"] == "below VWAP" and t["exitPrice"] == 1.5 and t["zStatus"] == "closed"
+    assert t["exitReason"] == "below EMA21" and t["exitPrice"] == 1.5 and t["zStatus"] == "closed"
     # 15:52: the day closes; the weekly (expires 10/02) is carried for holdBest
     clock.t = datetime(2026, 9, 28, 15, 52, tzinfo=ET).timestamp()
     b.apply("Watchlist", {"rows": [row2]}, datetime.fromtimestamp(clock.t, ET))
@@ -952,3 +964,586 @@ def test_new_entry_carries_its_bid_ask_for_the_paper_mirror(tmp_path):
     t = slow.trades()[0]
     assert t["status"] == "open" and "entryVia" not in t
     assert (t["lastBid"], t["lastAsk"]) == (t["entryBid"], t["entryAsk"]) and t["lastBid"] is not None
+
+
+def test_the_bot_holds_through_a_vwap_only_cross_and_exits_on_the_21_ema(tmp_path):
+    """2026-11-10 (NVDA put sold on a VWAP bounce): the real book keeps the trade open on a close
+    across VWAP alone, and closes it on the first close past the 21 EMA."""
+    clock = Clock(MON.timestamp())
+    prices = [chain(call_mid=(1.0, 1.1)), chain(call_mid=(1.4, 1.6)), chain(call_mid=(1.9, 2.1))]
+    b, _ = book(tmp_path, {"X": prices}, clock=clock)
+    b.apply("Watchlist", {"rows": [go_row(m5={"gapGo": {"goAt": GO_AT}, **m5_bar(101.0, MON.timestamp() - 60)})]}, MON)
+    clock.t = MON.timestamp() + 1200
+    dip = go_row(m5={"gapGo": {"goAt": GO_AT}, **m5_bar(99.2, clock.t - 300, vwap=99.5, e21=99.0)})
+    b.apply("Watchlist", {"rows": [dip]}, datetime.fromtimestamp(clock.t, ET))
+    t = next(x for x in b.trades() if x["rule"] == "go")
+    assert not t.get("exitReason")
+    clock.t += 600
+    under = go_row(m5={"gapGo": {"goAt": GO_AT}, **m5_bar(98.5, clock.t - 300, vwap=99.5, e21=99.0)})
+    b.apply("Watchlist", {"rows": [under]}, datetime.fromtimestamp(clock.t, ET))
+    t = next(x for x in b.trades() if x["rule"] == "go")
+    assert t["exitReason"] == "below EMA21"
+
+
+# --- Level re-entry (his rule 2026-11-10: "re-enter if it sets up again") -----------------
+def _at(h, m, s=0):
+    return datetime(2026, 9, 28, h, m, s, tzinfo=ET)
+
+
+def _bear_row(close, bar_start):
+    """A put setup: e21 99.5; close under it = right side for a put, over it = the 21 EMA exit."""
+    return {"symbol": "X", "last": close, "m5": m5_bar(close, bar_start.timestamp(), e21=99.5)}
+
+
+def _bull_row(close, bar_start):
+    """A call setup: e21 99.5; close above it = right side for a call, under it = the 21 EMA exit."""
+    return {"symbol": "X", "last": close, "m5": m5_bar(close, bar_start.timestamp(), e21=99.5)}
+
+
+#: per book: (row helper, right-side close, wrong-side close, the 21 EMA exit reason)
+SIDES = {"bear": (_bear_row, 99.0, 100.5, "above EMA21"),
+         "bull": (_bull_row, 100.5, 99.0, "below EMA21")}
+
+
+def _level_book(tmp_path, monkeypatch, rules=(), direction="bear"):
+    clock = Clock(_at(9, 35).timestamp())
+    b, _ = book(tmp_path, {"X": chain(spot=100.4)}, direction=direction, clock=clock)
+    monkeypatch.setattr(ot, "fired", lambda *args: list(rules))
+    b._levels.evaluate = lambda *a, **k: {"X": {"version": 1, "highestLevel": 3, "setupCount": 3, "virtualOnly": True}}
+    return b, clock
+
+
+def _scan(b, clock, when, row):
+    clock.t = when.timestamp()
+    b.apply("Mag7", {"rows": [row]}, when)
+
+
+def _level3(b):
+    return [t for t in b.trades() if t["rule"] == "level3"]
+
+
+def _dropped_scan(b, clock, when, row):
+    """A scan the evaluator really evaluated (a valid publication, status ready) on which the
+    ticker's Level signal is absent - the setup broke. {} = evaluated, nothing qualified; the
+    ticker has a context, i.e. the worker really judged its (fresh) row."""
+    keep, keep_ctx = b._levels.evaluate, getattr(b._levels, "contexts", {})
+
+    def judged(*a, **k):
+        b._levels.contexts = {row["symbol"]: {"version": 1, "highestLevel": 0}}
+        return {}
+
+    b._levels.evaluate = judged
+    try:
+        _scan(b, clock, when, row)
+    finally:
+        b._levels.evaluate, b._levels.contexts = keep, keep_ctx
+
+
+def _stale_row_scan(b, clock, when, row):
+    """A good publication on which this ticker's row was NOT judged (stale / unobserved: no context)."""
+    keep, keep_ctx = b._levels.evaluate, getattr(b._levels, "contexts", {})
+
+    def unjudged(*a, **k):
+        b._levels.contexts = {}
+        return {}
+
+    b._levels.evaluate = unjudged
+    try:
+        _scan(b, clock, when, row)
+    finally:
+        b._levels.evaluate, b._levels.contexts = keep, keep_ctx
+
+
+def _failed_scan(b, clock, when, row):
+    """A scan the evaluator could NOT evaluate (stale publication, worker timeout / error): None."""
+    keep = b._levels.evaluate
+    b._levels.evaluate = lambda *a, **k: None
+    try:
+        _scan(b, clock, when, row)
+    finally:
+        b._levels.evaluate = keep
+
+
+@pytest.mark.parametrize("side", ["bear", "bull"])
+def test_level_signal_re_enters_after_the_bot_exited_like_nvda(tmp_path, monkeypatch, side):
+    """NVDA 2026-11-10: Level 3 put 09:35, sold 10:00 on the 21 EMA, Level 3 again 10:30 -> a second trade.
+    The bull book (calls) mirrors it: right side = close above the 21 EMA."""
+    row, right, wrong, exit_reason = SIDES[side]
+    b, clock = _level_book(tmp_path, monkeypatch, direction=side)
+    _scan(b, clock, _at(9, 35), row(right, _at(9, 25)))
+    first = _level3(b)
+    assert len(first) == 1 and first[0]["status"] == "open" and first[0]["virtualOnly"] is True
+    # 10:00 the 5m candle closes across the 21 EMA: the bot exits (the signal is still on).
+    _scan(b, clock, _at(10, 0), row(wrong, _at(9, 55)))
+    assert len(_level3(b)) == 1 and _level3(b)[0]["exitReason"] == exit_reason
+    # Seconds later the level still shows, but no candle has closed back on the right side since
+    # the exit: no instant re-buy loop.
+    _scan(b, clock, _at(10, 0, 30), row(wrong, _at(9, 55)))
+    assert len(_level3(b)) == 1
+    # The Level signal drops on a later scan (the setup broke)...
+    _dropped_scan(b, clock, _at(10, 15), row(wrong, _at(10, 10)))
+    # ...and 10:30 it set up again (signal back + a candle closed on the right side): a new record.
+    _scan(b, clock, _at(10, 30), row(right, _at(10, 25)))
+    recs = _level3(b)
+    assert len(recs) == 2
+    second = recs[1]
+    assert second["at"] == _at(10, 30).isoformat() and second["at"] != recs[0]["at"]
+    assert second["status"] == "open" and second["entry"] > 0          # priced (need.add)
+    assert second["virtualOnly"] is True and second["levelSignal"]["strategyLevel"] == 3
+    assert second["levelReentry"] is True and not recs[0].get("levelReentry")
+    assert recs[0]["exitReason"] == exit_reason                         # the first is untouched
+    # Every level fired again, each on its own record.
+    assert sum(t["rule"] == "level1" for t in b.trades()) == 2
+    # The BOT panel (api_server reads SUMMARY_KEYS) shows which record is the re-entry.
+    shown = [t for t in b.summary() if t["rule"] == "level3"]
+    assert "levelReentry" in ot.OptionTrackBook.SUMMARY_KEYS
+    assert shown[1]["levelReentry"] is True and "levelReentry" not in shown[0]
+
+
+def test_a_failed_level_evaluation_does_not_re_arm(tmp_path, monkeypatch):
+    """Review finding: evaluate() failing (stale publication > 120 s, 5 s worker timeout, worker
+    error / restart) is not "the setup went away" - it must not count as the dropped scan."""
+    b, clock = _level_book(tmp_path, monkeypatch)
+    _scan(b, clock, _at(9, 35), _bear_row(99.0, _at(9, 25)))
+    _scan(b, clock, _at(10, 0), _bear_row(100.5, _at(9, 55)))          # 21 EMA exit
+    _failed_scan(b, clock, _at(10, 15), _bear_row(100.5, _at(10, 10)))  # evaluator hiccup
+    _stale_row_scan(b, clock, _at(10, 20), _bear_row(100.5, _at(10, 15)))  # good scan, this row not judged
+    assert len(_level3(b)) == 1                                          # and nothing opens on it
+    _scan(b, clock, _at(10, 30), _bear_row(99.0, _at(10, 25)))
+    assert len(_level3(b)) == 1, "a failed evaluation re-armed the Level re-entry"
+    # A real evaluation that leaves the ticker out still re-arms it.
+    _dropped_scan(b, clock, _at(10, 35), _bear_row(99.0, _at(10, 30)))
+    _scan(b, clock, _at(10, 40), _bear_row(99.0, _at(10, 35)))
+    assert len(_level3(b)) == 2 and _level3(b)[1]["levelReentry"] is True
+
+
+def test_level_signal_never_opens_a_second_copy_while_one_is_open(tmp_path, monkeypatch):
+    b, clock = _level_book(tmp_path, monkeypatch)
+    _scan(b, clock, _at(9, 35), _bear_row(99.0, _at(9, 25)))
+    for when in (_at(10, 0), _at(10, 30), _at(11, 22)):
+        _scan(b, clock, when, _bear_row(99.0, when - timedelta(minutes=5)))
+    assert len(_level3(b)) == 1 and not _level3(b)[0].get("exitAt")
+
+
+def test_non_level_rules_still_fire_once_a_day(tmp_path, monkeypatch):
+    b, clock = _level_book(tmp_path, monkeypatch, rules=("go",))
+    b._levels.evaluate = lambda *a, **k: {}
+    _scan(b, clock, _at(9, 35), _bear_row(99.0, _at(9, 25)))
+    _scan(b, clock, _at(10, 0), _bear_row(100.5, _at(9, 55)))
+    go = [t for t in b.trades() if t["rule"] == "go"]
+    assert len(go) == 1 and go[0]["exitReason"] == "above EMA21"
+    _scan(b, clock, _at(10, 30), _bear_row(99.0, _at(10, 25)))
+    assert len([t for t in b.trades() if t["rule"] == "go"]) == 1
+
+
+def test_level_re_entry_survives_a_reload_without_duplicates(tmp_path, monkeypatch):
+    b, clock = _level_book(tmp_path, monkeypatch)
+    _scan(b, clock, _at(9, 35), _bear_row(99.0, _at(9, 25)))
+    _scan(b, clock, _at(10, 0), _bear_row(100.5, _at(9, 55)))
+    _dropped_scan(b, clock, _at(10, 15), _bear_row(100.5, _at(10, 10)))
+    _scan(b, clock, _at(10, 30), _bear_row(99.0, _at(10, 25)))
+    b._save(force=True)
+    again, _ = book(tmp_path, {"X": chain(spot=100.4)}, direction="bear", clock=clock)
+    again._levels.evaluate = b._levels.evaluate
+    again._load(_at(10, 30).date().isoformat())
+    assert [t["at"] for t in _level3(again)] == [_at(9, 35).isoformat(), _at(10, 30).isoformat()]
+    # The reloaded book keeps scanning: the second record is open, so nothing new is added.
+    _scan(again, clock, _at(10, 35), _bear_row(99.0, _at(10, 30)))
+    assert len(_level3(again)) == 2
+    saved = json.loads((tmp_path / ot.DIRNAME / "2026-09-28.json").read_text(encoding="utf-8"))
+    assert sum(t["rule"] == "level3" for t in saved["trades"]) == 2
+
+
+def test_two_level_records_close_and_carry_separately(tmp_path, monkeypatch):
+    """Both records of a re-entry reach 15:50 and each weekly carries its own holdBest."""
+    b, clock = _level_book(tmp_path, monkeypatch)
+    _scan(b, clock, _at(9, 35), _bear_row(99.0, _at(9, 25)))
+    _scan(b, clock, _at(10, 0), _bear_row(100.5, _at(9, 55)))
+    _dropped_scan(b, clock, _at(10, 15), _bear_row(100.5, _at(10, 10)))
+    _scan(b, clock, _at(10, 30), _bear_row(99.0, _at(10, 25)))
+    _scan(b, clock, _at(15, 52), _bear_row(99.0, _at(15, 45)))
+    recs = _level3(b)
+    assert [t["status"] for t in recs] == ["closed", "closed"]
+    assert recs[0]["exitReason"] == "above EMA21" and recs[1]["exitReason"] == "15:50 close"
+    carried = [c for c in b._carry_list() if c["rule"] == "level3"]
+    assert sorted(c["at"] for c in carried) == [t["at"] for t in recs]
+
+
+def _levels_at(b, highest):
+    b._levels.evaluate = lambda *a, **k: {"X": {"version": 1, "highestLevel": highest, "setupCount": highest,
+                                                "virtualOnly": True}}
+
+
+def _cycle(b, clock, when, side="bear"):
+    """One full set-up-again cycle after an open Level trade: 21 EMA exit, a dropped scan, back."""
+    row, right, wrong, _ = SIDES[side]
+    _scan(b, clock, when, row(wrong, when - timedelta(minutes=5)))
+    _dropped_scan(b, clock, when + timedelta(minutes=5), row(wrong, when))
+    back = when + timedelta(minutes=10)
+    _scan(b, clock, back, row(right, back - timedelta(minutes=5)))
+
+
+@pytest.mark.parametrize("side", ["bear", "bull"])
+def test_choppy_level_that_holds_all_day_does_not_round_trip(tmp_path, monkeypatch, side):
+    """Review finding: the Level holds every scan while the 5m candles flip across the 21 EMA.
+    Without a dropped scan there is no re-entry, so the records stay bounded."""
+    row, right, wrong, exit_reason = SIDES[side]
+    b, clock = _level_book(tmp_path, monkeypatch, direction=side)
+    when = _at(9, 35)
+    for i in range(70):                                   # 09:35 -> 15:20, every 5 minutes
+        close = right if i % 2 == 0 else wrong
+        _scan(b, clock, when, row(close, when - timedelta(minutes=5)))
+        when += timedelta(minutes=5)
+    assert len(_level3(b)) == 1 and _level3(b)[0]["exitReason"] == exit_reason
+    assert all(sum(t["rule"] == r for t in b.trades()) == 1 for r in ot.LEVEL_RULES)
+
+
+@pytest.mark.parametrize("side", ["bear", "bull"])
+def test_level_re_entries_are_capped_per_ticker_per_day(tmp_path, monkeypatch, side):
+    row, right, _, _ = SIDES[side]
+    b, clock = _level_book(tmp_path, monkeypatch, direction=side)
+    _scan(b, clock, _at(9, 35), row(right, _at(9, 25)))
+    for start in (_at(10, 0), _at(10, 30), _at(11, 0), _at(11, 30), _at(12, 0)):
+        _cycle(b, clock, start, side)
+    recs = _level3(b)
+    assert len(recs) == 1 + ot.MAX_LEVEL_REENTRIES == 4
+    assert sum(bool(t.get("levelReentry")) for t in recs) == 3
+    assert sum(t["rule"] == "level1" for t in b.trades()) == 4
+
+
+def test_unpriced_re_entry_does_not_block_a_later_one(tmp_path, monkeypatch):
+    """A Level record that ended never-bought (no_contract / ai_skipped) counts as done at its signal time."""
+    b, clock = _level_book(tmp_path, monkeypatch)
+    _scan(b, clock, _at(9, 35), _bear_row(99.0, _at(9, 25)))
+    _cycle(b, clock, _at(10, 0))                          # re-entry at 10:10
+    second_at = _at(10, 10).isoformat()
+    assert [t["at"] for t in _level3(b)][-1] == second_at
+    for t in b._trades:                                   # that re-entry never got a contract
+        if t["at"] == second_at:
+            for k in ("exitAt", "exitReason", "entry", "entryAt", "contract"):
+                t.pop(k, None)
+            t["status"] = "no_contract" if t["rule"] != "level2" else "ai_skipped"
+    # Still set up, but no dropped scan since that record: nothing new.
+    _scan(b, clock, _at(10, 20), _bear_row(99.0, _at(10, 15)))
+    assert len(_level3(b)) == 2
+    _dropped_scan(b, clock, _at(10, 25), _bear_row(99.0, _at(10, 20)))
+    _scan(b, clock, _at(10, 35), _bear_row(99.0, _at(10, 30)))
+    recs = _level3(b)
+    assert len(recs) == 3 and recs[-1]["at"] == _at(10, 35).isoformat() and recs[-1]["status"] == "open"
+
+
+def test_open_level3_blocks_a_level1_re_entry_on_the_same_ticker(tmp_path, monkeypatch):
+    """Re-entry is per ticker, not per rule: any Level record still open blocks it."""
+    b, clock = _level_book(tmp_path, monkeypatch)
+    _levels_at(b, 1)
+    _scan(b, clock, _at(9, 35), _bear_row(99.0, _at(9, 25)))
+    _scan(b, clock, _at(10, 0), _bear_row(100.5, _at(9, 55)))           # level1 exits
+    _levels_at(b, 3)
+    _scan(b, clock, _at(10, 5), _bear_row(99.0, _at(10, 0)))             # level2/3 fire the first time
+    assert len(_level3(b)) == 1 and _level3(b)[0]["status"] == "open"
+    _dropped_scan(b, clock, _at(10, 15), _bear_row(99.0, _at(10, 10)))
+    _scan(b, clock, _at(10, 30), _bear_row(99.0, _at(10, 25)))
+    assert sum(t["rule"] == "level1" for t in b.trades()) == 1          # level3 still open
+    # Once level3 has exited too, the same set-up-again path re-enters (all levels together).
+    _cycle(b, clock, _at(10, 45))
+    assert sum(t["rule"] == "level1" for t in b.trades()) == 2
+    assert len(_level3(b)) == 2
+
+
+# --- His top-of-board rule (2026-11-10: "Mag7 top 3", "use H/L column top") ----------------
+def _hl(sym, hl, **over):
+    """A board row; a scan MATCH unless scanPass=False is passed (rank_board also ships non-matches in "rows")."""
+    row = {"symbol": sym, "last": 100.0, "highLow": {"value": hl}, "scanPass": True}
+    row.update(over)
+    return row
+
+
+def test_hl_ranking_orders_calls_high_first_and_puts_low_first_with_stable_ties():
+    rows = [_hl("A", 0.2), _hl("B", 0.9), _hl("C", 0.2), {"symbol": "D", "highLow": {}, "scanPass": True},
+            {"symbol": "E", "scanPass": True}, _hl("F", -0.7), "junk", _hl("B", -1.0)]
+    assert ot.hl_ranking(rows, bear=False) == [("B", 0.9), ("A", 0.2), ("C", 0.2), ("F", -0.7)]
+    # Puts: lowest first; the tie A / C keeps the board's own order.
+    assert ot.hl_ranking(rows, bear=True) == [("F", -0.7), ("A", 0.2), ("C", 0.2), ("B", 0.9)]
+    assert ot.hl_ranking(None, bear=False) == []
+
+
+def _top_book(tmp_path, monkeypatch, direction="bull", syms=("X",)):
+    clock = Clock(_at(9, 35).timestamp())
+    b, _ = book(tmp_path, {s: chain(spot=100.4) for s in syms}, direction=direction, clock=clock)
+    monkeypatch.setattr(ot, "fired", lambda *args: [])
+    b._levels.evaluate = lambda *a, **k: {}
+    return b, clock
+
+
+def _fire(b, sym):
+    b._levels.evaluate = lambda *a, **k: {sym: {"version": 1, "highestLevel": 3, "setupCount": 3, "virtualOnly": True}}
+
+
+def _board(b, clock, when, rows, board="Watchlist", rest=()):
+    clock.t = when.timestamp()
+    b.apply(board, {"rows": list(rows), "rest": list(rest)}, when)
+
+
+def test_top_runs_break_on_drop_out_and_on_a_long_gap(tmp_path, monkeypatch):
+    b, _ = _top_book(tmp_path, monkeypatch)
+    b._load("2026-09-28")
+    t0 = _at(10, 0).timestamp()
+    others = [("O%d" % i, 0.1 * i) for i in range(1, 7)]           # 6 names under X
+    for s in (0, 60, 120):
+        b._top_update("Watchlist", [("X", 0.95)] + others, t0 + s)
+    assert b._top_stamp("Watchlist", "X", t0 + 120) == {"board": "Watchlist", "n": 7, "rank": 1,
+                                                          "heldSeconds": 120, "hl": 0.95}
+    # Out of the top 7 on one scan (#8): the run breaks, and starts again when it is back.
+    b._top_update("Watchlist", [(f"P{i}", 1.0) for i in range(7)] + [("X", 0.95)], t0 + 180)
+    assert b._top_stamp("Watchlist", "X", t0 + 180) == {"board": "Watchlist", "n": 7, "rank": 8,
+                                                          "heldSeconds": 0, "hl": 0.95}
+    b._top_update("Watchlist", [("X", 0.95)] + others, t0 + 240)
+    b._top_update("Watchlist", [("X", 0.95)] + others, t0 + 300)
+    assert b._top_stamp("Watchlist", "X", t0 + 300)["heldSeconds"] == 60
+    # No scan for more than TOP_GAP_SECONDS (420 s): the board was not watched, every run starts again.
+    assert ot.TOP_GAP_SECONDS == 420
+    b._top_update("Watchlist", [("X", 0.95)] + others, t0 + 300 + 421)
+    assert b._top_stamp("Watchlist", "X", t0 + 721)["heldSeconds"] == 0
+    # Exactly 420 s apart still counts as watched.
+    b._top_update("Watchlist", [("X", 0.95)] + others, t0 + 1141)
+    assert b._top_stamp("Watchlist", "X", t0 + 1141)["heldSeconds"] == 420
+    # A ticker not ranked at all (no H/L) gets rank None, held 0.
+    assert b._top_stamp("Watchlist", "ZZ", t0 + 1141) == {"board": "Watchlist", "n": 7, "rank": None,
+                                                           "heldSeconds": 0, "hl": None}
+    # Other boards are not filtered: no stamp.
+    assert b._top_stamp("21 EMA Touch Monthly", "X", t0) is None
+
+
+def test_mag7_is_top_3_and_watchlist_top_7(tmp_path, monkeypatch):
+    assert ot.TOP_N == {"Mag7": 3, "Watchlist": 7} and ot.TOP_HOLD_SECONDS == 300
+    b, _ = _top_book(tmp_path, monkeypatch)
+    b._load("2026-09-28")
+    t0 = _at(10, 0).timestamp()
+    ranking = [(f"S{i}", 1 - i / 10) for i in range(1, 9)]       # S1 .. S8
+    for board in ("Mag7", "Watchlist"):
+        b._top_update(board, ranking, t0)
+        b._top_update(board, ranking, t0 + 120)
+        b._top_update(board, ranking, t0 + 240)
+        b._top_update(board, ranking, t0 + 300)
+    assert set(b._top_runs["Mag7"]["runs"]) == {"S1", "S2", "S3"}
+    assert set(b._top_runs["Watchlist"]["runs"]) == {f"S{i}" for i in range(1, 8)}
+    assert b._top_stamp("Mag7", "S4", t0 + 300)["heldSeconds"] == 0
+    assert b._top_stamp("Watchlist", "S7", t0 + 300)["heldSeconds"] == 300
+
+
+def test_only_scan_matches_are_ranked_and_new_records_are_stamped(tmp_path, monkeypatch):
+    """"rest" (non-matches) never take a top spot; the stamp goes on every new record, by board."""
+    b, clock = _top_book(tmp_path, monkeypatch, syms=("X",))
+    rows = [_hl("A", 0.9), _hl("B", 0.8), _hl("X", 0.7)]
+    rest = [_hl("R1", 1.0), _hl("R2", 1.0), _hl("R3", 1.0)]
+    for m in range(0, 6):
+        _board(b, clock, _at(10, m), rows, board="Mag7", rest=rest)
+    _fire(b, "X")
+    _board(b, clock, _at(10, 6), rows, board="Mag7", rest=rest)
+    recs = [t for t in b.trades() if t["symbol"] == "X"]
+    assert {t["rule"] for t in recs} == {"level1", "level2", "level3"}
+    for t in recs:
+        assert t["topHL"] == {"board": "Mag7", "n": 3, "rank": 3, "heldSeconds": 360, "hl": 0.7}
+    shown = [t for t in b.summary() if t["symbol"] == "X"]
+    assert "topHL" in ot.OptionTrackBook.SUMMARY_KEYS and shown[0]["topHL"]["rank"] == 3
+
+
+def test_a_board_outside_top_n_gets_no_stamp(tmp_path, monkeypatch):
+    b, clock = _top_book(tmp_path, monkeypatch, syms=("X",))
+    _fire(b, "X")
+    _board(b, clock, _at(10, 0), [_hl("X", 0.9)], board="21 EMA Touch Monthly")
+    recs = [t for t in b.trades() if t["symbol"] == "X"]
+    assert recs and all("topHL" not in t for t in recs)
+
+
+def test_bear_book_ranks_lowest_hl_first(tmp_path, monkeypatch):
+    b, clock = _top_book(tmp_path, monkeypatch, direction="bear", syms=("X",))
+    rows = [_hl("A", 0.9), _hl("X", -0.8), _hl("B", -0.5), _hl("C", -0.9)]
+    _fire(b, "X")
+    _board(b, clock, _at(10, 0), rows, board="Mag7")
+    t = next(t for t in b.trades() if t["symbol"] == "X")
+    assert t["topHL"]["rank"] == 2 and t["topHL"]["hl"] == -0.8
+
+
+def test_new_day_resets_the_top_runs(tmp_path, monkeypatch):
+    b, _ = _top_book(tmp_path, monkeypatch)
+    b._load("2026-09-28")
+    b._top_update("Mag7", [("X", 0.9)], _at(10, 0).timestamp())
+    assert b._top_runs
+    b._load("2026-09-29")
+    assert b._top_runs == {}
+
+
+def test_cmcsa_like_watchlist_top_7_for_6_min_passes_and_number_9_fails(tmp_path, monkeypatch):
+    from momx.paper_mirror import TOP_OK, stamp_verdict
+    names = [f"N{i}" for i in range(1, 11)]
+
+    def rows(cmcsa_place):
+        out = [_hl(s, round(0.99 - i * 0.05, 3)) for i, s in enumerate(names)]
+        out.insert(cmcsa_place - 1, _hl("CMCSA", round(0.99 - (cmcsa_place - 1) * 0.05 + 0.001, 3)))
+        return out
+
+    for place, ok in ((5, True), (9, False)):
+        b, clock = _top_book(tmp_path / str(place), monkeypatch, syms=("CMCSA",))
+        for m in range(0, 6):
+            _board(b, clock, _at(10, m), rows(place))
+        _fire(b, "CMCSA")
+        _board(b, clock, _at(10, 6), rows(place))
+        t = next(t for t in b.trades() if t["symbol"] == "CMCSA" and t["rule"] == "level3")
+        assert t["topHL"]["rank"] == place
+        assert t["topHL"]["heldSeconds"] == (360 if ok else 0)
+        verdict = stamp_verdict(t)
+        assert (verdict[0] == TOP_OK) is ok
+        if not ok:
+            assert verdict[1] == "CMCSA was #9 on the Watchlist by H/L (needs top 7 for 5 min from 9:45)"
+
+
+def test_a_level_re_entry_is_stamped_with_the_current_run_not_the_first(tmp_path, monkeypatch):
+    """The re-entry record must see the run that holds at ITS time: X fell out of the Mag7 top 3
+    at 10:15, so the 10:30 re-entry has been on top since 10:16 (14 min), not since 9:35."""
+    b, clock = _level_book(tmp_path, monkeypatch, direction="bear")
+    others = [_hl("A", -0.7), _hl("B", -0.6), _hl("C", -0.5)]
+
+    def scan(when, close, bar, top=True):
+        x = _bear_row(close, bar)
+        x["highLow"], x["scanPass"] = {"value": -0.9 if top else 0.5}, True
+        clock.t = when.timestamp()
+        b.apply("Mag7", {"rows": [x] + others}, when)
+
+    scan(_at(9, 35), 99.0, _at(9, 25))
+    first = _level3(b)[0]
+    assert first["topHL"] == {"board": "Mag7", "n": 3, "rank": 1, "heldSeconds": 0, "hl": -0.9}
+    for m in range(37, 60, 2):
+        scan(_at(9, m), 99.0, _at(9, 25))
+    scan(_at(10, 0), 100.5, _at(9, 55))                                # the 21 EMA exit
+    for m in range(2, 15, 2):
+        scan(_at(10, m), 100.5, _at(9, 55))
+    # 10:15: the Level signal drops AND X falls to #4 of the board.
+    keep = b._levels.evaluate
+
+    def judged(*a, **k):
+        b._levels.contexts = {"X": {"version": 1, "highestLevel": 0}}
+        return {}
+
+    b._levels.evaluate = judged
+    scan(_at(10, 15), 100.5, _at(10, 10), top=False)
+    b._levels.evaluate, b._levels.contexts = keep, {}
+    for m in range(16, 30, 2):
+        scan(_at(10, m), 100.5, _at(10, 10))
+    scan(_at(10, 30), 99.0, _at(10, 25))
+    recs = _level3(b)
+    assert len(recs) == 2 and recs[1]["levelReentry"] is True
+    assert recs[1]["topHL"] == {"board": "Mag7", "n": 3, "rank": 1, "heldSeconds": 14 * 60, "hl": -0.9}
+    assert recs[0]["topHL"]["heldSeconds"] == 0                        # the first record is untouched
+
+
+def test_non_matches_in_rows_never_take_a_top_spot(tmp_path, monkeypatch):
+    """rank_board ships every match first, then NON-matches (scanPass False) up to RANK_LIMIT in "rows" -
+    Mag7's 12 tickers are always all there. Only the matches are ranked."""
+    from momx import scan
+    b, clock = _top_book(tmp_path, monkeypatch, syms=("X",))
+    board_rows = scan.rank_board([_hl("N1", 1.0, scanPass=False, pctChange=9.0), _hl("A", 0.9, pctChange=1.0),
+                                  _hl("N2", 0.99, scanPass=False, pctChange=8.0), _hl("X", 0.5, pctChange=0.5),
+                                  _hl("N3", 0.98, scanPass=False, pctChange=7.0), _hl("B", 0.2, pctChange=0.1)])
+    assert [r["symbol"] for r in board_rows][:3] == ["A", "X", "B"] and len(board_rows) == 6
+    assert ot.hl_ranking(board_rows, bear=False) == [("A", 0.9), ("X", 0.5), ("B", 0.2)]
+    for m in range(0, 6):
+        _board(b, clock, _at(10, m), board_rows, board="Mag7")
+    _fire(b, "X")
+    _board(b, clock, _at(10, 6), board_rows, board="Mag7")
+    t = next(t for t in b.trades() if t["symbol"] == "X" and t["rule"] == "level3")
+    assert t["topHL"]["rank"] == 2 and t["topHL"]["heldSeconds"] == 360
+    assert b.top_now("Mag7", "N1", _at(10, 6).timestamp())["rank"] is None
+
+
+def test_bear_view_rows_rank_on_the_promoted_bear_scan_pass(tmp_path, monkeypatch):
+    from momx import board as momx_board
+    payload = {"rows": [_hl("A", -0.9, scanPass=True, bear={"scanPass": False}),
+                        _hl("P", -0.5, scanPass=False, bear={"scanPass": True}),
+                        _hl("Q", -0.2, scanPass=False, bear={"scanPass": True})], "rest": []}
+    bear = momx_board.bear_view(payload)
+    assert ot.hl_ranking(bear["rows"], bear=True) == [("P", -0.5), ("Q", -0.2)]
+
+
+def test_realistic_watchlist_scan_spacing_keeps_the_run(tmp_path, monkeypatch):
+    """Real Watchlist scans: 141-200 s apart, one busy 400 s gap - the run must survive all of them."""
+    b, _ = _top_book(tmp_path, monkeypatch)
+    b._load("2026-09-28")
+    t0 = _at(10, 0).timestamp()
+    ranking = [("X", 0.9)] + [(f"O{i}", 0.1 * i) for i in range(1, 7)]
+    ts = t0
+    for gap in (0, 150, 200, 141, 400, 180, 160):
+        ts += gap
+        b._top_update("Watchlist", ranking, ts)
+    assert b._top_stamp("Watchlist", "X", ts)["heldSeconds"] == 1231
+    assert b.top_now("Watchlist", "X", ts)["heldSeconds"] == 1231
+
+
+def test_top_now_reads_the_latest_scan_and_is_none_when_unknown(tmp_path, monkeypatch):
+    b, clock = _top_book(tmp_path, monkeypatch)
+    assert b.started_at == _at(9, 35).timestamp()
+    t0 = _at(10, 0).timestamp()
+    assert b.top_now("Mag7", "X", t0) is None                       # no scan of the board yet (restart)
+    assert b.top_now("21 EMA Touch Monthly", "X", t0) is None       # a board without TOP_N
+    rows = [_hl("A", 0.9), _hl("X", 0.8), _hl("B", 0.7), _hl("C", 0.6)]
+    _board(b, clock, _at(10, 0), rows, board="Mag7")
+    _board(b, clock, _at(10, 3), rows, board="Mag7")
+    assert b.top_now("Mag7", "X", _at(10, 4).timestamp()) == {
+        "board": "Mag7", "n": 3, "rank": 2, "heldSeconds": 180, "hl": 0.8, "at": _at(10, 3).isoformat()}
+    assert b.top_now("Mag7", "C", _at(10, 4).timestamp())["rank"] == 4
+    assert b.top_now("Mag7", "C", _at(10, 4).timestamp())["heldSeconds"] == 0
+    assert b.top_now("Mag7", "ZZ", _at(10, 4).timestamp())["rank"] is None
+    # The next day, before that day's first scan, yesterday's runs are unknown.
+    assert b.top_now("Mag7", "X", _at(10, 4).timestamp() + 86400) is None
+
+
+def test_hl_ranking_sorts_on_the_unrounded_degree_and_ties_on_symbol_like_the_board():
+    """Review fix: rank exactly like his board (momxCells.js highLowSortValue + sortRows): the
+    unrounded "degree" (value only when degree is missing), ties by symbol ascending both ways."""
+    def row(sym, value, degree):
+        return {"symbol": sym, "highLow": {"value": value, "degree": degree}, "scanPass": True}
+
+    # Both show 1.0 on the board, but 0.996 < 1.0: the true 1.0 ranks first for calls, last for puts.
+    rows = [row("A", 1.0, 0.996), row("B", 1.0, 1.0)]
+    assert ot.hl_ranking(rows, bear=False) == [("B", 1.0), ("A", 1.0)]
+    assert ot.hl_ranking(rows, bear=True) == [("A", 1.0), ("B", 1.0)]
+    # Equal degrees: symbol ascending in BOTH directions, whatever order the rows came in.
+    tied = [row("ZM", 0.5, 0.5), row("AMD", 0.5, 0.5), row("MU", 0.9, 0.9)]
+    assert ot.hl_ranking(tied, bear=False) == [("MU", 0.9), ("AMD", 0.5), ("ZM", 0.5)]
+    assert ot.hl_ranking(tied, bear=True) == [("AMD", 0.5), ("ZM", 0.5), ("MU", 0.9)]
+    # No degree: the value is the sort value (older cells, the rounded live value).
+    mixed = [row("A", 0.3, None), {"symbol": "B", "highLow": {"value": 0.4}, "scanPass": True}, row("C", 0.35, 0.349)]
+    assert [s for s, _ in ot.hl_ranking(mixed, bear=False)] == ["B", "C", "A"]
+
+
+def test_a_scan_match_with_no_hl_breaks_its_run_but_is_rank_unknown_not_a_fail(tmp_path, monkeypatch):
+    """Review fix: columns.null_cell in a candle gap ({'value': None, 'degree': None}) on a top
+    ticker: out of the top for that scan (its run breaks), but the paper bot waits (retry), and the
+    next good scan restarts the run."""
+    from momx.paper_mirror import TOP_FAIL, TOP_OK, TOP_WAIT, top_verdict
+    b, clock = _top_book(tmp_path, monkeypatch)
+    others = [_hl("A", 0.5), _hl("B", 0.4), _hl("C", 0.3)]
+    for m in range(0, 6):
+        _board(b, clock, _at(10, m), [_hl("X", 0.9)] + others, board="Mag7")
+    assert b.top_now("Mag7", "X", _at(10, 5).timestamp())["heldSeconds"] == 300
+    gap = dict(_hl("X", None), highLow={"value": None, "degree": None})
+    assert ot.hl_missing([gap] + others) == {"X"} and ot.hl_ranking([gap] + others, bear=False)[0][0] == "A"
+    _board(b, clock, _at(10, 6), [gap] + others, board="Mag7")
+    now = b.top_now("Mag7", "X", _at(10, 6).timestamp())
+    assert now["rank"] is None and now["heldSeconds"] == 0 and now["hlMissing"] is True
+    assert b.top_now("Mag7", "A", _at(10, 6).timestamp())["rank"] == 1          # the others still rank
+    assert b._top_stamp("Mag7", "X", _at(10, 6).timestamp())["hlMissing"] is True  # a record's stamp too
+    sig = {"rule": "level3", "symbol": "X", "board": "Mag7"}
+    state, why = top_verdict(sig, now, _at(10, 6))
+    assert state == TOP_WAIT and "no H/L on the last scan" in why                # retried, never final
+    # A symbol that is not a scan match at all is still a fail.
+    assert top_verdict(dict(sig, symbol="ZZ"), b.top_now("Mag7", "ZZ", _at(10, 6).timestamp()),
+                       _at(10, 6))[0] == TOP_FAIL
+    # The next good scan restarts the run (a new 5-min hold from there).
+    _board(b, clock, _at(10, 7), [_hl("X", 0.9)] + others, board="Mag7")
+    back = b.top_now("Mag7", "X", _at(10, 7).timestamp())
+    assert back["rank"] == 1 and back["heldSeconds"] == 0 and "hlMissing" not in back
+    for m in range(8, 13):
+        _board(b, clock, _at(10, m), [_hl("X", 0.9)] + others, board="Mag7")
+    assert top_verdict(sig, b.top_now("Mag7", "X", _at(10, 12).timestamp()), _at(10, 12))[0] == TOP_OK
+    assert "hlMissing" not in b._top_stamp("Mag7", "X", _at(10, 12).timestamp())

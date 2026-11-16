@@ -10,7 +10,8 @@ import { PHONE, e2eTest, marketHoursBlock, withApp } from "./harness.mjs";
 
 const KEYS = "GET /api/user/api-keys";
 const SAVE = "POST /api/user/api-keys";
-const MESSAGE = ".account-settings-body .schwab-settings-message";
+// The confirmation sits in the provider card whose Save was pressed (2026-11-14).
+const MESSAGE = ".personal-api-keys-body .schwab-settings-message";
 const EMAIL = "e2e.trader@example.com";
 const summary = (over = {}) => ({
   json: { alpaca: { configured: false, keyIdMasked: "" }, tradier: { configured: false, tokenMasked: "" },
@@ -78,7 +79,7 @@ e2eTest("the card says whose keys these are without spelling out the email", asy
 });
 
 test("on a phone the save confirmation is on screen where the trader pressed Save",
-  { skip: marketHoursBlock() || false, todo: "the confirmation renders in the MY ACCOUNT card at the top of Settings, off-screen when Save is pressed at the provider card", timeout: 180_000 },
+  { skip: marketHoursBlock() || false, timeout: 180_000 },
   async () => {
     const saved = summary({ alpaca: { configured: true, keyIdMasked: "PKE2...ABCDEF" } });
     await withApp({ view: "Settings", viewport: PHONE, fakeReads: { [KEYS]: summary(), "GET /api/auth/status": signedIn }, fakeWrites: { [SAVE]: saved } }, async (app) => {

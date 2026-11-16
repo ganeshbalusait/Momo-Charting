@@ -365,7 +365,25 @@ export function rowCounts(count, width) {
   return Array.from({ length: rows }, (_, index) => base + (index >= rows - extra ? 1 : 0));
 }
 
-export function rowLayout(items, rect, { minRowHeight = 30 } = {}) {
+// Split `total` in proportion to `shares`, with no part below `floor`: parts
+// under it are pinned at the floor and the rest share what is left.
+function flooredSplit(shares, total, floor) {
+  const pinned = shares.map(() => false);
+  for (;;) {
+    const fixed = pinned.filter(Boolean).length * floor;
+    const freeSum = shares.reduce((sum, share, index) => sum + (pinned[index] ? 0 : share), 0);
+    const parts = shares.map((share, index) => (pinned[index] ? floor : ((total - fixed) * share) / freeSum));
+    const low = parts.map((part, index) => !pinned[index] && part < floor - 1e-9);
+    if (!low.some(Boolean)) return parts;
+    low.forEach((isLow, index) => { if (isLow) pinned[index] = true; });
+  }
+}
+
+// Narrowest a row tile may be: room for "-12.34%" after the gutter. rowCounts
+// allows 50px per tile on average, so a row can always afford this.
+export const MIN_TILE_WIDTH = 50;
+
+export function rowLayout(items, rect, { minRowHeight = 30, minTileWidth = MIN_TILE_WIDTH } = {}) {
   const width = Math.max(0, Number(rect?.width) || 0);
   const height = Math.max(0, Number(rect?.height) || 0);
   const list = (Array.isArray(items) ? items : [])
@@ -382,26 +400,18 @@ export function rowLayout(items, rect, { minRowHeight = 30 } = {}) {
     cursor += size;
   }
   const sums = rows.map((row) => row.reduce((total, item) => total + item.weight, 0));
-  const total = sums.reduce((a, b) => a + b, 0);
-  let heights = sums.map((sum) => (height * sum) / total);
-  // Lift rows below the floor (so the bottom row can still print a ticker)
-  // and take the difference proportionally from the rows above the floor.
-  const floor = Math.min(minRowHeight, height / rows.length);
-  for (let pass = 0; pass < rows.length; pass += 1) {
-    const low = heights.map((h) => h < floor - 1e-9);
-    if (!low.some(Boolean)) break;
-    const fixed = low.filter(Boolean).length * floor;
-    const freeSum = sums.reduce((acc, sum, index) => acc + (low[index] ? 0 : sum), 0);
-    heights = heights.map((h, index) => (low[index] ? floor : ((height - fixed) * sums[index]) / freeSum));
-  }
+  // Lift rows below the floor (so the bottom row can still print its ticker
+  // and %) and take the difference proportionally from the taller rows.
+  const heights = flooredSplit(sums, height, Math.min(minRowHeight, height / rows.length));
 
   const out = [];
   let y = originY;
   rows.forEach((row, rowIndex) => {
     const rowHeight = rowIndex === rows.length - 1 ? originY + height - y : heights[rowIndex];
+    const widths = flooredSplit(row.map((item) => item.weight), width, Math.min(minTileWidth, width / row.length));
     let x = originX;
     row.forEach((item, index) => {
-      const tileWidth = index === row.length - 1 ? originX + width - x : (width * item.weight) / sums[rowIndex];
+      const tileWidth = index === row.length - 1 ? originX + width - x : widths[index];
       out.push({ item, x, y, width: tileWidth, height: rowHeight, row: rowIndex });
       x += tileWidth;
     });
@@ -427,17 +437,28 @@ export function cardHeight(count, width, expanded = false) {
 export function tileFontSizes(width, height, style = "tos") {
   if (style === "rh") {
     // Robinhood: ticker and % the same size, ticker bold, % regular.
-    const symbol = Math.round(Math.max(10, Math.min(18, width / 4.4, height / 3.2)));
+    // "-12.34%" measures about 4.5x the font size; rounded down so it fits.
+    const symbol = Math.floor(Math.max(10, Math.min(18, width / 4.6, height / 3.2)));
     return { symbol, pct: symbol };
   }
   const symbol = Math.round(Math.max(9, Math.min(20, width / 4.2, height / 2.6)));
   return { symbol, pct: Math.max(8, Math.round(symbol * 0.85)) };
 }
 
-// What a tile of this pixel size has room to print. Robinhood drops the % on
-// its short bottom row (MU, AMD, ASML... print the ticker only).
-export function tileLabelMode(width, height, style = "tos") {
-  if (width >= 46 && height >= (style === "rh" ? 52 : 34)) return "full";
+// What a tile of this pixel size has room to print. Trader, 2026-11-10: every
+// ticker shows its %, so "full" needs only the room for two lines of the
+// smallest font; Robinhood's habit of dropping it on short rows is not copied.
+export function tileLabelMode(width, height) {
+  if (width >= 44 && height >= 25) return "full";
   if (width >= 30 && height >= 16) return "symbol";
   return "none";
+}
+
+// The layout for one style. thinkorswim keeps its treemap unless that would
+// leave a tile too small for its % (narrow cards), then it uses full-width rows.
+export function layoutSectorTiles(tiles, rect, style, gap = 0) {
+  if (style === "rh") return rowLayout(tiles, rect);
+  const treemap = squarify(tiles, rect);
+  const fits = treemap.every((tile) => tileLabelMode(tile.width - gap, tile.height - gap) === "full");
+  return fits ? treemap : rowLayout(tiles, rect);
 }

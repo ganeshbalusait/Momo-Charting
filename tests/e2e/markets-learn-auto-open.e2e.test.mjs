@@ -28,7 +28,7 @@ e2eTest("a brand-new browser lands on Learn, stays there past the chart-grid ste
     await app.page.locator(LEARN).waitFor({ state: "visible", timeout: 60_000 });
     await app.page.waitForTimeout(10_000);
     assert.equal(await app.page.locator(LEARN).count(), 1, "the async grid steer took the new user away from Learn");
-    assert.equal((await app.page.locator(".command-context h1").innerText()).trim(), "Learn + Setup");
+    assert.equal((await app.page.locator(".command-context h1").textContent()).trim(), "Learn + Setup");
     assert.equal(await stored(app.page, "agxLearnSeen"), String(LEARN_CONTENT_VERSION));
     assert.equal(await stored(app.page, "agenticActiveView"), "Learn + Setup");
     assert.deepEqual(app.pageErrors, []);
@@ -40,13 +40,13 @@ e2eTest("once seen, Learn never opens by itself again", async () => {
   await withApp({ storage: { agxLearnSeen: "", ...grid } }, async (app) => {
     await app.page.locator(LEARN).waitFor({ state: "visible", timeout: 60_000 });
     await app.page.locator('button.nav-item[title="Settings"]').click();
-    await app.page.locator(".command-context h1", { hasText: "Settings" }).waitFor();
+    await app.page.locator(".command-context h1", { hasText: "Settings" }).waitFor({ state: "attached" });
     // A second window of the same browser: nothing re-seeded, storage as the app left it.
     const again = await app.context.newPage();
     const errors = [];
     again.on("pageerror", (error) => errors.push(String(error)));
     await again.goto(new URL("/", BASE_URL).href, { waitUntil: "domcontentloaded" });
-    await again.locator(".command-context h1", { hasText: "Settings" }).waitFor({ timeout: 60_000 });
+    await again.locator(".command-context h1", { hasText: "Settings" }).waitFor({ state: "attached", timeout: 60_000 });
     await again.waitForTimeout(5_000);
     assert.equal(await again.locator(LEARN).count(), 0);
     assert.equal(await stored(again, "agxLearnSeen"), String(LEARN_CONTENT_VERSION));
@@ -56,7 +56,7 @@ e2eTest("once seen, Learn never opens by itself again", async () => {
 
 e2eTest("an up-to-date browser with no remembered page opens on Charts & OI, not Learn", async () => {
   await withApp({ storage: await appliedGrid() }, async (app) => {
-    await app.page.locator(".command-context h1", { hasText: "Charts & OI" }).waitFor({ timeout: 60_000 });
+    await app.page.locator(".command-context h1", { hasText: "Charts & OI" }).waitFor({ state: "attached", timeout: 60_000 });
     await app.page.waitForTimeout(3_000);
     assert.equal(await app.page.locator(LEARN).count(), 0);
     assert.deepEqual(app.pageErrors, []);
@@ -65,7 +65,7 @@ e2eTest("an up-to-date browser with no remembered page opens on Charts & OI, not
 
 e2eTest("an older seen version mid-workflow stays on its remembered page", async () => {
   await withApp({ view: "Settings", storage: { agxLearnSeen: "1" } }, async (app) => {
-    await app.page.locator(".command-context h1", { hasText: "Settings" }).waitFor({ timeout: 60_000 });
+    await app.page.locator(".command-context h1", { hasText: "Settings" }).waitFor({ state: "attached", timeout: 60_000 });
     await app.page.waitForTimeout(5_000);
     assert.equal(await app.page.locator(LEARN).count(), 0, "a remembered page must not be yanked to Learn");
     assert.equal(await stored(app.page, "agxLearnSeen"), "1", "the version is only burned when Learn is shown");

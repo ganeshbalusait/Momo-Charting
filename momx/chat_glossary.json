@@ -1,0 +1,1473 @@
+{
+ "note": "The Ask chat's glossary (2026-11-11). \"number\": true marks a term the app reports per ticker (fundamentals, chain): with a ticker on screen or in the conversation the question gets that ticker's number, not the definition. Plain definitions only: no advice, no 'you should', no forecasts. tests/test_momx_chat_glossary.py scans every entry against the chat's advice rules. The app's own indicators are explained from the code (momx/columns.py, momx/grade.py, momx/scan.py, momx/bot_levels.py), not from older help text.",
+ "terms": [
+  {
+   "term": "Option",
+   "aliases": [
+    "options",
+    "option contract",
+    "stock option"
+   ],
+   "text": "An option is a contract that gives its holder the right, but not the duty, to buy or sell 100 shares of a stock at a fixed price (the strike) until a fixed date (the expiry). A call is the right to buy; a put is the right to sell."
+  },
+  {
+   "term": "Call",
+   "aliases": [
+    "call option",
+    "calls",
+    "how calls work",
+    "how a call works",
+    "call options"
+   ],
+   "text": "A call option is the right to buy 100 shares at the strike price until expiry. Its value rises when the stock rises above the strike and falls as time passes. The buyer pays a premium and can lose at most that premium."
+  },
+  {
+   "term": "Put",
+   "aliases": [
+    "put option",
+    "puts",
+    "how puts work",
+    "how a put works",
+    "put options"
+   ],
+   "text": "A put option is the right to sell 100 shares at the strike price until expiry. Its value rises when the stock falls below the strike and falls as time passes. The buyer pays a premium and can lose at most that premium."
+  },
+  {
+   "term": "Strike",
+   "aliases": [
+    "strike price",
+    "strikes",
+    "exercise price"
+   ],
+   "text": "The strike is the fixed price written into an option contract: the price a call holder may buy at, or a put holder may sell at."
+  },
+  {
+   "term": "Premium",
+   "aliases": [
+    "option premium",
+    "option price"
+   ],
+   "text": "The premium is the price of an option, quoted per share. One contract covers 100 shares, so a premium of 1.20 costs 120 dollars per contract."
+  },
+  {
+   "term": "Expiry",
+   "aliases": [
+    "expiration",
+    "expiration date",
+    "expiry date",
+    "expire",
+    "expires"
+   ],
+   "text": "The expiry is the last day an option exists. After it the contract is either exercised, if it has value, or it expires worthless."
+  },
+  {
+   "term": "DTE",
+   "aliases": [
+    "days to expiration",
+    "days to expiry"
+   ],
+   "text": "DTE means days to expiration, the number of days left before an option expires. The price of an option with few days left changes faster, in both directions."
+  },
+  {
+   "term": "0DTE",
+   "aliases": [
+    "zero dte",
+    "zero days to expiration",
+    "same day expiry",
+    "0 dte"
+   ],
+   "text": "A 0DTE option is one that expires at the end of the same trading day. Time value is close to zero, so its price reacts very strongly to each move in the stock."
+  },
+  {
+   "term": "In the money",
+   "aliases": [
+    "itm",
+    "in-the-money"
+   ],
+   "text": "An option is in the money when exercising it at the current price gives it value. That is a call with the stock above the strike, or a put with the stock below the strike."
+  },
+  {
+   "term": "Out of the money",
+   "aliases": [
+    "otm",
+    "out-of-the-money"
+   ],
+   "text": "An option is out of the money when exercising it at the current price gives it no value. That is a call with the stock below the strike, or a put with the stock above the strike, and its whole price is time value."
+  },
+  {
+   "term": "At the money",
+   "aliases": [
+    "atm",
+    "at-the-money",
+    "atm strike"
+   ],
+   "text": "An option is at the money when its strike is at or very close to the stock's current price."
+  },
+  {
+   "term": "Intrinsic value of an option",
+   "aliases": [
+    "option intrinsic value"
+   ],
+   "text": "An option's intrinsic value is the part of its price that exercising it at the current price gives. It is the stock price minus the strike for a call, or the strike minus the stock price for a put, and zero when that is negative."
+  },
+  {
+   "term": "Extrinsic value",
+   "aliases": [
+    "time value",
+    "extrinsic"
+   ],
+   "text": "The extrinsic value (also called time value) is the part of an option's price above its intrinsic value. It reflects the time left and implied volatility, and it shrinks to zero by expiry."
+  },
+  {
+   "term": "Delta",
+   "number": true,
+   "aliases": [
+    "option delta",
+    "deltas"
+   ],
+   "text": "Delta is roughly how much an option's price changes for a one dollar move in the stock. A delta of 0.30 means about 30 cents per dollar. Calls have delta between 0 and 1, puts between 0 and -1."
+  },
+  {
+   "term": "Gamma",
+   "aliases": [
+    "option gamma"
+   ],
+   "text": "Gamma is how fast an option's delta changes as the stock moves. It is largest for at-the-money options close to expiry."
+  },
+  {
+   "term": "Theta",
+   "aliases": [
+    "time decay",
+    "option theta",
+    "decay"
+   ],
+   "text": "Theta is time decay: how much value an option loses each day with nothing else changing. It speeds up as expiry gets closer, and it is largest for at-the-money options."
+  },
+  {
+   "term": "Vega",
+   "aliases": [
+    "option vega"
+   ],
+   "text": "Vega is how much an option's price changes when implied volatility changes by one percentage point. Longer-dated options have more vega."
+  },
+  {
+   "term": "Rho",
+   "aliases": [
+    "option rho"
+   ],
+   "text": "Rho is how much an option's price changes when interest rates change by one percentage point. It matters most for long-dated options."
+  },
+  {
+   "term": "Greeks",
+   "aliases": [
+    "the greeks",
+    "option greeks"
+   ],
+   "text": "The Greeks are measures of how an option's price reacts to changes. Delta reacts to the stock price, gamma to delta itself, theta to time, vega to implied volatility and rho to interest rates."
+  },
+  {
+   "term": "Implied volatility",
+   "number": true,
+   "aliases": [
+    "iv",
+    "implied vol",
+    "volatility implied"
+   ],
+   "text": "Implied volatility (IV) is the size of future moves that option prices imply, worked out backwards from those prices. Higher IV means higher option prices. It says how large moves are priced to be, not which direction."
+  },
+  {
+   "term": "Historical volatility",
+   "aliases": [
+    "realized volatility",
+    "hv",
+    "realised volatility"
+   ],
+   "text": "Historical volatility is how much a stock's price actually moved over a past period, measured as the spread of its daily returns. Implied volatility is the market's price for future moves; historical volatility is what already happened."
+  },
+  {
+   "term": "IV rank",
+   "aliases": [
+    "iv percentile",
+    "ivr"
+   ],
+   "text": "IV rank places today's implied volatility inside its range over the past year: 0 at the lowest level of that year, 100 at the highest."
+  },
+  {
+   "term": "IV crush",
+   "aliases": [
+    "volatility crush",
+    "vol crush"
+   ],
+   "text": "IV crush is a sharp drop in implied volatility after an expected event, such as earnings, has passed. Option prices fall with it, even when the stock moves."
+  },
+  {
+   "term": "Volatility",
+   "aliases": [
+    "vol"
+   ],
+   "text": "Volatility is how much and how quickly a price moves up and down. It describes the size of moves, not their direction."
+  },
+  {
+   "term": "VIX",
+   "aliases": [
+    "vix index",
+    "fear index",
+    "fear gauge"
+   ],
+   "text": "The VIX is an index of the implied volatility of S&P 500 options over the next 30 days. A higher VIX means larger moves are priced into the index."
+  },
+  {
+   "term": "Open interest",
+   "number": true,
+   "aliases": [
+    "oi",
+    "open interest options"
+   ],
+   "text": "Open interest is the number of option contracts at a strike that are open and not yet closed, exercised or expired. It is counted once a day, so it changes overnight, not during the session."
+  },
+  {
+   "term": "Option volume",
+   "aliases": [
+    "volume options",
+    "contract volume"
+   ],
+   "text": "Option volume is the number of contracts at a strike that traded during the session. It counts all contracts traded, opening or closing, while open interest counts only the contracts still open."
+  },
+  {
+   "term": "Volume",
+   "aliases": [
+    "stock volume",
+    "share volume",
+    "trading volume"
+   ],
+   "text": "Volume is the number of shares that traded in a period, such as one candle or one day."
+  },
+  {
+   "term": "Bid ask spread",
+   "aliases": [
+    "bid-ask spread",
+    "bid and ask",
+    "bid ask",
+    "spread cost",
+    "bid",
+    "ask price"
+   ],
+   "text": "The bid is the highest price a buyer is offering and the ask is the lowest price a seller is offering. The gap between them is the bid-ask spread, a cost paid when buying at the ask or selling at the bid."
+  },
+  {
+   "term": "Mid price",
+   "aliases": [
+    "mid",
+    "midpoint",
+    "mark"
+   ],
+   "text": "The mid price is halfway between the bid and the ask. Orders placed at the mid do not always fill."
+  },
+  {
+   "term": "Exercise",
+   "aliases": [
+    "exercising",
+    "exercise an option"
+   ],
+   "text": "Exercising an option means using the right it gives. A call holder who exercises buys the shares at the strike, and a put holder who exercises sells them at the strike."
+  },
+  {
+   "term": "Assignment",
+   "aliases": [
+    "assigned",
+    "early assignment",
+    "get assigned"
+   ],
+   "text": "Assignment is when the seller of an option is required to fulfil the contract. A call seller who is assigned delivers shares at the strike, and a put seller who is assigned buys them at the strike. American-style options can be assigned on any day before expiry."
+  },
+  {
+   "term": "American and European options",
+   "aliases": [
+    "american style",
+    "european style",
+    "american option",
+    "european option"
+   ],
+   "text": "American-style options can be exercised on any day up to expiry; most stock options are American. European-style options can be exercised only at expiry; most index options, such as SPX, are European."
+  },
+  {
+   "term": "Cash settled",
+   "aliases": [
+    "cash settlement",
+    "physically settled",
+    "physical settlement"
+   ],
+   "text": "A cash-settled option pays the difference in cash at expiry instead of delivering shares. Index options such as SPX are cash settled; stock options deliver shares."
+  },
+  {
+   "term": "Long and short",
+   "aliases": [
+    "long",
+    "short",
+    "going long",
+    "going short",
+    "long position",
+    "short position"
+   ],
+   "text": "Long means owning something, so its value rises when the price rises. Short means having sold something not owned, or sold an option, so its value rises when the price falls or, for a sold option, when the option loses value."
+  },
+  {
+   "term": "Short selling",
+   "aliases": [
+    "shorting",
+    "short sale",
+    "sell short"
+   ],
+   "text": "Selling short means borrowing shares, selling them and buying them back later to return them. The short seller gains if the price falls and loses if it rises, with no upper limit on the loss."
+  },
+  {
+   "term": "Short interest",
+   "number": true,
+   "aliases": [
+    "short float",
+    "short ratio",
+    "days to cover"
+   ],
+   "text": "Short interest is the number of shares sold short and not yet bought back, often shown as a percent of the float. Days to cover divides it by average daily volume."
+  },
+  {
+   "term": "Short squeeze",
+   "aliases": [
+    "squeeze shorts",
+    "shorts squeezed"
+   ],
+   "text": "A short squeeze is a fast rise in a stock that forces short sellers to buy shares back to limit their losses, and that buying pushes the price up further."
+  },
+  {
+   "term": "Gamma squeeze",
+   "aliases": [
+    "gamma squeezes"
+   ],
+   "text": "A gamma squeeze is a rise driven by option dealers who sold calls and buy the stock to stay hedged as it rises, which adds to the buying."
+  },
+  {
+   "term": "Gamma exposure",
+   "number": true,
+   "aliases": [
+    "gex",
+    "dealer gamma",
+    "gamma concentration",
+    "net gamma"
+   ],
+   "text": "Gamma exposure (GEX) estimates how much stock option dealers would buy or sell to stay hedged as the price moves, from open interest and each strike's gamma. It is an estimate: dealers' real positions are not published. The app's gamma concentration shows the strikes with the most gamma."
+  },
+  {
+   "term": "Pin",
+   "aliases": [
+    "pinning",
+    "pin risk",
+    "pinned",
+    "strike pinning"
+   ],
+   "text": "Pinning is a stock closing at or very near a strike with large open interest on expiry day. Pin risk is the uncertainty, for an option seller, about whether a contract right at the strike is assigned."
+  },
+  {
+   "term": "Max pain",
+   "aliases": [
+    "max pain strike",
+    "maximum pain"
+   ],
+   "text": "Max pain is the strike at which the open calls and puts of one expiry would have the lowest total value at expiry. The chat works it out from the saved open interest. It is not an app number and it is not a price target."
+  },
+  {
+   "term": "Expected move",
+   "aliases": [
+    "em",
+    "implied move",
+    "expected range"
+   ],
+   "text": "The expected move is how far the options market prices a stock to travel, up or down, by an expiry, worked out from the at-the-money straddle. It is a range, not a direction."
+  },
+  {
+   "term": "Put call ratio",
+   "aliases": [
+    "put/call ratio",
+    "pcr",
+    "put-call ratio"
+   ],
+   "text": "The put/call ratio divides put volume or open interest by call volume or open interest. Above 1 means more puts than calls traded or open."
+  },
+  {
+   "term": "Call wall",
+   "aliases": [
+    "call walls",
+    "resistance wall"
+   ],
+   "text": "A call wall is a strike above the price with very large call open interest. In the app it is drawn as a red band; it marks where a lot of call positions sit."
+  },
+  {
+   "term": "Put wall",
+   "aliases": [
+    "put walls",
+    "support wall"
+   ],
+   "text": "A put wall is a strike below the price with very large put open interest. In the app it is drawn as a green band; it marks where a lot of put positions sit."
+  },
+  {
+   "term": "High OI walls",
+   "aliases": [
+    "wall",
+    "walls",
+    "oi walls",
+    "high oi",
+    "option walls"
+   ],
+   "text": "High OI walls are the strikes with the most open interest within twice the expected move of the price, for expiries up to the monthly. The call walls sit above the price and the put walls below it. Each wall is graded strong, moderate or weak against the biggest wall on its side."
+  },
+  {
+   "term": "Option chain",
+   "aliases": [
+    "chain",
+    "options chain",
+    "chains"
+   ],
+   "text": "An option chain is the table of every call and put for one stock and one expiry, strike by strike, with bid, ask, volume, open interest, delta and implied volatility."
+  },
+  {
+   "term": "Vertical spread",
+   "aliases": [
+    "vertical",
+    "verticals",
+    "spread",
+    "option spread",
+    "spreads"
+   ],
+   "text": "A vertical spread buys one option and sells another of the same type and expiry at a different strike. It costs or collects less than a single option, and both the gain and the loss are capped."
+  },
+  {
+   "term": "Bull call spread",
+   "aliases": [
+    "call debit spread",
+    "long call spread",
+    "debit call spread"
+   ],
+   "text": "A bull call spread buys a call and sells a higher-strike call on the same expiry. It gains when the stock rises, and both its cost and its gain are capped by the two strikes."
+  },
+  {
+   "term": "Bear put spread",
+   "aliases": [
+    "put debit spread",
+    "long put spread",
+    "debit put spread"
+   ],
+   "text": "A bear put spread buys a put and sells a lower-strike put on the same expiry. It gains when the stock falls, and both its cost and its gain are capped by the two strikes."
+  },
+  {
+   "term": "Bull put spread",
+   "aliases": [
+    "put credit spread",
+    "short put spread",
+    "credit put spread"
+   ],
+   "text": "A bull put spread sells a put and buys a lower-strike put on the same expiry, collecting a credit. It keeps the credit if the stock stays above the sold strike, and its loss is capped by the strike width."
+  },
+  {
+   "term": "Bear call spread",
+   "aliases": [
+    "call credit spread",
+    "short call spread",
+    "credit call spread"
+   ],
+   "text": "A bear call spread sells a call and buys a higher-strike call on the same expiry, collecting a credit. It keeps the credit if the stock stays below the sold strike, and its loss is capped by the strike width."
+  },
+  {
+   "term": "Credit spread",
+   "aliases": [
+    "credit spreads"
+   ],
+   "text": "A credit spread sells one option and buys a further out-of-the-money option of the same type and expiry, so it collects money up front. The most it can lose is the strike width minus the credit."
+  },
+  {
+   "term": "Debit spread",
+   "aliases": [
+    "debit spreads"
+   ],
+   "text": "A debit spread buys one option and sells a further out-of-the-money option of the same type and expiry, so it costs money up front. The most it can lose is that cost."
+  },
+  {
+   "term": "Calendar spread",
+   "aliases": [
+    "time spread",
+    "horizontal spread",
+    "calendar"
+   ],
+   "text": "A calendar spread sells a near-dated option and buys a longer-dated option at the same strike. It is built around the near option losing time value faster than the far one."
+  },
+  {
+   "term": "Diagonal spread",
+   "aliases": [
+    "diagonal"
+   ],
+   "text": "A diagonal spread sells a near-dated option and buys a longer-dated option at a different strike: a mix of a vertical and a calendar spread."
+  },
+  {
+   "term": "Ratio spread",
+   "aliases": [
+    "ratio",
+    "backspread"
+   ],
+   "text": "A ratio spread buys and sells unequal numbers of options of the same type, for example one bought and two sold. A backspread is the reverse, with more bought than sold."
+  },
+  {
+   "term": "Iron condor",
+   "aliases": [
+    "iron condors",
+    "condor"
+   ],
+   "text": "An iron condor sells an out-of-the-money put spread and an out-of-the-money call spread on the same expiry. It collects a credit and keeps it if the stock stays between the two sold strikes; the loss on either side is capped by the spread width."
+  },
+  {
+   "term": "Iron butterfly",
+   "aliases": [
+    "iron fly",
+    "iron butterflies"
+   ],
+   "text": "An iron butterfly sells an at-the-money call and put and buys an out-of-the-money call and put as protection, all on one expiry. It collects a larger credit than an iron condor and keeps the most if the stock ends at the middle strike."
+  },
+  {
+   "term": "Butterfly",
+   "aliases": [
+    "butterfly spread",
+    "butterflies",
+    "long butterfly"
+   ],
+   "text": "A butterfly uses three strikes. One option is bought at a low strike, two are sold at the middle strike and one is bought at a high strike. Its cost and its risk are small, and it gains the most if the stock ends at the middle strike."
+  },
+  {
+   "term": "Straddle",
+   "aliases": [
+    "long straddle",
+    "short straddle",
+    "straddles"
+   ],
+   "text": "A straddle is a call and a put at the same strike and expiry. Bought, it gains when the stock moves far in either direction; sold, it gains when the stock stays near the strike."
+  },
+  {
+   "term": "Strangle",
+   "aliases": [
+    "long strangle",
+    "short strangle",
+    "strangles"
+   ],
+   "text": "A strangle is an out-of-the-money call and an out-of-the-money put on the same expiry. It costs less than a straddle, and a bought strangle needs a larger move than a straddle to gain."
+  },
+  {
+   "term": "Covered call",
+   "aliases": [
+    "covered calls",
+    "buy write"
+   ],
+   "text": "A covered call is selling a call against 100 shares already owned. The seller collects the premium and gives up any gain above the strike."
+  },
+  {
+   "term": "Cash secured put",
+   "aliases": [
+    "cash-secured put",
+    "csp",
+    "secured put"
+   ],
+   "text": "A cash-secured put is selling a put while holding enough cash to buy the shares at the strike if assigned. The seller keeps the premium either way."
+  },
+  {
+   "term": "Protective put",
+   "aliases": [
+    "married put",
+    "put protection"
+   ],
+   "text": "A protective put is buying a put on shares already owned, so losses below the strike are limited for the life of the put."
+  },
+  {
+   "term": "Collar",
+   "aliases": [
+    "collars",
+    "option collar"
+   ],
+   "text": "A collar holds shares, buys a protective put below the price and sells a covered call above it. The call's premium pays for some or all of the put, and the shares' gain and loss are both capped."
+  },
+  {
+   "term": "Wheel",
+   "aliases": [
+    "wheel strategy",
+    "the wheel"
+   ],
+   "text": "The wheel is a cycle of selling cash-secured puts until assigned, then selling covered calls on the shares until they are called away."
+  },
+  {
+   "term": "Naked option",
+   "aliases": [
+    "naked call",
+    "naked put",
+    "uncovered option",
+    "selling naked"
+   ],
+   "text": "A naked option is one sold without holding the shares or another option to cover it. A naked call has no cap on its loss."
+  },
+  {
+   "term": "LEAPS",
+   "aliases": [
+    "leap",
+    "leaps options",
+    "long term options",
+    "long-dated options"
+   ],
+   "text": "LEAPS are long-dated options, usually with more than a year until expiry. They lose time value more slowly than short-dated options."
+  },
+  {
+   "term": "Weekly options",
+   "aliases": [
+    "weeklies",
+    "weekly",
+    "weekly expiry"
+   ],
+   "text": "The weekly options are contracts that expire every week, usually on Friday, instead of only on the monthly expiry."
+  },
+  {
+   "term": "Monthly OPEX",
+   "aliases": [
+    "opex",
+    "options expiration",
+    "monthly expiry",
+    "monthly options"
+   ],
+   "text": "The monthly options expiration is the third Friday of each month, when the standard monthly contracts expire. It is often called OPEX.",
+   "names": [
+    "OPEX"
+   ]
+  },
+  {
+   "term": "Contract multiplier",
+   "aliases": [
+    "multiplier",
+    "100 shares",
+    "contract size"
+   ],
+   "text": "The contract multiplier is the number of shares one contract covers. A standard stock option covers 100 shares, so its quoted premium is multiplied by 100 to give its cost."
+  },
+  {
+   "term": "Break-even",
+   "aliases": [
+    "breakeven",
+    "break even",
+    "break-even price"
+   ],
+   "text": "An option's break-even at expiry is the strike plus the premium paid for a call, or the strike minus the premium paid for a put."
+  },
+  {
+   "term": "Stop loss",
+   "aliases": [
+    "stop",
+    "stop order",
+    "stop-loss"
+   ],
+   "text": "A stop order becomes a market order to sell (or buy) once the price reaches a set level. A stop-limit order becomes a limit order instead and may not fill."
+  },
+  {
+   "term": "Limit order",
+   "aliases": [
+    "limit",
+    "limit orders"
+   ],
+   "text": "A limit order is executed only at the set price or better. It may not be executed at all if the price never reaches it."
+  },
+  {
+   "term": "Market order",
+   "aliases": [
+    "market orders"
+   ],
+   "text": "A market order is executed at once at the price available at that moment, which can differ from the last quote, most of all when the spread is wide."
+  },
+  {
+   "term": "Liquidity",
+   "aliases": [
+    "liquid",
+    "illiquid"
+   ],
+   "text": "Liquidity is how easily something trades without moving its price. A market with high volume, large open interest and a narrow bid-ask spread has high liquidity."
+  },
+  {
+   "term": "Slippage",
+   "aliases": [
+    "slip"
+   ],
+   "text": "Slippage is the difference between the price expected for an order and the price it was actually executed at."
+  },
+  {
+   "term": "Support",
+   "aliases": [
+    "support level",
+    "supports"
+   ],
+   "text": "Support is a price area below the current price where falls have stopped before, because buying showed up there."
+  },
+  {
+   "term": "Resistance",
+   "aliases": [
+    "resistance level",
+    "resistances"
+   ],
+   "text": "Resistance is a price area above the current price where rises have stopped before, because selling showed up there."
+  },
+  {
+   "term": "Pivot points",
+   "aliases": [
+    "pivot",
+    "pivots",
+    "pivot point",
+    "floor pivots",
+    "r1",
+    "s1"
+   ],
+   "text": "Pivot points are levels worked out from the previous period's high, low and close. There is a central pivot, three resistance levels above it (R1 to R3) and three support levels below it (S1 to S3). The app draws them for the day, week and month."
+  },
+  {
+   "term": "Woodies pivots",
+   "aliases": [
+    "woodie pivots",
+    "woodies"
+   ],
+   "text": "Woodie's pivots are pivot levels that give more weight to the current period's open than classic pivots do. The app draws them on the daily chart for today."
+  },
+  {
+   "term": "Persons pivots",
+   "aliases": [
+    "personspivots",
+    "persons pivot"
+   ],
+   "text": "PersonsPivots are a filtered pivot system that draws only some pivot levels, usually R1 and S1, for the day and week."
+  },
+  {
+   "term": "Fibonacci retracement",
+   "aliases": [
+    "fib",
+    "fibs",
+    "fibonacci",
+    "autofib",
+    "fib levels"
+   ],
+   "text": "The Fibonacci retracement levels mark 38.2%, 50% and 61.8% of a price range. The app's AutoFib study draws them over the last 20 daily bars."
+  },
+  {
+   "term": "Moving average",
+   "aliases": [
+    "moving averages",
+    "ma"
+   ],
+   "text": "A moving average is the average closing price of the last set number of bars, redrawn on every bar, so it smooths price into a line."
+  },
+  {
+   "term": "EMA",
+   "aliases": [
+    "exponential moving average",
+    "emas",
+    "ema 9",
+    "ema 21",
+    "ema 50",
+    "21 ema",
+    "50 ema",
+    "9 ema"
+   ],
+   "text": "An EMA (exponential moving average) gives recent bars more weight than older ones, so it turns sooner than a simple average of the same length. The app's charts draw the 9, 21 and 50 EMA."
+  },
+  {
+   "term": "SMA",
+   "aliases": [
+    "simple moving average",
+    "smas",
+    "200 sma",
+    "sma 200"
+   ],
+   "text": "An SMA (simple moving average) gives every bar in its length the same weight. The app's charts draw the 200 SMA."
+  },
+  {
+   "term": "EMA clouds",
+   "aliases": [
+    "ema cloud",
+    "clouds",
+    "cloud"
+   ],
+   "text": "EMA clouds are the shading between two EMAs, 9 with 21 and 21 with 50 in the app. The colour shows which of the two is on top, and the width shows how far apart they are."
+  },
+  {
+   "term": "VWAP",
+   "aliases": [
+    "volume weighted average price",
+    "volume-weighted average price"
+   ],
+   "text": "VWAP (volume-weighted average price) is the average price paid during the session, with each price weighted by how many shares traded there. It starts again at each session's open."
+  },
+  {
+   "term": "RVOL",
+   "aliases": [
+    "relative volume",
+    "rel vol",
+    "relvol",
+    "rvol column"
+   ],
+   "text": "Relative volume (RVOL) measures how unusual a bar's volume is in the app's scanner, against that stock's last 50 bars on the same timeframe: 0 is normal and 3 or more is very unusual. Its colour shows whether the bar closed nearer its high (cyan or green) or its low (magenta or red)."
+  },
+  {
+   "term": "Squeeze",
+   "aliases": [
+    "ttm squeeze",
+    "squeezes",
+    "squeeze fire",
+    "squeeze release"
+   ],
+   "text": "A squeeze is a stretch when a stock's range tightens, measured as Bollinger Bands moving inside Keltner Channels. It fires, or releases, when the bands move back outside."
+  },
+  {
+   "term": "SQZ",
+   "aliases": [
+    "sqz column",
+    "squeeze column"
+   ],
+   "text": "SQZ is the scanner's squeeze column on the 2h, 4h, D and W timeframes. White or orange means coiled, with the number of bars it has been coiled; cyan means it released with upward momentum; magenta means it released without it; a dash means no squeeze."
+  },
+  {
+   "term": "Squeeze flame",
+   "aliases": [
+    "flame",
+    "squeeze flames",
+    "chart flame",
+    "fire icon"
+   ],
+   "text": "A squeeze flame on the chart marks the candle where a squeeze released on the 5m to D timeframes. It comes from a different squeeze script than the scanner's SQZ column, so the two can fire at different times."
+  },
+  {
+   "term": "Squeeze momentum",
+   "aliases": [
+    "mom",
+    "squeeze momentum line",
+    "sqz mom"
+   ],
+   "text": "The squeeze momentum line shows the push behind a squeeze: cyan when it is above zero and rising, magenta when it is below zero and falling."
+  },
+  {
+   "term": "Skittles",
+   "aliases": [
+    "skit",
+    "skittle",
+    "skit column"
+   ],
+   "text": "Skittles is the scanner's stochastic reading from 0 to 100 on each timeframe. The box colour marks a 9x20, MACD or 4x8 cross on that bar. The text colour shows the trend, with dark green for an uptrend with the reading at 90 or more and plum for a downtrend with a low reading."
+  },
+  {
+   "term": "Stochastic",
+   "aliases": [
+    "stochastics",
+    "stoch",
+    "stochasx",
+    "stochastic oscillator"
+   ],
+   "text": "A stochastic places the latest close inside the high-low range of recent bars, from 0 at the bottom of that range to 100 at the top. The app's StochasX marks a turn down from above 80 and a turn up from below 20."
+  },
+  {
+   "term": "MACD",
+   "aliases": [
+    "macd line",
+    "macd cross"
+   ],
+   "text": "MACD is the gap between a fast and a slow EMA, with a signal line that is an EMA of that gap. The app uses the 6/12/8 settings from the trader's thinkorswim scripts."
+  },
+  {
+   "term": "ADX",
+   "aliases": [
+    "adx di",
+    "di",
+    "directional index",
+    "+di",
+    "-di"
+   ],
+   "text": "ADX measures how strong a trend is, not its direction; 25 or more is a strong trend. +DI above -DI means the up moves have been larger than the down moves."
+  },
+  {
+   "term": "Ichimoku",
+   "aliases": [
+    "ichimoku cloud",
+    "kumo"
+   ],
+   "text": "Ichimoku is a set of lines built from the midpoints of past highs and lows; its cloud (Span A and Span B) is drawn ahead of price and is read as a support or resistance zone."
+  },
+  {
+   "term": "Bollinger Bands",
+   "aliases": [
+    "bollinger",
+    "bollinger band"
+   ],
+   "text": "Bollinger Bands are lines two standard deviations above and below a 20-bar average. They widen when price swings more and narrow when it swings less."
+  },
+  {
+   "term": "Keltner Channels",
+   "aliases": [
+    "keltner",
+    "keltner channel"
+   ],
+   "text": "Keltner Channels are lines a set multiple of the average true range above and below an average. The squeeze compares them with Bollinger Bands."
+  },
+  {
+   "term": "ATR",
+   "aliases": [
+    "average true range",
+    "true range"
+   ],
+   "text": "ATR (average true range) is the average size of a bar's full range, including any gap from the previous close, over recent bars."
+  },
+  {
+   "term": "Candlestick",
+   "aliases": [
+    "candle",
+    "candles",
+    "candlesticks"
+   ],
+   "text": "A candle shows one period's open, high, low and close. The body runs from open to close, and the thin wicks reach the high and the low."
+  },
+  {
+   "term": "Timeframe",
+   "aliases": [
+    "timeframes",
+    "time frame"
+   ],
+   "text": "A timeframe is how much time each candle covers. The app's charts offer 3m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, D (daily), W (weekly) and M (monthly)."
+  },
+  {
+   "term": "Breakout",
+   "aliases": [
+    "breakouts",
+    "break out",
+    "breakdown"
+   ],
+   "text": "A breakout is price moving above a resistance level or out of a range; a breakdown is the same below support. The app's 5-minute close confirmation counts it only once a full 5-minute candle closes through the level."
+  },
+  {
+   "term": "Gap",
+   "aliases": [
+    "gap up",
+    "gap down",
+    "gaps",
+    "gapping"
+   ],
+   "text": "A gap is a jump between one session's close and the next session's open, with no trading in between. Gap up means the open is above the prior close; gap down means it is below."
+  },
+  {
+   "term": "Float",
+   "number": true,
+   "aliases": [
+    "public float",
+    "share float"
+   ],
+   "text": "The float is the number of a company's shares available to trade, leaving out shares held by insiders and other locked holdings."
+  },
+  {
+   "term": "Market cap",
+   "number": true,
+   "aliases": [
+    "market capitalization",
+    "market capitalisation",
+    "mkt cap"
+   ],
+   "text": "Market capitalisation is the share price times the number of shares outstanding: the market's total value for the company's stock."
+  },
+  {
+   "term": "P/E ratio",
+   "number": true,
+   "aliases": [
+    "pe",
+    "p/e",
+    "pe ratio",
+    "price to earnings",
+    "price earnings ratio"
+   ],
+   "text": "The P/E ratio is the share price divided by earnings per share over the last year (trailing) or the next year (forward)."
+  },
+  {
+   "term": "EPS",
+   "number": true,
+   "aliases": [
+    "earnings per share"
+   ],
+   "text": "EPS (earnings per share) is a company's net income divided by its number of shares."
+  },
+  {
+   "term": "Earnings",
+   "aliases": [
+    "earnings report",
+    "earnings season",
+    "quarterly earnings"
+   ],
+   "text": "Earnings are a company's net income for a quarter or year. The earnings report also gives revenue, and often guidance for the next period, and implied volatility is usually higher before it."
+  },
+  {
+   "term": "Guidance",
+   "aliases": [
+    "outlook",
+    "forward guidance",
+    "company guidance"
+   ],
+   "text": "Guidance is a company's own forecast of its revenue or earnings for a coming period, given with its results."
+  },
+  {
+   "term": "Revenue",
+   "aliases": [
+    "sales",
+    "top line"
+   ],
+   "text": "Revenue is the total money a company takes in from sales before any costs are taken out."
+  },
+  {
+   "term": "Free cash flow",
+   "aliases": [
+    "fcf",
+    "cash flow"
+   ],
+   "text": "Free cash flow is the cash a business brings in from operations minus what it spends on equipment and buildings (capital spending)."
+  },
+  {
+   "term": "Intrinsic value",
+   "aliases": [
+    "intrinsic value of a stock",
+    "fair value",
+    "dcf",
+    "discounted cash flow"
+   ],
+   "text": "A stock's intrinsic value is an estimate of the value of the business, often the future cash it is expected to earn discounted back to the present. Different assumptions give different estimates."
+  },
+  {
+   "term": "Margin of safety",
+   "aliases": [
+    "mos"
+   ],
+   "text": "Margin of safety is the gap between an estimated intrinsic value and the market price, kept as room for errors in the estimate. The Long Term page shows it as part of its Rule #1 style screen."
+  },
+  {
+   "term": "Dividend",
+   "aliases": [
+    "dividends",
+    "dividend yield"
+   ],
+   "text": "A dividend is cash a company pays to its shareholders. The dividend yield is the yearly dividend divided by the share price."
+  },
+  {
+   "term": "ETF",
+   "aliases": [
+    "etfs",
+    "exchange traded fund",
+    "fund"
+   ],
+   "text": "An ETF (exchange-traded fund) is a fund that holds a basket of stocks or other assets and is bought and sold on an exchange like a single stock. SPY tracks the S&P 500 and QQQ tracks the Nasdaq-100.",
+   "names": [
+    "SPY",
+    "QQQ"
+   ]
+  },
+  {
+   "term": "Index",
+   "aliases": [
+    "indexes",
+    "indices",
+    "stock index"
+   ],
+   "text": "A stock index tracks the combined price of a group of stocks, such as the S&P 500 or the Nasdaq-100."
+  },
+  {
+   "term": "Sector",
+   "aliases": [
+    "sectors",
+    "industry",
+    "industries"
+   ],
+   "text": "A sector is a group of companies in the same line of business, such as technology or energy. The app's Sectors page shows each group's move next to SPY."
+  },
+  {
+   "term": "Premarket",
+   "aliases": [
+    "pre-market",
+    "pre market",
+    "premarket hours"
+   ],
+   "text": "Premarket is the trading before the 9:30 AM ET open, and the app's Premarket scanner runs from 6:00 to 9:30 AM ET. The number of shares traded then is far smaller than in regular hours."
+  },
+  {
+   "term": "After hours",
+   "aliases": [
+    "after-hours",
+    "extended hours",
+    "post market",
+    "postmarket"
+   ],
+   "text": "After-hours trading runs after the 4:00 PM ET close. With premarket it makes up extended hours, when far fewer shares trade than in regular hours."
+  },
+  {
+   "term": "Regular hours",
+   "aliases": [
+    "market hours",
+    "regular session",
+    "trading hours"
+   ],
+   "text": "The regular US market hours run from 9:30 AM to 4:00 PM ET on trading days."
+  },
+  {
+   "term": "Bull and bear",
+   "aliases": [
+    "bullish",
+    "bearish",
+    "bull market",
+    "bear market",
+    "bull",
+    "bear"
+   ],
+   "text": "Bullish means expecting or describing rising prices and bearish means falling prices. A bear market is commonly defined as a fall of 20% or more from a recent high."
+  },
+  {
+   "term": "Correction",
+   "aliases": [
+    "market correction",
+    "pullback",
+    "pullbacks"
+   ],
+   "text": "A pullback is a brief fall inside a larger rise. A correction is commonly defined as a fall of 10% to 20% from a recent high."
+  },
+  {
+   "term": "Rally",
+   "aliases": [
+    "rallies",
+    "relief rally"
+   ],
+   "text": "A rally is a period of rising prices. A relief rally is a rise after a stretch of falling prices."
+  },
+  {
+   "term": "Mag7",
+   "aliases": [
+    "mag 7",
+    "magnificent seven",
+    "magnificent 7"
+   ],
+   "text": "Mag7 are seven large technology stocks: AAPL, MSFT, NVDA, AMZN, META, GOOGL and TSLA. The app's Mag7 scanner list also carries SPY and QQQ.",
+   "names": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "META",
+    "GOOGL",
+    "TSLA",
+    "SPY",
+    "QQQ"
+   ]
+  },
+  {
+   "term": "MomX Scanner",
+   "aliases": [
+    "momx",
+    "momx scanner",
+    "scanner",
+    "the scanner"
+   ],
+   "text": "The MomX Scanner scores a few hundred stocks the same way throughout the day and shows those that pass its scan, on the Mag7 and Watchlist lists, for calls (bull) and puts (bear)."
+  },
+  {
+   "term": "Scan pass",
+   "aliases": [
+    "scan reasons",
+    "scanpass",
+    "scan reason"
+   ],
+   "text": "A scan pass means a stock met the MomX scan: price of 3 dollars or more, 4-hour volume up at least 0.5% against two bars ago, 1-hour price up at least 0.3% against two bars ago, and at least one event such as a momentum cross, a squeeze or unusual volume. The reasons show which events, for example ema4x8:D or rvol:4h."
+  },
+  {
+   "term": "H/L",
+   "aliases": [
+    "hl",
+    "high low",
+    "high/low",
+    "h l",
+    "hl column"
+   ],
+   "text": "H/L shows where the price sits inside the range of the last 8 two-hour bars, about 16 hours: +1 at the top, 0 in the middle and -1 at the bottom. The scanner board is ranked on it."
+  },
+  {
+   "term": "Quote trend",
+   "aliases": [
+    "quote column",
+    "quote"
+   ],
+   "text": "The quote trend counts up closes against down closes over the last 16 bars of the finest timeframe, for example 11 of 16 up."
+  },
+  {
+   "term": "Grade A+ A B",
+   "aliases": [
+    "grade",
+    "a+",
+    "grades",
+    "scanner grade",
+    "setup grade"
+   ],
+   "text": "The scanner's grade (A+, A or B) combines a squeeze, the push behind the move and how many Skittles timeframes agree. It is experimental: on the app's own record it has been close to a coin flip."
+  },
+  {
+   "term": "Confirm level",
+   "aliases": [
+    "confirm l1",
+    "confirm l2",
+    "confirm l3",
+    "l1",
+    "l2",
+    "l3",
+    "level 1",
+    "level 2",
+    "level 3",
+    "confirmation level",
+    "levels l1 l3",
+    "confirm l1-l3"
+   ],
+   "text": "The Confirm level counts confirmations on a ticker that shows three or more setup types, with one confirmation each possible from RVOL, SQZ and Skittles. Level 1 has one of them, Level 2 has two and Level 3 has all three."
+  },
+  {
+   "term": "Setup tags",
+   "aliases": [
+    "setup",
+    "setups",
+    "setup column",
+    "tags"
+   ],
+   "text": "The Setup column shows the scanner's grade and the named setups a ticker has at the latest scan, such as the GO, MX A+, CALL2H, SQZ fire, LINE, RECLAIM, MOM or FLIP tags. Each tag has its own help text.",
+   "names": [
+    "GO",
+    "MX",
+    "MOM",
+    "FLIP",
+    "LINE",
+    "RECLAIM",
+    "CALL2H",
+    "SQZ"
+   ]
+  },
+  {
+   "term": "GO",
+   "aliases": [
+    "go tag",
+    "go+",
+    "go plus"
+   ],
+   "text": "GO is the scanner's gap-and-go setup tag, for a 5-minute move that holds above the day's opening area. The GO+ tag adds a MACD 12/26/9 confirmation on the same move."
+  },
+  {
+   "term": "MX A+",
+   "aliases": [
+    "mx a plus",
+    "mxa+",
+    "momox a+",
+    "momox"
+   ],
+   "text": "MX A+ (MomoX A+) is a five-part setup tag that needs a squeeze, momentum, unusual volume, the trend on higher timeframes and enough space before the nearest option wall, all at once."
+  },
+  {
+   "term": "CALL2H",
+   "aliases": [
+    "call2h",
+    "call4h",
+    "put2h",
+    "put4h",
+    "c2h",
+    "c4h",
+    "call 2h",
+    "call 4h",
+    "call15",
+    "call5",
+    "c5",
+    "c15"
+   ],
+   "text": "CALL2H is a 2-hour 4x8 EMA cross up with the 4-hour trend agreeing; C2H is the same cross against the bigger trend. CALL4H is the same on the 4-hour chart, and PUT2H and PUT4H are the downward versions."
+  },
+  {
+   "term": "4x8 and 9x20 signals",
+   "aliases": [
+    "4x8",
+    "9x20",
+    "4x8 cross",
+    "9x20 cross",
+    "call and put signals",
+    "ema cross"
+   ],
+   "text": "The app's Call and Put signals mark EMA crosses: 4 over 8 (lime and pink, on 15m to 4h) and 9 over 20 (cyan and magenta, on 30m to 4h). The 4x8 cross comes sooner; the 9x20 cross is slower and reverses less often."
+  },
+  {
+   "term": "D to M signals",
+   "aliases": [
+    "d-m signals",
+    "callm",
+    "callw",
+    "calld",
+    "daily to monthly signals",
+    "d-m",
+    "dtom"
+   ],
+   "text": "The D to M signals are the same 4x8, 9x20 and MACD crosses on the daily, 2-, 3- and 4-day, weekly and monthly charts, labelled for example CALLD, CALLW or CALLM. They are rare."
+  },
+  {
+   "term": "MTF",
+   "aliases": [
+    "multi timeframe",
+    "multi-timeframe",
+    "mtf cloud label",
+    "mtf chips"
+   ],
+   "text": "MTF means multi-timeframe: a study read on several timeframes at once. The app's MTF Cloud Label chips show, for each timeframe, whether the 9 EMA is above the 20 and the price above the 9."
+  },
+  {
+   "term": "Ribbon",
+   "aliases": [
+    "ema ribbon",
+    "ribbon5m",
+    "ribbon 5m"
+   ],
+   "text": "The ribbon is the order of the 9, 21 and 50 EMAs; a bull ribbon has 9 above 21 above 50 with the price above the 9."
+  },
+  {
+   "term": "Momentum state",
+   "aliases": [
+    "building",
+    "holding",
+    "extended",
+    "fading",
+    "quiet",
+    "momentum now"
+   ],
+   "text": "The scanner's momentum state on the 5-minute chart reads Building, Holding, Extended (two or more average true ranges from the 20 EMA), Fading or Quiet."
+  },
+  {
+   "term": "LIVE bolt",
+   "aliases": [
+    "bolt",
+    "live bolt",
+    "lightning bolt"
+   ],
+   "text": "The LIVE bolt on the scanner marks a 9x20, 4x8, MACD, squeeze or RVOL event that happened in the last moments, checked every second."
+  },
+  {
+   "term": "Momo Alert",
+   "aliases": [
+    "momo",
+    "momo banner",
+    "momo alerts"
+   ],
+   "text": "The Momo Alert is the scanner's banner, sound and phone push when a ticker that passes the scan shows RVOL above the set threshold on an armed timeframe."
+  },
+  {
+   "term": "Fresh",
+   "aliases": [
+    "fresh column"
+   ],
+   "text": "The Fresh column shows what changed for a ticker in the last 15 minutes, and when and at what price each part first appeared today."
+  },
+  {
+   "term": "Record column",
+   "aliases": [
+    "record",
+    "similar record"
+   ],
+   "text": "The Record column shows how the most similar past setups did in the app's own history, next to the base rate. It looks back and is not a forecast, and on the record so far it is only slightly above a coin flip."
+  },
+  {
+   "term": "EMA Touch boards",
+   "aliases": [
+    "ema touch",
+    "21 ema touch",
+    "50 ema touch",
+    "21 ema touch weekly",
+    "50 ema touch monthly"
+   ],
+   "text": "The EMA Touch boards list tickers whose bar today touched the 21 or 50 EMA on the daily, weekly or monthly chart."
+  },
+  {
+   "term": "Sector rotation",
+   "aliases": [
+    "hot sector",
+    "rotation",
+    "sector leaders"
+   ],
+   "text": "The scanner's sector rotation marks sectors that beat SPY with a growing lead and broad participation, and the leading names in them.",
+   "names": [
+    "SPY"
+   ]
+  },
+  {
+   "term": "Option spread class",
+   "aliases": [
+    "spread column",
+    "tight spread",
+    "wide spread"
+   ],
+   "text": "The scanner's Spread column grades how wide a ticker's option bid-ask spreads are, from 10:00 to 15:30 ET. The grades are Tight, OK, Wide and Avoid, and a wider spread means a larger cost to trade.",
+   "names": [
+    "Avoid"
+   ]
+  },
+  {
+   "term": "C/P Levels",
+   "aliases": [
+    "cp levels",
+    "c p levels",
+    "call put levels"
+   ],
+   "text": "The C/P Levels tab on the Options page lists out-of-the-money strikes with unusual volume against open interest for each expiry. Each row is scored strong, moderate or weak."
+  },
+  {
+   "term": "Morning ladder",
+   "aliases": [
+    "oi auto alerts",
+    "auto alerts",
+    "alert ladder"
+   ],
+   "text": "The morning ladder is built at 9:15 AM ET on trading days: the largest call strikes above the price and put strikes below it. It records when the price touches a level and when a 5-minute candle closes through it (CONFIRMED)."
+  },
+  {
+   "term": "5-minute close confirmation",
+   "aliases": [
+    "confirmed",
+    "close confirmation",
+    "5 minute close"
+   ],
+   "text": "A 5-minute close confirmation means a full 5-minute candle closed above or below a level, not only a wick touching it."
+  },
+  {
+   "term": "Sentiment",
+   "aliases": [
+    "market sentiment"
+   ],
+   "text": "Sentiment is the overall leaning of traders, read in the app from things such as the put/call ratio, headlines and sector moves. It describes positioning, not where the price goes."
+  },
+  {
+   "term": "Fundamentals",
+   "aliases": [
+    "fundamental analysis",
+    "fundamental"
+   ],
+   "text": "Fundamentals are a company's business numbers: revenue, earnings, cash flow, debt and valuation ratios such as P/E."
+  },
+  {
+   "term": "Technical analysis",
+   "aliases": [
+    "technicals",
+    "technical",
+    "ta"
+   ],
+   "text": "Technical analysis studies price and volume on charts: trends, levels, moving averages and indicators."
+  },
+  {
+   "term": "Analyst rating",
+   "aliases": [
+    "analyst ratings",
+    "price target",
+    "price targets",
+    "upgrade",
+    "downgrade"
+   ],
+   "text": "An analyst rating is a research firm's published view of a stock, such as buy, hold or sell, often with a price target. An upgrade or downgrade is a change to that rating."
+  }
+ ]
+}

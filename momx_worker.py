@@ -442,6 +442,34 @@ class Handler(BaseHTTPRequestHandler):
                 from momx import chain_history
                 self._json(HTTPStatus.OK, chain_history.book().status())
                 return
+            if path == "/api/momx-scanner/ticker-trader":
+                # Ticker trader (2026-11-13): simulated runs, no broker - admin only.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import ticker_trader
+                _tt = ticker_trader.current()
+                if _tt is None:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "The Ticker trader is not running yet."})
+                    return
+                self._json(HTTPStatus.OK, _tt.snapshot())
+                return
+            if path == "/api/momx-scanner/ticker-trader/journal":
+                # Ticker trader journal (2026-11-13): one run (?id=NVDA-CALL) or all (?id=all),
+                # with his notes and today's cached AI review. Read-only; no AI call. Owner only.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import ticker_trader
+                _tt = ticker_trader.current()
+                if _tt is None:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "The Ticker trader is not running yet."})
+                    return
+                try:
+                    self._json(HTTPStatus.OK, _tt.journal(str(query.get("id", ["all"])[0])[:40]))
+                except ticker_trader.TraderError as exc:
+                    self._json(HTTPStatus(exc.status), {"ok": False, "error": exc.message})
+                return
             if path == "/api/momx-scanner/paper-mirror":
                 # Alpaca PAPER fills of the Jev BOT trades (2026-10-16) - admin only.
                 if not viewer_is_admin(self.headers.get("X-AGX-User")):
@@ -712,6 +740,50 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/momx-scanner/movers/refresh":
                 self._json(HTTPStatus.OK, _movers_refresh())
                 return
+            if path.startswith("/api/momx-scanner/ticker-trader/"):
+                # Ticker trader buttons (2026-11-13): Trade, Stop, Reset, Trade again.
+                # Simulated inside the app: no order goes to any broker. Admin only.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import ticker_trader
+                _tt, _tt_action = ticker_trader.current(), path.rsplit("/", 1)[-1]
+                if not isinstance(body, dict):
+                    body = {}
+                if _tt_action not in ("start", "stop", "reset", "again", "note", "review"):
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "unknown Ticker trader action"})
+                    return
+                if _tt is None:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "The Ticker trader is not running yet."})
+                    return
+                try:
+                    if _tt_action == "note":
+                        # His note on one journal trade: plain text, size-limited, kept on the server.
+                        self._json(HTTPStatus.OK, {"ok": True, "note": _tt.save_note(body.get("id"), body.get("text"))})
+                        return
+                    if _tt_action == "review":
+                        # Today's AI review of one run (or all): at most one AI call per run per ET day,
+                        # under the owner's share of the AI allowance; quietly none when the AI is down.
+                        try:
+                            from pathlib import Path as _TtPath
+                            from config import ARTIFACTS_DIR as _tt_artifacts
+                            from momx import chat_tools
+                            _tt_known = chat_tools.market_tickers(_TtPath(_tt_artifacts))
+                        except Exception:  # noqa: BLE001 - the capitals and $word checks still run
+                            _tt_known = frozenset()
+                        self._json(HTTPStatus.OK, {"ok": True, **_tt.review(body.get("id") or "all", known=_tt_known)})
+                        return
+                    if _tt_action == "start":
+                        _tt_run = _tt.start(body.get("ticker"), body.get("side"), body.get("size"))
+                    elif _tt_action == "reset":
+                        _tt_run = _tt.reset(body.get("id"), body.get("size"))
+                    else:
+                        _tt_run = getattr(_tt, _tt_action)(body.get("id"))
+                except ticker_trader.TraderError as exc:
+                    self._json(HTTPStatus(exc.status), {"ok": False, "error": exc.message})
+                    return
+                self._json(HTTPStatus.OK, {"ok": True, "run": _tt_run})
+                return
             if path == "/api/momx-scanner/paper-control":
                 # Scorecard buttons (2026-11-09, his "Yes" + "stuck orders give
                 # me button to remove"): pause / resume one paper account's NEW
@@ -876,6 +948,15 @@ def main() -> int:
         paper_picker.start(paper_mirror.current())
     except Exception as exc:  # noqa: BLE001 - the scanner must start regardless
         print(f"[paper-mirror] not started: {type(exc).__name__}: {exc}", flush=True)
+    # Ticker trader (2026-11-13): simulated runs he starts by typing a ticker.
+    # Reads quotes only; places no orders anywhere.
+    try:
+        from pathlib import Path
+        from config import ARTIFACTS_DIR
+        from momx import ticker_trader
+        ticker_trader.start(Path(ARTIFACTS_DIR) / "momx_ticker_trader")
+    except Exception as exc:  # noqa: BLE001 - the scanner must start regardless
+        print(f"[ticker-trader] not started: {type(exc).__name__}: {exc}", flush=True)
     # Shadow AI filter (2026-10-17): scores every Bot trade, retrains nightly
     # after 16:40 ET in its own low-priority process, grades itself walk-forward.
     # Places no orders.

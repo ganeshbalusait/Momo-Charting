@@ -39,7 +39,8 @@ e2eTest("the live Bot page opens with its seven totals and writes nothing", asyn
     await openBot(app);
     assert.equal((await app.page.locator(".bot-head h2").innerText()).trim(), "BOT workspace");
     assert.equal(await app.page.locator(`${TOTALS} .bot-kpi`).count(), 7);
-    const labels = (await app.page.locator(`${TOTALS} .bot-kpi-label`).allInnerTexts()).map((s) => s.trim());
+    // textContent, not innerText: .bot-kpi-label is drawn in capitals (text-transform), the words are unchanged.
+    const labels = (await app.page.locator(`${TOTALS} .bot-kpi-label`).allTextContents()).map((s) => s.trim());
     assert.deepEqual(labels.slice(1), ["ROI", "Closed wins / losses", "Avg trade", "Trades", "Best rule", "Worst rule"]);
     // Research follows the 0.20-delta contract only (2026-11-10). The label is drawn in capitals.
     assert.match(labels[0], /^P\/L · 0\.20 delta · Strategy exit$/i);
@@ -83,8 +84,8 @@ e2eTest("Research shows All trades only: no News trade or AI pick, and an old sa
   // 2026-11-10, his "Remove filters also news trade": the paper accounts trade only the three Level strategies.
   await withApp({ view: "Bot", storage: { "bot.book": "news" }, fakeReads: canned() }, async (app) => {
     await openBot(app);
-    assert.deepEqual((await group(app.page, "Which bot").locator("button").allTextContents()).map((s) => s.trim()), ["All trades"]);
-    assert.match(await group(app.page, "Which bot").locator("button").getAttribute("class"), /\bis-on\b/);
+    assert.deepEqual((await group(app.page, "Which bot").locator("button").allTextContents()).map((s) => s.trim()), ["All trades", "Ticker trader"]);
+    assert.match(await group(app.page, "Which bot").locator("button").first().getAttribute("class"), /\bis-on\b/);
     assert.equal(await app.page.locator(FILTER).count(), 0);
     assert.equal(await app.page.locator("p.bot-jevbook-note", { hasText: /News trade|AI pick/ }).count(), 0);
     assert.match(await app.page.locator("p.bot-jevbook-note").innerText(), /0\.20-delta contract sold at strategy exit/);
@@ -197,7 +198,6 @@ e2eTest("Contract x exit shows nine exit columns and an All rules row; a rule ro
 // from Winners by period to Day by day downloads the whole 180-day answer again.
 test("Winners by period then Day by day fetch the 180-day history once", {
   skip: marketHoursBlock() || false,
-  todo: "BotPanel.jsx loadHistory effect re-runs on every periods/days tab change",
   timeout: 180_000,
 }, async () => {
   await withApp({ view: "Bot", fakeReads: canned(), storage: { "bot.tab": "leaders" } }, async (app) => {

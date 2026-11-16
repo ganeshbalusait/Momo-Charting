@@ -81,6 +81,11 @@ e2eTest("the table lists the rows in the scanner's %Chg order, or says why it is
     const { page } = app;
     const empty = page.locator(".premarket-scanner-card .no-setups");
     await empty.waitFor({ timeout: 90_000 });
+    // Before the first /api/premarket-scanner answer lands the table shows the
+    // App.jsx fallback "No premarket matches yet." under the initial
+    // "6:00 AM - 9:30 AM ET" label; wait for the fixture's own window label so
+    // the sentence read is the scanner's answer, not the pre-load state.
+    await page.locator(".premarket-scanner-card .table-toolbar", { hasText: "12:00 AM - 9:30 AM ET" }).first().waitFor({ timeout: 30_000 });
     assert.equal((await empty.innerText()).trim(), quiet);
     assert.equal(await page.locator(PILLS).count(), 0);
     assert.deepEqual(app.pageErrors, []);

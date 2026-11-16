@@ -126,7 +126,6 @@ e2eTest("Refresh calendar forces a fresh read and says Refreshing meanwhile", as
 // its own inside the 100dvh overflow:hidden .workspace (see the News Feed spec).
 test("desktop: a real mouse wheel reaches Friday's column and the footnote", {
   skip: marketHoursBlock() || false,
-  todo: "suspected: .earnings-workspace cannot scroll inside the overflow:hidden .workspace",
   timeout: 180_000,
 }, async () => {
   await withApp({ view: VIEW, fakeReads: fakes() }, async (app) => {

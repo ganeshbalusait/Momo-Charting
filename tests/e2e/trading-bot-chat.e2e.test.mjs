@@ -31,6 +31,8 @@ function answers(extra = {}) {
 }
 
 const texts = async (locator) => (await locator.allTextContents()).map((s) => s.trim());
+// The questions asked; the opening screen's one read is the same route with {"home": true}.
+const asked = (app) => app.writes.filter((w) => !JSON.parse(w.body || "{}").home);
 
 e2eTest("Ask: a starter question, a typed question and a follow-up each send one request and show the answer", async () => {
   await withApp({ view: "Bot", storage: ASK, fakeWrites: answers() }, async (app) => {
@@ -38,17 +40,17 @@ e2eTest("Ask: a starter question, a typed question and a follow-up each send one
     await chat.waitFor({ timeout: 60_000 });
     assert.equal((await app.page.locator("[role='group'][aria-label='Page'] button[aria-pressed='true']").textContent()).trim(), "Ask");
     assert.match(await chat.locator(".chat-note").textContent(), /any reply with a number that is not in the records is thrown away\. It only reads; it cannot place or change a trade\./);
-    assert.deepEqual((await texts(chat.locator(".chat-empty .chat-chip"))).slice(0, 2), ["SPY if I take how much it went up", "why AAPL failed"]);
+    assert.deepEqual((await texts(chat.locator(".chat-tray .chat-chip"))).slice(0, 2), ["SPY if I take how much it went up", "why AAPL failed"]);
     assert.equal(await chat.locator("button.chat-send").isDisabled(), true);              // nothing typed yet
 
-    await chat.locator(".chat-empty .chat-chip", { hasText: "SPY if I take how much it went up" }).click();
+    await chat.locator(".chat-tray .chat-chip", { hasText: "SPY if I take how much it went up" }).click();
     const first = chat.locator("[data-testid='chat-answer']").first();
     await first.waitFor({ timeout: 15_000 });
     assert.equal((await first.locator(".chat-kind").textContent()).trim(), "How far it went · SPY · 2026-11-09");
     assert.deepEqual((await texts(first.locator(".chat-line"))).slice(1, 3), ["The 0.20-delta call ($753) cost $1.15 at the mid.", "Its best price of the day was $3.70: +220% from the entry."]);
-    assert.deepEqual(JSON.parse(app.writes[0].body), { question: "SPY if I take how much it went up" });   // nothing to continue yet
+    assert.deepEqual(JSON.parse(asked(app)[0].body), { question: "SPY if I take how much it went up" });   // nothing to continue yet
 
-    await first.locator(".chat-chip", { hasText: "why SPY failed" }).click();           // a follow-up the answer offered
+    await chat.locator(".chat-tray .chat-chip", { hasText: "why SPY failed" }).click();  // a follow-up the answer offered, in the tray
     const second = chat.locator("[data-testid='chat-answer']").nth(1);
     await second.waitFor({ timeout: 15_000 });
     assert.equal((await second.locator(".chat-kind").textContent()).trim(), "Why it failed · SPY · 2026-11-09");
@@ -60,15 +62,15 @@ e2eTest("Ask: a starter question, a typed question and a follow-up each send one
     await third.waitFor({ timeout: 15_000 });
     assert.equal((await third.locator(".chat-kind").textContent()).trim(), "What I can answer");
     assert.equal(await chat.locator("input.chat-input").inputValue(), "");
-    assert.deepEqual(app.writes.map((w) => JSON.parse(w.body).question), ["SPY if I take how much it went up", "why SPY failed", "tell me a joke"]);
+    assert.deepEqual(asked(app).map((w) => JSON.parse(w.body).question), ["SPY if I take how much it went up", "why SPY failed", "tell me a joke"]);
     // From the second question on, the ticker and day the conversation is about go along (2026-11-10:
     // he asked "NVDA if I take how much it went up" and then just "Profit or loss").
-    assert.deepEqual(JSON.parse(app.writes[1].body).context, { ticker: "SPY", day: "2026-11-09" });
-    assert.deepEqual(JSON.parse(app.writes[2].body).context, { ticker: "SPY", day: "2026-11-09" });
+    assert.deepEqual(JSON.parse(asked(app)[1].body).context, { ticker: "SPY", day: "2026-11-09" });
+    assert.deepEqual(JSON.parse(asked(app)[2].body).context, { ticker: "SPY", day: "2026-11-09" });
     await chat.locator("input.chat-input").fill("Profit or loss");
     await chat.locator("input.chat-input").press("Enter");
     await chat.locator("[data-testid='chat-answer']").nth(3).waitFor({ timeout: 15_000 });
-    assert.deepEqual(JSON.parse(app.writes[3].body), { question: "Profit or loss", context: { ticker: "SPY", day: "2026-11-09" } });   // the help answer did not erase it
+    assert.deepEqual(JSON.parse(asked(app)[3].body), { question: "Profit or loss", context: { ticker: "SPY", day: "2026-11-09" } });   // the help answer did not erase it
     assert.deepEqual(await texts(chat.locator(".chat-q")).then((q) => q.map((s) => s.replace(/^You/, ""))), ["SPY if I take how much it went up", "why SPY failed", "tell me a joke", "Profit or loss"]);
     assert.ok(app.writes.every((w) => w.path === "/api/bot-chat"));
     assert.ok(!app.reads.some((r) => r.path === "/api/momx-scanner/bot-desk"), "the Ask view must not load the Scorecard");
@@ -113,7 +115,8 @@ e2eTest("phone width: the Ask view fits, the question box stays reachable and an
   });
 });
 
-e2eTest("Ask: an AI reply shows on top with the record lines under it; without one the lines stand alone", async () => {
+// Changed on purpose (2026-11-11 design change): an AI reply is never shown, even when a server sends one.
+e2eTest("Ask: an AI reply a server sends is never shown; the record lines stand alone", async () => {
   const withAi = { ...REPLIES["SPY if I take how much it went up"], ai: { text: "Profit: three contracts would have made +$482 at the Bot's exit.", source: "openai" } };
   const understood = { ...REPLIES["why SPY failed"], understoodBy: "AI" };
   const extra = { "did SPY make money": { json: withAi }, "was that spy trade any good": { json: understood } };
@@ -124,20 +127,17 @@ e2eTest("Ask: an AI reply shows on top with the record lines under it; without o
     await chat.locator("button.chat-send").click();
     const first = chat.locator("[data-testid='chat-answer']").first();
     await first.waitFor({ timeout: 15_000 });
-    assert.equal((await first.locator("[data-testid='chat-ai']").textContent()).trim(), "AIProfit: three contracts would have made +$482 at the Bot's exit.");
-    assert.equal((await first.locator(".chat-from").textContent()).trim(), "From the records");
-    assert.equal(await first.locator(".chat-line").count(), 5);                                   // every record line is still shown
-    // The AI's reply comes before the record lines.
-    const aiBox = await first.locator("[data-testid='chat-ai']").boundingBox();
-    const lineBox = await first.locator(".chat-line").first().boundingBox();
-    assert.ok(aiBox && lineBox && aiBox.y < lineBox.y);
+    assert.equal(await first.locator("[data-testid='chat-ai']").count(), 0);
+    assert.doesNotMatch(await first.innerText(), /three contracts would have made \+\$482 at the Bot's exit/);
+    assert.equal(await first.locator(".chat-from").count(), 0);
+    assert.equal(await first.locator(".chat-line").count(), 5);                                   // every record line is shown
 
     await chat.locator("input.chat-input").fill("was that spy trade any good");
     await chat.locator("button.chat-send").click();
     const second = chat.locator("[data-testid='chat-answer']").nth(1);
     await second.waitFor({ timeout: 15_000 });
     assert.equal(await second.locator("[data-testid='chat-ai']").count(), 0);                     // understood by the AI, but no reply text
-    assert.equal((await second.locator(".chat-from").textContent()).trim(), "The AI worked out what you were asking; the answer is from the records");
+    assert.equal((await second.locator(".chat-from").textContent()).trim(), "The AI worked out what you were asking; the answer is from the app");
 
     await chat.locator("input.chat-input").fill("SPY if I take how much it went up");            // the plain canned answer: no AI at all
     await chat.locator("button.chat-send").click();

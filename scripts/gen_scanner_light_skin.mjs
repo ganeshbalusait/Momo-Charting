@@ -18,7 +18,8 @@
 // with the text typed for them, dark text, the dim layer behind a dialog, and
 // the ticker card's small day chart (chart drawing areas stay dark).
 // Dark: signal colours and surfaces stay as typed; only grey text under 4.5:1
-// becomes the shared second text colour.
+// becomes the shared second text colour (a state that is dim on purpose: the
+// quieter dim ink).
 //
 // Run after changing a scanner colour in index.css:
 //   node scripts/gen_scanner_light_skin.mjs
@@ -49,7 +50,8 @@ const DARK_BG = { r: 44, g: 44, b: 46 };
 // Rules left exactly as typed, in both themes.
 // (.momo-alert-banner is drawn on every screen, so it is not the scanner's.)
 const KEEP_RULES = [/overlay$/, /backdrop/, /\.momx-daychart( svg|-ext|-line|-wall|-em|-mark)/, /\.momo-alert-banner/];
-// States that are dim on purpose: dark must not lift their grey text.
+// States that are dim on purpose: dark does not lift their grey text to the
+// shared second colour, only as far as darkDimText() below.
 const DIM_STATES = /\.is-(none|stored|few|hidden|off|gone|muted|stale|dim|disabled|placeholder)\b/;
 // Classes shared with an older page outside the scanner: twinned only inside
 // the scanner panel.
@@ -159,6 +161,23 @@ export function darkText(c) {
   return { r: 161, g: 161, b: 166, a: 1 };
 }
 
+// A state that is dim on purpose (DIM_STATES) stays quieter than the #a1a1a6
+// above, but must still be readable. 2026-11-14: the age of an older stored
+// headline in the News column ("10h", #6b7280) read 3.8:1 on a board row and
+// 3.5:1 on the hovered row, and the name of a hidden column in the Columns
+// dialog (#6b7080) 3.3:1; the look's rule is 4.5:1 for every label. A dim grey
+// that already reads 4.5:1 on the hovered row (--momx-row-hover #1c1c1f in
+// theme.css, the lightest surface a board cell sits on) is kept as typed;
+// any other becomes the look's dim ink, --momx-ink-dim #8e8e93:
+// 5.6:1 on a row (#141416), 5.2:1 hovered, 5.1:1 on a hidden column's line.
+const DARK_ROW_HOVER = { r: 28, g: 28, b: 31 };
+export function darkDimText(c) {
+  const { l } = toHsl(c);
+  if (!isGrey(c) || l < 0.3 || l > 0.8) return null;
+  if (contrast(c, DARK_ROW_HOVER) >= 4.5 && c.a >= 0.85) return null;
+  return { r: 142, g: 142, b: 147, a: 1 };
+}
+
 // css text -> [{ selector, wrappers: ["@media ..."], declarations: [[prop, value]] }]
 export function readRules(css) {
   const text = css.replace(/\r\n/g, "\n").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -200,8 +219,8 @@ const scoped = (part, scope) => {
   return SHARED.test(part) ? `${scope} .momx-scanner-panel ${part}` : `${scope} ${part}`;
 };
 
-function converterFor(prop, theme, ownFill) {
-  if (TEXT_PROPS.test(prop)) return { convert: ownFill ? null : theme === "dark" ? darkText : lightText };
+function converterFor(prop, theme, ownFill, dimOnPurpose = false) {
+  if (TEXT_PROPS.test(prop)) return { convert: ownFill ? null : theme === "dark" ? (dimOnPurpose ? darkDimText : darkText) : lightText };
   if (theme === "dark") return null;
   if (BG_PROPS.test(prop)) return { convert: lightBackground };
   if (LINE_PROPS.test(prop)) return { convert: lightLine };
@@ -251,7 +270,7 @@ export function skinRule(rule, theme = "light") {
   const out = [];
   for (const [prop, rawValue] of rule.declarations) {
     if (prop.startsWith("--")) continue;
-    const kind = converterFor(prop, theme, ownFill || dimOnPurpose);
+    const kind = converterFor(prop, theme, ownFill, dimOnPurpose);
     if (!kind) continue;
     const important = /!important\s*$/.test(rawValue);
     const value = rawValue.replace(/\s*!important\s*$/, "").replace(/\s+/g, " ");

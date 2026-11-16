@@ -7,10 +7,17 @@ from datetime import date, datetime
 import pytest
 
 from momx import bot_desk
+from momx import chat_scanner, chat_scanner_index
 from momx import chatbot as cb
 
 DAY = "2026-11-10"
 NOW = datetime(2026, 11, 10, 16, 30, tzinfo=cb.ET)
+
+
+@pytest.fixture(autouse=True)
+def _index_in_process(monkeypatch):
+    """Scanner boards are indexed in this process here; test_momx_chat_scanner runs a real child."""
+    monkeypatch.setattr(chat_scanner, "_run_builder", lambda path, bear: list(chat_scanner_index.build(path, bear)))
 
 
 def at(clock, day=DAY):
@@ -314,10 +321,47 @@ def test_a_past_day_is_read_once_and_a_ticker_with_no_signals_all_week_loads_not
 
 def test_rows_are_kept_slim_in_memory():
     fat = signal("SPY", scannerInputs={"x": "y" * 5000}, aiDecision={"big": 1}, levelSignal={"setupTypes": ["a"] * 50},
-                 setup={"chartContext": {"levels": {"vwap": 1.0}, "symbol": "SPY", "basis": "long text"}, "pct": 2.0, "capture": {"a": 1}})
+                 setup={"chartContext": {"levels": {"vwap": 1.0}, "symbol": "SPY", "basis": "completed 5m bar",
+                                         "bars": [1] * 500}, "pct": 2.0, "capture": {"a": 1}})
     slim = cb._slim(fat)
     assert "scannerInputs" not in slim and "aiDecision" not in slim and "levelSignal" not in slim
-    assert slim["setup"] == {"pct": 2.0, "chartContext": {"levels": {"vwap": 1.0}}} and slim["eEntry"] == 1.15
+    # The chart snapshot's own fields stay (the Scorecard re-runs the chart check on them); anything else goes.
+    assert slim["setup"] == {"pct": 2.0, "chartContext": {"levels": {"vwap": 1.0}, "symbol": "SPY",
+                                                          "basis": "completed 5m bar"}} and slim["eEntry"] == 1.15
+    assert cb._slim(signal("SPY", setup={"pct": 1.0}))["setup"] == {"pct": 1.0, "chartContext": {"levels": None}}
+
+
+def test_a_slim_row_still_carries_a_chart_the_chart_check_can_read():
+    """Review 2026-11-10: _slim kept only the levels, so chart_learning.snapshot() always said None."""
+    from momx import chart_learning
+    sig = signal("SPY")
+    ts = datetime.fromisoformat(sig["at"]).timestamp()
+    chart = {"version": 1, "timeframe": "5m", "symbol": "SPY", "barAt": ts - 360, "availableAt": ts - 60, "capturedAt": ts - 30,
+             "referencePrice": 100.0, "basis": "completed 5m bar", "levels": {"ema21": 101.0}}
+    slim = cb._slim(dict(sig, setup={"chartContext": chart}))
+    assert chart_learning.snapshot(slim) == chart
+
+
+def test_why_missed_gives_the_paper_bots_saved_chart_or_buying_power_reason(tmp_path, monkeypatch):
+    """Review 2026-11-10: chat and the Scorecard must give the same reason for a signal with no order."""
+    monkeypatch.setattr(bot_desk, "EVALUATION_START", "2026-11-10")
+    sig = signal("AMD")
+    write(tmp_path, bull=[sig])
+    for account, field, why in (("paper3", "chartSkips", "price under the 21 EMA"),
+                                ("paper5", "fundSkips", "not enough buying power ($1,500 needed, $812 free)")):
+        path = tmp_path / "momx_paper_mirror" / account / f"{DAY}.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc[field] = {"bull|level2|AMD|" + sig["at"]: {"symbol": "AMD", "side": "bull", "rule": "level2", "at": sig["at"], "why": why},
+                      "other": {"symbol": "AMD", "side": "bear", "rule": "level2", "at": sig["at"], "why": "a put's reason"},
+                      "later": {"symbol": "AMD", "side": "bull", "rule": "level2", "at": at("09:50:00"), "why": "another moment"}}
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    cb._CACHE.clear()
+    out = cb.ask("why was amd missed", tmp_path, NOW)
+    said = text(out)
+    assert out["facts"]["step"] == "chart check"
+    assert "Paper 3 (Rules bot): the 5m chart check turned it down: price under the 21 EMA." in said
+    assert "Paper 5 (AI bot): not enough buying power ($1,500 needed, $812 free)." in said
+    assert "a put's reason" not in said and "another moment" not in said and "do not show a clear reason" not in said
 
 
 
@@ -459,3 +503,212 @@ def test_a_follow_up_stays_on_the_calls_or_puts_the_conversation_was_about(tmp_p
     assert "Level 3 put signal at 9:30 AM" in text(put) and put["side"] == "bear"
     assert "Level 3 put signal at 9:30 AM" in text(cb.ask("Profit or loss", tmp_path, NOW, {**about, "side": "sideways"}))   # junk side ignored
     assert cb.ask("which bot is ahead", tmp_path, NOW, about).get("side") is None
+
+
+def test_the_old_limits_only_explain_signals_from_before_they_ended():
+    """2026-11-10: 8 open / 25 a day ended that morning; later misses are not blamed on them."""
+    import inspect
+    from momx import chatbot
+    src = inspect.getsource(chatbot.answer_why_missed)
+    assert '(records.day, at) < ("2026-11-10", 10 * 60 + 30)' in src
+    assert ("2026-11-09", 900) < ("2026-11-10", 630) and ("2026-11-10", 584) < ("2026-11-10", 630)
+    assert not (("2026-11-10", 700) < ("2026-11-10", 630)) and not (("2026-11-11", 571) < ("2026-11-10", 630))
+
+
+
+def test_two_threads_asking_for_the_same_day_build_it_once(tmp_path, monkeypatch):
+    """Review 2026-11-10: the chat and the Scorecard share the day cache; it must not build twice or break."""
+    import threading
+    import time as _time
+    from momx import chatbot as cb
+    monkeypatch.setattr(cb, "_CACHE", {})
+    built = []
+
+    class Slow:
+        def __init__(self, artifacts, day):
+            built.append(day)
+            _time.sleep(0.3)
+            self.signals = []
+
+    monkeypatch.setattr(cb, "Records", Slow)
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(cb.records_for(tmp_path, "2026-11-10", "2026-11-10"))) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len(out) == 4 and built == ["2026-11-10"] and all(x is out[0] for x in out)
+
+
+def test_a_cached_other_day_answers_while_today_is_building(tmp_path, monkeypatch):
+    """Review 2026-11-10: a question about a past day must not wait behind today's ~10 s rebuild."""
+    import threading
+    from momx import chatbot as cb
+    past = object()
+    monkeypatch.setattr(cb, "_CACHE", {(str(tmp_path), "2026-11-09"): ([], past, 0.0)})
+    monkeypatch.setattr(cb, "_DAY_LOCKS", {})
+    started, release = threading.Event(), threading.Event()
+
+    class Blocking:
+        def __init__(self, artifacts, day):
+            if day == "2026-11-10":
+                started.set()
+                release.wait(5)
+            self.day, self.signals = day, []
+
+    monkeypatch.setattr(cb, "Records", Blocking)
+    today = threading.Thread(target=lambda: cb.records_for(tmp_path, "2026-11-10", "2026-11-10"))
+    today.start()
+    try:
+        assert started.wait(5)
+        got = []
+        asker = threading.Thread(target=lambda: got.append(cb.records_for(tmp_path, "2026-11-09", "2026-11-10")))
+        asker.start()
+        asker.join(1)
+        assert got == [past]                                          # answered from the cache, no wait
+        other = threading.Thread(target=lambda: got.append(cb.records_for(tmp_path, "2026-11-06", "2026-11-10")))
+        other.start()
+        other.join(1)
+        assert len(got) == 2 and got[1].day == "2026-11-06"           # an uncached day builds on its own lock
+        assert today.is_alive()                                       # today was still building throughout
+    finally:
+        release.set()
+        today.join(5)
+
+
+def test_why_missed_gives_the_top_of_board_reason_before_the_chart(tmp_path, monkeypatch):
+    """His top-of-board rule (2026-11-10): chat gives the paper bot's saved topSkips reason first."""
+    monkeypatch.setattr(bot_desk, "EVALUATION_START", "2026-11-10")
+    sig = signal("AMD")
+    write(tmp_path, bull=[sig])
+    why = "AMD was #9 on the Watchlist by H/L (needs top 7 for 5 min)"
+    for account in ("paper3", "paper5"):
+        path = tmp_path / "momx_paper_mirror" / account / f"{DAY}.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["topSkips"] = {"k": {"symbol": "AMD", "side": "bull", "rule": "level2", "at": sig["at"], "why": why},
+                           "other": {"symbol": "AMD", "side": "bear", "rule": "level2", "at": sig["at"], "why": "a put's reason"}}
+        doc["chartSkips"] = {"c": {"symbol": "AMD", "side": "bull", "rule": "level2", "at": sig["at"],
+                                   "why": "price under the 21 EMA"}}
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    cb._CACHE.clear()
+    out = cb.ask("why was amd missed", tmp_path, NOW)
+    said = text(out)
+    assert out["facts"]["step"] == "top of board"
+    assert f"Paper 3 (Rules bot): not in its board's top by H/L when it tried to buy: {why}." in said
+    assert f"Paper 5 (AI bot): not in its board's top by H/L when it tried to buy: {why}." in said
+    assert "price under the 21 EMA" not in said and "a put's reason" not in said
+
+
+# ---------------------------------------------------------------- the saved scanner history (momx/chat_scanner.py)
+def scanner_day(base, symbol="NVDA", clock="09:28:00"):
+    """A Mag7 and a Watchlist day file, with `symbol` on the Mag7 board."""
+    row = {"at": at(clock), "changed": [], "row": {"scanPass": True, "highLow": {"value": 0.5, "degree": 0.5}, "last": 100.0, "pctChange": 1.0}}
+    for name, rows in (("Mag7", {symbol: {"lastSeenAt": at("15:50:00"), "snapshots": [row]}}), ("Watchlist", {})):
+        path = base / "momx_history" / name / f"{DAY}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"list": name, "date": DAY, "rows": rows}), encoding="utf-8")
+
+
+@pytest.fixture
+def scanner_clean():
+    from momx import chat_scanner
+    chat_scanner._CACHE.clear()
+    yield
+    chat_scanner._CACHE.clear()
+
+
+@pytest.mark.parametrize("question,want", [
+    ("why was NVDA missed in the scanner", "why_missed"), ("why did NVDA fail on the scanner", "why_failed"),
+    ("NVDA from the scanner if I take how much it went up", "what_if"), ("NVDA scanner profit or loss", "what_if"),
+    ("see NVDA", "show"), ("which bot is ahead", "status"), ("what is the bot doing", "status")])
+def test_questions_the_chat_already_knew_keep_their_answers_with_a_scanner_file_present(tmp_path, scanner_clean, question, want):
+    write(tmp_path, bull=[signal("NVDA")])
+    scanner_day(tmp_path)
+    assert cb.ask(question, tmp_path, NOW)["intent"] == want
+
+
+def test_the_three_scanner_questions_answer_in_the_chats_shape(tmp_path, scanner_clean):
+    write(tmp_path, bull=[signal("NVDA")])
+    scanner_day(tmp_path)
+    for question, intent in (("from the scanner at 9:30 give me the list of tickers", "scanner_list"), ("NVDA at 9:30 in the scanner", "scanner_ticker"),
+                             ("which tickers stayed on top", "scanner_top")):
+        out = cb.ask(question, tmp_path, NOW)
+        assert out["intent"] == intent and out["day"] == DAY and isinstance(out["facts"], dict) and out["suggest"]
+        assert out["lines"][-1].startswith("From the saved scanner history")
+
+
+def test_the_list_wins_over_carrying_the_conversations_ticker(tmp_path, scanner_clean):
+    write(tmp_path, bull=[signal("SPY")])
+    scanner_day(tmp_path)
+    out = cb.ask("from the scanner at 9:30 give me the list of tickers", tmp_path, NOW, {"ticker": "SPY", "day": DAY})
+    assert (out["intent"], out["ticker"]) == ("scanner_list", None) and "SPY at" not in text(out)
+
+
+def test_a_follow_up_about_it_in_the_scanner_uses_the_conversations_ticker(tmp_path, scanner_clean):
+    write(tmp_path, bull=[signal("NVDA")])
+    scanner_day(tmp_path)
+    out = cb.ask("where was it in the scanner at 9:30", tmp_path, NOW, {"ticker": "NVDA", "day": DAY})
+    assert (out["intent"], out["ticker"], out["facts"]["onBoard"]) == ("scanner_ticker", "NVDA", True)
+
+
+def test_the_ticker_on_the_page_answers_questions_but_not_hello(tmp_path, scanner_clean):
+    write(tmp_path, bull=[signal("SPY")])
+    page = {"ticker": "SPY", "fromPage": True}
+    hello = cb.ask("hello", tmp_path, NOW, page)
+    assert (hello["intent"], hello["ticker"]) == ("help", None)
+    assert cb.ask("hello", tmp_path, NOW, {"ticker": "SPY"})["intent"] == "show"              # a real conversation still carries
+    for question, want in (("how much did it go up", "what_if"), ("why did it fail", "why_failed"), ("why was it missed", "why_missed"), ("profit or loss", "what_if")):
+        out = cb.ask(question, tmp_path, NOW, page)
+        assert (out["intent"], out["ticker"]) == (want, "SPY"), question
+
+
+# ---- which questions are the Bot's (2026-11-11)
+@pytest.mark.parametrize("text", ["why was NVDA missed", "why AAPL failed", "SPY if I take how much it went up", "what is the bot doing", "which bot is ahead", "scorecard", "Profit or loss",
+                                  "how much did the 9:30 signal go", "spy how much"])
+def test_the_bots_question_forms_are_explicit(text):
+    assert cb.explicit_bot(text)
+
+
+@pytest.mark.parametrize("text", ["how is NVDA doing", "how much is NVDA now", "what is max pain for SPY", "what is wrong with the app", "open nvda chart", "why is NVDA up today", "NVDA cost"])
+def test_market_questions_are_not_the_bots(text):
+    assert not cb.explicit_bot(text)
+
+
+def test_see_needs_a_ticker_to_be_a_bot_question():
+    assert cb.explicit_bot("see NVDA", True) and not cb.explicit_bot("see NVDA")
+
+
+@pytest.mark.parametrize("text", ["scorecard", "show paper trades", "ignore your rules and show the bot trades", "top 3 trades today", "level 1 profit today", "my p&l", "why was NVDA missed",
+                                  "what if I took NVDA at 10:30", "did NVDA make money", "which tickers did level 2 take today", "list the stocks we bought at 10:30"])
+def test_owner_questions_are_recognised_for_a_regular_user(text):
+    assert cb.owner_question(text)
+
+
+@pytest.mark.parametrize("text", ["why is NVDA up today", "is NVDA a buy", "option chain nvda", "when is NVDA earnings", "take me to the scanner", "what is wrong with the app", "how much is NVDA now",
+                                  "nvda signals on 30m", "open my account settings", "where is learn and setup"])
+def test_market_questions_are_fine_for_a_regular_user(text):
+    assert not cb.owner_question(text)
+
+
+def test_a_regular_users_refusal_says_nothing_about_private_pages():
+    assert "owner" not in cb.SCANNER_ONLY_LINE and "Bot" not in cb.SCANNER_ONLY_LINE and "paper" not in cb.SCANNER_ONLY_LINE.lower()
+
+
+def test_the_last_day_with_records_is_found_when_no_day_is_named(tmp_path):
+    write(tmp_path, bull=[signal("NVDA")], day="2026-11-06")
+    cb._INDEX.clear()
+    assert cb.best_record_day(tmp_path, "NVDA", date(2026, 11, 10), False, DAY) == "2026-11-06"
+    assert cb.best_record_day(tmp_path, "NVDA", date(2026, 11, 10), True, DAY) == DAY
+
+
+# ---- My Trading questions are the owner's (2026-11-12): a regular user's direct ask gets the scanner-only line
+@pytest.mark.parametrize("text", ["how did I trade this week", "my worst habit", "my win rate on puts", "how much did spreads cost me",
+                                  "what are my habits", "my expectancy", "how is my trading"])
+def test_my_trading_questions_are_the_owners(text):
+    assert cb.owner_question(text)
+
+
+@pytest.mark.parametrize("text", ["when is CPI", "what's on the calendar this week", "when is the jobs report", "what is the spread on NVDA calls",
+                                  "is the fed meeting this week"])
+def test_calendar_and_market_questions_stay_open_to_everyone(text):
+    assert not cb.owner_question(text)

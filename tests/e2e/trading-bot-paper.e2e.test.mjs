@@ -49,7 +49,8 @@ e2eTest("Paper 3 replaces the contract / exit switches with the account's own to
     assert.equal((await heading.innerText()).trim(), "Paper 3 · 2 orders · calls");
     assert.equal(await app.page.locator("[role='group'][aria-label='Contract']").count(), 0);
     assert.equal(await app.page.locator("[role='group'][aria-label='Exit comparison']").count(), 0);
-    const kpis = (await app.page.locator("section.bot-kpis[aria-label='Paper totals'] .bot-kpi-label").allInnerTexts()).map((s) => s.trim());
+    // textContent, not innerText: .bot-kpi-label is drawn in capitals (text-transform), the words are unchanged.
+    const kpis = (await app.page.locator("section.bot-kpis[aria-label='Paper totals'] .bot-kpi-label").allTextContents()).map((s) => s.trim());
     assert.deepEqual(kpis, ["Realized P/L · paper", "Closed ROI", "Open P/L · midpoint estimate", "Closed win rate", "Orders"]);
     assert.ok(app.reads.some((read) => read.path === "/api/momx-scanner/paper-mirror" && read.search === "?days=1"));
     assert.deepEqual(app.writes, []);
@@ -110,7 +111,9 @@ e2eTest("on a phone the paper order table scrolls inside its card, not the page"
     await openBot(app);
     await app.page.locator(PAPER_SELECT).selectOption("paper3");
     await app.page.locator(".bot-page h3", { hasText: /^Paper 3 · / }).waitFor({ timeout: 30_000 });
-    await app.page.locator(".bot-scroll table.bot-table").first().waitFor({ timeout: 15_000 });
+    // The paper order table itself (PaperBook renders it straight into .bot-page). A bare .first() could pick the
+    // Truth check's "By rule" table, which sits above it inside a closed <details>, and wait forever for it to show.
+    await app.page.locator(".bot-page > .bot-scroll table.bot-table").first().waitFor({ timeout: 15_000 });
     assert.equal(await overflowsSideways(app.page), false);
     assert.deepEqual(app.pageErrors, []);
   });

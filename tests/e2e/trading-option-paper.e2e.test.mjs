@@ -218,7 +218,6 @@ e2eTest("an unanswered Start is stopped by the harness and its reason is shown",
 // set_option_bot_state: "...sending Alpaca paper option orders...").
 test("the option banner never claims orders are disabled while the engine sends paper orders", {
   skip: marketHoursBlock() || false,
-  todo: "App.jsx paper-bot-banner-meta hard-codes '| orders disabled'",
   timeout: 180_000,
 }, async () => {
   await withApp({ view: VIEW, fakeReads: { "GET /api/dashboard": canned((d) => known(d, { state: "Running" })) } }, async (app) => {
@@ -308,19 +307,29 @@ e2eTest("the Log ... To Option Journal button sends one ticket for the previewed
   });
 });
 
-e2eTest("on a phone the three settings cards stack inside the screen", async () => {
+// FAILS TODAY: index.css `.option-layout-grid.option-layout-grid-three`
+// (repeat(3, ...), two classes) outranks the narrow-screen
+// `.option-layout-grid { grid-template-columns: 1fr }` (one class), so at 375px
+// the three cards sit side by side, 113px wide each.
+test("on a phone the three settings cards stack inside the screen", {
+  skip: marketHoursBlock() || false,
+  timeout: 180_000,
+}, async () => {
   await withApp({ view: VIEW, viewport: PHONE, fakeReads: { "GET /api/dashboard": canned((d) => known(d)) } }, async (app) => {
     await openKnown(app);
     const cards = app.page.locator("section.option-layout-grid.option-layout-grid-three > section.data-card");
     assert.equal(await cards.count(), 3);
+    // Measure all three in ONE scroll position. The page scrolls inside
+    // main.workspace, not the window, so window.scrollY stays 0 and boxes taken
+    // after separate scrollIntoView calls are not comparable.
+    await cards.first().scrollIntoViewIfNeeded();
+    const boxes = [];
+    for (const card of await cards.all()) boxes.push(await card.boundingBox());
     let previousBottom = -Infinity;
-    for (const card of await cards.all()) {
-      await card.scrollIntoViewIfNeeded();
-      const box = await card.boundingBox();
+    for (const box of boxes) {
       assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `card at ${JSON.stringify(box)} is cut off`);
-      const top = box.y + (await app.page.evaluate(() => window.scrollY));
-      assert.ok(top >= previousBottom - 1, "cards overlap instead of stacking");
-      previousBottom = top + box.height;
+      assert.ok(box.y >= previousBottom - 1, `cards overlap instead of stacking: ${JSON.stringify(boxes)}`);
+      previousBottom = box.y + box.height;
     }
     assert.equal(await overflowsSideways(app.page), false);
     assert.deepEqual(app.pageErrors, []);

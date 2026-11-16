@@ -34,7 +34,7 @@ e2eTest("the newest deploy is on top, every stamp in ET", async () => {
   const releases = await liveNotes();
   await withApp({ view: "Release Notes" }, async (app) => {
     await page(app);
-    assert.equal((await app.page.locator(".release-notes-title").innerText()).trim(), "Release Notes");
+    assert.equal((await app.page.locator(".release-notes-title").textContent()).trim(), "Release Notes");
     assert.equal((await app.page.locator(".release-entry-heading").first().innerText()).trim(), releases[0].heading);
     const stamps = await app.page.locator(".release-entry-stamp").allInnerTexts();
     assert.ok(stamps.length > 0 && stamps.every((s) => /ET$/.test(s.trim())), `stamps: ${JSON.stringify(stamps.slice(0, 3))}`);

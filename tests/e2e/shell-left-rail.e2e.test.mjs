@@ -11,6 +11,7 @@ import test from "node:test";
 import { BASE_URL, e2eTest, marketHoursBlock, overflowsSideways, withApp } from "./harness.mjs";
 
 const RAIL = 'aside.sidebar[data-testid="primary-navigation"]';
+// The page title: in the page but hidden below 1450 px wide (index.css), so tests wait for it attached and read textContent.
 const H1 = ".command-context h1";
 const member = { json: { bootstrapRequired: false, bootstrapRequiresToken: false, accessStatus: "", accessEmail: "",
   user: { id: "e2e-user-1", email: "e2e.member@example.com", displayName: "Member", role: "user", isAdmin: false, isActive: true, hasPassword: true, mustChangePassword: false } } };
@@ -29,8 +30,8 @@ const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const exactly = (text) => new RegExp(`^${escapeRegExp(text)}$`);
 
 async function heading(page, expected) {
-  await page.locator(H1, { hasText: exactly(expected) }).waitFor({ timeout: 30_000 });
-  assert.equal((await page.locator(H1).innerText()).trim(), expected);
+  await page.locator(H1, { hasText: exactly(expected) }).waitFor({ state: "attached", timeout: 30_000 });
+  assert.equal((await page.locator(H1).textContent()).trim(), expected);
 }
 
 async function secondTab(app) {
@@ -57,22 +58,37 @@ e2eTest("every rail button opens its page and moves the highlight", async () => 
   });
 }, { timeout: 300_000 });
 
-e2eTest("collapsing the rail survives a reload, and expanding brings the labels back", async () => {
-  await withApp({ view: "Release Notes" }, async (app) => {
-    const toggle = app.page.locator(`${RAIL} .sidebar-toggle`);
-    await toggle.waitFor({ state: "visible", timeout: 60_000 });
-    assert.equal(await toggle.getAttribute("aria-label"), "Collapse navigation");
-    await toggle.click();
-    await app.page.locator(".app-shell.sidebar-collapsed").waitFor({ timeout: 10_000 });
-    assert.equal(await toggle.getAttribute("aria-label"), "Expand navigation");
-    assert.equal(await toggle.getAttribute("aria-expanded"), "false");
-    const { page, errors } = await secondTab(app);
-    assert.equal(await page.locator(".app-shell.sidebar-collapsed").count(), 1, "the collapsed rail was not remembered");
-    await page.locator(`${RAIL} button[aria-label="Expand navigation"]`).click();
-    await page.locator(".app-shell:not(.sidebar-collapsed)").waitFor({ timeout: 10_000 });
-    assert.equal(await page.locator(`${RAIL} .nav-item[title="Settings"] .nav-label`).isVisible(), true);
-    assert.deepEqual(errors, []);
-  });
+// The rail is a fixed compact icon rail on every page (App.jsx: "charts-workstation
+// is applied on every view: the whole product uses the compact MomoX3-style
+// terminal chrome"; index.css `.app-shell.charts-workstation .sidebar-toggle,
+// .nav-label { display: none }`, both since 5e47c8cf 2026-08-10; release note
+// 2026-11-13 "the left icon rail"). There is no collapse/expand button to press,
+// so the 11-04 "collapse survives a reload" test described a control the design
+// had already removed. What the trader gets instead: icons only, each named by
+// its tooltip, and an old remembered collapsed/expanded choice changes nothing.
+e2eTest("the rail is a fixed icon rail: no collapse button, names in the tooltips, an old remembered choice changes nothing", async () => {
+  const railShape = async (page) => {
+    await page.locator(`${RAIL} .nav-item[title="Settings"]`).waitFor({ state: "visible", timeout: 60_000 });
+    return {
+      toggleShown: await page.locator(`${RAIL} .sidebar-toggle`).isVisible(),
+      labelShown: await page.locator(`${RAIL} .nav-item[title="Settings"] .nav-label`).isVisible(),
+      width: Math.round((await page.locator(RAIL).boundingBox()).width),
+      titles: await page.locator(`${RAIL} .nav-item`).evaluateAll((els) => els.map((el) => el.getAttribute("title"))),
+    };
+  };
+  const shapes = [];
+  for (const remembered of ["false", "true"]) {
+    await withApp({ view: "Release Notes", storage: { agenticSidebarCollapsed: remembered } }, async (app) => {
+      const shape = await railShape(app.page);
+      assert.equal(shape.toggleShown, false, `a collapse button is drawn (remembered ${remembered})`);
+      assert.equal(shape.labelShown, false, `the rail shows text labels (remembered ${remembered})`);
+      assert.ok(shape.width <= 64, `the rail is ${shape.width}px wide, not an icon rail (remembered ${remembered})`);
+      for (const [title] of PAGES) assert.ok(shape.titles.includes(title), `${title} has no named rail icon: ${JSON.stringify(shape.titles)}`);
+      shapes.push(shape);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }
+  assert.equal(shapes[0].width, shapes[1].width, "a remembered collapsed/expanded choice changed the rail width");
 });
 
 e2eTest("the last page opened is where a new tab starts", async () => {
@@ -114,11 +130,11 @@ e2eTest("the header gear, avatar and help button go where they say", async () =>
 });
 
 test("a non-admin whose browser remembers Bot does not land on a hidden page",
-  { skip: marketHoursBlock() || false, todo: "BUG: the remembered-page check accepts any rail label and ignores adminOnly, so a non-admin opens 'Bot' (empty, no rail item lit)", timeout: 180_000 },
+  { skip: marketHoursBlock() || false, timeout: 180_000 },
   async () => {
     await withApp({ view: "Bot", fakeReads: { "GET /api/auth/status": member, "GET /api/momx-scanner/bot": { json: {} } } }, async (app) => {
-      await app.page.locator(H1).waitFor({ timeout: 60_000 });
-      assert.notEqual((await app.page.locator(H1).innerText()).trim(), "Bot");
+      await app.page.locator(H1).waitFor({ state: "attached", timeout: 60_000 });
+      assert.notEqual((await app.page.locator(H1).textContent()).trim(), "Bot");
       assert.equal(await app.page.locator(`${RAIL} .nav-item[aria-current="page"]`).count(), 1, "no rail item is lit");
     });
   });

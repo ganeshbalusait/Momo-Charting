@@ -1,0 +1,140 @@
+/* Ticker trader (2026-11-13): BOT workspace > Research > Ticker trader. Phone first (390 px).
+   Everything is scoped under .tt so nothing else on the Bot page changes. */
+.tt { --tt-card: #111a2c; --tt-inset: #0b1220; --tt-line: #263149; --tt-line-2: #3a4660; --tt-text: #e6ebf5; --tt-dim: #93a0b8;
+  --tt-soft: #b7c2d8; --tt-cyan: #67e8f9; --tt-up: #5eead4; --tt-down: #f9a8d4; --tt-up-bg: #12302c; --tt-down-bg: #2a1422;
+  --tt-entry-bg: #101a2e; --tt-on: #06202a; font-variant-numeric: tabular-nums; }
+:root[data-theme="light"] .tt { --tt-card: #ffffff; --tt-inset: #f2f4f8; --tt-line: #d6dbe6; --tt-line-2: #b8c0d0; --tt-text: #1d2433;
+  --tt-dim: #5a6478; --tt-soft: #3f4859; --tt-cyan: #0e7490; --tt-up: #0f766e; --tt-down: #be185d; --tt-up-bg: #e3f6f2;
+  --tt-down-bg: #fce8f1; --tt-entry-bg: #e8f4f8; --tt-on: #ffffff; }
+.tt > * { max-width: 720px; width: 100%; box-sizing: border-box; }
+.tt > .bot-head { max-width: none; }
+.tt .is-up { color: var(--tt-up); }
+.tt .is-down { color: var(--tt-down); }
+.tt-dim { font-size: 13px; color: var(--tt-dim); }
+.tt-card { background: var(--tt-card); border: 1px solid var(--tt-line); border-radius: 12px; padding: 16px; display: flex;
+  flex-direction: column; gap: 12px; min-width: 0; color: var(--tt-text); margin: 0; }
+.tt-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; min-width: 0; }
+.tt-card h4 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; color: var(--tt-dim); }
+.tt-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--tt-line); border-radius: 10px; overflow: hidden; }
+.tt-side button { height: 48px; background: transparent; border: 0; color: var(--tt-dim); font-weight: 600; font-size: 16px; font-family: inherit; cursor: pointer; }
+.tt-side button.is-on.is-call { background: var(--tt-up-bg); box-shadow: inset 0 -3px var(--tt-up); color: var(--tt-up); font-weight: 700; }
+.tt-side button.is-on.is-put { background: var(--tt-down-bg); box-shadow: inset 0 -3px var(--tt-down); color: var(--tt-down); font-weight: 700; }
+.tt-entry { display: flex; gap: 10px; min-width: 0; }
+.tt-entry input { flex: 1 1 0; min-width: 0; width: 0; height: 52px; box-sizing: border-box; background: var(--tt-inset); border: 2px solid var(--tt-cyan);
+  border-radius: 10px; padding: 0 14px; color: var(--tt-text); font-weight: 600; font-size: 20px; font-family: inherit; letter-spacing: 0.04em; text-transform: uppercase; }
+.tt-primary { height: 52px; padding: 0 22px; background: var(--tt-cyan); border: 0; border-radius: 10px; color: var(--tt-on);
+  font-weight: 700; font-size: 16px; font-family: inherit; cursor: pointer; flex: 0 0 auto; }
+.tt-primary:disabled, .tt-ghost:disabled { opacity: 0.5; cursor: default; }
+.tt-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.tt-chips button { height: 44px; padding: 0 14px; background: transparent; border: 1px solid var(--tt-line-2); border-radius: 999px;
+  color: var(--tt-soft); font-weight: 500; font-size: 14px; font-family: inherit; cursor: pointer; }
+.tt-rules { display: grid; gap: 12px; margin: 0; font-size: 14px; line-height: 1.45; }
+.tt-rules > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); column-gap: 10px; }
+.tt-rules dt { color: var(--tt-dim); }
+.tt-rules dd { margin: 0; }
+.tt-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 56px; padding: 8px 12px; background: var(--tt-inset);
+  border: 1px solid var(--tt-line); border-radius: 10px; color: var(--tt-text); font: inherit; text-align: left; cursor: pointer; min-width: 0; width: 100%; }
+.tt-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tt-row-main b { font-size: 16px; }
+.tt-row-main small { font-size: 12px; color: var(--tt-dim); overflow-wrap: anywhere; }
+.tt-row-money { font-size: 15px; font-weight: 600; flex: 0 0 auto; }
+.tt-foot { margin: 0; font-size: 12px; line-height: 1.5; color: var(--tt-dim); }
+.tt-why { font-size: 13px; line-height: 1.45; color: var(--tt-soft); overflow-wrap: anywhere; }
+.tt-note { margin: 0; padding: 10px 12px; border: 1px solid var(--tt-line); border-radius: 10px; font-size: 13px; color: var(--tt-soft); overflow-wrap: anywhere; }
+
+.tt-run { display: flex; flex-direction: column; gap: 16px; min-width: 0; color: var(--tt-text); }
+.tt-run-bar, .tt-run-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.tt-run-head { align-items: flex-end; }
+.tt-run-head h3 { margin: 0 0 4px; font-size: 30px; font-weight: 700; letter-spacing: 0.02em; }
+.tt-run-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.tt-back { min-height: 44px; background: transparent; border: 0; padding: 0; color: var(--tt-cyan); font: inherit; font-size: 14px; cursor: pointer; }
+.tt-ghost { height: 44px; padding: 0 14px; background: transparent; border: 1px solid var(--tt-line-2); border-radius: 10px; color: var(--tt-soft);
+  font-weight: 600; font-size: 14px; font-family: inherit; cursor: pointer; }
+.tt-ghost.is-sure { border-color: var(--tt-down); color: var(--tt-down); }
+.tt-pill { border: 1px solid var(--tt-line-2); border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--tt-soft); }
+.tt-pill.is-live { border-color: var(--tt-up); color: var(--tt-up); }
+.tt-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.tt-tile { background: var(--tt-card); border: 1px solid var(--tt-line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tt-tile span { font-size: 11px; letter-spacing: 0.06em; color: var(--tt-dim); }
+.tt-tile b { font-size: 18px; font-weight: 700; overflow-wrap: anywhere; }
+.tt-contract { font-size: 16px; font-weight: 600; }
+.tt-ladder { display: flex; flex-direction: column; border: 1px solid var(--tt-line); border-radius: 10px; overflow: hidden; }
+.tt-level { display: grid; grid-template-columns: 62px minmax(0, 1fr) auto; align-items: center; column-gap: 8px; min-height: 44px; padding: 4px 12px;
+  border-left: 4px solid var(--tt-up); background: transparent; }
+.tt-level + .tt-level { border-top: 1px solid var(--tt-line); }
+.tt-level b { color: var(--tt-up); }
+.tt-level small { font-size: 12px; color: var(--tt-dim); text-align: right; max-width: 150px; }
+.tt-level.is-hit { background: var(--tt-up-bg); }
+.tt-level.is-hit small { color: var(--tt-up); }
+.tt-level.is-entry { border-left-color: var(--tt-cyan); background: var(--tt-entry-bg); }
+.tt-level.is-entry b { color: var(--tt-cyan); }
+.tt-level.is-stop { border-left-color: var(--tt-down); background: var(--tt-down-bg); }
+.tt-level.is-stop b, .tt-level.is-stop small { color: var(--tt-down); }
+.tt-chart { display: flex; justify-content: center; align-items: center; min-height: 48px; background: transparent; border: 1px solid var(--tt-cyan);
+  border-radius: 10px; color: var(--tt-cyan); font-weight: 600; font-size: 15px; font-family: inherit; cursor: pointer; }
+.tt-trade { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: var(--tt-inset); border-radius: 10px;
+  border-left: 4px solid var(--tt-line-2); min-width: 0; }
+.tt-trade.is-up { border-left-color: var(--tt-up); color: var(--tt-text); }
+.tt-trade.is-down { border-left-color: var(--tt-down); color: var(--tt-text); }
+.tt button:focus-visible, .tt input:focus-visible { outline: 2px solid var(--tt-cyan); outline-offset: 2px; }
+/* Account size picker (2026-11-13): quick buttons + any amount. */
+.tt-size { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tt-size-row { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.tt-size-row button { height: 44px; padding: 0 14px; background: transparent; border: 1px solid var(--tt-line-2); border-radius: 999px;
+  color: var(--tt-soft); font-weight: 600; font-size: 14px; font-family: inherit; cursor: pointer; }
+.tt-size-row button.is-on { background: var(--tt-entry-bg); border-color: var(--tt-cyan); color: var(--tt-cyan); }
+.tt-size-row input { flex: 1 1 110px; min-width: 0; width: 110px; height: 44px; box-sizing: border-box; background: var(--tt-inset);
+  border: 1px solid var(--tt-line-2); border-radius: 10px; padding: 0 12px; color: var(--tt-text); font-size: 16px; font-family: inherit; }
+.tt-tile small { display: block; margin-top: 2px; }
+
+/* Journal and AI review (2026-11-13). Wears the Scorecard's .desk tiles, bars and calendar (index.css). */
+.tt > .tj { max-width: 1100px; }
+.tj-scopes { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.tj-scopes button { min-height: 40px; padding: 0 14px; background: transparent; border: 1px solid var(--tt-line-2); border-radius: 999px;
+  color: var(--tt-soft); font-weight: 600; font-size: 14px; font-family: inherit; cursor: pointer; }
+.tj-scopes button.is-on { background: var(--tt-entry-bg); border-color: var(--tt-cyan); color: var(--tt-cyan); }
+.tj-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.tj-card { min-width: 0; }
+.tj-review { border-color: var(--tt-cyan); }
+.tj-review-text { margin: 0; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+.tj-review-label { font-size: 12px; color: var(--tt-dim); }
+.tj-improve { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-top: 1px solid var(--tt-line); min-width: 0; }
+.tj-improve:first-of-type { border-top: 0; }
+.tj-improve b { font-size: 14px; }
+.tj-judge { color: var(--tt-down); }
+.tj-breakdowns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.tj-table { display: grid; gap: 2px; font-size: 13px; }
+.tj-tr { display: grid; grid-template-columns: minmax(0, 1fr) 56px 48px 76px; gap: 8px; align-items: center; min-height: 32px;
+  border-bottom: 1px solid var(--tt-line); }
+.tj-tr:last-child { border-bottom: 0; }
+.tj-tr > :not(:first-child) { text-align: right; }
+.tj-tr > :first-child { overflow-wrap: anywhere; }
+.tj-tr.is-head { color: var(--tt-dim); font-size: 11px; min-height: 24px; }
+.tj-tr.is-empty { color: var(--tt-dim); }
+.tj-trade.is-open { border-color: var(--tt-cyan); }
+.tj-detail { margin-top: 8px; }
+.tj-note { width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical; background: var(--tt-inset); border: 1px solid var(--tt-line-2);
+  border-radius: 10px; padding: 10px 12px; color: var(--tt-text); font-size: 16px; font-family: inherit; line-height: 1.4; }
+.tj-note-bar { display: flex; justify-content: flex-end; align-items: center; gap: 12px; flex-wrap: wrap; }
+.tj-note-bar small:first-child { margin-right: auto; }
+.tj-note-bar .tt-primary { height: 44px; }
+.tt textarea:focus-visible { outline: 2px solid var(--tt-cyan); outline-offset: 2px; }
+@media (max-width: 760px) {
+  .tj-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tj-breakdowns { grid-template-columns: minmax(0, 1fr); }
+  .tj-tr { grid-template-columns: minmax(0, 1fr) 48px 40px 70px; gap: 6px; }
+}
+
+/* "Trade a ticker" box at the top of Research (BotPanel.jsx, 2026-11-13). */
+.bot-quick-trade { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 14px;
+  background: var(--bot-card); border: 1px solid #22e0e055; border-radius: 10px; min-width: 0; }
+.bot-quick-title { font-size: 14px; font-weight: 800; color: #e3e8f2; }
+.bot-quick-trade input { width: 110px; background: #0a0e15; color: #e3e8f2; border: 1px solid var(--bot-line);
+  border-radius: 8px; padding: 8px 10px; font-size: 15px; font-weight: 700; text-transform: uppercase; }
+.bot-quick-go { background: #22e0e0; color: #04161a; border: 0; border-radius: 8px; padding: 8px 14px;
+  font-size: 13px; font-weight: 800; cursor: pointer; }
+.bot-quick-go:disabled { opacity: 0.45; cursor: default; }
+@media (max-width: 760px) {
+  .bot-quick-trade input { flex: 1 1 90px; min-width: 0; }
+  .bot-quick-go { flex: 1 1 100%; }
+}

@@ -23,7 +23,16 @@ function spreadService() {
   };
 }
 
+// "Scan matches only" starts ticked (MomxScannerPanel.jsx useState(true), since
+// f3d4c8ff 2026-09-27), so whenever nothing passes the bull scan - every night
+// and weekend - the live board shows no rows at all, only "Untick 'Scan matches
+// only' to see the whole list". Untick it, as the trader would, so the Spread
+// column is checked on the whole list whatever the scan says today. The box is
+// screen state only (no request), so the read-only harness is unaffected.
 async function boardRows(page, minimum = 1) {
+  const matchesOnly = page.locator(VIEW).getByLabel("Scan matches only");
+  await matchesOnly.waitFor({ state: "visible", timeout: 60_000 });
+  await matchesOnly.setChecked(false);
   await page.waitForFunction(([selector, wanted]) => document.querySelectorAll(selector).length >= wanted, [ROW, minimum], { timeout: 120_000 });
   return page.locator(ROW).evaluateAll((rows) => rows.map((row) => /^[A-Z][A-Z0-9.\-]{0,9}/.exec(
     (row.querySelector('td[data-col="symbol"]')?.innerText || "").trim(),
@@ -94,7 +103,7 @@ e2eTest("tapping a Spread cell opens its explanation and does not open the ticke
     const detail = await dialog.locator(".momx-tag-explain-detail").innerText();
     assert.match(detail, /^Spread: Avoid/);
     assert.match(detail, /Avoid because an at-the-money option under \$3 is \$0\.30\+ wide\./);
-    assert.equal(await app.page.locator(".command-context h1").innerText(), "MomX Scanner", "the tap must not navigate away");
+    assert.equal(await app.page.locator(".command-context h1").textContent(), "MomX Scanner", "the tap must not navigate away");
     await dialog.locator('button[aria-label="Close"]').click();
     await app.page.waitForFunction(() => !document.querySelector(".momx-tag-explain"));
     assert.deepEqual(app.pageErrors, []);

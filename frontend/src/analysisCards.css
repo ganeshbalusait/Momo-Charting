@@ -1,0 +1,81 @@
+/* Analysts and Technical analysis cards (2026-11-11): the chat's ticker report and the Long Term ticker detail.
+   The app's own dark look; everything shrinks to a phone's width with no sideways scroll. */
+
+.ta-card, .an-card { display: grid; gap: 8px; min-width: 0; max-width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid rgba(92, 92, 103, .5); border-radius: 12px; background: #15151a; color: #e6e6ec; }
+.ta-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.ta-head b { color: #fff; font-size: 14px; }
+.ta-time, .ta-foot, .an-based { margin: 0; color: #9a9aa6; font-size: 11px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* Technical analysis */
+.ta-pills { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.ta-pill { display: inline-flex; align-items: center; gap: 4px; min-height: 30px; padding: 3px 10px; border: 1px solid transparent; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 800; cursor: pointer; }
+.ta-pill.is-down { background: rgba(239, 68, 68, .14); color: #f87171; }
+.ta-pill.is-up { background: rgba(34, 197, 94, .14); color: #4ade80; }
+.ta-pill.is-flat { background: rgba(156, 163, 175, .14); color: #c4c4cc; }
+.ta-pill.is-on { border-color: currentColor; }
+.ta-pill:focus-visible, .ta-frames button:focus-visible, .mini-mark:focus-visible { outline: 2px solid #22d3ee; outline-offset: 2px; }
+.ta-verdict { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 10px; min-width: 0; }
+.ta-verdict > b { font-size: 16px; }
+.ta-verdict .is-down { color: #f87171; } .ta-verdict .is-up { color: #4ade80; } .ta-verdict .is-flat { color: #c4c4cc; }
+.ta-strength { display: grid; grid-template-columns: repeat(4, minmax(0, 34px)); gap: 3px; }
+.ta-strength i { height: 6px; border-radius: 3px; background: #2a2a31; }
+.ta-strength i.is-down { background: #ef4444; } .ta-strength i.is-up { background: #22c55e; } .ta-strength i.is-flat { background: #9ca3af; }
+.ta-reason { grid-column: 1 / -1; margin: 0; color: #d7d7de; font-size: 12.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.ta-frames { display: inline-flex; justify-self: start; gap: 2px; padding: 2px; border-radius: 8px; background: #0f0f12; }
+.ta-frames button { min-height: 28px; padding: 2px 12px; border: 0; border-radius: 6px; background: transparent; color: #9a9aa6; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.ta-frames button.is-on { background: #24242a; color: #fff; }
+
+/* The mini chart: read only, markers laid over it */
+.mini-chart { position: relative; display: grid; gap: 4px; min-width: 0; }
+.mini-chart-canvas { position: relative; width: 100%; min-width: 0; overflow: hidden; }
+.mini-chart-marks { position: absolute; inset: 0 0 auto 0; z-index: 3; height: 0; pointer-events: none; }
+.mini-mark { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; padding: 0; border: 0; background: var(--mark); pointer-events: auto; cursor: pointer; }
+.mini-mark::after { content: ""; position: absolute; inset: -8px; }   /* a bigger target for a finger */
+.mini-mark.is-dot { border-radius: 50%; }
+.mini-mark.is-square { border-radius: 2px; }
+.mini-mark.is-diamond { width: 10px; height: 10px; margin: -5px 0 0 -5px; transform: rotate(45deg); }
+.mini-mark.is-earnings { width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 4px; background: #2a2a31; color: #fff; font: 800 10px/16px system-ui, sans-serif; text-align: center; }
+.mini-mark[aria-pressed="true"] { box-shadow: 0 0 0 2px #fff; }
+.mini-chart-pick { min-height: 16px; margin: 0; color: #9a9aa6; font-size: 11.5px; overflow-wrap: anywhere; }
+.mini-chart-pick b { color: #fff; }
+
+/* Analysts */
+.an-gauge { position: relative; width: min(240px, 100%); justify-self: center; }
+.an-gauge svg { display: block; width: 100%; height: auto; }
+.an-middle { position: absolute; left: 0; right: 0; bottom: 4%; display: grid; justify-items: center; gap: 0; }
+.an-middle small { color: #9a9aa6; font-size: 11px; }
+.an-word { font-size: 16px; }
+.an-word.is-up { color: #4ade80; } .an-word.is-down { color: #f87171; } .an-word.is-flat { color: #c4c4cc; }
+.an-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 3px 14px; margin: 2px 0 0; padding: 0; list-style: none; }
+.an-counts li { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; white-space: nowrap; }
+.an-counts li i, .an-legend i { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 2px; }
+.an-counts li b { margin-left: auto; color: #fff; font-variant-numeric: tabular-nums; }
+.an-counts li span { width: 34px; color: #9a9aa6; text-align: right; font-variant-numeric: tabular-nums; }
+.an-sub { color: #fff; font-size: 12.5px; }
+.an-target, .an-months { display: grid; gap: 6px; min-width: 0; }
+.an-bar { position: relative; height: 14px; margin: 0 7px; }
+.an-track { position: absolute; left: 0; right: 0; top: 5px; height: 4px; border-radius: 2px; background: linear-gradient(90deg, #ef4444, #9ca3af, #22c55e); opacity: .55; }
+.an-dot, .an-today { position: absolute; top: 1px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #e6e6ec; }
+.an-dot.is-average { background: #22d3ee; }
+.an-today { top: -2px; width: 4px; height: 18px; margin-left: -2px; border-radius: 2px; background: #fbbf24; }
+.an-marks { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; font-size: 11px; color: #9a9aa6; }
+.an-marks span { display: grid; gap: 1px; min-width: 0; }
+.an-marks b { color: #fff; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.an-marks em { font-style: normal; font-variant-numeric: tabular-nums; }
+.an-marks .is-up { color: #4ade80; } .an-marks .is-down { color: #f87171; }
+.an-month-row { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
+.an-month { display: grid; justify-items: center; gap: 3px; flex: 1 1 0; min-width: 0; max-width: 42px; }
+.an-stack { display: flex; flex-direction: column; justify-content: flex-end; width: 100%; height: 56px; border-radius: 3px; overflow: hidden; background: #1d1d23; }
+.an-stack i { display: block; width: 100%; }
+.an-month small { color: #9a9aa6; font-size: 10.5px; }
+.an-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; color: #9a9aa6; font-size: 10.5px; }
+.an-legend span { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Long Term ticker detail: the long-term view */
+.long-term-view { display: grid; gap: 8px; min-width: 0; margin: 8px 0; }
+.long-term-view h4 { margin: 0; }
+.long-term-view-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 10px; min-width: 0; align-items: start; }
+
+@media (max-width: 760px) {
+  .an-marks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

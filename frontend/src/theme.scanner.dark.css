@@ -856,7 +856,7 @@
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-setup.is-none .momx-setup-letter {
-  color: #6b7080;
+  color: #8e8e93;
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-setup-mom {
@@ -925,7 +925,7 @@
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-columns-row.is-hidden .momx-columns-name {
-  color: #6b7080;
+  color: #8e8e93;
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-columns-move {
@@ -1286,7 +1286,7 @@
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-newscol-ai.is-none {
-  color: #64748b;
+  color: #8e8e93;
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-newscol-ai.is-flat {
@@ -1302,7 +1302,7 @@
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-newscol.is-stored:not(.is-fresh) {
-  color: #6b7280;
+  color: #8e8e93;
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-newsfeed-health {
@@ -1671,5 +1671,5 @@
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel td.momx-spreadcol.is-none {
-  color: var(--momx-muted, #6b7280);
+  color: var(--momx-muted, #8e8e93);
 }

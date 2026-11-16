@@ -27,6 +27,11 @@ from typing import Any, Iterable, Mapping
 #: Down this many dollars on the day -> no new paper buys until tomorrow. The
 #: same number the Scorecard's "Daily loss limit" check uses (bot_desk.LIMITS).
 DAILY_LOSS_STOP = 500.0
+#: OFF since 2026-11-10. The stop was my default; it held both paper accounts by
+#: 9:40 AM and they missed AVGO. His ruling: "Why you set daily set loss limit.
+#: Trade as much as you can". The Scorecard still MEASURES a day worse than
+#: -$500 (its "Daily loss limit" check); nothing holds a buy for it any more.
+DAILY_STOP_ON = False
 #: A buy still unconfirmed after this long is "stuck" (a normal buy resolves in
 #: about 6 minutes: 2 minutes at the mid, then two re-sends at the ask).
 STUCK_SECONDS = 600.0
@@ -79,6 +84,35 @@ def not_found(exc: BaseException) -> bool:
     """True when the broker answered that it has no such order (Alpaca 40410000)."""
     text = str(exc).lower()
     return "40410000" in text or "order not found" in text
+
+
+def refusal_reason(error: Any) -> str:
+    """What the broker said when it refused a buy, in plain words. On 2026-11-10 Paper 3's
+    broker account ran out of cash and 22 buys were refused; the app only said "never reached
+    the broker" because the broker's answer was thrown away."""
+    text = " ".join(str(error or "").split())
+    low = text.lower()
+    if "insufficient" in low or "buying power" in low or "buying_power" in low:
+        return "not enough buying power in the paper account"
+    # Alpaca answers {"code": ..., "message": "..."}: the message is the readable part.
+    start = text.find("{")
+    if start >= 0:
+        try:
+            said = json.loads(text[start:text.rfind("}") + 1]).get("message")
+        except (ValueError, AttributeError):
+            said = None
+        if said:
+            return str(said)[:140]
+    return text[:140]
+
+
+def broker_answered(exc: BaseException) -> bool:
+    """True when the error is the broker's own answer (an HTTP status or an Alpaca error code), not a
+    network failure on the way - only then can a missing order be called a refusal."""
+    if getattr(exc, "status_code", None) or getattr(exc, "code", None):
+        return True
+    text = str(exc).lower()
+    return '"code"' in text or "insufficient" in text or "buying power" in text or "forbidden" in text
 
 
 def carried(r: Mapping, day: str) -> bool:

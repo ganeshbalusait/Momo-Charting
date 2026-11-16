@@ -52,6 +52,49 @@ async function strip(card) {
   return { text, open: price("O"), low: price("L"), close: price("C") };
 }
 
+// The daily seed (2026-11-13): the saved 11-11 daily row was built from the same unfiltered minutes and kept
+// low 711.4601, so the D candle (and W/M, the week low, pivots) still reached $711 after the minute candles
+// had dropped the print. The minute tape here starts the evening before, so 11-11 is a whole day on it.
+const et = (day, hour, minute) => Date.UTC(2026, 10, day, hour + 5, minute) / 1000;
+const wholeDay = [
+  { time: et(10, 19, 0), open: 754.4, high: 754.6, low: 754.3, close: 754.5, volume: 1000 },
+  { time: et(11, 10, 0), open: 755, high: 755.2, low: 753.98, close: 755.1, volume: 5000 },
+  ...spy,
+];
+const seed = [
+  { time: et(9, 0, 0), open: 739.93, high: 754.11, low: 734.1, close: 753.79, volume: 101189 },
+  { time: et(10, 0, 0), open: 753.71, high: 755.31, low: 751.42, close: 754.42, volume: 66143 },
+  { time: et(11, 0, 0), open: 754.5, high: 762.51, low: 711.4601, close: 756.81, volume: 28934859 },
+];
+const dailyChart = (read) => (/historyStatus=true/.test(read.search)
+  ? { json: { symbol: "AAPL", historyReady: true, refreshing: false, hasBars: true, warming: false } }
+  : { json: {
+    symbol: "AAPL", source: "e2e fixture", bars: wholeDay, fineStudyBars: fiveMinute(wholeDay), studyBars: [], dailyBars: seed,
+    historyLoading: false, refreshing: false, error: "", tapeStale: false, updatedAt: new Date().toISOString(),
+  } });
+
+for (const [name, extra] of [["desktop", {}], ["phone", { viewport: PHONE }]]) {
+  e2eTest(`${name}: on D the 11-11 daily candle no longer reaches down to $711`, async () => {
+    await withApp(chartAppOptions({ ...extra, fakeReads: { ...options().fakeReads, "GET /api/oi-finder-chart": dailyChart } }), async (app) => {
+      let card = await chartCard(app.page, "AAPL");
+      if (extra.viewport) {
+        await card.locator('select.oi-finder-timeframe-select[aria-label="Chart timeframe"]').selectOption("D");
+      } else {
+        await card.locator('.oi-finder-timeframes[aria-label="Chart timeframe"] button', { hasText: /^D$/ }).click();
+      }
+      card = await chartCard(app.page, "AAPL", { timeframe: "D" });
+      let shown = await strip(card);
+      for (let tries = 0; tries < 30 && !(shown.close > 700 && / · D/.test(shown.text)); tries += 1) {
+        await app.page.waitForTimeout(500);
+        shown = await strip(card);
+      }
+      assert.match(shown.text, / · D/, `the strip is not on D: ${shown.text}`);
+      assert.ok(shown.low > 750, `the 11-11 daily candle still reaches down to ${shown.low}: ${shown.text}`);
+      noPageErrors(app);
+    });
+  });
+}
+
 for (const [name, extra] of [["desktop", {}], ["phone", { viewport: PHONE }]]) {
   e2eTest(`${name}: the bad $711.46 print does not draw a candle down to $711`, async () => {
     await withApp(options(extra), async (app) => {

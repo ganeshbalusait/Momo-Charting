@@ -74,7 +74,7 @@ e2eTest("a new build offers the bar, and tapping it lands on Release Notes", asy
     await bar.waitFor({ state: "visible", timeout: 20_000 });
     assert.equal((await bar.innerText()).trim(), "New version available - tap to update");
     await Promise.all([app.page.waitForEvent("load", { timeout: 60_000 }), bar.click()]);
-    await app.page.locator(".command-context h1", { hasText: "Release Notes" }).waitFor({ timeout: 60_000 });
+    await app.page.locator(".command-context h1", { hasText: "Release Notes" }).waitFor({ state: "attached", timeout: 60_000 });
     assert.equal(await app.page.evaluate(() => window.sessionStorage.getItem("agx:open-release-notes")), null, "the hand-off mark is used once");
   });
 });

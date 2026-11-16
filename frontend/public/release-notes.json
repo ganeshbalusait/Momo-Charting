@@ -2,6 +2,13 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-15T23:48:50-05:00",
+      "heading": "Everything saved and backed up",
+      "items": [
+        "Nothing new on screen. The features from the last few days that were already live but not yet saved (Ask chat answers, BOT Research and Ticker trader, My Trading, chart and scanner fixes; see the entries below) are now saved in the app's history and backed up to GitHub."
+      ]
+    },
+    {
       "at": "2026-11-15T22:09:01-05:00",
       "heading": "ROI and Odds stay on when you change tickers",
       "items": [
@@ -57,6 +64,17 @@
       ]
     },
     {
+      "at": "2026-11-15T02:31:34-05:00",
+      "heading": "Ask chat: \"Can we predict the price?\" now gets a real answer",
+      "items": [
+        "Asking the chat to predict a price (\"can we predict the price\", \"where will NVDA go tomorrow\", \"will SPY go up\", \"how high can TSLA go\") used to show unrelated release notes. It now says plainly that no one can predict a price, then shows the range the options market is pricing (expected move, low to high) and the biggest call and put walls for that ticker.",
+        "Short and loose wording works too: \"where SPY go tomorrow\", \"SPY tomorrow?\", \"NVDA next week\", \"what next for SPY\", \"which way is NVDA going\".",
+        "The AI now reads loosely worded questions for meaning, not exact words: when the app's own word rules are only guessing, the AI decides what you meant, and it can now choose the price-range answer for any wording. If the AI is slow or resting, you still get the app's own answer.",
+        "With no ticker in the question it uses the ticker you are looking at. Name one to change it, for example \"predict AAPL\".",
+        "Still no forecasts and no buy or sell advice: the numbers come from the saved option chain, with the time it was saved."
+      ]
+    },
+    {
       "at": "2026-11-14T21:45:50-05:00",
       "heading": "New look: Midnight (deep navy, Mona Sans)",
       "items": [
@@ -66,11 +84,33 @@
       ]
     },
     {
+      "at": "2026-11-14T17:18:42-05:00",
+      "heading": "Menu order, two buttons you can reach again, exact chart zoom",
+      "items": [
+        "Menu: Long Term sits directly under Bot again, with My Trading right below it.",
+        "Mag7 Watchlist page: a new \"Scan MAG7 OI\" button at the top starts the MAG7 open-interest scan (it used to be on a page you could not open).",
+        "Stock Paper Trading: the status banner has a Start Stock Bot / Pause Stock Bot button. It controls the paper stock bot only.",
+        "Charts: a zoom made with the mouse wheel or by dragging comes back at exactly the same width after you visit another timeframe. After Return to latest, the same candles and the same empty space ahead come back too. A zoom followed straight away by a timeframe switch is the zoom that is remembered.",
+        "Scanner: the age of an older headline in the News column (for example \"10h\") is a readable grey instead of a very faint one. A switched-off column name in the Columns dialog is readable too."
+      ]
+    },
+    {
       "at": "2026-11-14T16:56:34-05:00",
       "heading": "Option chain panel new look, more titles in normal letters",
       "items": [
         "Option chain panel: Chain / High OI is now an iPhone-style switch (grey track, the chosen side lighter with white text), and the expected move, EM and OI numbers sit on one rounded card. Nothing moved.",
         "More titles in normal letters: the News toolbar (Watchlist news feed · info only), Option target ROI, the calendar footer (Live calendar / Calendar unavailable), and the small labels on ROI Calc, News search and Release Notes."
+      ]
+    },
+    {
+      "at": "2026-11-14T14:53:28-05:00",
+      "heading": "Charts: no fake weekend candle, better zoom and pan arrows",
+      "items": [
+        "On weekends and at night a chart no longer draws a fake flat candle at the current time and then keeps reloading itself. This also fixes big screen refetching and the odd zoom after switching timeframes.",
+        "The zoom-in button keeps the newest candle on screen (it used to hide the last dozen candles).",
+        "The pan-forward arrow is greyed out when there is nothing newer to see, on a fresh chart and after Return to latest. It no longer walks into the blank space ahead of the newest candle; Return to latest and the scrollbar still do.",
+        "A zoom set with the buttons comes back exactly after you visit another timeframe. A zoom after Return to latest no longer comes back showing the whole chart.",
+        "Morning brief and scanner news: if the saved list of company names is more than a day old and cannot be refreshed, the old list is still used, so a headline that names the company is no longer marked \"not about\" its ticker."
       ]
     },
     {
@@ -87,6 +127,16 @@
       "heading": "iPhone Home Screen: the real app icon",
       "items": [
         "An app added to the iPhone Home Screen showed a plain letter A, because the phone fetches the icon without your sign-in and was turned away. The icon is now built into the app itself. To get it, delete the A icon, open the app in Safari, tap Share and then Add to Home Screen."
+      ]
+    },
+    {
+      "at": "2026-11-14T08:17:46-05:00",
+      "heading": "Chat understands many more ways to ask why",
+      "items": [
+        "Ask in your own words: \"why spy bleeding\", \"why nvda pumped\", \"why is tsla mooning\", \"why qqq weak\", \"what's up with nvda\", \"what's wrong with nvda\", \"how come spy is down\", \"what made spy fall\", \"what's driving the market\", \"reason for spy drop\", \"explain spy drop\". Before, these got no proper answer.",
+        "More times of day: \"at lunch\" / \"midday\" (11:30 AM to 1:30 PM), \"into the close\" / \"power hour\" / \"end of day\" (the last hour), \"gap down\" / \"gap up\" (the open against the previous close), and a clock time such as \"at 10am\" (15 minutes either side). Asked about yesterday or Friday, it says which day: \"Friday at lunch\", \"Thursday morning\".",
+        "When a morning gapped one way and then turned, the answer tells both halves, for example: \"NVDA was down 5.10% from Wednesday's close Thursday morning. It opened 13.15% lower, then rose 9.27% from the open.\"",
+        "If the question gets the direction wrong (\"why did spy gap down\" when it gapped up), the answer says what really happened."
       ]
     },
     {
@@ -122,6 +172,32 @@
       ]
     },
     {
+      "at": "2026-11-14T05:31:39-05:00",
+      "heading": "Chat: \"why did it move\" now gives a short answer with real reasons",
+      "items": [
+        "Ask \"Why did SPY go down this morning?\" (or any ticker, any time) and the chat answers in two short sentences, then up to 3 Key reasons, each with its news source and time. Example for Friday: SPY fell 1.36% from 9:30 to 12:00, the biggest drags were NVDA, AVGO and GOOGL, and the reasons were Nvidia's CEO resigning and a hot inflation report pushing Treasury yields up.",
+        "Every news link now has a tag: green Positive, red Negative or grey Neutral.",
+        "\"This morning\" now means 9:30 to 12:00 of the right day: today during market hours (so far), Friday when you ask at night or on the weekend. \"This afternoon\", past days, after hours and single stocks work the same way. Market holidays are skipped.",
+        "SPY is no longer compared with itself (\"The whole market moved the same way\" is gone). The big stocks that pulled it down are named instead.",
+        "The numbers behind the answer are under \"Show the numbers\". News search now covers the evening before (and the weekend before a Monday).",
+        "Only you see an AI-written answer. Everyone else gets the same layout built from the prices and headlines. Either way it is labelled \"Not confirmed\"."
+      ]
+    },
+    {
+      "at": "2026-11-14T05:00:42-05:00",
+      "heading": "Fixes found by the full test run",
+      "items": [
+        "Scanner: a row with signals but no ticker name no longer blanks the whole board. \"Why is it moving?\" in a news popup now waits for the AI's answer instead of saying \"No answer.\" straight away.",
+        "Charts: with Link ticker turned off (all charts the same colour), typing a ticker changes only the chart you are in. A zoom you set on 5m is still there after you look at 15m and come back. The deep history for a chart is downloaded once, not twice.",
+        "News Feed: there is a Search box again, at the start of the filter row (the old one at the top was hidden by the new look). The mouse wheel now scrolls the News Feed and the Earnings Calendar to the bottom.",
+        "Earnings Calendar: a missing EPS estimate shows \"--\", not a fake $0.00.",
+        "Paper trading: 1st Profit Target % shows your saved target, not the stop %. The option banner no longer always says \"orders disabled\": it says \"Alpaca paper orders on\" while the bot runs in Auto mode, \"orders wait for your approval\" in Human mode, and \"orders paused\" or \"orders off\" otherwise. On a phone the three option settings cards stack instead of being squeezed side by side.",
+        "Bot: switching between Winners by period and Day by day no longer downloads the 180-day history again.",
+        "Phone: a small dot on More shows when new release notes arrived, and on Release Notes inside the More sheet.",
+        "Settings: \"keys saved\" now shows under the Save button you pressed. A failed Run check no longer leaves the old rows under the error. A member's own Alpaca key lights the ALPACA lamp on every page. A member's browser that remembered an owner-only page (Bot, Paper Trading) now opens Charts instead."
+      ]
+    },
+    {
       "at": "2026-11-13T23:50:34-05:00",
       "heading": "New app icon",
       "items": [
@@ -136,11 +212,26 @@
       ]
     },
     {
+      "at": "2026-11-13T17:24:46-05:00",
+      "heading": "BOT Research: a Trade a ticker box at the top",
+      "items": [
+        "Research now has a \"Trade a ticker\" box right under All trades / Ticker trader: type the ticker, pick Call or Put, and the Ticker trader opens with both filled in. Tap Trade there to start the simulated trade."
+      ]
+    },
+    {
       "at": "2026-11-13T17:23:00-05:00",
       "heading": "Option chain High OI: calls and puts in the new look",
       "items": [
         "In the High OI list (Options page and the chain panel next to the charts) calls are now cyan and puts magenta, with softer row shading, rounded open-interest bars and a cyan or magenta edge on the leading wall.",
         "Rows your sheet marks green or red keep those colours, and the Chain tab keeps its TOS colour key. Every number and row is where it was."
+      ]
+    },
+    {
+      "at": "2026-11-13T16:30:45-05:00",
+      "heading": "Charts: no more $711 SPY low on daily, weekly and monthly",
+      "items": [
+        "A bad after-hours print that the minute candles already ignore no longer shows up in the daily, weekly or monthly candles, the week low, yesterday's high/low and pivots, or the Ask chat's mini chart (SPY showed a $711.46 low on 11-11). Real after-hours moves still count.",
+        "Ticker trader journal opens with one read instead of two."
       ]
     },
     {
@@ -156,6 +247,16 @@
       "items": [
         "The Options page has the new dark Apple-style look: the header in a rounded card, a solid blue Go button, the chosen ticker as a blue pill, Chain / Heatmap / Flow / C/P Levels / News as an iPhone-style switch, and the chain in a rounded card.",
         "Every number, colour bar and row of the option chain is exactly as before."
+      ]
+    },
+    {
+      "at": "2026-11-13T09:57:44-05:00",
+      "heading": "Ticker trader journal, My Trading, and after-hours answers in Ask",
+      "items": [
+        "Ticker trader: a Journal for each ticker and for all of them together - win rate, average win and loss, profit factor, your balance over time, daily P/L bars, a month calendar, and what to improve from the numbers. Each trade opens a card with its Entry, Stop and targets, what was hit and when, and a notes box.",
+        "Ticker trader: an AI review that only you see, at most once a day per ticker, labelled 'can be wrong'. Resetting a ticker never asks the AI again that day.",
+        "New page My Trading (owner only): your real Schwab option trades, read once a day after 4:30 PM ET and read-only - win rate, habits that cost money, spreads paid, you against the paper bots, and the week's market events.",
+        "Ask: 'why is NVDA down' after the close or before the open now shows the regular session, after hours and premarket separately, with SPY, QQQ and the sector in the same session. An old saved chart is named as old instead of being called current."
       ]
     },
     {
@@ -190,6 +291,28 @@
         "The MomX Scanner has a new dark look: the Inter font, a near-black page, the board in one rounded dark card, iPhone-style Live / History switches and rounded buttons. Your cyan, magenta and orange signal colours and the thinkScript cells are exactly as before, and the same number of rows fits on screen.",
         "Sectors are now cards: each card shows the sector, how many are up, its average, and every ticker in it with its % move. HOT sectors have an orange outline. Click a card to show only that sector, as before.",
         "The Dark / Light switch is gone: the app is dark only. If you had picked Light, it opens dark again."
+      ]
+    },
+    {
+      "at": "2026-11-13T08:32:41-05:00",
+      "heading": "Ticker trader: type a ticker, pick Call or Put, the bot trades the chart",
+      "items": [
+        "BOT workspace > Research has a new Ticker trader button next to All trades. Type a ticker, pick Call or Put (Call is the default) and an account size ($2K, $5K, $10K, $100K or any amount from $500 to $1,000,000), and tap Trade.",
+        "The bot takes the contract, Entry (the ask), Stop and T1, T2, T3 from the chart's own plan. It sells one contract at each target, moves the stop to break-even after T1, sells everything if the stock trades through the stop, and closes at 3:50 PM. At most 10% of the account goes into one trade.",
+        "Simulated inside the app: buys at the ask and sells at the bid from live quotes, and no order goes to any broker. It only uses a quote from today that is under a minute old, so it never buys on yesterday's closing price at the open.",
+        "Each ticker shows its balance, the open trade as a ladder (T3, T2, T1, Entry, Stop), every trade with its reason, and Stop, Trade again and Reset (pick a new size) buttons."
+      ]
+    },
+    {
+      "at": "2026-11-13T06:28:42-05:00",
+      "heading": "Bots trade the chart's plan: Entry, Stop, T1, T2, T3",
+      "items": [
+        "The two paper bots and the Bot's own tracked trades now follow the same Entry, Stop and target lines the chart draws. They buy at the option's ask, from 9:30 as before (right away if the setup is there at the open, otherwise after it holds 5 minutes).",
+        "Stop: everything is sold the moment the stock trades through the chart's stop price (where the option is down 50%). The option's own -50% is the backup and no longer waits. A stop seen while another sale is working is remembered and still sells.",
+        "Targets: one contract is sold at each of T1 (half the expected move), T2 (the full move) and T3 (the biggest open-interest strike beyond it). After T1 the stop moves to break-even; after T2 it moves to T1. The 21 EMA exit and the 3:50 PM close stay.",
+        "The Scorecard, All trades and Paper pages show Entry, Stop, T1, T2 and T3 for every trade and say in plain words why it closed. The new plan starts a fresh evaluation; Nov 10 to 12 is kept as an Earlier period.",
+        "This starts when the servers are next restarted. Until then the bots trade the older plan and the Scorecard says so.",
+        "Ask chat: answers are laid out as rows (highlighted first line, coloured labels, each headline in its own block) instead of one paragraph."
       ]
     },
     {
@@ -237,6 +360,18 @@
         "The Entry box names both contracts and their prices, e.g. 'Entry 217.30  222.5C $1.31 · 212.5P $1.10'.",
         "Call / Put now choose which side you are editing; each side keeps its own strike, fill and target. The card lists both sides' targets and Broker orders.",
         "Overnight, when the option prices still belong to the close (the stock moved or printed a bad tick), the card warns 'Option prices were quoted with … near $X' and the Entry box shows '⚠ quotes old' - the numbers reprice at the open."
+      ]
+    },
+    {
+      "at": "2026-11-11T23:17:53-05:00",
+      "heading": "Ask chat: like a search engine, with stock analysis",
+      "items": [
+        "The Ask button is on every page, for every signed-in user. Ask anything and get the app's own numbers with buttons that take you to the exact page, ticker, day and time. Suggested questions stay above the ask box, and typing shows ready-made questions as you go.",
+        "\"Why is NVDA down\" shows the move against SPY, QQQ and the ticker's sector, then the app's saved headlines, then Google News with article links, and the likely reasons by category from the headlines (marked not confirmed).",
+        "\"NVDA\" or \"full report on NVDA\" gives every section the app has: scanner, your indicators (CALL/PUT signals, 9/21/50 EMA, SQZ, Skittles, ADX, RVOL, levels; no VWAP), options (expected move, walls), fundamentals, sentiment, analyst ratings and price targets. Short, Mid and Long term each get a Bullish/Bearish verdict with a strength bar and a small chart of your signals.",
+        "\"Nvda today scanner\" opens the whole day on Mag7 and Watchlist in the scanner's own columns. \"Should I buy\" shows what each of the app's rules says, never a buy or sell call. Definitions come from a 157-term glossary.",
+        "Only you (the owner) also get a short AI summary under the answer, labelled \"can be wrong\". Regular users never see it, and they never see Bot, paper or trade answers.",
+        "Long Term page: an Analysts card (rating gauge and price-target range) and a Technical analysis card for each ticker."
       ]
     },
     {
@@ -316,6 +451,24 @@
       ]
     },
     {
+      "at": "2026-11-11T00:26:00-05:00",
+      "heading": "Scanner: Confirm L1-L3 shows after hours",
+      "items": [
+        "After the regular session the Live Setup column now shows Confirm L1, L2 or L3 for each ticker, judged at that ticker's last candle. Before, every row showed nothing once its candles were 10 minutes old.",
+        "A level from an old candle is dimmed. Hover it to see the candle's time and the Setup types it was judged on. The Confirm L1+, L2+ and L3 filters keep the same rows the column shows.",
+        "From 09:30 to 16:00 ET the rule stays strict, so a ticker that has fallen behind shows no level. A last candle more than 4 days old also shows no level. The paper bots and alerts never use these after-hours levels.",
+        "Fixed: tickers drawn from the board saved on your device lost their Confirm tag until the next scan arrived."
+      ]
+    },
+    {
+      "at": "2026-11-10T23:38:00-05:00",
+      "heading": "Sectors: every ticker shows its %",
+      "items": [
+        "Every box on the Sectors page now shows the day's % under the ticker. Before, smaller boxes showed only the ticker, up to about half of them on a phone.",
+        "Works in both the RH and TOS looks, on a sector's own Map too. The smallest companies get slightly wider boxes so the number fits. On a narrow screen the TOS look switches to rows."
+      ]
+    },
+    {
       "at": "2026-11-10T18:59:16-05:00",
       "heading": "Fast Options heatmap is compact",
       "items": [
@@ -325,12 +478,130 @@
       ]
     },
     {
+      "at": "2026-11-10T16:09:16-05:00",
+      "heading": "Bots trade your manual method",
+      "items": [
+        "The paper bots now trade the way you trade by hand. A buy needs: the ticker near the top of its scanner board by H/L, 3+ setups with a confirm, a clean 5-minute chart, and then 3 contracts with high OI as the target.",
+        "Top of the board: Mag7 top 3 and Watchlist top 7 by the H/L column (highest H/L for calls, lowest for puts). From 9:30 to 9:45 being in the top is enough; from 9:45 the ticker must stay there for 5 minutes.",
+        "Confirm L1 to L3 is now any of RVOL, SQZ or Skittles: L1 = one of them, L2 = two, L3 = all three, always with 3+ setup types. RVOL counts when it is green or cyan (rising is no longer needed). The scanner's Confirm column uses the same rule.",
+        "Chart check: price on the right side of the 5-minute 21 EMA, and no pivot, previous-day or premarket level within 0.5% ahead.",
+        "Every option up to $8 is bought 3 contracts at a time, so the 2 + 1 exit split always works. A buy the paper account cannot pay for is skipped instead of being refused by Alpaca.",
+        "Re-entry: after a trade closes, the bot can buy the same ticker again when its Level signal goes away and comes back - up to 3 times a ticker a day.",
+        "All trades and the Ask chat say why a signal was not bought: not in the top by H/L, the chart check, or not enough buying power."
+      ]
+    },
+    {
+      "at": "2026-11-10T14:38:29-05:00",
+      "heading": "Bots no longer sell on a VWAP cross",
+      "items": [
+        "Paper 3 and Paper 5 no longer sell when a 5-minute candle closes across VWAP. A trade now ends early only on a 5-minute close past the 21 EMA (or the +100% / -50% / high-OI steps); otherwise it is held to the close.",
+        "Today's NVDA put (bought 9:35) was sold at 10:00 on a bounce above VWAP for a loss, before NVDA fell to about 167. That trade would have stayed open under the new rule unless a candle closed above the 21 EMA.",
+        "The Research page scores new Bot trades the same way. Older trades keep the exit they had."
+      ]
+    },
+    {
       "at": "2026-11-10T13:33:32-05:00",
       "heading": "Removing a ticker from My Watchlist now reaches the scanner",
       "items": [
         "Removing a ticker from My Watchlist now drops it from the scanner's Watchlist within a refresh - no restart needed. Adding one works the same way.",
         "Before this, the scanner kept the list it had when it started, so a deleted ticker (KVUE today) stayed on the board and showed 'No data came back' until the scanner restarted.",
         "If the watchlist file is ever empty or can't be read, the scanner keeps the list it already has instead of going blank."
+      ]
+    },
+    {
+      "at": "2026-11-10T13:02:38-05:00",
+      "heading": "Fill likelihood on each paper buy, like Robinhood",
+      "items": [
+        "Each paper buy now carries a High / Medium / Low fill label, like Robinhood's order screen. The bot still buys at the mid; the label never changes the price or stops a buy.",
+        "The label comes from the option's spread when the order is sent: under 5% of the price is High, 5-15% Medium, over 15% Low. In past orders, tight spreads filled at the mid far more often.",
+        "All trades shows the label next to each order, and a line on top shows how each label really did (for example 'High fill: 18 of 25 filled at the mid'). Older orders are labelled from the spread saved on them where there is one."
+      ]
+    },
+    {
+      "at": "2026-11-10T12:37:45-05:00",
+      "heading": "Scorecard All trades now includes the Research signals",
+      "items": [
+        "All trades on the Scorecard now also lists every Level 1 / 2 / 3 signal of the day that this paper bot sent no order for - the same signals as Research 'All trades' - under a new 'Not ordered' button.",
+        "Each one says why it was not ordered when the records show it: the daily loss stop was holding buys, outside the buy windows, the option was under $0.05 or had no bid, or the ticker was already ordered on an earlier signal. Otherwise it says the records do not say why.",
+        "It also shows how the 0.20-delta option moved at the mid since the signal (now and best). Nothing was bought, so these never count in the real totals."
+      ]
+    },
+    {
+      "at": "2026-11-10T12:30:33-05:00",
+      "heading": "Scorecard shows the real Alpaca buying power",
+      "items": [
+        "The Scorecard strip now shows each paper account's real money at Alpaca: buying power, account value and today's change, read once a minute during market hours.",
+        "It turns red with a warning when there is less than $300 to spend, because Alpaca then refuses most buys. It turns amber when the Alpaca account holds less than half of the $10,000 the Scorecard counts.",
+        "This morning Paper 3 held under $1,000 at Alpaca, which is why 22 of its buys were refused."
+      ]
+    },
+    {
+      "at": "2026-11-10T12:08:02-05:00",
+      "heading": "Paper bots: a refused buy now says why",
+      "items": [
+        "When the paper broker refuses a buy, the order now reads 'The broker refused this buy: not enough buying power in the paper account' (or the broker's own words). Before, it wrongly said the buy 'never reached the broker'.",
+        "This morning Paper 3's broker account was nearly out of cash and 22 of its buys were refused this way, including the MU put.",
+        "The All trades list on the Scorecard shows the refusal in its 'What happened' column.",
+        "Orders refused before this change keep the old wording, because the broker's answer was not saved then."
+      ]
+    },
+    {
+      "at": "2026-11-10T10:49:46-05:00",
+      "heading": "Scorecard: All trades moved to the top",
+      "items": [
+        "The All trades list is now the first card on the Scorecard, right under the Pause strip, so you see it without scrolling past the charts and the calendar."
+      ]
+    },
+    {
+      "at": "2026-11-10T10:30:15-05:00",
+      "heading": "Paper bots: no limit on open positions",
+      "items": [
+        "The limit of 8 positions open at once is gone for both paper bots. Every Level 1 / 2 / 3 signal that passes the price checks now gets an order, inside the buy windows.",
+        "Because nothing waits for a free place any more, the Rules bot and the AI bot will now take the same trades. The AI's ranking only mattered while places were limited.",
+        "Still in place: one position per ticker, your exit plan, the Pause button, and the paper broker's own buying power."
+      ]
+    },
+    {
+      "at": "2026-11-10T09:56:25-05:00",
+      "heading": "Paper bots: daily loss stop removed, no daily trade limit",
+      "items": [
+        "The $500 daily loss stop is switched off for both paper bots. This morning it held both accounts by 9:40 AM and they missed the AVGO Level signal at 9:44. A losing day no longer stops new buys.",
+        "The limit of 25 new trades a day is gone too, so the bots keep taking Level 1 / 2 / 3 signals all day inside the buy windows.",
+        "Still in place: at most 8 positions open at one time per account, your exit plan, and the Pause button.",
+        "The Scorecard strip now reads 'No daily loss stop' with today's result. The Daily loss limit check still records a day worse than -$500, but it holds nothing.",
+        "Ask: a signal missed while this morning's stop was holding is still explained by it; later ones are not blamed on it."
+      ]
+    },
+    {
+      "at": "2026-11-10T09:07:35-05:00",
+      "heading": "Scorecard: new All trades list",
+      "items": [
+        "The Scorecard now has an All trades card under the calendar: every Level signal since the fresh start, newest first, with what became of it - Open, Closed, Not filled or Waiting.",
+        "Buttons on the card show one group at a time, each with its count: All, Open, Closed, Not filled. Your choice is remembered.",
+        "A closed trade shows its real profit or loss. A trade still open shows its result so far at the last mid price, marked now (or the time of that price if it is from an earlier day). That is an estimate and is never added to the real totals.",
+        "Positions bought before the fresh start on 11-10 that are still not sold are listed too, marked as not scored. Everything else from before the fresh start stays under Research.",
+        "Calendar: the back arrow stops at the first month that has trades, and switching paper account returns to the current month.",
+        "The Scorecard no longer shows numbers more than about two minutes old when you reopen it after a break."
+      ]
+    },
+    {
+      "at": "2026-11-10T08:54:51-05:00",
+      "heading": "Scorecard now opens like a trading journal",
+      "items": [
+        "Five tiles on top: Net P&L, Trade win %, Profit factor, Day win % and Average win against average loss, each with a small gauge. All from real paper fills.",
+        "Two charts side by side: the account curve and a new Net daily P&L bar chart (cyan = a winning day, magenta = a losing day).",
+        "A month calendar: every trading day shows its real profit or loss and how many trades closed, with a total for each week and for the month. Use the arrows to look at earlier months.",
+        "A Recent trades list beside the calendar: ticker, call or put, which Level, the result and how the trade ended.",
+        "Rules bot against AI bot, the three strategies, the day / week / month journal and the eight real-money checks follow below. Nothing was removed."
+      ]
+    },
+    {
+      "at": "2026-11-10T08:42:01-05:00",
+      "heading": "Scorecard opens at once instead of sitting on 'Loading the scorecard'",
+      "items": [
+        "The Scorecard now shows the numbers from your last visit immediately, marked 'Saved numbers from ... updating', and swaps in the new ones when the server answers. Before, it stayed on 'Loading the scorecard...' for many seconds while the server was busy before the open.",
+        "The server now answers the Scorecard from its saved copy straight away and refreshes that copy in the background, so opening the page no longer makes you wait for a rebuild.",
+        "After you press Pause, Resume or Remove the page still shows the new state straight away, never the old one."
       ]
     },
     {

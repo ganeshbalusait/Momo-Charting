@@ -116,6 +116,16 @@ def test_the_grid_request_answers_one_row_per_symbol_in_order_with_profiles(sect
     assert sectors["fills"] == [SECTOR_SYMBOLS], "missing caps are filled on a background pass, scheduled once"
 
 
+def test_every_priced_row_carries_the_move_its_tile_prints(sectors):
+    """Each tile prints changePct, so no priced row may arrive without one."""
+    with running_api() as api:
+        status, body = api.get(_url(SECTOR_SYMBOLS))
+    assert status == 200, body
+    missing = [row["symbol"] for row in body["rows"] if row["lastPrice"] is not None and row["changePct"] is None]
+    assert missing == []
+    assert len(body["rows"]) == len(SECTOR_SYMBOLS)
+
+
 def test_a_second_poll_inside_five_seconds_is_served_from_the_shared_cache(sectors):
     with running_api() as api:
         api.get(_url(SECTOR_SYMBOLS))

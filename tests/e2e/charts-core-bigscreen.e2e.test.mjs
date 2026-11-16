@@ -39,9 +39,16 @@ e2eTest("big screen fills the app, its option chain hides and returns, and Exit 
 
     await page.locator('button.oi-chart-workspace-toggle[aria-label="Exit the big screen workspace"]').click();
     await page.waitForFunction((selector) => !document.querySelector(selector), `${MULTI}.is-workspace-maximized`, { timeout: 10_000 });
-    await page.waitForTimeout(500);
-    const after = await canvasBox(page);
-    assert.ok(Math.abs(after.width - before.width) <= 4 && Math.abs(after.height - before.height) <= 4,
+    // The panes shrink back over ~2.5 s after Exit (measured 2026-11-13:
+    // 458 -> 318 -> 246 px at 0.8 s steps), so a single read 0.5 s after the
+    // click caught the chart mid-way. Give it up to 8 s to settle, then compare.
+    const restored = (box) => Math.abs(box.width - before.width) <= 4 && Math.abs(box.height - before.height) <= 4;
+    let after = await canvasBox(page);
+    for (const deadline = Date.now() + 8_000; !restored(after) && Date.now() < deadline;) {
+      await page.waitForTimeout(250);
+      after = await canvasBox(page);
+    }
+    assert.ok(restored(after),
       `layout not restored: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
     assert.equal(await page.locator(`${MULTI}.layout-two-columns`).count(), 1);
     assert.deepEqual(app.pageErrors, []);

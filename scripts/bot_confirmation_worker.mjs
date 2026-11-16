@@ -21,15 +21,21 @@ for await (const line of lines) {
         const observation = tracker.observe(row, at, request.board);
         const types = scannerSetupTypes(row, at);
         const confirmation = scannerConfirmation({ ...row, _rvolObservation: observation }, at, undefined, types);
-        if (observation) contexts[symbol] = { version: 1, highestLevel: confirmation.level,
+        // His rule 2026-11-10: the level is a COUNT of RVOL / SQZ / Skittles
+        // confirms (any one = L1), so each record says which ones were on.
+        // `increasing` (RVOL rising) is kept as information only.
+        // ruleVersion 2 = the counted-OR rule (2026-11-10); records without it used the stacked rule.
+        if (observation) contexts[symbol] = { version: 1, ruleVersion: 2, highestLevel: confirmation.level,
           setupTypes: types, setupCount: types.length, publicationAt: request.publicationAt,
           historyReady: Object.keys(observation.before).length > 0,
+          confirms: confirmation.confirms, rvol: confirmation.rvol, rvolTimeframes: confirmation.rvolTimeframes,
           increasing: confirmation.increasing, sqz: confirmation.sqz, fire: confirmation.fire,
           skittles: confirmation.skittles };
         if (!confirmation.level) continue;
         if (types.length < 3) continue;
-        signals[symbol] = { version: 1, highestLevel: confirmation.level, setupTypes: types,
+        signals[symbol] = { version: 1, ruleVersion: 2, highestLevel: confirmation.level, setupTypes: types,
           setupCount: types.length, momMandatory: false, publicationAt: request.publicationAt,
+          confirms: confirmation.confirms, rvol: confirmation.rvol, rvolTimeframes: confirmation.rvolTimeframes,
           increasing: confirmation.increasing, sqz: confirmation.sqz, fire: confirmation.fire,
           skittles: confirmation.skittles, virtualOnly: true };
       }

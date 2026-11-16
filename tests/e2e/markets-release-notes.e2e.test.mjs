@@ -53,7 +53,11 @@ e2eTest("the install line settles on a real answer, never a stuck Checking", asy
 e2eTest("a newer build on the server offers 'Update available' and the tap reloads onto Release Notes", async () => {
   await withApp({ view: "Settings" }, async (app) => {
     // Only the page's fetch of '/' sees a different build; navigations are real.
-    await app.context.route((url) => url.pathname === "/", (route) => (route.request().resourceType() === "document"
+    // Once public/sw.js controls the page, the reload's navigation arrives as
+    // the worker's fetch (resourceType "fetch"), still asking for text/html
+    // first; the version check sends Accept */* (2026-11-13: routing that
+    // navigation left the reloaded app blank).
+    await app.context.route((url) => url.pathname === "/", (route) => (route.request().resourceType() === "document" || /^text\/html/.test(route.request().headers().accept || "")
       ? route.fallback()
       : route.fulfill({ status: 200, contentType: "text/html", body: '<!doctype html><script type="module" crossorigin src="/assets/index-E2ENEWBUILD.js"></script>' })));
     await openNotesFromSettings(app);

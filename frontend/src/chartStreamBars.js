@@ -193,17 +193,39 @@ export function mergeLatestStreamBar(
 // whose cache had not been rebuilt during the current session.
 export const MAX_LIVE_BAR_GAP_SECONDS = 2 * 3_600;
 
+// receiveTimeOnly marks the 1 s REST quote fallback. That quote has no trade
+// time of its own - liveMarketStream stamps it with the browser's receive
+// time - so its "minute" is a clock reading, not a print. Two rules follow:
+//
+//  1. It never opens a candle before the real tape exists. At mount, and after
+//     every ticker switch, the tape is empty for a second or two; admitting
+//     the quote then drew a candle at "now" (Saturday 07:40 ET, 11.7 h after
+//     Friday's 19:59 bar, measured 2026-11-14). The remembered zoom anchored
+//     to it, a failing chart server showed one fake candle under its error
+//     notice, and the gap poll reloaded the chart every 1-3 s for as long as
+//     the page stayed open.
+//  2. Outside the session (sessionOpen false: weeknights 20:00-04:00 ET and
+//     weekends) it cannot open a NEW minute. The quote only repeats the last
+//     price, so a candle at 20:05 after a 19:59 tape is the same phantom
+//     inside the two-hour gap below. It may still refresh the minute that is
+//     already on the tape.
+//
+// A real Schwab stream packet carries Schwab's own trade time and is not
+// subject to either rule.
 export function shouldUseEquityTradeForChart({
   equityTime,
   latestBarTime,
+  receiveTimeOnly = false,
+  sessionOpen = true,
 } = {}) {
   const equityMinute = Math.floor(Number(equityTime || 0) / 60) * 60;
   const latestMinute = Math.floor(Number(latestBarTime || 0) / 60) * 60;
   if (!Number.isFinite(equityMinute) || equityMinute <= 0) return false;
   // No tape yet: nothing to be disconnected from, and refusing would leave a
-  // cold chart permanently blank.
-  if (!(latestMinute > 0)) return true;
+  // cold chart permanently blank. Only a real trade may start it.
+  if (!(latestMinute > 0)) return !receiveTimeOnly;
   if (equityMinute < latestMinute) return false;
+  if (receiveTimeOnly && !sessionOpen && equityMinute > latestMinute) return false;
   return equityMinute - latestMinute <= MAX_LIVE_BAR_GAP_SECONDS;
 }
 

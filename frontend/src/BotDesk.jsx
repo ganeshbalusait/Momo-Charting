@@ -5,23 +5,33 @@
 // Data: GET /api/momx-scanner/bot-desk (momx/bot_desk.py). Read-only.
 import { useEffect, useMemo, useState } from "react";
 import { Check, RefreshCw, X } from "lucide-react";
-import { JOURNAL_MODES, JOURNAL_MODE_KEY, deskJournal, readJournalMode, DESK_ACCOUNT_KEY, DESK_CONTROL_URL, DESK_URL, deskAccountLabel, deskAiPicks, deskAlerts, deskClock, deskControl, deskCoverage, deskCurve, deskDollars, deskEvaluation, deskLessons, deskMoney, deskObjectives, deskPct, deskStrategies, deskStuckRows, deskTone, deskTruthDays, deskTruthLabel, deskVerdict, deskVersus } from "./botDesk.js";
+import { deskEarlier, deskPlanText, deskFillChance, deskBroker, deskFirstMonth, deskTradeLog, readTradeFilter, TRADE_FILTER_KEY, deskCalendar, deskDailyBars, deskKpis, deskMonthKey, DESK_SAVED_KEY, readSavedDesk, JOURNAL_MODES, JOURNAL_MODE_KEY, deskJournal, readJournalMode, DESK_ACCOUNT_KEY, DESK_CONTROL_URL, DESK_URL, deskAccountLabel, deskAiPicks, deskAlerts, deskClock, deskControl, deskCoverage, deskCurve, deskDollars, deskEvaluation, deskLessons, deskMoney, deskObjectives, deskPct, deskStrategies, deskStuckRows, deskTone, deskTruthDays, deskTruthLabel, deskVerdict, deskVersus } from "./botDesk.js";
 import { truthAccountLabel, truthPct } from "./botTruth.js";
 import { botRuleLabel } from "./momxBot.js";
 
 const REFRESH_MS = 60 * 1000;
 const TRUTH_REFRESH_MS = 5 * 60 * 1000;
 
-function useJson(url, everyMs, refreshKey = 0) {
-  const [state, setState] = useState({ doc: null, failed: false, loading: true });
+function useJson(url, everyMs, refreshKey = 0, savedKey = "") {
+  // With a savedKey the answer from the last visit is shown at once (marked as saved)
+  // and replaced when the server answers: the page never opens on a blank "Loading".
+  const [state, setState] = useState(() => {
+    let saved = null;
+    if (savedKey) { try { saved = readSavedDesk(window.localStorage.getItem(savedKey)); } catch { saved = null; } }
+    return { doc: saved, failed: false, loading: true, saved: !!saved };
+  });
   useEffect(() => {
     if (!url) return undefined;          // not known yet (waits for the first Scorecard read)
     let alive = true;
     const load = () => fetch(url, { credentials: "include", cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((doc) => { if (alive) setState({ doc, failed: false, loading: false }); })
+      .then((doc) => {
+        if (!alive) return;
+        setState({ doc, failed: false, loading: false, saved: false });
+        if (savedKey) { try { window.localStorage.setItem(savedKey, JSON.stringify(doc)); } catch { /* private window or full */ } }
+      })
       // A failed refresh keeps the last good numbers but says so (failed stays true).
-      .catch(() => { if (alive) setState((s) => ({ doc: s.doc, failed: true, loading: false })); });
+      .catch(() => { if (alive) setState((s) => ({ doc: s.doc, failed: true, loading: false, saved: s.saved })); });
     load();
     const id = window.setInterval(load, everyMs);
     return () => { alive = false; window.clearInterval(id); };
@@ -58,9 +68,37 @@ function Curve({ days, limits }) {
   );
 }
 
+/** A half-circle gauge: the cyan part is the winning share, the magenta the rest. */
+export function Gauge({ share }) {
+  const length = 125.66;                                   // half the circumference of a 40-unit radius
+  return (
+    <svg className="desk-gauge" viewBox="0 0 100 56" aria-hidden="true">
+      <path className="desk-gauge-rest" d="M10 50 A40 40 0 0 1 90 50" />
+      {share > 0 ? <path className="desk-gauge-won" d="M10 50 A40 40 0 0 1 90 50" strokeDasharray={`${Math.round(share * length * 10) / 10} ${length}`} /> : null}
+    </svg>
+  );
+}
+
+// Exported for the Ticker trader journal (TickerTrader.jsx), which draws the same tiles and daily bars.
+export function DailyBars({ days }) {
+  const g = useMemo(() => deskDailyBars(days), [days]);
+  if (!g.bars.length) return <p className="desk-note">The bars start with the first day a real paper trade closes.</p>;
+  return (
+    <svg className="desk-curve-svg desk-bars-svg" viewBox={`0 0 ${g.width} ${g.height}`} role="img" preserveAspectRatio="none"
+      aria-label={`Real profit and loss for each of ${g.bars.length} days`}>
+      <line className="desk-line-zero" x1="0" x2={g.width} y1={g.zeroY} y2={g.zeroY} />
+      {g.bars.map((b) => (
+        <rect key={b.day} className={"desk-bar-day " + b.tone} x={b.x} y={b.y} width={b.w} height={b.h} rx="2">
+          <title>{`${b.day}: ${deskMoney(b.pnl)}`}</title>
+        </rect>
+      ))}
+    </svg>
+  );
+}
+
 export default function BotDesk() {
   const [refresh, setRefresh] = useState(0);
-  const { doc, failed, loading } = useJson(DESK_URL, REFRESH_MS, refresh);
+  const { doc, failed, loading, saved } = useJson(DESK_URL, REFRESH_MS, refresh, DESK_SAVED_KEY);
   // The BOT's claim is read for the same days the evaluation covers.
   const truthDays = deskTruthDays(doc);
   const truth = useJson(doc && truthDays ? `/api/momx-scanner/bot-truth?days=${truthDays}` : "", TRUTH_REFRESH_MS).doc;
@@ -71,6 +109,7 @@ export default function BotDesk() {
   const account = names.includes(picked) ? picked : names[0] || "";
   const pick = (name) => {
     setPicked(name);
+    setMonth("");                         // the other account opens on the current month
     try { window.localStorage.setItem(DESK_ACCOUNT_KEY, name); } catch { /* private window */ }
   };
   const acct = doc?.accounts?.[account] || null;
@@ -94,6 +133,27 @@ export default function BotDesk() {
     try { window.localStorage.setItem(JOURNAL_MODE_KEY, mode); } catch { /* private window */ }
   };
   const journal = deskJournal(acct, journalMode);
+  // The journal dashboard: tiles, the month on the calendar (his choice, else the current month), latest trades.
+  const kpis = deskKpis(acct);
+  const thisMonth = deskMonthKey(doc?.asOf);
+  const [month, setMonth] = useState("");
+  const calendar = deskCalendar(acct, month || thisMonth, String(doc?.asOf || "").slice(0, 10)) || { weeks: [], label: "", key: "", pnl: "$0", tone: "", days: 0 };
+  const recent = (deskJournal(acct, "day")?.trades || []).slice(0, 6);
+  // "All trades": every signal and what became of it; the chosen filter is remembered on this device.
+  const [tradeFilter, setTradeFilterState] = useState(() => {
+    try { return readTradeFilter(window.localStorage.getItem(TRADE_FILTER_KEY)); } catch { return "all"; }
+  });
+  const setTradeFilter = (key) => {
+    setTradeFilterState(key);
+    try { window.localStorage.setItem(TRADE_FILTER_KEY, key); } catch { /* private window */ }
+  };
+  const tradeLog = deskTradeLog(acct, tradeFilter, String(doc?.asOf || "").slice(0, 10));
+  const fillChance = deskFillChance(acct);
+  const earlier = deskEarlier(acct);
+  // The chart plan's text only when the SERVER says the paper bots run it (doc.plan === "chart");
+  // this page is live in the browser before the servers restart.
+  const planText = deskPlanText(doc);
+  const broker = deskBroker(acct, doc?.limits?.accountSize, String(doc?.asOf || "").slice(0, 10));
   const aiPicks = deskAiPicks(acct);
   const stuck = deskStuckRows(acct);
   // Pause / Resume / Remove a stuck order (2026-11-09). The answer is shown as
@@ -145,7 +205,7 @@ export default function BotDesk() {
             </div>
           ) : null}
           <span className="desk-asof" role="status">
-            {failed ? "Refresh failed · showing " : "Real paper fills · as of "}{deskClock(doc.asOf)}
+            {failed ? "Refresh failed · showing " : saved ? "Saved numbers from " : "Real paper fills · as of "}{deskClock(doc.asOf)}{saved && !failed ? " · updating…" : ""}
           </span>
           <button type="button" className="desk-btn" onClick={() => setRefresh((n) => n + 1)} disabled={loading} title="Refresh the scorecard">
             <RefreshCw size={13} aria-hidden="true" /> Refresh
@@ -161,38 +221,25 @@ export default function BotDesk() {
 
       {evaluation ? <p className="desk-coverage desk-evaluation" data-testid="desk-evaluation">{evaluation}</p> : null}
 
-      {versus ? (
-        <section className="desk-card" aria-label="Rules bot against AI bot">
-          <div className="desk-card-head">
-            <h4>Rules bot against AI bot · which way works</h4>
-            <span className="desk-note">Same signals, same contract, same size and exits. Only the choice of which signal gets a free slot differs.</span>
-          </div>
-          <p className={"desk-answer" + (versus.tone ? " is-" + versus.tone : "")} data-testid="desk-versus-answer">{versus.answer}</p>
-          <div className="desk-scroll">
-            <table className="desk-table">
-              <thead><tr><th className="is-left">Bot</th><th>Closed</th><th>Win</th><th>Real P/L</th><th>Return</th><th>Per trade</th><th>Balance</th></tr></thead>
-              <tbody>
-                {versus.rows.map((r) => (
-                  <tr key={r.key} className={r.leader ? "is-best" : ""} data-bot={r.key}>
-                    <td className="is-left"><b>{r.name}</b><span className="desk-tag">{r.account}</span>{r.leader ? <span className="desk-tag is-on">ahead</span> : null}<span className="desk-strategy-needs">{r.how}</span></td>
-                    <td>{r.closed}</td><td>{r.win}</td><td className={r.tone}>{r.pnl}</td><td className={r.tone}>{r.roi}</td><td className={r.tone}>{r.perTrade}</td><td>{r.balance}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {aiPicks ? <p className="desk-note" data-testid="desk-ai-picks">{aiPicks}</p> : null}
-          <p className="desk-note">A bot is called ahead only when both have {doc.smallSample} closed real trades, the AI really chose at least half of the AI bot's trades, and the gap is bigger than one trade can move it.</p>
-        </section>
-      ) : null}
-
       {control ? (
         <section className="desk-controls" aria-label="Paper bot controls">
           <span className={"desk-pill is-" + control.tone} data-testid="desk-buying">{control.state}</span>
           <button type="button" className="desk-btn" disabled={busy}
             onClick={() => act({ action: control.action, account }, control.done)}>{control.button}</button>
           <span className={"desk-pill" + (control.stopHit ? " is-bad" : "")} data-testid="desk-stop">{control.stop}</span>
-          <span className="desk-note">Pause and the daily loss stop hold new buys only. Positions already held still sell on their plan.</span>
+          {broker ? (
+            <span className={"desk-pill is-" + broker.tone} data-testid="desk-broker"
+              title={`Alpaca paper account · cash ${broker.cash} · read ${broker.asOf}`}>
+              Alpaca buying power {broker.buyingPower} · account {broker.equity}
+              {broker.change ? <> · <span className={broker.changeTone}>{broker.change} today</span></> : null}
+            </span>
+          ) : null}
+          {broker && (broker.warning || broker.old || broker.error) ? (
+            <span className="desk-note desk-broker-note" data-testid="desk-broker-note">
+              {broker.warning}{broker.old ? ` Read ${broker.asOf}.` : ""}{broker.error ? ` ${broker.error}` : ""}
+            </span>
+          ) : null}
+          <span className="desk-note">{acct?.control?.dailyStop?.on === false ? "Pause holds new buys only. There is no daily loss stop: the bot keeps taking Level signals all day." : "Pause and the daily loss stop hold new buys only."} Positions already held still sell on their plan.</span>
         </section>
       ) : null}
 
@@ -211,28 +258,190 @@ export default function BotDesk() {
       {notice && notice.account === account ? <p className={"desk-note desk-notice" + (notice.bad ? " is-bad" : "")} role="status" data-testid="desk-notice">{notice.text}</p> : null}
 
       {!acct ? <p className="desk-note" role="status">No paper orders yet. The evaluation starts with the first real paper fill.</p> : (<>
-        <p className="desk-coverage">{truthAccountLabel(account)} · {deskCoverage(acct)} · judged as a {deskDollars(limits.accountSize)} evaluation account</p>
+        {/* All trades first (2026-11-10: he asked three times where it was - it sat below the calendar). */}
+        {tradeLog ? (
+          <section className="desk-card" aria-label="All trades">
+            <div className="desk-card-head">
+              <h4>All trades</h4>
+              <div className="desk-switch" role="group" aria-label="Trade filter">
+                {tradeLog.filters.map((f) => (
+                  <button key={f.key} type="button" aria-pressed={f.on} onClick={() => setTradeFilter(f.key)}>{f.label}</button>
+                ))}
+              </div>
+            </div>
+            {fillChance ? (
+              <p className="desk-note desk-fill-line" data-testid="desk-fill-chance">
+                Fill likelihood, like Robinhood (from the spread when each buy is sent; it never changes the price. {planText.active ? "On the chart plan the bot buys at the ask, so nearly every order fills" : "The older plan, still running, tries the middle price first, then the ask"}) · {fillChance.parts.map((p) => p.text).join(" · ")}
+              </p>
+            ) : null}
+            {tradeLog.rows.length ? (
+              <div className="desk-scroll desk-trades-scroll">
+                <table className="desk-table">
+                  <thead><tr><th className="is-left">Signal</th><th className="is-left">Ticker</th><th className="is-left">Side</th><th className="is-left">Strategy</th><th className="is-left">Status</th><th>Contracts</th><th>Bought at</th><th title="The chart plan's entry: the option's ask when the order went out">Entry (ask)</th><th title="The stock price where the option is down 50% from the entry. An arrow shows where the stop stands after a target was reached.">Stop (stock)</th><th title="Half the expected move">T1</th><th title="The full expected move">T2</th><th title="The biggest open-interest strike past the move">T3</th><th>Real P/L</th><th>Return</th><th className="is-left">What happened</th></tr></thead>
+                  <tbody>
+                    {tradeLog.rows.map((t) => (
+                      <tr key={t.key} data-status={t.status}>
+                        <td className="is-left">{t.when}</td><td className="is-left"><b>{t.symbol}</b>{t.aiPicked ? <span className="desk-tag is-on">AI pick</span> : null}</td>
+                        <td className="is-left">{t.side}</td><td className="is-left">{t.strategy}</td>
+                        <td className="is-left"><span className={"desk-status is-" + t.status}>{t.statusLabel}</span>
+                          {t.fill ? <span className={"desk-fill is-" + t.fillKey} title="Fill likelihood at the mid when the order was sent, from the quote's spread">{t.fill}</span> : null}</td>
+                        <td>{t.qty}</td><td>{t.buy}</td><td>{t.plan.entry}</td><td>{t.plan.stop}</td><td>{t.plan.t1}</td><td>{t.plan.t2}</td><td>{t.plan.t3}</td><td className={t.tone}>{t.pnl}</td><td className={t.tone}>{t.roi}</td><td className="is-left">{t.note}{t.plan.result ? " · " + t.plan.result : ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : <p className="desk-note" data-testid="desk-trades-empty">{tradeLog.empty}</p>}
+            <p className="desk-note">
+              {tradeLog.capped ? `Showing the ${tradeLog.capped}. ` : ""}Every paper order since the evaluation started, plus today's Bot signals this bot sent no order for ("Not ordered": the same list as Research, with the 0.20-delta option's move at the mid since the signal - nothing was bought), newest first. "now" (or a time) marks a trade still open: its result so far at the last mid price, an estimate that is not in the real totals.
+              {tradeLog.full ? "" : " Open, not-filled and skipped orders appear after the next backend restart."} Entry (ask), Stop, T1, T2 and T3 are the chart&apos;s plan for that trade: the option&apos;s ask when the order went out, the stock price that stops it, and the three stock targets (✓ and a time = reached). A dash means the trade is from before the chart plan. The earlier period is listed below; older trades are under Research.
+            </p>
+          </section>
+        ) : null}
 
-        <section className="desk-checks" aria-label="Evaluation checks">
-          {objectives.map((o) => (
-            <div key={o.key} className={"desk-check " + (o.pass ? "is-pass" : "is-fail")} data-check={o.key} title={o.help}>
-              <span className="desk-check-head">
-                <span className="desk-check-icon" aria-hidden="true">{o.pass ? <Check size={13} /> : <X size={13} />}</span>
-                <span className="desk-check-label">{o.label}</span>
-                <span className="desk-check-state">{o.pass ? "Passed" : "Not passed"}</span>
+        {/* The evaluations that ended (2026-11-12: the chart plan starts a clean record; the old plan's
+            trades stay visible here and are never added to the numbers above). */}
+        {earlier.map((p) => (
+          <section className="desk-card" aria-label={p.title} key={p.key} data-testid="desk-earlier">
+            <div className="desk-card-head"><h4>{p.title}</h4></div>
+            <p className="desk-note">Not part of the evaluation above. It traded: {p.strategy}. {p.why}</p>
+            <p className="desk-note" data-testid="desk-earlier-summary"><b className={p.tone}>{p.summary}</b></p>
+            {p.trades.length ? (
+              <details className="desk-journal-trades">
+                <summary>Its closed trades ({p.trades.length})</summary>
+                <div className="desk-scroll">
+                  <table className="desk-table">
+                    <thead><tr><th className="is-left">Closed</th><th className="is-left">Ticker</th><th className="is-left">Side</th><th>Contracts</th><th>Bought at</th><th>Real P/L</th><th>Return</th><th className="is-left">How it ended</th></tr></thead>
+                    <tbody>
+                      {p.trades.map((t) => (
+                        <tr key={t.key}>
+                          <td className="is-left">{t.when}</td><td className="is-left"><b>{t.symbol}</b></td><td className="is-left">{t.side}</td>
+                          <td>{t.qty}</td><td>{t.buy}</td><td className={t.tone}>{t.pnl}</td><td className={t.tone}>{t.roi}</td><td className="is-left">{t.exit}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            ) : null}
+          </section>
+        ))}
+
+        {/* Journal dashboard (2026-11-10, his "Scoreboard look like not a tradezella"): what a trading journal opens
+            on - the key numbers, the two P&L charts, the month calendar and the latest trades. */}
+        <section className="desk-tiles" aria-label="Key numbers">
+          {kpis.map((k) => (
+            <div key={k.key} className="desk-tile" data-tile={k.key}>
+              <span className="desk-tile-label">{k.label}</span>
+              <span className="desk-tile-row">
+                <span className={"desk-tile-value " + k.tone}>{k.value}</span>
+                {k.share == null ? null : <Gauge share={k.share} />}
               </span>
-              <span className="desk-check-actual">{o.actual}</span>
-              <span className="desk-check-target">{o.target}</span>
-              <span className="desk-bar" aria-hidden="true"><i style={{ width: Math.round(o.progress * 100) + "%" }} /></span>
+              <span className="desk-tile-sub">{k.sub}</span>
             </div>
           ))}
         </section>
+
+        <div className="desk-grid">
+          <section className="desk-card" aria-label="Account curve">
+            <div className="desk-card-head">
+              <h4>Account curve · real profit and loss</h4>
+              <span className={"desk-big " + deskTone(s.netPnl)}>{deskMoney(s.netPnl)}</span>
+            </div>
+            <Curve days={acct.days} limits={limits} />
+            <p className="desk-legend">
+              <span className="is-target">Target {deskMoney(limits.profitTarget)}</span>
+              <span className="is-zero">Start $0</span>
+              <span className="is-floor">Drawdown limit {deskMoney(-limits.maxDrawdown)}</span>
+            </p>
+          </section>
+
+          <section className="desk-card" aria-label="Net daily P&L">
+            <div className="desk-card-head"><h4>Net daily P&amp;L</h4><span className="desk-note">each bar is one day's real result</span></div>
+            <DailyBars days={acct.days} />
+          </section>
+        </div>
+
+        <div className="desk-grid is-calendar">
+          <section className="desk-card" aria-label="Calendar">
+            <div className="desk-card-head">
+              <h4>{calendar.label}</h4>
+              <span className="desk-cal-nav">
+                <button type="button" className="desk-btn" onClick={() => setMonth(calendar.prev)} aria-label="Previous month" disabled={calendar.key <= deskFirstMonth(acct, thisMonth)}>‹</button>
+                <button type="button" className="desk-btn" onClick={() => setMonth("")} disabled={calendar.key === thisMonth}>This month</button>
+                <button type="button" className="desk-btn" onClick={() => setMonth(calendar.next)} aria-label="Next month" disabled={calendar.key >= thisMonth}>›</button>
+              </span>
+              <span className="desk-cal-total" data-testid="desk-cal-total">Month: <b className={calendar.tone}>{calendar.pnl}</b> · {calendar.days} {calendar.days === 1 ? "day" : "days"} traded</span>
+            </div>
+            <div className="desk-cal" role="table" aria-label={`Daily results for ${calendar.label}`}>
+              <div className="desk-cal-row is-head" role="row">
+                {["Mon", "Tue", "Wed", "Thu", "Fri", "Week"].map((name) => <span key={name} role="columnheader">{name}</span>)}
+              </div>
+              {calendar.weeks.map((week) => (
+                <div key={week.key} className="desk-cal-row" role="row">
+                  {week.cells.map((c) => (
+                    <span key={c.key} role="cell" title={c.title} data-day={c.inMonth ? c.key : undefined}
+                      className={"desk-cal-cell" + (c.inMonth ? "" : " is-out") + (c.tone ? " " + c.tone : "") + (c.isToday ? " is-today" : "")}>
+                      {c.inMonth ? <span className="desk-cal-num">{c.num}</span> : null}
+                      {c.pnl ? <b className="desk-cal-pnl">{c.pnl}</b> : null}
+                      {c.trades ? <span className="desk-cal-trades">{c.trades} {c.trades === 1 ? "trade" : "trades"}</span> : null}
+                    </span>
+                  ))}
+                  <span role="cell" className={"desk-cal-cell is-week" + (week.tone ? " " + week.tone : "")}>
+                    <b className="desk-cal-pnl">{week.pnl}</b>
+                    {week.days ? <span className="desk-cal-trades">{week.days} {week.days === 1 ? "day" : "days"}</span> : null}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="desk-card" aria-label="Recent trades">
+            <div className="desk-card-head"><h4>Recent trades</h4><span className="desk-note">real fills, newest first</span></div>
+            {recent.length ? (
+              <ul className="desk-recent">
+                {recent.map((t) => (
+                  <li key={t.key}>
+                    <span className="desk-recent-main"><b>{t.symbol}</b> {t.side} · {t.strategy}{t.aiPicked ? <span className="desk-tag is-on">AI pick</span> : null}</span>
+                    <span className={"desk-recent-pnl " + t.tone}>{t.pnl}</span>
+                    <span className="desk-recent-sub">{t.when} · {t.exit}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="desk-note">No closed trades yet. They appear here as real paper trades close.</p>}
+          </section>
+        </div>
+
+        {versus ? (
+          <section className="desk-card" aria-label="Rules bot against AI bot">
+            <div className="desk-card-head">
+              <h4>Rules bot against AI bot · which way works</h4>
+              <span className="desk-note">Same signals, same contract, same size and exits. Only the choice of which signal gets a free slot differs.</span>
+            </div>
+            <p className={"desk-answer" + (versus.tone ? " is-" + versus.tone : "")} data-testid="desk-versus-answer">{versus.answer}</p>
+            <div className="desk-scroll">
+              <table className="desk-table">
+                <thead><tr><th className="is-left">Bot</th><th>Closed</th><th>Win</th><th>Real P/L</th><th>Return</th><th>Per trade</th><th>Balance</th></tr></thead>
+                <tbody>
+                  {versus.rows.map((r) => (
+                    <tr key={r.key} className={r.leader ? "is-best" : ""} data-bot={r.key}>
+                      <td className="is-left"><b>{r.name}</b><span className="desk-tag">{r.account}</span>{r.leader ? <span className="desk-tag is-on">ahead</span> : null}<span className="desk-strategy-needs">{r.how}</span></td>
+                      <td>{r.closed}</td><td>{r.win}</td><td className={r.tone}>{r.pnl}</td><td className={r.tone}>{r.roi}</td><td className={r.tone}>{r.perTrade}</td><td>{r.balance}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {aiPicks ? <p className="desk-note" data-testid="desk-ai-picks">{aiPicks}</p> : null}
+            <p className="desk-note">A bot is called ahead only when both have {doc.smallSample} closed real trades, the AI really chose at least half of the AI bot's trades, and the gap is bigger than one trade can move it.</p>
+          </section>
+        ) : null}
 
         {strategies ? (
           <section className="desk-card" aria-label="The three strategies">
             <div className="desk-card-head">
               <h4>The three strategies · which one is good</h4>
-              <span className="desk-note">Real paper fills on the 0.20-delta contract{doc.startDay ? ` since ${doc.startDay.slice(5)}` : ""}.</span>
+              <span className="desk-note">Real paper fills on the 0.20-delta contract{!planText.active ? " · the chart-plan evaluation has not started" : doc.startDay ? ` since ${doc.startDay.slice(5)}` : ""}.</span>
             </div>
             <p className={"desk-answer" + (strategies.tone ? " is-" + strategies.tone : "")} data-testid="desk-strategy-answer">{strategies.answer}</p>
             <div className="desk-scroll">
@@ -287,12 +496,13 @@ export default function BotDesk() {
                 <summary>Every closed trade{journal.tradeCount > journal.shown ? ` (newest ${journal.shown} of ${journal.tradeCount})` : ` (${journal.shown})`}</summary>
                 <div className="desk-scroll">
                   <table className="desk-table">
-                    <thead><tr><th className="is-left">Closed</th><th className="is-left">Ticker</th><th className="is-left">Side</th><th className="is-left">Strategy</th><th>Contracts</th><th>Bought at</th><th>Real P/L</th><th>Return</th><th className="is-left">How it ended</th></tr></thead>
+                    <thead><tr><th className="is-left">Closed</th><th className="is-left">Ticker</th><th className="is-left">Side</th><th className="is-left">Strategy</th><th>Contracts</th><th>Bought at</th><th>Stop (stock)</th><th>T1</th><th>T2</th><th>T3</th><th>Real P/L</th><th>Return</th><th className="is-left">How it ended</th></tr></thead>
                     <tbody>
                       {journal.trades.map((t) => (
                         <tr key={t.key}>
                           <td className="is-left">{t.when}</td><td className="is-left"><b>{t.symbol}</b>{t.aiPicked ? <span className="desk-tag is-on">AI pick</span> : null}</td>
                           <td className="is-left">{t.side}</td><td className="is-left">{t.strategy}</td><td>{t.qty}</td><td>{t.buy}</td>
+                          <td>{t.plan.stop}</td><td>{t.plan.t1}</td><td>{t.plan.t2}</td><td>{t.plan.t3}</td>
                           <td className={t.tone}>{t.pnl}</td><td className={t.tone}>{t.roi}</td><td className="is-left">{t.exit}</td>
                         </tr>
                       ))}
@@ -305,34 +515,36 @@ export default function BotDesk() {
           </section>
         ) : null}
 
-        <div className="desk-grid">
-          <section className="desk-card" aria-label="Account curve">
-            <div className="desk-card-head">
-              <h4>Account curve · real profit and loss</h4>
-              <span className={"desk-big " + deskTone(s.netPnl)}>{deskMoney(s.netPnl)}</span>
-            </div>
-            <Curve days={acct.days} limits={limits} />
-            <p className="desk-legend">
-              <span className="is-target">Target {deskMoney(limits.profitTarget)}</span>
-              <span className="is-zero">Start $0</span>
-              <span className="is-floor">Drawdown limit {deskMoney(-limits.maxDrawdown)}</span>
-            </p>
-          </section>
+        <p className="desk-coverage">{truthAccountLabel(account)} · {deskCoverage(acct)} · judged as a {deskDollars(limits.accountSize)} evaluation account</p>
 
-          <section className="desk-card" aria-label="Trader statistics">
-            <div className="desk-card-head"><h4>Trader statistics · closed real fills</h4></div>
-            <div className="desk-stats">
-              <Stat label="Win rate" value={deskPct(s.winRatePct)} sub={`${s.wins ?? 0} wins · ${s.losses ?? 0} losses`} />
-              <Stat label="Average win" value={deskMoney(s.avgWin)} tone={deskTone(s.avgWin)} />
-              <Stat label="Average loss" value={deskMoney(s.avgLoss)} tone={deskTone(s.avgLoss)} />
-              <Stat label="Per trade" value={deskMoney(s.expectancy)} sub="average result of one trade" tone={deskTone(s.expectancy)} />
-              <Stat label="Return on money used" value={s.roiPct == null ? "–" : truthPct(s.roiPct)} tone={deskTone(s.roiPct)} />
-              <Stat label="Green days" value={`${d.greenDays ?? 0} of ${d.tradingDays ?? 0}`} sub={`${d.redDays ?? 0} red`} />
-              <Stat label="Best day" value={deskMoney(d.bestDay?.pnl)} sub={d.bestDay?.day?.slice(5) || ""} tone={deskTone(d.bestDay?.pnl)} />
-              <Stat label="Worst day" value={deskMoney(d.worstDay?.pnl)} sub={d.worstDay?.day?.slice(5) || ""} tone={deskTone(d.worstDay?.pnl)} />
+        <section className="desk-checks" aria-label="Evaluation checks">
+          {objectives.map((o) => (
+            <div key={o.key} className={"desk-check " + (o.pass ? "is-pass" : "is-fail")} data-check={o.key} title={o.help}>
+              <span className="desk-check-head">
+                <span className="desk-check-icon" aria-hidden="true">{o.pass ? <Check size={13} /> : <X size={13} />}</span>
+                <span className="desk-check-label">{o.label}</span>
+                <span className="desk-check-state">{o.pass ? "Passed" : "Not passed"}</span>
+              </span>
+              <span className="desk-check-actual">{o.actual}</span>
+              <span className="desk-check-target">{o.target}</span>
+              <span className="desk-bar" aria-hidden="true"><i style={{ width: Math.round(o.progress * 100) + "%" }} /></span>
             </div>
-          </section>
-        </div>
+          ))}
+        </section>
+
+        <section className="desk-card" aria-label="Trader statistics">
+          <div className="desk-card-head"><h4>Trader statistics · closed real fills</h4></div>
+          <div className="desk-stats">
+            <Stat label="Win rate" value={deskPct(s.winRatePct)} sub={`${s.wins ?? 0} wins · ${s.losses ?? 0} losses`} />
+            <Stat label="Average win" value={deskMoney(s.avgWin)} tone={deskTone(s.avgWin)} />
+            <Stat label="Average loss" value={deskMoney(s.avgLoss)} tone={deskTone(s.avgLoss)} />
+            <Stat label="Per trade" value={deskMoney(s.expectancy)} sub="average result of one trade" tone={deskTone(s.expectancy)} />
+            <Stat label="Return on money used" value={s.roiPct == null ? "–" : truthPct(s.roiPct)} tone={deskTone(s.roiPct)} />
+            <Stat label="Green days" value={`${d.greenDays ?? 0} of ${d.tradingDays ?? 0}`} sub={`${d.redDays ?? 0} red`} />
+            <Stat label="Best day" value={deskMoney(d.bestDay?.pnl)} sub={d.bestDay?.day?.slice(5) || ""} tone={deskTone(d.bestDay?.pnl)} />
+            <Stat label="Worst day" value={deskMoney(d.worstDay?.pnl)} sub={d.worstDay?.day?.slice(5) || ""} tone={deskTone(d.worstDay?.pnl)} />
+          </div>
+        </section>
 
         {claim?.n ? (
           <section className="desk-card desk-claim" aria-label="BOT claim against real result">
@@ -414,9 +626,10 @@ export default function BotDesk() {
 
       <details className="desk-how">
         <summary>How this evaluation works</summary>
+        <p data-testid="desk-plan-rules" data-plan={planText.active ? "chart" : "old"}><b>{planText.title}</b> {planText.rules.join(" ")}{planText.note ? <> <b>{planText.note}</b></> : null}</p>
         <p>A prop firm hands a trader an account and reads the real record: a profit target, a daily loss limit and a maximum drawdown. This page does the same to the bot. Every number here is a real Alpaca paper order. An order that never filled earns nothing, and profit lands on the day the trade closed.</p>
         <p>The checks: up {deskDollars(limits.profitTarget)} on a {deskDollars(limits.accountSize)} account, never down more than {deskDollars(limits.dailyLossLimit)} in one day, never more than {deskDollars(limits.maxDrawdown)} below the highest point, at least {limits.minDays} trading days and {limits.minTrades} closed trades, profit factor {limits.minProfitFactor} or more, still in profit without the best {limits.luckTrades} trades, and at least {limits.minFillPct}% of orders filled.</p>
-        <p>Safety: Pause stops new paper buys for that account until you resume. The daily loss stop does the same by itself once the account is down {deskDollars(limits.dailyLossLimit)} on the day, until the next day. Neither one sells what is already held; those positions keep their exit plan. A stuck order is a buy the broker never confirmed; Remove checks the broker first and then frees its slot.</p>
+        <p>Safety: Pause stops new paper buys for that account until you resume. {acct?.control?.dailyStop?.on === false ? "There is no daily loss stop any more (switched off 11-10): a losing day does not hold new buys. The Daily loss limit check above still records such a day." : <>The daily loss stop does the same by itself once the account is down {deskDollars(limits.dailyLossLimit)} on the day, until the next day. Neither one sells what is already held; those positions keep their exit plan. A stuck order is a buy the broker never confirmed; Remove checks the broker first and then frees its slot.</>}</p>
         <p>AI: it never blocks a trade. On Paper 5 (the AI bot) it chooses which waiting signal gets a free slot; with no fresh answer the newest signal goes first, the same as Paper 3 (the Rules bot). Every evening it studies the losing real trades of each strategy and writes one lesson, one change to try and how to test it. A lesson is a suggestion; nothing changes until you decide.</p>
         <p>Passing shows the record is good enough to consider real money. It does not switch anything on. This app has no real-money order path for this bot.</p>
       </details>

@@ -121,7 +121,7 @@ e2eTest("News dock: only the chart ticker's newest 8 headlines, and a ticker swi
     await app.page.waitForFunction(([selector, symbol]) => document.querySelector(`${selector} header small`)?.textContent === symbol, [NEWS, target], { timeout: 30_000 });
     await waitForArticles(app.page, Math.min(8, STORIES[target].length));
     assert.deepEqual(await news.locator(".charts-oi-chain-dock-news article a").allInnerTexts(), expected(target));
-    assert.equal(await app.page.locator(".command-context h1").innerText(), "Charts & OI", "a dock tile keeps him on the chart page");
+    assert.equal(await app.page.locator(".command-context h1").textContent(), "Charts & OI", "a dock tile keeps him on the chart page");
     assert.deepEqual(app.pageErrors, []);
   });
 });

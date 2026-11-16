@@ -161,31 +161,32 @@ def test_planner_failures_are_durable_and_do_not_change_entry_policy(tmp_path):
     assert not restored.propose("batch",{})
 
 
-def test_promoted_policy_advises_paper5_but_never_blocks_and_preserves_mid_limits(tmp_path):
+def test_promoted_policy_advises_paper5_but_never_blocks_and_never_changes_the_order_price(tmp_path):
     from test_momx_paper_mirror import FakeClient, Book as MirrorBook, NOW, _trade
     from momx.paper_mirror import PaperMirror
     from momx.paper_learning import trade_first
     lab=pe.ExperimentLab({},directory=tmp_path/"lab",roots={})
     lab.policy={"id":"candidate","spec":{"kind":"spread_ceiling","value":.1}}
     lab.last_observed = lab.clock()
-    # Order quote spread 11.7%: over the candidate's 10% ceiling; mid still $1.20.
+    # Order quote spread 11.7%: over the candidate's 10% ceiling. The buy goes out at the ask $1.27
+    # (the chart plan's entry since 2026-11-12; it was the mid $1.20), whatever the advice says.
     trade=_trade(entryBid=.5,entryAsk=1.9,lastBid=1.13,lastAsk=1.27)
     client=FakeClient()
     mirror=PaperMirror({"bull":MirrorBook([trade])},tmp_path/"paper5",account="paper5",jev_cut=None,
                        client_factory=lambda:client,off=lambda:False,ai_policy=lab.decision)
     mirror.tick(NOW)
     # The rule would have skipped it; the buy goes out anyway and the advice is kept.
-    assert client.calls[0][3] == 1.2 and not lab.execution[next(iter(lab.execution))]["qualified"]
+    assert client.calls[0][3] == 1.27 and not lab.execution[next(iter(lab.execution))]["qualified"]
     advice = mirror.status()["rows"][0]["aiDecision"]
     assert advice["approved"] is True and advice["candidateTake"] is False and "never blocks" in advice["reason"]
     baseline=FakeClient()
     ordinary=PaperMirror({"bull":MirrorBook([trade])},tmp_path/"paper3",account="paper3",jev_cut=None,
                         client_factory=lambda:baseline,off=lambda:False,ai_policy=trade_first)
     ordinary.tick(NOW)
-    assert baseline.calls[0][3] == 1.2
+    assert baseline.calls[0][3] == 1.27
     lab.policy=None
     mirror.tick(NOW)
-    assert client.calls[0][3] == 1.2
+    assert client.calls[0][3] == 1.27
 
 
 def test_actual_paper5_daily_loss_rolls_back_next_entries_only(tmp_path):

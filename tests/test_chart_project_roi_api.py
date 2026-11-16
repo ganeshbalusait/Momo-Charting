@@ -71,15 +71,16 @@ def test_the_chain_route_payload_fills_the_chart_roi_card(schwab):
         assert side["expectedMove"] > 0
         assert side["entry"] > 0, "entry is the picked contract's live ask"
         assert side["roi"] is not None
-        assert side["lines"] == ["entry", "target", "stop"]
+        assert side["lines"] == ["entry", "t1", "target", "t3", "stop"]  # T1 / T2 (Target) / T3, as the chart draws them
         assert side["ladder"][0] == 200.0, "the ladder starts at the ATM strike"
     # Target is the full expected move in the trade's direction.
     assert call["target"] == pytest.approx(SPOT + call["expectedMove"], abs=0.01)
     assert put["target"] == pytest.approx(SPOT - put["expectedMove"], abs=0.01)
-    # Strike comes from the wall nearest the exit, limited to the ladder.
+    # The chain has deltas, so the strike is the chain ENTRY contract (nearest 0.20 delta, same as the Options chain,
+    # f83a50fc); the wall-nearest-the-exit pick is the fallback without deltas (chartProjectRoi.test.js).
     assert call["strike"] in call["ladder"] and call["strike"] > SPOT
     assert put["strike"] in put["ladder"] and put["strike"] < SPOT
-    assert call["reason"].startswith("strike from 210C 9K wall")
-    assert put["reason"].startswith("strike from 190P 8K wall")
+    assert "chain ENTRY" in call["reason"] and "nearest 0.20 delta" in call["reason"], call["reason"]
+    assert "chain ENTRY" in put["reason"] and "nearest 0.20 delta" in put["reason"], put["reason"]
     # Stop is on the losing side of spot.
     assert call["stop"] < SPOT < put["stop"]

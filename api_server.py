@@ -4727,7 +4727,12 @@ class DashboardState:
             # real market). Never the last trade - it can be hours or days old.
             mid = round((bid + ask) / 2, 4) if ask > 0 and bid >= 0 else None
             if mid:
-                out[contract] = {"bid": bid, "ask": ask, "mid": mid, "last": last or None}
+                # quoteAt = Schwab's OWN time for this quote (epoch seconds, None when it sent
+                # none). asOf below is only when this reply was built (2026-11-13: the Ticker
+                # trader must not buy at 09:30 on yesterday's closing ask).
+                at_ms = self._safe_float(q.get("quote_time_ms"), 0.0)
+                out[contract] = {"bid": bid, "ask": ask, "mid": mid, "last": last or None,
+                                 "quoteAt": round(at_ms / 1000.0, 3) if at_ms > 0 else None}
         return {"asOf": time.time(), "quotes": out}
 
     def option_contract_quotes(self, items: list[dict]) -> dict:
@@ -20950,6 +20955,7 @@ AUTH_SESSION_COOKIE_MAX_AGE = 30 * 24 * 3600
 AUTH_DEVICE_COOKIE_MAX_AGE = 365 * 24 * 3600
 # Endpoints reachable without a session: the auth handshake itself and the
 # health probe the supervisor/load tooling polls.
+BOT_CHAT_MAX_BODY_BYTES = 16 * 1024
 AUTH_PUBLIC_API_PATHS = {
     "/api/health",
     "/api/auth/status",
@@ -23320,6 +23326,21 @@ class ApiHandler(BaseHTTPRequestHandler):
                     _desk_days = 90
                 self._send_json(HTTPStatus.OK, _momx_bot_desk(_desk_days))
                 return
+            if parsed.path == "/api/my-insights":
+                # My Trading (2026-11-11, his "Yes build it"): his REAL Schwab
+                # trades, from the stored once-a-day read. Owner only. This
+                # route only reads saved files; it never calls Schwab.
+                _mi_user = self._session_user()
+                if not (_mi_user and _mi_user.get("isAdmin")):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                try:
+                    _mi_days = int(str((parse_qs(parsed.query or "").get("days") or ["30"])[0]))
+                except ValueError:
+                    _mi_days = 30
+                from momx import my_insights as _my_insights
+                self._send_json(HTTPStatus.OK, _my_insights.build(_mi_days, artifacts=_my_insights_artifacts()))
+                return
             if parsed.path == "/api/momx-scanner/bot-truth":
                 # Truth check (2026-11-04): the BOT's virtual mid trades vs the
                 # real Alpaca paper orders on the same signals. Admin only, like
@@ -23350,6 +23371,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                     _bot_days = 5
                 self._send_momx_bot(_bot_days)
                 return
+            if parsed.path == "/api/momx-scanner/ticker-trader" or parsed.path.startswith("/api/momx-scanner/ticker-trader/"):
+                # Ticker trader (2026-11-13): simulated runs and their journal. Admin only here too;
+                # then proxied to the worker like the rest (falls through).
+                _tt_user = self._session_user()
+                if not (_tt_user and _tt_user.get("isAdmin")):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
             if parsed.path.startswith("/api/momx-scanner"):
                 # PROXY to momx_worker.py on :3010. api_server does NOT build
                 # boards: measured 2026-08-28, the same 30m fetch took 10s in a
@@ -23605,6 +23633,26 @@ class ApiHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 self._send_json(HTTPStatus.OK, strip)
+                return
+            if parsed.path == "/api/long-term/analyst":
+                # Analyst ratings and price targets (momx/analyst.py): Finnhub + FMP, one fetch per
+                # ticker per day, cached on disk. Read-only for signed-in users; not the app's rules.
+                if self._require_session_user() is None:
+                    return
+                _an_symbol = str(parse_qs(parsed.query).get("symbol", [""])[0]).strip().upper()
+                try:
+                    from momx import analyst as _analyst, chat_state as _an_chat_state
+                    # The Technical card (momx/chat_report.technical) peeks at the chart the app holds, as the chat does.
+                    _an_chat_state.bind(STATE, MARKET_STREAM)
+                    _an_override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+                    _an_payload = _analyst.payload(_an_symbol, artifacts=Path(_an_override) if _an_override else Path(ARTIFACTS_DIR))
+                except Exception:  # noqa: BLE001 - the screen says unavailable, the server stays up
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "analyst views unavailable"})
+                    return
+                if _an_payload.get("status") == "bad ticker":
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "symbol must be a ticker"})
+                    return
+                self._send_json(HTTPStatus.OK, _an_payload)
                 return
             if parsed.path == "/api/long-term" or parsed.path.startswith("/api/long-term/"):
                 # Long Term (Rule #1 / Buffett) screen. Imported lazily so a
@@ -23982,6 +24030,8 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             parsed = urlparse(self.path)
+            if parsed.path == "/api/bot-chat" and self._bot_chat_body_refused():
+                return
             body = self._read_json_body()
 
             if parsed.path == "/api/auth/bootstrap":
@@ -24017,6 +24067,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if not self._api_gate_passed(parsed.path):
                 return
+            if parsed.path == "/api/my-insights/refresh":
+                # My Trading's "refresh now": one read-only Schwab read on a
+                # quiet thread, at most once an hour, never on a day a sign-in
+                # failure stopped reading. Owner only. The body is ignored.
+                _mir_user = self._session_user()
+                if not (_mir_user and _mir_user.get("isAdmin")):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import schwab_history as _schwab_history
+                _mir_code, _mir_body = _schwab_history.request_manual(_my_insights_transport(), after=_my_insights_enrich)
+                self._send_json(HTTPStatus(_mir_code), _mir_body)
+                return
             if parsed.path == "/api/preflight/run":
                 # ADMIN ONLY, and it HEALS: this is the button that re-primes
                 # credentials and restarts warmers. Same reasoning as the GET,
@@ -24037,21 +24099,53 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # Ask the app (2026-11-10): the no-AI chatbot (momx/chatbot.py).
                 # It answers from the saved Bot / paper / Scorecard files only
                 # and never writes; a POST so the question stays out of the URL.
-                # Admin only: the answers are the owner's trades.
-                if self._require_admin_user() is None:
+                # Any signed-in user may ask, but what they get is decided here,
+                # from the session alone: the owner gets everything, a regular
+                # user the scanner history only (the same boards they can read
+                # on MomX Scanner). Nothing in the body can widen it.
+                _chat_user = self._require_session_user()
+                if _chat_user is None:
+                    return
+                # A temporary password has to be changed first. The screen
+                # enforces that, but a request can skip the screen.
+                if _chat_user.get("mustChangePassword"):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "Change your temporary password first."})
+                    return
+                _chat_override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+                _chat_dir = Path(_chat_override) if _chat_override else Path(ARTIFACTS_DIR)
+                _chat_owner = _chat_user.get("role") == "admin"
+                _chat_account = str(_chat_user.get("email") or _chat_user.get("id") or "").strip().lower()
+                _chat_context = body.get("context") if isinstance(body, dict) and isinstance(body.get("context"), dict) else None
+                # momx/chat_state.py: the chat peeks at what these two already hold; it never calls them to fetch.
+                from momx import chat_ai as _chatbot, chat_state as _chat_state
+                _chat_state.bind(STATE, MARKET_STREAM)
+                if isinstance(body, dict) and isinstance(body.get("more"), str):
+                    # The slow part of an answer (Google News, the AI's reasons, chart numbers), for the
+                    # session that asked; waits a few seconds at most and uses up no question.
+                    try:
+                        _chat_more = _chatbot.more_for_session(body["more"][:80], _chat_owner, _chat_account)
+                    except Exception:  # noqa: BLE001 - the card keeps its fast part
+                        _chat_more = {"more": {"done": True, "lines": ["The rest of the answer could not be read."], "articles": [], "reasons": []}}
+                    self._send_json(HTTPStatus.OK, _chat_more)
+                    return
+                if isinstance(body, dict) and body.get("home") is True:
+                    # The chat's opening cards: cached reads only, no question used up.
+                    try:
+                        _chat_home = _chatbot.home_for_session(_chat_dir, _chat_owner, _chat_account, _chat_context)
+                    except Exception:  # noqa: BLE001 - an empty home screen, never a broken chat
+                        _chat_home = {"home": {"cards": [], "chips": []}}
+                    self._send_json(HTTPStatus.OK, _chat_home)
                     return
                 _chat_q = body.get("question") if isinstance(body, dict) else None
                 if not isinstance(_chat_q, str) or not _chat_q.strip():
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Send a question"})
                     return
-                _chat_override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
-                # momx/chat_ai.py wraps the no-AI chatbot: the AI may understand an
-                # unrecognised question and write a short reply from the record
-                # lines; any AI failure leaves the records answer untouched.
-                from momx import chat_ai as _chatbot
+                # momx/chat_ai.py answers it: tools and saved records for the facts,
+                # the AI only to pick tools and write a short reply on top; any AI
+                # failure leaves the records answer untouched.
                 try:
-                    _chat_out = _chatbot.answer(_chat_q, Path(_chat_override) if _chat_override else Path(ARTIFACTS_DIR),
-                                                context=body.get("context") if isinstance(body.get("context"), dict) else None)
+                    _chat_out = _chatbot.answer_for_session(
+                        _chat_q, _chat_dir, is_owner=_chat_owner, account=_chat_account, context=_chat_context)
                 except Exception as exc:  # noqa: BLE001 - a question must never take the server down
                     _chat_out = {"intent": "error", "ticker": None, "day": None, "suggest": [],
                                  "lines": [f"I could not read the records for that question ({type(exc).__name__}). Nothing was changed."]}
@@ -24070,7 +24164,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # also why POST /rebuild 404'd through the browser while
                 # working against :3010 directly (verify agent, 2026-08-30).
                 if parsed.path in ("/api/momx-scanner/data-source", "/api/momx-scanner/paper-experiment-decision",
-                                   "/api/momx-scanner/paper-control"):
+                                   "/api/momx-scanner/paper-control") or parsed.path.startswith("/api/momx-scanner/ticker-trader/"):
                     # The "TOS" checkbox switches the scanner's data source for
                     # EVERY viewer (2026-09-30) - admin only, like preflight.
                     # Paper 5 rule Approve / Reject (2026-11-05) - admin only.
@@ -25127,6 +25221,20 @@ class ApiHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:
         return
 
+    def _bot_chat_body_refused(self) -> bool:
+        """A chat question is a few hundred bytes. Anything far bigger is refused before it is read."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return False                              # _read_json_body reports it
+        if length <= BOT_CHAT_MAX_BODY_BYTES:
+            return False
+        # Take a little of it, so a client that has already sent a modest body still gets the answer, then hang up.
+        self.rfile.read(min(length, BOT_CHAT_MAX_BODY_BYTES * 4))
+        self.close_connection = True
+        self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "That message is too long."})
+        return True
+
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
@@ -25307,14 +25415,16 @@ def _momx_bot_desk_clear() -> None:
         _MOMX_BOT_DESK.clear()
 
 
-def _momx_bot_desk(days: int) -> dict:
-    """The paper accounts' prop-firm style scorecard (momx/bot_desk.py), cached
-    30 s. Read-only: the small paper-mirror day files, never the broker."""
-    with _MOMX_BOT_DESK_LOCK:
-        hit = _MOMX_BOT_DESK.get(days)
-        gen = _MOMX_BOT_DESK_GEN
-    if hit and time.time() - hit[0] < 30:
-        return hit[1]
+#: Look-backs being rebuilt in the background right now (one rebuild at a time each).
+_MOMX_BOT_DESK_BUILDING: set = set()
+#: A copy this old is shown at once and refreshed behind it.
+_MOMX_BOT_DESK_FRESH_SECONDS = 30.0
+#: A copy older than this is never shown: the read waits for a new build (a first
+#: open after a long break must not show numbers from hours ago as the live answer).
+_MOMX_BOT_DESK_MAX_STALE_SECONDS = 150.0
+
+
+def _momx_bot_desk_build(days: int, gen: int) -> dict:
     override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
     base = Path(override) if override else Path(ARTIFACTS_DIR)
     from momx import bot_desk
@@ -25323,6 +25433,46 @@ def _momx_bot_desk(days: int) -> dict:
         if gen == _MOMX_BOT_DESK_GEN:
             _MOMX_BOT_DESK[days] = (time.time(), payload)
     return payload
+
+
+def _momx_bot_desk(days: int) -> dict:
+    """The paper accounts' prop-firm style scorecard (momx/bot_desk.py).
+    Read-only: the small paper-mirror day files, never the broker.
+
+    Shown at once, refreshed behind (2026-11-10, his "Taking too much time"):
+    before the open this process is saturated and a rebuild that takes 0.2 s
+    alone took several seconds, on every open of the page. So a saved copy is
+    always returned immediately; when it is older than 30 s one background
+    rebuild is started and the NEXT read gets the new numbers. Only the very
+    first read, and the first one after a Pause / Remove press (which clears
+    the copy so the screen cannot show the old state), waits for a build."""
+    with _MOMX_BOT_DESK_LOCK:
+        hit = _MOMX_BOT_DESK.get(days)
+        gen = _MOMX_BOT_DESK_GEN
+        if hit and time.time() - hit[0] >= _MOMX_BOT_DESK_MAX_STALE_SECONDS:
+            hit = None
+        stale = bool(hit) and time.time() - hit[0] >= _MOMX_BOT_DESK_FRESH_SECONDS
+        refresh = stale and days not in _MOMX_BOT_DESK_BUILDING
+        if refresh:
+            _MOMX_BOT_DESK_BUILDING.add(days)
+    if refresh:
+        def _rebuild() -> None:
+            try:
+                _momx_bot_desk_build(days, gen)
+            except Exception:  # noqa: BLE001 - the saved copy keeps being served
+                pass
+            finally:
+                with _MOMX_BOT_DESK_LOCK:
+                    _MOMX_BOT_DESK_BUILDING.discard(days)
+
+        try:
+            threading.Thread(target=_rebuild, name="bot-desk-refresh", daemon=True).start()
+        except RuntimeError:  # no thread to spare: the saved copy is served, the next read tries again
+            with _MOMX_BOT_DESK_LOCK:
+                _MOMX_BOT_DESK_BUILDING.discard(days)
+    if hit:
+        return hit[1]
+    return _momx_bot_desk_build(days, gen)
 
 
 def _momx_bot_payload(days: int) -> dict:
@@ -25411,6 +25561,58 @@ class ApiServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
+def _my_insights_artifacts() -> Path:
+    """Where My Trading reads the paper bots and saved chains (the Bot routes' folder)."""
+    override = os.environ.get("AGX_MOMX_GRADE_DIR", "").strip()
+    return Path(override) if override else Path(ARTIFACTS_DIR)
+
+
+def _my_insights_transport():
+    """The read-only Schwab GET for momx/schwab_history.py, on the trading profile.
+    Built per read; it can only GET the allow-listed trader/v1 paths."""
+    from momx import schwab_history as _schwab_history
+    return _schwab_history.schwab_transport(lambda: _schwab_client_for_profile("trading"))
+
+
+def _my_insights_enrich(store: dict) -> None:
+    """After a good read: saved-chain prices and scanner rows for the new fills (files only)."""
+    from momx import my_insights as _my_insights
+    _my_insights.enrich_store(store, _my_insights_artifacts())
+
+
+_MY_INSIGHTS_THREAD: threading.Thread | None = None
+
+
+def _my_insights_loop() -> None:
+    """Once a minute: the daily Schwab read after 16:30 ET on weekdays (claimed before
+    it is sent, never retried), and the 7-day market events copy every 6 hours.
+    Wrapped so it can never take the server down."""
+    from momx import market_events as _market_events, schwab_history as _schwab_history
+    while True:
+        try:
+            _schwab_history.run_daily_if_due(_my_insights_transport(), after=_my_insights_enrich)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if _market_events.due():
+                _market_events.refresh(lambda: STATE.forex_factory_us_news_payload(),
+                                       lambda: STATE.earnings_calendar_payload(days=7))
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(60.0)
+
+
+def _start_my_insights_scheduler() -> None:
+    """Started from main() only (never at import), like the preflight scheduler."""
+    global _MY_INSIGHTS_THREAD
+    if os.getenv("AGX_MY_INSIGHTS", "1") == "0":
+        return
+    if _MY_INSIGHTS_THREAD is not None and _MY_INSIGHTS_THREAD.is_alive():
+        return
+    _MY_INSIGHTS_THREAD = threading.Thread(target=_my_insights_loop, name="my-insights-daily", daemon=True)
+    _MY_INSIGHTS_THREAD.start()
+
+
 def main() -> None:
     global _IS_SERVING_PROCESS
     _IS_SERVING_PROCESS = True
@@ -25436,6 +25638,11 @@ def main() -> None:
         _start_preflight_scheduler()
         _start_schwab_expiry_watch()
     except Exception:
+        pass
+    # My Trading: the once-a-day read-only Schwab trade history (after 16:30 ET).
+    try:
+        _start_my_insights_scheduler()
+    except Exception:  # noqa: BLE001
         pass
     auto_login_email = str(os.getenv("LOCAL_AUTO_LOGIN_EMAIL", "") or "").strip()
     if auto_login_email:

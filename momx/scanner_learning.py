@@ -28,8 +28,9 @@ def snapshot(trade, side):
     keys = [t.get('key') if isinstance(t, Mapping) else None for t in types]
     if any(k not in SETUP_RULE_KEYS for k in keys) or len(set(keys)) != len(keys) or value.get('setupCount') != len(keys):
         return None
-    return {k: copy.deepcopy(value[k]) for k in ('version', 'highestLevel', 'setupTypes', 'setupCount',
-            'publicationAt', 'historyReady', 'increasing', 'sqz', 'fire', 'skittles') if k in value}
+    return {k: copy.deepcopy(value[k]) for k in ('version', 'ruleVersion', 'highestLevel', 'setupTypes', 'setupCount',
+            'publicationAt', 'historyReady', 'increasing', 'sqz', 'fire', 'skittles',
+            'confirms', 'rvol', 'rvolTimeframes') if k in value}
 
 
 def features(trade, side):
@@ -40,13 +41,18 @@ def features(trade, side):
     keys = {t['key'] for t in value['setupTypes']}
     out.update({'setup_' + key: float(key in keys) for key in SETUP_RULE_KEYS})
     out['setupCount'] = len(keys)
+    # His rule changed 2026-11-10 (ruleVersion 2): a level now counts any of RVOL / SQZ / Skittles,
+    # where before it meant "RVOL rising first". The two do not mean the same thing, so the confirm
+    # features stay unknown for new-rule records instead of mixing them into the old ones.
+    if value.get('ruleVersion') == 2:
+        return out
     # First observations are unknown, not negative examples of Level 1.
     if value.get('historyReady') is True or value['highestLevel'] > 0:
         out['confirmLevel'] = value['highestLevel']
         increasing = value.get('increasing')
         if isinstance(increasing, list):
             out['rvolIncreasingCount'] = len(set(increasing))
-    # scannerConfirmation evaluates confirmations only once RVOL reaches L1.
+    # Old-rule records only carried these once RVOL reached L1.
     if value['highestLevel'] > 0:
         for source, target in [('sqz', 'confirmSqz'), ('fire', 'confirmFire'), ('skittles', 'confirmSkittles')]:
             if type(value.get(source)) is bool:

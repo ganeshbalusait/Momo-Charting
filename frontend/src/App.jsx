@@ -23,6 +23,7 @@ import {
   ChevronRight,
   ChevronUp,
   ChevronsRight,
+  ClipboardList,
   Clock3,
   Columns3,
   Database,
@@ -63,13 +64,15 @@ import {
   WalletCards,
   Zap,
 } from "lucide-react";
-import { Component, Fragment, Profiler, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, startTransition } from "react";
+import { Component, Fragment, Profiler, Suspense, lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, startTransition } from "react";
 import { flushSync } from "react-dom";
 import AgxMark from "./AgxMark";
-import MomxScannerPanel from "./MomxScannerPanel.jsx";
-import BotPanel from "./BotPanel.jsx";
+import MomxScannerPanel, { activeScannerTicker, subscribeScannerTicker } from "./MomxScannerPanel.jsx";
+import BotPanel, { openBotLink } from "./BotPanel.jsx";
+import MyTradingPanel from "./MyTradingPanel.jsx";
+import { OPEN_LINK_EVENT, cleanLink, linkAllowed } from "./appLinks.js";
 import SectorHeatmapPanel from "./SectorHeatmapPanel.jsx";
-import LongTermPanel from "./LongTermPanel.jsx";
+import LongTermPanel, { openLongTermTicker } from "./LongTermPanel.jsx";
 import { CHART_LINK_CHANNEL, CHART_LINK_EVENT, TOS_LINK_GROUPS } from "./tosLinkGroups.js";
 import MomoAlertWatcher from "./MomoAlertWatcher.jsx";
 import { gradeUnderwaterNow, gradeWithinCandle, isBullishCallLabel, isBearishPutLabel } from "./momxGrade.js";
@@ -79,6 +82,7 @@ import ReleaseNotesPanel from "./ReleaseNotesPanel.jsx";
 import { parseReleases, readSeen, unreadCount } from "./releaseNotes.js";
 import { candleTimeFor, gradeStepMarkers } from "./gradeMarkers.js";
 import { consumeReleaseNotesMark, inTradingSession, offerUpdate } from "./appVersion.js";
+import { mag7OiScanControl, stockBotControl } from "./automationControls.js";
 import { SCHWAB_RENEW_GIVE_UP_MS, SCHWAB_RENEW_POLL_MS, SCHWAB_RENEW_TIMED_OUT, manualRenewal, manualRenewalAfter, manualRenewalNext, manualRenewalText, renewalBaseline, renewalProgress } from "./schwabRenewal.js";
 import { LEARN_CONTENT_VERSION, markLearnSeen, readLearnSeen, shouldAutoOpenLearn } from "./learnFirstVisit.js";
 import { nonJsonResponseError } from "./apiErrorMessage";
@@ -97,6 +101,7 @@ import {
 import { layoutChartAxisLabels, mergePivotAndOiAxisLabels } from "./chartAxisLabels";
 import { STOCHASX_DEFAULTS, calculateStochasX } from "./stochasX";
 import { dedupeDailyBars } from "./dailyBars.js";
+import { withoutDailySeedBadPrints } from "./chartBadPrints.js";
 import { setItemMakingRoom } from "./storageRoom.js";
 import { pruneOversizedBoardCaches } from "./momxCells.js";
 import { WOODIES_DEFAULTS, WOODIES_LEVELS, WOODIES_TIMEFRAMES, buildWoodiesPivots } from "./woodiesPivots.js";
@@ -196,6 +201,13 @@ import {
   chartTimeViewportRange,
   chartTrailingSessionHistorySlots,
   chartZoomLogicalRange,
+  chartLiveEdgeFutureSlots,
+  chartPanForwardLastIndex,
+  chartTimeViewportToPersist,
+  chartPanBoundsCacheUsable,
+  chartWholeBarLogicalRange,
+  chartZoomMemoryFromLogicalRange,
+  chartZoomMemoryLogicalRange,
   chartPanStepLogicalRange,
   clampExpandedPriceRangeToCandles,
   CHART_LAYOUT_VIEWPORT_VERSION,
@@ -353,6 +365,14 @@ import {
   startOiFinderRequest,
 } from "./oiFinderRequestPolicy";
 
+// A chat file that cannot load (an old tab after an update) must never take the whole app down.
+const ChatDock = lazy(() => import("./ChatDock.jsx").catch(() => ({ default: () => null })));
+// The door to the chat. One component on every page, so the conversation survives
+// a page change. It alone listens to the scanner's ticker, so that never re-renders App.
+function ChatDockDoor({ pageTicker, scannerPage, pageName, isOwner }) {
+  const scannerTicker = useSyncExternalStore(subscribeScannerTicker, activeScannerTicker, activeScannerTicker);
+  return <ChatDock pageTicker={scannerPage ? scannerTicker : pageTicker} pageName={pageName} isOwner={isOwner} />;
+}
 const MAG7 = "AAPL,MSFT,NVDA,AMZN,META,GOOGL,TSLA";
 const OI_FINDER_QUICK_TICKERS = ["SPY", "QQQ", "SLV", "AAPL", "AMZN", "GOOGL", "META", "MSFT", "NFLX", "NVDA", "TSLA", "AVGO", "USO"];
 // Panels the option-chain column's "+" menu can stack above the chain. Options is
@@ -1176,6 +1196,8 @@ const optionNavItems = [
   // next to 'bot'" - directly under Bot here; the phone sheet puts the two
   // side by side (mobileOverflowNavigation.SHEET_FIRST_LABELS).
   { label: "Long Term", icon: Landmark },
+  // My Trading (2026-11-11, "Yes build it"): the owner's real Schwab trades, read-only. Owner only.
+  { label: "My Trading", icon: ClipboardList, adminOnly: true },
   // Alpaca PAPER accounts back in the menu (2026-10-16, "I don't see alpaca
   // paper trade" -> "Do A and B"). Removed from the menu 2026-08-09; the
   // pages themselves never left. Admin only, like the trading routes.
@@ -1208,6 +1230,7 @@ function viewDescription(view) {
   if (view === "Auto Alert") return "Automatic OI-level alerts: 9:15 AM ET ladders for MAG7 + your tickers, confirmed on 5-minute closes";
   if (view === "MomX Scanner") return "TOS AlertX Bull Momo scan and watchlist board: RVOL, squeeze, and Skittles across 5m to monthly";
   if (view === "Bot") return "Virtual bot: every scanner rule traded with real option prices - which rule wins, which tickers, P/L";
+  if (view === "My Trading") return "Your real Schwab option trades, read once a day after the close: win rate, habits, spreads, you vs the paper bots";
   if (view === "Option Paper Trading") return "Option planning, approvals, and paper execution";
   if (view === "Paper Trading") return "Stock paper positions, automation, and risk controls";
   if (view === "Watchlist") return "Your saved tickers, shared by the scanners and the chart rails";
@@ -14024,6 +14047,10 @@ function OiFinderMultiChart({
     if (!baseSymbolChanged) return;
     const activeLinkGroup = Number(panelConfigs[activePanel]?.linkGroup || 2);
     const syncWholeWorkspace = syncPanelSymbols && !activeLayout.mag7 && panesShareOneLinkGroup;
+    // Link ticker Off with every pane in one colour means "a different ticker in
+    // each chart": only the active pane follows. Different colours still link
+    // by colour whatever the toggle says (see panesShareOneLinkGroup).
+    const colourLinked = syncPanelSymbols || !panesShareOneLinkGroup;
     setPanelConfigs((current) => {
       if (syncWholeWorkspace) {
         return updateSharedWorkspaceSymbol({
@@ -14033,13 +14060,13 @@ function OiFinderMultiChart({
         }, baseSymbol, OI_CHART_MAX_PANELS).panels;
       }
       return current.map((config, index) => (
-        (index === activePanel || Number(config.linkGroup) === activeLinkGroup) && config.symbol !== baseSymbol
+        (index === activePanel || (colourLinked && Number(config.linkGroup) === activeLinkGroup)) && config.symbol !== baseSymbol
           ? { ...config, symbol: baseSymbol }
           : config
       ));
     });
     setPanelFocusVersions((current) => current.map((version, index) => (
-      syncWholeWorkspace || index === activePanel || Number(panelConfigs[index]?.linkGroup) === activeLinkGroup
+      syncWholeWorkspace || index === activePanel || (colourLinked && Number(panelConfigs[index]?.linkGroup) === activeLinkGroup)
         ? version + 1
         : version
     )));
@@ -14073,6 +14100,7 @@ function OiFinderMultiChart({
     const symbol = normalizeOiChartSymbol(nextSymbol, panelConfigs[index]?.symbol || baseSymbol);
     const sourceGroup = Number(panelConfigs[index]?.linkGroup || 2);
     const syncWholeWorkspace = syncPanelSymbols && !activeLayout.mag7 && panesShareOneLinkGroup;
+    const colourLinked = syncPanelSymbols || !panesShareOneLinkGroup; // see the baseSymbol effect
     setPanelConfigs((current) => {
       if (syncWholeWorkspace) {
         return updateSharedWorkspaceSymbol({
@@ -14082,13 +14110,13 @@ function OiFinderMultiChart({
         }, symbol, OI_CHART_MAX_PANELS).panels;
       }
       return current.map((config, configIndex) => (
-        configIndex === index || Number(config.linkGroup) === sourceGroup
+        configIndex === index || (colourLinked && Number(config.linkGroup) === sourceGroup)
           ? { ...config, symbol }
           : config
       ));
     });
     setPanelFocusVersions((current) => current.map((version, configIndex) => (
-      syncWholeWorkspace || configIndex === index || Number(panelConfigs[configIndex]?.linkGroup) === sourceGroup
+      syncWholeWorkspace || configIndex === index || (colourLinked && Number(panelConfigs[configIndex]?.linkGroup) === sourceGroup)
         ? version + 1
         : version
     )));
@@ -15388,7 +15416,12 @@ function OiFinderCandleChart({
   // 60-day FIVE-minute tape: history for 3m/5m/10m/15m, which cannot be
   // rebuilt from the 30-minute studyBars.
   const [fineStudyTape, setFineStudyTape] = useState([]);
-  const [dailyBars, setDailyBars] = useState([]);
+  const [rawDailyBars, setDailyBars] = useState([]);
+  // The saved daily rows are built from the unfiltered minutes, so a day whose
+  // after-hours bad print the minute candles dropped still carried it here
+  // (SPY 2026-11-11: low 711.4601 on D/W/M and every daily level). Every
+  // daily consumer below reads the repaired seed (chartBadPrints.js).
+  const dailyBars = useMemo(() => withoutDailySeedBadPrints(rawDailyBars, bars), [rawDailyBars, bars]);
   const [tosMtfSignals, setTosMtfSignals] = useState([]);
   // TOS evaluates the MTF study once per CHART bar, so the server ships one
   // label set per chart timeframe ({"15": [...], "60": [...]}); the 5m set is
@@ -17202,19 +17235,43 @@ function OiFinderCandleChart({
   // range. getVisibleRange returns times, so this never stores a logical
   // index - the reflow that made the previous index-based span drift (and
   // pinned every ticker to a stale zoom) cannot affect it.
-  const persistChartTimeViewport = (timeScale) => {
+  //
+  // The zoom itself is remembered in CANDLES (chartZoomMemoryFromLogicalRange):
+  // a fractional wheel/drag zoom and the blank room ahead of the newest candle
+  // then restore exactly. A caller that has just SET a range passes it in,
+  // because the library applies a new range on its next frame and until then
+  // still reports the previous view (a zoom followed at once by a timeframe
+  // switch used to be remembered one step stale).
+  const persistChartTimeViewport = (timeScale, appliedLogicalRange = null) => {
     if (!timeScale?.getVisibleRange) return false;
-    const visible = timeScale.getVisibleRange();
-    const from = Number(visible?.from);
-    const to = Number(visible?.to);
-    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return false;
-    const latestCandleTime = Number(chartBars.at(-1)?.time || 0);
-    return storeChartTimeViewport(window.sessionStorage, chartTimeViewportKey, {
-      spanSeconds: to - from,
-      // Empty space held past the newest candle, so the live edge keeps the
-      // same breathing room after a reload.
-      forwardSeconds: latestCandleTime > 0 ? Math.max(0, to - latestCandleTime) : 0,
+    const displayed = displayedChartBarsRef.current;
+    const candleViewport = chartZoomMemoryFromLogicalRange({
+      logicalRange: appliedLogicalRange || timeScale.getVisibleLogicalRange?.(),
+      bars: Number(displayed?.minutes) === Number(selectedTimeframe.minutes)
+        && Array.isArray(displayed?.bars)
+        && displayed.bars.length
+        ? displayed.bars
+        : chartBars,
+      timeToIndex: (time) => timeScale.timeToIndex?.(time, true),
     });
+    if (candleViewport) {
+      return storeChartTimeViewport(window.sessionStorage, chartTimeViewportKey, candleViewport);
+    }
+    // The time range below is the library's own report, which is still the
+    // previous view right after a set; the queued layout save stores it once
+    // the range has been applied.
+    if (appliedLogicalRange) return false;
+    const visible = timeScale.getVisibleRange();
+    // Candle seconds only: the blank room past the newest candle carries the
+    // next session's times and has no honest length (see
+    // chartTimeViewportToPersist).
+    const viewport = chartTimeViewportToPersist({
+      visibleFrom: visible?.from,
+      visibleTo: visible?.to,
+      latestCandleTime: Number(chartBars.at(-1)?.time || 0),
+    });
+    if (!viewport) return false;
+    return storeChartTimeViewport(window.sessionStorage, chartTimeViewportKey, viewport);
   };
   chartLayoutProfileKeyRef.current = chartLayoutProfileKey;
   const visibleCandlePriceRangeForLayout = (visibleSpan, latestRatio) => {
@@ -17616,11 +17673,37 @@ function OiFinderCandleChart({
     // restoring an index span here is what caused the 2026-08-05 ratchet.
     // Framing still goes through the same time-based writer below, so staged
     // studies land on the identical window and nothing dances.
-    const rememberedRange = chartTimeViewportRange(
-      latestVisibleTime,
-      readChartTimeViewport(window.sessionStorage, chartTimeViewportKey),
-    );
-    if (rememberedRange) {
+    const rememberedViewport = readChartTimeViewport(window.sessionStorage, chartTimeViewportKey);
+    // The remembered zoom in CANDLES back from the newest candle (plus blank
+    // candle widths ahead of it). A candle count is not a logical index: it is
+    // turned into indexes only here, against the scale as it is right now, so
+    // the 2026-08-05 reflow ratchet cannot reach it, and it is null while the
+    // scale is still clamping (the seconds below then frame the chart).
+    const rememberedCandles = chartZoomMemoryLogicalRange({
+      viewport: rememberedViewport,
+      bars: chartBars,
+      timeToIndex: (time) => timeScale.timeToIndex(time, true),
+    });
+    if (rememberedCandles && !rememberedCandles.wholeBars) {
+      // A fractional zoom (mouse wheel, drag) or a view with blank room ahead
+      // of the newest candle (Return to latest) cannot be written as candle
+      // times: the time range rounds out to whole candles and cannot reach
+      // past the newest one. Same rule as below: no write when the chart is
+      // already there, so the repeat calls of each study stage do nothing.
+      const current = timeScale.getVisibleLogicalRange?.();
+      const alreadyFramed = current
+        && Math.abs(Number(current.from) - rememberedCandles.from) < 0.01
+        && Math.abs(Number(current.to) - rememberedCandles.to) < 0.01;
+      if (!alreadyFramed) {
+        timeScale.setVisibleLogicalRange({ from: rememberedCandles.from, to: rememberedCandles.to });
+      }
+      return;
+    }
+    const rememberedRange = chartTimeViewportRange(latestVisibleTime, rememberedViewport);
+    if (rememberedCandles) {
+      // Whole candles, no blank room: frame by the first candle's own TIME.
+      firstVisibleTime = rememberedCandles.firstTime;
+    } else if (rememberedRange) {
       // Only the FROM edge moves. setVisibleRange cannot express times past
       // the newest data point (the scale clamps, which would defeat the
       // already-framed comparison below and re-twitch every study stage), so
@@ -17700,7 +17783,7 @@ function OiFinderCandleChart({
       bars: chartBars,
       timeToIndex: (time) => timeScale.timeToIndex(time, true),
     });
-    const visibleFutureSlots = Math.min(futureLogicalSlots, Math.max(2, visibleSpan * 0.3));
+    const visibleFutureSlots = chartLiveEdgeFutureSlots({ visibleSpan, futureSlots: futureLogicalSlots });
     const nextFrom = Number(latestCandleIndex) - (visibleSpan - visibleFutureSlots);
     const nextTo = Number(latestCandleIndex) + visibleFutureSlots;
     // Defense in depth: skip the write when the view is already here. Even an
@@ -17709,9 +17792,11 @@ function OiFinderCandleChart({
     // unchanged view must be a no-op, not a re-frame.
     if (Math.abs(Number(visibleRange.from) - nextFrom) < 0.5
       && Math.abs(Number(visibleRange.to) - nextTo) < 0.5) {
-      return;
+      return { from: Number(visibleRange.from), to: Number(visibleRange.to) };
     }
     timeScale.setVisibleLogicalRange({ from: nextFrom, to: nextTo });
+    // The range this view is parked on, for the caller that remembers it.
+    return { from: nextFrom, to: nextTo };
   };
 
   // TradingView keeps following new candles as long as your view still SHOWS
@@ -17753,17 +17838,22 @@ function OiFinderCandleChart({
     });
   };
 
-  const focusLatestCandle = () => {
+  // forgetZoom=false is the automatic reframe after a timeframe or layout
+  // change: it must NOT wipe the per symbol+timeframe zoom memory, or a 5m zoom
+  // was gone after visiting 15m (2026-11-14). The Reset button passes a click
+  // event, which is not { forgetZoom: false }, so Reset still forgets.
+  const focusLatestCandle = (options) => {
+    const forgetZoom = options?.forgetZoom !== false;
     const timeScale = chartApiRef.current?.timeScale?.();
     if (!timeScale || !chartBars.length) return;
-    clearChartTimeViewport(window.sessionStorage, chartTimeViewportKey);
+    if (forgetZoom) clearChartTimeViewport(window.sessionStorage, chartTimeViewportKey);
     // Reset must also FORGET a saved zoom, not just reframe the current view.
     // An explicitly saved layout lives in localStorage and short-circuits the
     // opening framing on every load, so a layout saved while zoomed in stayed
     // stuck across reloads with no in-app way out - the only escape was
     // deleting the key from the console. Pane sizing is deliberately kept:
     // this button resets the ZOOM, not the upper/lower study split.
-    try {
+    if (forgetZoom) try {
       const parsed = JSON.parse(localStorage.getItem(OI_CHART_LAYOUT_PROFILES_STORAGE_KEY) || "{}");
       const profiles = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
       const saved = profiles[chartLayoutProfileKey];
@@ -17793,7 +17883,7 @@ function OiFinderCandleChart({
     const timeScale = chartApiRef.current?.timeScale?.();
     if (!timeScale || !chartBars.length) return;
     enableCandleAutoScale();
-    followLatestTimeScale(timeScale);
+    const parkedRange = followLatestTimeScale(timeScale);
     manualPriceNavigationRef.current = false;
     fitVisibleCandlePriceRangeRef.current?.();
     chartInitialViewRef.current = false;
@@ -17803,6 +17893,9 @@ function OiFinderCandleChart({
     // indicator points cannot replace that span with the opening preset.
     autoFollowLatestSymbolRef.current = "";
     manualTimeNavigationRef.current = true;
+    // Remember the parked view now (candles AND the blank room ahead), from
+    // the range just set, so a timeframe switch right after still has it.
+    if (parkedRange) persistChartTimeViewport(timeScale, parkedRange);
     queueChartLayoutSave();
   };
 
@@ -17882,18 +17975,23 @@ function OiFinderCandleChart({
       bars: selectedBars,
       timeToIndex: (time) => timeScale.timeToIndex(time, true),
     });
-    const nextRange = chartZoomLogicalRange({
+    // Whole bars only: the remembered zoom is stored as candle times, and a
+    // fractional view comes back about one candle wider (see
+    // chartWholeBarLogicalRange).
+    const nextRange = chartWholeBarLogicalRange(chartZoomLogicalRange({
       logicalRange: range,
       direction,
       firstCandleIndex,
       latestCandleIndex,
       futureSlots: futureLogicalSlots,
-    });
+    }));
     if (!nextRange) return;
     timeScale.setVisibleLogicalRange(nextRange);
-    // Read the resulting range back in TIME and persist that, so the stored
-    // zoom never carries a logical index across a reflow.
-    persistChartTimeViewport(timeScale);
+    // Remember the range just SET, not what the chart reports: the library
+    // applies it on its next frame and until then still reports the previous
+    // view. It is stored as candles and candle seconds, never as a logical
+    // index, so nothing here can cross a reflow.
+    persistChartTimeViewport(timeScale, nextRange);
     queueChartLayoutSave();
   };
 
@@ -17914,12 +18012,14 @@ function OiFinderCandleChart({
   const chartPanBounds = () => {
     // timeToIndex is the only honest way to turn a candle time into a logical
     // index, but the disabled-state probe below runs on the scroll hot path,
-    // so the answer is cached for a beat - the mapping only moves when bars
-    // arrive, and a slightly stale bound can only shorten a step, never
-    // reverse one.
+    // so the expensive part (slots per candle, two dozen lookups) is cached
+    // for a beat. The newest candle's index is looked up every time - one
+    // binary search - and the cache is dropped the moment it or the tape
+    // differs: the greyed state of the forward arrow depends on it, and a
+    // bound cached mid timeframe-switch used to decide it for the settled
+    // chart.
     const cache = panBoundsCacheRef.current;
     const now = performance.now();
-    if (cache.bounds && now - cache.at < 400) return cache.bounds;
     const timeScale = chartApiRef.current?.timeScale?.();
     const bars = Array.isArray(displayedChartBarsRef.current?.bars)
       ? displayedChartBarsRef.current.bars
@@ -17928,16 +18028,19 @@ function OiFinderCandleChart({
     const firstCandleTime = Number(bars[0]?.time || 0);
     const latestCandleTime = Number(bars.at(-1)?.time || 0);
     if (!(firstCandleTime > 0) || !(latestCandleTime > 0)) return null;
-    const firstIndex = Number(timeScale.timeToIndex?.(firstCandleTime, true));
     const latestIndex = Number(timeScale.timeToIndex?.(latestCandleTime, true));
+    if (chartPanBoundsCacheUsable({ cache, nowMs: now, bars, latestIndex })) return cache.bounds;
+    const firstIndex = Number(timeScale.timeToIndex?.(firstCandleTime, true));
     if (![firstIndex, latestIndex].every(Number.isFinite)) return null;
     const { futureSlots } = defaultTradingViewScale();
     const futureLogicalSlots = futureSlots * chartLogicalSlotsPerCandle({
       bars,
       timeToIndex: (time) => timeScale.timeToIndex(time, true),
     });
-    const bounds = { firstIndex, lastIndex: latestIndex + futureLogicalSlots };
-    panBoundsCacheRef.current = { at: now, bounds };
+    // latestIndex and futureLogicalSlots are kept apart because the forward
+    // end depends on the view being panned (chartPanForwardLastIndex).
+    const bounds = { firstIndex, latestIndex, futureLogicalSlots };
+    panBoundsCacheRef.current = { at: now, bars, bounds };
     return bounds;
   };
 
@@ -17949,7 +18052,15 @@ function OiFinderCandleChart({
       logicalRange: range,
       direction,
       firstIndex: bounds?.firstIndex,
-      lastIndex: bounds?.lastIndex,
+      // Forward is finished once the newest candle is on screen; until then it
+      // walks to where "Return to latest" parks a view of this width.
+      lastIndex: bounds
+        ? chartPanForwardLastIndex({
+          logicalRange: range,
+          latestIndex: bounds.latestIndex,
+          futureSlots: bounds.futureLogicalSlots,
+        })
+        : undefined,
     });
   };
 
@@ -17985,7 +18096,7 @@ function OiFinderCandleChart({
     lastAutoFocusedSymbolRef.current = normalizedChartSymbol;
     autoFollowLatestSymbolRef.current = "";
     timeScale.setVisibleLogicalRange(nextRange);
-    persistChartTimeViewport(timeScale);
+    persistChartTimeViewport(timeScale, nextRange);
     queueChartLayoutSave();
     refreshPanStepReady(nextRange);
     return true;
@@ -18049,7 +18160,7 @@ function OiFinderCandleChart({
           autoFollowLatestSymbolRef.current = normalizedChartSymbol;
           manualTimeNavigationRef.current = false;
           manualPriceNavigationRef.current = false;
-          focusLatestCandle();
+          focusLatestCandle({ forgetZoom: false });
         });
       });
       return () => {
@@ -18526,6 +18637,10 @@ function OiFinderCandleChart({
     let staleRefreshTimer = 0;
     let queuedFullHistoryRefresh = false;
     let queuedFullTapeLoad = false;
+    // True while the request in flight IS the deep tape. Two overlapping
+    // history-status chains both saw historyReady and asked again, queueing a
+    // second identical ~6.7 MB pull (2026-11-14).
+    let fullTapeInFlight = false;
     let queuedFullHistoryRefreshTimer = 0;
     // Keep the in-flight guard scoped to this symbol effect. A shared ref can
     // still be true when the user switches tickers, which skips the new
@@ -18613,11 +18728,12 @@ function OiFinderCandleChart({
         // still downloading. Do not discard that full TOS backfill request:
         // run it immediately after the current request settles.
         if (refreshServerHistory) queuedFullHistoryRefresh = true;
-        if (forceFullTape) queuedFullTapeLoad = true;
+        if (forceFullTape && !fullTapeInFlight) queuedFullTapeLoad = true;
         return;
       }
       if (gapPollTimer) { window.clearTimeout(gapPollTimer); gapPollTimer = 0; }
       requestInFlight = true;
+      fullTapeInFlight = forceFullTape;
       let deliveredBars = false;
       requestStartedAt = Date.now();
       const cacheDecision = oiChartClientCacheDecision(
@@ -18856,6 +18972,7 @@ function OiFinderCandleChart({
         if (!cancelled) setChartError(requestError instanceof Error ? requestError.message : "Live candle chart unavailable.");
       } finally {
         requestInFlight = false;
+        fullTapeInFlight = false;
         if (!cancelled
           && (queuedFullHistoryRefresh || queuedFullTapeLoad)
           && !queuedFullHistoryRefreshTimer) {
@@ -18970,7 +19087,7 @@ function OiFinderCandleChart({
       // socket died with the suspension and its `finally` will never clear the
       // in-flight flag, so every later loadChart returns early forever. This is
       // what left CRWV frozen on 19:55 candles for twelve hours.
-      if (decision.abandonRequest) requestInFlight = false;
+      if (decision.abandonRequest) { requestInFlight = false; fullTapeInFlight = false; }
       // After hours the tape is always "old", but a rebuild cannot add bars
       // then - a plain reload fetches whatever the server already holds.
       if (decision.mode === "full" && chartServerRebuildAllowed()) loadChart(true, true);
@@ -19299,6 +19416,11 @@ function OiFinderCandleChart({
       if (shouldUseEquityTradeForChart({
         equityTime: Math.floor(eventMillis / 1000),
         latestBarTime: latestRawBarTimeRef.current,
+        // The REST quote is stamped with the browser's receive time, so it
+        // may not open a candle with no tape, nor a new minute outside the
+        // extended session (chartServerRebuildAllowed is that same clock).
+        receiveTimeOnly: restFallback,
+        sessionOpen: chartServerRebuildAllowed(),
       })) {
         latestEquityTradeMinuteRef.current = Math.max(
           Number(latestEquityTradeMinuteRef.current || 0),
@@ -24698,6 +24820,8 @@ function OiFinderCandleChart({
 }
 
 function formatEarningsEstimate(value) {
+  // Number(null) is 0 and passes isFinite: a missing estimate showed as $0.00.
+  if (value === null || value === undefined || value === "") return "--";
   const numeric = Number(value);
   return Number.isFinite(numeric) ? `$${numeric.toFixed(2)}` : "--";
 }
@@ -25110,7 +25234,7 @@ function BacktestStatus({ job }) {
   );
 }
 
-function PaperTradeStatusBanner({ dashboard, sessionStatus }) {
+function PaperTradeStatusBanner({ dashboard, sessionStatus, action = null }) {
   const blockStatus = dashboard.scheduler?.entryBlockStatus || "";
   const blockMessage = dashboard.scheduler?.entryBlockMessage || "";
   const stockAutoReadiness = dashboard.stockAutoReadiness || {};
@@ -25165,6 +25289,7 @@ function PaperTradeStatusBanner({ dashboard, sessionStatus }) {
         <small>{accountLabel}</small>
         <small>{sessionStatus?.currentSession || "Closed"} session</small>
         <small>Position checks: {dashboard.stockPositionManager?.intervalSeconds || 5}s</small>
+        {action}
       </div>
     </section>
   );
@@ -26132,7 +26257,8 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
     try {
       const stored = window.localStorage.getItem(ACTIVE_VIEW_STORAGE_KEY);
-      if (stored === "Settings" || optionNavItems.some((item) => item.label === stored)) return stored;
+      // An owner-only page remembered by this browser must not open for a member.
+      if (stored === "Settings" || optionNavItems.some((item) => item.label === stored && (!item.adminOnly || authUser?.isAdmin))) return stored;
     } catch {
       // Storage unavailable: fall through to the default page.
     }
@@ -26395,6 +26521,9 @@ function TradingWorkspace({ authUser, onLogout }) {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [accountMessage, setAccountMessage] = useState("");
+  // The key-save confirmation sits next to the Save buttons; in the account
+  // card it was ~2,200px above them on a phone and never seen.
+  const [apiKeyMessage, setApiKeyMessage] = useState(null); // { provider, text }
   const [adminUsers, setAdminUsers] = useState([]);
   // Two-tap delete, not window.confirm(): some phone in-app browsers
   // (WKWebView without a dialog delegate) resolve confirm() to false
@@ -27318,14 +27447,16 @@ function TradingWorkspace({ authUser, onLogout }) {
     }
   };
 
-  const loadApiKeySummary = async () => {
+  // quiet: the member's mount-time load for the ALPACA lamp must not leave a
+  // stale error in the account card that a later good load never clears.
+  const loadApiKeySummary = async ({ quiet = false } = {}) => {
     try {
       const response = await fetch("/api/user/api-keys");
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "API key status unavailable.");
       setApiKeySummary(payload);
     } catch (requestError) {
-      setAccountMessage(requestError instanceof Error ? requestError.message : "API key status unavailable.");
+      if (!quiet) setAccountMessage(requestError instanceof Error ? requestError.message : "API key status unavailable.");
     }
   };
 
@@ -27403,6 +27534,8 @@ function TradingWorkspace({ authUser, onLogout }) {
       const payload = await readJsonResponse(response);
       if (!response.ok) {
         setPreflightError(preflightErrorMessage(response.status, payload?.error));
+        // Old check rows must not stand under the error as if they were current.
+        setPreflightPayload(null);
         return;
       }
       // The POST may answer with just the fresh run and no archive, so merge
@@ -27456,6 +27589,13 @@ function TradingWorkspace({ authUser, onLogout }) {
     return () => clearInterval(timer);
   }, [activeView, authUser?.isAdmin]);
 
+  // A member's own saved Alpaca key lights the ALPACA lamp on every page, not
+  // only after they visit Settings (the summary used to load only there).
+  useEffect(() => {
+    if (authUser?.id && !authUser?.isAdmin) loadApiKeySummary({ quiet: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser?.id, authUser?.isAdmin]);
+
   useEffect(() => {
     if (activeView !== "Settings") return;
     loadApiKeySummary();
@@ -27480,7 +27620,8 @@ function TradingWorkspace({ authUser, onLogout }) {
     const syncedStopPercent = String(config.stopLossPercent ?? 2);
     setStopLossPercent(syncedStopPercent);
     setStopLossAmount(String(config.stopLossAmount ?? 100));
-    setFirstProfitTargetPercent(syncedStopPercent);
+    // The saved target, not the stop %: the box showed the stop % because of this line.
+    setFirstProfitTargetPercent(String(config.firstProfitTargetPercent ?? syncedStopPercent));
   }, [
     dashboard.riskConfig?.dailyTradeAmount,
     dashboard.riskConfig?.tradeAmount,
@@ -27739,7 +27880,7 @@ function TradingWorkspace({ authUser, onLogout }) {
   const savePersonalApiKey = async (provider) => {
     const pendingKey = `api-key-${provider}`;
     setSubmitting(pendingKey);
-    setAccountMessage("");
+    setApiKeyMessage(null);
     try {
       const requestBody = provider === "alpaca_market_data"
         ? { provider, keyId: alpacaKeyId, secretKey: alpacaSecretKey }
@@ -27755,9 +27896,9 @@ function TradingWorkspace({ authUser, onLogout }) {
       setAlpacaKeyId("");
       setAlpacaSecretKey("");
       setTradierAccessToken("");
-      setAccountMessage("Your API credentials were encrypted and saved.");
+      setApiKeyMessage({ provider, text: "Your API credentials were encrypted and saved." });
     } catch (requestError) {
-      setAccountMessage(requestError instanceof Error ? requestError.message : "Unable to save API credentials.");
+      setApiKeyMessage({ provider, text: requestError instanceof Error ? requestError.message : "Unable to save API credentials." });
     } finally {
       setSubmitting("");
     }
@@ -28529,6 +28670,52 @@ function TradingWorkspace({ authUser, onLogout }) {
       try { channel?.close(); } catch { /* already closed */ }
     };
   }, [openChartSignalChart, popoutConfig.mode]);
+
+  // A button in a chat answer. Main window only, and refs only, so this adds no
+  // state and no re-render of its own. The Paper pages check nothing but activeView,
+  // so an owner page is refused here for anyone else. A link only moves the screen.
+  const chooseOiFinderTickerLatestRef = useRef(chooseOiFinderTicker);
+  chooseOiFinderTickerLatestRef.current = chooseOiFinderTicker;
+  const oiFinderSymbolLatestRef = useRef(oiFinderSymbol);
+  oiFinderSymbolLatestRef.current = oiFinderSymbol;
+  const isOwnerLatestRef = useRef(false);
+  isOwnerLatestRef.current = Boolean(authUser?.isAdmin);
+  useEffect(() => {
+    if (popoutConfig.mode) return undefined;
+    const onOpen = (event) => {
+      const link = cleanLink(event?.detail);
+      if (!link || !linkAllowed(link, isOwnerLatestRef.current)) return;
+      setMobileMoreOpen(false);
+      const { view, ticker } = link;
+      if (view === "Charts & OI" && ticker) {
+        hasChosenPageRef.current = true;
+        setMobileChartSection("chart");
+        // A timeframe the chart does not draw opens on 5m rather than being dropped.
+        const timeframe = OI_CHART_TIMEFRAMES.some((item) => item.key === link.timeframe) ? link.timeframe : "5m";
+        openChartSignalChart(ticker, timeframe, "chat");
+        return;
+      }
+      if (view === "Quick Options" && ticker) {
+        // The same symbol would force a refresh of a chain already on screen.
+        if (ticker !== oiFinderSymbolLatestRef.current) chooseOiFinderTickerLatestRef.current(ticker);
+        warmMobileQuickOptions(ticker).catch(() => {});
+      } else if (view === "News Feed" && ticker) {
+        setNewsSearchDraft(ticker);
+        setNewsSearch(ticker);
+        setNewsUniverse("all");
+      } else if (view === "Premarket Scanner" && link.day) {
+        setScannerHistoryOpen(true);
+        setScannerHistorySelectedDate(link.day);
+      } else if (view === "Long Term" && ticker) {
+        openLongTermTicker(ticker);
+      } else if (view === "Bot" && link.sub) {
+        openBotLink(link.sub);
+      }
+      chooseMainPage(view);
+    };
+    window.addEventListener(OPEN_LINK_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_LINK_EVENT, onOpen);
+  }, [chooseMainPage, openChartSignalChart, popoutConfig.mode]);
 
   const handleChartsAndOiNavigationIntent = useCallback((intentId) => {
     setChartsAndOiNavigationIntent((current) => (
@@ -29344,6 +29531,11 @@ function TradingWorkspace({ authUser, onLogout }) {
   const optionWorkflowActive = activeView === "Option Paper Trading";
   const activeNavItem = optionNavItems.find((item) => item.label === activeView) || optionNavItems[0];
   const ActiveViewIcon = activeNavItem.icon;
+  // One description each for the two controls that only the unreachable
+  // Dashboard had: shared by the Dashboard strip, the Stock Paper Trading
+  // banner and the Mag7 Watchlist page.
+  const stockBot = stockBotControl(dashboard.botState);
+  const mag7OiScan = mag7OiScanControl(submitting, dashboard.oiScannerAuto);
   const marketDataConnected = Boolean(dashboard.streaming?.marketDataConnected || dashboard.streaming?.enabled);
   const optionAccount = dashboard.optionAccount || dashboard.optionBot?.account || defaultDashboard.optionAccount;
   const optionAccounts = dashboard.optionAccounts || [];
@@ -29756,7 +29948,7 @@ function TradingWorkspace({ authUser, onLogout }) {
             <label className="top-search">
               <Search size={17} strokeWidth={1.8} />
               <input
-                aria-label={newsPageActive ? "News search" : oiFinderSurfacePageActive ? "Ticker from watchlist" : "Ticker or contract search"}
+                aria-label={newsPageActive ? "News search (top bar)" : oiFinderSurfacePageActive ? "Ticker from watchlist" : "Ticker or contract search"}
                 placeholder={newsPageActive ? "Search news or ticker" : oiFinderSurfacePageActive ? "Search ticker" : "Ticker or contract"}
                 autoComplete={oiFinderSurfacePageActive ? "off" : undefined}
                 value={newsPageActive ? newsSearchDraft : oiFinderSurfacePageActive ? oiFinderDraft : symbolLookup}
@@ -30077,17 +30269,13 @@ function TradingWorkspace({ authUser, onLogout }) {
               </div>
               <div className="dashboard-control-actions">
                 <button
-                  className={dashboard.botState === "Running" ? "is-running" : ""}
+                  className={stockBot.running ? "is-running" : ""}
                   disabled={Boolean(submitting)}
-                  onClick={() => runAction(
-                    "/api/bot-control",
-                    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state: dashboard.botState === "Running" ? "Paused" : "Running" }) },
-                    "dashboard-stock-bot",
-                  )}
+                  onClick={() => runAction(...stockBot.action)}
                   type="button"
                 >
                   <Bot size={16} />
-                  <span><b>{dashboard.botState === "Running" ? "Pause Stock Bot" : "Start Stock Bot"}</b><small>{dashboard.botState}</small></span>
+                  <span><b>{stockBot.label}</b><small>{dashboard.botState}</small></span>
                 </button>
                 <button
                   className={dashboard.optionBot?.state === "Running" ? "is-running" : ""}
@@ -30112,15 +30300,11 @@ function TradingWorkspace({ authUser, onLogout }) {
                 </button>
                 <button
                   disabled={Boolean(submitting)}
-                  onClick={() => runAction(
-                    "/api/oi-scan",
-                    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ universe: "mag7" }) },
-                    "dashboard-mag7-oi",
-                  )}
+                  onClick={() => runAction(...mag7OiScan.action)}
                   type="button"
                 >
-                  <ScanSearch className={submitting === "dashboard-mag7-oi" ? "is-spinning" : ""} size={16} />
-                  <span><b>{submitting === "dashboard-mag7-oi" ? "Scanning MAG7..." : "Scan MAG7 OI"}</b><small>{dashboard.oiScannerAuto?.symbols?.length || 7} symbols · Schwab/TOS</small></span>
+                  <ScanSearch className={mag7OiScan.scanning ? "is-spinning" : ""} size={16} />
+                  <span><b>{mag7OiScan.label}</b><small>{mag7OiScan.note}</small></span>
                 </button>
               </div>
               {(submitting || dashboard.scanJob?.running) && (
@@ -30622,10 +30806,24 @@ function TradingWorkspace({ authUser, onLogout }) {
           <PremarketMag7Plan plan={dashboard.mag7PremarketPlan} onRefresh={loadDashboard} />
         )}
 
-        {activeView === "Paper Trading" && (
+        {activeView === "Paper Trading" && authUser?.isAdmin && (
           <section className="paper-trading-layout">
             <div className="paper-trading-stack">
-            <PaperTradeStatusBanner dashboard={dashboard} sessionStatus={sessionStatus} />
+            <PaperTradeStatusBanner
+              dashboard={dashboard}
+              sessionStatus={sessionStatus}
+              action={(
+                <button
+                  className="config-save-button paper-bot-banner-action"
+                  data-testid="stock-bot-toggle"
+                  disabled={Boolean(submitting)}
+                  onClick={() => runAction(...stockBot.action)}
+                  type="button"
+                >
+                  {stockBot.label}
+                </button>
+              )}
+            />
             <section className="data-card">
               <div className="table-toolbar"><span>RISK SETTINGS</span><span>Live paper trade controls</span></div>
               <div className="config-stack risk-config-grid">
@@ -30801,7 +30999,7 @@ function TradingWorkspace({ authUser, onLogout }) {
           </section>
         )}
 
-        {activeView === "Option Paper Trading" && (
+        {activeView === "Option Paper Trading" && authUser?.isAdmin && (
           <section className="paper-trading-layout">
             <div className="paper-trading-stack">
               <section className={`paper-bot-banner tone-${statusTone(optionBotState)}`}>
@@ -30812,7 +31010,14 @@ function TradingWorkspace({ authUser, onLogout }) {
                 </div>
                 <div className="paper-bot-banner-meta">
                   <strong>{formatDateTime(dashboard.status.clockTime)}</strong>
-                  <small>Underlying signals from {dashboard.streaming?.signalSource || "market data"} | orders disabled</small>
+                  <small>Underlying signals from {dashboard.streaming?.signalSource || "market data"} | {(() => {
+                    // The server only sends to the broker in automatic mode
+                    // (human mode queues plans for approval).
+                    const state = String(optionBotState || "").toLowerCase();
+                    if (state === "running") return optionApprovalMode === "automatic" ? "Alpaca paper orders on" : "orders wait for your approval";
+                    if (state === "paused") return "orders paused";
+                    return "orders off";
+                  })()}</small>
                 </div>
               </section>
 
@@ -31416,6 +31621,12 @@ function TradingWorkspace({ authUser, onLogout }) {
           </section>
         )}
 
+        {activeView === "My Trading" && authUser?.isAdmin && (
+          <section className="my-trading-view" data-testid="my-trading-view">
+            <MyTradingPanel />
+          </section>
+        )}
+
         {activeView === "Learn + Setup" && (
           <section className="learn-view" data-testid="learn-view">
             <LearningCenter onNavigate={setActiveView} />
@@ -31511,6 +31722,15 @@ function TradingWorkspace({ authUser, onLogout }) {
                 <span>{newsFeedRows.length} matching headlines</span>
               </div>
               <div className="news-filter-row">
+                {/* The search lives here: the top command bar that used to hold it
+                    is display:none on every page in the clean look (2026-11-14). */}
+                <label className="news-search-field"><span>Search</span><input
+                  aria-label="News search"
+                  placeholder="News or ticker, then Enter"
+                  value={newsSearchDraft}
+                  onChange={(event) => setNewsSearchDraft(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") setNewsSearch(newsSearchDraft.trim()); }}
+                /></label>
                 <label><span>Freshness</span><select value={newsFreshnessFilter} onChange={(event) => setNewsFreshnessFilter(event.target.value)}><option value="week">Last 7 days</option><option value="today">Last 24 hours</option><option value="breaking">Last hour</option><option value="all">All stored</option></select></label>
                 <label><span>Rating</span><select value={newsRatingFilter} onChange={(event) => setNewsRatingFilter(event.target.value)}><option value="all">All ratings</option><option value="3">3 / 3 strong</option><option value="2">2 / 3 positive</option><option value="1">1 / 3 neutral</option><option value="0">0 / 3 risk</option></select></label>
                 <label><span>News type</span><select value={newsTypeFilter} onChange={(event) => setNewsTypeFilter(event.target.value)}><option value="all">All news types</option>{newsTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
@@ -31668,6 +31888,26 @@ function TradingWorkspace({ authUser, onLogout }) {
               <button className="watchlist-close" onClick={() => setActiveView("Charts & OI")} type="button">x</button>
             </div>
             <div className="watchlist-panel-body">
+              {/* Scan MAG7 OI (2026-11-14): the only button for this was on the
+                  Dashboard view, which no menu opens. Same request, same busy
+                  state, same progress line as the Dashboard strip. */}
+              <div className="watchlist-addbar mag7-oi-scan-bar" data-testid="mag7-oi-scan">
+                <p className="watchlist-helper">Run the MAG7 open-interest scan now · {mag7OiScan.note}</p>
+                <button
+                  className="watchlist-add-button"
+                  disabled={Boolean(submitting)}
+                  onClick={() => runAction(...mag7OiScan.action)}
+                  type="button"
+                >
+                  {mag7OiScan.label}
+                </button>
+                {mag7OiScan.scanning && (
+                  <div className="dashboard-control-progress" role="status">
+                    <RefreshCw className="is-spinning" size={14} />
+                    <span>{dashboard.oiScannerAuto?.message || "Starting the MAG7 OI scan..."}</span>
+                  </div>
+                )}
+              </div>
               <div className="watchlist-addbar">
                 <input
                   value={mag7ScannerSymbol}
@@ -32396,11 +32636,13 @@ function TradingWorkspace({ authUser, onLogout }) {
                         <label>API key ID<input autoComplete="off" value={alpacaKeyId} onChange={(event) => setAlpacaKeyId(event.target.value)} placeholder={apiKeySummary.alpaca?.configured ? "Leave blank to keep saved key" : "Alpaca API key ID"} /></label>
                         <label>API secret<input autoComplete="new-password" type="password" value={alpacaSecretKey} onChange={(event) => setAlpacaSecretKey(event.target.value)} placeholder={apiKeySummary.alpaca?.configured ? "Leave blank to keep saved secret" : "Alpaca API secret"} /></label>
                         <button disabled={submitting === "api-key-alpaca_market_data"} onClick={() => savePersonalApiKey("alpaca_market_data")} type="button">{submitting === "api-key-alpaca_market_data" ? "Saving..." : "Save Alpaca keys"}</button>
+                        {apiKeyMessage?.provider === "alpaca_market_data" ? <div className="schwab-settings-message" role="status">{apiKeyMessage.text}</div> : null}
                       </div>
                       <div className="personal-provider-card">
                         <header><b>Tradier fallback data</b><span>{apiKeySummary.tradier?.configured ? apiKeySummary.tradier.tokenMasked : "Not configured"}</span></header>
                         <label>Access token<input autoComplete="new-password" type="password" value={tradierAccessToken} onChange={(event) => setTradierAccessToken(event.target.value)} placeholder={apiKeySummary.tradier?.configured ? "Leave blank to keep saved token" : "Tradier access token"} /></label>
                         <button disabled={submitting === "api-key-tradier"} onClick={() => savePersonalApiKey("tradier")} type="button">{submitting === "api-key-tradier" ? "Saving..." : "Save Tradier token"}</button>
+                        {apiKeyMessage?.provider === "tradier" ? <div className="schwab-settings-message" role="status">{apiKeyMessage.text}</div> : null}
                       </div>
                     </div>
                   </div>
@@ -32505,6 +32747,8 @@ function TradingWorkspace({ authUser, onLogout }) {
           <span className="mobile-nav-bell">
             <LayoutPanelTop size={20} />
             {oiAutoAlertFeed.unseen ? <i className="nav-auto-alert-badge">{oiAutoAlertFeed.unseen > 9 ? "9+" : oiAutoAlertFeed.unseen}</i> : null}
+            {/* The phone's only sign that a new version landed (the sidebar dot is hidden here). */}
+            {releaseNotesUnread ? <i className="nav-unread-dot is-mobile-more" data-testid="release-notes-unread-mobile" aria-label="New release notes" /> : null}
           </span>
           <span>More</span>
         </button>
@@ -32542,12 +32786,19 @@ function TradingWorkspace({ authUser, onLogout }) {
                   >
                     {Icon ? <Icon size={19} /> : null}
                     <span>{overflowDestinationLabel(item)}</span>
+                    {item.label === "Release Notes" && releaseNotesUnread ? <i className="nav-unread-dot is-inline" aria-label="Unread" /> : null}
                   </button>
                 );
               })}
             </div>
           </div>
         </div>
+      ) : null}
+      {/* The chat window on every page, loaded after first paint: the owner's full chat, scanner questions only for anyone else. Only plain values go in. */}
+      {authUser && !authUser.mustChangePassword && !popoutConfig.mode ? (
+        <Suspense fallback={null}>
+          <ChatDockDoor pageTicker={quickOptionsPageActive || chartsAndOiPageActive ? String(oiFinderSymbol || "") : ""} scannerPage={activeView === "MomX Scanner"} pageName={activeView} isOwner={Boolean(authUser?.isAdmin)} />
+        </Suspense>
       ) : null}
     </div>
   );

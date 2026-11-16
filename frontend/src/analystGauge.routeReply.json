@@ -1,0 +1,66 @@
+{
+ "symbol": "NVDA",
+ "status": "fresh",
+ "label": "Analyst views from Finnhub and FMP, not the app's rules and not advice.",
+ "views": {
+  "symbol": "NVDA",
+  "fetchedAt": "2026-11-11T12:40:00-05:00",
+  "day": "2026-11-11",
+  "finnhub": {
+   "months": [
+    {
+     "period": "2026-11-01",
+     "strongBuy": 24,
+     "buy": 38,
+     "hold": 5,
+     "sell": 1,
+     "strongSell": 0
+    },
+    {
+     "period": "2026-10-01",
+     "strongBuy": 23,
+     "buy": 37,
+     "hold": 6,
+     "sell": 1,
+     "strongSell": 0
+    }
+   ]
+  },
+  "targets": {
+   "targetHigh": 360.0,
+   "targetLow": 140.0,
+   "targetConsensus": 252.5,
+   "targetMedian": 250.0
+  },
+  "summary": {
+   "lastMonthCount": 12.0,
+   "lastMonthAvgPriceTarget": 255.0,
+   "lastQuarterCount": null,
+   "lastQuarterAvgPriceTarget": null,
+   "lastYearCount": null,
+   "lastYearAvgPriceTarget": null,
+   "publishers": [
+    "Benzinga"
+   ]
+  },
+  "grades": {
+   "strongBuy": 1,
+   "buy": 60,
+   "hold": 6,
+   "sell": 1,
+   "strongSell": 0,
+   "consensus": "Buy"
+  },
+  "errors": {}
+ },
+ "lines": [
+  "Analyst views from Finnhub and FMP, not the app's rules and not advice.",
+  "Finnhub ratings, 2026-11 (68 analysts): Strong buy 24 (35%), Buy 38 (56%), Hold 5 (7%), Sell 1 (1%), Strong sell 0 (0%).",
+  "Month by month (Finnhub): 2026-11: 62 buy, 5 hold, 1 sell; 2026-10: 60 buy, 6 hold, 1 sell.",
+  "62 of 68 Finnhub analysts rate it buy or strong buy.",
+  "FMP grades (68 grades): Strong buy 1 (1%), Buy 60 (88%), Hold 6 (9%), Sell 1 (1%), Strong sell 0 (0%); FMP's consensus word: Buy.",
+  "FMP price targets: average 252.50, median 250.00, high 360.00, low 140.00.",
+  "Finnhub and FMP count analysts differently, so their totals do not match; they are shown side by side.",
+  "Fetched 2026-11-11 12:40 ET."
+ ]
+}

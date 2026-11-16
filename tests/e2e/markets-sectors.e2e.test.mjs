@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 
-import { PHONE, e2eTest, overflowsSideways, withApp } from "./harness.mjs";
+import { DESKTOP, PHONE, e2eTest, overflowsSideways, withApp } from "./harness.mjs";
 
 const VIEW = "Sectors";
 const PAGE = '[data-testid="sectors-view"]';
@@ -95,6 +95,53 @@ e2eTest("the TOS style keeps every tile inside its card", async () => {
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// Trader, 2026-11-10: "some tickers % is missing". -12.34% is the widest text a
+// tile normally has to fit, so a clipped % shows up here.
+const wideMoves = (read) => {
+  const symbols = (new URLSearchParams(read.search).get("symbols") || "").split(",").filter(Boolean);
+  return { json: { rows: symbols.map((symbol) => ({ symbol, lastPrice: 50, change: -6, changePct: -12.34, volume: null, name: `${symbol} CORP`, industry: null, marketCap: null })) } };
+};
+
+for (const [label, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
+  for (const style of ["rh", "tos"]) {
+    e2eTest(`${label} ${style}: every tile prints its %, nothing clipped`, async () => {
+      await withApp({
+        view: VIEW,
+        viewport,
+        storage: { sectorHeatmapPrefs: JSON.stringify({ style }) },
+        fakeReads: { "GET /api/watchlist-quotes": wideMoves },
+      }, async (app) => {
+        await app.page.locator(`${PAGE} button.sector-heatmap-tile.is-down`).nth(100).waitFor({ timeout: 60_000 });
+        await app.page.waitForTimeout(300);
+        const result = await app.page.evaluate((root) => {
+          const bad = [];
+          const tiles = [...document.querySelectorAll(`${root} button.sector-heatmap-tile`)];
+          for (const tile of tiles) {
+            const name = tile.getAttribute("aria-label");
+            const box = tile.getBoundingClientRect();
+            const ticker = tile.querySelector("b");
+            const pct = tile.querySelector("span");
+            if (!ticker || pct?.textContent !== "-12.34%") { bad.push(`${name}: no %`); continue; }
+            const range = document.createRange();
+            for (const element of [ticker, pct]) {
+              range.selectNodeContents(element);
+              const text = range.getBoundingClientRect();
+              if (text.left < box.left - 0.5 || text.right > box.right + 0.5 || text.top < box.top - 0.5 || text.bottom > box.bottom + 0.5) {
+                bad.push(`${name}: ${element.tagName} clipped ${Math.round(text.width)}x${Math.round(text.height)} in ${Math.round(box.width)}x${Math.round(box.height)}`);
+              }
+            }
+          }
+          return { count: tiles.length, bad };
+        }, PAGE);
+        assert.equal(result.count, 11 * 16);
+        assert.deepEqual(result.bad, []);
+        assert.equal(await overflowsSideways(app.page), false);
+        assert.deepEqual(app.pageErrors, []);
+      });
+    });
+  }
+}
 
 e2eTest("a sector's own page: chips narrow the list, Map shows tiles, Back returns to the grid", async () => {
   await withApp({ view: VIEW, fakeReads: { "GET /api/watchlist-quotes": quotes() } }, async (app) => {

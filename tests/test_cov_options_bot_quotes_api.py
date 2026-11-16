@@ -132,5 +132,5 @@ def test_closing_quotes_use_the_live_bid_ask_mid_and_are_capped_at_400(held):
         status, body = api.get(f"/api/option-quotes?symbols={quote(query, safe=',')}")
     assert status == 200, body
     assert len(held.asked) == 1 and len(held.asked[0]) <= 400
-    assert body["quotes"][C235] == {"bid": 1.3, "ask": 1.4, "mid": 1.35, "last": 1.31}
+    assert body["quotes"][C235] == {"bid": 1.3, "ask": 1.4, "mid": 1.35, "last": 1.31, "quoteAt": 1_762_272_000.0}
     assert "STALEONLY" not in body["quotes"], "a close is never priced from a stale last trade"

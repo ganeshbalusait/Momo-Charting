@@ -15,8 +15,7 @@ import {
   formatMarketCap,
   formatSignedPct,
   heatLevel,
-  rowLayout,
-  squarify,
+  layoutSectorTiles,
   tileFontSizes,
   tileLabelMode,
 } from "./sectorHeatmap";
@@ -99,8 +98,7 @@ function moveLabel(changePct) {
 function SectorTiles({ tiles, gap, style, activeSymbol, onSelect, large = false, label }) {
   const [tilesRef, width] = useElementWidth();
   const height = cardHeight(tiles.length, width, large);
-  const layoutTiles = style === "rh" ? rowLayout : squarify;
-  const layout = width > 0 ? layoutTiles(tiles, { x: 0, y: 0, width, height }) : [];
+  const layout = width > 0 ? layoutSectorTiles(tiles, { x: 0, y: 0, width, height }, style, gap) : [];
   // Robinhood prints every tile in a row at one size: the size that fits the
   // row's narrowest tile.
   const rowFont = {};
@@ -116,7 +114,7 @@ function SectorTiles({ tiles, gap, style, activeSymbol, onSelect, large = false,
         const heat = heatLevel(item.changePct);
         const innerWidth = Math.max(0, tileWidth - gap);
         const innerHeight = Math.max(0, tileHeight - gap);
-        const mode = tileLabelMode(innerWidth, innerHeight, style);
+        const mode = tileLabelMode(innerWidth, innerHeight);
         const fonts = rowFont[row] || tileFontSizes(innerWidth, innerHeight, style);
         const active = item.symbol === activeSymbol;
         return (

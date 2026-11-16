@@ -1,5 +1,6 @@
 """BOT desk scorecard: the paper accounts judged like a prop-firm evaluation (2026-11-09)."""
 import json
+import time
 
 from momx import bot_desk as bd
 
@@ -170,8 +171,9 @@ def test_build_names_each_stuck_order_so_it_can_be_removed(tmp_path):
                       "buyAt": at("2026-11-04", "09:33:19"), "note": "Awaiting broker reconciliation: order not found"}]
 
 
-def test_build_reports_pause_and_the_daily_loss_stop_per_account(tmp_path):
+def test_build_reports_pause_and_the_daily_loss_stop_per_account(tmp_path, monkeypatch):
     from momx import paper_control
+    monkeypatch.setattr(paper_control, "DAILY_STOP_ON", True)       # as it was built; it is off in the app since 2026-11-10
     root = tmp_path / "momx_paper_mirror"
     write(root / "paper3" / f"{TODAY}.json", {"rows": {"a": closed(-300.0, "A"), "b": closed(-260.0, "B")},
                                                "dailyStop": {"at": at(TODAY, "10:42:00"), "pnl": -560.0, "limit": 500.0}})
@@ -179,9 +181,9 @@ def test_build_reports_pause_and_the_daily_loss_stop_per_account(tmp_path):
     paper_control.set_paused(root, "paper5", True, "owner@example.com", at(TODAY, "11:00:00"))
     accounts = bd.build(tmp_path, days=30, today=TODAY)["accounts"]
     assert accounts["paper3"]["control"] == {"paused": False, "pausedAt": None, "dailyStop": {
-        "limit": 500, "hit": True, "hitAt": at(TODAY, "10:42:00"), "todayPnl": -560.0}}
+        "on": True, "limit": 500, "hit": True, "hitAt": at(TODAY, "10:42:00"), "todayPnl": -560.0}}
     assert accounts["paper5"]["control"] == {"paused": True, "pausedAt": at(TODAY, "11:00:00"), "dailyStop": {
-        "limit": 500, "hit": False, "hitAt": None, "todayPnl": 120.0}}
+        "on": True, "limit": 500, "hit": False, "hitAt": None, "todayPnl": 120.0}}
 
 
 def test_before_todays_file_exists_an_older_position_is_not_counted_as_todays_loss(tmp_path):
@@ -189,7 +191,7 @@ def test_before_todays_file_exists_an_older_position_is_not_counted_as_todays_lo
     write(folder / "2026-11-06.json", {"rows": {"k": order("open", "ZETA", day="2026-11-06", buyFill=2.0, held=3, markMid=0.1,
                                                          buyAt=at("2026-11-06", "10:00:00"), sells=[])}})
     control = bd.build(tmp_path, days=30, today=TODAY)["accounts"]["paper3"]["control"]
-    assert control["dailyStop"] == {"limit": 500, "hit": False, "hitAt": None, "todayPnl": 0.0}
+    assert control["dailyStop"] == {"on": False, "limit": 500, "hit": False, "hitAt": None, "todayPnl": 0.0}
 
 
 # ---- fresh evaluation (2026-11-09: only orders from the start day are judged)
@@ -411,3 +413,429 @@ def test_the_journal_keeps_only_the_newest_trades_but_counts_them_all(monkeypatc
     rows = [jr(1.0, f"T{i}", "2026-11-10") for i in range(5)]
     j = bd.account_report(rows, "2026-11-10")["journal"]
     assert len(j["trades"]) == 3 and j["tradeCount"] == 5 and j["periods"]["day"][0]["trades"] == 5
+
+
+# ---- "All trades" (2026-11-10: "Scoreboard I don't see all trade")
+def test_all_trades_lists_every_signal_newest_first_with_what_became_of_it():
+    rows = [
+        closed(120.0, "AAPL", "2026-11-10", rule="level3", levels=["level1", "level2", "level3"], qty=3, fill=1.0,
+               sells=[{"qty": 2, "price": 2.0, "why": "+100%: sell 2 of 3"}, {"qty": 1, "price": 0.2, "why": "stop loss -50%"}]),
+        order("missed", "MSFT", "2026-11-10", rule="level1"),
+        order("skipped", "IOT", "2026-11-10", rule="level2", note="Spread 71% of the mid is over 15%"),
+        order("buying", "NVDA", "2026-11-10", rule="level2", side="bear"),
+        order("open", "TSLA", "2026-11-10", rule="level2", buyFill=1.0, markMid=1.5, buyFillAt=at("2026-11-10", "09:41:00"),
+              sells=[{"qty": 1, "price": 2.0, "why": "+100%: sell 1 of 3"}], aiPick={"rank": 1}),
+    ]
+    for i, r in enumerate(rows):
+        r["at"] = at("2026-11-10", f"09:3{i}:00")
+    log = bd.account_report(rows, "2026-11-10")["tradeLog"]
+    assert log["counts"] == {"open": 1, "closed": 1, "missed": 1, "waiting": 1, "skipped": 1, "signal": 0} and log["total"] == 5
+    assert [(t["symbol"], t["status"]) for t in log["rows"]] == [
+        ("TSLA", "open"), ("NVDA", "waiting"), ("IOT", "skipped"), ("MSFT", "missed"), ("AAPL", "closed")]
+    by = {t["symbol"]: t for t in log["rows"]}
+    assert (by["AAPL"]["pnl"], by["AAPL"]["roiPct"], by["AAPL"]["live"], by["AAPL"]["note"], by["AAPL"]["levels"]) == (
+        120.0, 40.0, False, "stop loss -50%", ["level1", "level2", "level3"])
+    # Open: +$100 banked on the one sold, the two still held marked at 1.50 against 1.00 = +$100 more. An estimate.
+    assert (by["TSLA"]["pnl"], by["TSLA"]["roiPct"], by["TSLA"]["live"], by["TSLA"]["aiPicked"]) == (200.0, 66.7, True, True)
+    assert by["TSLA"]["note"] == "part sold: +100%: sell 1 of 3" and by["TSLA"]["boughtAt"] == at("2026-11-10", "09:41:00")
+    assert (by["MSFT"]["pnl"], by["MSFT"]["buy"], by["MSFT"]["note"]) == (None, None, "the order did not fill")
+    assert (by["NVDA"]["side"], by["NVDA"]["pnl"], by["NVDA"]["note"]) == ("bear", None, "order sent, waiting for a fill")
+    assert (by["IOT"]["pnl"], by["IOT"]["note"]) == (None, "Spread 71% of the mid is over 15%")
+
+
+def test_all_trades_never_invents_a_result_and_is_capped(monkeypatch):
+    # Open with no price yet: no P/L shown. A "closed" row with no fill is not a closed trade.
+    log = bd.account_report([order("open", "A", buyFill=1.0), order("closed", "B", pl=50.0)], TODAY)["tradeLog"]
+    by = {t["symbol"]: t for t in log["rows"]}
+    assert (by["A"]["pnl"], by["A"]["live"], by["A"]["note"]) == (None, False, "holding")
+    # A closed order whose result could not be priced is closed, never "open" with a running estimate.
+    assert (by["B"]["status"], by["B"]["pnl"]) == ("closed", None)
+    gone = bd.account_report([order("closed", "C", buyFill=1.0, buyFilledQty=3, pl=None, markMid=1.5, sells=[{"qty": 2, "price": 2.0, "why": "x"}])], TODAY)["tradeLog"]
+    assert (gone["counts"]["open"], gone["rows"][0]["status"], gone["rows"][0]["pnl"], gone["rows"][0]["live"], gone["rows"][0]["note"]) == (
+        0, "closed", None, False, "closed, result not priced")
+    assert bd.account_report([], TODAY)["tradeLog"] == {"rows": [], "counts": {"open": 0, "closed": 0, "missed": 0, "waiting": 0, "skipped": 0, "signal": 0}, "total": 0}
+    monkeypatch.setattr(bd, "TRADE_LOG_ROWS", 2)
+    many = [order("missed", f"S{i}") for i in range(5)]
+    capped = bd.account_report(many, TODAY)["tradeLog"]
+    assert len(capped["rows"]) == 2 and capped["counts"]["missed"] == 5 and capped["total"] == 5
+    # Only not-filled and skipped rows are cut: a trade that filled is never pushed out of the list.
+    busy = [order("missed", f"S{i}") for i in range(5)] + [closed(10.0, "WIN", day="2026-11-02"), order("open", "HOLD", day="2026-11-02", buyFill=1.0)]
+    kept = bd.account_report(busy, TODAY)["tradeLog"]
+    assert [t["symbol"] for t in kept["rows"]] == ["S0", "S1", "WIN", "HOLD"] or sorted(t["status"] for t in kept["rows"]) == ["closed", "missed", "missed", "open"]
+    assert kept["counts"] == {"open": 1, "closed": 1, "missed": 5, "waiting": 0, "skipped": 0, "signal": 0}
+    # The open estimate is not part of the real totals.
+    rep = bd.account_report([order("open", "A", buyFill=1.0, markMid=3.0)], TODAY)
+    assert rep["stats"]["n"] == 0 and rep["stats"]["netPnl"] == 0 and rep["tradeLog"]["rows"][0]["pnl"] == 600.0
+
+
+def test_all_trades_open_estimate_uses_what_is_really_held_and_says_when_it_was_priced():
+    # The bot says 1 is still held (2 sold): the estimate is on 1 contract, with the time of that price.
+    held = order("open", "A", buyFill=1.0, buyFilledQty=3, held=1, markMid=2.0, markAt=at(TODAY, "15:59:00"),
+                 sells=[{"qty": 2, "price": 2.0, "why": "+100%: sell 2 of 3"}])
+    t = bd.account_report([held], TODAY)["tradeLog"]["rows"][0]
+    assert (t["pnl"], t["live"], t["markAt"]) == (300.0, True, at(TODAY, "15:59:00"))
+    # A part-sale with no price: the result so far is unknown, so none is shown.
+    unknown = order("open", "B", buyFill=1.0, buyFilledQty=3, held=1, markMid=2.0, sells=[{"qty": 2, "price": None, "why": "partial"}])
+    u = bd.account_report([unknown], TODAY)["tradeLog"]["rows"][0]
+    assert (u["pnl"], u["live"], u["markAt"], u["status"]) == (None, False, None, "open")
+
+
+def test_all_trades_also_lists_what_is_still_live_from_before_the_fresh_start(tmp_path, monkeypatch):
+    """A position bought before the fresh start and not sold yet is real: listed, flagged, never scored."""
+    monkeypatch.setattr(bd, "EVALUATION_START", "2026-11-10")
+    folder = tmp_path / "momx_paper_mirror" / "paper5"
+    folder.mkdir(parents=True)
+    old_open = order("selling", "MVIS", "2026-11-09", buyFill=0.75, buyFilledQty=7, held=7, markMid=0.03, markAt=at("2026-11-09", "16:00:48"))
+    old_closed = closed(-90.0, "OLD", "2026-11-09")
+    old_missed = order("missed", "QQQ", "2026-11-09")
+    new_closed = closed(40.0, "AAPL", "2026-11-10", rule="level1")
+    (folder / "2026-11-10.json").write_text(json.dumps({"rows": {
+        "k|MVIS": old_open, "k|OLD": old_closed, "k|QQQ": old_missed, "k|AAPL": new_closed}}), encoding="utf-8")
+    acct = bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper5"]
+    log = acct["tradeLog"]
+    assert [(t["symbol"], t["status"], t["scored"]) for t in log["rows"]] == [("AAPL", "closed", True), ("MVIS", "open", False)]
+    mvis = log["rows"][1]
+    assert mvis["note"] == "from before the fresh start, not scored · holding" and mvis["pnl"] == -504.0 and mvis["markAt"] == at("2026-11-09", "16:00:48")
+    assert log["counts"] == {"open": 1, "closed": 1, "missed": 0, "waiting": 0, "skipped": 0, "signal": 0} and log["total"] == 2
+    assert (acct["stats"]["n"], acct["stats"]["netPnl"]) == (1, 40.0)          # the old position is not in the real totals
+
+
+def test_the_scorecard_says_the_daily_stop_is_off_and_never_holding(tmp_path, monkeypatch):
+    """2026-11-10: the stop is switched off; one that tripped this morning must not read as still holding buys."""
+    from momx import paper_control
+    monkeypatch.setattr(bd, "EVALUATION_START", "2026-11-10")
+    folder = tmp_path / "momx_paper_mirror" / "paper3"
+    folder.mkdir(parents=True)
+    (folder / "2026-11-10.json").write_text(json.dumps({
+        "rows": {"k|TTWO": closed(-574.0, "TTWO", "2026-11-10", rule="level3")},
+        "dailyStop": {"at": at("2026-11-10", "09:36:41"), "pnl": -574.0, "limit": 500.0}}), encoding="utf-8")
+    assert paper_control.DAILY_STOP_ON is False
+    stop = bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]["control"]["dailyStop"]
+    assert (stop["on"], stop["hit"], stop["hitAt"], stop["todayPnl"]) == (False, False, at("2026-11-10", "09:36:41"), -574.0)
+    monkeypatch.setattr(paper_control, "DAILY_STOP_ON", True)
+    assert bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]["control"]["dailyStop"]["hit"] is True
+
+
+def test_all_trades_says_when_the_broker_refused_a_buy():
+    refused = order("missed", "MU", note="The broker refused this buy: not enough buying power in the paper account")
+    plain = order("missed", "HPE", note="buy canceled (not filled at the mid)")
+    by = {t["symbol"]: t for t in bd.account_report([refused, plain], TODAY)["tradeLog"]["rows"]}
+    assert by["MU"]["note"] == "The broker refused this buy: not enough buying power in the paper account"
+    assert by["HPE"]["note"] == "the order did not fill"
+
+
+def test_the_scorecard_carries_the_alpaca_account_from_the_newest_day_file(tmp_path):
+    """2026-11-10, "scoreboard should show alpaca buying power"."""
+    folder = tmp_path / "momx_paper_mirror" / "paper3"
+    folder.mkdir(parents=True)
+    broker = {"at": at(TODAY, "12:29:00"), "cash": 517.93, "optionsBuyingPower": 517.93, "buyingPower": 2071.72, "equity": 967.93, "lastEquity": 2809.79}
+    (folder / "2026-11-06.json").write_text(json.dumps({"rows": {"k": closed(10.0, "A", "2026-11-06")}, "broker": {**broker, "at": at("2026-11-06"), "cash": 1.0}}), encoding="utf-8")
+    (folder / f"{TODAY}.json").write_text(json.dumps({"rows": {"k2": closed(10.0, "B")}, "broker": broker}), encoding="utf-8")
+    acct = bd.build(tmp_path, 30, today=TODAY)["accounts"]["paper3"]
+    assert acct["broker"] == {**broker, "error": None}
+    # Before today's file has a read, the newest earlier read is shown; never a later day's.
+    (folder / f"{TODAY}.json").write_text(json.dumps({"rows": {"k2": closed(10.0, "B")}}), encoding="utf-8")
+    assert bd.build(tmp_path, 30, today=TODAY)["accounts"]["paper3"]["broker"]["cash"] == 1.0
+    assert bd.build(tmp_path, 30, today="2026-11-05")["accounts"].get("paper3", {}).get("broker") is None
+
+
+# ---- All trades also lists the Bot's signals from Research (2026-11-10: "i dont see all trade from research")
+def _sig(symbol, clock, rule="level3", **extra):
+    t = {"rule": rule, "symbol": symbol, "board": "Watchlist", "at": at("2026-11-10", clock), "status": "open",
+         "eContract": f"{symbol}261113C00010000", "eEntry": 2.0, "eEntryBid": 1.95, "eEntryAsk": 2.05, "eLast": 3.0, "eBest": 4.0}
+    t.update(extra)
+    return t
+
+
+def test_all_trades_lists_each_bot_signal_this_bot_did_not_order_and_why(tmp_path, monkeypatch):
+    from momx import chatbot
+    monkeypatch.setattr(bd, "EVALUATION_START", "2026-11-10")
+    monkeypatch.setattr(chatbot, "_CACHE", {})
+    monkeypatch.setattr(bd, "_SIGNALS", {})
+    bull = [_sig("SPY", "09:31:00", rule="level1"), _sig("SPY", "09:31:00", rule="level2"),     # the same signal at three levels: once
+            _sig("AVGO", "09:44:00"), _sig("NVDA", "09:50:00"), _sig("NVDA", "10:05:00"), _sig("PENNY", "10:10:00", eEntry=0.03, eEntryBid=0.0),
+            _sig("LATE", "11:30:00"), _sig("SPY", "09:31:00"), _sig("OLD", "09:45:00", rule="call2h")]
+    (tmp_path / "momx_option_track").mkdir()
+    (tmp_path / "momx_option_track" / "2026-11-10.json").write_text(json.dumps({"trades": bull}), encoding="utf-8")
+    folder = tmp_path / "momx_paper_mirror" / "paper3"
+    folder.mkdir(parents=True)
+    nvda = order("open", "NVDA", "2026-11-10", rule="level3", buyFill=2.0, buyId="b1")
+    nvda["at"] = at("2026-11-10", "09:50:00")
+    (folder / "2026-11-10.json").write_text(json.dumps({
+        "rows": {"bull|level3|NVDA|" + nvda["at"]: nvda},
+        "dailyStop": {"at": at("2026-11-10", "09:36:41"), "pnl": -574.0, "limit": 500.0, "liftedAt": at("2026-11-10", "09:59:33")}}), encoding="utf-8")
+    log = bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]["tradeLog"]
+    by = {(t["symbol"], t["at"][11:16]): t for t in log["rows"]}
+    assert log["counts"]["signal"] == 5 and log["counts"]["open"] == 1 and log["total"] == 6       # OLD (not a Level rule) is left out
+    assert ("NVDA", "09:50") in by and by[("NVDA", "09:50")]["status"] == "open"                    # the ordered one is the order, once
+    avgo = by[("AVGO", "09:44")]
+    assert (avgo["status"], avgo["pnl"], avgo["qty"], avgo["roiPct"], avgo["bestPct"], avgo["board"]) == ("signal", None, None, 50.0, 100.0, "Watchlist")
+    assert avgo["note"] == "Not ordered: the daily loss stop was holding buys · 0.20-delta option $2.00, now +50%, best +100%"
+    assert by[("NVDA", "10:05")]["note"].startswith("Not ordered: a NVDA position or buy was already open (one position per ticker)")
+    assert by[("PENNY", "10:10")]["note"].startswith("Not ordered: the 0.20-delta option was under $0.05 or had no bid")
+    assert by[("LATE", "11:30")]["note"].startswith("Not ordered: outside the buy windows")
+    assert by[("SPY", "09:31")]["note"].startswith("Not ordered: not ordered by this bot (the records do not say why)")
+    # A day before the fresh start lists no Bot signals; and the real totals never include them.
+    acct = bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]
+    assert acct["stats"]["n"] == 0
+
+
+def test_the_scorecard_opens_when_the_bot_files_are_missing_or_broken(tmp_path, monkeypatch):
+    from momx import chatbot
+    monkeypatch.setattr(bd, "EVALUATION_START", "2026-11-10")
+    monkeypatch.setattr(chatbot, "_CACHE", {})
+    folder = tmp_path / "momx_paper_mirror" / "paper3"
+    folder.mkdir(parents=True)
+    (folder / "2026-11-10.json").write_text(json.dumps({"rows": {"k": closed(10.0, "A", "2026-11-10")}}), encoding="utf-8")
+    (tmp_path / "momx_option_track").mkdir()
+    monkeypatch.setattr(bd, "_SIGNALS", {})
+    (tmp_path / "momx_option_track" / "2026-11-10.json").write_text("{broken", encoding="utf-8")
+    log = bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]["tradeLog"]
+    assert log["counts"]["signal"] == 0 and log["counts"]["closed"] == 1
+    monkeypatch.setattr(chatbot, "records_for", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(bd, "_SIGNALS", {})
+    assert bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]["tradeLog"]["counts"]["closed"] == 1
+
+
+
+def test_big_bot_files_are_read_in_the_background_and_kept(tmp_path, monkeypatch):
+    """A day's Bot files take ~10 s to read: a Scorecard build answers at once and the list follows."""
+    import threading
+    monkeypatch.setattr(bd, "_SIGNALS", {})
+    monkeypatch.setattr(bd, "_SIGNALS_LOADING", set())
+    monkeypatch.setattr(bd, "SIGNAL_INLINE_BYTES", 0)               # treat the test file as big
+    gate, calls = threading.Event(), []
+
+    def slow(artifacts, day):
+        calls.append(day)
+        gate.wait(5)
+        return [("bull", _sig("AVGO", "09:44:00"))]
+
+    monkeypatch.setattr(bd, "_load_signals", slow)
+    (tmp_path / "momx_option_track").mkdir()
+    (tmp_path / "momx_option_track" / "2026-11-10.json").write_text("{}", encoding="utf-8")
+    assert bd._bot_signals(tmp_path, "2026-11-10") == []            # nothing kept yet: answers at once
+    assert bd._bot_signals(tmp_path, "2026-11-10") == []            # and starts no second read
+    gate.set()
+    for _ in range(100):
+        if bd._SIGNALS:
+            break
+        time.sleep(0.02)
+    assert [t["symbol"] for _, t in bd._bot_signals(tmp_path, "2026-11-10")] == ["AVGO"] and calls == ["2026-11-10"]
+
+
+def test_the_scorecard_measures_how_each_fill_label_did():
+    rows = [order("closed", "A", buyId="1", buyFill=1.0, pl=10.0, closedAt=at(TODAY, "10:00:00"), fillChance={"label": "high"}, buyTries=0),
+            order("missed", "B", buyId="2", spreadAtOrder=0.40),                                  # an older order: labelled from its spread
+            order("missed", "C", buyId="3", note="The broker refused this buy: not enough buying power in the paper account", fillChance={"label": "high"})]
+    rep = bd.account_report(rows, TODAY)
+    assert (rep["fillChance"]["high"]["orders"], rep["fillChance"]["high"]["filledAtMid"]) == (1, 1)
+    assert (rep["fillChance"]["low"]["orders"], rep["fillChance"]["low"]["filled"]) == (1, 0)
+    by = {t["symbol"]: t for t in rep["tradeLog"]["rows"]}
+    assert (by["A"]["fillChance"], by["B"]["fillChance"], by["C"]["fillChance"]) == ("high", "low", "high")
+
+
+
+def test_the_one_position_reason_only_when_that_ticker_was_live_at_the_signal():
+    """Review 2026-11-10: an earlier order that had closed or missed does not explain a later signal."""
+    sig = _sig("AAPL", "10:20:00")
+    def row(status, buy, closed=None, side="bull"):
+        r = {"symbol": "AAPL", "side": side, "buyId": "b", "status": status, "buyAt": at("2026-11-10", buy), "at": at("2026-11-10", buy)}
+        if closed:
+            r["closedAt"] = at("2026-11-10", closed)
+        return r
+    why = lambda orders: bd._not_ordered_why("bull", sig, orders, None)
+    assert why([row("open", "09:35:00")]).startswith("a AAPL position or buy was already open")
+    assert why([row("selling", "09:35:00", side="bear")]).startswith("a AAPL position")                 # either side holds the ticker
+    assert why([row("closed", "09:35:00", closed="10:30:00")]).startswith("a AAPL position")              # still held at 10:20
+    assert why([row("closed", "09:35:00", closed="09:50:00")]) == "not ordered by this bot (the records do not say why)"
+    assert why([row("missed", "09:35:00")]) == "not ordered by this bot (the records do not say why)"
+    assert why([row("open", "10:25:00")]) == "not ordered by this bot (the records do not say why)"        # bought after the signal
+
+
+# ---- his rule 2026-11-10: the paper bots' 5m chart check explains a signal with no order
+def _chart_on(sig, price=100.0, **levels):
+    from datetime import datetime
+    t = datetime.fromisoformat(sig["at"]).timestamp()
+    return {"version": 1, "timeframe": "5m", "symbol": sig["symbol"], "barAt": t - 360, "availableAt": t - 60,
+            "capturedAt": t - 30, "referencePrice": price, "levels": {"ema21": 99.0, **levels}}
+
+
+def test_not_ordered_names_the_chart_check_from_the_saved_skip_or_the_signals_own_chart():
+    sig = _sig("AAPL", "10:20:00")
+    skips = {"bull|level3|AAPL|" + sig["at"]: {"symbol": "AAPL", "side": "bull", "rule": "level3", "at": sig["at"],
+                                              "why": "R1 $182.27 is only 0.3% ahead"}}
+    assert bd._not_ordered_why("bull", sig, [], None, skips) == "the chart check failed: R1 $182.27 is only 0.3% ahead"
+    # A skip for another side or moment is not this signal's reason.
+    assert bd._not_ordered_why("bear", sig, [], None, skips) == "not ordered by this bot (the records do not say why)"
+    # No saved skip: the same check on the signal's frozen chart - as the Scorecard really holds the
+    # signal, slimmed by chatbot._slim (review 2026-11-10: it used to strip the chart to its levels).
+    from momx import chatbot
+    under = chatbot._slim(dict(sig, setup={"chartContext": _chart_on(sig, ema21=101.0)}))
+    assert bd._not_ordered_why("bull", under, [], None) == "the chart check failed: price under the 21 EMA"
+    passing = chatbot._slim(dict(sig, setup={"chartContext": _chart_on(sig)}))
+    assert bd._not_ordered_why("bull", passing, [], None) == "not ordered by this bot (the records do not say why)"
+    # A ticker already held is checked by the bot BEFORE the chart, so it stays the reason.
+    held = [{"symbol": "AAPL", "side": "bull", "buyId": "b", "status": "open", "buyAt": at("2026-11-10", "09:35:00"),
+             "at": at("2026-11-10", "09:35:00")}]
+    assert bd._not_ordered_why("bull", under, held, None).startswith("a AAPL position or buy was already open")
+    # The earlier checks still come first: outside the buy windows wins over a saved chart skip.
+    late = _sig("AAPL", "11:30:00")
+    late_skip = {"k": {"symbol": "AAPL", "side": "bull", "at": late["at"], "why": "price under the 21 EMA"}}
+    assert bd._not_ordered_why("bull", late, [], None, late_skip).startswith("outside the buy windows")
+
+
+def test_the_scorecard_shows_the_chart_check_reason_the_paper_bot_saved(tmp_path, monkeypatch):
+    from momx import chatbot
+    monkeypatch.setattr(bd, "EVALUATION_START", "2026-11-10")
+    monkeypatch.setattr(chatbot, "_CACHE", {})
+    monkeypatch.setattr(bd, "_SIGNALS", {})
+    sig = _sig("AVGO", "09:44:00")
+    (tmp_path / "momx_option_track").mkdir()
+    (tmp_path / "momx_option_track" / "2026-11-10.json").write_text(json.dumps({"trades": [sig]}), encoding="utf-8")
+    folder = tmp_path / "momx_paper_mirror" / "paper3"
+    folder.mkdir(parents=True)
+    other = order("closed", "A", "2026-11-10", buyId="x", buyFill=1.0, pl=5.0)
+    (folder / "2026-11-10.json").write_text(json.dumps({
+        "rows": {"a": other},
+        "chartSkips": {"bull|level3|AVGO|" + sig["at"]: {"symbol": "AVGO", "side": "bull", "rule": "level3", "at": sig["at"],
+                                                         "why": "price under the 21 EMA"}}}), encoding="utf-8")
+    doc = bd.build(tmp_path, 30, today="2026-11-10")
+    by = {t["symbol"]: t for t in doc["accounts"]["paper3"]["tradeLog"]["rows"]}
+    assert by["AVGO"]["note"].startswith("Not ordered: the chart check failed: price under the 21 EMA · ")
+    assert "chart check" in doc["strategy"] and doc["strategy"].startswith("Level 1 / 2 / 3")
+
+
+def test_the_scorecard_rechecks_the_chart_on_a_signal_read_through_records_for(tmp_path, monkeypatch):
+    """Review 2026-11-10: no saved skip (an older day file) -> the Scorecard re-runs the chart check on
+    the signal as records_for keeps it; before the _slim fix this could never say anything."""
+    from momx import chatbot
+    monkeypatch.setattr(bd, "EVALUATION_START", "2026-11-10")
+    monkeypatch.setattr(chatbot, "_CACHE", {})
+    monkeypatch.setattr(bd, "_SIGNALS", {})
+    sig = _sig("AVGO", "09:44:00")
+    sig["setup"] = {"chartContext": _chart_on(sig, ema21=101.0)}
+    (tmp_path / "momx_option_track").mkdir()
+    (tmp_path / "momx_option_track" / "2026-11-10.json").write_text(json.dumps({"trades": [sig]}), encoding="utf-8")
+    [(side, slim)] = chatbot.records_for(tmp_path, "2026-11-10", "2026-11-10").signals
+    assert bd._not_ordered_why(side, slim, [], None) == "the chart check failed: price under the 21 EMA"
+    folder = tmp_path / "momx_paper_mirror" / "paper3"
+    folder.mkdir(parents=True)
+    (folder / "2026-11-10.json").write_text(json.dumps({"rows": {"a": order("closed", "A", "2026-11-10", buyId="x", buyFill=1.0, pl=5.0)}}),
+                                            encoding="utf-8")
+    by = {t["symbol"]: t for t in bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]["tradeLog"]["rows"]}
+    assert by["AVGO"]["note"].startswith("Not ordered: the chart check failed: price under the 21 EMA · ")
+
+
+def test_not_ordered_says_when_the_paper_account_could_not_pay_for_it(tmp_path, monkeypatch):
+    """2026-11-10: 3 contracts up to $8 can cost $2,400 and the paper account may hold less."""
+    sig = _sig("AAPL", "10:20:00")
+    why = "not enough buying power ($1,500 needed, $812 free)"
+    funds = {"k": {"symbol": "AAPL", "side": "bull", "rule": "level3", "at": sig["at"], "why": why}}
+    assert bd._not_ordered_why("bull", sig, [], None, None, funds) == why
+    assert bd._not_ordered_why("bear", sig, [], None, None, funds) == "not ordered by this bot (the records do not say why)"
+    # The chart reason comes first when both are on file.
+    chart = {"c": {"symbol": "AAPL", "side": "bull", "at": sig["at"], "why": "price under the 21 EMA"}}
+    assert bd._not_ordered_why("bull", sig, [], None, chart, funds) == "the chart check failed: price under the 21 EMA"
+    # And the Scorecard reads it from the paper bot's day file.
+    from momx import chatbot
+    monkeypatch.setattr(bd, "EVALUATION_START", "2026-11-10")
+    monkeypatch.setattr(chatbot, "_CACHE", {})
+    monkeypatch.setattr(bd, "_SIGNALS", {})
+    (tmp_path / "momx_option_track").mkdir()
+    (tmp_path / "momx_option_track" / "2026-11-10.json").write_text(json.dumps({"trades": [sig]}), encoding="utf-8")
+    folder = tmp_path / "momx_paper_mirror" / "paper3"
+    folder.mkdir(parents=True)
+    (folder / "2026-11-10.json").write_text(json.dumps({
+        "rows": {"a": order("closed", "A", "2026-11-10", buyId="x", buyFill=1.0, pl=5.0)}, "fundSkips": funds}), encoding="utf-8")
+    by = {t["symbol"]: t for t in bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]["tradeLog"]["rows"]}
+    assert by["AAPL"]["note"].startswith(f"Not ordered: {why} · ")
+
+
+# ---- his top-of-board rule 2026-11-10 ("Mag7 top 3", "use H/L column top")
+def test_not_ordered_names_the_top_of_board_check_before_the_chart_and_buying_power(tmp_path, monkeypatch):
+    sig = _sig("CMCSA", "10:20:00")
+    why = "CMCSA was #9 on the Watchlist by H/L (needs top 7 for 5 min)"
+    tops = {"k": {"symbol": "CMCSA", "side": "bull", "rule": "level3", "at": sig["at"], "why": why}}
+    chart = {"c": {"symbol": "CMCSA", "side": "bull", "at": sig["at"], "why": "price under the 21 EMA"}}
+    funds = {"f": {"symbol": "CMCSA", "side": "bull", "at": sig["at"], "why": "not enough buying power"}}
+    assert bd._not_ordered_why("bull", sig, [], None, chart, funds, tops) == why        # top first
+    assert bd._not_ordered_why("bear", sig, [], None, None, None, tops) == "not ordered by this bot (the records do not say why)"
+    # The earlier checks still come first: outside the buy windows wins over a saved top skip.
+    late = _sig("CMCSA", "11:30:00")
+    late_top = {"k": {"symbol": "CMCSA", "side": "bull", "at": late["at"], "why": why}}
+    assert bd._not_ordered_why("bull", late, [], None, None, None, late_top).startswith("outside the buy windows")
+    # No saved skip: the signal's own topHL stamp answers (after a held ticker).
+    stamped = dict(sig, topHL={"board": "Watchlist", "n": 7, "rank": 2, "heldSeconds": 130, "hl": 0.9})
+    assert bd._not_ordered_why("bull", stamped, [], None) == (
+        "CMCSA was #2 on the Watchlist by H/L for only 2 min of the 5 (needs top 7 for 5 min from 9:45)")
+    # The same verdict at the record's time: 9:30-9:45 needs only the rank (his "Start trading 9:30").
+    opening = dict(_sig("CMCSA", "09:40:00"), topHL={"board": "Watchlist", "n": 7, "rank": 2, "heldSeconds": 0})
+    assert bd._not_ordered_why("bull", opening, [], None) == "not ordered by this bot (the records do not say why)"
+    held = [{"symbol": "CMCSA", "side": "bull", "buyId": "b", "status": "open", "buyAt": at("2026-11-10", "09:35:00"),
+             "at": at("2026-11-10", "09:35:00")}]
+    assert bd._not_ordered_why("bull", stamped, held, None).startswith("a CMCSA position or buy was already open")
+    # And the Scorecard reads it from the paper bot's day file.
+    from momx import chatbot
+    monkeypatch.setattr(bd, "EVALUATION_START", "2026-11-10")
+    monkeypatch.setattr(chatbot, "_CACHE", {})
+    monkeypatch.setattr(bd, "_SIGNALS", {})
+    (tmp_path / "momx_option_track").mkdir()
+    (tmp_path / "momx_option_track" / "2026-11-10.json").write_text(json.dumps({"trades": [sig]}), encoding="utf-8")
+    folder = tmp_path / "momx_paper_mirror" / "paper3"
+    folder.mkdir(parents=True)
+    (folder / "2026-11-10.json").write_text(json.dumps({
+        "rows": {"a": order("closed", "A", "2026-11-10", buyId="x", buyFill=1.0, pl=5.0)},
+        "topSkips": tops, "chartSkips": chart}), encoding="utf-8")
+    by = {t["symbol"]: t for t in bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]["tradeLog"]["rows"]}
+    assert by["CMCSA"]["note"].startswith(f"Not ordered: {why} · ")
+
+
+def test_a_passed_top_check_never_falls_back_to_the_frozen_stamp(tmp_path, monkeypatch):
+    """Review fix: the bot saved that the top check PASSED at buy time ({"passed": time}, no "why");
+    the record's stamp (held 0 when it fired) must not be shown as the reason - go on to the others."""
+    stamped = dict(_sig("CMCSA", "10:20:00"), topHL={"board": "Watchlist", "n": 7, "rank": 2, "heldSeconds": 0, "hl": 0.9})
+    passed = {"k": {"symbol": "CMCSA", "side": "bull", "rule": "level3", "at": stamped["at"],
+                    "checkedAt": at("2026-11-10", "10:25:00"), "passed": at("2026-11-10", "10:25:00")}}
+    assert bd._not_ordered_why("bull", stamped, [], None).startswith("CMCSA was #2 on the Watchlist by H/L for only 0 s")
+    assert bd._not_ordered_why("bull", stamped, [], None, None, None, passed) == (
+        "not ordered by this bot (the records do not say why)")
+    # The other reasons still answer after a passed top check.
+    funds = {"f": {"symbol": "CMCSA", "side": "bull", "at": stamped["at"], "why": "not enough buying power"}}
+    assert bd._not_ordered_why("bull", stamped, [], None, None, funds, passed) == "not enough buying power"
+    # A passed entry for another side or signal time does not count.
+    other = {"k": dict(passed["k"], at=at("2026-11-10", "10:21:00"))}
+    assert "for only 0 s" in bd._not_ordered_why("bull", stamped, [], None, None, None, other)
+    # And the Scorecard reads it from the paper bot's day file.
+    from momx import chatbot
+    monkeypatch.setattr(bd, "EVALUATION_START", "2026-11-10")
+    monkeypatch.setattr(chatbot, "_CACHE", {})
+    monkeypatch.setattr(bd, "_SIGNALS", {})
+    (tmp_path / "momx_option_track").mkdir()
+    (tmp_path / "momx_option_track" / "2026-11-10.json").write_text(json.dumps({"trades": [stamped]}), encoding="utf-8")
+    folder = tmp_path / "momx_paper_mirror" / "paper3"
+    folder.mkdir(parents=True)
+    (folder / "2026-11-10.json").write_text(json.dumps({
+        "rows": {"a": order("closed", "A", "2026-11-10", buyId="x", buyFill=1.0, pl=5.0)},
+        "topSkips": passed}), encoding="utf-8")
+    by = {t["symbol"]: t for t in bd.build(tmp_path, 30, today="2026-11-10")["accounts"]["paper3"]["tradeLog"]["rows"]}
+    assert by["CMCSA"]["note"].startswith("Not ordered: not ordered by this bot (the records do not say why) · ")
+    assert "for only" not in by["CMCSA"]["note"]
+
+
+def test_not_ordered_names_an_option_over_eight_dollars():
+    from momx.paper_mirror import MAX_PRICE
+    assert MAX_PRICE == 8.00
+    dear = _sig("NVDA", "10:20:00", eEntry=8.40, eEntryBid=8.30, eEntryAsk=8.50)
+    assert bd._not_ordered_why("bull", dear, [], None) == "the option was over $8.00 (the bot skips those)"
+    edge = _sig("NVDA", "10:20:00", eEntry=8.00, eEntryBid=7.95, eEntryAsk=8.05)
+    assert bd._not_ordered_why("bull", edge, [], None) == "not ordered by this bot (the records do not say why)"
+
+
+def test_a_saved_reason_wins_over_the_signal_time_over_8_dollar_price():
+    """Review 2026-11-10: the bot sizes on the live mid AFTER its top / chart / fund checks, so a saved
+    reason is the truth even when the signal-time 0.20-delta price read over $8."""
+    t = {"symbol": "MSFT", "at": "2026-11-10T10:05:00-05:00", "rule": "level3", "eContract": "MSFT_C", "eEntry": 8.2, "eEntryBid": 8.1}
+    top = {"k": {"symbol": "MSFT", "side": "bull", "at": t["at"], "why": "MSFT was #2 on the Mag7 board by H/L for only 3 min of the 5"}}
+    assert bd._not_ordered_why("bull", t, [], None, top_skips=top).startswith("MSFT was #2 on the Mag7")
+    assert bd._not_ordered_why("bull", t, [], None) == "the option was over $8.00 (the bot skips those)"

@@ -89,12 +89,10 @@ e2eTest("notes that cannot be fetched show no dot and break nothing", async () =
   });
 });
 
-// Expected to fail today (2026-11-04): the dot lives only in the desktop
-// sidebar, which is display:none at <=760px, and neither the bottom bar nor the
-// More sheet carries one - so on the phone a silent update leaves no trace.
+// Fixed 2026-11-14: the dot used to live only in the desktop sidebar
+// (display:none at <=760px). The phone's More button now carries one.
 test("phone: an unread release is signalled somewhere on screen", {
   skip: marketHoursBlock() || false,
-  todo: "the unread dot exists only in the desktop sidebar; the phone bottom bar and More sheet show nothing",
   timeout: 180_000,
 }, async () => {
   await withApp({ view: "Settings", viewport: PHONE, storage: { [SEEN]: OLD_MARK } }, async (app) => {

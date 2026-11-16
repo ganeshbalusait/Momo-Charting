@@ -15,8 +15,17 @@ const BAR = "#agx-update-bar";
 const WEDNESDAY_10AM_ET = new Date("2026-11-04T15:00:00Z");   // in session
 const SATURDAY_NOON_ET = new Date("2026-11-07T17:00:00Z");     // out of session
 
+// Navigations stay real; only the page's version check (appVersion.js
+// fetchLatestEntryScript, default Accept */*) is answered. Once public/sw.js
+// controls the page (it registers after the first load) a reload's navigation
+// reaches Playwright as the worker's fetch (resourceType "fetch", not
+// "document") - it still asks for text/html first. Routing that one too served
+// the fake page as the document, its script 404'd to HTML, and the reloaded
+// app stayed blank (2026-11-13).
+const isNavigation = (request) => request.resourceType() === "document" || /^text\/html/.test(request.headers().accept || "");
+
 async function serveRoot(app, html) {
-  await app.context.route((url) => url.pathname === "/", (route) => (route.request().resourceType() === "document"
+  await app.context.route((url) => url.pathname === "/", (route) => (isNavigation(route.request())
     ? route.fallback()
     : route.fulfill({ status: 200, contentType: "text/html", body: html })));
 }
@@ -31,7 +40,7 @@ async function setVisibility(page, state) {
 }
 
 async function settled(app) {
-  await app.page.locator('.command-context h1', { hasText: "Settings" }).waitFor({ timeout: 60_000 });
+  await app.page.locator('.command-context h1', { hasText: "Settings" }).waitFor({ state: "attached", timeout: 60_000 });
   await app.page.evaluate(() => { window.__e2eSameDocument = true; });
 }
 const sameDocument = (page) => page.evaluate(() => window.__e2eSameDocument === true);
@@ -64,8 +73,14 @@ e2eTest("tapping the bar reloads onto Release Notes, once", async () => {
     await Promise.all([app.page.waitForEvent("load"), app.page.locator(BAR).click()]);
     await app.page.locator('[data-testid="release-notes-view"] h1.release-notes-title').waitFor({ timeout: 60_000 });
     assert.equal(await app.page.evaluate(() => sessionStorage.getItem("agx:open-release-notes")), null, "the hand-off is consumed");
+    // The app remembers the page he is on (App.jsx ACTIVE_VIEW_STORAGE_KEY,
+    // since f3d4c8ff), so a reload while still ON Release Notes rightly comes
+    // back to it. "Once" means the hand-off never steers a later load: he goes
+    // back to Settings, reloads, and stays on Settings.
+    await app.page.locator('button.nav-item[title="Settings"]').click();
+    await app.page.locator(".command-context h1", { hasText: "Settings" }).waitFor({ state: "attached", timeout: 15_000 });
     await app.page.reload({ waitUntil: "domcontentloaded" });
-    await app.page.locator(".command-context h1").waitFor({ timeout: 60_000 });
+    await app.page.locator(".command-context h1", { hasText: "Settings" }).waitFor({ state: "attached", timeout: 60_000 });
     await app.page.waitForTimeout(1_000);
     assert.equal(await app.page.locator('[data-testid="release-notes-view"]').count(), 0, "a later reload went to Release Notes again");
     assert.deepEqual(app.pageErrors, []);
@@ -96,7 +111,7 @@ e2eTest("out of session, coming back after a minute reloads silently and stays o
     await setVisibility(app.page, "hidden");
     await app.page.clock.setFixedTime(new Date(SATURDAY_NOON_ET.getTime() + 61_000));
     await Promise.all([app.page.waitForEvent("load", { timeout: 15_000 }), setVisibility(app.page, "visible").catch(() => {})]);
-    await app.page.locator(".command-context h1", { hasText: "Settings" }).waitFor({ timeout: 60_000 });
+    await app.page.locator(".command-context h1", { hasText: "Settings" }).waitFor({ state: "attached", timeout: 60_000 });
     assert.equal(await app.page.locator('[data-testid="release-notes-view"]').count(), 0, "a silent reload must not switch the page");
     assert.equal(await app.page.evaluate(() => localStorage.getItem("agx:reloaded-for")), NEW_BUILD);
     assert.equal(await app.page.locator(BAR).count(), 0);

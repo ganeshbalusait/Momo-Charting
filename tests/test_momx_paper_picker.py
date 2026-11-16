@@ -15,7 +15,7 @@ from momx import paper_mirror as pm
 from momx import paper_picker as pp
 
 ET = pm.ET
-NOW = datetime(2026, 11, 10, 10, 0, tzinfo=ET)      # Tuesday, inside the first buy window
+NOW = datetime(2026, 11, 10, 10, 10, tzinfo=ET)     # Tuesday, inside the first buy window
 
 
 class FakeClient:
@@ -52,6 +52,9 @@ def signal(symbol, seconds_old, rule="level2", now=NOW, **kw):
          "expectedMove": 4.0, "momentum": "rising", "callWalls": [{"strike": 105.0, "oi": 900}, {"strike": 120.0, "oi": 500}],
          "market": {"spyPct": 0.42, "breadth": 0.61}, "lastAt": (now - timedelta(seconds=10)).isoformat()}
     t.update(kw)
+    # A Level signal is bought only when the Bot gave it a chart plan (paper_mirror.has_plan,
+    # 2026-11-13); plan=None in a test = the Bot gave it none.
+    t.setdefault("plan", {"strike": t.get("eStrike")})
     return t
 
 

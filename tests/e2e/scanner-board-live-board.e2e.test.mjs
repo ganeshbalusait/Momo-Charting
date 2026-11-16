@@ -114,6 +114,12 @@ e2eTest("a worker that is still warming shows the building message, not an error
   await withApp({ view: VIEW, storage: BOARD_STORAGE, fakeReads: reads }, async (app) => {
     const empty = app.page.locator("td.momx-empty .momx-empty-inner");
     await empty.waitFor({ timeout: 60_000 });
+    // Until the first board read lands the same cell says "Loading the MomX
+    // board..." (MomxScannerPanel.jsx emptyMessage); judge the settled message.
+    await app.page.waitForFunction(() => {
+      const node = document.querySelector("td.momx-empty .momx-empty-inner");
+      return node && !/^Loading the MomX board/.test(node.textContent.trim());
+    }, null, { timeout: 30_000 });
     assert.match(await empty.innerText(), /^Building this watchlist from live bars/);
     assert.equal(await app.page.locator(".momx-banner.is-error").count(), 0);
     assert.deepEqual(app.pageErrors, []);
@@ -127,7 +133,6 @@ e2eTest("a worker that is still warming shows the building message, not an error
 // while rendering and takes the board down. Kept as a known failure until the
 // panel is fixed; it should pass (and lose `todo`) once it reads row.symbol only.
 test("a row with signals but no ticker name does not crash the board", {
-  todo: "MomxRow reads undeclared `entry` for a symbol-less row with fires (MomxScannerPanel.jsx ~2838)",
   skip: marketHoursBlock() || false,
   timeout: 180_000,
 }, async () => {

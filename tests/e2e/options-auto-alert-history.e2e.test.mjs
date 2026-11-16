@@ -93,7 +93,12 @@ e2eTest("ALERTS BY SESSION: a date drives the history panel, a ticker opens its 
     await app.page.locator(`${FEED} header small`, { hasText: "2 alerts · 2 tickers" }).waitFor({ timeout: 15_000 });
     assert.match(await app.page.locator(`${DRAWER} .auto-alert-summary-day`, { hasText: EARLIER_DAY }).locator("small").first().innerText(), /2 tickers · 2 alerts/);
     await app.page.locator(`${DRAWER} .auto-alert-summary-day`, { hasText: TODAY }).locator(".auto-alert-summary-symbols button", { hasText: "NVDA" }).click();
-    await app.page.locator(".charts-oi-heading h2", { hasText: "NVDA" }).waitFor({ timeout: 60_000 });
+    // "attached", not visible: Charts & OI embeds FullChartsAndOiBoard with
+    // `embedded`, and index.css hides its heading by design
+    // (.charts-oi-page-full.is-embedded > .charts-oi-heading { display: none },
+    // since 5e47c8cf 2026-08-10). The heading text still names the ticker.
+    await app.page.locator('[data-testid="charts-and-oi-view"]').waitFor({ timeout: 60_000 });
+    await app.page.locator(".charts-oi-heading h2", { hasText: "NVDA" }).waitFor({ state: "attached", timeout: 60_000 });
     assert.deepEqual(app.pageErrors, []);
   });
 });

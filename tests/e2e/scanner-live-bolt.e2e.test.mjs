@@ -1,11 +1,13 @@
 // MomX Scanner -> the LIVE ⚡ bolt (ALL / ⚡ NOW / ⚡ TODAY), end to end.
-// The board is the live Mag7 board (read-only); the per-second bolt state is a
+// The board is the live Mag7 board (read-only), except in the cycle test, which
+// needs rows that are not stale and so uses the fixture board; the per-second bolt state is a
 // fixture naming two of the board's own tickers (NVDA, AAPL), so what each view must show is
 // known exactly: one name lit NOW, one that fired earlier TODAY.
 
 import assert from "node:assert/strict";
 
 import { PHONE, e2eTest, withApp } from "./harness.mjs";
+import { boardReads } from "./scanner-board-fixtures.mjs";
 
 const SCANNER = {
   "momx.scanner.activeList": "Mag7",
@@ -54,7 +56,12 @@ function boltsFor(picked) {
 
 e2eTest("the bolt button cycles ALL -> NOW -> TODAY -> ALL, filters to the lit names and is remembered", async () => {
   const picked = [];
-  await withApp({ view: "MomX Scanner", storage: SCANNER, fakeReads: { "GET /api/momx-live-bolts": () => ({ json: boltsFor(picked) }) } }, async (app) => {
+  // 2026-11-14: this test used the LIVE Mag7 board. The app hides the bolt on
+  // a row whose last 5-minute bar is more than 10 minutes old (stale data must
+  // not look live), so outside market hours no row could ever show the badge
+  // and the test failed by the clock. The board is now the shared fixture
+  // (NVDA / AAPL / SPY, rows that are not stale); every assertion is unchanged.
+  await withApp({ view: "MomX Scanner", storage: SCANNER, fakeReads: { ...boardReads(), "GET /api/momx-live-bolts": () => ({ json: boltsFor(picked) }) } }, async (app) => {
     const { page } = app;
     await wholeBoard(page);
     const all = await symbolsOnScreen(page);

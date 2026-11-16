@@ -257,3 +257,84 @@ test("the first minute ever seen anchors on its own total rather than inventing 
   assert.equal(bar.dayVolumeAtOpen, 1_000_000);
   assert.equal(bar.volumeKnown, true);
 });
+
+// ---------------------------------------------------------------------------
+// The 1 s REST quote fallback has no trade time of its own: liveMarketStream
+// stamps each quote with the browser's RECEIVE time. Treated like a real trade
+// it opened a candle at "now" on a chart with no tape yet - a Saturday 07:40 ET
+// candle 11.7 h after Friday's 19:59 close (measured 2026-11-14) - and from
+// then on the gap poll reloaded the chart every 1-3 s forever.
+// ---------------------------------------------------------------------------
+test("a receive-time REST quote never opens a candle before the real tape exists", () => {
+  assert.equal(shouldUseEquityTradeForChart({
+    equityTime: 1_794_660_000,
+    latestBarTime: 0,
+    receiveTimeOnly: true,
+    sessionOpen: true,
+  }), false);
+  assert.equal(shouldUseEquityTradeForChart({
+    equityTime: 1_794_660_000,
+    latestBarTime: 0,
+    receiveTimeOnly: true,
+    sessionOpen: false,
+  }), false);
+});
+
+test("a real Schwab stream trade is still accepted with no tape", () => {
+  // Stream packets carry Schwab's own trade time, so the candle they open is
+  // a real print. Session state does not matter for them.
+  assert.equal(shouldUseEquityTradeForChart({
+    equityTime: 1_794_660_000,
+    latestBarTime: 0,
+    receiveTimeOnly: false,
+    sessionOpen: false,
+  }), true);
+  assert.equal(shouldUseEquityTradeForChart({
+    equityTime: 1_794_660_000,
+    latestBarTime: 0,
+  }), true);
+});
+
+test("outside the session a receive-time REST quote cannot open a new minute", () => {
+  // Weekday evening: the tape ends at 19:59 ET and the REST quote keeps
+  // repeating the closing price. A candle at 20:05 would be a clock reading,
+  // not a trade, yet it sits inside the two-hour live gap.
+  const lastBar = 1_794_617_940;
+  assert.equal(shouldUseEquityTradeForChart({
+    equityTime: lastBar + 6 * 60,
+    latestBarTime: lastBar,
+    receiveTimeOnly: true,
+    sessionOpen: false,
+  }), false);
+  // The minute already on the tape may still take the newer price.
+  assert.equal(shouldUseEquityTradeForChart({
+    equityTime: lastBar + 30,
+    latestBarTime: lastBar,
+    receiveTimeOnly: true,
+    sessionOpen: false,
+  }), true);
+  // A real stream trade in the same place is a real after-hours print.
+  assert.equal(shouldUseEquityTradeForChart({
+    equityTime: lastBar + 6 * 60,
+    latestBarTime: lastBar,
+    receiveTimeOnly: false,
+    sessionOpen: false,
+  }), true);
+});
+
+test("inside the session a receive-time REST quote still drives the forming candle", () => {
+  const lastBar = 1_794_600_000;
+  assert.equal(shouldUseEquityTradeForChart({
+    equityTime: lastBar + 65,
+    latestBarTime: lastBar,
+    receiveTimeOnly: true,
+    sessionOpen: true,
+  }), true);
+  // The stale-tape gate still applies to it.
+  assert.equal(shouldUseEquityTradeForChart({
+    equityTime: lastBar + 6 * 3_600,
+    latestBarTime: lastBar,
+    receiveTimeOnly: true,
+    sessionOpen: true,
+  }), false);
+});

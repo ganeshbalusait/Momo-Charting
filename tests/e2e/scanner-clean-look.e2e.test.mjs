@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 
 import { PHONE, e2eTest, overflowsSideways, withApp } from "./harness.mjs";
-import { BOARD_STORAGE, boardReads, boardReady } from "./scanner-board-fixtures.mjs";
+import { BOARD_STORAGE, boardReads, boardReady, storedNews } from "./scanner-board-fixtures.mjs";
 
 const VIEW = "MomX Scanner";
 const MONITOR = { width: 1920, height: 1080 };
@@ -26,16 +26,16 @@ const MONITOR = { width: 1920, height: 1080 };
 const ROWS_BEFORE = { monitor: 24, phone: 5 };
 const LIVE_TABLE = "table.momx-table:not(.momx-history-table):not(.momx-find-table)";
 
-const cardReads = () => ({
-  ...boardReads(),
+const cardReads = (news) => ({
+  ...boardReads({ news }),
   "GET /api/momx-scanner/daybars": { json: { symbol: "NVDA", day: "2026-11-03",
     bars: [[1762182000, 180.1], [1762182300, 181.4], [1762182600, 180.9], [1762182900, 182.4]], low: 180.1, high: 182.4 } },
   "GET /api/oi-finder": { json: { symbol: "NVDA", callRows: [], putRows: [], errors: [] } },
 });
 
-async function openScanner({ viewport = MONITOR } = {}, fn) {
+async function openScanner({ viewport = MONITOR, news } = {}, fn) {
   const storage = { ...BOARD_STORAGE };
-  await withApp({ view: VIEW, viewport, storage, fakeReads: cardReads() }, async (app) => {
+  await withApp({ view: VIEW, viewport, storage, fakeReads: cardReads(news) }, async (app) => {
     await boardReady(app.page);
     await app.page.waitForTimeout(800);
     await fn(app);
@@ -163,8 +163,60 @@ for (const theme of ["dark"]) {
     });
   });
 
+  // 2026-11-14: the board's stored headlines used to come from the LIVE news
+  // store (the fixture did not fake /api/news-feed/latest), so this state was
+  // on screen only when the live headline happened to be older than 3 hours -
+  // and then it failed five tests here at once. It is now a fixture: NVDA
+  // carries a 10-hour-old stored headline, AAPL a 1-hour-old one, always.
+  // The rule is the same 4.5:1 as every other label on the board.
+  e2eTest(`a stored headline's age in the News column is readable, fresh or older (${theme})`, async () => {
+    await openScanner({ news: storedNews({ NVDA: 10, AAPL: 1 }) }, async ({ page }) => {
+      const older = page.locator(`${LIVE_TABLE} td.momx-newscol.is-stored:not(.is-fresh)`);
+      await older.first().waitFor({ timeout: 15_000 });
+      assert.match((await older.first().innerText()).trim(), /^10h/);
+      assert.match((await page.locator(`${LIVE_TABLE} td.momx-newscol.is-stored.is-fresh`).first().innerText()).trim(), /^1h/);
+      const seen = await unreadable(page);
+      assert.deepEqual(seen.bad, []);
+      // The row under the pointer is lighter (#1c1c1f): the age must read there too.
+      await older.first().hover();
+      await page.waitForTimeout(300);
+      assert.equal(await older.first().evaluate((cell) => getComputedStyle(cell.closest("tr")).backgroundColor), "oklch(0.23 0.055 264)");
+      assert.deepEqual((await unreadable(page)).bad, []);
+    });
+  });
+
+  // 2026-11-14: the other states that are dim on purpose, each put on screen:
+  // the sparkle of a headline nobody scored (no sentiment), an empty Spread
+  // cell, and the name of a column switched off in the Columns dialog (it read
+  // 3.3:1). Same 4.5:1 rule, on a monitor and on a phone.
+  e2eTest(`states that are dim on purpose stay readable: an unscored headline, an empty Spread cell, a hidden column (${theme})`, async () => {
+    const news = storedNews({ NVDA: 10, AAPL: 1 });
+    news.NVDA = { ...news.NVDA, sentiment: "" };
+    for (const viewport of [MONITOR, PHONE]) {
+      await openScanner({ viewport, news }, async ({ page }) => {
+        const older = page.locator(`${LIVE_TABLE} td.momx-newscol.is-stored:not(.is-fresh)`);
+        await older.first().waitFor({ timeout: 15_000 });
+        assert.equal(await older.first().locator(".momx-newscol-ai.is-none").count(), 1, "the unscored sparkle is on screen");
+        assert.ok((await page.locator(`${LIVE_TABLE} td.momx-spreadcol.is-none`).count()) >= 1, "an empty Spread cell is on screen");
+        assert.deepEqual((await unreadable(page)).bad, []);
+        await page.locator("[data-testid='momx-columns-open']").first().click();
+        const dialog = page.locator("[role='dialog'][aria-label='Scanner columns']");
+        await dialog.waitFor({ timeout: 10_000 });
+        // Switching a column off is kept in this browser only (no write).
+        await dialog.locator(".momx-columns-row[data-col='pctChange'] input[type='checkbox']").click();
+        const hidden = dialog.locator(".momx-columns-row.is-hidden .momx-columns-name");
+        await hidden.first().waitFor({ timeout: 5_000 });
+        await page.waitForTimeout(300);
+        assert.deepEqual((await unreadable(page)).bad, []);
+        await hidden.first().hover();
+        await page.waitForTimeout(300);
+        assert.deepEqual((await unreadable(page)).bad, []);
+      });
+    }
+  });
+
   for (const [name, opener, root] of [
-    ["Filters", "[data-testid='momx-filters-open']", ".momx-filters"],
+    ["Filters","[data-testid='momx-filters-open']", ".momx-filters"],
     ["Columns", "[data-testid='momx-columns-open']", "[role='dialog'][aria-label='Scanner columns']"],
     ["Setup rules", ".momx-head-row th[data-col='setup'] button", ".momx-setup-picker"],
     ["list menu", ".momx-listbtn", ".momx-picker"],

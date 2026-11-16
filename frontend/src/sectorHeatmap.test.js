@@ -22,6 +22,8 @@ import {
   formatSignedPct,
   heatLevel,
   rowCounts,
+  MIN_TILE_WIDTH,
+  layoutSectorTiles,
   rowLayout,
   squarify,
   tileFontSizes,
@@ -238,12 +240,53 @@ describe("sizing and labels", () => {
     assert.ok(mid.symbol > 9 && mid.symbol < 20 && mid.pct < mid.symbol);
   });
 
-  test("Robinhood drops the % on its short bottom row; ticker and % share a size", () => {
-    assert.equal(tileLabelMode(90, 45, "rh"), "symbol");
-    assert.equal(tileLabelMode(90, 70, "rh"), "full");
+  // Trader, 2026-11-10: "some tickers % is missing". Short rows used to print
+  // the ticker only, copying Robinhood; he wants the % on them too.
+  test("a short Robinhood row still prints the %; ticker and % share a size", () => {
+    assert.equal(tileLabelMode(90, 45), "full");
+    assert.equal(tileLabelMode(90, 27), "full");
+    assert.equal(tileLabelMode(90, 70), "full");
     const rh = tileFontSizes(130, 160, "rh");
     assert.equal(rh.symbol, rh.pct);
     assert.ok(rh.symbol <= 18);
+  });
+
+  test("a Robinhood % as wide as -12.34% (about 4.5 font-widths) fits its tile", () => {
+    for (let width = MIN_TILE_WIDTH - 3; width <= 300; width += 1) {
+      const { pct } = tileFontSizes(width, 200, "rh");
+      assert.ok(pct * 4.5 <= width, `${pct}px text in a ${width}px tile`);
+    }
+  });
+
+  test("no row lets a small company shrink below the width its % needs", () => {
+    const skewed = [{ symbol: "BIG", weight: 1000 }, ...Array.from({ length: 4 }, (_, i) => ({ symbol: `s${i}`, weight: 1 }))];
+    const layout = rowLayout(skewed, { x: 0, y: 0, width: 330, height: 120 });
+    for (const tile of layout) assert.ok(tile.width >= MIN_TILE_WIDTH - 1e-6, `${tile.item.symbol} ${tile.width}`);
+    const span = layout.filter((tile) => tile.row === 0).reduce((sum, tile) => sum + tile.width, 0);
+    assert.ok(Math.abs(span - 330) < 1e-6, "the row still fills the card exactly");
+  });
+
+  for (const [style, gap] of [["rh", 3], ["tos", 1]]) {
+    for (const width of [300, 320, 330, 380, 440, 520, 640, 900]) {
+      test(`${style} at ${width}px: every tile has room for its %`, () => {
+        const check = (tiles, name, large) => {
+          const height = cardHeight(tiles.length, width, large);
+          const layout = layoutSectorTiles(tiles, { x: 0, y: 0, width, height }, style, gap);
+          assert.equal(layout.length, tiles.length, name);
+          for (const tile of layout) {
+            assert.equal(tileLabelMode(tile.width - gap, tile.height - gap), "full", `${name} ${tile.item.symbol} ${tile.width}x${tile.height}`);
+          }
+        };
+        for (const group of buildMarketSectorGroups({})) check(group.tiles, group.name, false);
+        for (const card of SECTOR_CARDS) check(buildSectorPage(card.name, {}).tiles, `${card.name} page`, true);
+      });
+    }
+  }
+
+  test("thinkorswim keeps its treemap whenever the treemap has room", () => {
+    const tiles = buildMarketSectorGroups({})[0].tiles;
+    const rect = { x: 0, y: 0, width: 900, height: 340 };
+    assert.deepEqual(layoutSectorTiles(tiles, rect, "tos", 1), squarify(tiles, rect));
   });
 
   test("small tiles drop the % first, then the ticker", () => {

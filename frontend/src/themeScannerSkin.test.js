@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
-  OUTPUTS, SCOPES, contrast, darkText, generate, isSolidFill, lightBackground, lightLine, lightText,
+  OUTPUTS, SCOPES, contrast, darkDimText, darkText, generate, isSolidFill, lightBackground, lightLine, lightText,
   parseColour, printColour, readRules, skinRule,
 } from "../../scripts/gen_scanner_light_skin.mjs";
 
@@ -185,12 +185,36 @@ test("the History day picker's classes are shared with an older page: twinned on
   assert.ok(twin.text.startsWith(SCOPES.light + " .momx-scanner-panel .scanner-day-navbtn {"), twin.text.slice(0, 120));
 });
 
-test("dark: a state that is dim on purpose stays dim", () => {
-  for (const selector of [".momx-scanner-panel .momx-setup.is-none .momx-setup-letter", ".momx-scanner-panel td.momx-recordcol.is-few", ".momx-columns-row.is-hidden .momx-columns-name", ".momx-scanner-panel .momx-newscol.is-stored:not(.is-fresh)"]) {
-    const twin = skinRule(rule(selector, "color: #6b7080"), "dark");
-    assert.match(twin.text, /color: #6b7080;/, selector);
+// 2026-11-14: a dim state used to keep its grey whatever it was. The age of an
+// older stored headline ("10h", #6b7280) read 3.8:1 on a board row and 3.5:1 on
+// the hovered row, and the name of a hidden column 3.3:1 - under the 4.5:1 of
+// every other label. A dim state now stops at the look's own dim ink.
+test("dark: a state that is dim on purpose stays quieter than ordinary text but is readable, also on a hovered row", () => {
+  const ROW = hex("#141416"); const ROW_HOVER = hex("#1c1c1f"); const HIDDEN_COLUMN_ROW = hex("#1e1f23");
+  const ordinary = darkText(hex("#6b7080"));
+  for (const [selector, typed] of [
+    [".momx-scanner-panel .momx-newscol.is-stored:not(.is-fresh)", "#6b7280"],
+    [".momx-scanner-panel .momx-newscol-ai.is-none", "#64748b"],
+    [".momx-scanner-panel .momx-setup.is-none .momx-setup-letter", "#6b7080"],
+    [".momx-columns-row.is-hidden .momx-columns-name", "#6b7080"],
+  ]) {
+    const twin = skinRule(rule(selector, "color: " + typed), "dark");
+    assert.match(twin.text, /color: #8e8e93;/, selector);
   }
-  assert.match(skinRule(rule(".momx-scanner-panel .momx-footnote", "color: #6b7080"), "dark").text, /color: #a1a1a6;/);
+  assert.ok(skinRule(rule(".momx-scanner-panel td.momx-spreadcol.is-none", "color: var(--momx-muted, #6b7280)"), "dark").text.includes("color: var(--momx-muted, #8e8e93);"));
+  const dim = hex("#8e8e93");
+  for (const surface of [ROW, ROW_HOVER, HIDDEN_COLUMN_ROW]) assert.ok(contrast(dim, surface) >= 4.5, printColour(surface) + " " + contrast(dim, surface).toFixed(2));
+  assert.ok(contrast(dim, ROW) < contrast(ordinary, ROW), "dim is quieter than ordinary second text");
+  assert.ok(contrast(dim, ROW) < contrast(hex("#f1f5f9"), ROW) / 2, "and far quieter than a fresh headline");
+  assert.equal(printColour(darkDimText(hex("rgba(148, 163, 184, 0.62)"))), "#8e8e93", "see-through grey");
+});
+
+test("dark: a dim state that is already readable, or coloured, is left exactly as typed", () => {
+  assert.match(skinRule(rule(".momx-scanner-panel td.momx-recordcol.is-few", "color: #7d8a96"), "dark").text, /color: #7d8a96;/);
+  assert.match(skinRule(rule(".momx-reach-wall.is-none .momx-reach-wall-need", "color: #8a8a98"), "dark").text, /color: #8a8a98;/);
+  assert.match(skinRule(rule(".momx-scanner-panel .momx-newscol.is-stored.is-tone-up", "color: #4ade80"), "dark").text, /color: #4ade80;/);
+  assert.equal(darkDimText(hex("#05131a")), null, "dark text on a signal fill is not touched");
+  assert.match(skinRule(rule(".momx-scanner-panel .momx-footnote", "color: #6b7080"), "dark").text, /color: #a1a1a6;/, "ordinary faint text still gets the shared second colour");
 });
 
 test("Windows line endings in index.css do not change what is written", () => {

@@ -73,7 +73,9 @@ e2eTest("a failing chart server shows a readable message in the card, then recov
   await withCharts({ workspace: { symbols: ["AAPL"] } }, async (app) => {
     const { page } = app;
     await waitForTape(page, { symbol: "AAPL" });
-    const failing = /\/api\/oi-finder-chart\?(?=.*symbol=NVDA)/;
+    // 2026-11-13: the two \b here were raw backspace bytes (0x08) since c71be3a6,
+    // so the route never matched and NVDA loaded from the live server.
+    const failing = /\/api\/oi-finder-chart\?(?=.*\bsymbol=NVDA\b)/;
     await page.route(failing, (route) => route.fulfill({
       status: 502, contentType: "application/json", body: JSON.stringify({ error: "Bad gateway (end-to-end test)" }),
     }));

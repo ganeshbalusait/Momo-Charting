@@ -30,6 +30,11 @@ import {
   chartZoomOutMaximumHalfRange,
   chartZoomLogicalRange,
   chartPanStepLogicalRange,
+  chartLiveEdgeFutureSlots,
+  chartPanForwardLastIndex,
+  chartTimeViewportToPersist,
+  chartPanBoundsCacheUsable,
+  chartWholeBarLogicalRange,
   CHART_PAN_STEP_FRACTION,
   CHART_LAYOUT_VIEWPORT_VERSION,
   clampExpandedPriceRangeToCandles,
@@ -44,6 +49,7 @@ import {
   storeChartPaneFactors,
   workspaceCompanionWidthAtPointer,
 } from "./chartViewport.js";
+import { chartZoomMemoryFromLogicalRange, chartZoomMemoryLogicalRange } from "./chartViewport.js";
 
 test("a measurable host never forces the chart wider than its own content box", () => {
   // "6 across" desktop column: 308px box with 10px padding each side. The old
@@ -502,6 +508,257 @@ test("zoom-in keeps the current chart center", () => {
   assert.equal((next.from + next.to) / 2, 200);
 });
 
+// At the live edge the toolbar zoom-in behaves like TradingView: the newest
+// candle stays where it is and the older candles leave on the left. The centre
+// zoom moved the right edge left by a sixth of the view on every click, so one
+// click from the opening view pushed the newest candle's breathing room off
+// screen and lit the "pan forward" arrow although the trader never left the
+// live edge (charts-core-navigation, 2026-11-14).
+test("zoom-in at the live edge keeps the right edge and trims older candles", () => {
+  // Measured on the real AAPL 5m chart: the opening view is [134, 207] with
+  // the newest candle at 207. The centre zoom returned [145.68, 195.32], which
+  // hid the 12 newest candles after ONE click.
+  const opening = chartZoomLogicalRange({
+    logicalRange: { from: 134, to: 207 },
+    direction: "in",
+    firstCandleIndex: 0,
+    latestCandleIndex: 207,
+    futureSlots: 6,
+  });
+  assert.equal(opening.to, 207, "the newest candle must stay at the right edge");
+  assert.ok(Math.abs((opening.to - opening.from) - 73 * 0.68) < 1e-9);
+  // Parked by Return to latest, six blank slots ahead of the newest candle.
+  const next = chartZoomLogicalRange({
+    logicalRange: { from: 231, to: 340 },
+    direction: "in",
+    firstCandleIndex: 127,
+    latestCandleIndex: 334,
+    futureSlots: 6,
+  });
+  assert.equal(next.to, 340, "the live edge must not move");
+  assert.ok(Math.abs((next.to - next.from) - 109 * 0.68) < 1e-9);
+  // Repeating it never loses the newest candle or lets blank space take over.
+  let range = { from: 231, to: 340 };
+  for (let click = 0; click < 12; click += 1) {
+    range = chartZoomLogicalRange({
+      logicalRange: range,
+      direction: "in",
+      firstCandleIndex: 127,
+      latestCandleIndex: 334,
+      futureSlots: 6,
+    });
+    const span = range.to - range.from;
+    assert.ok(range.from < 334 && range.to >= 334, "newest candle left the view");
+    assert.ok(range.to - 334 <= Math.max(2, span * 0.3) + 1e-9, "blank space above 30% of the view");
+  }
+  assert.equal(range.to - range.from, 8);
+});
+
+test("zoom-in at the live edge caps the blank space the way Return to latest does", () => {
+  // 4H opens with generous room ahead (24 slots here). Zooming in must shrink
+  // that room with the view instead of keeping all 24 slots of nothing.
+  const next = chartZoomLogicalRange({
+    logicalRange: { from: 60, to: 124 },
+    direction: "in",
+    firstCandleIndex: 0,
+    latestCandleIndex: 100,
+    futureSlots: 24,
+  });
+  const span = next.to - next.from;
+  assert.ok(Math.abs(span - 64 * 0.68) < 1e-9);
+  assert.ok(Math.abs(next.to - (100 + chartLiveEdgeFutureSlots({ visibleSpan: span, futureSlots: 24 }))) < 1e-9);
+});
+
+test("zoom-in away from the live edge still zooms around the centre", () => {
+  // The newest candle (334) is off screen to the right: the trader is reading
+  // history, so the middle of what he is looking at must stay put.
+  const next = chartZoomLogicalRange({
+    logicalRange: { from: 100, to: 300 },
+    direction: "in",
+    firstCandleIndex: 0,
+    latestCandleIndex: 334,
+    futureSlots: 6,
+  });
+  assert.equal(next.to - next.from, 136);
+  assert.equal((next.from + next.to) / 2, 200);
+});
+
+test("the live-edge room is one rule shared by zoom, pan and Return to latest", () => {
+  assert.equal(chartLiveEdgeFutureSlots({ visibleSpan: 109, futureSlots: 6 }), 6);
+  assert.equal(chartLiveEdgeFutureSlots({ visibleSpan: 40, futureSlots: 24 }), 12);
+  assert.equal(chartLiveEdgeFutureSlots({ visibleSpan: 4, futureSlots: 24 }), 2);
+  assert.equal(chartLiveEdgeFutureSlots({ visibleSpan: 40, futureSlots: 0 }), 0);
+});
+
+// "Pan forward to newer candles" is lit only while newer candles are hidden to
+// the right. The old bound was "newest candle + the configured projection",
+// which the opening view never reaches (it opens with the newest candle AT the
+// right edge), so the arrow was lit on every freshly opened chart and led only
+// to blank space.
+test("pan forward is finished once the newest candle is on screen", () => {
+  const forward = (logicalRange) => chartPanStepLogicalRange({
+    logicalRange,
+    direction: "forward",
+    firstIndex: 0,
+    lastIndex: chartPanForwardLastIndex({ logicalRange, latestIndex: 207, futureSlots: 6 }),
+  });
+  // Opening view and the first toolbar zoom-in: newest candle at the edge.
+  assert.equal(forward({ from: 134, to: 207 }), null);
+  assert.equal(forward({ from: 157, to: 207 }), null);
+  // Parked by Return to latest (six blank slots ahead).
+  assert.equal(forward({ from: 163, to: 213 }), null);
+  // Scrolled or dragged out past it: still nothing newer.
+  assert.equal(forward({ from: 180, to: 230 }), null);
+});
+
+test("pan forward walks back to exactly where Return to latest parks the view", () => {
+  // One step back from [157, 207] is a third of the view.
+  let range = { from: 157 - 50 / 3, to: 207 - 50 / 3 };
+  const lastIndex = chartPanForwardLastIndex({ logicalRange: range, latestIndex: 207, futureSlots: 6 });
+  assert.equal(lastIndex, 213);
+  range = chartPanStepLogicalRange({ logicalRange: range, direction: "forward", firstIndex: 0, lastIndex });
+  assert.ok(range, "newer candles were hidden, so forward must move");
+  assert.ok(Math.abs(range.to - 207) < 1e-9);
+  assert.ok(Math.abs((range.to - range.from) - 50) < 1e-9, "a pan never changes the zoom");
+  // A deeper view takes several steps and its last one stops at the park
+  // position: newest candle plus the shared live-edge room, never further.
+  range = { from: 20, to: 60 };
+  for (let step = 0; step < 40; step += 1) {
+    const next = chartPanStepLogicalRange({
+      logicalRange: range,
+      direction: "forward",
+      firstIndex: 0,
+      lastIndex: chartPanForwardLastIndex({ logicalRange: range, latestIndex: 207, futureSlots: 24 }),
+    });
+    if (!next) break;
+    range = next;
+  }
+  assert.ok(range.to >= 207, "stopped before the newest candle");
+  assert.ok(range.to <= 207 + chartLiveEdgeFutureSlots({ visibleSpan: 40, futureSlots: 24 }) + 1e-9);
+  assert.ok(Math.abs((range.to - range.from) - 40) < 1e-9);
+});
+
+// The pan bounds are cached for a beat because the arrows' greyed state is
+// probed on every scroll frame. The cache used to be trusted on age alone, so
+// a bound taken while a timeframe switch was still loading (other bars, other
+// index of the newest candle) decided the arrow for the settled chart:
+// measured 2026-11-14, forward lit on a 5m view [173, 207] whose newest candle
+// was 207, after a 15m -> 5m switch.
+test("cached pan bounds are dropped as soon as the tape or its newest index changes", () => {
+  const bars = [{ time: 60 }, { time: 120 }];
+  const cache = { at: 1_000, bars, bounds: { firstIndex: 0, latestIndex: 207, futureLogicalSlots: 6 } };
+  assert.equal(chartPanBoundsCacheUsable({ cache, nowMs: 1_100, bars, latestIndex: 207 }), true);
+  // Too old.
+  assert.equal(chartPanBoundsCacheUsable({ cache, nowMs: 1_401, bars, latestIndex: 207 }), false);
+  // Another tape (timeframe or ticker switch), even with the same numbers.
+  assert.equal(chartPanBoundsCacheUsable({ cache, nowMs: 1_100, bars: bars.slice(), latestIndex: 207 }), false);
+  // Same tape, but the time scale now puts the newest candle elsewhere.
+  assert.equal(chartPanBoundsCacheUsable({ cache, nowMs: 1_100, bars, latestIndex: 69 }), false);
+  assert.equal(chartPanBoundsCacheUsable({ cache: { at: 0, bounds: null }, nowMs: 1, bars, latestIndex: 207 }), false);
+  assert.equal(chartPanBoundsCacheUsable({ cache: null, nowMs: 1, bars, latestIndex: 207 }), false);
+});
+
+// THE BLANK ROOM AHEAD OF THE NEWEST CANDLE HAS NO HONEST LENGTH IN SECONDS.
+// Its slots carry the times of the NEXT session's bars, so on a Friday evening
+// six 5m slots "last" 56.5 hours. Measured 2026-11-14 on AAPL 5m: a 29-candle
+// view parked by Return to latest was stored as spanSeconds 211800 /
+// forwardSeconds 203400; the restore clamps forward to half the span, so the
+// chart came back showing all 208 candles - the zoom was simply gone.
+test("the remembered zoom counts candle time only, never the blank room ahead", () => {
+  const latest = 1_794_617_700;            // Fri 19:55 ET
+  const from = 1_794_609_300;              // 28 five-minute bars earlier
+  const mondayPremarket = 1_794_821_100;   // the time carried by blank slot 6
+  const stored = chartTimeViewportToPersist({
+    visibleFrom: from,
+    visibleTo: mondayPremarket,
+    latestCandleTime: latest,
+  });
+  assert.deepEqual(stored, { spanSeconds: latest - from, forwardSeconds: 0 });
+  // Restoring it frames the same first candle the trader was looking at...
+  const restored = chartTimeViewportRange(latest, stored);
+  assert.equal(restored.from, from);
+  // ...and saving that restored view (it ends on the newest candle) returns
+  // the same numbers: a fixed point, so nothing can creep.
+  assert.deepEqual(chartTimeViewportToPersist({
+    visibleFrom: restored.from,
+    visibleTo: latest,
+    latestCandleTime: latest,
+  }), stored);
+});
+
+test("a view that ends on or before the newest candle is remembered unchanged", () => {
+  assert.deepEqual(chartTimeViewportToPersist({
+    visibleFrom: 1_000_000,
+    visibleTo: 1_010_200,
+    latestCandleTime: 1_010_200,
+  }), { spanSeconds: 10_200, forwardSeconds: 0 });
+  // Panned back into history: the span is what is on screen.
+  assert.deepEqual(chartTimeViewportToPersist({
+    visibleFrom: 1_000_000,
+    visibleTo: 1_006_000,
+    latestCandleTime: 1_010_200,
+  }), { spanSeconds: 6_000, forwardSeconds: 0 });
+  // No tape yet: nothing to measure against, keep the visible span.
+  assert.deepEqual(chartTimeViewportToPersist({
+    visibleFrom: 1_000_000,
+    visibleTo: 1_006_000,
+    latestCandleTime: 0,
+  }), { spanSeconds: 6_000, forwardSeconds: 0 });
+});
+
+test("a view with no candle in it is not remembered at all", () => {
+  assert.equal(chartTimeViewportToPersist({
+    visibleFrom: 1_010_500,
+    visibleTo: 1_020_000,
+    latestCandleTime: 1_010_200,
+  }), null);
+  assert.equal(chartTimeViewportToPersist({ visibleFrom: 5, visibleTo: 5, latestCandleTime: 9 }), null);
+  assert.equal(chartTimeViewportToPersist({ visibleFrom: null, visibleTo: 5, latestCandleTime: 9 }), null);
+});
+
+test("the forward bound falls back to the widest region when the indexes are unusable", () => {
+  assert.equal(chartPanForwardLastIndex({ logicalRange: null, latestIndex: 207, futureSlots: 6 }), 213);
+  assert.ok(Number.isNaN(chartPanForwardLastIndex({ logicalRange: { from: 1, to: 9 }, latestIndex: null, futureSlots: 6 })));
+});
+
+// ZOOM MEMORY IS EXACT ONLY FOR WHOLE BARS. The zoom is remembered as the
+// TIMES of the first and last visible candle, and Lightweight Charts reports
+// those by rounding a fractional logical range outwards (measured: a view of
+// [153.62, 187.38] is reported as candles 153..188). Restoring those times
+// frames 35 slots where the trader had 33.76 - about one extra candle on every
+// first restore (141 px -> 146 px on the scrollbar thumb). A toolbar zoom that
+// lands on whole bars is reported exactly and restored exactly, and saving the
+// restored view returns the same times, so nothing can creep.
+test("a toolbar zoom lands on whole bars so the remembered zoom restores exactly", () => {
+  assert.deepEqual(chartWholeBarLogicalRange({ from: 157.36, to: 207 }), { from: 157, to: 207 });
+  assert.deepEqual(chartWholeBarLogicalRange({ from: 153.6224, to: 187.3776 }), { from: 154, to: 187 });
+  // Idempotent: a whole-bar view is its own fixed point (no ratchet).
+  const once = chartWholeBarLogicalRange({ from: 172.5, to: 206.49 });
+  assert.deepEqual(chartWholeBarLogicalRange(once), once);
+  assert.deepEqual(chartWholeBarLogicalRange({ from: 173, to: 207 }), { from: 173, to: 207 });
+  // Never collapses or flips a tiny view; unusable input passes through.
+  assert.deepEqual(chartWholeBarLogicalRange({ from: 10.1, to: 10.4 }), { from: 10.1, to: 10.4 });
+  assert.equal(chartWholeBarLogicalRange(null), null);
+});
+
+test("repeated toolbar zoom-in from the opening view stays on whole bars at the live edge", () => {
+  let range = { from: 134, to: 207 };
+  const spans = [];
+  for (let click = 0; click < 4; click += 1) {
+    range = chartWholeBarLogicalRange(chartZoomLogicalRange({
+      logicalRange: range,
+      direction: "in",
+      firstCandleIndex: 0,
+      latestCandleIndex: 207,
+      futureSlots: 6,
+    }));
+    assert.equal(range.to, 207);
+    assert.ok(Number.isInteger(range.from));
+    spans.push(range.to - range.from);
+  }
+  assert.deepEqual(spans, [50, 34, 23, 16]);
+});
+
 test("stores manual horizontal zoom per chart for the browser session", () => {
   const values = new Map();
   const storage = {
@@ -886,4 +1143,186 @@ test("pans unbounded while the candle indices are unknown, and refuses junk", ()
   assert.equal(chartPanStepLogicalRange({ logicalRange: { from: 10, to: 5 }, direction: "back" }), null);
   assert.equal(chartPanStepLogicalRange({ logicalRange: { from: 0, to: 30 }, direction: "sideways" }), null);
   assert.equal(chartPanStepLogicalRange(), null);
+});
+
+// ---- Zoom memory in candles (2026-11-14) -----------------------------------
+// The remembered zoom is a fractional CANDLE count back from the newest candle
+// plus the blank candle slots ahead of it, so a wheel or drag zoom restores
+// exactly and a view parked by Return to latest keeps its blank room.
+
+// A shared time scale as Lightweight Charts presents it: `density` logical
+// slots per candle (denser 30m study points), `offset` extra slots before the
+// first candle, and an optional clamp that mimics a series not yet fully on
+// the scale (older timestamps resolve to the nearest index it has).
+function zoomMemoryScale({ count = 208, step = 300, density = 1, offset = 0, clampBelow = null, gapAt = -1, gapSeconds = 0 } = {}) {
+  const start = 1_794_555_600;
+  const bars = Array.from({ length: count }, (_, index) => ({
+    time: start + index * step + (gapAt >= 0 && index >= gapAt ? gapSeconds : 0),
+  }));
+  const byTime = new Map(bars.map((bar, index) => [bar.time, index]));
+  const timeToIndex = (time) => {
+    const at = byTime.get(Number(time));
+    if (at === undefined) return null;
+    const logical = offset + at * density;
+    return clampBelow !== null && logical < clampBelow ? clampBelow : logical;
+  };
+  return { bars, timeToIndex, latestIndex: offset + (count - 1) * density, density };
+}
+
+test("a fractional wheel zoom is remembered exactly and restores to the same width", () => {
+  const { bars, timeToIndex } = zoomMemoryScale();
+  // Measured 2026-11-14: this view used to be remembered as candles 153..188.
+  const saved = chartZoomMemoryFromLogicalRange({ logicalRange: { from: 153.6224, to: 187.3776 }, bars, timeToIndex });
+  assert.equal(saved.candleSpan, 33.755);
+  assert.equal(saved.aheadSlots, 0);
+  const restored = chartZoomMemoryLogicalRange({ viewport: saved, bars, timeToIndex });
+  assert.ok(Math.abs((restored.to - restored.from) - 33.755) < 1e-9, "the restored view is not one candle wider");
+  assert.equal(restored.to, 207);
+  assert.equal(restored.wholeBars, false);
+});
+
+test("zoom memory is a fixed point: save -> restore -> save returns the same value", () => {
+  let seed = 20261114;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+  const scales = [
+    zoomMemoryScale(),
+    zoomMemoryScale({ density: 8 }),
+    zoomMemoryScale({ density: 8, offset: 37 }),
+    zoomMemoryScale({ count: 70, step: 900, offset: 3 }),
+    zoomMemoryScale({ gapAt: 150, gapSeconds: 203_400 }),
+  ];
+  let checked = 0;
+  for (const scale of scales) {
+    for (let sample = 0; sample < 200; sample += 1) {
+      const span = (8 + random() * 120) * scale.density;
+      const to = scale.latestIndex + (random() * 40 - 25) * scale.density;
+      const first = chartZoomMemoryFromLogicalRange({
+        logicalRange: { from: to - span, to },
+        bars: scale.bars,
+        timeToIndex: scale.timeToIndex,
+      });
+      if (!first) continue;
+      checked += 1;
+      let saved = first;
+      let width = null;
+      for (let trip = 0; trip < 5; trip += 1) {
+        const restored = chartZoomMemoryLogicalRange({ viewport: saved, bars: scale.bars, timeToIndex: scale.timeToIndex });
+        assert.ok(restored, "a remembered zoom must restore on a healthy scale");
+        if (width !== null) assert.ok(Math.abs((restored.to - restored.from) - width) < 1e-6, "the view crept between round trips");
+        width = restored.to - restored.from;
+        const again = chartZoomMemoryFromLogicalRange({ logicalRange: restored, bars: scale.bars, timeToIndex: scale.timeToIndex });
+        assert.deepEqual(again, first, `drift on trip ${trip}: ${JSON.stringify(first)} -> ${JSON.stringify(again)}`);
+        saved = again;
+      }
+    }
+  }
+  assert.ok(checked > 900, `only ${checked} views were checked`);
+});
+
+test("a view parked by Return to latest keeps its candles AND its blank room", () => {
+  const { bars, timeToIndex } = zoomMemoryScale();
+  // Measured: Return to latest parks a 34-slot view at [179, 213] (28 candle
+  // slots + 6 blank). It used to come back as [179, 207], then 22, then 16.
+  let range = { from: 179, to: 213 };
+  for (let trip = 0; trip < 3; trip += 1) {
+    const saved = chartZoomMemoryFromLogicalRange({ logicalRange: range, bars, timeToIndex });
+    assert.deepEqual(saved, { spanSeconds: 28 * 300, forwardSeconds: 0, candleSpan: 28, aheadSlots: 6 });
+    const restored = chartZoomMemoryLogicalRange({ viewport: saved, bars, timeToIndex });
+    assert.equal(restored.from, 179);
+    assert.equal(restored.to, 213);
+    assert.equal(restored.wholeBars, false);
+    range = { from: restored.from, to: restored.to };
+  }
+});
+
+test("blank room is remembered in candle widths on a scale made denser by study points", () => {
+  const { bars, timeToIndex, latestIndex } = zoomMemoryScale({ count: 120, step: 14_400, density: 8, offset: 5 });
+  const saved = chartZoomMemoryFromLogicalRange({
+    logicalRange: { from: latestIndex - 40 * 8, to: latestIndex + 12 * 8 },
+    bars,
+    timeToIndex,
+  });
+  assert.equal(saved.candleSpan, 40);
+  assert.equal(saved.aheadSlots, 12);
+  // Restored before the 30m studies are back on the scale: one slot a candle.
+  const bare = zoomMemoryScale({ count: 120, step: 14_400 });
+  const restored = chartZoomMemoryLogicalRange({ viewport: saved, bars: bare.bars, timeToIndex: bare.timeToIndex });
+  assert.equal(restored.from, 119 - 40);
+  assert.equal(restored.to, 119 + 12);
+});
+
+test("a whole-bar toolbar zoom is remembered as before and restores by candle time", () => {
+  const { bars, timeToIndex } = zoomMemoryScale();
+  const saved = chartZoomMemoryFromLogicalRange({ logicalRange: { from: 173, to: 207 }, bars, timeToIndex });
+  // The same 10200 s the time-range reading stored for this view.
+  assert.deepEqual(saved, { spanSeconds: 10_200, forwardSeconds: 0, candleSpan: 34, aheadSlots: 0 });
+  const restored = chartZoomMemoryLogicalRange({ viewport: saved, bars, timeToIndex });
+  assert.equal(restored.wholeBars, true);
+  assert.equal(restored.firstTime, bars[173].time);
+  assert.equal(restored.latestTime, bars[207].time);
+  assert.deepEqual([restored.from, restored.to], [173, 207]);
+});
+
+test("remembered seconds count candles only, never the gap a view happens to span", () => {
+  // Panned back across a weekend gap: 34 candles, 56.5 h of clock time.
+  const { bars, timeToIndex } = zoomMemoryScale({ gapAt: 150, gapSeconds: 203_400 });
+  const saved = chartZoomMemoryFromLogicalRange({ logicalRange: { from: 130, to: 164 }, bars, timeToIndex });
+  assert.equal(saved.candleSpan, 34);
+  assert.equal(saved.spanSeconds, 34 * 300);
+});
+
+test("zoom memory refuses a scale that is still clamping, a view with no candle, and junk", () => {
+  const healthy = zoomMemoryScale();
+  const saved = chartZoomMemoryFromLogicalRange({ logicalRange: { from: 150.5, to: 207 }, bars: healthy.bars, timeToIndex: healthy.timeToIndex });
+  // Older candles not on the scale yet: every old time resolves to index 190.
+  const clamped = zoomMemoryScale({ clampBelow: 190 });
+  assert.equal(chartZoomMemoryLogicalRange({ viewport: saved, bars: clamped.bars, timeToIndex: clamped.timeToIndex }), null);
+  assert.equal(chartZoomMemoryFromLogicalRange({ logicalRange: { from: 150.5, to: 180.2 }, bars: clamped.bars, timeToIndex: clamped.timeToIndex }), null);
+  // An empty scale answers null; Number(null) is 0 and must not pass as index 0.
+  assert.equal(chartZoomMemoryLogicalRange({ viewport: saved, bars: healthy.bars, timeToIndex: () => null }), null);
+  assert.equal(chartZoomMemoryFromLogicalRange({ logicalRange: { from: 150.5, to: 207 }, bars: healthy.bars, timeToIndex: () => null }), null);
+  // Entirely in the blank room ahead of the newest candle.
+  assert.equal(chartZoomMemoryFromLogicalRange({ logicalRange: { from: 208, to: 230 }, bars: healthy.bars, timeToIndex: healthy.timeToIndex }), null);
+  assert.equal(chartZoomMemoryFromLogicalRange({ logicalRange: { from: 9, to: 9 }, bars: healthy.bars, timeToIndex: healthy.timeToIndex }), null);
+  assert.equal(chartZoomMemoryFromLogicalRange(), null);
+  // An entry saved before candle memory existed has no candle span.
+  assert.equal(chartZoomMemoryLogicalRange({ viewport: { spanSeconds: 10_200, forwardSeconds: 0 }, bars: healthy.bars, timeToIndex: healthy.timeToIndex }), null);
+  assert.equal(chartZoomMemoryLogicalRange(), null);
+});
+
+test("blank room never outgrows the candles, and a span deeper than the tape shows the whole tape", () => {
+  const { bars, timeToIndex } = zoomMemoryScale();
+  // Dragged far into the future: 10 candles and 30 blank slots on screen.
+  const dragged = chartZoomMemoryFromLogicalRange({ logicalRange: { from: 197, to: 237 }, bars, timeToIndex });
+  assert.deepEqual([dragged.candleSpan, dragged.aheadSlots], [10, 10]);
+  const again = chartZoomMemoryFromLogicalRange({
+    logicalRange: chartZoomMemoryLogicalRange({ viewport: dragged, bars, timeToIndex }),
+    bars,
+    timeToIndex,
+  });
+  assert.deepEqual(again, dragged);
+  // Remembered on a 208-candle tape, restored on a 60-candle one.
+  const deep = chartZoomMemoryFromLogicalRange({ logicalRange: { from: 20.4, to: 207 }, bars, timeToIndex });
+  const short = zoomMemoryScale({ count: 60 });
+  const restored = chartZoomMemoryLogicalRange({ viewport: deep, bars: short.bars, timeToIndex: short.timeToIndex });
+  assert.deepEqual([restored.from, restored.to], [0, 59]);
+});
+
+test("the stored zoom keeps its candle fields and still reads entries saved without them", () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const viewport = { spanSeconds: 8_400, forwardSeconds: 0, candleSpan: 27.5, aheadSlots: 6 };
+  assert.equal(storeChartTimeViewport(storage, "normal:panel-0:5m:AAPL", viewport), true);
+  assert.deepEqual(readChartTimeViewport(storage, "normal:panel-0:5m:AAPL"), viewport);
+  assert.equal(storeChartTimeViewport(storage, "normal:panel-0:15m:AAPL", { spanSeconds: 9_000, forwardSeconds: 0 }), true);
+  assert.deepEqual(readChartTimeViewport(storage, "normal:panel-0:15m:AAPL"), { spanSeconds: 9_000, forwardSeconds: 0 });
+  // Junk candle fields are dropped, not trusted.
+  assert.equal(storeChartTimeViewport(storage, "normal:panel-0:1h:AAPL", { spanSeconds: 9_000, candleSpan: "wide", aheadSlots: -3 }), true);
+  assert.deepEqual(readChartTimeViewport(storage, "normal:panel-0:1h:AAPL"), { spanSeconds: 9_000, forwardSeconds: 0 });
 });

@@ -80,6 +80,10 @@ _os.environ["AGX_MOMX_DATA_SOURCE_PATH"] = str(_SCRATCH_DIR / "momx_data_source.
 # and its store lives in the scratch folder, never artifacts/long_term.
 _os.environ["AGX_LONG_TERM_REFRESH"] = "0"
 _os.environ["AGX_LONG_TERM_DIR"] = str(_SCRATCH_DIR / "long_term")
+# My Trading (2026-11-11): the owner's real Schwab fills live in artifacts/insights.
+# No test may read or write them, and no test starts the daily Schwab read.
+_os.environ["AGX_INSIGHTS_DIR"] = str(_SCRATCH_DIR / "insights")
+_os.environ["AGX_MY_INSIGHTS"] = "0"
 
 
 # The MomX volume correction reads Schwab. Feed tests drive the tape with a

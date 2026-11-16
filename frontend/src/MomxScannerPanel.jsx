@@ -6,6 +6,7 @@ import { createScannerRequestScope, isAbortError } from "./scannerRequestScope.j
 import { readScannerBoard } from "./scannerBoardRead.js";
 import { directionCounts, otherDirectionUrl, showsDirectionCounts } from "./momxDirectionCounts.js";
 import { createLiveRowProjector, liveQuote } from "./scannerLiveRows.js";
+import { subscribePendingScannerLink, takePendingScannerLink } from "./appLinks.js";
 
 function useScannerReadFetch() {
   const scope = useRef(null);
@@ -40,7 +41,7 @@ import { scannerFreshness, scannerRowFreshness, setupSourceTime } from "./scanne
 import { MOMX_LIVE_RVOL_ENDPOINT, MOMX_LIVE_RVOL_MAX_AGE_MS, MOMX_LIVE_RVOL_MS, MOMX_LIVE_RVOL_TIMEOUT_MS, liveRvolCell, reuseLiveCells } from "./momxLiveRvol.js";
 import SetupColumnPicker from './SetupColumnPicker.jsx';
 import { scannerRecordLearning } from './scannerRecordLearning.js';
-import { createRvolObservationTracker, observeConfirmationBoard, observeConfirmationHistory, scannerConfirmation, confirmationDescription } from "./scannerConfirmation.js";
+import { createRvolObservationTracker, observeConfirmationBoard, observeConfirmationHistory, scannerConfirmation, scannerConfirmationShown, confirmationDescription } from "./scannerConfirmation.js";
 import {
   boardSymbols,
   feedAge,
@@ -2352,6 +2353,10 @@ function MomxNewsPopover({ symbol, news, verdict, onClose }) {
       const response = await fetch(
         "/api/ai/catalyst?symbol=" + encodeURIComponent(symbol || ""),
       );
+      // An HTTP error (401/502 with a JSON body) is an error, not a pending
+      // answer: it has no summary either and would otherwise poll for ~15 s
+      // and end on a fake "No answer." line.
+      if (!response.ok) throw new Error("HTTP " + response.status);
       const payload = await response.json();
       const answered = payload && typeof payload === "object";
       // THE FIRST CALL USUALLY HAS NO ANSWER YET. The endpoint hands back a
@@ -2361,10 +2366,20 @@ function MomxNewsPopover({ symbol, news, verdict, onClose }) {
       // answer." over a question that is still being worked on - measured on
       // AAPL 2026-09-04. So: keep waiting, and only give up after a bounded
       // number of tries so a stuck build cannot spin forever.
-      const pending = answered && payload.summary == null && payload.available !== false;
+      // The server's placeholder says available:false AND pending:true, so
+      // pending must win over available or the wait ends on the first reply.
+      const pending = answered && payload.summary == null
+        && (payload.pending === true || payload.available !== false);
       if (pending && attempt < 6) {
         setAiRead(payload);
         window.setTimeout(() => askWhy(attempt + 1), 2500);
+        return;
+      }
+      if (pending) {
+        // Gave up while the server still says "writing": say so plainly
+        // instead of its "appears here on its own" placeholder text.
+        setAiRead({ ...payload, summary: null, available: false, reason: "Still writing - press Why is it moving? again in a moment." });
+        setAiState("done");
         return;
       }
       setAiRead(answered ? payload : null);
@@ -2420,7 +2435,7 @@ function MomxNewsPopover({ symbol, news, verdict, onClose }) {
           <button
             type="button"
             className="momx-news-why"
-            onClick={askWhy}
+            onClick={() => askWhy(0)}
             disabled={aiState === "loading"}
           >
             {aiState === "loading" ? "Reading..." : "Why is it moving?"}
@@ -2524,7 +2539,7 @@ function MomxRuleRecordLoader() {
     let alive = true;
     const load = () => fetch("/api/momx-scanner/rule-record?days=10", { credentials: "include", cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => { if (alive && data) { setRuleRecord(data); setTick((n) => n + 1); } })
+      .then((data) => { if (alive && data) { RULE_RECORD_LOADED = true; setRuleRecord(data); setTick((n) => n + 1); } })
       .catch(() => {});
     load();
     const id = window.setInterval(load, 10 * 60 * 1000);
@@ -2584,7 +2599,11 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefi
       // ADX, so "strong" is unknown there and their MOM↑ is hidden too.
       .filter((tag) => !(tag.key === "sqzmom" && !tag.strong))
       .map(tag => dataWarning ? { ...tag, fresh: false } : tag);
-    const confirmation = scannerConfirmation(row, evaluatedAt, tags);
+    // Live shows a stale row's level as of its last candle (dimmed below);
+    // History already judges at the snapshot, so it stays strict.
+    const confirmation = asOfMs === undefined
+      ? scannerConfirmationShown(row, evaluatedAt, tags)
+      : scannerConfirmation(row, evaluatedAt, tags);
     // The momentum WORD (Fading / Holding / Extended / Building) is no longer
     // printed here (his ask, 2026-09-24): it describes only the last few 5m
     // candles, and "A+ · Fading" read as a downtrend - FSLY showed "A ·
@@ -2608,6 +2627,7 @@ function gradeCell(column, row, onOpenGrade, base = "momx-cell", asOfMs = undefi
         {confirmation.level > 0 ? (
           <span className={`momx-strategy-tag is-confirmation is-level-${confirmation.level}`}
             data-testid="momx-confirmation-level"
+            style={confirmation.asOfData ? { opacity: 0.7 } : undefined}
             title={confirmationDescription(confirmation)}
             onClick={event => explainTag(event, { text: `Confirm L${confirmation.level}`, title: confirmationDescription(confirmation) }, row)}>
             Confirm L{confirmation.level}
@@ -2836,10 +2856,12 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
                   title={(bolt && bolt.on
                     ? "⚡ LIVE: " + (bolt.families || []).join(" · ") + " - fired " + String(bolt.firedAt || "").slice(11, 16) + " ET" + (bolt.now ? ", passing the gates now" : "") + ". "
                     : "") + (fires.length ? "Signals fired: " + fires.join(" · ") : "") + " - click for the full card"}
-                  aria-label={"Open the " + (row.symbol || entry.symbol) + " card"}
+                  aria-label={"Open the " + (row.symbol || "") + " card"}
                   onClick={(event) => {
                     event.stopPropagation();
-                    onOpenCard(row.symbol || entry.symbol);
+                    // MomxRow has no `entry` (that is MomxHistoryRow): reading
+                    // it crashed the whole board for a row with fires and no name.
+                    if (row.symbol) onOpenCard(row.symbol);
                   }}
                 >
                   <Zap size={10} aria-hidden="true" />
@@ -3074,7 +3096,10 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
 // Time column. Cells named in the snapshot's `changed` list are highlighted;
 // arrival rows carry the sparkline/quote cells and change rows blank them,
 // which is what makes arrivals visually distinct in the table.
-const MomxHistoryRow = memo(function MomxHistoryRow({ entry, newsTime, onOpenSnapshot, onOpenGrade, columns = MOMX_HISTORY_COLUMNS }) {
+// onOpenTime: only the chat's day sheet passes it, and turns the Time into a link.
+// dataTick is never read: changing it re-renders the memo'd row once the Event and
+// Record data the cells read from module maps has arrived.
+const MomxHistoryRow = memo(function MomxHistoryRow({ entry, newsTime, onOpenSnapshot, onOpenGrade, columns = MOMX_HISTORY_COLUMNS, onOpenTime }) {
   const row = entry.row && typeof entry.row === "object" ? entry.row : EMPTY_OBJECT;
   const pct = Number(row.pctChange);
   const up = Number.isFinite(pct) ? pct >= 0 : null;
@@ -3122,7 +3147,23 @@ const MomxHistoryRow = memo(function MomxHistoryRow({ entry, newsTime, onOpenSna
           const when = newsTime && news ? newsTimeLabel(news, entry.atMs || undefined) : null;
           return (
             <td key={column.key} data-col={column.key} className={base + " momx-col-time"}>
-              <span className="momx-history-time">{entry.timeLabel}</span>
+              {onOpenTime ? (
+                <button
+                  type="button"
+                  className="momx-history-time"
+                  style={TIME_LINK_STYLE}
+                  title={"Open this moment on the History tab"}
+                  data-testid="momx-day-time-link"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenTime(entry);
+                  }}
+                >
+                  {entry.timeLabel}
+                </button>
+              ) : (
+                <span className="momx-history-time">{entry.timeLabel}</span>
+              )}
               {when ? (
                 <span className="momx-history-newstime" title={news.headline}>
                   <Newspaper size={9} aria-hidden="true" />
@@ -3570,7 +3611,7 @@ function MomxHistoryQueryResults({ payload, state, onClose, onOpenSymbol }) {
 // memo: the panel re-renders on every live poll and alert tick; without this
 // each one rebuilt the whole 400-row archive table (every prop below is
 // stable between those renders, so the memo actually holds).
-const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, onOpenCard, onOpenGrade, list, payload, loading, error, date, query, search, onDate, onSearch, onRefresh, onOffset, findState, findResult, findBusy, findError, onOpenFind, onCloseFind, columnLayout, onColumnLayoutChange }) {
+const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, onOpenCard, onOpenGrade, list, payload, loading, error, date, query, search, onDate, onSearch, onRefresh, onOffset, findState, findResult, findBusy, findError, onOpenFind, onCloseFind, columnLayout, onColumnLayoutChange, jumpClock = "", jumpId = 0, onJumpDone }) {
   // The Live board's column layout, applied to the History columns: one
   // layout for both tables. Memoised so the memo'd rows keep one `columns`
   // reference until the layout itself changes.
@@ -3745,8 +3786,10 @@ const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, on
     (Array.isArray(payload && payload.timeIndex) && payload.timeIndex.length > 0) ||
     (searching && fullTimeline.length > 0);
 
-  const commitJump = () => {
-    const typed = jumpText.trim();
+  // A chat link passes its time; the box's own click and blur pass nothing
+  // (or an event), and those use what he typed.
+  const commitJump = (clockText) => {
+    const typed = (typeof clockText === "string" ? clockText : jumpText).trim();
     if (!typed) return;
     setJumpMark(null);
     if (searching) {
@@ -3793,7 +3836,7 @@ const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, on
   useEffect(() => {
     if (!jumpMark) return undefined;
     const target = document.querySelector(
-      '.momx-history-table tbody tr[data-at="' + jumpMark.clock + '"]' +
+      '.momx-history-table:not(.momx-day-table) tbody tr[data-at="' + jumpMark.clock + '"]' +
         (jumpMark.day ? '[data-day="' + jumpMark.day + '"]' : ""),
     );
     if (!target) {
@@ -3829,6 +3872,21 @@ const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, on
     setJumpText("");
     setJumpError("");
   }, [date, query]);
+
+  // A chat link that named a time. After the reset above on purpose, so landing
+  // on the new day keeps the time it landed on. NEWS would hide the row, so it
+  // comes off first and this runs again on the full page.
+  const commitJumpRef = useRef(commitJump);
+  commitJumpRef.current = commitJump;
+  useEffect(() => {
+    if (!jumpId || !jumpClock) return;
+    if (newsOnly) {
+      setNewsOnly(false);
+      return;
+    }
+    commitJumpRef.current(jumpClock);
+    if (onJumpDone) onJumpDone();
+  }, [jumpId, jumpClock, newsOnly, onJumpDone]);
 
   const sessions = sessionLine(payload && payload.sessions);
 
@@ -4176,6 +4234,117 @@ const MomxHistorySection = memo(function MomxHistorySection({ onOpenSnapshot, on
     </Fragment>
   );
 });
+
+// The chat's "whole day" sheet (ChatScannerDay.jsx) draws its tables from here so
+// they are the History table itself: the same row, the same columns in his saved
+// layout, the same work on the snapshots. No sorting or dragging: the day is read
+// as a timeline.
+const TIME_LINK_STYLE = Object.freeze({
+  padding: 0, border: 0, background: "none", color: "inherit", font: "inherit", textDecoration: "underline", cursor: "pointer",
+});
+
+export const MomxDayTable = memo(function MomxDayTable({ rows, onOpenTime, dataTick = 0 }) {
+  const [columnLayout] = useState(() => readStoredLayout(MOMX_COLUMN_KEYS));
+  const columns = useMemo(() => applyLayout(MOMX_HISTORY_COLUMNS, columnLayout), [columnLayout]);
+  const pin = usePinnedColumns(columns);
+  const groups = useMemo(() => columnGroupSpans(columns, pin.pinned), [columns, pin.pinned]);
+  const entries = useMemo(() => observeConfirmationHistory(annotateChanges(flattenHistoryRows(rows))), [rows]);
+  return (
+    <div className="momx-table-scroll">
+      <table ref={pin.tableRef} className="momx-table momx-history-table momx-day-table" {...pin.tableAttrs}>
+        <thead>
+          <tr className="momx-group-row">
+            {groups.map((group) => {
+              const cell = group.pinKey ? pin.headPin(group.pinKey) : null;
+              const base = group.label ? "momx-group-label" : "momx-group-gap";
+              return (
+                <th key={group.key} colSpan={group.span} className={cell ? base + " " + cell.className : base}
+                  style={cell ? cell.style : undefined} scope={group.span > 1 ? "colgroup" : "col"}>
+                  {group.label || ""}
+                </th>
+              );
+            })}
+          </tr>
+          <tr className="momx-head-row">
+            {columns.map((column) => {
+              const classes = ["momx-th"];
+              if (column.kind === "color") classes.push("momx-col-color");
+              if (column.kind === "symbol") classes.push("momx-col-symbol");
+              const cell = pin.headPin(column.key);
+              if (cell) classes.push(cell.className);
+              return (
+                <th key={column.key} scope="col" data-col={column.key} className={classes.join(" ")}
+                  style={cell ? cell.style : undefined} title={column.kind === "color" ? "COLOR" : undefined}>
+                  {column.kind === "color"
+                    ? <span className="momx-visually-hidden">COLOR</span>
+                    : <span className="momx-th-label">{column.label}</span>}
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry) => (
+            <MomxHistoryRow key={entry.key} entry={entry} columns={columns} onOpenTime={onOpenTime} dataTick={dataTick} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+});
+
+// The Event and Record columns read maps the panel fills once it has mounted, so
+// on any other page they would be blank. Filled here if still empty. True when
+// something new arrived and the rows should draw again.
+let RULE_RECORD_LOADED = false;
+export function loadMomxDayData() {
+  const reads = [];
+  if (EARNINGS_BY_SYMBOL.size === 0) {
+    reads.push(fetch("/api/earnings-calendar?days=45")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        if (!payload || EARNINGS_BY_SYMBOL.size > 0) return false;
+        EARNINGS_BY_SYMBOL = earningsMapFrom(payload);
+        return EARNINGS_BY_SYMBOL.size > 0;
+      }));
+  }
+  if (!RULE_RECORD_LOADED) {
+    reads.push(fetch("/api/momx-scanner/rule-record?days=10", { credentials: "include", cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!data) return false;
+        RULE_RECORD_LOADED = true;
+        setRuleRecord(data);
+        return true;
+      }));
+  }
+  return Promise.allSettled(reads).then((done) => done.some((one) => one.status === "fulfilled" && one.value === true));
+}
+
+// The box a tapped tag opens. The panel has its own; two would both answer.
+let PANELS_MOUNTED = 0;
+export function MomxDayExplain() {
+  const [own] = useState(() => PANELS_MOUNTED === 0);
+  return own ? <MomxTagExplain /> : null;
+}
+
+// The ticker the scanner page is showing, for the chat: an open card, or the
+// History search, or the ticker picked on the live board. Outside React state so
+// a change re-renders only the chat's door, never App.
+let scannerTicker = "";
+const scannerTickerListeners = new Set();
+export const activeScannerTicker = () => scannerTicker;
+export function subscribeScannerTicker(listener) {
+  scannerTickerListeners.add(listener);
+  return () => scannerTickerListeners.delete(listener);
+}
+function reportScannerTicker(next) {
+  if (next === scannerTicker) return;
+  scannerTicker = next;
+  scannerTickerListeners.forEach((listener) => listener());
+}
+
+export { MomxHistoryRow, MOMX_HISTORY_COLUMNS };
 
 // memo (2026-11-09): App re-renders ~3 times a second (clocks, alerts, the
 // Schwab countdown) and each one re-ran this whole panel - filters, Setup tags
@@ -4677,6 +4846,9 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
 
   const historyCacheRef = useRef(new Map());
   const historySeqRef = useRef(0);
+  // Which request the payload on screen answered: a chat link's time waits for
+  // the payload of the day it named, not whatever was already here.
+  const historyPayloadKeyRef = useRef("");
 
   useEffect(() => {
     writeStoredView(historyView ? "history" : "live");
@@ -4786,6 +4958,7 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
       if (!force && immutable) {
         const held = historyCacheRef.current.get(request.key);
         if (held) {
+          historyPayloadKeyRef.current = request.key;
           setHistoryPayload(held);
           setHistoryError("");
           return;
@@ -4808,6 +4981,7 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
           throw new Error("History sent a reply this page could not read.");
         }
         historyCacheRef.current.set(request.key, payload);
+        historyPayloadKeyRef.current = request.key;
         setHistoryPayload(payload);
         setHistoryError("");
       } catch (caught) {
@@ -6237,6 +6411,114 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
     [onChooseList],
   );
 
+  // ---- A link from the chat: "NVDA on Mag7 History at 09:30" ----------------
+  // Three steps, because each one needs the one before it to have landed.
+  // onChooseList wipes the day and the search, so setting them in the same
+  // breath would lose them; and the time can only be found in that day's rows.
+  //   1. board, side and tab.  2. day and ticker.  3. the time, once that day is here.
+  // A pop-out board never follows a link. Its slot is for the main window.
+  const [linkJump, setLinkJump] = useState(null);
+  const [historyJump, setHistoryJump] = useState(null);
+  const [linkNote, setLinkNote] = useState("");
+  const linkJumpSeqRef = useRef(0);
+  const onHistoryJumpDone = useCallback(() => setHistoryJump(null), []);
+
+  useEffect(() => {
+    if (embedded) return undefined;
+    const take = () => {
+      const link = takePendingScannerLink();
+      if (!link) return;
+      linkJumpSeqRef.current += 1;
+      setHistoryJump(null);
+      setLinkNote("");
+      setLinkJump({ ...link, id: linkJumpSeqRef.current, phase: 1 });
+    };
+    take();
+    return subscribePendingScannerLink(take);
+  }, [embedded]);
+
+  useEffect(() => {
+    if (!linkJump || linkJump.phase !== 1 || lists.length === 0 || !activeList) return;
+    const side = linkJump.side || direction;
+    // The side first and on its own: onChooseList files the board under the
+    // side it can see, so it has to run after this has landed.
+    if (direction !== side) {
+      setDirection(side);
+      return;
+    }
+    // List names change (the EMA lists carry their timeframe), so a link can
+    // outlive its list. Say so rather than showing another list under its label.
+    const known = !linkJump.list || lists.some((item) => item.name === linkJump.list);
+    const list = known && linkJump.list ? linkJump.list : activeList;
+    const history = linkJump.tab ? linkJump.tab === "history" : historyView || Boolean(linkJump.day || linkJump.time);
+    if (!known) setLinkNote(linkJump.list + " is not on the scanner any more, so this is " + activeList + ".");
+    setFindResult(null);
+    setHistoryView(history);
+    onChooseList(list);
+    setLinkJump({ ...linkJump, list, side, history, phase: 2 });
+  }, [linkJump, lists, activeList, direction, historyView, onChooseList]);
+
+  useEffect(() => {
+    if (!linkJump || linkJump.phase !== 2) return;
+    if (activeList !== linkJump.list || direction !== linkJump.side) return;
+    const ticker = linkJump.ticker || "";
+    if (!linkJump.history) {
+      setFocusSymbol(ticker || null);
+      setLinkJump(null);
+      return;
+    }
+    setFocusSymbol(null);
+    setHistoryDate(linkJump.day || null);
+    setHistorySearch(ticker);
+    setHistoryQuery(ticker);
+    setLinkJump(linkJump.time ? { ...linkJump, phase: 3 } : null);
+  }, [linkJump, activeList, direction]);
+
+  useEffect(() => {
+    if (!linkJump || linkJump.phase !== 3 || !historyView || historyLoading || !historyPayload) return;
+    const ticker = linkJump.ticker || "";
+    if (historyDate !== (linkJump.day || null) || historyQuery !== ticker) return;
+    const wanted = historyRequest(activeList, { date: historyDate, symbol: historyQuery, offset: historyOffset, direction });
+    if (historyPayloadKeyRef.current !== wanted.key) return;
+    setHistoryJump({ clock: linkJump.time, id: linkJump.id });
+    setLinkJump(null);
+  }, [linkJump, historyView, historyLoading, historyPayload, historyDate, historyQuery, historyOffset, activeList, direction]);
+
+  // A day that never arrives must not move the page on a Refresh an hour later.
+  const linkJumpWaiting = linkJump && linkJump.phase === 3 ? linkJump.id : 0;
+  useEffect(() => {
+    if (!linkJumpWaiting) return undefined;
+    const timer = window.setTimeout(() => setLinkJump((current) => (current && current.id === linkJumpWaiting ? null : current)), 60_000);
+    return () => window.clearTimeout(timer);
+  }, [linkJumpWaiting]);
+
+  useEffect(() => {
+    if (!linkNote) return undefined;
+    const timer = window.setTimeout(() => setLinkNote(""), 12_000);
+    return () => window.clearTimeout(timer);
+  }, [linkNote]);
+
+  // Tell the chat which ticker this page is showing. Only the main window's board.
+  const openCardTicker = useMemo(() => {
+    let top = null;
+    for (const item of popouts) {
+      if (item && item.kind === "card" && item.symbol && (!top || item.z > top.z)) top = item;
+    }
+    return top ? top.symbol : "";
+  }, [popouts]);
+  const shownTicker = openCardTicker || (historyView ? historyQuery : focusSymbol) || "";
+  useEffect(() => {
+    if (!embedded) reportScannerTicker(/^[A-Z][A-Z0-9.\-]{0,9}$/.test(shownTicker) ? shownTicker : "");
+  }, [embedded, shownTicker]);
+  useEffect(() => {
+    if (embedded) return undefined;
+    PANELS_MOUNTED += 1;
+    return () => {
+      PANELS_MOUNTED -= 1;
+      reportScannerTicker("");
+    };
+  }, [embedded]);
+
   // The timeframe is part of an EMA touch list's name ("21 EMA Touch
   // Weekly"), so switching it is switching lists: the server renames, then
   // the same path as picking a list (clears the old rows and chips) runs.
@@ -6702,6 +6984,8 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
         />
       ) : null}
 
+      {linkNote ? <p className="momx-banner is-notice" role="status" data-testid="momx-link-note">{linkNote}</p> : null}
+
       {/* Scanner grade "why" panel - above the view branch for the same
           reason as FIND: Setup cells are clickable in Live AND History. */}
       {gradeRow ? (
@@ -6732,6 +7016,9 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
           onCloseFind={onCloseFind}
           columnLayout={columnLayout}
           onColumnLayoutChange={setColumnLayout}
+          jumpClock={historyJump ? historyJump.clock : ""}
+          jumpId={historyJump ? historyJump.id : 0}
+          onJumpDone={onHistoryJumpDone}
         />
       ) : (
         <>
@@ -7539,7 +7826,7 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
         Colours come straight from the thinkScript studies on the server. The scanner re-runs
         continuously; this view checks for a scan every 15 seconds while the tab is open.
         When markets are closed or study candles are old, saved rows remain for review with their Data timestamp; a new scan does not mean new market data.
-        {" "}Confirm L1/L2/L3 are rule confirmations, not win probabilities. Every level needs 3+ Setup types and at least three cyan/green RVOL cells (5m-D) rising versus their previous valid scanner publication; first observations do not match. L2 adds one of 2h/4h/D SQZ cyan, blank or fired today; L3 adds one or more cyan/green Skittles boxes 2h-M. On the BEAR board every color is mirrored: magenta/red RVOL, magenta SQZ, magenta/red/plum Skittles. History uses only earlier loaded snapshots.
+        {" "}Confirm L1/L2/L3 are rule confirmations, not win probabilities. Every level needs 3+ Setup types, then any of three confirms: RVOL cyan/green on 3+ cells 5m-D (the colour counts, rising is not needed), OR one of 2h/4h/D SQZ cyan, blank or fired today, OR one or more cyan/green Skittles boxes 2h-M. L1 = any one, L2 = any two, L3 = all three. On the BEAR board every color is mirrored: magenta/red RVOL, magenta SQZ, magenta/red/plum Skittles. When a ticker's candles are old (after hours, or a quiet ticker), its level is dimmed and comes from its last candle: it is not live, and the bots and alerts do not use it. History uses only earlier loaded snapshots.
         The small number under an RVOL value is how long ago that volume arrived &mdash; 12m is
         happening now, 3h is old news. It brightens under 15 minutes, and pulses when the cell
         is also coloured.

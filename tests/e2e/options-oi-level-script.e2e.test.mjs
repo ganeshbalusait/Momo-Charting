@@ -73,7 +73,11 @@ e2eTest("Copy ThinkScript reports a copy, or says plainly when the browser block
     const script = await scriptReady(app.page);
     await app.page.locator(`${PAGE} .oi-level-script-copy`).click();
     await app.page.locator(`${PAGE} .oi-level-script-status`, { hasText: "Copied — paste into a Thinkorswim study." }).waitFor({ timeout: 10_000 });
-    assert.equal(await app.page.evaluate(() => navigator.clipboard.readText()), script);
+    // The app copies "\n" lines (App.jsx copyTosScript); the Windows clipboard
+    // stores text as CRLF and hands it back that way, so compare line endings
+    // out of the picture - every character of every line must still match.
+    const copied = await app.page.evaluate(() => navigator.clipboard.readText());
+    assert.equal(copied.replace(/\r\n/g, "\n"), script);
     await app.page.evaluate(() => {
       navigator.clipboard.writeText = () => Promise.reject(new DOMException("blocked", "NotAllowedError"));
     });

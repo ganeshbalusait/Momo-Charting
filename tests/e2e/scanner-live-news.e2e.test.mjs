@@ -56,7 +56,10 @@ async function boardWithNews(page) {
   const matchesOnly = page.locator("label.momx-toggle", { hasText: "Scan matches only" }).locator("input");
   if (await matchesOnly.isChecked()) await matchesOnly.uncheck();
   await page.locator(ROWS).nth(1).waitFor({ timeout: 120_000 });
-  await page.locator("td.momx-newscol.is-openable[aria-label='Open news for AAPL']").waitFor({ timeout: 30_000 });
+  // The live board already carries real headlines (AAPL is openable before
+  // the fixture lands), so wait for the FIXTURE's AAPL story itself: reading
+  // the NEWS ▲ count earlier caught it at 0 and the rows a moment later at 1.
+  await page.locator("td.momx-newscol.is-openable[aria-label='Open news for AAPL'][title*='Apple beats on iPhone sales']").waitFor({ timeout: 30_000 });
 }
 
 const symbolsOnScreen = async (page) =>
@@ -138,7 +141,6 @@ e2eTest("a News cell opens the headline and the AI's answer; the overlay closes 
 
 test("the AI's 'writing it now' placeholder is waited out until the answer arrives", {
   skip: marketHoursBlock() || false,
-  todo: "BUG: the server placeholder says available:false, so askWhy stops at once and shows 'No answer.' (see tests/test_cov_scanner-live_news_api.py xfail)",
   timeout: 180_000,
 }, async () => {
   let asks = 0;

@@ -5,7 +5,8 @@
 
 import assert from "node:assert/strict";
 
-import { LEARN_SETUP_SECTIONS } from "../../frontend/src/learnContent.js";
+import { LEARN_SECTIONS, LEARN_SETUP_SECTIONS, LEARN_STEPS } from "../../frontend/src/learnContent.js";
+import { isScreenshotReady } from "../../frontend/src/learnScreenshots.js";
 import { PHONE, e2eTest, overflowsSideways, withApp } from "./harness.mjs";
 
 const VIEW = "Learn + Setup";
@@ -20,18 +21,45 @@ e2eTest("Learn: eight numbered steps whose screenshots all load", async () => {
   await withApp({ view: VIEW }, async (app) => {
     await open(app);
     assert.equal((await app.page.locator(`${PAGE} .learn-hero h1`).innerText()).trim(), "Welcome to AGX");
-    assert.equal((await app.page.locator("#learn-steps-heading").innerText()).trim(), "Your first 15 minutes");
+    assert.equal((await app.page.locator("#learn-steps-heading").textContent()).trim(), "Your first 15 minutes");
     const steps = app.page.locator(`${PAGE} article.learn-step`);
     assert.equal(await steps.count(), 8);
     assert.deepEqual((await app.page.locator(`${PAGE} .learn-step-number`).allInnerTexts()).map((t) => t.trim()), ["1", "2", "3", "4", "5", "6", "7", "8"]);
-    const images = app.page.locator(`${PAGE} figure.learn-shot img`);
-    assert.ok(await images.count() > 0);
-    for (const image of await images.all()) {
+    // 2026-11-14 test corrected. It used to wait on every `figure.learn-shot img`
+    // on the page. Four of those sit inside the folded 'How each part works'
+    // sections (<details>, closed) and are loading="lazy": the browser does not
+    // fetch them until the section is opened, so the wait never ended. What the
+    // page promises: each step's screenshot loads as he scrolls to it, and a
+    // folded section's screenshot loads once he opens it. Both are checked, and
+    // a screenshot that never settles now fails by name instead of hanging.
+    const loaded = async (image) => {
       await image.scrollIntoViewIfNeeded();
-      await image.evaluate((img) => (img.complete ? null : new Promise((resolve) => { img.onload = img.onerror = resolve; })));
-      const width = await image.evaluate((img) => img.naturalWidth);
-      assert.ok(width > 0, `${await image.getAttribute("src")} did not load`);
+      const width = await image.evaluate((img) => new Promise((resolve) => {
+        const done = () => resolve(img.naturalWidth);
+        if (img.complete) return done();
+        img.addEventListener("load", done, { once: true });
+        img.addEventListener("error", done, { once: true });
+        setTimeout(() => resolve(-1), 20_000);
+      }));
+      assert.ok(width > 0, `${await image.getAttribute("src")} did not load (${width === -1 ? "never fetched" : "broken"})`);
+    };
+    // A screenshot not captured yet (learnScreenshots.js PENDING) is left out by the page on purpose.
+    const wanted = (items) => items.filter((item) => item.screenshot && isScreenshotReady(item.screenshot)).length;
+    const stepShots = app.page.locator(`${PAGE} article.learn-step figure.learn-shot img`);
+    assert.equal(await stepShots.count(), wanted(LEARN_STEPS));
+    assert.ok(await stepShots.count() > 0);
+    for (const image of await stepShots.all()) await loaded(image);
+    let folded = 0;
+    for (const section of await app.page.locator(`${PAGE} details.learn-section`).all()) {
+      await section.locator("summary").click();
+      assert.equal(await section.evaluate((el) => el.open), true);
+      for (const image of await section.locator("figure.learn-shot img").all()) {
+        await loaded(image);
+        folded += 1;
+      }
     }
+    assert.equal(folded, wanted(LEARN_SECTIONS));
+    assert.ok(folded > 0);
     assert.ok(await app.page.locator(`${PAGE} span.learn-shot-marker`).count() > 0);
     assert.deepEqual(app.pageErrors, []);
   });
@@ -62,8 +90,8 @@ for (const [label, page] of [["Open Premarket", "Premarket Scanner"], ["Open the
     await withApp({ view: VIEW }, async (app) => {
       await open(app);
       await app.page.locator(`${PAGE} button.learn-goto`, { hasText: label }).first().click();
-      await app.page.locator(".command-context h1", { hasText: page }).waitFor({ timeout: 15_000 });
-      assert.equal((await app.page.locator(".command-context h1").innerText()).trim(), page);
+      await app.page.locator(".command-context h1", { hasText: page }).waitFor({ state: "attached", timeout: 15_000 });
+      assert.equal((await app.page.locator(".command-context h1").textContent()).trim(), page);
       assert.deepEqual(app.pageErrors, []);
     });
   });
@@ -84,7 +112,7 @@ e2eTest("the topbar '?' opens Learn from Settings", async () => {
     await help.waitFor({ state: "visible", timeout: 60_000 });
     await help.click();
     await open(app);
-    assert.equal((await app.page.locator(".command-context h1").innerText()).trim(), VIEW);
+    assert.equal((await app.page.locator(".command-context h1").textContent()).trim(), VIEW);
     assert.deepEqual(app.pageErrors, []);
   });
 });

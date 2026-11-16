@@ -12,7 +12,16 @@ from momx import paper_control as pc
 from momx import paper_mirror as pm
 
 ET = pm.ET
-NOW = datetime(2026, 10, 19, 10, 0, tzinfo=ET)      # a Monday, inside the first buy window
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stop_switched_on(monkeypatch):
+    """The stop is OFF in the app since 2026-11-10; these tests keep its mechanism honest by
+    switching it on. The switched-off behaviour has its own tests at the end."""
+    monkeypatch.setattr(pc, "DAILY_STOP_ON", True)
+NOW = datetime(2026, 10, 19, 10, 10, tzinfo=ET)     # a Monday, inside the first buy window
 DAY = NOW.date().isoformat()
 NOT_FOUND = '{"code":40410000,"message":"order not found for mxp-b0-x"}'
 
@@ -385,3 +394,147 @@ def test_remove_refuses_while_the_broker_still_shows_the_order_working(tmp_path)
     assert result["ok"] is False and "still shows this order as working" in result["error"]
     assert m._rows[key]["status"] == "buying"
     assert not (tmp_path / "paper3" / f"{DAY}.json").exists()
+
+
+# ---------------------------------------------------------------- the daily loss stop is switched off
+def test_with_the_stop_off_a_losing_day_keeps_buying(tmp_path, monkeypatch):
+    """2026-11-10, his "Why you set daily set loss limit. Trade as much as you can"."""
+    monkeypatch.setattr(pc, "DAILY_STOP_ON", False)
+    client = FakeClient()
+    m, book = mirror(tmp_path, [], client)
+    m._load(DAY)
+    m._rows = {"a": closed_today(-300.0, "A"), "b": closed_today(-900.0, "B")}       # down $1,200 on the day
+    for i in range(pm.STOP_TICKS + 2):
+        m.tick(NOW + timedelta(seconds=10 * i))
+    assert m.status()["dailyStop"] is None and m.status()["holdBuys"] == ""
+    later = NOW + timedelta(minutes=1)
+    book.items = [trade(later)]
+    m.tick(later)
+    assert len(buys(client)) == 1
+
+
+def test_a_stop_that_tripped_before_it_was_switched_off_no_longer_holds_buys(tmp_path, monkeypatch):
+    client = FakeClient()
+    m, book = mirror(tmp_path, [], client)
+    m._load(DAY)
+    m._rows = {"a": closed_today(-300.0, "A"), "b": closed_today(-250.0, "B")}
+    for i in range(pm.STOP_TICKS):
+        m.tick(NOW + timedelta(seconds=10 * i))
+    assert m.status()["holdBuys"] == "daily loss stop"                               # tripped while it was on
+
+    monkeypatch.setattr(pc, "DAILY_STOP_ON", False)                                  # the app as it runs now
+    later = NOW + timedelta(minutes=5)
+    restarted, _ = mirror(tmp_path, [trade(later)], client)
+    restarted.tick(later)
+    assert restarted.status()["holdBuys"] == "" and len(buys(client)) == 1
+    saved = json.loads((tmp_path / "paper3" / f"{DAY}.json").read_text(encoding="utf-8"))["dailyStop"]
+    assert saved["pnl"] == -550.0 and saved["liftedAt"]                              # kept as a record, with when it was lifted
+    first = saved["liftedAt"]
+    restarted.tick(later + timedelta(seconds=10))
+    assert json.loads((tmp_path / "paper3" / f"{DAY}.json").read_text(encoding="utf-8"))["dailyStop"]["liftedAt"] == first
+
+
+def test_the_daily_count_limit_is_out_of_the_way():
+    assert pc.DAILY_STOP_ON is True                 # (switched on by this file's fixture)
+    assert pm.MAX_ENTRIES_PER_DAY >= 500
+
+
+# ---------------------------------------------------------------- a buy the broker refused says why
+class RefusingClient(FakeClient):
+    """The broker turns the buy down when it is sent (2026-11-10: Paper 3 had about $90 of buying power)."""
+    refusal = '{"code":40310000,"message":"insufficient options buying power"}'
+
+    def submit_option_limit_order(self, symbol, qty, limit, cid, intent):
+        self.calls.append((intent, symbol, qty, limit))
+        raise RuntimeError(self.refusal)
+
+
+def test_a_buy_the_broker_refused_says_why_instead_of_never_reached_the_broker(tmp_path):
+    client = RefusingClient()
+    m, _ = mirror(tmp_path, [trade()], client)
+    m.tick(NOW)
+    row = next(iter(m._rows.values()))
+    assert row["status"] == "buying" and "insufficient options buying power" in row["submitError"]
+    m.tick(NOW + timedelta(seconds=60))                                   # the reason survives the next broker poll
+    assert row["status"] == "buying" and "insufficient options buying power" in row["submitError"]
+    m.tick(NOW + timedelta(seconds=pm.ORPHAN_SECONDS + 30))
+    assert row["status"] == "missed"
+    assert row["note"] == "The broker refused this buy: not enough buying power in the paper account"
+    saved = json.loads((tmp_path / "paper3" / f"{DAY}.json").read_text(encoding="utf-8"))["rows"]
+    assert next(iter(saved.values()))["note"].startswith("The broker refused this buy")
+
+
+def test_another_refusal_is_quoted_and_a_buy_with_no_answer_keeps_the_old_wording(tmp_path):
+    client = RefusingClient()
+    client.refusal = '{"code":42210000,"message":"asset AAPL261023C00250000 is not tradable"}'
+    m, _ = mirror(tmp_path, [trade()], client)
+    m.tick(NOW)
+    m.tick(NOW + timedelta(seconds=pm.ORPHAN_SECONDS + 30))
+    assert next(iter(m._rows.values()))["note"] == "The broker refused this buy: asset AAPL261023C00250000 is not tradable"
+    assert pc.refusal_reason('{"buying_power":"12.00","message":"x"}') == "not enough buying power in the paper account"
+    assert pc.refusal_reason(None) == "" and len(pc.refusal_reason("x" * 500)) == 140
+    # No answer on file (an order from before this fix): the old wording stays.
+    other = FakeClient()
+    old = stuck_row(age=timedelta(seconds=pm.ORPHAN_SECONDS + 30))
+    m2, _ = mirror(tmp_path / "b", [], other)
+    m2._load(DAY)
+    m2._rows = {"old": old}
+    m2.tick(NOW)
+    assert old["note"] == "The broker has no record of this buy: it never reached the broker"
+
+
+# ---------------------------------------------------------------- the Alpaca account's real money
+class AccountClient(FakeClient):
+    def __init__(self, **money):
+        super().__init__()
+        self.money = money
+        self.reads = 0
+        self.fail = None
+
+    def get_account(self):
+        self.reads += 1
+        if self.fail:
+            raise RuntimeError(self.fail)
+        return SimpleNamespace(**self.money)
+
+
+def test_the_paper_bot_reads_the_alpaca_account_once_a_minute_and_saves_it(tmp_path):
+    client = AccountClient(cash="517.93", options_buying_power="517.93", buying_power="2071.72", equity="967.93", last_equity="2809.79")
+    m, _ = mirror(tmp_path, [], client)
+    m.tick(NOW)
+    m.tick(NOW + timedelta(seconds=20))                                   # not again inside the minute
+    assert client.reads == 1
+    b = m.status()["broker"]
+    assert (b["cash"], b["optionsBuyingPower"], b["buyingPower"], b["equity"], b["lastEquity"]) == (517.93, 517.93, 2071.72, 967.93, 2809.79)
+    saved = json.loads((tmp_path / "paper3" / f"{DAY}.json").read_text(encoding="utf-8"))["broker"]
+    assert saved["equity"] == 967.93 and saved["at"]
+    client.fail = "read timed out"
+    m.tick(NOW + timedelta(seconds=pm.ACCOUNT_SECONDS + 5))             # a failed read keeps the last good one
+    assert client.reads == 2 and m.status()["broker"]["equity"] == 967.93 and "read timed out" in m.status()["broker"]["error"]
+    restarted, _ = mirror(tmp_path, [], FakeClient())
+    restarted._load(DAY)
+    assert restarted.status()["broker"]["cash"] == 517.93                 # a restart shows the saved read
+
+
+def test_a_client_without_an_account_read_never_stops_trading(tmp_path):
+    client = FakeClient()                                                 # no get_account at all
+    m, _ = mirror(tmp_path, [trade()], client)
+    m.tick(NOW)
+    assert m.status()["broker"] is None and len(buys(client)) == 1
+
+
+
+def test_a_network_error_on_the_way_is_not_called_a_refusal(tmp_path):
+    """Review 2026-11-10: only the broker's own answer is a refusal."""
+    client = RefusingClient()
+    client.refusal = "HTTPSConnectionPool: Max retries exceeded (ConnectionResetError)"
+    m, _ = mirror(tmp_path, [trade()], client)
+    m.tick(NOW)
+    row = next(iter(m._rows.values()))
+    assert "submitError" not in row
+    m.tick(NOW + timedelta(seconds=pm.ORPHAN_SECONDS + 30))
+    assert row["note"] == "The broker has no record of this buy: it never reached the broker"
+    coded = RuntimeError("forbidden")
+    coded.status_code = 403
+    assert pc.broker_answered(coded) and pc.broker_answered(RuntimeError('{"code":40310000,"message":"x"}'))
+    assert not pc.broker_answered(RuntimeError("read timed out"))

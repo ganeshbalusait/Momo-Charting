@@ -153,7 +153,7 @@ e2eTest("x closes the page back to Charts & OI", async () => {
     await ready(app.page, 4);
     await app.page.locator(`${PANEL} .watchlist-close`).click();
     await app.page.locator('[data-testid="charts-and-oi-view"]').waitFor({ timeout: 60_000 });
-    assert.equal(await app.page.locator(".command-context h1").innerText(), "Charts & OI");
+    assert.equal(await app.page.locator(".command-context h1").textContent(), "Charts & OI");
   });
 });
 

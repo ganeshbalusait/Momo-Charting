@@ -19,11 +19,18 @@ function tools(card) {
   };
 }
 
+// Since 2368fac2 (2026-11-01) a collapsed rail is display:none at every width
+// ("Drawing tools stay out of the plot until the trader opens Draw",
+// index.css), so its own toggle cannot be clicked; the chart header's Draw
+// button is the way in, on desktop as on the phone.
 async function showTools(card) {
   const { bar, button } = tools(card);
-  await bar.waitFor({ state: "visible", timeout: 30_000 });
+  await bar.waitFor({ state: "attached", timeout: 30_000 });
   if (await bar.evaluate((element) => element.classList.contains("is-collapsed"))) {
-    await bar.locator('button.oi-chart-drawing-toolbar-toggle[aria-label="Show drawing tools"]').click();
+    const draw = card.locator('button.oi-finder-mobile-draw-toggle[aria-label="Show drawing tools"]');
+    await draw.waitFor({ state: "visible", timeout: 30_000 });
+    await draw.click();
+    await card.locator("aside.oi-chart-drawing-toolbar:not(.is-collapsed)").waitFor({ state: "visible", timeout: 10_000 });
   }
   await button("Horizontal line").waitFor({ state: "visible", timeout: 10_000 });
   return tools(card);
@@ -80,7 +87,9 @@ e2eTest("a horizontal line is drawn, undone, redone, hidden, shown and deleted",
     assert.equal((await savedFor(app.page, "AAPL:5m")).length, 1);
 
     await button("Hide drawings").click();
-    await card.locator("svg.oi-chart-drawing-layer.is-hidden").waitFor({ timeout: 10_000 });
+    // A hidden layer is not displayed at all, so wait for the class, not for visibility.
+    await card.locator("svg.oi-chart-drawing-layer.is-hidden").waitFor({ state: "attached", timeout: 10_000 });
+    assert.equal(await card.locator("svg.oi-chart-drawing-layer").isVisible(), false, "Hide drawings left the layer on screen");
     assert.equal(await drawings(card).count(), 0);
     assert.equal((await savedFor(app.page, "AAPL:5m")).length, 1, "hiding must not delete");
     await button("Show drawings").click();

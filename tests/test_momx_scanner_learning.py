@@ -59,3 +59,15 @@ def test_duplicate_or_unknown_setup_types_cannot_inflate_count():
     for keys in [['tagRvol', 'tagRvol', 'tagSqz'], ['tagRvol', 'futureProfit', 'tagSqz']]:
         t = trade(); t['scannerInputs']['setupTypes'] = [{'key': k} for k in keys]
         assert sl.snapshot(t, 'bull') is None
+
+
+def test_new_rule_records_keep_setups_but_not_old_rule_confirm_features():
+    """His rule 2026-11-10 (ruleVersion 2): a level counts any of RVOL / SQZ / Skittles, so its confirm
+    features are left unknown rather than mixed with old "RVOL rising first" levels."""
+    t = trade()
+    t['scannerInputs'].update(ruleVersion=2, confirms=['skittles'], rvol=False, rvolTimeframes=[])
+    snap = sl.snapshot(t, 'bull')
+    assert snap['ruleVersion'] == 2 and snap['confirms'] == ['skittles']
+    f = sl.features(t, 'bull')
+    assert f['setupCount'] == 3 and f['setup_tagRvol'] == 1
+    assert f['confirmLevel'] is None and f['confirmSqz'] is None and f['rvolIncreasingCount'] is None

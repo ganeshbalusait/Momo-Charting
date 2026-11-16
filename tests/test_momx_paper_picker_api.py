@@ -20,9 +20,9 @@ OWNER = "owner-ai-bot@example.com"
 VIEWER = "viewer-ai-bot@example.com"
 ADMIN = {ACCESS_EMAIL_HEADER: OWNER}
 def _last_weekday_at_ten() -> datetime:
-    """10:00 ET on today's date (or the Friday before a weekend): inside the first buy window,
+    """10:10 ET on today's date (or the Friday before a weekend): inside the first buy window,
     and inside the Scorecard's look-back whenever the suite runs."""
-    at = datetime.now(paper_mirror.ET).replace(hour=10, minute=0, second=0, microsecond=0)
+    at = datetime.now(paper_mirror.ET).replace(hour=10, minute=10, second=0, microsecond=0)    # signals must fire at or after 10:00
     while at.weekday() >= 5:
         at -= timedelta(days=1)
     return at
@@ -63,6 +63,8 @@ def signal(symbol, seconds_old):
             "levelSignal": {"highestLevel": 2, "setupTypes": [{"key": "tagRvol", "text": "RVOL"}]},
             "contract": f"{symbol}261113C00100000", "eContract": f"{symbol}261113C00110000", "eStrike": 110.0, "eDelta": 0.18,
             "eEntry": 0.60, "eLastBid": 0.58, "eLastAsk": 0.62, "eStatus": "open", "spot": 100.0,
+            # Bought only with the Bot's chart plan on it (paper_mirror.has_plan, 2026-11-13).
+            "plan": {"strike": 110.0},
             "lastAt": (NOW - timedelta(seconds=10)).isoformat()}
 
 

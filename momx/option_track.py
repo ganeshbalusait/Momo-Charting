@@ -34,6 +34,7 @@ at import.
 """
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import os
@@ -46,7 +47,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
-from momx import etf_list
+from momx import chart_plan, etf_list
 from momx.bot_levels import LevelEvaluator, LEVEL_RULES
 
 ET = ZoneInfo("America/New_York")
@@ -73,6 +74,21 @@ SAVE_EVERY_SECONDS = 30.0
 STATUS_URL = os.environ.get("AGX_MOMX_OPTIONABLE_STATUS_URL", "http://127.0.0.1:3002/api/schwab/status")
 HEADERS = {"X-AGX-Background": "1"}
 FROM_MIN, UNTIL_MIN = 9 * 60 + 30, 15 * 60 + 30     # new signals
+#: Level re-entries per ticker per day per book (his "re-enter if it sets up again", 2026-11-10;
+#: the back-test: re-entries are weaker, 36% hit +1% first). See OptionTrackBook._level_rearmed.
+MAX_LEVEL_REENTRIES = 3
+#: HIS TOP-OF-BOARD RULE (2026-11-10, "see scanner top 5 same ticker is repeating top 5 then
+#: try to trade", "Mag7 top 3", "use H/L column top"): the paper bots buy a Level signal only
+#: when its ticker has been in the TOP N of its board by the H/L column (row["highLow"]["value"],
+#: -1..+1) on every scan for TOP_HOLD_SECONDS. Calls rank highest H/L first, puts lowest first.
+#: Boards not listed here are not filtered. The book measures the runs (OptionTrackBook.top_now,
+#: and a "topHL" stamp on each new record as history); momx/paper_mirror.top_verdict decides.
+TOP_N = {"Mag7": 3, "Watchlist": 7}
+TOP_HOLD_SECONDS = 300
+#: A board with no scan for longer than this breaks every ticker's run (it was not watched).
+#: Real Watchlist scans come 141-200 s apart (up to ~678 s when the worker is busy); 180 s
+#: reset the runs on most scans, so nearly nothing could ever hold 5 minutes.
+TOP_GAP_SECONDS = 420
 CLOSE_MIN, STOP_MIN = 15 * 60 + 50, 15 * 60 + 58    # "the close" mark window, last re-price
 REPRICE_SECONDS = 600
 #: HIS EXIT (2026-09-28, "exit ... below VWAP/21 EMA exit the trade profit or
@@ -661,17 +677,70 @@ def _price(r: Mapping) -> float:
     return 0.0
 
 
+#: The VWAP exit is gone (2026-11-10, his "Remove 'vwap' exit strategy in BOT's" after the NVDA put
+#: bought 09:35 was sold at 10:00 on a 5m close above VWAP, -$144, before NVDA fell to 167). The bots
+#: and the Research score now exit on the 21 EMA only, else 15:50. Past records keep their old exits.
+def _hl_sort_value(cell: Any) -> float | None:
+    """The H/L cell's sort value exactly as his board sorts it (frontend/src/momxCells.js
+    highLowSortValue): the unrounded "degree" (momx/columns.py high_low_cell), else the rounded
+    "value" when there is no degree; None = no numeric H/L (columns.null_cell in a candle gap)."""
+    c = _m(cell)
+    raw = c.get("degree")
+    if raw is None or raw == "":
+        raw = c.get("value")
+    v = _num(raw) if raw is not None and raw != "" else None
+    return v if v is not None and math.isfinite(v) else None
+
+
+def _hl_matches(rows: Any) -> list[tuple[str, Mapping]]:
+    """(symbol, row) of the board's scan MATCHES, a symbol listed twice once (its first row)."""
+    out: list[tuple[str, Mapping]] = []
+    seen: set[str] = set()
+    for r in rows or []:
+        if not isinstance(r, Mapping) or not r.get("scanPass"):
+            continue
+        sym = r.get("symbol")
+        if not isinstance(sym, str) or sym in seen:
+            continue
+        seen.add(sym)
+        out.append((sym, r))
+    return out
+
+
+def hl_ranking(rows: Any, bear: bool) -> list[tuple[str, float]]:
+    """The board's scan MATCHES ordered exactly as his H/L-sorted board: (symbol, H/L shown),
+    highest H/L first for calls, lowest first for puts. Only rows with a truthy "scanPass" count:
+    the payload's "rows" also carries NON-matches (scan.rank_board fills it up to RANK_LIMIT with
+    movers; Mag7's 12 tickers are always all there), and the bear view promotes the bear verdict
+    to "scanPass". Sorted like the board (momxCells.js sortRows): on the unrounded "degree"
+    (falling back to "value"), ties broken by symbol ascending in BOTH directions. Rows without a
+    numeric H/L are left out (hl_missing lists them); a symbol listed twice counts once."""
+    ranked: list[tuple[float, str, float]] = []
+    for sym, r in _hl_matches(rows):
+        key = _hl_sort_value(r.get("highLow"))
+        if key is None:
+            continue
+        shown = _num(_m(r.get("highLow")).get("value"))
+        ranked.append((key, sym, shown if shown is not None and math.isfinite(shown) else key))
+    ranked.sort(key=lambda p: (p[0] if bear else -p[0], p[1].casefold(), p[1]))
+    return [(sym, shown) for _, sym, shown in ranked]
+
+
+def hl_missing(rows: Any) -> set[str]:
+    """Scan MATCHES with no numeric H/L on this scan (columns.null_cell during a candle gap):
+    their rank is unknown for the scan - not in the top (their run breaks), but no fail either."""
+    return {sym for sym, r in _hl_matches(rows) if _hl_sort_value(r.get("highLow")) is None}
+
+
 def exit_signal(row: Mapping, entry_ts: float, bear: bool) -> str | None:
     """His exit: the last COMPLETED 5m candle that closed after the entry
-    closed below VWAP or EMA21 (bull; above for bear). None = hold."""
+    closed below EMA21 (bull; above for bear). None = hold."""
     m5 = _m(row.get("m5"))
     last = _m(m5.get("lastCompleted"))
     start, close = _num(last.get("time")), _num(last.get("close"))
     if start is None or close is None or start + 300 <= entry_ts:
         return None
-    vwap, e21 = _num(m5.get("vwap")), _num(m5.get("ema21"))
-    if vwap is not None and (close > vwap if bear else close < vwap):
-        return "above VWAP" if bear else "below VWAP"
+    e21 = _num(m5.get("ema21"))
     if e21 is not None and (close > e21 if bear else close < e21):
         return "above EMA21" if bear else "below EMA21"
     return None
@@ -771,6 +840,227 @@ def levels_at_signal(chain: Any) -> dict:
         return {"expectedMove": round(em, 4) if em else None, "callWalls": side("calls"), "putWalls": side("puts")}
     except Exception:  # noqa: BLE001 - levels are a bonus; never block the trade record
         return {}
+
+
+# ---------------------------------------------------------------------------
+# THE CHART PLAN on the Bot's own tracked trades (his decision 2026-11-12: "BOT we
+# can do the entry and exit and profit target, we have in chart 'entry, exit and
+# target' use that entry the position and target 1,2,3 ... and stop loss", then
+# "Do the paper trades and all trades also changes").
+#
+# Every Level trade opened inside PLAN_WINDOWS (9:30-11:00 and 1:00-3:30 ET; his
+# 2026-11-13 "Remove 10 am rule on bot also if you see the setup then trade it") gets, on its
+# 0.20-delta contract, the plan the chart's Project ROI card would draw for that
+# contract (momx/chart_plan.py, a tested port of the chart's own formulas):
+#   t["plan"]       entry (the ASK at the signal), the stock price at entry, the
+#                   STOCK stop (option down 50%), T1 / T2 / T3, delta, gamma, the
+#                   expected move, and what the chart itself would have picked;
+#   t["planState"]  three contracts followed through that plan: target hits,
+#                   every sale with its price and reason in plain words, the
+#                   stop as it moves, and the result once all three are sold.
+# A signal outside the windows keeps t["planNote"] ("Not ordered: outside the buy windows ...").
+# The paper bots buy ONLY signals that carry t["plan"] (momx/paper_mirror.has_plan), so this
+# is the one place that decides both "gets a plan" and "may be bought".
+# The older scores on the trade (exitPrice, eExit, close, holdBest) are untouched.
+#
+# The stock price comes from the board rows (every rebuild, 15 s to a few
+# minutes), so a stop or target is seen that much later than on the paper bots,
+# which read the stock's live quote every 10 s. Sales are priced at the mid of a
+# live quote taken right after (bid and ask are kept beside it).
+#: Same windows as the paper bots (momx/paper_mirror.ENTRY_WINDOWS; a test holds them equal).
+PLAN_WINDOWS = ((9, 30, 11, 0), (13, 0, 15, 30))
+#: The paper bots still buy a signal up to this long after it fired
+#: (momx/paper_mirror.FRESH_SECONDS; a test holds them equal), so a signal in the
+#: last minutes BEFORE a window opens is bought when it opens and needs its plan
+#: too. On 2026-11-12 both accounts bought AMD at 13:00:03 / 13:00:08 on a
+#: 12:56:22 signal; with no plan for it that order had no stop and no targets.
+PLAN_LEAD_SECONDS = 600.0
+#: His plan is written for three contracts: one at each target.
+PLAN_CONTRACTS = 3
+PLAN_EXIT_WORDS = {"below EMA21": "5-minute candle closed below the 21 EMA",
+                   "above EMA21": "5-minute candle closed above the 21 EMA",
+                   "15:50 close": "15:50 close"}
+PLAN_BACKSTOP_WHY = "Stop: option down 50% (backstop)"
+#: What is kept of chart_plan.build on the trade (the per-target list is dropped: t1..t3 say it).
+PLAN_KEYS = ("side", "expiry", "strike", "entry", "entrySpot", "expectedMove", "delta", "gamma", "stopPremium",
+             "stopStock", "t1", "t2", "t3", "t3FromOi", "chartExpiry", "chartStrike", "chainAt", "walls")
+PLAN_CHAIN_DIR = "oi_chain_cache"
+
+
+PLAN_OUTSIDE_WHY = "outside the buy windows (9:30-11:00, 1:00-3:30)"
+
+
+def plan_window_note(at: Any, entry_at: Any = None) -> str | None:
+    """None when a signal may be traded under the plan; else why not, in his words.
+
+    The clock is the LATER of the signal time `at` and the time the Bot opened the trade
+    `entry_at` (2026-11-13 review). The paper bots count a signal's 10 fresh minutes from
+    the time it was opened (paper_mirror.eligible), which is some seconds after it fired:
+    a 12:49:55 signal opened at 12:50:20 is still bought at 13:00:05, so it needs its plan.
+    Judged on `at` alone it had none, and the order went out with no stop and no targets."""
+    when, opened = _iso(at), _iso(entry_at)
+    if when is None or (opened is not None and opened > when):
+        when = opened
+    if when is None:
+        return None
+    second = when.hour * 3600 + when.minute * 60 + when.second
+    # Inside a window, or close enough before one that the paper bots still buy it at the open.
+    if any((h1 * 60 + m1) * 60 - PLAN_LEAD_SECONDS <= second < (h2 * 60 + m2) * 60 for h1, m1, h2, m2 in PLAN_WINDOWS):
+        return None
+    return PLAN_OUTSIDE_WHY
+
+
+def _default_plan_chain(symbol: str) -> Any:
+    """The option chain api_server last saved for this ticker (the same copy its quote route
+    picks the contract from). Read-only, straight from the file: no request to api_server, so
+    no chain rebuild is ever started by the plan."""
+    from config import ARTIFACTS_DIR
+    name = str(symbol or "").strip().upper()
+    if not name or not all(ch.isalnum() or ch in ".-" for ch in name):
+        return None
+    with gzip.open(Path(ARTIFACTS_DIR) / PLAN_CHAIN_DIR / f"{name}.json.gz", "rt", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def plan_open(t: dict, chain: Any, bear: bool, day: str) -> bool:
+    """Give a just-opened Level trade its chart plan (see above). True when the trade changed."""
+    if t.get("rule") not in LEVEL_RULES or t.get("plan") or t.get("planNote"):
+        return False
+    note = plan_window_note(t.get("at"), t.get("entryAt"))
+    if note:
+        t["planNote"] = "Not ordered: " + note
+        return True
+    if not t.get("eContract"):
+        t["planNote"] = "No chart plan: no 0.20-delta option was found"
+        return True
+    ask = _num(t.get("eEntryAsk"))
+    entry = ask if ask and ask > 0 else _num(t.get("eEntry"))
+    spot = _num(t.get("spot")) or _num(t.get("stockPrice"))
+    try:
+        plan = chart_plan.from_chain(chain, bear=bear, expiry=str(t.get("expiry") or ""), strike=t.get("eStrike"),
+                                     entry=entry, spot=spot, today=day)
+    except Exception:  # noqa: BLE001 - the plan never costs a trade record
+        plan = None
+    if not plan or not entry:
+        t["planNote"] = "No chart plan: the option chain was not available at the signal"
+        return True
+    t["plan"] = {k: plan.get(k) for k in PLAN_KEYS}
+    t["planState"] = {"status": "open", "qty": PLAN_CONTRACTS, "held": PLAN_CONTRACTS,
+                      "split": chart_plan.split_contracts(PLAN_CONTRACTS), "entry": plan["entry"],
+                      "stopStock": plan.get("stopStock"), "stopKind": "stop", "hits": [], "sells": []}
+    return True
+
+
+def _plan_live(t: Mapping) -> dict | None:
+    st = t.get("planState")
+    return st if isinstance(st, dict) and isinstance(t.get("plan"), Mapping) else None
+
+
+def plan_unpriced(t: Mapping) -> bool:
+    """True when a sale of the plan still waits for its option price."""
+    st = _plan_live(t)
+    return bool(st) and st.get("status") != "closed" and any(_num(s.get("price")) is None for s in st.get("sells") or [])
+
+
+def plan_step(t: dict, stock: Any, stamp: str, bear: bool) -> bool:
+    """One look at the stock price for a trade on the plan: the stop first (everything sold
+    at once), then T1 / T2 / T3 (one lot each; the stop moves to break-even, then to T1).
+    Sales are added without a price; plan_price fills it in. True when something happened."""
+    st, price = _plan_live(t), _num(stock)
+    if not st or st.get("status") != "open" or price is None or t.get("exitAt"):
+        return False
+    held = int(st.get("held") or 0)
+    if held <= 0:
+        return False
+    plan = t["plan"]
+    stop = _num(st.get("stopStock"))
+    if stop is not None and (price >= stop if bear else price <= stop):
+        lead = {"break-even": "Stop at break-even", "T1": "Stop at T1"}.get(st.get("stopKind"), "Stop")
+        st["sells"].append({"qty": held, "why": f"{lead}: stock traded through {stop:.2f}", "at": stamp,
+                            "stock": price, "price": None, "kind": "stop"})
+        st.update(held=0, status="closing")
+        return True
+    levels = [_num(plan.get(k)) for k in ("t1", "t2", "t3")]
+    done = len(st.get("hits") or [])
+    reached = done
+    while reached < 3 and levels[reached] is not None and (price <= levels[reached] if bear else price >= levels[reached]):
+        reached += 1
+    if reached == done:
+        return False
+    split = st.get("split") if isinstance(st.get("split"), list) and len(st["split"]) == 3 else chart_plan.split_contracts(st.get("qty"))
+    qty = min(held, sum(int(n) for n in split[done:reached]))
+    last = reached >= 3 or sum(int(n) for n in split[reached:]) <= 0 or qty >= held
+    if last:
+        qty = held
+    for i in range(done, reached):
+        st.setdefault("hits", []).append({"target": f"T{i + 1}", "at": stamp, "stock": price, "level": levels[i]})
+    name = f"T{reached}"
+    if last:
+        why = f"{name} hit: sold the last {qty}"
+    else:
+        entry_stock = _num(plan.get("entrySpot"))
+        if reached == 1 and entry_stock:
+            st.update(stopStock=round(entry_stock, 2), stopKind="break-even")
+        elif reached == 2 and levels[0] is not None:
+            st.update(stopStock=levels[0], stopKind="T1")
+        moved = "stop to break-even" if reached == 1 else "stop to T1"
+        why = f"{name} hit: sold {qty}, {moved}" if qty > 0 else f"{name} hit: {moved}"
+    if qty > 0:
+        st["sells"].append({"qty": qty, "why": why, "at": stamp, "stock": price, "price": None, "kind": "target"})
+        st["held"] = held - qty
+    else:
+        st["note"] = why
+    if st["held"] <= 0:
+        st["status"] = "closing"
+    return True
+
+
+def plan_price(t: dict, mid: Any, bid: Any, ask: Any, stamp: str) -> bool:
+    """A fresh quote of the 0.20-delta contract: it prices the plan's sales still waiting for
+    one, and is the backstop - the option itself down 50% from the entry sells what is held."""
+    st, price = _plan_live(t), _num(mid)
+    if not st or st.get("status") == "closed" or price is None or price <= 0:
+        return False
+    changed = False
+    for sale in st.get("sells") or []:
+        if _num(sale.get("price")) is None:
+            sale.update(price=price, bid=_num(bid), ask=_num(ask), priceAt=stamp)
+            changed = True
+    entry, held = _num(st.get("entry")), int(st.get("held") or 0)
+    if st.get("status") == "open" and held > 0 and entry and not t.get("exitAt") and price <= entry * chart_plan.STOP_LOSS_SHARE:
+        st["sells"].append({"qty": held, "why": PLAN_BACKSTOP_WHY, "at": stamp, "price": price, "bid": _num(bid),
+                            "ask": _num(ask), "priceAt": stamp, "kind": "stop"})
+        st.update(held=0, status="closing")
+        changed = True
+    return changed
+
+
+def plan_settle(t: dict) -> bool:
+    """Close the plan's books when it can be done: whatever is still held leaves with the Bot's
+    own exit of the 0.20-delta contract (the 5m close past the 21 EMA, else 15:50), and once
+    every sale has a price the result is written. True when something changed."""
+    st = _plan_live(t)
+    if not st or st.get("status") == "closed":
+        return False
+    changed = False
+    held = int(st.get("held") or 0)
+    out = _num(t.get("eExit"))
+    if st.get("status") == "open" and held > 0 and out is not None and (t.get("exitAt") or t.get("status") == "closed"):
+        said = str(t.get("exitReason") or "")
+        st["sells"].append({"qty": held, "why": PLAN_EXIT_WORDS.get(said) or said or "15:50 close",
+                            "at": t.get("exitAt") or t.get("closeAt"), "price": out, "bid": _num(t.get("eExitBid")),
+                            "ask": _num(t.get("eExitAsk")), "priceAt": t.get("eExitPriceAt") or t.get("exitPriceAt"),
+                            "kind": "exit"})
+        st.update(held=0, status="closing")
+        changed = True
+    sells = st.get("sells") or []
+    entry, qty = _num(st.get("entry")), int(st.get("qty") or 0)
+    if st.get("status") == "closing" and sells and entry and qty and all(_num(s.get("price")) is not None for s in sells):
+        total = sum(int(s.get("qty") or 0) * (float(s["price"]) - entry) for s in sells)
+        st.update(status="closed", pnl=round(total * 100, 2), pct=round(total / (qty * entry) * 100, 1),
+                  closedAt=sells[-1].get("priceAt") or sells[-1].get("at"), reason=sells[-1].get("why"))
+        changed = True
+    return changed
 
 
 def contract_quote(chain: Any, symbol: str) -> tuple[float | None, float | None]:
@@ -974,10 +1264,15 @@ class OptionTrackBook:
                  healthy: Callable[[], bool] | None = None, background: bool = True,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
                  jev: Any = None, quote_fetch: Callable[[str], Any] | None = None,
-                 quotes_fetch: Callable[[list], Any] | None = None, ai_policy: Callable | None = None) -> None:
+                 quotes_fetch: Callable[[list], Any] | None = None, ai_policy: Callable | None = None,
+                 plan_chain: Callable[[str], Any] | None = None) -> None:
         self.directory = Path(directory)
         self.bear = str(direction).lower() == "bear"
         self._fetch = fetch or _default_fetch
+        # The chain the chart plan is worked out from when a trade opens on the fast quote
+        # path (that reply carries no gamma, expected move or open interest). A test that
+        # injects its own chain fetch reads no live file unless it passes plan_chain too.
+        self._plan_chain = plan_chain or (_default_plan_chain if fetch is None else (lambda _s: None))
         # A test that injects its own chain fetch gets no live quote path unless it
         # passes quote_fetch too - a unit test must never reach the running app.
         self._quote_fetch = quote_fetch or (_default_quote_fetch if fetch is None else (lambda _q: None))
@@ -991,7 +1286,7 @@ class OptionTrackBook:
         # Re-entrant: Jev's answer (_jev_ask's done) may arrive on the thread that holds it.
         self._lock = threading.RLock()
         self._day = ""
-        self._trades: list[dict] = []          # one per (rule, symbol)
+        self._trades: list[dict] = []          # one per (rule, symbol); Level rules may repeat after an exit
         self._paths: dict[str, dict[str, float]] = {}   # path_key -> {"HH:MM": mid} (PATHS_DIRNAME)
         self._paths_dirty = False
         self._paths_saved_at = float("-inf")
@@ -999,6 +1294,18 @@ class OptionTrackBook:
         self._carry: list[dict] | None = None   # weeklies held past their day for holdBest (CARRY_FILE)
         self._skipped: list[dict] = []          # signals NOT taken because momentum was fading
         self._capture_skips: dict[str, dict] = {}
+        # symbol -> last scan (epoch s, whole seconds) its Level signal was ABSENT today. A
+        # Level re-entry needs one such scan after the exit (in memory: a restart only delays one).
+        self._level_dropped: dict[str, float] = {}
+        # His top-of-board rule (TOP_N): board -> {"last": epoch s of its last scan,
+        # "runs": {symbol: epoch s its current unbroken top-N run began},
+        # "ranks": {symbol: (1-based rank, H/L)} from the last scan}. In memory only:
+        # after a restart the runs simply need TOP_HOLD_SECONDS (5 min) to build again.
+        # Each board's state is a NEW dict per scan, never changed after (top_now reads it lock-free).
+        self._top_runs: dict[str, dict] = {}
+        #: When this book started (epoch s): the paper bots wait up to TOP_HOLD_SECONDS after it
+        #: before an unknown run (no scan of the board yet) stops blocking ("warming").
+        self.started_at = float(clock())
         self._queue: queue.Queue = queue.Queue()
         self._fast_wanted: set[str] = set()
         self._fast_exit_next: dict[str, float] = {}
@@ -1081,6 +1388,8 @@ class OptionTrackBook:
             self._write_paths(force=True)
         self._day, self._trades, self._opt_seen, self._skipped = day, [], {}, []
         self._capture_skips = {}
+        self._level_dropped = {}
+        self._top_runs = {}
         self._jev_ctx = {}
         self._paths = load_paths(self.directory, day)
         self._paths_dirty = False
@@ -1212,7 +1521,8 @@ class OptionTrackBook:
         """Write the final holdBest back into the trade's own day file."""
         if c["day"] == self._day:
             for t in self._trades:
-                if t.get("rule") == c["rule"] and t.get("symbol") == c["symbol"]:
+                if (t.get("rule") == c["rule"] and t.get("symbol") == c["symbol"]
+                        and c.get("at") in (None, t.get("at"))):
                     t.update(holdBest=c["holdBest"], holdBestAt=c.get("holdBestAt"), holdDone=True)
             self._save()
             return
@@ -1221,7 +1531,7 @@ class OptionTrackBook:
         # Mon 2026-11-02 (8,884 Friday expiries) and froze every scanner board.
         with self._lock:
             self._finished.setdefault(c["day"], []).append(
-                {"rule": c["rule"], "symbol": c["symbol"], "holdBest": c["holdBest"],
+                {"rule": c["rule"], "symbol": c["symbol"], "at": c.get("at"), "holdBest": c["holdBest"],
                  "holdBestAt": c.get("holdBestAt")})
             if not self._background:
                 self._write_finished()
@@ -1231,12 +1541,14 @@ class OptionTrackBook:
         with self._lock:
             pending, self._finished = self._finished, {}
         for day, done in pending.items():
-            by_key = {(d["rule"], d["symbol"]): d for d in done}
+            # Exact record first (rule, symbol, at); carries saved before re-entry had no "at".
+            by_key = {(d["rule"], d["symbol"], d.get("at")): d for d in done}
             path = self._path(day)
             try:
                 doc = json.loads(path.read_text(encoding="utf-8"))
                 for t in doc.get("trades") or []:
-                    d = by_key.get((t.get("rule"), t.get("symbol")))
+                    d = (by_key.get((t.get("rule"), t.get("symbol"), t.get("at")))
+                         or by_key.get((t.get("rule"), t.get("symbol"), None)))
                     if d:
                         t.update(holdBest=d["holdBest"], holdBestAt=d.get("holdBestAt"), holdDone=True)
                 tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
@@ -1261,7 +1573,9 @@ class OptionTrackBook:
                     "closeBid", "closeAsk", "closeQ", "zClose", "zCloseBid", "zCloseAsk", "eClose", "eCloseBid",
                     "eCloseAsk", "zExitBid", "zExitAsk", "eExitBid", "eExitAsk", "zEntryBid", "zEntryAsk",
                     "eEntryBid", "eEntryAsk", "zLastBid", "zLastAsk", "eLastBid", "eLastAsk",
-                    "levelSignal", "virtualOnly", "scannerInputs")
+                    "levelSignal", "levelReentry", "virtualOnly", "scannerInputs", "topHL",
+                    # The chart plan (2026-11-12): entry at the ask, stock stop, T1-T3 and what happened.
+                    "plan", "planState", "planNote")
 
     def summary(self) -> list[dict]:
         with self._lock:
@@ -1287,6 +1601,125 @@ class OptionTrackBook:
                     "entered": entered, "pending": len(pending), "notEntered": len(missing), "reasons": reasons,
                     "examples": missing[-10:], "levelStrategies": self._levels.status}
 
+    def _level_index(self) -> dict[str, list]:
+        """Per ticker, across ALL Level rules (level1/2/3) of this book today:
+        [blocked, last_exit_ts, re-entry times]. Built once per apply (caller holds the lock).
+
+        blocked = some Level record is still pending / open, or ended at an unknown time.
+        A record is done when the bot's exit is stamped (exitAt / exitReason), it closed,
+        or it ended never-bought (no_contract, ai_skipped or any other status that is not
+        pending / open - see _expire_unpriced); a never-bought record's exit time is its
+        signal time ("at")."""
+        index: dict[str, list] = {}
+        for t in self._trades:
+            if t.get("rule") not in LEVEL_RULES or not isinstance(t.get("symbol"), str):
+                continue
+            ent = index.setdefault(t["symbol"], [False, None, set()])
+            if t.get("levelReentry"):
+                ent[2].add(t.get("at"))
+            status = t.get("status")
+            if t.get("exitAt") or t.get("exitReason") or status == "closed":
+                ex = _iso(t.get("exitAt") or t.get("closeAt"))
+            elif status in ("pending", "open"):
+                ent[0] = True                      # still pending / open: one at a time
+                continue
+            else:
+                ex = _iso(t.get("at"))             # never bought: done at its signal time
+            if ex is None:
+                ent[0] = True                      # done, but when is unknown: be safe
+                continue
+            ent[1] = ex.timestamp() if ent[1] is None else max(ent[1], ex.timestamp())
+        return index
+
+    def _level_rearmed(self, sym: str, row: Mapping, index: Mapping[str, list]) -> bool:
+        """May the Level rules open ANOTHER trade on this ticker today? (caller holds the lock)
+
+        His rule 2026-11-10 ("re-enter if it sets up again"): NVDA's Level 3 put was sold
+        at 10:00 and the later Level 3 signals at 10:30, 11:22 and 12:40 were dropped
+        because every rule fired once per ticker per day. A Level re-entry now needs ALL of:
+        (a) no Level record (any of level1/2/3) for the ticker is still pending / open;
+        (b) fewer than MAX_LEVEL_REENTRIES re-entries today on this book (the back-test:
+            re-entries are weaker, 36% hit +1% first);
+        (c) the Level signal was ABSENT from at least one scan after the last exit and is
+            back now - the level is a state that repeats every scan while it holds, so a
+            choppy ticker holding its Level all day would otherwise round-trip every ~10 min;
+        (d) a 5m candle that closed AFTER that exit sits back on the right side of the
+            21 EMA (above for calls, below for puts). Missing candle data = no re-entry."""
+        ent = index.get(sym)
+        if not ent or ent[0] or ent[1] is None or len(ent[2]) >= MAX_LEVEL_REENTRIES:
+            return False
+        last_exit = ent[1]
+        if self._level_dropped.get(sym, float("-inf")) <= last_exit:
+            return False
+        m5 = _m(row.get("m5"))
+        last = _m(m5.get("lastCompleted"))
+        start, close, e21 = _num(last.get("time")), _num(last.get("close")), _num(m5.get("ema21"))
+        if start is None or close is None or e21 is None or start + 300 <= last_exit:
+            return False
+        return close <= e21 if self.bear else close >= e21
+
+    def _top_update(self, board: str, ranking: list[tuple[str, float]], ts: float,
+                    missing: Any = ()) -> None:
+        """Record one scan of a TOP_N board (caller holds the lock). A ticker's run goes on
+        while it is in the top N on every scan; it breaks when it is out of the top N, or when
+        the board went more than TOP_GAP_SECONDS without a scan. `missing`: scan matches with no
+        numeric H/L on this scan (hl_missing) - not in the top, rank unknown ("hlMissing")."""
+        n = TOP_N.get(board)
+        if not n:
+            return
+        state = self._top_runs.get(board) or {}
+        last = state.get("last")
+        runs = state.get("runs") or {}
+        if last is None or ts - last > TOP_GAP_SECONDS or ts < last:
+            runs = {}                       # not watched in between: every run starts again
+        top = [sym for sym, _ in ranking[:n]]
+        self._top_runs[board] = {
+            "last": ts,
+            "runs": {sym: min(runs.get(sym, ts), ts) for sym in top},
+            "ranks": {sym: (i + 1, hl) for i, (sym, hl) in enumerate(ranking)},
+            "missing": frozenset(s for s in (missing or ()) if isinstance(s, str))}
+
+    def _top_stamp(self, board: str, sym: str, ts: float) -> dict | None:
+        """The "topHL" stamp for a new record from this board, from the CURRENT scan's run
+        (so a re-entry or a later signal never inherits an older run). None = board not filtered."""
+        n = TOP_N.get(board)
+        if not n:
+            return None
+        state = self._top_runs.get(board) or {}
+        rank, hl = (state.get("ranks") or {}).get(sym, (None, None))
+        since = (state.get("runs") or {}).get(sym)
+        held = int(max(0.0, ts - since)) if since is not None else 0
+        out = {"board": board, "n": n, "rank": rank, "heldSeconds": held, "hl": hl}
+        if rank is None and sym in (state.get("missing") or ()):
+            out["hlMissing"] = True         # a scan match with no H/L on this scan: rank unknown
+        return out
+
+    def top_now(self, board: str, symbol: str, now_ts: float | None = None) -> dict | None:
+        """Where this ticker stands on its board by H/L as of the board's LATEST scan (the
+        paper bots decide on this at buy time, not on a record's frozen "topHL" stamp):
+        {board, n, rank, heldSeconds, hl, at}; rank None = not a ranked scan match.
+        None = unknown: a board without TOP_N, or no scan of the board today since this book
+        started (e.g. right after a restart). Cheap and lock-free: a board's state is a new
+        dict per scan, never changed after it is stored."""
+        n = TOP_N.get(str(board))
+        if not n:
+            return None
+        state = self._top_runs.get(str(board))
+        if not isinstance(state, dict) or state.get("last") is None:
+            return None
+        last = float(state["last"])
+        now_ts = float(self._clock() if now_ts is None else now_ts)
+        if datetime.fromtimestamp(last, ET).date() != datetime.fromtimestamp(now_ts, ET).date():
+            return None                     # yesterday's runs (the day's first scan resets them)
+        rank, hl = (state.get("ranks") or {}).get(symbol, (None, None))
+        since = (state.get("runs") or {}).get(symbol)
+        held = int(max(0.0, last - since)) if since is not None else 0
+        out = {"board": str(board), "n": n, "rank": rank, "heldSeconds": held, "hl": hl,
+               "at": datetime.fromtimestamp(last, ET).isoformat()}
+        if rank is None and symbol in (state.get("missing") or ()):
+            out["hlMissing"] = True         # a scan match with no H/L on the last scan: rank unknown
+        return out
+
     def _expire_unpriced(self, local: datetime) -> bool:
         changed = False
         for t in self._trades:
@@ -1310,6 +1743,12 @@ class OptionTrackBook:
             # Bear Level 1/2/3 (his "Yes" 2026-11-05): the same shared rules,
             # mirrored colors, on this book's own evaluator (puts).
             level_signals = self._levels.evaluate(board, _m(payload), local, bear=self.bear)
+            # None = this scan was NOT evaluated (stale publication, worker timeout / error,
+            # disabled); {} = evaluated and nothing qualified. Only a real evaluation may
+            # mark a ticker's Level as dropped (an evaluator hiccup is not "the setup went away").
+            levels_evaluated = isinstance(level_signals, Mapping)
+            if not levels_evaluated:
+                level_signals = {}
             learning_contexts = getattr(self._levels, 'contexts', {})
             for row in rows:
                 row.pop('scannerInputs', None)
@@ -1318,10 +1757,29 @@ class OptionTrackBook:
             mega = mega_caps(rows)
             spy_row = next((r for r in rows if r.get("symbol") == "SPY"), None)
             need: set[str] = set()
+            # His top-of-board rule (TOP_N): rank only the scan MATCHES (rows with scanPass;
+            # "rows" also carries non-matches, "rest" only non-matches) by H/L, as his board shows them.
+            ranking = hl_ranking(_m(payload).get("rows"), self.bear) if str(board) in TOP_N else []
+            hl_gaps = hl_missing(_m(payload).get("rows")) if str(board) in TOP_N else set()
             with self._lock:
                 self._load(local.date().isoformat())
                 have = {(t["rule"], t["symbol"]) for t in self._trades}
                 changed = self._expire_unpriced(local)
+                self._top_update(str(board), ranking, local.replace(microsecond=0).timestamp(), hl_gaps)
+                first_new = len(self._trades)   # records added by this scan get the topHL stamp
+                # Level re-entry bookkeeping: a ticker on this board whose Level signal is
+                # absent this scan has "dropped" (one of the re-entry conditions), and one
+                # per-ticker index of the Level records instead of a scan per rule per row.
+                scan_ts = local.replace(microsecond=0).timestamp()
+                # Only a row the worker really judged counts: it builds a context only for a row
+                # with a fresh observation, so a stale or unobserved row (a Schwab block, delayed
+                # candles) never reads as "the setup went away".
+                for row in rows if levels_evaluated else ():
+                    s = row.get("symbol")
+                    if (isinstance(s, str) and s in learning_contexts
+                            and not (level_signals.get(s) and not _etf_excluded(row))):
+                        self._level_dropped[s] = scan_ts
+                level_index = self._level_index()
                 if FROM_MIN <= minute <= UNTIL_MIN:
                     # "News" (2026-10-08): the scanner's NEWS ▲ / NEWS ▼ list with
                     # "Scan matches only" - momx/trade_news.news_rule_symbols.
@@ -1346,8 +1804,13 @@ class OptionTrackBook:
                         if day_line_now(row, local, "signal100"):
                             rules.append("dayLine100")
                         # Retired Jev picks remain historical; they create no new virtual entries.
+                        # Level re-entry is decided once per ticker per scan (all levels together).
+                        rearmed = bool(level_signal) and self._level_rearmed(sym, row, level_index)
                         for rule in rules:
-                            if (rule, sym) in have:
+                            # Once a day per rule+ticker, except a Level rule that has
+                            # exited and set up again (his rule 2026-11-10: re-entry).
+                            reentry = (rule, sym) in have and rule in LEVEL_RULES and rearmed
+                            if (rule, sym) in have and not reentry:
                                 continue
                             # HIS RULE, narrowed by the data (2026-09-28): momentum
                             # FADING = no MX A+ trade (back-test: fading MX A+
@@ -1367,6 +1830,10 @@ class OptionTrackBook:
                                                                 "reason": "Daily signal cap for this rule"}
                                     changed = True
                                 continue
+                            if (rule, sym) in have:
+                                # A re-entry: drop any Jev row left by the earlier record so
+                                # the new trade is judged on its own scanner row.
+                                self._jev_ctx.pop((rule, sym), None)
                             have.add((rule, sym))
                             self._trades.append({"rule": rule, "symbol": sym, "board": board,
                                                  "at": local.replace(microsecond=0).isoformat(),
@@ -1380,6 +1847,14 @@ class OptionTrackBook:
                             if rule in LEVEL_RULES:
                                 self._trades[-1].update(levelSignal={**level_signal, "strategyLevel": LEVEL_RULES.index(rule)+1},
                                                         virtualOnly=True)
+                                if reentry:
+                                    self._trades[-1]["levelReentry"] = True
+                                # Keep the per-ticker index current: a new Level record is
+                                # pending, and a re-entry counts toward MAX_LEVEL_REENTRIES.
+                                ent = level_index.setdefault(sym, [False, None, set()])
+                                ent[0] = True
+                                if reentry:
+                                    ent[2].add(self._trades[-1]["at"])
                             if rule == "jev":       # the scanner score IS this trade's Jev score
                                 self._trades[-1].update(jevP=float(_m(row.get("jevRow"))["p"]), jevSource="scanner")
                             changed = True
@@ -1408,8 +1883,26 @@ class OptionTrackBook:
                 if self.bear and FROM_MIN <= minute <= UNTIL_MIN:
                     self._bear_sector_trades(str(board), [r for r in rows if live_today(r, local)], local, have, need)
                     changed = True
+                # Every NEW record from this scan (all rules) carries where its ticker stood on
+                # the board by H/L at that moment: the paper bots' top-of-board check.
+                if str(board) in TOP_N:
+                    stamp_ts = local.replace(microsecond=0).timestamp()
+                    for t in self._trades[first_new:]:
+                        top_hl = self._top_stamp(str(board), t.get("symbol"), stamp_ts)
+                        if top_hl is not None:
+                            t["topHL"] = top_hl
                 # HIS EXIT on the board's rows (open trades not yet exited)
                 by_sym = {r.get("symbol"): r for r in rows if isinstance(r.get("symbol"), str)}
+                # The chart plan (2026-11-12): the stop and T1 / T2 / T3 on the board's stock price.
+                plan_stamp = local.replace(microsecond=0).isoformat()
+                for t in self._trades:
+                    if t.get("status") != "open" or not isinstance(t.get("planState"), dict) or t["symbol"] not in by_sym:
+                        continue
+                    if plan_step(t, _num(by_sym[t["symbol"]].get("last")), plan_stamp, self.bear):
+                        changed = True
+                for t in self._trades:
+                    if isinstance(t.get("planState"), dict) and plan_settle(t):
+                        changed = True
                 for t in self._trades:
                     if t.get("status") != "open" or t.get("exitAt") or t["symbol"] not in by_sym:
                         continue
@@ -1505,6 +1998,9 @@ class OptionTrackBook:
                           and (t.get("exitPrice") is None or any(t.get(p + "Contract") and t.get(p + "Exit") is None for p in ("e", "z")))
                           and self._clock() >= self._fast_exit_next.get(t["symbol"], 0)):
                         fresh.add(t["symbol"])
+                    elif (t.get("eContract") and plan_unpriced(t)
+                          and self._clock() >= self._fast_exit_next.get(t["symbol"], 0)):
+                        fresh.add(t["symbol"])          # a plan sale waiting for its price
             # One batch at 15:50, then a retry every QUOTE_CLOSE_RETRY_SECONDS for any
             # trade still without a quote close, until 16:28 (review 2026-10-10: a
             # failed first batch was never retried - the MRNA 10-09 hole again).
@@ -1535,8 +2031,11 @@ class OptionTrackBook:
         t.update(holdBest=max(float(t.get("best") or 0), float(mark)), holdBestAt=t.get("bestAt"))
         if str(t.get("expiry") or "") > self._day:
             carry = self._carry_list()
-            if not any(c["day"] == self._day and c["rule"] == t["rule"] and c["symbol"] == sym for c in carry):
-                carry.append({"day": self._day, "rule": t["rule"], "symbol": sym,
+            # "at" tells apart two records of one Level rule on one ticker (re-entry, his
+            # rule 2026-11-10); older carries without it still match on rule+symbol.
+            if not any(c["day"] == self._day and c["rule"] == t["rule"] and c["symbol"] == sym
+                       and c.get("at") in (None, t.get("at")) for c in carry):
+                carry.append({"day": self._day, "rule": t["rule"], "symbol": sym, "at": t.get("at"),
                               "contract": t.get("contract"), "expiry": t.get("expiry"),
                               "entry": t.get("entry"), "holdBest": t.get("holdBest"),
                               "holdBestAt": t.get("bestAt"), "pricedAtTs": now})
@@ -1596,6 +2095,8 @@ class OptionTrackBook:
                         continue
                     t.update({pre + "Close": smid, pre + "CloseBid": sq.get("bid"), pre + "CloseAsk": sq.get("ask"),
                               pre + "Last": smid, pre + "LastBid": sq.get("bid"), pre + "LastAsk": sq.get("ask")})
+                    if pre == "e":
+                        plan_price(t, smid, sq.get("bid"), sq.get("ask"), stamp)
                     if smid > float(t.get(pre + "Best") or 0):
                         t[pre + "Best"] = smid
                     if t.get(pre + "Status") == "open":
@@ -1620,6 +2121,8 @@ class OptionTrackBook:
                 elif t.get("close") is None:
                     t.update(close=mid, closeBid=q.get("bid"), closeAsk=q.get("ask"), closeAt=stamp)
                 t["closeQ"] = stamp
+            for t in todo:
+                plan_settle(t)
             if not missing:
                 self._quote_closed_day = local.date().isoformat()
             elif quotes or todo:
@@ -1686,13 +2189,27 @@ class OptionTrackBook:
         with self._lock:
             day = self._day
             spots = {}
+            plan_syms = set()
             for t in self._trades:
                 if t["symbol"] in symbols and t.get("status") == "pending":
                     spots[t["symbol"]] = self._live_px.get(t["symbol"]) or _num(t.get("stockPrice"))
+                    # The trade is opened a moment from now: the same clock as plan_open.
+                    if t.get("rule") in LEVEL_RULES and plan_window_note(
+                            t.get("at"), _et(self._clock()).isoformat()) is None:
+                        plan_syms.add(t["symbol"])
         items = [f"{sym}:{'P' if self.bear else 'C'}:{spot}" for sym, spot in spots.items() if spot]
         if not items:
             return
         reply = self._quote_fetch(",".join(items))
+        # The chart plan needs the chain itself (gamma, expected move, open interest), which the
+        # quote reply does not carry. Read outside the lock; a missing chain only means no plan.
+        plan_chains: dict = {}
+        ok_syms = {_m(res).get("symbol") for res in _m(reply).get("results") or [] if _m(res).get("ok")}
+        for sym in sorted(plan_syms & ok_syms):
+            try:
+                plan_chains[sym] = self._plan_chain(sym)
+            except Exception:  # noqa: BLE001
+                plan_chains[sym] = None
         now = self._clock()
         stamp = _et(now).replace(microsecond=0).isoformat()
         changed = False
@@ -1734,6 +2251,7 @@ class OptionTrackBook:
                         # Same reason as lastBid/lastAsk above, for the 0.20-delta
                         # contract the paper accounts buy since 2026-11-10.
                         t.update(eLastBid=t.get("eEntryBid"), eLastAsk=t.get("eEntryAsk"))
+                    plan_open(t, plan_chains.get(sym), self.bear, day)
                     z = _m(res.get("z"))
                     if z.get("contract") and _num(z.get("entry")):
                         t.update(zContract=z["contract"], zStrike=z.get("strike"), zEntry=z["entry"],
@@ -1757,7 +2275,10 @@ class OptionTrackBook:
                     and t.get("status") == "open" and t.get("exitAt")]
             contracts = sorted({t.get(p + "Contract" if p else "contract") for t in todo for p in ("", "e", "z")
                 if t.get(p + "Exit" if p else "exitPrice") is None and t.get(p + "Contract" if p else "contract")})
-            for t in todo:
+            # Sales of the chart plan (a target or the stop, seen on the stock price) waiting for a price.
+            plan_todo = [t for t in self._trades if t.get("symbol") in symbols and t.get("eContract") and plan_unpriced(t)]
+            contracts = sorted(set(contracts) | {t["eContract"] for t in plan_todo})
+            for t in todo + plan_todo:
                 self._fast_exit_next[t["symbol"]] = self._clock() + 30
         for start in range(0, len(contracts), 150):
             try:
@@ -1787,6 +2308,14 @@ class OptionTrackBook:
                         else:
                             t.update(exitPrice=mid, exitPriceAt=stamp, exitBid=bid, exitAsk=ask)
                         changed = True
+                for t in plan_todo:
+                    q = _m(quotes.get(t.get("eContract")))
+                    bid, ask = _num(q.get("bid")), _num(q.get("ask"))
+                    if bid is None or ask is None or bid < 0 or ask < bid or ask <= 0:
+                        continue
+                    changed |= plan_price(t, round((bid + ask) / 2, 4), bid, ask, stamp)
+                for t in todo + plan_todo:
+                    changed |= plan_settle(t)
                 if changed:
                     self._save()
 
@@ -1923,6 +2452,7 @@ class OptionTrackBook:
                             t.update(e if e else {"eStatus": "none"})
                             if t.get("eContract"):
                                 t.update(eLastBid=t.get("eEntryBid"), eLastAsk=t.get("eEntryAsk"))
+                            plan_open(t, chain, self.bear, self._day)
                             z = pick_contract(chain, self.bear, zero_dte=True)
                             if z:
                                 t.update(zContract=z["contract"], zStrike=z["strike"], zEntry=z["entry"],
@@ -1960,6 +2490,8 @@ class OptionTrackBook:
                                 continue
                             s_bid, s_ask = contract_quote(chain, t.get(pre + "Contract"))
                             t.update({pre + "Last": sm, pre + "LastBid": s_bid, pre + "LastAsk": s_ask})
+                            if pre == "e":
+                                plan_price(t, sm, s_bid, s_ask, stamp)      # prices waiting sales; the -50% backstop
                             if sm > float(t.get(pre + "Best") or 0):
                                 t[pre + "Best"] = sm
                             if t.get(pre + "Status") == "open" and (t.get("exitAt") or minute >= CLOSE_MIN):
@@ -1969,6 +2501,7 @@ class OptionTrackBook:
                                 t.update({pre + "Close": sm, pre + "CloseBid": s_bid, pre + "CloseAsk": s_ask})
                         if minute >= CLOSE_MIN:
                             self._close_trade(t, mark, q_bid, q_ask, stamp, now)
+                        plan_settle(t)
                         changed = True
                 carry_changed = False
                 for c in list(self._carry_list()):

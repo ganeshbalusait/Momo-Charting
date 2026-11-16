@@ -436,6 +436,16 @@ export const OI_CHART_TIME_VIEWPORT_SESSION_KEY = "oiFinderChartTimeViewports.v2
 // pinch would persist as an unusable view.
 const MINIMUM_VIEWPORT_SPAN_SECONDS = 60;
 
+// The candle-count part of a stored zoom (see "Zoom memory in candles" below),
+// present only when it is usable. Entries saved before it existed simply have
+// none and keep restoring from their seconds.
+function chartZoomMemoryCandleFields(entry) {
+  const candleSpan = typeof entry?.candleSpan === "number" ? entry.candleSpan : Number.NaN;
+  if (!Number.isFinite(candleSpan) || candleSpan < 1) return {};
+  const aheadSlots = typeof entry?.aheadSlots === "number" ? entry.aheadSlots : Number.NaN;
+  return { candleSpan, aheadSlots: Number.isFinite(aheadSlots) && aheadSlots >= 0 ? aheadSlots : 0 };
+}
+
 export function readChartTimeViewport(storage, viewportKey) {
   const key = String(viewportKey || "").trim();
   if (!key) return null;
@@ -448,6 +458,7 @@ export function readChartTimeViewport(storage, viewportKey) {
     return {
       spanSeconds,
       forwardSeconds: Number.isFinite(forwardSeconds) && forwardSeconds >= 0 ? forwardSeconds : 0,
+      ...chartZoomMemoryCandleFields(entry),
     };
   } catch {
     return null;
@@ -466,6 +477,7 @@ export function storeChartTimeViewport(storage, viewportKey, viewport) {
     entries[key] = {
       spanSeconds,
       forwardSeconds: Number.isFinite(forwardSeconds) && forwardSeconds >= 0 ? forwardSeconds : 0,
+      ...chartZoomMemoryCandleFields(viewport),
     };
     storage.setItem(OI_CHART_TIME_VIEWPORT_SESSION_KEY, JSON.stringify(entries));
     return true;
@@ -494,6 +506,32 @@ export function chartTimeViewportRange(latestCandleTime, viewport) {
   return { from: to - spanSeconds, to };
 }
 
+/**
+ * What to remember for a visible TIME range: the seconds of CANDLES on screen,
+ * measured back from the newest candle (or from the right edge when the view
+ * is panned into history).
+ *
+ * The blank room ahead of the newest candle is deliberately not counted. Its
+ * slots carry the times of the next session's bars, so its length in seconds
+ * is whatever gap happens to follow: six 5m slots after Friday 19:55 ET
+ * "lasted" 56.5 hours (measured 2026-11-14). That was stored as
+ * forwardSeconds, chartTimeViewportRange clamps forward to half the span, and
+ * a 29-candle view came back showing the whole tape. The restore only ever
+ * moves the FROM edge to `latest + forward - span`, so storing the candle
+ * seconds with forward 0 restores the identical first candle whenever the old
+ * numbers were sane, and the right one when they were not.
+ */
+export function chartTimeViewportToPersist({ visibleFrom, visibleTo, latestCandleTime } = {}) {
+  if (visibleFrom === null || visibleFrom === undefined) return null;
+  const from = Number(visibleFrom);
+  const to = Number(visibleTo);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null;
+  const latest = Number(latestCandleTime) || 0;
+  const candleTo = latest > 0 ? Math.min(to, latest) : to;
+  if (!(candleTo > from)) return null;
+  return { spanSeconds: candleTo - from, forwardSeconds: 0 };
+}
+
 export function clearChartTimeViewport(storage, viewportKey) {
   const key = String(viewportKey || "").trim();
   if (!key || typeof storage?.setItem !== "function") return false;
@@ -508,6 +546,129 @@ export function clearChartTimeViewport(storage, viewportKey) {
   }
 }
 
+// ---- Zoom memory in candles -------------------------------------------------
+// Seconds alone cannot remember a zoom exactly. Lightweight Charts reports the
+// visible TIME range by rounding a fractional view outwards to whole candles,
+// so a mouse-wheel or drag zoom came back about one candle wider, and the
+// blank room ahead of the newest candle has no honest length in seconds at
+// all, so a view parked by Return to latest came back without it (34 slots ->
+// 28 -> 22 on repeated timeframe round trips, measured 2026-11-14).
+//
+// The zoom is therefore also remembered as a CANDLE COUNT: `candleSpan`
+// candles on screen (fractional) back from the newest candle, and `aheadSlots`
+// blank candle widths ahead of it. These are positions on the candle array,
+// NOT logical indexes: a logical index moves whenever a study series adds
+// points to the shared scale (the 2026-08-05 ratchet), a candle count does
+// not. Both are rounded to a thousandth of a candle when saved, and restoring
+// then saving returns the identical numbers, so the value cannot creep.
+
+const ZOOM_MEMORY_PRECISION = 1000;
+const roundZoomMemory = (value) => Math.round(value * ZOOM_MEMORY_PRECISION) / ZOOM_MEMORY_PRECISION;
+
+// The candles as the time scale places them, or null while the scale cannot
+// be trusted: empty (timeToIndex answers null, and Number(null) is 0), or
+// still clamping older candle times onto its first point mid-load.
+function zoomMemoryCandleScale(bars, timeToIndex) {
+  const source = Array.isArray(bars) ? bars : [];
+  if (source.length < 2 || typeof timeToIndex !== "function") return null;
+  const indexAtTime = (time) => {
+    const index = timeToIndex(Number(time || 0));
+    return index === null || index === undefined ? Number.NaN : Number(index);
+  };
+  const indexOf = (position) => indexAtTime(source[position]?.time);
+  const last = source.length - 1;
+  const firstIndex = indexOf(0);
+  const latestIndex = indexOf(last);
+  if (![firstIndex, latestIndex].every(Number.isFinite)) return null;
+  if (!(indexOf(1) > firstIndex) || !(latestIndex > firstIndex)) return null;
+  const slotsPerCandle = chartLogicalSlotsPerCandle({ bars: source, timeToIndex: indexAtTime });
+  return { source, indexOf, last, firstIndex, latestIndex, slotsPerCandle };
+}
+
+// Where a logical index sits on the candle array (fractional), found from the
+// candles' own places on the scale rather than by assuming a density.
+function zoomMemoryCandlePosition(scale, logical) {
+  if (logical >= scale.latestIndex) return scale.last + (logical - scale.latestIndex) / scale.slotsPerCandle;
+  if (logical <= scale.firstIndex) return 0;
+  let low = 0;
+  let high = scale.last;
+  while (high - low > 1) {
+    const middle = (low + high) >> 1;
+    if (scale.indexOf(middle) <= logical) low = middle;
+    else high = middle;
+  }
+  const lowIndex = scale.indexOf(low);
+  const width = scale.indexOf(high) - lowIndex;
+  if (!(width > 0)) return Number.NaN;
+  return low + (logical - lowIndex) / width;
+}
+
+/** What to remember for a visible LOGICAL range (see the block comment above).
+ *
+ * Taking the range as an argument, rather than asking the chart, is what lets
+ * a toolbar zoom be saved from the range it just set: the library applies a
+ * new range on its next frame and until then still reports the previous view.
+ * `spanSeconds` stays in the payload as the candle seconds of the same window,
+ * for the time-based restore and for entries read by older code.
+ */
+export function chartZoomMemoryFromLogicalRange({ logicalRange, bars, timeToIndex } = {}) {
+  const from = Number(logicalRange?.from);
+  const to = Number(logicalRange?.to);
+  if (!logicalRange || ![from, to].every(Number.isFinite) || to <= from) return null;
+  const scale = zoomMemoryCandleScale(bars, timeToIndex);
+  if (!scale) return null;
+  const fromPosition = zoomMemoryCandlePosition(scale, from);
+  const toPosition = to >= scale.latestIndex ? scale.last : zoomMemoryCandlePosition(scale, to);
+  if (![fromPosition, toPosition].every(Number.isFinite)) return null;
+  const candleSpan = roundZoomMemory(toPosition - fromPosition);
+  // Less than one candle on screen is not a zoom worth restoring.
+  if (!(candleSpan >= 1)) return null;
+  // Blank room is capped by the candles beside it (never more than half the
+  // view), using the candle span only so that the cap is the same on every
+  // later save and cannot shrink the view step by step.
+  const aheadSlots = to > scale.latestIndex
+    ? roundZoomMemory(Math.min((to - scale.latestIndex) / scale.slotsPerCandle, candleSpan))
+    : 0;
+  const wholeCandles = Math.min(scale.last, Math.ceil(candleSpan - 1e-6));
+  const spanSeconds = Number(scale.source[scale.last].time) - Number(scale.source[scale.last - wholeCandles].time);
+  if (!Number.isFinite(spanSeconds) || spanSeconds <= 0) return null;
+  return { spanSeconds, forwardSeconds: 0, candleSpan, aheadSlots };
+}
+
+/** The logical range a remembered zoom restores to on the current scale.
+ *
+ * Always anchored to the newest candle (zoom is remembered, scroll position is
+ * not - see chartTimeViewportRange). `wholeBars` is true when the view is
+ * whole candles with no blank room: the caller then frames it by candle TIME
+ * (`firstTime`..`latestTime`), exactly as every toolbar zoom has been restored
+ * so far. Null means "no candle memory, or the scale cannot be trusted yet":
+ * the caller falls back to the remembered seconds.
+ */
+export function chartZoomMemoryLogicalRange({ viewport, bars, timeToIndex } = {}) {
+  const remembered = Number(viewport?.candleSpan);
+  if (!viewport || !Number.isFinite(remembered) || remembered < 1) return null;
+  const scale = zoomMemoryCandleScale(bars, timeToIndex);
+  if (!scale) return null;
+  // A span deeper than this symbol's history shows the whole tape.
+  const candleSpan = Math.min(remembered, scale.last);
+  const wholeCandles = Math.ceil(candleSpan - 1e-6);
+  const firstPosition = scale.last - wholeCandles;
+  const firstIndex = scale.indexOf(firstPosition);
+  // At least one logical slot per candle, or the scale is still clamping.
+  if (!Number.isFinite(firstIndex) || scale.latestIndex - firstIndex < wholeCandles) return null;
+  const cutOff = Math.max(0, wholeCandles - candleSpan);
+  const firstWidth = scale.indexOf(firstPosition + 1) - firstIndex;
+  if (!(firstWidth > 0)) return null;
+  const aheadSlots = Math.max(0, Math.min(Number(viewport.aheadSlots) || 0, candleSpan));
+  return {
+    from: firstIndex + cutOff * firstWidth,
+    to: scale.latestIndex + aheadSlots * scale.slotsPerCandle,
+    firstTime: Number(scale.source[firstPosition].time),
+    latestTime: Number(scale.source[scale.last].time),
+    wholeBars: cutOff === 0 && aheadSlots === 0,
+  };
+}
+
 export function chartZoomOutMaximumHalfRange({
   candleCount,
   futureSlots = 0,
@@ -519,6 +680,80 @@ export function chartZoomOutMaximumHalfRange({
   // Allow room for both loaded candles and the intentional future projection,
   // while keeping a higher-timeframe chart bounded by its own candle count.
   return Math.max(minimum, (candles + projection) * 1.25);
+}
+
+// How much blank room a view of this width keeps to the right of the newest
+// candle when "Return to latest" parks it: the timeframe's configured
+// projection, but never more than 30% of the view (and at least two slots).
+// ONE rule, shared by Return to latest, the toolbar zoom-in and the last step
+// of a forward pan, so all three stop in the same place.
+export function chartLiveEdgeFutureSlots({ visibleSpan, futureSlots = 0 } = {}) {
+  const span = Math.max(0, Number(visibleSpan) || 0);
+  const projection = Math.max(0, Number(futureSlots) || 0);
+  return Math.min(projection, Math.max(2, span * 0.3));
+}
+
+// Where a forward pan of this view has to stop, as the `lastIndex` for
+// chartPanStepLogicalRange.
+//
+// "Pan forward to newer candles" means exactly that: it is available only
+// while newer candles are hidden to the right. Once the newest candle is on
+// screen there is nothing newer, so the bound is the view's own right edge and
+// the step comes back null (arrow greyed). The old bound was "newest candle +
+// the whole configured projection". A chart OPENS with the newest candle at
+// the right edge (measured on AAPL 5m: view [134, 207], newest candle 207), so
+// the arrow was lit on every freshly opened chart and led only to blank space;
+// and a zoomed view parked by Return to latest could still sit short of it.
+//
+// While newer candles ARE hidden, the walk ends where Return to latest would
+// park this view, so the last arrow click and that button agree.
+export function chartPanForwardLastIndex({ logicalRange, latestIndex, futureSlots = 0 } = {}) {
+  // Explicit null check: Number(null) is 0 and would pass for a real index.
+  const latest = latestIndex === null || latestIndex === undefined ? Number.NaN : Number(latestIndex);
+  if (!Number.isFinite(latest)) return Number.NaN;
+  const projection = Math.max(0, Number(futureSlots) || 0);
+  const from = Number(logicalRange?.from);
+  const to = Number(logicalRange?.to);
+  if (![from, to].every(Number.isFinite) || to <= from) return latest + projection;
+  if (to >= latest - 0.001) return to;
+  return latest + chartLiveEdgeFutureSlots({
+    visibleSpan: Math.max(to - from, 8),
+    futureSlots: projection,
+  });
+}
+
+// May the cached pan bounds answer this probe? Only while they are fresh AND
+// still describe the chart on screen: the same bars array and the same logical
+// index for its newest candle. Age alone is not enough - during a timeframe or
+// ticker switch a bound taken mid-load would otherwise decide whether the
+// forward arrow is greyed on the settled chart.
+export function chartPanBoundsCacheUsable({ cache, nowMs, bars, latestIndex, maxAgeMs = 400 } = {}) {
+  if (!cache?.bounds) return false;
+  if (!(Number(nowMs) - Number(cache.at) < maxAgeMs)) return false;
+  return cache.bars === bars && cache.bounds.latestIndex === latestIndex;
+}
+
+// Snap a toolbar zoom to whole bars.
+//
+// The zoom is remembered as the TIMES of the first and last visible candle
+// (never logical indexes - see chartTimeViewportRange). Lightweight Charts
+// reports those times by rounding a fractional logical range OUTWARDS
+// (measured 2026-11-14: a view of [153.62, 187.38] is reported as candles
+// 153..188), and restoring them frames exactly those whole bars. A fractional
+// zoom therefore came back about one candle wider the first time it was
+// restored (33.76 slots -> 35). A whole-bar range is reported as itself and
+// restored as itself, and saving the restored view returns the same times
+// again (measured over three 5m -> 15m -> 5m round trips), so this cannot
+// creep the way the 2026-08-05 index-span ratchet did.
+export function chartWholeBarLogicalRange(logicalRange) {
+  const from = Number(logicalRange?.from);
+  const to = Number(logicalRange?.to);
+  if (!logicalRange || ![from, to].every(Number.isFinite)) return logicalRange ?? null;
+  const nextFrom = Math.round(from);
+  const nextTo = Math.round(to);
+  // A view narrower than one bar cannot be expressed in whole bars.
+  if (!(nextTo - nextFrom >= 1)) return logicalRange;
+  return { from: nextFrom, to: nextTo };
 }
 
 export function chartZoomLogicalRange({
@@ -537,6 +772,25 @@ export function chartZoomLogicalRange({
 
   if (direction === "in") {
     const nextSpan = Math.max(minimum, span * 0.68);
+    // Explicit null check: Number(null) is 0 and would pass for a real index.
+    const liveIndex = latestCandleIndex === null || latestCandleIndex === undefined
+      ? Number.NaN
+      : Number(latestCandleIndex);
+    if (Number.isFinite(liveIndex) && liveIndex >= from && liveIndex <= to) {
+      // The newest candle is on screen: keep the right edge and let older
+      // candles leave on the left, as TradingView does (and as zoom-out below
+      // already does). The centre zoom slid the live edge left on every click:
+      // measured on AAPL 5m, one click from the opening view [134, 207] gave
+      // [145.68, 195.32] and hid the 12 newest candles. Blank room ahead of
+      // the newest candle is capped by the shared live-edge rule, so repeated
+      // clicks can never leave it behind a view full of nothing.
+      const projection = Math.max(0, Number(futureSlots) || 0);
+      const room = projection > 0
+        ? chartLiveEdgeFutureSlots({ visibleSpan: nextSpan, futureSlots: projection })
+        : Math.max(2, nextSpan * 0.3);
+      const nextTo = Math.min(to, liveIndex + room);
+      return { from: nextTo - nextSpan, to: nextTo };
+    }
     const center = (from + to) / 2;
     return { from: center - nextSpan / 2, to: center + nextSpan / 2 };
   }

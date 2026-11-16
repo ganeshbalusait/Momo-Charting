@@ -87,7 +87,10 @@ e2eTest("the page shows the status pill, the MAG7 cards being built, or the empt
   const service = alertService();
   await withApp({ view: "Auto Alert", fakeReads: service.fakeReads, fakeWrites: service.fakeWrites }, async (app) => {
     await drawerReady(app.page);
-    assert.equal(await app.page.locator(`${DRAWER} .auto-alert-drawer-status`).innerText(), "Armed");
+    // textContent, not innerText: the pill is text-transform: uppercase in
+    // index.css (.auto-alert-drawer-status, since f3d4c8ff), so innerText reads
+    // "ARMED". The word the app writes is still "Armed".
+    assert.equal(await app.page.locator(`${DRAWER} .auto-alert-drawer-status`).textContent(), "Armed");
     assert.equal(await app.page.locator(`${DRAWER} .auto-alert-card.is-pending`).count(), 7);
     assert.equal(await app.page.locator(`${DRAWER} .auto-alert-drawer-empty`).count(), 0);
     assert.deepEqual(app.pageErrors, []);
@@ -146,9 +149,19 @@ e2eTest("the Alerts on and MAG7 switches post the flipped setting", async () => 
 });
 
 e2eTest("a new confirmation on another page plays the toast and counts on the Auto Alert bell", async () => {
-  // First poll: nothing new (history is shown, not replayed). Later polls: one confirm.
-  const service = alertService({ regularHours: true, events: (polls) => (polls > 1 ? [confirmEvent("e2e-confirm-1")] : []) });
+  // The first payload primes the seen-set (history is shown, not replayed), so
+  // the confirm must appear only after that. Counting polls ("polls > 1") was
+  // wrong: the dev app runs under React.StrictMode (main.jsx), which mounts the
+  // feed effect twice, so the 2nd fetch is the one that primes - it would carry
+  // the confirm as history and nothing would ever be announced. Instead the
+  // confirm is released once the mount-time fetches have all been answered.
+  const service = alertService({ regularHours: true, events: [] });
   await withApp({ view: "Watchlist", fakeReads: { ...service.fakeReads, "GET /api/dashboard": { json: { watchlist: ["NVDA"] } } }, fakeWrites: service.fakeWrites }, async (app) => {
+    const deadline = Date.now() + 60_000;
+    while (service.state.polls < 1 && Date.now() < deadline) await sleep(200);
+    assert.ok(service.state.polls >= 1, "the alert feed polled at least once");
+    await sleep(2_000); // let the StrictMode double-mount fetch land too
+    service.state.events = [confirmEvent("e2e-confirm-1")];
     const toast = app.page.locator(".auto-alert-toast");
     await toast.waitFor({ state: "visible", timeout: 40_000 });
     assert.match(await toast.innerText(), /NVDA CALL OI 150 CONFIRMED/);
@@ -169,7 +182,11 @@ e2eTest("a Latest alerts row opens that ticker on Charts & OI", async () => {
     assert.match(await row.innerText(), /NVDA/);
     await row.click();
     await app.page.locator('[data-testid="charts-and-oi-view"]').waitFor({ timeout: 60_000 });
-    await app.page.locator(".charts-oi-heading h2", { hasText: "NVDA" }).waitFor({ timeout: 60_000 });
+    // "attached", not visible: Charts & OI embeds FullChartsAndOiBoard with
+    // `embedded`, and index.css hides its heading by design
+    // (.charts-oi-page-full.is-embedded > .charts-oi-heading { display: none },
+    // since 5e47c8cf 2026-08-10). The heading text still names the ticker.
+    await app.page.locator(".charts-oi-heading h2", { hasText: "NVDA" }).waitFor({ state: "attached", timeout: 60_000 });
     assert.deepEqual(app.pageErrors, []);
   });
 });

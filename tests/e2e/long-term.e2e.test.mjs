@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 
 import { PHONE, e2eTest, overflowsSideways, withApp } from "./harness.mjs";
+import { ANALYST_ROUTE, CAPTURED, TECHNICAL } from "./analysis-fixtures.mjs";
 
 const VIEW = "Long Term";
 
@@ -66,8 +67,10 @@ const detail = (symbol, name) => ({ json: {
   listingFactor: 1,
 } });
 
-const reads = (list) => ({
+const reads = (list, analyst = { status: 404, json: { error: "no analyst data" } }) => ({
   "GET /api/long-term": page(list),
+  // The Analysts card's read (2026-11-11). Faked in every spec so none reaches the live server.
+  "GET /api/long-term/analyst": analyst,
   "GET /api/long-term/AAPL": () => detail("AAPL", "Apple Inc"),
   "GET /api/long-term/NVDA": () => detail("NVDA", "Nvidia Corp"),
 });
@@ -135,7 +138,11 @@ e2eTest("on a phone each ticker is a card, nothing scrolls sideways, and a tap o
     assert.equal(await card.isVisible(), true);
     assert.equal(await card.locator(".long-term-pill.is-buy").first().isVisible(), true, "the BUY pill shows");
     assert.equal(await overflowsSideways(p), false);
-    await card.click();
+    // Tap the ticker line, as he does. A bare card.click() lands on the card's
+    // centre, which is the LEAP line: when its (unfaked) read answers with a
+    // Retry / Find contract link, that link takes the tap on purpose
+    // (LongTermPanel.jsx LeapLine stopPropagation) and the drawer stays shut.
+    await card.locator(".long-term-card-top").click();
     const drawer = p.getByTestId("long-term-drawer");
     await drawer.waitFor({ timeout: 10_000 });
     await drawer.getByText(/Sticker/).first().waitFor({ timeout: 10_000 });
@@ -728,6 +735,81 @@ e2eTest("leaving Long Term for another page and coming back keeps the rows and t
     assert.equal(await p.getByTestId("long-term-tile-BUY").getAttribute("aria-pressed"), "true", "the BUY tile is still on");
     assert.equal(await p.locator("[data-testid^='long-term-card-']").count(), 1);
     assert.ok(callsAway >= 1, "the page still asked the server again on return");
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+// The long-term view on a ticker's detail (2026-11-11): the Analysts card and the Technical analysis card on
+// its Long-Term pill, from one read of GET /api/long-term/analyst when the ticker opens. No data hides both.
+// The analyst part is the real route's shape (momx/analyst.payload(): counts under views.grades, targets under
+// views.targets, no price). The real route adds `technical` from 2026-11-11. TECHNICAL is the card's own shape
+// ({terms, charts}); the test after the loop sends the chat report's shape (views + miniChart, captured from the
+// real POST /api/bot-chat), and the page reads both (chatReport.js technicalData).
+const analystRead = (read) => ({ json: { ...ANALYST_ROUTE, symbol: new URLSearchParams(read.search).get("symbol"), technical: TECHNICAL } });
+
+for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]) {
+  e2eTest(`ticker detail at ${label}: Analysts card with gauge, counts, targets and months, and the long-term technical view`, async () => {
+    await withApp({ view: VIEW, ...(viewport ? { viewport } : {}), fakeReads: reads(undefined, analystRead) }, async (app) => {
+      const p = app.page;
+      // On the phone, tap the card's ticker line: its centre is the LEAP line, whose Retry link keeps the tap.
+      const opener = viewport ? p.getByTestId("long-term-card-AAPL").locator(".long-term-card-top") : p.getByTestId("long-term-row-AAPL");
+      await opener.waitFor({ timeout: 90_000 });
+      await opener.click();
+      const drawer = p.getByTestId("long-term-drawer");
+      const card = drawer.getByTestId("analyst-card");
+      await card.waitFor({ timeout: 15_000 });
+      assert.equal((await card.getByTestId("an-consensus").innerText()).trim(), "Buy");
+      assert.match(await card.getByTestId("an-based").innerText(), /Based on 60 analysts, updated 2026-11-01 · FMP grades/);
+      for (const key of ["strongBuy", "buy", "hold", "sell", "strongSell"]) assert.equal(await card.getByTestId(`an-seg-${key}`).count(), 1, key);
+      assert.match(await card.innerText(), /Strong Buy\s*20\s*33%/);
+      // The route sends no price: the targets are measured from the AAPL row's own price, $100.
+      assert.match(await card.getByTestId("an-mark-low").innerText(), /Low\s*\$150\.00\s*\+50\.0%/);
+      assert.match(await card.getByTestId("an-mark-average").innerText(), /Average\s*\$200\.00\s*\+100\.0%/);
+      assert.match(await card.getByTestId("an-mark-high").innerText(), /High\s*\$250\.00\s*\+150\.0%/);
+      assert.equal(await card.getByTestId("an-months").locator(".an-month").count(), 4);
+      const ta = drawer.getByTestId("technical-card");
+      await ta.waitFor({ timeout: 10_000 });
+      assert.match(await ta.getByTestId("ta-verdict").innerText(), /Bullish signal/, "the Long Term page opens on the Long-Term pill");
+      await ta.getByTestId("mini-chart-marker").first().waitFor({ timeout: 10_000 });
+      await ta.getByTestId("ta-frame-weekly").click();
+      await ta.locator("[data-testid='mini-chart-marker'][data-kind='bullish']").waitFor({ timeout: 10_000 });
+      const reads = app.reads.filter((r) => r.path === "/api/long-term/analyst");
+      assert.equal(reads.length, 1, "one read when the ticker opens");
+      assert.match(reads[0].search, /symbol=AAPL/);
+      assert.equal(await overflowsSideways(p), false);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }, { timeout: 240_000 });
+}
+
+e2eTest("ticker detail: a technical in the chat report's shape (views + miniChart) shows the Technical card on its Long-Term pill", async () => {
+  const { views, miniChart } = CAPTURED["nvda full report"].more.more;
+  const serverRead = (read) => ({ json: { ...ANALYST_ROUTE, symbol: new URLSearchParams(read.search).get("symbol"), technical: { views, miniChart, asOf: "as of 15:58 ET" } } });
+  await withApp({ view: VIEW, fakeReads: reads(undefined, serverRead) }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await p.getByTestId("long-term-row-AAPL").click();
+    const ta = p.getByTestId("long-term-drawer").getByTestId("technical-card");
+    await ta.waitFor({ timeout: 15_000 });
+    for (const key of ["short", "mid", "long"]) assert.equal(await ta.getByTestId(`ta-pill-${key}`).count(), 1, key);
+    const long = views.find((v) => v.view === "long");
+    assert.match(await ta.getByTestId("ta-verdict").innerText(), new RegExp(long.verdict, "i"), "the Long Term page opens on the Long-Term pill");
+    await ta.getByTestId("mini-chart-marker").first().waitFor({ timeout: 10_000 });
+    assert.equal(await overflowsSideways(p), false);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("ticker detail with no analyst data shows no Analysts or Technical card", async () => {
+  await withApp({ view: VIEW, fakeReads: reads() }, async (app) => {
+    const p = app.page;
+    await ready(p);
+    await p.getByTestId("long-term-row-AAPL").click();
+    const drawer = p.getByTestId("long-term-drawer");
+    await drawer.getByText(/Sticker/).first().waitFor({ timeout: 10_000 });
+    assert.equal(await drawer.getByTestId("analyst-card").count(), 0);
+    assert.equal(await drawer.getByTestId("technical-card").count(), 0);
+    assert.equal(await drawer.getByTestId("long-term-view").count(), 0);
     assert.deepEqual(app.pageErrors, []);
   });
 });

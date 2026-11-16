@@ -38,6 +38,13 @@ os.environ.setdefault("AUTO_START_BOT", "false")
 os.environ.setdefault("ALPACA_STREAMING_ENABLED", "false")
 os.environ.setdefault("ALPACA_TRADE_UPDATES_ENABLED", "false")
 
+# 2026-11-14: a script that imported a test module outside pytest loaded this harness before tests/conftest.py had
+# pointed the database at a scratch copy, so api_server's startup maintenance ran on the LIVE database. Refuse instead.
+import config  # noqa: E402
+
+if not os.path.normcase(str(Path(config.DATABASE_PATH).resolve())).startswith(os.path.normcase(str(Path(tempfile.gettempdir()).resolve()))):
+    raise RuntimeError("tests/api_harness.py runs only under pytest: tests/conftest.py must point the database at a scratch copy first")
+
 import api_server  # noqa: E402 - the env flags above must be set first
 import chart_profile_store  # noqa: E402
 from http_client import ApiClient  # noqa: E402,F401 - re-exported for tests

@@ -122,7 +122,6 @@ e2eTest("Daily Trade $ fills the per-trade amount and stop $, and Save sends the
 // 3% target and the next Save overwrites the target with the stop value.
 test("1st Profit Target % shows the saved target, not the stop %", {
   skip: marketHoursBlock() || false,
-  todo: "App.jsx riskConfig sync sets firstProfitTargetPercent from stopLossPercent",
   timeout: 180_000,
 }, async () => {
   await withApp({ view: VIEW, fakeReads: { "GET /api/dashboard": canned((d) => known(d)) } }, async (app) => {
@@ -142,7 +141,10 @@ e2eTest("the Paper Account select switches with one POST and options-only accoun
     assert.equal(await select.inputValue(), "default-paper");
     const optionsOnly = select.locator("option", { hasText: "(options only)" });
     assert.equal(await optionsOnly.count(), 1);
-    assert.equal(await optionsOnly.isDisabled(), true);
+    // The option's own `disabled`, read from the DOM: Playwright's isDisabled()
+    // retargets an element inside a <label> to label.control (the <select>,
+    // which is enabled), so it never looked at the option at all.
+    assert.equal(await optionsOnly.evaluate((option) => option.disabled), true);
     assert.equal((await optionsOnly.innerText()).trim(), "Mag7 Options (options only)");
     await select.selectOption("paper2");
     const deadline = Date.now() + 10_000;
@@ -182,18 +184,64 @@ e2eTest("a row's close sends one POST for that symbol; Close All sends one too; 
   });
 });
 
-// FAILS TODAY: the stock bot's Start / Pause (POST /api/bot-control) lives only
-// on the "Dashboard" view, which is not in the rail, while this page's banner
-// tells him to "Start the bot".
-test("the stock bot can be started or paused from Stock Paper Trading", {
-  skip: marketHoursBlock() || false,
-  todo: "the only Start/Pause Stock Bot control is on the unreachable Dashboard view",
-  timeout: 180_000,
-}, async () => {
-  await withApp({ view: VIEW, fakeReads: { "GET /api/dashboard": canned((d) => known(d)) } }, async (app) => {
+// The stock bot's Start / Pause (POST /api/bot-control) used to live only on
+// the "Dashboard" view, which is not in the rail, while this page's banner
+// tells him to "Start the bot". Since 2026-11-14 the banner carries it. The
+// write is FAKED: the paper bot's real state is never changed by this spec.
+function botServer() {
+  const server = { state: "Stopped" };
+  server.read = async () => ({ json: known(await readLiveDashboard(), { botState: server.state }) });
+  server.write = async (write) => {
+    server.state = body(write).state;
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    return { json: { dashboard: { botState: server.state } } };
+  };
+  return server;
+}
+
+async function startThenPause(viewport) {
+  const server = botServer();
+  await withApp({
+    view: VIEW, ...(viewport ? { viewport } : {}),
+    fakeReads: { "GET /api/dashboard": server.read },
+    fakeWrites: { "POST /api/bot-control": server.write },
+  }, async (app) => {
     await openKnown(app);
     assert.ok(await app.page.locator("section.paper-trading-layout button", { hasText: /(Start|Pause) Stock Bot/ }).count() > 0);
+    const toggle = app.page.locator(`${BANNER} button`, { hasText: /Stock Bot$/ });
+    assert.equal(await toggle.count(), 1, "one Start / Pause control in the banner");
+    assert.equal((await toggle.innerText()).trim(), "Start Stock Bot");
+    assert.equal((await app.page.locator(`${BANNER} .paper-bot-banner-meta strong`).innerText()).trim(), "Stopped");
+    if (viewport) {
+      await toggle.scrollIntoViewIfNeeded();
+      const box = await toggle.boundingBox();
+      assert.ok(box && box.x >= 0 && box.x + box.width <= viewport.width + 1, `the button at ${JSON.stringify(box)} is cut off`);
+      assert.equal(await overflowsSideways(app.page), false);
+    }
+    // inside the banner's own padding, not pressed against (or past) its edge
+    const [edge, card] = [await toggle.boundingBox(), await app.page.locator(BANNER).boundingBox()];
+    assert.ok(edge.x >= card.x + 8 && edge.x + edge.width <= card.x + card.width - 8 && edge.y + edge.height <= card.y + card.height - 8,
+      `the button ${JSON.stringify(edge)} spills out of the banner ${JSON.stringify(card)}`);
+    assert.deepEqual(app.writes, [], "nothing is sent before the click");
+    await toggle.click();
+    assert.equal(await toggle.isDisabled(), true, "no second command while one is in flight");
+    await app.page.locator(`${BANNER} button:enabled`, { hasText: /^Pause Stock Bot$/ }).waitFor({ timeout: 10_000 });
+    assert.equal((await app.page.locator(`${BANNER} .paper-bot-banner-meta strong`).innerText()).trim(), "Running");
+    await toggle.click();
+    await app.page.locator(`${BANNER} button:enabled`, { hasText: /^Start Stock Bot$/ }).waitFor({ timeout: 10_000 });
+    assert.equal((await app.page.locator(`${BANNER} .paper-bot-banner-meta strong`).innerText()).trim(), "Paused");
+    assert.deepEqual(app.writes.map((w) => [w.method, w.path, body(w)]),
+      [["POST", "/api/bot-control", { state: "Running" }], ["POST", "/api/bot-control", { state: "Paused" }]]);
+    assert.deepEqual(app.pageErrors, []);
   });
+}
+
+e2eTest("the stock bot can be started or paused from Stock Paper Trading", async () => {
+  await startThenPause();
+});
+
+e2eTest("on a phone the Start / Pause Stock Bot button fits the banner", async () => {
+  await startThenPause(PHONE);
 });
 
 e2eTest("on a phone the risk grid and portfolio stack inside the screen", async () => {

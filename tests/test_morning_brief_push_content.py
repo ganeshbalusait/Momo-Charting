@@ -164,13 +164,20 @@ def test_a_payload_without_sections_is_sent_as_its_own_lines():
     assert mb.push_message({"lines": ["first", "second"]}) == "first\nsecond"
 
 
-def test_yesterdays_message_is_reproduced_exactly():
+def test_yesterdays_message_is_reproduced_exactly(monkeypatch):
     """The sample he asked for, rebuilt from the inputs that produced it.
 
     Not a paraphrase: this is the text in his 2026-09-01 09:17 screenshot,
     character for character. If this test has to change, the format he chose
     is changing with it.
     """
+    # Test correction 2026-11-14: "AEye" -> LIDR came from the LIVE cache
+    # artifacts/sec_company_tickers.json, so this failed ("related news, not about
+    # LIDR") whenever that file was over a day old (the SEC refetch cannot run under
+    # pytest). The one name it needs is given here; the matcher is still the real one.
+    import news_names
+    monkeypatch.setattr(news_names, "_DEFAULT", news_names.CompanyNames(
+        fetch=lambda: {"0": {"ticker": "LIDR", "title": "AEye, Inc."}}))
     scanner = {"rows": [{"symbol": "NFLX", "strength": "STRONG", "score": 2,
                          "signals": "signals", "catalyst": None}]}
     quotes = {"SPY": {"change_pct": -0.7}, "QQQ": {"change_pct": -1.4},

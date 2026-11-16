@@ -129,10 +129,17 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_a_headline_that_names_the_company_beats_a_tagged_tag_along():
+def test_a_headline_that_names_the_company_beats_a_tagged_tag_along(monkeypatch):
     """2026-10-02: META's premarket row showed an Apple story (tagged AI/PRODUCT)."""
     from datetime import datetime, timedelta, timezone
     from catalyst_news import pick_catalyst
+    # Test correction 2026-11-14: the company names came from the LIVE cache
+    # artifacts/sec_company_tickers.json, so this failed whenever that file was over a
+    # day old (the SEC refetch cannot run under pytest). The names it needs are given
+    # here instead; the matcher and pick_catalyst are still the real ones.
+    import news_names
+    monkeypatch.setattr(news_names, "_DEFAULT", news_names.CompanyNames(fetch=lambda: {
+        "0": {"ticker": "META", "title": "Meta Platforms, Inc."}, "1": {"ticker": "AAPL", "title": "Apple Inc."}}))
     now = datetime(2026, 10, 2, 13, 0, tzinfo=timezone.utc)
     at = lambda m: (now - timedelta(minutes=m)).isoformat()  # noqa: E731
     apple = {"headline": "Apple Takes Aim at AI Agents, Wants Mac Users to Know When Their Data Is Used",

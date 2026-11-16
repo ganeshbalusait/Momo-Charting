@@ -19,7 +19,7 @@ class LevelEvaluator:
         self.answers = queue.Queue()
         self.serial = 0
         self.contexts = {}
-        self.status = {'state': 'warming', 'reason': 'Awaiting two valid scanner publications'}
+        self.status = {'state': 'warming', 'reason': 'Awaiting a valid scanner publication'}
         atexit.register(self.close)
 
     def close(self):
@@ -51,19 +51,23 @@ class LevelEvaluator:
         threading.Thread(target=read, name='bot-level-reader', daemon=True).start()
 
     def evaluate(self, board, payload, now, bear=False):
+        """{symbol: signal} when this publication was really evaluated ({} = evaluated,
+        nothing qualified). None when it was NOT evaluated (disabled, missing / stale /
+        future publication, worker error or timeout) - callers must not read None as
+        "every Level setup went away" (the bot's Level re-entry depends on that)."""
         self.contexts = {}
         if os.environ.get('AGX_BOT_LEVEL_STRATEGIES', '1') == '0':
             self.status = {'state': 'disabled', 'reason': 'Level strategies disabled'}
-            return {}
+            return None
         publication = payload.get('scanCompletedAt') or payload.get('generatedAt')
         if not publication:
-            return {}
+            return None
         try:
             published = datetime.fromisoformat(str(publication).replace('Z', '+00:00'))
             if published.tzinfo is None or not 0 <= (now-published).total_seconds() <= 120:
-                return {}
+                return None
         except (ValueError, TypeError):
-            return {}
+            return None
         with self.lock:
             try:
                 if self.process is None or self.process.poll() is not None: self._start()
@@ -74,7 +78,7 @@ class LevelEvaluator:
                 self.process.stdin.write(json.dumps(request, allow_nan=False) + '\n')
                 self.process.stdin.flush()
                 answer = self.answers.get(timeout=5)
-                if answer.get('id') != self.serial or answer.get('error'):
+                if answer.get('id') != self.serial or answer.get('error') or not isinstance(answer.get('signals'), dict):
                     raise RuntimeError('Level worker did not return a valid response')
                 self.status = {'state': 'ready', 'publicationAt': publication,
                                'reason': 'Exact scanner levels and 23 Setup types; MOM optional'}
@@ -83,4 +87,4 @@ class LevelEvaluator:
             except Exception as exc:
                 self.close()
                 self.status = {'state': 'unavailable', 'reason': type(exc).__name__ + ': level entries paused; existing rules continue'}
-                return {}
+                return None

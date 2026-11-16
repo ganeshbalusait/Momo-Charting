@@ -181,7 +181,8 @@ test("Resume does not promise buying when something else still holds it", () => 
 const { deskEvaluation, deskLessons, deskTruthDays } = await import("./botDesk.js");
 
 test("the evaluation line says when it started, what is traded and the balance", () => {
-  const doc = { startDay: "2026-11-10", strategy: "Level 1 / 2 / 3 on the 0.20-delta contract", limits: { accountSize: 10000 } };
+  // plan: "chart" = the server says the running paper bots trade the plan being judged.
+  const doc = { startDay: "2026-11-10", plan: "chart", strategy: "Level 1 / 2 / 3 on the 0.20-delta contract", limits: { accountSize: 10000 } };
   assert.equal(deskEvaluation(doc, { balance: 10120 }),
     "Evaluation started 11-10 · trades only Level 1 / 2 / 3 on the 0.20-delta contract · $10,000 account · balance now $10,120");
   assert.match(deskEvaluation(doc, null), /balance now \$10,000$/);          // nothing traded yet: the starting balance
@@ -248,8 +249,9 @@ test("before any trade the three strategies are listed and the answer says when 
     best: null, allLosing: false, need: 20, mostClosed: { rule: "level1", closed: 0 } } });
   assert.deepEqual(out.rows.map((r) => [r.name, r.closed, r.pnl, r.win, r.roi, r.calls, r.tag]), [
     ["Level 1", 0, "–", "–", "–", "–", ""], ["Level 2", 0, "–", "–", "–", "–", ""], ["Level 3", 0, "–", "–", "–", "–", ""]]);
+  // Was "the 10:00 AM ET buy window" (the 10:00 rule, removed 2026-11-13).
   assert.match(out.answer, /^No closed trades yet\. The first Level orders go out in the 9:30 AM ET buy window\.$/);
-  assert.equal(out.rows[0].needs, "RVOL rising on 3+ timeframes, plus 3+ Setup types");
+  assert.equal(out.rows[0].needs, "3+ Setup types and any 1 of RVOL / SQZ / Skittles");
   assert.equal(deskStrategies({ orders: {} }), null);
 });
 
@@ -288,6 +290,7 @@ test("before any trade the two bots are listed and nothing is called ahead", asy
     need: 20, ready: false, leader: null, allLosing: false } }, (a) => (a === "paper3" ? "Paper 3" : "Paper 5"));
   assert.deepEqual(out.rows.map((r) => [r.name, r.account, r.closed, r.pnl, r.roi, r.balance, r.leader]),
     [["Rules bot", "Paper 3", 0, "–", "–", "$10,000", false], ["AI bot", "Paper 5", 0, "–", "–", "$10,000", false]]);
+  // Was "the 10:00 AM ET buy window" (the 10:00 rule, removed 2026-11-13).
   assert.equal(out.answer, "No closed trades yet. Both bots start with the 9:30 AM ET buy window.");
   assert.equal(deskVersus({ versus: { rows: [bot("paper3", "Rules bot", 0, 0, null, 10000)] } }), null);   // one account: nothing to compare
   assert.equal(deskVersus({}), null);
@@ -374,4 +377,199 @@ test("an empty journal says so, and an account with no journal shows no card", (
   const red = deskJournal({ journal: { periods: { day: [per("2026-11-10", 1, -20, split([1, -20], [0, 0], [0, 0]), null)] }, trades: [], tradeCount: 1 } });
   assert.equal(red.answer, "0 of 1 days in profit. No strategy has made money in any of them yet.");
   assert.equal(red.rows[0].best, "–");
+});
+
+test("only a real saved Scorecard is shown at once; anything else is ignored", async () => {
+  const { readSavedDesk, DESK_SAVED_KEY } = await import("./botDesk.js");
+  const good = { asOf: "2026-11-10T08:39:08-05:00", accounts: { paper3: {} }, limits: {} };
+  assert.deepEqual(readSavedDesk(JSON.stringify(good)), good);
+  for (const bad of [null, undefined, "", "{broken", "[]", "5", JSON.stringify({ accounts: {} }), JSON.stringify({ asOf: "x", accounts: "no" })]) {
+    assert.equal(readSavedDesk(bad), null);
+  }
+  assert.equal(DESK_SAVED_KEY, "bot.deskSaved");
+});
+
+// ---- the journal dashboard (2026-11-10: "Scoreboard look like not a tradezella")
+const { deskCalendar, deskDailyBars, deskKpis, deskMonthKey, deskShortMoney, shiftMonth } = await import("./botDesk.js");
+const DASH = {
+  stats: { n: 129, wins: 32, losses: 95, winRatePct: 24.8, netPnl: -6817, avgWin: 300.41, avgLoss: -172.95, profitFactor: 0.59 },
+  daySummary: { tradingDays: 16, greenDays: 3, redDays: 13 },
+  days: [{ day: "2026-11-04", closed: 7, pnl: 420 }, { day: "2026-11-05", closed: 12, pnl: -1354 }, { day: "2026-11-06", closed: 0, pnl: 0 }],
+  journal: { periods: { day: [{ key: "2026-11-12", trades: 1, pnl: 60 }, { key: "2026-11-10", trades: 2, pnl: -45 }, { key: "2026-10-30", trades: 4, pnl: 1250 }] } },
+};
+
+test("the five tiles: net P&L, trade win %, profit factor, day win % and average win against loss", () => {
+  const tiles = deskKpis(DASH);
+  assert.deepEqual(tiles.map((k) => [k.key, k.label, k.value, k.tone, k.sub]), [
+    ["net", "Net P&L", "−$6,817", "is-down", "129 closed trades"],
+    ["win", "Trade win %", "25%", "", "32 won · 95 lost"],
+    ["factor", "Profit factor", "0.59", "", "dollars won per dollar lost"],
+    ["dayWin", "Day win %", "19%", "", "3 green · 13 red"],
+    ["avg", "Avg win / loss", "1.74", "", "+$300 · −$173"]]);
+  assert.equal(tiles[0].share, null);                                     // money has no gauge
+  assert.deepEqual(tiles.slice(1).map((k) => Math.round(k.share * 100)), [25, 37, 19, 63]);
+  assert.equal(deskKpis({ stats: { n: 1, wins: 1, losses: 0, netPnl: 40, winRatePct: 100, avgWin: 40 } })[0].sub, "1 closed trade");
+});
+
+test("before any trade closes the tiles show dashes, never a made-up number or gauge", () => {
+  for (const acct of [{}, null, { stats: { n: 0 }, daySummary: { tradingDays: 0 } }]) {
+    const tiles = deskKpis(acct);
+    assert.deepEqual(tiles.map((k) => k.value), ["$0", "–", "–", "–", "–"]);
+    assert.deepEqual(tiles.map((k) => k.share), [null, null, null, null, null]);
+  }
+  // Only winners so far: no profit factor and no win/loss ratio can be worked out.
+  const winners = deskKpis({ stats: { n: 2, wins: 2, losses: 0, netPnl: 90, winRatePct: 100, avgWin: 45, avgLoss: null, profitFactor: null } });
+  assert.deepEqual([winners[2].value, winners[4].value, winners[4].sub], ["–", "–", "+$45 · –"]);
+  assert.equal(winners[1].share, 1);
+});
+
+test("the calendar lays a month out Monday to Friday with each day's real result and a total per week", () => {
+  const cal = deskCalendar(DASH, "2026-11", "2026-11-10");
+  assert.deepEqual([cal.label, cal.prev, cal.next, cal.pnl, cal.tone, cal.days, cal.trades], ["November 2026", "2026-10", "2026-12", "+$15", "is-up", 2, 3]);
+  const row = (w) => w.cells.map((c) => `${c.inMonth ? c.num : "_"}${c.pnl}${c.isToday ? "*" : ""}`).join(" ");
+  assert.deepEqual(cal.weeks.map((w) => [w.key, w.pnl, w.tone, w.days, row(w)]), [
+    ["2026-11-02", "–", "", 0, "2 3 4 5 6"],
+    ["2026-11-09", "+$15", "is-up", 2, "9 10−$45* 11 12+$60 13"],
+    ["2026-11-16", "–", "", 0, "16 17 18 19 20"],
+    ["2026-11-23", "–", "", 0, "23 24 25 26 27"],
+    ["2026-11-30", "–", "", 0, "30 _ _ _ _"]]);
+  const tenth = cal.weeks[1].cells[1];
+  assert.deepEqual([tenth.key, tenth.tone, tenth.trades, tenth.title], ["2026-11-10", "is-down", 2, "2026-11-10: −$45 on 2 trades"]);
+});
+
+test("another month shows only its own days; a month with nothing traded is all blanks", () => {
+  const oct = deskCalendar(DASH, "2026-10", "2026-11-10");
+  assert.deepEqual([oct.label, oct.pnl, oct.days, oct.weeks.length], ["October 2026", "+$1,250", 1, 5]);
+  assert.deepEqual(oct.weeks[0].cells.map((c) => c.inMonth), [false, false, false, true, true]);   // Oct 1 was a Thursday
+  assert.equal(oct.weeks[4].cells[4].pnl, "+$1.3k");
+  assert.equal(oct.weeks[4].cells[4].isToday, false);
+  const empty = deskCalendar({}, "2027-01", "");
+  assert.deepEqual([empty.pnl, empty.tone, empty.days, empty.weeks.length], ["$0", "", 0, 5]);
+  assert.equal(deskCalendar(DASH, "nonsense"), null);
+  // A month that starts on a weekend has no empty first row (Aug 2026 starts on a Saturday).
+  assert.equal(deskCalendar({}, "2026-08").weeks[0].cells[0].key, "2026-08-03");
+});
+
+test("month keys step across the year end and come from the server's ET stamp", () => {
+  assert.deepEqual([shiftMonth("2026-12", 1), shiftMonth("2026-01", -1), shiftMonth("x", 1)], ["2027-01", "2025-12", ""]);
+  assert.deepEqual([deskMonthKey("2026-11-09T18:30:00-05:00"), deskMonthKey(null), deskMonthKey("soon")], ["2026-11", "", ""]);
+});
+
+test("short money fits a calendar cell", () => {
+  assert.deepEqual([0, 5.4, -340, 1250, -1000, 12345, null, NaN].map(deskShortMoney), ["$0", "+$5", "−$340", "+$1.3k", "−$1k", "+$12k", "–", "–"]);
+});
+
+test("daily bars: winners rise from the zero line, losers hang below it, days with nothing closed are left out", () => {
+  const g = deskDailyBars(DASH.days);
+  assert.deepEqual(g.bars.map((b) => [b.day, b.tone]), [["2026-11-04", "is-up"], ["2026-11-05", "is-down"]]);
+  const [up, down] = g.bars;
+  assert.ok(Math.abs(up.y + up.h - g.zeroY) < 0.2 && down.y === g.zeroY);
+  assert.ok(down.h > up.h * 3);                                           // −$1,354 against +$420
+  assert.ok(g.bars.every((b) => b.x >= 0 && b.x + b.w <= g.width && b.y >= 0 && b.y + b.h <= g.height));
+  assert.deepEqual(deskDailyBars(null).bars, []);
+  assert.deepEqual(deskDailyBars([{ day: "2026-11-04", closed: 1, pnl: 0 }]).bars.map((b) => b.h), [1]);
+});
+
+// ---- "All trades" (2026-11-10: "Scoreboard I don't see all trade")
+const { deskTradeLog, readTradeFilter, TRADE_FILTERS } = await import("./botDesk.js");
+const LOG = { total: 6, counts: { open: 1, closed: 1, missed: 1, waiting: 1, skipped: 2 }, rows: [
+  { key: "k1", status: "open", symbol: "TSLA", side: "bull", rule: "level2", levels: ["level1", "level2"], at: "2026-11-10T09:34:00-05:00", qty: 3, buy: 1, pnl: 200, roiPct: 66.7, live: true, note: "part sold: +100%: sell 1 of 3", aiPicked: true },
+  { key: "k2", status: "waiting", symbol: "NVDA", side: "bear", rule: "level2", levels: ["level1", "level2"], at: "2026-11-10T09:33:00-05:00", qty: 5, buy: null, pnl: null, roiPct: null, live: false, note: "order sent, waiting for a fill" },
+  { key: "k3", status: "skipped", symbol: "IOT", side: "bull", rule: "level1", levels: ["level1"], at: "2026-11-10T09:32:00-05:00", qty: null, buy: null, pnl: null, note: "Spread 71% of the mid is over 15%" },
+  { key: "k4", status: "missed", symbol: "MSFT", side: "bull", rule: "level1", levels: ["level1"], at: "2026-11-10T09:31:00-05:00", qty: 2, buy: null, pnl: null, note: "the order did not fill" },
+  { key: "k5", status: "closed", symbol: "AAPL", side: "bull", rule: "level3", levels: ["level1", "level2", "level3"], at: "2026-11-10T09:30:00-05:00", qty: 3, buy: 1, pnl: -120, roiPct: -40, live: false, note: "stop loss -50%" }] };
+
+test("All trades shows every signal with its status, and a count on each filter", () => {
+  const all = deskTradeLog({ tradeLog: LOG }, "all");
+  assert.deepEqual(all.filters.map((f) => [f.label, f.on]), [["All 6", true], ["Open 2", false], ["Closed 1", false], ["Not filled 1", false], ["Skipped 2", false]]);
+  assert.deepEqual(all.rows.map((t) => [t.when, t.symbol, t.side, t.strategy, t.statusLabel, t.qty, t.buy, t.pnl, t.tone, t.roi, t.note]), [
+    ["11-10 09:34 ET", "TSLA", "Call", "Level 2", "Open", 3, "$1.00", "+$200 now", "is-up", "+67%", "part sold: +100%: sell 1 of 3"],
+    ["11-10 09:33 ET", "NVDA", "Put", "Level 2", "Waiting", 5, "–", "–", "", "–", "order sent, waiting for a fill"],
+    ["11-10 09:32 ET", "IOT", "Call", "Level 1", "Skipped", "–", "–", "–", "", "–", "Spread 71% of the mid is over 15%"],
+    ["11-10 09:31 ET", "MSFT", "Call", "Level 1", "Not filled", 2, "–", "–", "", "–", "the order did not fill"],
+    ["11-10 09:30 ET", "AAPL", "Call", "Level 3", "Closed", 3, "$1.00", "−$120", "is-down", "−40%", "stop loss -50%"]]);
+  assert.deepEqual([all.rows[0].aiPicked, all.rows[0].live, all.rows[4].live, all.empty, all.full], [true, true, false, "", true]);
+  assert.equal(all.capped, "newest 5 of 6");                                   // the server sent fewer rows than exist
+  assert.equal(deskTradeLog({ tradeLog: LOG }, "skipped").capped, "newest 1 of 2");
+  assert.equal(deskTradeLog({ tradeLog: LOG }, "closed").capped, "");
+});
+
+test("each filter keeps only its trades; Open also holds orders still waiting for a fill", () => {
+  const pick = (f) => deskTradeLog({ tradeLog: LOG }, f).rows.map((t) => t.symbol);
+  assert.deepEqual([pick("open"), pick("closed"), pick("missed"), pick("skipped")], [["TSLA", "NVDA"], ["AAPL"], ["MSFT"], ["IOT"]]);
+  assert.deepEqual(pick("nonsense"), pick("all"));
+  assert.deepEqual([readTradeFilter("closed"), readTradeFilter(null), readTradeFilter("waiting")], ["closed", "all", "all"]);
+  assert.deepEqual(TRADE_FILTERS.map(([key]) => key), ["all", "open", "closed", "missed", "signal", "skipped"]);
+  const none = deskTradeLog({ tradeLog: { ...LOG, rows: LOG.rows.filter((t) => t.status !== "closed") } }, "closed");
+  assert.deepEqual([none.rows.length, none.empty], [0, "Nothing under Closed right now."]);
+});
+
+test("no trades yet says so; an older server still shows the closed trades of the journal", () => {
+  const empty = deskTradeLog({ tradeLog: { rows: [], counts: {}, total: 0 } });
+  assert.deepEqual([empty.rows, empty.empty, empty.filters[0].label], [[], "No trades yet. Every Level signal shows here the moment the bot acts on it.", "All 0"]);
+  const old = deskTradeLog({ journal: { trades: [{ symbol: "AAPL", side: "bull", rule: "level3", closedAt: "2026-11-12T10:15:00-05:00", qty: 3, buy: 0.6, pnl: 60, roiPct: 33.3, exit: "stop at break-even" }] } });
+  assert.deepEqual(old.rows.map((t) => [t.when, t.symbol, t.statusLabel, t.pnl, t.note]), [["11-12 10:15 ET", "AAPL", "Closed", "+$60", "stop at break-even"]]);
+  assert.deepEqual([old.full, old.filters[2].label, old.capped], [false, "Closed 1", ""]);
+  assert.equal(deskTradeLog(null), null);
+});
+
+test("review fixes: today's ring only inside the month, a stale open price says its time, Skipped hides at zero, the first month", async () => {
+  const { deskFirstMonth } = await import("./botDesk.js");
+  const nov = deskCalendar({}, "2026-11", "2026-12-01");
+  assert.equal(nov.weeks.flatMap((w) => w.cells).some((c) => c.isToday), false);          // Dec 1 is a blank cell of November
+  const open = { ...LOG.rows[0], markAt: "2026-11-09T16:00:48-05:00" };
+  const log = { rows: [open], counts: { open: 1 }, total: 1 };
+  assert.equal(deskTradeLog({ tradeLog: log }, "all", "2026-11-10").rows[0].pnl, "+$200 at 11-09 16:00 ET");
+  assert.equal(deskTradeLog({ tradeLog: log }, "all", "2026-11-09").rows[0].pnl, "+$200 now");
+  assert.deepEqual(deskTradeLog({ tradeLog: log }).filters.map((f) => f.label), ["All 1", "Open 1", "Closed 0", "Not filled 0"]);
+  assert.equal(deskTradeLog({ tradeLog: log }, "skipped").filters.length, 5);             // still shown while it is the chosen one
+  assert.equal(deskFirstMonth({ journal: { periods: { day: [{ key: "2026-11-12" }, { key: "2026-10-30" }] } } }, "2026-12"), "2026-10");
+  assert.deepEqual([deskFirstMonth({}, "2026-11"), deskFirstMonth(null, "")], ["2026-11", ""]);
+});
+
+test("with the daily loss stop switched off the strip says so and never reads as holding buys", () => {
+  const acct = { control: { paused: false, dailyStop: { on: false, limit: 500, hit: false, hitAt: "2026-11-10T09:36:41-05:00", todayPnl: -574 } } };
+  const c = deskControl(acct, { paused: false });
+  assert.deepEqual([c.stop, c.stopHit, c.state, c.tone], ["No daily loss stop · today −$574", false, "New buys are ON", "on"]);
+  // An older server that does not say on/off keeps the old wording.
+  assert.equal(deskControl({ control: { dailyStop: { limit: 500, hit: false, todayPnl: 219 } } }, {}).stop, "Daily loss stop $500 · today +$219");
+});
+
+test("the Alpaca account: buying power, account value, today's change, and a warning when it is too low", async () => {
+  const { deskBroker } = await import("./botDesk.js");
+  const low = deskBroker({ broker: { at: "2026-11-10T12:29:00-05:00", cash: 517.93, optionsBuyingPower: 217.93, buyingPower: 2071.72, equity: 967.93, lastEquity: 2809.79 } }, 10000, "2026-11-10");
+  assert.deepEqual([low.buyingPower, low.cash, low.equity, low.change, low.changeTone, low.asOf, low.tone, low.old],
+    ["$218", "$518", "$968", "−$1,842", "is-down", "11-10 12:29 ET", "bad", false]);
+  assert.equal(low.warning, "Under $300 to spend: Alpaca will refuse most buys until the paper account is topped up.");
+  const small = deskBroker({ broker: { at: "2026-11-10T12:29:00-05:00", cash: 3838, optionsBuyingPower: 3838, equity: 4000, lastEquity: 4000 } }, 10000, "2026-11-10");
+  assert.deepEqual([small.tone, small.change, small.warning], ["warn", "$0", "The Scorecard counts a $10,000 account; the paper account at Alpaca holds $4,000."]);
+  const fine = deskBroker({ broker: { at: "2026-11-09T15:59:00-05:00", cash: 9000, optionsBuyingPower: 9000, equity: 10100, lastEquity: null, error: "x" } }, 10000, "2026-11-10");
+  assert.deepEqual([fine.tone, fine.warning, fine.change, fine.old, fine.error], ["on", "", "", true, "Last read failed; showing the read before it."]);
+  assert.equal(deskBroker({ broker: { cash: 1 } }), null);
+  assert.equal(deskBroker({}), null);
+});
+
+test("All trades: Bot signals this bot did not order show as Not ordered, with their own button", () => {
+  const sig = { key: "s1", status: "signal", symbol: "AVGO", side: "bull", rule: "level3", levels: ["level3"], at: "2026-11-10T09:44:00-05:00",
+    qty: null, buy: null, pnl: null, roiPct: 45.3, bestPct: 133.2, live: false, note: "Not ordered: the daily loss stop was holding buys · 0.20-delta option $3.58, now +45%, best +133%" };
+  const log = { total: 7, counts: { ...LOG.counts, signal: 1 }, rows: [sig, ...LOG.rows] };
+  const all = deskTradeLog({ tradeLog: log }, "all");
+  assert.deepEqual(all.filters.map((f) => f.label), ["All 7", "Open 2", "Closed 1", "Not filled 1", "Not ordered 1", "Skipped 2"]);
+  const row = all.rows[0];
+  assert.deepEqual([row.statusLabel, row.qty, row.buy, row.pnl, row.roi, row.status], ["Not ordered", "–", "–", "–", "+45%", "signal"]);
+  assert.deepEqual(deskTradeLog({ tradeLog: log }, "signal").rows.map((t) => t.symbol), ["AVGO"]);
+  // A server with no Bot signals: no Not ordered button.
+  assert.equal(deskTradeLog({ tradeLog: LOG }).filters.some((f) => f.key === "signal"), false);
+});
+
+test("fill likelihood like Robinhood: a label on each order and how each label really did", async () => {
+  const { deskFillChance } = await import("./botDesk.js");
+  const rows = deskTradeLog({ tradeLog: { ...LOG, rows: [{ ...LOG.rows[0], fillChance: "high" }, { ...LOG.rows[3], fillChance: "low" }, LOG.rows[4]] } }).rows;
+  assert.deepEqual(rows.map((t) => [t.fill, t.fillKey]), [["High fill", "high"], ["Low fill", "low"], ["", ""]]);
+  const m = { high: { orders: 25, filledAtMid: 18, filled: 22, midPct: 72, enough: true }, medium: { orders: 4, filledAtMid: 1, midPct: 25, enough: false },
+    low: { orders: 0, filledAtMid: 0, midPct: null, enough: false } };
+  assert.deepEqual(deskFillChance({ fillChance: m }).parts.map((p) => p.text),
+    ["High fill: 18 of 25 filled at the mid (72%)", "Medium fill: 1 of 4 filled at the mid (25%) · too few yet", "Low fill: no orders yet"]);
+  assert.equal(deskFillChance({ fillChance: { high: { orders: 0 }, medium: {}, low: {} } }), null);
+  assert.equal(deskFillChance({}), null);
 });

@@ -67,9 +67,15 @@ def paper(tmp_path, monkeypatch):
                                       off=lambda: False, account="paper3")
     sent = (NOW - timedelta(days=1)).replace(microsecond=0).isoformat()
     mirror._load(DAY)
+    # Test correction 2026-11-14: every order the mirror sends since the chart plan began
+    # (bot_desk.CHART_PLAN_DAY) carries exitPlan "chart"; one without it is the OLD plan's and
+    # is left out of the Scorecard's counts (bot_desk.old_plan_after_switch). The stuck order
+    # had no marker, so once removed it was no longer counted as missed. It is marked like a
+    # real order of today's plan.
     mirror._rows = {
         STUCK_KEY: {"side": "bear", "rule": "call2h", "symbol": "CCJ", "at": sent, "contract": "CCJ   261106P00072000",
-                    "qty": 3, "buyLimit": 1.0, "buyId": "mxp-b0-ccj", "buyAt": sent, "status": "buying", "carried": True},
+                    "qty": 3, "buyLimit": 1.0, "buyId": "mxp-b0-ccj", "buyAt": sent, "status": "buying", "carried": True,
+                    "exitPlan": paper_mirror.EXIT_PLAN},
         "bull|rvol|AAPL|today": {"side": "bull", "rule": "rvol", "symbol": "AAPL", "at": DAY + "T09:31:00-05:00", "qty": 3,
                                  "buyLimit": 1.0, "buyFill": 1.0, "buyId": "mxp-b0-aapl", "status": "closed", "pl": -60.0,
                                  "closedAt": DAY + "T10:00:00-05:00"},
@@ -103,7 +109,7 @@ def test_pause_then_resume_through_the_proxy_shows_on_the_scorecard(tmp_path, mo
     assert status == 200 and body["ok"] is True and body["paused"] is True
     control = after["accounts"]["paper3"]["control"]
     assert control["paused"] is True and control["pausedAt"] == body["at"]
-    assert control["dailyStop"] == {"limit": 500, "hit": False, "hitAt": None, "todayPnl": -60.0}
+    assert control["dailyStop"] == {"on": False, "limit": 500, "hit": False, "hitAt": None, "todayPnl": -60.0}
     assert resume_status == 200 and resumed["paused"] is False
     assert final["accounts"]["paper3"]["control"]["paused"] is False
     assert paper_control.paused(paper.root, "paper3") is None

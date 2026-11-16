@@ -12,7 +12,9 @@ import { truthAccountLabel, truthGapLabel, truthHeadline, truthMoney, truthNewRu
 import { Bot, RefreshCw, X } from "lucide-react";
 import BotDesk from "./BotDesk.jsx";
 import BotChat from "./BotChat.jsx";
-import { DESK_VIEW_KEY, readDeskView } from "./botDesk.js";
+import TickerTrader from "./TickerTrader.jsx";
+import { TICKER_TRADER_KEY } from "./tickerTrader.js";
+import { DESK_VIEW_KEY, readDeskView, botTradePlanLine, deskPlan, paperRowPlan } from "./botDesk.js";
 import { BOT_RULE_HELP, BOT_RULE_LABELS, BOT_RULE_ORDER, botRuleLabel, BOT_TEST_RULES, botContractLabel, botDailyLog, botEntryStrikeLabel, isEarlyDayLine, setBotFills, setBotExit, setBotContract, BOT_EXIT_LABELS, BOT_CONTRACT_LABELS, botExitMatrix, botRiskOk, botRiskRoi, botMomentumMatrix, botPeriodMatrix, botReport, formatBotDollars, formatBotPct, nextBotSort, sortBotRows } from "./momxBot.js";
 
 // Trading days with bot data (his ask 2026-09-28: daily / 2D / 3D / 4D /
@@ -45,6 +47,32 @@ function readStoredTab() {
     return "leaders";
   }
 }
+
+// A chat link to part of this page (owner only; App has already checked). `sub` is
+// a page ("desk", "research", "ask") or a Research tab ("trades", "days", ...).
+// Saved for a page about to open; a page already open is told directly.
+const BOT_VIEWS = ["desk", "research", "ask"];
+const botLinkListeners = new Set();
+export function openBotLink(sub) {
+  const isView = BOT_VIEWS.includes(sub);
+  if (!isView && !BOT_TABS.some((t) => t.key === sub)) return;
+  const link = isView ? { view: sub } : { view: "research", tab: sub };
+  try {
+    window.localStorage.setItem(DESK_VIEW_KEY, link.view);
+    if (link.tab) window.localStorage.setItem(BOT_TAB_KEY, link.tab);
+  } catch { /* private window: a page already open is still told below */ }
+  botLinkListeners.forEach((listener) => listener(link));
+}
+function useBotLink(listener) {
+  const latest = useRef(listener);
+  latest.current = listener;
+  useEffect(() => {
+    const call = (link) => latest.current(link);
+    botLinkListeners.add(call);
+    return () => botLinkListeners.delete(call);
+  }, []);
+}
+
 const REFRESH_MS = 60 * 1000;
 
 function tone(value) {
@@ -93,14 +121,14 @@ function PaperMirrorLine({ doc }) {
       {open ? (
         <div>
           <p className="bot-hint">
-            Real PAPER orders (no money) for the Bot's {doc.rules?.book || "All trades"} trades, bull and bear, limit at the mid.
+            Real PAPER orders (no money) for the Bot's {doc.rules?.book || "All trades"} trades, bull and bear. Orders: {doc.rules?.orders || "limit orders"}.
             Size: {doc.rules?.sizing || "-"}. Exit: {doc.rules?.exitPlan || "-"}. {doc.rules?.maxOpen ?? 8} open,
-            {doc.rules?.maxEntriesPerDay ?? 25} a day, one per ticker. A buy not filled in 2 min is cancelled. {doc.error ? "Last error: " + doc.error : ""}
+            {doc.rules?.maxEntriesPerDay ?? 25} a day, one per ticker. {doc.error ? "Last error: " + doc.error : ""}
           </p>
           {/* Columns always shown (2026-10-17, his "What about the columns?"). */}
           <div className="bot-scroll">
             <table className="bot-table">
-              <thead><tr><th>Time</th><th>Side</th><th>Rule</th><th>Ticker</th><th>Contract</th><th>Qty</th><th>Bot mid</th><th>Paper buy</th><th>Sold</th><th>Stop</th><th>P/L</th><th>Status</th></tr></thead>
+              <thead><tr><th>Time</th><th>Side</th><th>Rule</th><th>Ticker</th><th>Contract</th><th>Qty</th><th>Bot mid</th><th>Paper buy</th><th>Sold</th><th title="Chart plan: the stock price that stops the trade (older orders: the option price of their stop)">Stop</th><th>T1</th><th>T2</th><th>T3</th><th>P/L</th><th>Status</th></tr></thead>
               <tbody>
                 {(doc.rows || []).length ? doc.rows.map((r) => (
                   <tr key={r.buyId || r.at + r.symbol}>
@@ -112,12 +140,15 @@ function PaperMirrorLine({ doc }) {
                     <td title={(r.sells || []).map((f) => f.qty + " @ " + money(f.price) + " (" + (f.why || "") + ")").join(" | ")}>
                       {(r.sells || []).map((f) => f.qty + "@" + money(f.price)).join(", ") || "-"}
                     </td>
-                    <td className="bot-num">{money(r.stop)}</td>
+                    <td className="bot-num">{paperRowPlan(r) ? deskPlan(paperRowPlan(r)).stop : money(r.stop)}</td>
+                    <td className="bot-num">{deskPlan(paperRowPlan(r)).t1}</td>
+                    <td className="bot-num">{deskPlan(paperRowPlan(r)).t2}</td>
+                    <td className="bot-num">{deskPlan(paperRowPlan(r)).t3}</td>
                     <td className="bot-num">{money(r.pl)}</td>
                     <td title={r.note || ""}>{r.status}</td>
                   </tr>
                 )) : (
-                  <tr><td colSpan={12} className="bot-hint">No paper orders yet today - they start when the market opens (9:30 AM ET).</td></tr>
+                  <tr><td colSpan={15} className="bot-hint">No paper orders yet today - the first buy window opens at 9:30 AM ET.</td></tr>
                 )}
               </tbody>
             </table>
@@ -137,7 +168,7 @@ function PaperTable({ rows, showDay, account, team }) {
   return (
     <div className="bot-scroll">
       <table className="bot-table">
-        <thead><tr>{showDay ? <th>Day</th> : null}<th>Order time (ET)</th><th>Fill time (ET)</th><th>Side</th><th>Rule</th><th>Ticker</th><th>Contract</th><th>Filled / ordered</th><th>Held</th><th>Entry mid estimate</th><th>Buy fill</th><th>Sell fills / expiry</th><th>Stop</th><th>Realized P/L</th><th>Open P/L (mid)</th><th>Closed ROI</th><th>Status</th><th>Post-trade review</th></tr></thead>
+        <thead><tr>{showDay ? <th>Day</th> : null}<th>Order time (ET)</th><th>Fill time (ET)</th><th>Side</th><th>Rule</th><th>Ticker</th><th>Contract</th><th>Filled / ordered</th><th>Held</th><th>Entry mid estimate</th><th>Buy fill</th><th>Sell fills / expiry</th><th title="Chart plan: the stock price that stops the trade; an arrow shows where it stands after a target (older orders: the option price of their stop)">Stop</th><th title="Half the expected move (stock price). A check mark and a time = reached.">T1</th><th title="The full expected move">T2</th><th title="The biggest open-interest strike past the move">T3</th><th>Realized P/L</th><th>Open P/L (mid)</th><th>Closed ROI</th><th>Status</th><th>Post-trade review</th></tr></thead>
         <tbody>
           {rows.length ? rows.map((r) => (
             <tr key={(r.day || "") + (r.buyId || r.at + r.symbol)}>
@@ -152,7 +183,10 @@ function PaperTable({ rows, showDay, account, team }) {
               <td title={(r.sells || []).map((f) => f.qty + " @ " + PAPER_MONEY(f.price) + " (" + (f.why || "") + ")").join(" | ")}>
                 {(r.sells || []).map((f) => f.qty + "@" + PAPER_MONEY(f.price) + (f.kind === "expiration" ? " expired" : "")).join(", ") || "-"}
               </td>
-              <td className="bot-num">{PAPER_MONEY(r.stop)}</td>
+              <td className="bot-num">{paperRowPlan(r) ? deskPlan(paperRowPlan(r)).stop : PAPER_MONEY(r.stop)}</td>
+              <td className="bot-num">{deskPlan(paperRowPlan(r)).t1}</td>
+              <td className="bot-num">{deskPlan(paperRowPlan(r)).t2}</td>
+              <td className="bot-num">{deskPlan(paperRowPlan(r)).t3}</td>
               <td className={"bot-num" + (paperMetrics(r).realized > 0 ? " is-up" : paperMetrics(r).realized < 0 ? " is-down" : "")}>{PAPER_MONEY(paperMetrics(r).realized)}</td>
               <td title={r.markAt ? "Quote: " + r.markAt : "No fresh midpoint quote"} className={"bot-num" + (paperMetrics(r).open > 0 ? " is-up" : paperMetrics(r).open < 0 ? " is-down" : "")}>{r.status === "missed" || r.status === "buying" && r.buyFill == null ? "—" : paperMetrics(r).open == null ? "Unpriced" : PAPER_MONEY(paperMetrics(r).open)}</td>
               <td className="bot-num">{formatBotPct(paperMetrics(r).roi, 1)}</td>
@@ -160,7 +194,7 @@ function PaperTable({ rows, showDay, account, team }) {
               <td title="Review status refers to the batch containing this trade; it is not an entry approval.">{reviewLabel(team, `${account}|${r.buyId}`, r)}</td>
             </tr>
           )) : (
-            <tr><td colSpan={showDay ? 18 : 17} className="bot-hint">No paper orders in this range. New entries require an eligible signal and a fresh midpoint quote during the entry windows. AI reviews completed trades afterward.</td></tr>
+            <tr><td colSpan={showDay ? 21 : 20} className="bot-hint">No paper orders in this range. New entries require an eligible signal and a fresh quote during the entry windows (9:30-11:00 AM and 1:00-3:30 PM ET). AI reviews completed trades afterward.</td></tr>
           )}
         </tbody>
       </table>
@@ -398,7 +432,7 @@ function PaperBook({ account, side, days, team, refreshKey }) {
       <p className="bot-jevbook-note">
         <b>Alpaca PAPER · {account}</b> · {doc.enabled ? "ON" : "OFF"} · real paper orders (no money) for the Bot&apos;s {doc.rules?.book}.
         {" "}{side === "bear" ? "BEAR (puts)" : "BULL (calls)"} rules: {picked.length ? picked.join(", ") : "every rule"}.
-        {" "}When: {doc.rules?.entryTimes || "9:30 AM-3:30 PM ET"}. Size: {doc.rules?.sizing}. Exit: {doc.rules?.exitPlan}. {doc.error ? "Last error: " + doc.error : ""}
+        {" "}When: {doc.rules?.entryTimes || "9:30-11:00 AM and 1:00-3:30 PM ET"}. Size: {doc.rules?.sizing}. Exit: {doc.rules?.exitPlan}. {doc.error ? "Last error: " + doc.error : ""}
       </p>
       <p className="bot-hint" role="status">Entry policy: {account === "paper5" && team?.experiments?.activeId ? "every signal is taken; the validated rule is advice only" : "every signal is taken; AI never blocks"}. {doc.ai?.enabled ? "ON · experimental" : "OFF"}. {doc.ai?.reason || "Waiting for status"}. Entries never wait for an AI response. The review and critic agents analyze completed trades afterward. Existing risk limits and midpoint exits stay in force.</p>
       </details>
@@ -641,7 +675,7 @@ function AiModelCard() {
                 {Object.keys(paper).length ? Object.entries(paper).map(([acct, v]) => {
                   const cell = (c) => (c && c.trades ? `${c.trades} trades · ${Math.round(c.wins / c.trades * 100)}% win · ${c.pl < 0 ? "-$" : "$"}${Math.abs(c.pl).toFixed(0)}` : "-");
                   return <tr key={acct}><td>{acct}</td><td>{cell(v.aiPick)}</td><td>{cell(v.notPick)}</td><td>{cell(v.unscored)}</td></tr>;
-                }) : <tr><td colSpan={4} className="bot-hint">No closed paper trades yet - they start Monday 9:30 AM ET.</td></tr>}
+                }) : <tr><td colSpan={4} className="bot-hint">No closed paper trades yet - the first buy window opens at 9:30 AM ET.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -803,7 +837,24 @@ function BotResearch({ viewSwitch }) {
     try { const b = window.localStorage.getItem("bot.book"); return ["paper3", "paper5"].includes(b) ? b : "all"; } catch { return "all"; }
   });
   const [learningTeam, setLearningTeam] = useState(null);
-  const paperMode = book === "paper3" || book === "paper5";
+  // Ticker trader (2026-11-13): the second button beside "All trades" (TickerTrader.jsx).
+  const [tickerTrader, setTickerTraderState] = useState(() => {
+    try { return window.localStorage.getItem(TICKER_TRADER_KEY) === "1"; } catch { return false; }
+  });
+  const setTickerTrader = (on) => {
+    setTickerTraderState(on);
+    try { window.localStorage.setItem(TICKER_TRADER_KEY, on ? "1" : "0"); } catch { /* private window */ }
+  };
+  // The ticker box at the top of Research (2026-11-13, his "I dnt see research trade box"): type a ticker,
+  // pick Call or Put, and the Ticker trader opens with both filled in, one tap from Trade.
+  const [quick, setQuick] = useState({ ticker: "", side: "CALL" });
+  const [handoff, setHandoff] = useState(null);
+  const openQuick = (e) => {
+    e.preventDefault();
+    setHandoff({ ticker: quick.ticker.trim().toUpperCase(), side: quick.side });
+    setTickerTrader(true);
+  };
+  const paperMode =book === "paper3" || book === "paper5";
   const [paperRefresh, setPaperRefresh] = useState(0);
   const setBook = (b) => {
     setBookState(b);
@@ -866,6 +917,7 @@ function BotResearch({ viewSwitch }) {
     setTabState(key);
     try { window.localStorage.setItem(BOT_TAB_KEY, key); } catch { /* private mode */ }
   }, []);
+  useBotLink((link) => { if (link.tab) setTabState(link.tab); });
 
   const loadHistory = useCallback(async () => {
     try {
@@ -875,12 +927,15 @@ function BotResearch({ viewSwitch }) {
       // the main view shows the error; the period table just waits
     }
   }, []);
+  // Periods -> Day by day keeps this true, so the 180-day answer is not
+  // downloaded a second time; any other tab -> a history tab still loads once.
+  const historyTabOpen = tab === "periods" || tab === "days";
   useEffect(() => {
-    if (paperMode || (tab !== "periods" && tab !== "days")) return;
+    if (paperMode || !historyTabOpen) return;
     loadHistory();
     const id = window.setInterval(() => { if (marketOpenNow()) loadHistory(); }, HISTORY_REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [loadHistory, tab, paperMode]);
+  }, [loadHistory, historyTabOpen, paperMode]);
 
   // Only the newest request may fill the page (2026-10-16: tapping Today then 1W
   // showed 1W lit over Today's numbers - the slower 1-day answer landed last).
@@ -946,6 +1001,10 @@ function BotResearch({ viewSwitch }) {
   const dailyLog = useMemo(() => botDailyLog(pick(history ? history[side] : []), side), [history, side, pick]);
   const ruleLabel = rule ? (leaderboard.find((r) => r.rule === rule) || {}).label || rule : null;
 
+  if (tickerTrader) {
+    return <TickerTrader viewSwitch={viewSwitch} initialTicker={handoff?.ticker || ""} initialSide={handoff?.side || "CALL"}
+      onAllTrades={() => { setHandoff(null); setTickerTrader(false); }} />;
+  }
   return (
     <div className="bot-page">
       <header className="bot-head">
@@ -959,7 +1018,20 @@ function BotResearch({ viewSwitch }) {
           {viewSwitch}
           <div className="bot-seg" role="group" aria-label="Which bot">
             <button type="button" className={book === "all" ? "is-on" : ""} onClick={() => setBook("all")} title="Every trade the rules took">All trades</button>
+            <button type="button" data-testid="open-ticker-trader" onClick={() => setTickerTrader(true)} title="Type a ticker: the bot trades it from the chart in a simulated $10,000 account">Ticker trader</button>
           </div>
+          <form className="bot-quick-trade" data-testid="bot-quick-trade" aria-label="Trade a ticker" onSubmit={openQuick}>
+            <span className="bot-quick-title">Trade a ticker</span>
+            <input aria-label="Ticker to trade" placeholder="NVDA" maxLength={7} autoCapitalize="characters" autoComplete="off"
+              value={quick.ticker} onChange={(e) => setQuick((q) => ({ ...q, ticker: e.target.value.toUpperCase() }))} />
+            <div className="bot-seg" role="group" aria-label="Call or Put">
+              {["CALL", "PUT"].map((s) => (
+                <button key={s} type="button" className={quick.side === s ? "is-on" : ""} aria-pressed={quick.side === s}
+                  onClick={() => setQuick((q) => ({ ...q, side: s }))}>{s === "CALL" ? "Call" : "Put"}</button>
+              ))}
+            </div>
+            <button type="submit" className="bot-quick-go" disabled={!quick.ticker.trim()}>Open Ticker trader</button>
+          </form>
           {/* News trade and AI pick are gone from this page (2026-11-10, his "Remove filters also
               news trade"): the paper accounts trade only the three Level strategies. */}
           {/* Paper accounts as ONE drop-down (2026-10-17, his "Instead of panel use dropdown for paper 3/paper5"). */}
@@ -993,7 +1065,7 @@ function BotResearch({ viewSwitch }) {
             {["exit", "close", "best"].map((v) => (
               <button key={v} type="button" className={exitMode === v ? "is-on" : ""} aria-pressed={exitMode === v} onClick={() => setExitMode(v)}>
                 <span>{BOT_EXIT_LABELS[v]}</span>
-                <small>{v === "exit" ? "First 5m close below VWAP or EMA21; otherwise 3:50 PM ET." : v === "close" ? "Hold until 3:50 PM ET, ignoring earlier exit signals." : "Highest midpoint including entry: losses appear as break-even. Hindsight only."}</small>
+                <small>{v === "exit" ? "First 5m close below the 21 EMA (no VWAP exit since 2026-11-10); otherwise 3:50 PM ET." : v === "close" ? "Hold until 3:50 PM ET, ignoring earlier exit signals." : "Highest midpoint including entry: losses appear as break-even. Hindsight only."}</small>
               </button>
             ))}
           </div>
@@ -1015,7 +1087,7 @@ function BotResearch({ viewSwitch }) {
       <TruthCheckCard />
       {book === 'all' ? <details className="bot-level-help">
         <summary>Level strategies · 3+ Setup types · MOM optional · AI review afterward</summary>
-        <p>{BOT_LEVEL_HELP} Entries use the existing 09:30–15:30 ET window. New records start with valid future scanner updates.</p>
+        <p>{BOT_LEVEL_HELP} The Bot records every Level signal from 09:30 to 15:30 ET. Once the servers run the chart plan, the signals from 9:30-11:00 AM and 1:00-3:30 PM go on the chart&apos;s Entry / Target / Stop plan (the Chart plan column shows its numbers); a midday or later signal is noted &quot;Not ordered&quot;. A dash in that column means the trade was recorded before the chart plan was running. New records start with valid future scanner updates.</p>
         <p><b>Setup column rules counted (23):</b> {SCANNER_SETUP_TYPES.map(([, label]) => label).join(' · ')}.</p>
         <p>Any three distinct types above satisfy the Setup requirement for each level. Multiple timeframes of one type count once. MOM is optional; these types include status and warning tags, so three types do not mean three independent bullish confirmations. Each new level trade shows its recorded Setup rules below its strategy name.</p>
         {learningTeam?.capture?.[side]?.levelStrategies ? <p role="status">Level engine ({side === "bear" ? "puts" : "calls"}): {learningTeam.capture[side].levelStrategies.state} · {learningTeam.capture[side].levelStrategies.reason}</p> : null}
@@ -1381,7 +1453,7 @@ function BotResearch({ viewSwitch }) {
                 <SortTh k="now" sort={tradeSort} onSort={cycle(setTradeSort)}>Exit / now</SortTh>
                 <SortTh k="exitAt" sort={tradeSort} onSort={cycle(setTradeSort)} title={exitMode === "exit" ? "Strategy exit signal time (ET)" : exitMode === "close" ? "Scheduled close time; not the earlier strategy signal" : "Hindsight comparison; no executed exit time"}>Exit time</SortTh>
                 <SortTh k="roi" sort={tradeSort} onSort={cycle(setTradeSort)} title={exitMode === "exit" && contractMode === "main"
-                  ? "Profit ÷ what the contract cost, at strategy exit (first 5m close below VWAP / EMA21, else 15:50). Click to sort."
+                  ? "Profit ÷ what the contract cost, at strategy exit (first 5m close below the 21 EMA, else 15:50; VWAP exits before 2026-11-10). Click to sort."
                   : "Profit ÷ what the contract cost, for the " + BOT_CONTRACT_LABELS[contractMode] + " contract sold at " + BOT_EXIT_LABELS[exitMode] + ". The Option / Entry / Exit columns follow the selected contract and fill mode. Click to sort."}>
                   {exitMode === "exit" && contractMode === "main" ? "ROI (strategy exit)" : "ROI (" + BOT_CONTRACT_LABELS[contractMode] + " · " + BOT_EXIT_LABELS[exitMode] + ")"}</SortTh>
                 <SortTh k="dollars" sort={tradeSort} onSort={cycle(setTradeSort)}>$</SortTh>
@@ -1393,13 +1465,14 @@ function BotResearch({ viewSwitch }) {
                 <SortTh k="zPct" sort={tradeSort} onSort={cycle(setTradeSort)}>0DTE %</SortTh>
                 <SortTh k="max" sort={tradeSort} onSort={cycle(setTradeSort)}>Hold max</SortTh>
                 </> : null}
+                <th className="is-left" title="Level trades recorded while the chart plan is running (a dash = recorded before that): three 0.20-delta contracts bought at the ask and followed on the chart's plan. Entry = the option's ask at the signal. Stop = the stock price where the option is down 50%. T1 / T2 / T3 = stock targets (a check mark and a time = reached). Then what the plan made, at the mid.">Chart plan</th>
                 <SortTh k="status" sort={tradeSort} onSort={cycle(setTradeSort)} className="is-left">Status</SortTh>
                 <th className="is-left">Post-trade review</th>
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={showDetails ? 19 : 14} className="bot-empty">{loading ? "Loading trades…" : error ? "Trade data unavailable — retry above." : "No trades match this view. Try a longer range or clear the ticker, rule and outcome filters."}</td></tr>
+                <tr><td colSpan={showDetails ? 20 : 15} className="bot-empty">{loading ? "Loading trades…" : error ? "Trade data unavailable — retry above." : "No trades match this view. Try a longer range or clear the ticker, rule and outcome filters."}</td></tr>
               ) : sortBotRows(rows, tradeSort, TRADE_SORT).slice(0, rowLimit).map((t) => {
                 const out = t.results.sell;
                 const forecast = t.aiDecision?.prediction;
@@ -1426,6 +1499,7 @@ function BotResearch({ viewSwitch }) {
                     <td className={"bot-num" + tone(t.results.zero)}>{formatBotPct(t.results.zero)}</td>
                     <td className={"bot-num" + tone(t.results.max)}>{formatBotPct(t.results.max)}{!t.holdDone && t.entry !== undefined ? "…" : ""}</td>
                     </> : null}
+                    <td className="is-left bot-dim" data-testid="bot-trade-plan">{botTradePlanLine(t)}</td>
                     <td className="is-left"><span className={"bot-status is-" + statusOf(t).replace(" ", "-")}>{t.status === "ai_skipped" ? "AI skipped" : t.status === "pending" && t.aiDecision ? "AI pending" : t.results.exit === null ? "unpriced" : exitMode === "best" ? "hindsight" : !t.results.closed ? "open" : t.results.exit > 0 ? "win" : t.results.exit < 0 ? "loss" : "break-even"}</span></td>
                     <td className="is-left" title="Batch review of the original strategy outcome, independent of the exit comparison selected above.">{reviewLabel(learningTeam, `${side}|${t.rule}|${t.symbol}|${t.at}`, t)}</td>
                   </tr>
@@ -1468,8 +1542,9 @@ function BotResearch({ viewSwitch }) {
       <p className="bot-foot">
         <b>How it trades:</b> at each GO+, GO, ⭐1, MX A+, Daily 2 and Market-turn signal (and, as a <i>test</i>, the first 15 a day of
         C2H/C4H, CALL2H/4H, ADX, SKIT, RVOL, SQZ fire and your ZS rule - above EMA 9/21/50, VWAP and the 5m cloud with no level within 2% above) it takes the nearest weekly first out-of-the-money option at the mid price, 09:30-15:30 ET.
-        <b> Strategy exit</b> = the first 5-minute close below VWAP or the 21 EMA, else 15:50. <b>ENTRY strike</b> = the chain's ENTRY strike (the out-of-the-money option with delta just under 0.20, same expiry, same exit). <b>0DTE</b> = the same signal on a same-day option.
+        <b> Strategy exit</b> = the first 5-minute close below the 21 EMA, else 15:50 (until 2026-11-10 a close below VWAP also exited). <b>ENTRY strike</b> = the chain's ENTRY strike (the out-of-the-money option with delta just under 0.20, same expiry, same exit). <b>0DTE</b> = the same signal on a same-day option.
         <b> Hold max</b> = the weekly's best price until it expires (… = still being tracked). Midpoint estimates; actual fills may differ or remain unfilled.
+        <b> Chart plan</b> (Level trades recorded while the chart plan is running; a dash = recorded before that) = three 0.20-delta contracts bought at the ask and followed on the chart&apos;s Entry / Target / Stop plan: sold in full when the stock trades through the stop, one at each of T1, T2 and T3 otherwise.
         Paper tracking of your rules, not advice. Kept {data && data.keepDays ? data.keepDays : 180} days.
       </p>
       </>)}
@@ -1487,6 +1562,7 @@ export default function BotPanel() {
     setViewState(v);
     try { window.localStorage.setItem(DESK_VIEW_KEY, v); } catch { /* private window */ }
   };
+  useBotLink((link) => setViewState(link.view));
   const viewSwitch = (
     <div className="bot-seg bot-view-switch" role="group" aria-label="Page">
       <button type="button" className={view === "desk" ? "is-on" : ""} aria-pressed={view === "desk"} onClick={() => setView("desk")}

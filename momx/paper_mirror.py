@@ -8,10 +8,18 @@ real paper fills next to the mid-price estimates. It never changes the Bot.
 Safety:
 * PAPER ONLY - refuses to run unless the account's credentials say paper.
 * Off switch: env AGX_MOMX_PAPER_MIRROR=0 or the file artifacts/paper_mirror_off.
-* Limit at the mid (his "use only mid order"), sized by price (see BUDGET). A
-  buy not filled in BUY_TTL_SECONDS is cancelled. Exits follow his plan (see
-  PARTIAL_AT) and the Bot's exit. All retries remain midpoint limits;
-  unfilled exits remain visible and may stay open past FINAL_EXIT.
+* Since 2026-11-13 (his decision 2026-11-12, "use that entry the position and
+  target 1,2,3 ... and stop loss"): the chart's Project ROI plan (momx/chart_plan.py,
+  see EXIT_PLAN). Buy: limit at the ASK, in the buy windows (from 9:30 ET; his
+  2026-11-13 "Remove 10 am rule on bot also if you see the setup then trade it").
+  A Level signal with no chart plan is never bought. Stop: the STOCK
+  price where the option is down 50% (the chart's formula), sold the tick the
+  stock trades through it. Targets: T1 / T2 / T3 from the chart, one lot each.
+  Orders opened before the switch keep the older plan (PARTIAL_AT) until closed.
+* A buy not filled in BUY_TTL_SECONDS is cancelled and re-sent at the ask.
+  Target, Bot-exit and 15:52 sells are midpoint limits; STOP sells are limits at
+  the bid. No market orders; unfilled exits stay visible and may stay open past
+  FINAL_EXIT.
 * Caps: MAX_OPEN positions, MAX_ENTRIES_PER_DAY, one open position per
   ticker; no new entries after 15:30.
 * Controls (2026-11-09, momx/paper_control.py): a per-account Pause and a
@@ -34,7 +42,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from momx import paper_control
+from momx import chart_check, chart_plan, fill_chance, paper_control
 
 ET = ZoneInfo("America/New_York")
 #: His split (2026-10-17): paper3 trades the Bot's "All trades" book (bull
@@ -96,12 +104,13 @@ FRESH_SECONDS = 600.0
 QUOTE_FRESH_SECONDS = 120.0
 #: His sizing (2026-10-17: "Limit max $200-$300", "Use my plan", "Min 3 cons",
 #: "Less than $300 then 3 cons, greater than $400 to $800 take only one cons"):
-#: up to $4.00 an option -> at least MIN_MULTI contracts, more when they fit in
-#: BUDGET (0.25 -> 12, 0.50 -> 6, 1.00 -> 3); over $4.00 up to $8.00 -> 1; over
-#: $8.00 -> skip.
+#: 2026-11-10 (his rule, "took 3 cons, 2 cons exit at 100% ... 1 cons move to
+#: BE"): EVERY buy up to MAX_PRICE is at least MIN_MULTI = 3 contracts, so the
+#: sell-2 / keep-1 split always works; more when they fit in BUDGET (0.25 -> 12,
+#: 0.50 -> 6, 1.00 -> 3, 5.00 -> 3, 8.00 -> 3); over $8.00 -> skip. (Before this,
+#: $4.01-$8.00 bought 1 contract, which could never be split.)
 BUDGET = 300.0
 MIN_MULTI = 3
-MULTI_UP_TO = 4.00
 MAX_PRICE = 8.00
 #: His exit plan: at +100% sell 20% (when holding 2+) and move the stop to
 #: break-even; at +200% the stop goes to +100%, +300% -> +200%, ... The Bot's
@@ -126,21 +135,92 @@ STOCK_FRESH_SECONDS = 180.0
 #: An option this cheap, or with nobody bidding, cannot be sold back at the mid:
 #: 42 of the 176 Level contracts on 2026-11-09 had a $0.00 bid. Not bought.
 MIN_PRICE = 0.05
-MAX_OPEN = 8
-MAX_ENTRIES_PER_DAY = 25
+#: No limit on open positions in practice (his "No limit for open", 2026-11-10; it was 8).
+#: Every Level signal that passes the price / bid checks gets an order. The number left is a runaway guard.
+MAX_OPEN = 500
+#: No daily count limit in practice (his "Trade as much as you can", 2026-11-10; it was 25).
+#: The number left is only a runaway guard.
+MAX_ENTRIES_PER_DAY = 500
 BUY_TTL_SECONDS = 120.0
 SELL_TTL_SECONDS = 60.0
 TICK_SECONDS = 10.0
 FINAL_EXIT = (15, 52)
 #: When NEW paper buys may go in (2026-10-17, his "first 90 minutes ... and 2nd
-#: half (1:00pm est)" -> "Yes do it"): 9:30-11:00 and 13:00-15:30 ET; the
-#: 11:00-13:00 midday chop is skipped. Exits run all day.
+#: half (1:00pm est)" -> "Yes do it"): the 11:00-13:00 midday chop is skipped.
+#: 2026-11-12: the chart-plan build first started the buys at 10:00. 2026-11-13, his
+#: decision the next morning ("Remove 10 am rule on bot also if you see the setup then
+#: trade it"; "Start trading 9:30 if you see the setup or wait 5 mins"): back to
+#: 9:30-11:00 and 13:00-15:30 ET, with the top-of-board rule as before (no 5-minute
+#: hold 9:30-9:45, the hold from 9:45: OPEN_NO_HOLD_UNTIL). Exits run all day.
 ENTRY_WINDOWS = ((9, 30, 11, 0), (13, 0, 15, 30))
 
 
 def entry_open(now: datetime) -> bool:
     m = now.hour * 60 + now.minute
     return any(h1 * 60 + m1 <= m < h2 * 60 + m2 for h1, m1, h2, m2 in ENTRY_WINDOWS)
+
+
+def has_plan(t: Mapping, leg: str = "main") -> bool:
+    """True when the Bot gave this signal a chart plan for the contract the paper account
+    buys (option_track.plan_open: the stock stop and T1 / T2 / T3). ONE rule for "may this
+    Level signal be bought" and "does it get a chart plan": a paper order never goes out
+    without one (PaperMirror._entries). The same test as PaperMirror._plan_attach."""
+    plan = t.get("plan") if isinstance(t, Mapping) else None
+    if not isinstance(plan, Mapping) or _num(plan.get("strike")) is None:
+        return False
+    strike = _num(leg_get(t, "strike", leg))
+    return strike is None or float(plan["strike"]) == strike
+
+
+#: THE CHART PLAN (his decision 2026-11-12: "BOT we can do the entry and exit and
+#: profit target, we have in chart 'entry, exit and target' use that entry the
+#: position and target 1,2,3 ... and stop loss"; "Do the paper trades and all
+#: trades also changes"). Every order sent by this code carries
+#: row["exitPlan"] == EXIT_PLAN and is managed by PaperMirror._manage_plan:
+#:   entry    limit at the option's ASK when the order goes out;
+#:   stop     the STOCK price where the option is down 50% from the fill
+#:            (momx/chart_plan.py, the chart's projectRoiStopStock), checked on
+#:            the live stock price every tick and sold in full the first tick
+#:            the stock trades through it;
+#:   backstop the option itself down 50% on a quote under STOP_QUOTE_SECONDS
+#:            old: sold in full on the first such tick;
+#:   targets  T1 (half the expected move), T2 (the full move), T3 (the chart's
+#:            open-interest strike past the move): one lot at each
+#:            (chart_plan.split_contracts). At T1 the stop moves to break-even
+#:            (the stock price at entry), at T2 to T1's stock price;
+#:   also     the Bot's exit (5m close past the 21 EMA) and the 15:52 close.
+#: A row WITHOUT the marker was opened under the older plan (+100% / high-OI
+#: level / stop ladder) and keeps it until it is closed.
+EXIT_PLAN = "chart"
+#: The file in each account's folder that says the running paper bot trades EXIT_PLAN
+#: (PaperMirror._plan_mark; read by momx/bot_desk.plan_running).
+PLAN_MARK_FILE = "plan.json"
+#: The option's own -50% only counts on a quote this fresh.
+STOP_QUOTE_SECONDS = 15.0
+#: A live stock quote older than this is not used for the stop or the targets.
+PLAN_STOCK_SECONDS = 30.0
+#: The Bot exit's reasons in his words (the chart-plan rows' sell reason).
+BOT_EXIT_WORDS = {"below EMA21": "5-minute candle closed below the 21 EMA",
+                  "above EMA21": "5-minute candle closed above the 21 EMA",
+                  "15:50 close": "15:50 close"}
+BACKSTOP_WHY = "Stop: option down 50% (backstop)"
+#: A sale the broker REJECTS is not sent again straight away (2026-11-13 review: a
+#: rejected sale was re-sent as a new order every 10-second tick, about 2,000 a day
+#: per position, with no note). It is tried again once per SELL_TTL_SECONDS; after
+#: this many refusals in a row, once per SELL_REJECT_SLOW_SECONDS. The row stays
+#: "exit_due" with the note "The broker refused this sale ..." (shown on the Paper
+#: page and in the Scorecard's All trades). A fill or a normal cancel clears the count.
+SELL_REJECTS_MAX = 5
+SELL_REJECT_SLOW_SECONDS = 1800.0
+SELL_REFUSED_NOTE = "The broker refused this sale"
+#: A SALE the broker says it has no record of ("order not found"). If the broker ANSWERED when
+#: it was sent (a 403 / 422 / 429 / 5xx: Alpaca refuses most orders this way, so no order ever
+#: exists) it is a refusal at once and takes the back-off above. If nothing came back (a network
+#: timeout) the order may still appear, so it is looked up by its id for this long first, then
+#: sent again under a new id. Before 2026-11-13 such a sale stayed "selling" for good: no stop,
+#: no targets, no 15:52 close (CLS sat that way from 11-10 12:24, 89 tries).
+SELL_LOST_SECONDS = 15.0
+SELL_LOST_NOTE = "The broker has no record of this sale: sending it again"
 LIVE = ("buying", "open", "selling", "exit_due")
 
 # Order rules v2 (2026-11-04/05). The BOT truth check found paper filled only
@@ -153,6 +233,12 @@ LIVE = ("buying", "open", "selling", "exit_due")
 EXEC_VERSION = 2
 #: An unfilled mid buy is re-sent at the live ask up to this many times.
 BUY_REPRICES = 2
+#: How often the paper account's real balance is read from Alpaca (his "scoreboard should show
+#: alpaca buying power", 2026-11-10: the Scorecard said $10,000 while Paper 3 held under $1,000).
+ACCOUNT_SECONDS = 60.0
+#: An account read older than this is "unknown": the buying-power check then
+#: never blocks a buy (a failed or stale read must not stop the bot).
+BROKER_FRESH_SECONDS = 3 * ACCOUNT_SECONDS
 #: A buy the broker says it has no record of ("order not found") this long
 #: after it was sent never reached the broker: it becomes "missed" instead of
 #: holding one of the MAX_OPEN slots for days (five did on 2026-11-04/05).
@@ -160,6 +246,10 @@ ORPHAN_SECONDS = 300.0
 #: The day's P/L must be past the daily loss stop on this many ticks in a row
 #: before the stop latches, so one bad quote cannot end the day's buying.
 STOP_TICKS = 3
+#: Signals the chart check turned down today, kept in the day file so the
+#: Scorecard can say why no order went out (his rule 2026-11-10). Bounded: the
+#: oldest is dropped past this many.
+CHART_SKIPS_MAX = 600
 
 
 def spread_share(bid: Any, ask: Any) -> float | None:
@@ -190,6 +280,13 @@ def _mid(bid: Any, ask: Any) -> float | None:
     if b is None or a is None or a <= 0 or b < 0 or a < b:
         return None
     return round((a + b) / 2, 2)
+
+
+def _ask(bid: Any, ask: Any) -> float | None:
+    """The ask of a usable quote, to the cent: what a buy at the chart plan's entry pays."""
+    if _mid(bid, ask) is None:
+        return None
+    return round(float(ask), 2)
 
 
 def trade_key(side: str, t: Mapping) -> str:
@@ -252,13 +349,106 @@ def bot_quote(t: Mapping, now_ts: float, leg: str = "main") -> tuple[Any, Any] |
     return bid, ask
 
 
+def _stock_price(q: Any) -> float | None:
+    """The stock's price from one live quote: the last trade, else the bid/ask middle."""
+    if not isinstance(q, Mapping):
+        return None
+    last = _num(q.get("last"))
+    if last is not None and last > 0:
+        return last
+    return _mid(q.get("bid"), q.get("ask"))
+
+
 def size_for(price: float | None) -> int | None:
     """Contracts to buy at this option price, per his plan; None = skip."""
     if price is None or price <= 0 or price > MAX_PRICE:
         return None
-    if price <= MULTI_UP_TO:
-        return max(MIN_MULTI, int(BUDGET // (price * 100)))
-    return 1
+    return max(MIN_MULTI, int(BUDGET // (price * 100)))
+
+
+#: top_verdict's answers: buy may go on / not yet (checked again on later ticks while the
+#: signal is fresh) / no (a rules skip for the day).
+TOP_OK, TOP_WAIT, TOP_FAIL = "ok", "wait", "fail"
+#: HIS RULE (2026-11-10, "Start trading 9:30", "Don't start 9:45"): from 9:30 to 9:45 ET a Level
+#: signal needs only its ticker in the top N on the current scan; the 5-minute hold applies from
+#: 9:45 on. (hour, minute) ET.
+OPEN_NO_HOLD_UNTIL = (9, 45)
+
+
+def top_verdict(t: Mapping, top: Mapping | None, now: datetime | None,
+                warming: bool = False) -> tuple[str, str | None]:
+    """His top-of-board rule (2026-11-10, "see scanner top 5 same ticker is repeating top 5
+    then try to trade", "Mag7 top 3", "use H/L column top"), in ONE place: may this Level signal
+    be bought at `now`, with its ticker standing at `top` on its board ({board, n, rank,
+    heldSeconds, hl} - option_track.OptionTrackBook.top_now at buy time, or the record's own
+    "topHL" stamp with the record's time; None = unknown)?
+
+    - Other rules and boards outside option_track.TOP_N: TOP_OK.
+    - 9:30-9:45 ET (OPEN_NO_HOLD_UNTIL): rank <= n on the current scan is enough.
+    - From 9:45: rank <= n AND held for TOP_HOLD_SECONDS; a shorter hold is TOP_WAIT.
+    - Rank over n, or not a scan match: TOP_FAIL. A scan match with no H/L on the scan
+      ("hlMissing", a candle gap): rank unknown, TOP_WAIT (retried, never final).
+    - Unknown: never blocks before 9:45; from 9:45 it is TOP_WAIT while `warming` (the book has
+      just started and has not seen the board yet), else TOP_OK (missing data never blocks).
+    Returns (state, why-not)."""
+    if t.get("rule") not in _LEVELS:
+        return TOP_OK, None
+    from momx.option_track import TOP_HOLD_SECONDS, TOP_N
+    stamp = t.get("topHL") if isinstance(t.get("topHL"), Mapping) else {}
+    board = str((top or {}).get("board") or t.get("board") or stamp.get("board") or "")
+    n = TOP_N.get(board)
+    if not n:
+        return TOP_OK, None
+    local = (now or datetime.now(ET)).astimezone(ET)
+    hold = (local.hour, local.minute) >= OPEN_NO_HOLD_UNTIL
+    hold_min = TOP_HOLD_SECONDS / 60
+    where = "the Watchlist" if board == "Watchlist" else f"the {board} board"
+    need = (f"needs top {n} for {hold_min:g} min from 9:45" if hold
+            else f"needs top {n}; no {hold_min:g}-min hold before 9:45")
+    sym = t.get("symbol")
+    if not isinstance(top, Mapping):
+        if hold and warming:
+            return TOP_WAIT, (f"{sym}: the bot just started and has not seen {where} scan yet "
+                              f"(waits up to {hold_min:g} min; {need})")
+        return TOP_OK, None
+    rank, held = top.get("rank"), _num(top.get("heldSeconds")) or 0.0
+    if not isinstance(rank, int) or isinstance(rank, bool):
+        if top.get("hlMissing"):
+            # A scan match with no numeric H/L on that scan (a candle gap): its rank is unknown,
+            # not bad - not in the top (its run broke), but checked again on the next scan.
+            return TOP_WAIT, f"{sym} had no H/L on the last scan of {where} (checked again on the next scan; {need})"
+        return TOP_FAIL, f"{sym} was not ranked on {where} by H/L ({need})"
+    if rank > n:
+        return TOP_FAIL, f"{sym} was #{rank} on {where} by H/L ({need})"
+    if hold and held < TOP_HOLD_SECONDS:
+        so_far = f"{int(held // 60)} min" if held >= 60 else f"{int(held)} s"
+        return TOP_WAIT, f"{sym} was #{rank} on {where} by H/L for only {so_far} of the {hold_min:g} ({need})"
+    return TOP_OK, None
+
+
+def stamp_verdict(t: Mapping) -> tuple[str, str | None]:
+    """top_verdict on the record's own "topHL" stamp at the record's time (history: where the
+    ticker stood when the signal fired). No stamp (older records) passes."""
+    stamp = t.get("topHL")
+    if not isinstance(stamp, Mapping):
+        return TOP_OK, None
+    at = _ts(t.get("at"))
+    return top_verdict(t, stamp, datetime.fromtimestamp(at, ET) if at is not None else None)
+
+
+def _live_level_tickers(rows) -> set:
+    """(side, symbol) of today's Level orders that are still LIVE (being bought, held or sold)."""
+    return {(r.get("side"), r.get("symbol")) for r in rows
+            if r.get("rule") in _LEVELS and not r.get("carried") and r.get("status") in LIVE}
+
+
+def _levels_for(side: str, t: Mapping, seen_today, top) -> list | None:
+    """Every level one Level order counts for: all levels up to the signal's highest one - or,
+    for an upgrade while the ticker's earlier Level order is still live (seen_today), just its
+    own level. None when it is not a Level signal or the highest level is unknown."""
+    if t.get("rule") not in _LEVELS or not isinstance(top, int) or not 1 <= top <= len(LEVEL_RULES):
+        return None
+    return [t.get("rule")] if (side, t.get("symbol")) in seen_today else list(LEVEL_RULES[:top])
 
 
 def oi_target(side: str, t: Mapping) -> float | None:
@@ -342,6 +532,208 @@ class PaperMirror:
         #: {"at", "pnl", "limit"} once today's daily loss stop has latched.
         self._daily_stop: dict | None = None
         self._stop_ticks = 0
+        #: The paper account at Alpaca: {"at", "cash", "optionsBuyingPower", "buyingPower", "equity", "lastEquity"}.
+        self._broker: dict | None = None
+        self._broker_ts = 0.0
+        #: Today's signals the chart check turned down: {key: {symbol, side, rule, at, why, checkedAt}}.
+        self._chart_skips: dict[str, dict] = {}
+        #: Today's signals not bought because the paper account lacked the buying power, same shape.
+        self._fund_skips: dict[str, dict] = {}
+        #: Today's Level signals not bought because the ticker was not in its board's top N by
+        #: H/L for 5 min (his top-of-board rule, top_verdict), same shape.
+        self._top_skips: dict[str, dict] = {}
+        #: In memory only: for each fund skip, how many of today's orders were closed or missed
+        #: when it was last checked (an order closing since frees money: check again).
+        self._fund_seen: dict[str, int] = {}
+
+    def _chart_verdict(self, side: str, t: Mapping) -> tuple[str, str | None]:
+        """His step 3 (his rule 2026-11-10): the 5m chart check on the signal's
+        frozen chart. Level signals only; anything else is "not checked".
+        Never raises: a broken snapshot passes as "not checked"."""
+        if t.get("rule") not in _LEVELS:
+            return chart_check.NOT_CHECKED, None
+        try:
+            from momx.chart_learning import snapshot as chart_snapshot
+            return chart_check.verdict(side, chart_snapshot(t))
+        except Exception:  # noqa: BLE001 - never block a buy on a bad chart record
+            return chart_check.NOT_CHECKED, None
+
+    def _top_check(self, side: str, t: Mapping, now: datetime) -> tuple[str, str | None]:
+        """His top-of-board rule at BUY time (top_verdict): on the ticker's CURRENT run from the
+        Bot book this mirror already holds (OptionTrackBook.top_now), not the record's frozen stamp.
+        The record's "topHL" stamp is used only when the book cannot say: a book without top_now
+        (test doubles), or a board still unknown once the book's warm-up is over."""
+        if t.get("rule") not in _LEVELS:
+            return TOP_OK, None
+        book = self.books.get(side)
+        top_now = getattr(book, "top_now", None)
+        if not callable(top_now):
+            return stamp_verdict(t)
+        from momx.option_track import TOP_HOLD_SECONDS, TOP_N
+        stamp = t.get("topHL") if isinstance(t.get("topHL"), Mapping) else {}
+        board = str(t.get("board") or stamp.get("board") or "")
+        if board not in TOP_N:
+            return TOP_OK, None
+        now_ts = now.timestamp()
+        try:
+            current = top_now(board, t.get("symbol"), now_ts)
+        except Exception:  # noqa: BLE001 - an unreadable run is an unknown run
+            current = None
+        if isinstance(current, Mapping):
+            return top_verdict(t, current, now)
+        started = _num(getattr(book, "started_at", None))
+        if started is not None and now_ts - started < TOP_HOLD_SECONDS:
+            return top_verdict(t, None, now, warming=True)
+        return stamp_verdict(t)
+
+    def _top_skip(self, key: str, side: str, t: Mapping, why: str, stamp: str, final: bool) -> bool:
+        """Remember (or refresh) the one top-of-board skip of this signal (side, ticker, time).
+        final = a rules skip for the day (rank); otherwise the signal is checked again on later
+        ticks and only the reason is kept current (latest rank / hold), so "Not ordered" stays
+        truthful. True when something changed (save)."""
+        signal = (side, t.get("symbol"), t.get("at"))
+        k = next((k for k, v in self._top_skips.items()
+                  if isinstance(v, dict) and (v.get("side"), v.get("symbol"), v.get("at")) == signal), key)
+        old = self._top_skips.get(k)
+        if isinstance(old, dict) and old.get("why") == why and bool(old.get("final")) == final:
+            return False
+        self._remember_skip(self._top_skips, k, side, t, why, stamp, refresh=True)
+        entry = self._top_skips.get(k)
+        if isinstance(entry, dict):
+            entry.pop("passed", None)         # held (again) by the top check: the latest reason stands
+            if final:
+                entry["final"] = True
+            else:
+                entry.pop("final", None)
+        return True
+
+    def _top_final(self) -> set:
+        """Signals (side, ticker, time) the top-of-board check turned down for the day."""
+        return {(v.get("side"), v.get("symbol"), v.get("at")) for v in self._top_skips.values()
+                if isinstance(v, dict) and v.get("final")}
+
+    def _top_pass(self, key: str, side: str, t: Mapping, stamp: str) -> bool:
+        """The signal passes the top-of-board check now: its entry is kept but marked passed
+        ({"passed": time}, no "why"), so no stale reason is left behind AND the Scorecard knows the
+        check passed at buy time (it must not fall back to the record's frozen stamp). A signal
+        with no entry gets one only when its own stamp would read as a top-of-board hold.
+        _drop_skips_for still removes it once an order goes out. True when something changed (save)."""
+        signal = (side, t.get("symbol"), t.get("at"))
+        found = [k for k, v in self._top_skips.items()
+                 if isinstance(v, dict) and (v.get("side"), v.get("symbol"), v.get("at")) == signal]
+        if not found:
+            if stamp_verdict(t)[0] == TOP_OK:
+                return False
+            self._remember_skip(self._top_skips, key, side, t, "", stamp, refresh=True)
+            found = [key]
+        changed = False
+        for k in found:
+            entry = self._top_skips.get(k)
+            if not isinstance(entry, dict) or (entry.get("passed") and "why" not in entry):
+                continue
+            entry.pop("why", None)
+            entry.pop("final", None)
+            entry["passed"] = stamp
+            changed = True
+        return changed
+
+    def _top_skip_count(self) -> int:
+        """Signals the top-of-board check is holding or turned down (passed entries excluded)."""
+        return sum(1 for v in self._top_skips.values() if isinstance(v, dict) and not v.get("passed"))
+
+    def _skip_for_chart(self, key: str, side: str, t: Mapping, why: str, stamp: str) -> bool:
+        """Remember a chart-check skip for the day. True when it is new (save)."""
+        return self._remember_skip(self._chart_skips, key, side, t, why, stamp)
+
+    @staticmethod
+    def _remember_skip(store: dict, key: str, side: str, t: Mapping, why: str, stamp: str,
+                       refresh: bool = False) -> bool:
+        """Remember why a signal got no order today (bounded). True when it is new (save); a
+        known one only has its reason (and with refresh, its checkedAt) refreshed in memory
+        (saved with the next save)."""
+        if key in store:
+            store[key]["why"] = why
+            if refresh:
+                store[key]["checkedAt"] = stamp
+            return False
+        store[key] = {"symbol": t.get("symbol"), "side": side, "rule": t.get("rule"),
+                      "at": t.get("at"), "why": why, "checkedAt": stamp}
+        while len(store) > CHART_SKIPS_MAX:
+            store.pop(next(iter(store)))
+        return True
+
+    def _free_buying_power(self, now_ts: float) -> float | None:
+        """The paper account's options buying power still free for a new buy: the last Alpaca
+        read, less every LIVE order sent at or after that read - still waiting, or already filled
+        since (a buy sent before the read is already inside the broker's figure). A filled one
+        counts at its fill (filled contracts x fill price), else at its limit. Closed and missed
+        orders are not counted. None = unknown or stale: never blocks."""
+        b = self._broker
+        if not isinstance(b, dict):
+            return None
+        power, read_ts = _num(b.get("optionsBuyingPower")), _ts(b.get("at"))
+        if power is None or read_ts is None or not -60 <= now_ts - read_ts <= BROKER_FRESH_SECONDS:
+            return None
+        committed = 0.0
+        for r in self._rows.values():
+            if r.get("status") not in LIVE or (_ts(r.get("buyAt")) or 0) < read_ts:
+                continue
+            qty, limit = _num(r.get("qty")), _num(r.get("buyLimit"))
+            got, fill = _num(r.get("buyFilledQty")), _num(r.get("buyFill"))
+            if r.get("status") != "buying" and got and fill:
+                committed += got * fill * 100
+            elif qty and limit:
+                committed += qty * limit * 100
+        return power - committed
+
+    def _fund_hold(self, key: str, now_ts: float, done: int) -> bool:
+        """True when this signal's buying-power skip still stands without a fresh quote: it was
+        checked after the latest (fresh) account read and no order has closed or missed since.
+        Saves the synchronous live-quote call on every 10 s tick for a signal that cannot be paid for."""
+        skip = self._fund_skips.get(key)
+        if not isinstance(skip, dict) or self._fund_seen.get(key) != done:
+            return False
+        if self._free_buying_power(now_ts) is None:
+            return False                      # unknown or stale buying power never blocks
+        read_ts, checked = _ts((self._broker or {}).get("at")), _ts(skip.get("checkedAt"))
+        return read_ts is not None and checked is not None and checked >= read_ts
+
+    def _skip_for_funds(self, key: str, side: str, t: Mapping, why: str, stamp: str, done: int) -> bool:
+        """Remember a buying-power skip (checkedAt refreshed on every re-check). True when new (save)."""
+        self._fund_seen[key] = done
+        return self._remember_skip(self._fund_skips, key, side, t, why, stamp, refresh=True)
+
+    def _drop_skips_for(self, signal: tuple) -> bool:
+        """An order went out for this (side, symbol, at) signal: no skip reason may remain for it
+        at any other level. True when something was dropped (save)."""
+        dropped = False
+        for store in (self._fund_skips, self._chart_skips, self._top_skips):
+            for k in [k for k, v in store.items()
+                      if isinstance(v, dict) and (v.get("side"), v.get("symbol"), v.get("at")) == signal]:
+                store.pop(k, None)
+                self._fund_seen.pop(k, None)
+                dropped = True
+        return dropped
+
+    def _read_account(self, client, now_ts: float, stamp: str) -> bool:
+        """Read the paper account's real money from Alpaca, at most once a minute. A failed read
+        keeps the last good one (marked with the error); it never stops the trading loop."""
+        if now_ts - self._broker_ts < ACCOUNT_SECONDS:
+            return False
+        self._broker_ts = now_ts
+        try:
+            a = client.get_account()
+        except Exception as exc:  # noqa: BLE001
+            if self._broker:
+                self._broker["error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return False
+
+        def money(name):
+            v = getattr(a, name, None) if not isinstance(a, dict) else a.get(name)
+            return _num(v)
+        self._broker = {"at": stamp, "cash": money("cash"), "optionsBuyingPower": money("options_buying_power"),
+                        "buyingPower": money("buying_power"), "equity": money("equity"), "lastEquity": money("last_equity")}
+        return True
 
     def _client_ok(self):
         if self._client is None and not self._refused:
@@ -363,12 +755,23 @@ class PaperMirror:
     def _load(self, day: str) -> None:
         self._day, self._rows = day, {}
         self._daily_stop, self._stop_ticks = None, 0
+        self._broker, self._broker_ts = None, 0.0
+        self._chart_skips, self._fund_skips, self._fund_seen = {}, {}, {}
+        self._top_skips = {}
         try:
             doc = json.loads(self._path(day).read_text(encoding="utf-8"))
+            if isinstance(doc, dict) and isinstance(doc.get("topSkips"), dict):
+                self._top_skips = doc["topSkips"]        # and the top-of-board ones
+            if isinstance(doc, dict) and isinstance(doc.get("chartSkips"), dict):
+                self._chart_skips = doc["chartSkips"]    # a restart keeps the day's chart-check reasons
+            if isinstance(doc, dict) and isinstance(doc.get("fundSkips"), dict):
+                self._fund_skips = doc["fundSkips"]      # and the buying-power ones
             if isinstance(doc, dict) and isinstance(doc.get("rows"), dict):
                 self._rows = doc["rows"]
             if isinstance(doc, dict) and isinstance(doc.get("dailyStop"), dict):
                 self._daily_stop = doc["dailyStop"]      # a restart must not re-open a stopped day
+            if isinstance(doc, dict) and isinstance(doc.get("broker"), dict):
+                self._broker = doc["broker"]             # shown until the next read
         except (OSError, ValueError):
             pass
         # Midpoint exits need not fill before the bell. Retain the latest known
@@ -388,6 +791,27 @@ class PaperMirror:
                 if row.get("status") in LIVE:
                     self._rows[key] = {**row, "carried": True}
 
+    def _plan_mark(self, stamp: str) -> None:
+        """Say on disk which exit plan THIS running bot follows: <account>/plan.json =
+        {"plan": "chart", "since": first time this code ran}. The Scorecard is built in
+        another process (api_server, momx/bot_desk.py) and the Bot page is live in the
+        browser before either server restarts, so the page shows the chart plan's text and
+        evaluation only once this file says the paper bot really trades it."""
+        try:
+            path = self.directory / PLAN_MARK_FILE
+            try:
+                seen = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                seen = None
+            if isinstance(seen, dict) and seen.get("plan") == EXIT_PLAN and seen.get("since"):
+                return
+            self.directory.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"plan": EXIT_PLAN, "since": stamp, "account": self.account}), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
     def _save(self) -> None:
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
@@ -395,27 +819,40 @@ class PaperMirror:
             doc = {"day": self._day, "account": self.account, "rows": self._rows}
             if self._daily_stop:
                 doc["dailyStop"] = self._daily_stop
+            if self._broker:
+                doc["broker"] = self._broker
+            if self._chart_skips:
+                doc["chartSkips"] = self._chart_skips
+            if self._fund_skips:
+                doc["fundSkips"] = self._fund_skips
+            if self._top_skips:
+                doc["topSkips"] = self._top_skips
             tmp.write_text(json.dumps(doc), encoding="utf-8")
             os.replace(tmp, self._path(self._day))
         except OSError:
             pass
 
-    def _live_quote(self, contract: str, now_ts: float, cache: dict | None = None) -> tuple[Any, Any] | None:
+    def _live_quote(self, contract: str, now_ts: float, cache: dict | None = None,
+                    stock: str | None = None) -> tuple[Any, Any] | None:
         """A fresh broker (bid, ask) for one contract right now, or None.
         The Bot re-prices one ticker every 8+ s, so its own quote can be
-        minutes old; the order uses the live quote whenever it can."""
+        minutes old; the order uses the live quote whenever it can.
+        With `stock` (and a cache), the stock's live price rides in the same
+        call and is left in cache[("stock", symbol)] for the chart plan."""
         if not self._quotes_fetch or not contract:
             return None
         if cache is not None and contract in cache:
             return cache[contract]
         found = None
         try:
-            doc = self._quotes_fetch([contract]) or {}
+            doc = self._quotes_fetch([contract] + ([stock] if stock else [])) or {}
             seen = _num(doc.get("asOf"))
             if seen is not None and -5 <= now_ts - seen <= QUOTE_FRESH_SECONDS:
                 q = (doc.get("quotes") or {}).get(contract) or {}
                 if _mid(q.get("bid"), q.get("ask")) is not None:
                     found = (q.get("bid"), q.get("ask"))
+                if stock and cache is not None and now_ts - seen <= PLAN_STOCK_SECONDS:
+                    cache[("stock", stock)] = _stock_price((doc.get("quotes") or {}).get(stock))
         except Exception:  # noqa: BLE001 - fall back to the Bot's own quote
             found = None
         if cache is not None:
@@ -435,18 +872,41 @@ class PaperMirror:
         # here turned 18 late-sent buys into misses with no try at the ask.
         if t and not still_open(t, leg):
             return False
-        q = self._live_quote(row.get("contract"), now_ts) or (bot_quote(t, now_ts, leg) if t else None)
+        charted = row.get("exitPlan") == EXIT_PLAN
+        cache: dict = {}
+        q = (self._live_quote(row.get("contract"), now_ts, cache, stock=row.get("symbol") if charted else None)
+             or (bot_quote(t, now_ts, leg) if t else None))
         limit = round(float(q[1]), 2) if q and sellable(*q) else None
         if limit is None or limit <= 0:
-            row["note"] = "No fresh quote to re-send at the ask; not filled at the mid"
+            row["note"] = ("No fresh quote to re-send at the ask; not filled at the ask" if row.get("exitPlan") == EXIT_PLAN
+                           else "No fresh quote to re-send at the ask; not filled at the mid")
             return False
         cid = self._cid(key, "b", tries + 1)
         row.setdefault("buyHistory", []).append({"limit": row.get("buyLimit"), "at": row.get("buyAt"), "id": row.get("buyId")})
         row.update(buyId=cid, buyLimit=limit, buyAt=stamp, buyTries=tries + 1, note=f"Re-sent at the ask ${limit:.2f} (try {tries + 1})")
+        row.pop("submitError", None)
+        if charted:
+            # The plan starts from the stock price when THIS order went out, not the first
+            # one's: an ask buy goes unfilled mainly when the price is running away, so two
+            # to six minutes later the stock has moved. Kept at the first order's price, a
+            # re-sent buy "hit T1" on its fill tick and sold a lot under what it had just paid
+            # (2026-11-13 review). _plan_stop re-bases the stop and T1/T2/T3 from entryStock.
+            row["buyHistory"][-1].update(entryStock=row.get("entryStock"), entryBid=row.get("entryBid"),
+                                         entryAsk=row.get("entryAsk"))
+            stock_now = cache.get(("stock", row.get("symbol")))
+            if stock_now is None and t:
+                seen_at = _ts(t.get("stockLastAt"))
+                if seen_at is not None and 0 <= now_ts - seen_at <= STOCK_FRESH_SECONDS:
+                    stock_now = _num(t.get("stockLast"))
+            if stock_now is not None:
+                row["entryStock"] = stock_now
+            row.update(entryBid=_num(q[0]), entryAsk=_num(q[1]), entryMid=_mid(q[0], q[1]))
         try:
             client.submit_option_limit_order(row["contract"], int(row.get("qty") or 1), limit, cid, "buy_to_open")
         except Exception as exc:  # noqa: BLE001 - outcome unknown: reconcile by client id
             row["note"] = f"Awaiting broker reconciliation: {exc}"[:200]
+            if paper_control.broker_answered(exc):
+                row["submitError"] = str(exc)[:300]  # what the broker answered: kept, the note is overwritten
         return True
 
     def _cid(self, key: str, leg: str, attempt: int = 0) -> str:
@@ -481,6 +941,7 @@ class PaperMirror:
         with self._lock:
             if self._day != day:
                 self._load(day)
+                self._plan_mark(stamp)
             if not trading_now and not any(self._expired_day(r, now) for r in self._rows.values()):
                 return
             client = self._client_ok()
@@ -493,7 +954,7 @@ class PaperMirror:
                         bot[trade_key(side, t)] = (side, t)
                 except Exception:  # noqa: BLE001
                     continue
-            changed = False
+            changed = self._read_account(client, now_ts, stamp)
             try:
                 changed |= self._reconcile_expired(client, now)
                 if trading_now:
@@ -518,6 +979,7 @@ class PaperMirror:
         ticker. No broker call: the Bot's own quote decides "sellable" here."""
         held = {r.get("symbol") for r in self._rows.values() if r.get("status") in LIVE}
         taken = {(r.get("side"), r.get("symbol"), r.get("at")) for r in self._rows.values() if r.get("rule") in _LEVELS}
+        top_final, now = self._top_final(), datetime.fromtimestamp(now_ts, ET)
         out, tickers = [], set()
         for key, (side, t) in sorted(bot.items(), key=_newest_first, reverse=True):
             allowed = None if self.rules is None else self.rules.get(side)
@@ -528,8 +990,14 @@ class PaperMirror:
                 continue
             if t.get("symbol") in tickers or not eligible(t, now_ts, self.jev_cut, self.leg):
                 continue
+            if t.get("rule") in _LEVELS and not has_plan(t, self.leg):
+                continue                      # no chart plan: the order loop will not buy it
+            if (t.get("rule") in _LEVELS and signal in top_final) or self._top_check(side, t, now)[0] != TOP_OK:
+                continue                      # not (yet) in its board's top N by H/L: not bought now
+            if self._chart_verdict(side, t)[0] == chart_check.FAILED:
+                continue                      # the order loop will not buy it: not one for the AI to rank
             q = bot_quote(t, now_ts, self.leg)
-            if not q or not sellable(*q) or not size_for(_mid(*q)):
+            if not q or not sellable(*q) or not size_for(_ask(*q)):
                 continue
             tickers.add(t.get("symbol"))
             out.append((key, side, dict(t)))
@@ -567,7 +1035,14 @@ class PaperMirror:
         """Decide whether NEW buys are held this tick (pause, or the daily loss
         stop). Exits are never held. True when the stop latched just now."""
         latched = False
-        if self._daily_stop is None:
+        if not paper_control.DAILY_STOP_ON:
+            # The stop is switched off. One that tripped earlier today stays on file as a record
+            # (it explains the signals missed while it held), stamped with when it was lifted.
+            if self._daily_stop and not self._daily_stop.get("liftedAt"):
+                self._daily_stop["liftedAt"] = stamp
+                latched = True                # save the stamp
+            self._stop_ticks = 0
+        elif self._daily_stop is None:
             pnl = paper_control.day_pnl(self._rows.values(), day)
             # A held position with no price at all is "unknown", not "fine":
             # it must not clear the count toward the stop (a dead 0/0 quote
@@ -585,7 +1060,7 @@ class PaperMirror:
                 latched = True
         if paper_control.paused(self.directory.parent, self.account):
             self._hold_buys = "paused"
-        elif self._daily_stop:
+        elif self._daily_stop and paper_control.DAILY_STOP_ON:
             self._hold_buys = "daily loss stop"
         else:
             self._hold_buys = ""
@@ -705,15 +1180,24 @@ class PaperMirror:
             except Exception as exc:
                 orphan = (row.get("status") == "buying" and paper_control.not_found(exc)
                           and now_ts - (_ts(row.get("buyAt")) or now_ts) > ORPHAN_SECONDS)
-                if orphan:
+                if orphan and row.get("submitError"):
+                    # The broker answered when the buy was sent: it refused it. Say why.
+                    row.update(status="missed",
+                               note=("The broker refused this buy: " + paper_control.refusal_reason(row["submitError"]))[:200])
+                elif orphan:
                     row.update(status="missed", note="The broker has no record of this buy: it never reached the broker")
+                elif self._sale_lost(row, exc, now_ts):
+                    pass  # back to "exit_due": the manage pass sends it again
                 else:
                     row["note"] = f"Awaiting broker reconciliation: {exc}"[:200]
                 changed = True
         return changed
 
     def _follow_row(self, client, row: dict, now_ts: float, stamp: str, key: str | None = None,
-                    bot: Mapping | None = None) -> bool:
+                    bot: Mapping | None = None, pull: bool = False) -> bool:
+        """pull=True: cancel the working SALE now instead of waiting SELL_TTL_SECONDS (a
+        chart-plan stop is due while a target lot is still at the broker); anything it
+        filled meanwhile is booked exactly as usual."""
         changed = False
         if row.get("status") == "buying":
             status, price, _, filled = self._state(client, row["buyId"])
@@ -723,6 +1207,10 @@ class PaperMirror:
             if status == "filled" or (filled > 0 and status in ("canceled", "expired", "rejected")):
                 got = filled or int(row.get("qty") or 1)
                 row.update(status="open", buyFill=price, buyFillAt=stamp, buyFilledQty=got, held=got, peak=0.0, sells=[])
+                if row.get("exitPlan") == EXIT_PLAN:
+                    # His split: one lot at each target, from what really filled.
+                    row["planSplit"] = chart_plan.split_contracts(got)
+                    self._plan_stop(row)
                 # Broker time is distinct from the time our poll observed a fill.
                 try:
                     filled_at = getattr(client.get_order_by_client_id(row["buyId"]), "filled_at", None)
@@ -736,16 +1224,19 @@ class PaperMirror:
                 changed = True
             elif status in ("canceled", "expired", "rejected"):
                 note = row.get("note") if row.get("exec") == EXEC_VERSION and row.get("note") else None
+                first = "ask" if row.get("exitPlan") == EXIT_PLAN else "mid"
                 if self._hold_buys and status != "rejected":
-                    note = f"Not filled at the mid; not re-sent at the ask ({self._hold_buys})"
-                row.update(status="missed", note=note or f"buy {status or 'unfilled'} (not filled at the mid)")
+                    note = f"Not filled at the {first}; not re-sent at the ask ({self._hold_buys})"
+                row.update(status="missed", note=note or f"buy {status or 'unfilled'} (not filled at the {first})")
                 changed = True
         elif row.get("status") == "selling":
             status, price, _, filled = self._state(client, row["sellId"])
-            late = now_ts - (_ts(row.get("sellAt")) or now_ts) > SELL_TTL_SECONDS
+            late = pull or now_ts - (_ts(row.get("sellAt")) or now_ts) > SELL_TTL_SECONDS
             if status != "filled" and late:
                 status, price, filled = self._cancel(client, row["sellId"])
             if filled > 0 and status in ("filled", "canceled", "expired", "rejected"):
+                row.pop("sellRejects", None)
+                row.pop("sellRejectAt", None)
                 row.setdefault("sells", []).append(
                     {"qty": filled, "price": price, "why": row.get("sellWhy"), "at": stamp})
                 row["held"] = int(row.get("held") or 0) - filled
@@ -758,15 +1249,72 @@ class PaperMirror:
                     row.update(status="exit_due", sellQty=want)       # the rest of that leg, re-priced
                 else:
                     row.update(status="open", sellTries=0)
+                    row.pop("sellUrgent", None)
                 changed = True
-            elif status in ("canceled", "expired", "rejected"):
+            elif status == "rejected":
+                # The broker refused the sale outright. Not re-sent every tick: see SELL_REJECTS_MAX.
+                self._sale_refused(row, now_ts)
+                changed = True
+            elif status in ("canceled", "expired"):
                 row["status"] = "exit_due"                              # re-priced on the manage pass
+                row.pop("sellRejects", None)
+                row.pop("sellRejectAt", None)
                 changed = True
         return changed
 
-    def _sell(self, client, key: str, row: dict, qty: int, why: str, bid: Any, ask: Any, stamp: str) -> None:
+    @staticmethod
+    def _sale_refused(row: dict, now_ts: float) -> None:
+        """Book one refusal of the working sale: back to "exit_due", counted and timed so
+        _sale_held spaces the next tries (see SELL_REJECTS_MAX), with the broker's reason."""
+        count = int(row.get("sellRejects") or 0) + 1
+        said = paper_control.refusal_reason(row["sellError"]) if row.get("sellError") else ""
+        more = ("; trying again every %d minutes" % (SELL_REJECT_SLOW_SECONDS // 60)
+                if count >= SELL_REJECTS_MAX else "")
+        times = "" if count == 1 else f" ({count} times in a row{more})"
+        row.update(status="exit_due", sellRejects=count, sellRejectAt=now_ts,
+                   note=(SELL_REFUSED_NOTE + (": " + said if said else "") + times)[:200])
+
+    @classmethod
+    def _sale_lost(cls, row: dict, exc: BaseException, now_ts: float) -> bool:
+        """A working SALE the broker has no record of (see SELL_LOST_SECONDS). True when the
+        row went back to "exit_due" so it is sent again (under a new id: the try counter has
+        already moved on); False = not this case, or still inside the wait for a sale whose
+        submit got no answer. What is sold, why and how (sellQty / sellWhy / sellUrgent) is kept."""
+        if row.get("status") != "selling" or not paper_control.not_found(exc):
+            return False
+        if row.get("sellError"):
+            cls._sale_refused(row, now_ts)        # the broker answered at submit: a refusal
+            return True
+        if now_ts - (_ts(row.get("sellAt")) or now_ts) < SELL_LOST_SECONDS:
+            return False                          # no answer at submit: it may still appear
+        row.update(status="exit_due", note=SELL_LOST_NOTE)
+        return True
+
+    @staticmethod
+    def _sale_held(row: Mapping, now_ts: float) -> bool:
+        """True while a sale the broker refused must not be sent again yet (see SELL_REJECTS_MAX)."""
+        count = int(row.get("sellRejects") or 0)
+        last = _num(row.get("sellRejectAt"))
+        if count <= 0 or last is None:
+            return False
+        wait = SELL_REJECT_SLOW_SECONDS if count >= SELL_REJECTS_MAX else SELL_TTL_SECONDS
+        return 0 <= now_ts - last < wait
+
+    def _sell(self, client, key: str, row: dict, qty: int, why: str, bid: Any, ask: Any, stamp: str,
+              urgent: bool | None = None) -> None:
+        """A limit sell at the mid. urgent=True (a chart-plan STOP): a limit at the BID, so it
+        fills instead of sitting at the mid while the option keeps falling (several 2026-11-10..12
+        "-50%" stops closed at -78% to -93%). None = the same as this row's last sell (a re-price)."""
         tries = int(row.get("sellTries") or 0)
+        if urgent is None:
+            urgent = bool(row.get("sellUrgent"))
+        if urgent:
+            row["sellUrgent"] = True
+        else:
+            row.pop("sellUrgent", None)
         limit = _mid(bid, ask)
+        if urgent and limit is not None and (_num(bid) or 0) > 0:
+            limit = round(float(bid), 2)
         if limit is None or limit <= 0:
             row.update(status="exit_due", sellQty=qty, sellWhy=why,
                        note="Waiting for a valid fresh bid/ask midpoint; no market fallback")
@@ -775,7 +1323,10 @@ class PaperMirror:
         try:
             client.submit_option_limit_order(row["contract"], qty, limit, cid, "sell_to_close")
             row.update(sellId=cid, sellLimit=limit, sellAt=stamp, sellQty=qty, sellWhy=why, status="selling", note="")
+            row.pop("sellError", None)
         except Exception as exc:  # noqa: BLE001
+            if paper_control.broker_answered(exc):
+                row["sellError"] = str(exc)[:300]      # what the broker answered, for the note
             # A timeout can occur AFTER broker acceptance. Reconcile this exact
             # client id before any new attempt; do not create another order.
             row.update(sellId=cid, sellLimit=limit, sellAt=stamp, sellQty=qty,
@@ -786,15 +1337,28 @@ class PaperMirror:
         changed = False
         final = (now.hour, now.minute) >= FINAL_EXIT
         live_quotes = {}
+        #: symbol -> the stock's live price this tick, for the chart-plan rows' stop and targets.
+        live_stocks: dict = {}
         if self._quotes_fetch:
             contracts = sorted({r["contract"] for r in self._rows.values()
                                 if r.get("status") in ("open", "selling", "exit_due") and r.get("contract")})
+            # The stocks of the chart-plan positions ride in the same batched call (one Schwab
+            # /quotes request), so the stop is checked on a live stock price every tick instead
+            # of waiting for the scanner's next board rebuild (15 s to several minutes).
+            stocks = sorted({str(r["symbol"]) for r in self._rows.values()
+                             if r.get("status") in ("open", "selling", "exit_due") and r.get("contract")
+                             and r.get("exitPlan") == EXIT_PLAN and r.get("symbol") and int(r.get("held") or 0) > 0})
             if contracts:
                 try:
-                    doc = self._quotes_fetch(contracts) or {}
+                    doc = self._quotes_fetch(contracts + stocks) or {}
                     seen = _num(doc.get("asOf"))
                     if seen is not None and -5 <= now_ts - seen <= QUOTE_FRESH_SECONDS:
                         live_quotes = doc.get("quotes") or {}
+                        if now_ts - seen <= PLAN_STOCK_SECONDS:
+                            for sym in stocks:
+                                px = _stock_price(live_quotes.get(sym))
+                                if px is not None:
+                                    live_stocks[sym] = px
                 except Exception:
                     pass  # Keep the position and retry; never fall back to market.
         for key, row in self._rows.items():
@@ -824,9 +1388,41 @@ class PaperMirror:
             if mark is not None:
                 row["stopMark"] = mark        # last good price, for the daily loss stop only
             changed = True
+            age = now_ts - seen if mark is not None and seen is not None else None
             if row.get("status") == "selling":
-                continue  # Pending orders remain exclusively broker-reconciled.
+                # Pending orders remain exclusively broker-reconciled - with ONE exception: a
+                # chart-plan position whose working sale is a target lot (or the 21-EMA / 15:52
+                # sale) at the mid. Its stop is still checked every tick; when the stock trades
+                # through it (or the option's own -50% shows) the working sale is cancelled and
+                # everything left is sold at the bid in this same tick. Before 2026-11-13 the
+                # stop waited for the 60 s sale to time out first.
+                if row.get("exitPlan") != EXIT_PLAN or row.get("sellUrgent") or row.get("carried"):
+                    continue
+                self._plan_attach(row, t)
+                self._plan_stop(row)
+                stock = self._plan_stock(row, t, live_stocks.get(row.get("symbol")), now_ts, stamp)
+                if not self._plan_due(row, stock, mark, age, stamp):
+                    continue
+                try:
+                    self._follow_row(client, row, now_ts, stamp, key=key, pull=True)
+                except Exception as exc:  # noqa: BLE001
+                    # The broker has no record of the working sale (refused when it was sent,
+                    # or lost on the way): nothing to cancel, so the stop goes out now.
+                    # Anything else = the broker did not answer: try again next tick.
+                    if not self._sale_lost(row, exc, now_ts):
+                        continue
+                held = int(row.get("held") or 0)
+                if row.get("status") not in ("open", "exit_due") or held <= 0:
+                    continue  # it filled in full meanwhile, or the cancel has not gone through yet
+            if row.get("exitPlan") == EXIT_PLAN:
+                # The chart plan (his decision 2026-11-12). Rows without the marker were
+                # opened under the older plan below and keep it until they are closed.
+                self._manage_plan(client, key, row, t, held, bid, ask, mark, age,
+                                  live_stocks.get(row.get("symbol")), final, now_ts, stamp)
+                continue
             if row.get("status") == "exit_due":                      # re-price the same leg
+                if self._sale_held(row, now_ts):
+                    continue                                          # the broker refused it: not every tick
                 self._sell(client, key, row, min(held, int(row.get("sellQty") or held)),
                            row.get("sellWhy") or "exit", bid, ask, stamp)
                 changed = True
@@ -885,6 +1481,183 @@ class PaperMirror:
                 changed = True
         return changed
 
+    # ------------------------------------------------------- the chart plan
+    #: What an order keeps of the Bot trade's chart plan (momx/option_track.py works it out
+    #: once per signal from the option chain, with the chart's own formulas).
+    PLAN_KEYS = ("side", "expiry", "strike", "entrySpot", "expectedMove", "delta", "gamma", "t1", "t2", "t3",
+                 "t3FromOi", "chartExpiry", "chartStrike", "chainAt", "walls")
+
+    def _plan_attach(self, row: dict, t: Mapping) -> bool:
+        """Copy the signal's chart plan onto the order once the Bot has it (it may arrive a few
+        seconds after the order: the Bot reads the chain in the background). Only a plan for
+        the SAME contract counts. True when it was attached now."""
+        if isinstance(row.get("plan"), dict):
+            return False
+        plan = t.get("plan") if isinstance(t, Mapping) else None
+        if not isinstance(plan, Mapping) or _num(plan.get("strike")) is None:
+            return False
+        if _num(row.get("strike")) is not None and float(plan["strike"]) != float(row["strike"]):
+            return False
+        row["plan"] = {k: plan.get(k) for k in self.PLAN_KEYS}
+        return True
+
+    @staticmethod
+    def _plan_stop(row: dict) -> bool:
+        """The stop and the targets, once the order has both its fill and its plan. The Bot
+        worked the plan out at the SIGNAL; the order goes out a little later (median about
+        2 minutes, up to 10), so everything is re-based on ONE stock price - the stock
+        price when the order went out - exactly as the chart does when a fill is typed
+        (chart_plan.rebase = buildProjectRoi from that stock price):
+          stop      the STOCK price where the option is down 50% from the FILL;
+          T1/T2/T3  half the expected move, the full move, and the chart's open-interest
+                    strike past the move, all from that same stock price.
+        Before 2026-11-13 the targets stayed at the signal's stock price while the
+        break-even stop used the order's: a stock already past T1 at the order was bought
+        at the ask, "hit T1" on the first tick and was stopped at break-even a cent later.
+        Set once; target hits move the stop later. No plan, or no way down to half -> no
+        stock stop (the option's own -50% backstop still stands). True when it was set now."""
+        plan, fill = row.get("plan"), _num(row.get("buyFill"))
+        if not isinstance(plan, Mapping) or not fill or row.get("stopSet"):
+            return False
+        spot = _num(row.get("entryStock")) or _num(plan.get("entrySpot"))
+        try:
+            based = chart_plan.rebase(plan, fill, spot)
+        except Exception:  # noqa: BLE001 - a plan that cannot be re-based keeps its signal-time targets
+            based = None
+        if based:
+            kept = {k: v for k, v in plan.items() if k != "walls"}
+            kept.setdefault("signalSpot", plan.get("entrySpot"))
+            kept.setdefault("signalTargets", [plan.get("t1"), plan.get("t2"), plan.get("t3")])
+            kept.update(entrySpot=based["entrySpot"], t1=based["t1"], t2=based["t2"], t3=based["t3"],
+                        t3FromOi=based["t3FromOi"])
+            row["plan"] = kept
+            premium, stop = based["stopPremium"], based["stopStock"]
+        else:
+            premium, stop = chart_plan.restop(plan, fill, spot)
+        row.update(stopSet=True, stopPremium=premium, stopStock=stop, stopStock0=stop, stopKind="stop", entryStock=spot)
+        return True
+
+    @staticmethod
+    def _plan_stock(row: dict, t: Mapping, live_stock: float | None, now_ts: float, stamp: str) -> float | None:
+        """The stock's live price for a chart-plan row: this tick's quote, else the Bot's last
+        board price while fresh. Kept on the row for the Paper page."""
+        stock = live_stock
+        if stock is None:
+            seen = _ts(t.get("stockLastAt"))
+            if seen is not None and 0 <= now_ts - seen <= STOCK_FRESH_SECONDS:
+                stock = _num(t.get("stockLast"))
+        if stock is not None:
+            row.update(stockLast=stock, stockAt=stamp)
+        return stock
+
+    @staticmethod
+    def _plan_urgent(row: Mapping, stock: float | None, mark: float | None,
+                     quote_age: float | None) -> tuple[str | None, float | None]:
+        """(reason, stop price) when a chart-plan position must be sold in full NOW: the stock
+        traded through the stop, or the option itself is down 50% on a fresh quote. Else (None, None)."""
+        stop, buy = _num(row.get("stopStock")), _num(row.get("buyFill"))
+        if stock is not None and stop is not None and (stock >= stop if row.get("side") == "bear" else stock <= stop):
+            lead = {"break-even": "Stop at break-even", "T1": "Stop at T1"}.get(row.get("stopKind"), "Stop")
+            return f"{lead}: stock traded through {stop:.2f}", stop
+        if (buy and mark is not None and mark <= buy * (1 - STOP_LOSS)
+                and quote_age is not None and -5 <= quote_age <= STOP_QUOTE_SECONDS):
+            # The backstop: the option itself is down 50% on a fresh quote. First tick, no wait.
+            return BACKSTOP_WHY, None
+        return None, None
+
+    def _plan_due(self, row: dict, stock: float | None, mark: float | None, quote_age: float | None,
+                  stamp: str) -> str | None:
+        """_plan_urgent, LATCHED on the row (2026-11-13 review). Once the stock has traded
+        through the stop (or the option's own -50% backstop has shown) the stop is DUE and
+        stays due: row["stopDue"] = {why, at, stock, stop}. Before this, a stop seen while a
+        target lot was still at the broker (its cancel pending for a tick or two) was
+        forgotten when the stock bounced a few cents back: the lot was re-priced at the mid
+        and the rest held with no stop. Now everything is sold as soon as the working order
+        is out of the way, wherever the stock is by then. Returns the reason, or None."""
+        due = row.get("stopDue")
+        if isinstance(due, dict) and due.get("why"):
+            return str(due["why"])
+        why, stop = self._plan_urgent(row, stock, mark, quote_age)
+        if why:
+            row["stopDue"] = {"why": why, "at": stamp, "stock": stock, "stop": stop}
+        return why
+
+    def _manage_plan(self, client, key: str, row: dict, t: Mapping, held: int, bid: Any, ask: Any,
+                     mark: float | None, quote_age: float | None, live_stock: float | None, final: bool,
+                     now_ts: float, stamp: str) -> None:
+        """One tick of one chart-plan position (status open or exit_due). See EXIT_PLAN."""
+        self._plan_attach(row, t)
+        self._plan_stop(row)
+        buy = _num(row.get("buyFill"))
+        bear = row.get("side") == "bear"
+        stock = self._plan_stock(row, t, live_stock, now_ts, stamp)
+        if buy and mark is not None and mark / buy - 1 > float(row.get("peak") or 0):
+            row["peak"] = round(mark / buy - 1, 4)
+        why, urgent = None, False
+        stop_why = self._plan_due(row, stock, mark, quote_age, stamp)
+        if row.get("carried"):
+            why = "Prior-session exit still unfilled"
+        elif stop_why:
+            why, urgent = stop_why, True
+        elif final:
+            why = "15:52 close"
+        elif t.get("exitPrice") is not None or t.get("status") == "closed":
+            said = str(t.get("exitReason") or "")
+            why = BOT_EXIT_WORDS.get(said) or ("Bot exit: " + said)
+        pending = row.get("status") == "exit_due"
+        if why and (not pending or int(row.get("sellQty") or 0) < held or (urgent and not row.get("sellUrgent"))):
+            # Everything goes, at once. A target lot still being worked is replaced by this.
+            # The try counter is NOT reset here: the order id is built from (sales booked,
+            # tries), and the broker refuses an id it has seen. A reset made the stop re-use
+            # the id of the cancelled, unfilled sale of this leg, so the stop was refused and
+            # reached the broker one tick later for every earlier re-price (2026-11-13 review:
+            # 30 mid re-prices -> the stop went out 310 s late). The counter only goes back to
+            # 0 when a sale FILLS (_follow_row), which also changes the id's first part.
+            self._sell(client, key, row, held, why, bid, ask, stamp, urgent=urgent)
+            return
+        if pending:                                   # re-price the same leg, the same way
+            if self._sale_held(row, now_ts):
+                return                                # the broker refused it: not every tick
+            self._sell(client, key, row, min(held, int(row.get("sellQty") or held)),
+                       row.get("sellWhy") or "exit", bid, ask, stamp)
+            return
+        # Targets on the stock price: T1, T2, T3, one lot each.
+        plan = row.get("plan") if isinstance(row.get("plan"), Mapping) else {}
+        levels = [_num(plan.get(k)) for k in ("t1", "t2", "t3")]
+        done = len(row.get("hits") or [])
+        if stock is None or done >= 3:
+            return
+        reached = done
+        while reached < 3 and levels[reached] is not None and (stock <= levels[reached] if bear else stock >= levels[reached]):
+            reached += 1
+        if reached == done:
+            return
+        split = row.get("planSplit") if isinstance(row.get("planSplit"), list) and len(row.get("planSplit")) == 3 \
+            else chart_plan.split_contracts(row.get("buyFilledQty") or row.get("qty"))
+        qty = min(held, sum(int(n) for n in split[done:reached]))
+        last = reached >= 3 or sum(int(n) for n in split[reached:]) <= 0 or qty >= held
+        if last:
+            qty = held
+        for i in range(done, reached):
+            row.setdefault("hits", []).append({"target": f"T{i + 1}", "at": stamp, "stock": stock, "level": levels[i]})
+        name = f"T{reached}"
+        if last:
+            reason = f"{name} hit: sold the last {qty}"
+        else:
+            # "1 cons move to BE": after T1 the rest cannot turn into a loss on the stock;
+            # after T2 the stop follows up to T1.
+            entry_stock = _num(row.get("entryStock"))
+            if reached == 1 and entry_stock:
+                row.update(stopStock=round(entry_stock, 2), stopKind="break-even")
+            elif reached == 2 and levels[0] is not None:
+                row.update(stopStock=levels[0], stopKind="T1")
+            moved = "stop to break-even" if reached == 1 else "stop to T1"
+            reason = f"{name} hit: sold {qty}, {moved}" if qty > 0 else f"{name} hit: {moved}"
+        if qty > 0:
+            self._sell(client, key, row, qty, reason, bid, ask, stamp, urgent=False)
+        else:
+            row["note"] = reason
+
     def _entries(self, client, bot, now: datetime, now_ts: float, stamp: str) -> bool:
         if not entry_open(now):
             return False
@@ -922,14 +1695,23 @@ class PaperMirror:
         # One Level signal (same ticker, same moment) is one order, whatever
         # became of it: a missed Level 3 buy is not tried again as Level 2.
         taken = {(r.get("side"), r.get("symbol"), r.get("at")) for r in self._rows.values() if r.get("rule") in _LEVELS}
-        # Tickers that already had a Level order today. The Bot records each
-        # level once per ticker per day, so a ticker that starts as Level 2 and
-        # is upgraded minutes later gets a lone Level 3 row with a new time (25
-        # of 152 tickers on 2026-11-09). That upgrade is a new signal and may
-        # be traded, but it counts for its own level only - the ticker's
-        # Level 1 / Level 2 trade is the earlier order.
-        seen_today = {(r.get("side"), r.get("symbol")) for r in self._rows.values()
-                      if r.get("rule") in _LEVELS and not r.get("carried")}
+        # Tickers whose earlier Level order today is still LIVE (being bought,
+        # held or sold). The Bot records each level once per ticker per day, so
+        # a ticker that starts as Level 2 and is upgraded minutes later gets a
+        # lone Level 3 row with a new time (25 of 152 tickers on 2026-11-09).
+        # An upgrade while that earlier order is still live counts for its own
+        # level only - the ticker's Level 1 / Level 2 trade is the earlier
+        # order. Once the earlier order has CLOSED (or never filled), a new
+        # Level signal is a fresh entry (option_track's re-entry) and counts
+        # for every level it stands at, like any first signal.
+        seen_today = _live_level_tickers(self._rows.values())
+        # Orders closed or missed so far (a change frees buying power: fund skips are re-checked).
+        done = sum(1 for r in self._rows.values() if r.get("status") not in LIVE)
+        # Level signals the chart check already turned down today (one signal = one verdict).
+        chart_failed = {(v.get("side"), v.get("symbol"), v.get("at")) for v in self._chart_skips.values()
+                        if isinstance(v, dict)}
+        # Signals the top-of-board check turned down for the day (a rank fail; a short hold is retried).
+        top_failed = self._top_final()
         for key, (side, t) in queue:
             if live >= MAX_OPEN or entries >= MAX_ENTRIES_PER_DAY:
                 break
@@ -941,20 +1723,88 @@ class PaperMirror:
                 continue
             if key in self._rows or t.get("symbol") in held or not eligible(t, now_ts, self.jev_cut, self.leg):
                 continue
+            # ONE clock for "bought" and "has a chart plan" (2026-11-13 review): the Bot decides
+            # whether a Level signal gets a plan (option_track.plan_open, from the later of its
+            # signal and entry times), and a signal without one is never bought - so no paper
+            # order can go out with no stock stop and no T1 / T2 / T3. Checked again on later
+            # ticks while the signal is fresh (the plan is written when the trade opens).
+            if t.get("rule") in _LEVELS and not has_plan(t, self.leg):
+                continue
+            # His top-of-board rule (2026-11-10, "Mag7 top 3", "use H/L column top"): a Level
+            # signal from Mag7 / the Watchlist needs its ticker in the board's top N by H/L on the
+            # CURRENT scan, and from 9:45 on every scan for the last 5 minutes (top_verdict, on
+            # the Bot book's live run). Free - no quote, no chart - so it runs first. Out of the
+            # top N is a rules skip for the day; a hold still building (or a book still warming
+            # up after a restart) is checked again on later ticks while the signal is fresh.
+            if t.get("rule") in _LEVELS and signal in top_failed:
+                continue
+            top_state, top_why = self._top_check(side, t, now)
+            if top_state != TOP_OK:
+                final = top_state == TOP_FAIL
+                if final:
+                    top_failed.add(signal)    # one signal (side, ticker, time) is one skip
+                changed |= self._top_skip(key, side, t, top_why or "not top of board", stamp, final)
+                continue
+            if t.get("rule") in _LEVELS and self._top_pass(key, side, t, stamp):
+                changed = True                # passes now: marked passed, no stale reason left behind
+            # His step 3, the chart check (his rule 2026-11-10): calls need the
+            # 5m price above the 21 EMA and puts below it, with at least
+            # chart_check.ROOM_PCT of room before the next pivot / previous-day /
+            # premarket level. A fail is a rules skip (no order), remembered for
+            # the day so the Scorecard can say why. The chart is frozen on the
+            # signal, so one signal is judged once. AI plays no part here.
+            if t.get("rule") in _LEVELS and signal in chart_failed:
+                continue
+            chart_said, chart_why = self._chart_verdict(side, t)
+            if chart_said == chart_check.FAILED:
+                chart_failed.add(signal)
+                changed |= self._skip_for_chart(key, side, t, chart_why or "chart check failed", stamp)
+                continue
+            if self._chart_skips.pop(key, None):  # passes now: no stale reason left behind
+                changed = True
+            # Buying power, cheap checks first (each live quote is a synchronous broker call
+            # under the mirror lock): a signal already found unaffordable after the latest
+            # account read, with no order closed since, is not quoted again; nor is one whose
+            # Bot quote alone (MIN_MULTI contracts at its mid) is more than is free.
+            if self._fund_hold(key, now_ts, done):
+                continue
+            free = self._free_buying_power(now_ts)
+            bot_q = bot_quote(t, now_ts, self.leg) if free is not None else None
+            bot_mid = _ask(*bot_q) if bot_q and sellable(*bot_q) else None   # the buy goes out at the ask
+            if bot_mid is not None and bot_mid <= MAX_PRICE and bot_mid * MIN_MULTI * 100 > free:
+                need = bot_mid * MIN_MULTI * 100
+                why = f"not enough buying power (${need:,.0f} needed, ${max(free, 0):,.0f} free)"
+                changed |= self._skip_for_funds(key, side, t, why, stamp, done)
+                continue
             contract = leg_get(t, "contract", self.leg)
             # A live broker quote first (the Bot's own can be minutes old), else
             # the Bot's quote while it is fresh (v2, 2026-11-04).
-            live_q = self._live_quote(contract, now_ts, quote_cache)
+            live_q = self._live_quote(contract, now_ts, quote_cache, stock=t.get("symbol"))
             q = live_q or bot_quote(t, now_ts, self.leg)
             if not q:
                 continue
             bid, ask = q
             if not sellable(bid, ask):
                 continue                      # $0 bid or a penny option: it could not be sold back
-            limit = _mid(bid, ask)
+            # The chart plan's entry (his decision 2026-11-12): a limit at the ASK, not the mid.
+            limit = _ask(bid, ask)
             qty = size_for(limit)
             if not qty:
                 continue
+            # Buying power (2026-11-10): every buy is 3+ contracts up to $8.00
+            # (up to $2,400) and the paper account can hold far less. A buy the
+            # account cannot pay for is a rules skip with the reason saved for
+            # the Scorecard; the contract count is never cut. Unknown or stale
+            # buying power never blocks. Re-checked after the next account read
+            # or once an order closes, while the signal is still eligible.
+            needed = qty * limit * 100
+            if free is not None and needed > free:
+                why = f"not enough buying power (${needed:,.0f} needed, ${max(free, 0):,.0f} free)"
+                changed |= self._skip_for_funds(key, side, t, why, stamp, done)
+                continue
+            if self._fund_skips.pop(key, None):   # paid for now: no stale reason left behind
+                self._fund_seen.pop(key, None)
+                changed = True
             # Research must see the same fresh quote and time as this order,
             # not the earlier virtual signal entry or a future broker fill.
             policy_trade = {**t, "contract": contract, "strike": leg_get(t, "strike", self.leg),
@@ -979,20 +1829,31 @@ class PaperMirror:
                    "contract": contract, "qty": qty, "jevP": t.get("jevP"), "botEntry": leg_get(t, "entry", self.leg),
                    "buyLimit": limit, "buyId": cid, "buyAt": stamp, "status": "buying",
                    "exec": EXEC_VERSION, "buyTries": 0, "spreadAtOrder": spread_share(bid, ask),
+                   # Robinhood-style fill likelihood (momx/fill_chance.py): shown, never acted on.
+                   "fillChance": fill_chance.stamp(bid, ask),
                    "quoteVia": "live" if live_q else "bot", "leg": self.leg,
-                   "delta": leg_get(t, "delta", self.leg), "strike": leg_get(t, "strike", self.leg)}
+                   "delta": leg_get(t, "delta", self.leg), "strike": leg_get(t, "strike", self.leg),
+                   # The chart plan: bought at the ask; the quote and the stock price at the order.
+                   "exitPlan": EXIT_PLAN, "entryBid": _num(bid), "entryAsk": _num(ask), "entryMid": _mid(bid, ask)}
+            stock_now = quote_cache.get(("stock", t.get("symbol")))
+            if stock_now is None:
+                seen_at = _ts(t.get("stockLastAt"))
+                if seen_at is not None and 0 <= now_ts - seen_at <= STOCK_FRESH_SECONDS:
+                    stock_now = _num(t.get("stockLast"))
+            if stock_now is None and isinstance(t.get("plan"), Mapping):
+                stock_now = _num(t["plan"].get("entrySpot"))
+            row["entryStock"] = stock_now
+            self._plan_attach(row, t)
             if self.picker is not None:
                 # How this order was chosen, for the Scorecard's rules-against-AI comparison.
                 row["aiPick"] = ({"rank": place[key] + 1, "of": rank.get("of"), "why": (rank.get("why") or {}).get(key, ""),
                                   "source": rank.get("source")} if rank and key in place else None)
-            row["targetStrike"] = oi_target(side, t)      # his target: the high-OI wall ahead of the stock
             if isinstance(t.get("levelSignal"), dict):
                 top = t["levelSignal"].get("highestLevel")
                 row["levelAtSignal"] = top
-                if t.get("rule") in _LEVELS and isinstance(top, int) and 1 <= top <= len(LEVEL_RULES):
-                    # Every level this one order counts for - or, for a later
-                    # upgrade on a ticker already ordered today, just its own.
-                    row["levels"] = [t.get("rule")] if (side, t.get("symbol")) in seen_today else list(LEVEL_RULES[:top])
+                levels = _levels_for(side, t, seen_today, top)
+                if levels is not None:
+                    row["levels"] = levels
             if t.get("rule") in _LEVELS:
                 taken.add(signal)
                 seen_today.add((side, t.get("symbol")))
@@ -1002,6 +1863,8 @@ class PaperMirror:
             chart_inputs = chart_snapshot(t)
             if chart_inputs:
                 row['chartContext'] = chart_inputs
+            # "passed", or "not checked" (no usable chart, or not a Level signal): missing data never blocks.
+            row["chartCheck"] = chart_said
             from momx.scanner_learning import snapshot as scanner_snapshot
             captured = scanner_snapshot(t, side)
             if captured:
@@ -1016,9 +1879,13 @@ class PaperMirror:
                 held.add(t.get("symbol"))
             except Exception as exc:  # noqa: BLE001 - submission outcome may be unknown
                 row.update(status="buying", note=f"Awaiting broker reconciliation: {exc}"[:200])
+                if paper_control.broker_answered(exc):
+                    row["submitError"] = str(exc)[:300]   # the broker's answer; a network error is not a refusal
                 live += 1
                 held.add(t.get("symbol"))
             self._rows[key] = row
+            # One bought signal is not also "skipped" at its other levels.
+            self._drop_skips_for(signal)
             entries += 1
             changed = True
         return changed
@@ -1056,6 +1923,13 @@ class PaperMirror:
                 "reconciling": not acquired, "snapshotSource": source, "snapshotAt": stamp,
                 "refused": self._refused, "error": self._error,
                 "holdBuys": self._hold_buys, "dailyStop": dict(self._daily_stop) if self._daily_stop else None,
+                "broker": dict(self._broker) if self._broker else None,
+                # How many of today's signals the chart check turned down (reasons: day file "chartSkips").
+                "chartSkipped": len(self._chart_skips),
+                # How many were not bought for want of buying power (reasons: day file "fundSkips").
+                "fundSkipped": len(self._fund_skips),
+                # How many were not in their board's top N by H/L for 5 min (reasons: day file "topSkips").
+                "topSkipped": self._top_skip_count(),
                 "picker": ({**self.picker.status(), "rankedAt": (self._ai_rank or {}).get("at"),
                             "source": (self._ai_rank or {}).get("source")} if self.picker is not None else {"on": False}),
                 "ai": dict(self._ai_status),
@@ -1063,14 +1937,36 @@ class PaperMirror:
                           "picked": {side: sorted(r) for side, r in (self.rules or {}).items()},
                           "contract": "0.20 delta (OTM, next week's expiry)" if self.leg == "entry" else "nearest OTM strike, next week's expiry",
                           "ai": "AI never blocks a buy; its opinion is recorded on the order",
-                          "orders": f"buy: limit at the live mid; unfilled after {BUY_TTL_SECONDS:.0f} s, re-sent at the ask "
-                                    f"(up to {BUY_REPRICES} times); sell: limit at mid",
-                          "sizing": f"up to ${MULTI_UP_TO:.2f}: {MIN_MULTI}+ contracts (as many as fit in ${BUDGET:.0f}); "
-                                    f"over ${MULTI_UP_TO:.2f} to ${MAX_PRICE:.2f}: 1 contract; over ${MAX_PRICE:.2f}: skip",
-                          "entryTimes": "new buys 9:30-11:00 AM and 1:00-3:30 PM ET (midday skipped)",
-                          "exitPlan": "at +100% or when the stock reaches the high-OI level ahead: sell 2 of 3 and stop to break-even; "
-                                      "+200%: stop to +100%; +300%: stop to +200% ...; -50%: sell all; else the Bot's exit "
-                                      "(5m close below VWAP / 21 EMA); midpoint exit attempts from 15:52; fills not guaranteed",
+                          "orders": f"buy: limit at the live ask; unfilled after {BUY_TTL_SECONDS:.0f} s, re-sent at the ask "
+                                    f"(up to {BUY_REPRICES} times); target and close sells: limit at the mid; "
+                                    "stop sells: limit at the bid",
+                          "entry": "Setup 3+ with a confirm - Level 1: one of RVOL / SQZ / Skittles, Level 2: two, "
+                                   "Level 3: all three; the ticker in its board's top by H/L (Mag7 top 3, "
+                                   "Watchlist top 7; calls highest H/L, puts lowest) on every scan for the last "
+                                   "5 min at buy time (a hold still "
+                                   "building is checked again while the signal is fresh); then the 5m chart check: "
+                                   "price above the 21 EMA for calls "
+                                   f"(below for puts) and at least {chart_check.ROOM_PCT:g}% of room before the next "
+                                   "pivot / previous-day / premarket level; no chart data = not checked, never blocked",
+                          "sizing": f"up to ${MAX_PRICE:.2f}: at least {MIN_MULTI} contracts (more when they fit in "
+                                    f"${BUDGET:.0f}), so one lot can come off at each target; over ${MAX_PRICE:.2f}: skip",
+                          "entryTimes": "new buys 9:30-11:00 AM and 1:00-3:30 PM ET (midday skipped; a signal from the "
+                                        "10 minutes before 1:00 is bought at 1:00; a Level signal with no chart plan "
+                                        "is not bought)",
+                          # Which exit plan this running bot follows (the Bot page shows the
+                          # chart-plan text only when the server says so).
+                          "plan": EXIT_PLAN,
+                          "exitPlan": "the chart's Entry / Target / Stop plan. Stop: the stock price where the option is down 50% "
+                                      "from the fill; all sold the moment the stock trades through it (backstop: the option "
+                                      f"itself down 50% on a quote under {STOP_QUOTE_SECONDS:.0f} s old); the stop is checked every tick, also "
+                                      "while a target sale is still working. Targets on the stock, measured from the stock "
+                                      "price when the order went out: "
+                                      "T1 = half the expected move: sell 1 of 3 and stop to break-even (the stock price at entry); "
+                                      "T2 = the full expected move: sell 1 and stop to T1; T3 = the biggest open-interest strike "
+                                      "past the move (1.5x the move when there is none): sell the last. 2 contracts: T1 and T2; "
+                                      "1 contract: T2. Also the Bot's exit (a 5-minute candle closing past the 21 EMA) and the "
+                                      "15:52 close; fills not guaranteed",
+                          "planSince": "orders from before the chart plan keep their older exit plan until closed",
                           "maxOpen": MAX_OPEN, "maxEntriesPerDay": MAX_ENTRIES_PER_DAY},
                 "totals": {"entries": sum(1 for r in rows if r.get("buyId")),
                            "filled": sum(1 for r in rows if r.get("buyFill") is not None),

@@ -41,7 +41,10 @@ def grade(tmp_path, monkeypatch):
 
 def seed(base):
     order = lambda sym, status, **x: {"side": "bull", "rule": "rvol", "symbol": sym, "at": AT, "qty": 3,
-                                      "buyLimit": 1.0, "status": status, **x}
+                                      "buyLimit": 1.0, "status": status,
+                                      # Today's orders are opened under the plan being judged (2026-11-13: an
+                                      # order without this marker is the older plan's and is not judged).
+                                      "exitPlan": "chart", **x}
     path = base / "momx_paper_mirror" / "paper3" / f"{DAY}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"rows": {
@@ -104,3 +107,123 @@ def test_the_journal_is_served_with_the_scorecard(grade):
     assert (day["key"], day["trades"], day["pnl"], day["best"]) == (DAY, 1, -1100.0, None)
     assert [p["trades"] for p in journal["periods"]["week"]] == [1] and journal["periods"]["month"][0]["key"] == DAY[:7]
     assert journal["trades"][0]["symbol"] == "ZETA" and journal["trades"][0]["pnl"] == -1100.0
+
+
+def test_a_saved_scorecard_is_served_at_once_and_refreshed_behind_it(grade, monkeypatch):
+    """2026-11-10, "Taking too much time": the page must not wait for a rebuild on a busy server."""
+    import threading
+    import time as _time
+    from momx import bot_desk
+    release = threading.Event()
+    built = []
+
+    def build(base, days):
+        built.append(days)
+        if len(built) > 1:
+            release.wait(5)                              # the background rebuild is slow
+        return {"copy": len(built)}
+
+    monkeypatch.setattr(bot_desk, "build", build)
+    monkeypatch.setattr(api_server, "_MOMX_BOT_DESK_BUILDING", set())
+    assert api_server._momx_bot_desk(90) == {"copy": 1}          # the very first read builds
+    assert api_server._momx_bot_desk(90) == {"copy": 1} and built == [90]            # fresh: no rebuild
+    monkeypatch.setattr(api_server, "_MOMX_BOT_DESK_FRESH_SECONDS", 0.0)             # now the copy counts as old
+    started = _time.monotonic()
+    assert api_server._momx_bot_desk(90) == {"copy": 1}          # the old copy, immediately
+    assert api_server._momx_bot_desk(90) == {"copy": 1}          # and no second rebuild while one is running
+    assert _time.monotonic() - started < 1
+    for _ in range(100):
+        if len(built) == 2:
+            break
+        _time.sleep(0.02)
+    assert built == [90, 90]
+    release.set()
+    for _ in range(100):
+        if api_server._MOMX_BOT_DESK.get(90, (0, {}))[1] == {"copy": 2}:
+            break
+        _time.sleep(0.02)
+    assert api_server._MOMX_BOT_DESK[90][1] == {"copy": 2}       # the next read gets the new numbers
+    api_server._momx_bot_desk_clear()                            # a Pause / Remove press: never the old state
+    release.set()
+    assert api_server._momx_bot_desk(90)["copy"] >= 3
+
+
+def test_all_trades_are_served_with_the_scorecard(grade):
+    """2026-11-10, "Scoreboard I don't see all trade": every signal, whatever became of it."""
+    seed(grade)
+    with running_api() as api:
+        status, body = api.get("/api/momx-scanner/bot-desk?days=30", headers=ADMIN)
+        refused, _ = api.get("/api/momx-scanner/bot-desk?days=30", headers=USER)
+    log = body["accounts"]["paper3"]["tradeLog"]
+    assert status == 200 and refused in (401, 403)
+    assert log["total"] == 3 and log["counts"] == {"open": 0, "closed": 1, "missed": 1, "waiting": 0, "skipped": 1, "signal": 0}
+    by = {t["symbol"]: t for t in log["rows"]}
+    assert (by["ZETA"]["status"], by["ZETA"]["pnl"], by["ZETA"]["live"]) == ("closed", -1100.0, False)
+    assert (by["AAPL"]["status"], by["AAPL"]["pnl"]) == ("missed", None) and by["AVGO"]["status"] == "skipped"
+    assert by["ZETA"]["key"] == "bull|rvol|ZETA|" + AT
+
+
+def test_a_saved_scorecard_that_is_too_old_is_never_shown(grade, monkeypatch):
+    """Review 2026-11-10: a first open after a long break must wait for new numbers, not show hours-old ones."""
+    from momx import bot_desk
+    built = []
+    monkeypatch.setattr(bot_desk, "build", lambda base, days: built.append(days) or {"copy": len(built)})
+    monkeypatch.setattr(api_server, "_MOMX_BOT_DESK_BUILDING", set())
+    assert api_server._momx_bot_desk(90) == {"copy": 1}
+    monkeypatch.setattr(api_server, "_MOMX_BOT_DESK_MAX_STALE_SECONDS", 0.0)
+    assert api_server._momx_bot_desk(90) == {"copy": 2}          # built now, not the old copy
+
+    # No thread to spare for the background refresh: the saved copy is still served and the next read tries again.
+    monkeypatch.setattr(api_server, "_MOMX_BOT_DESK_MAX_STALE_SECONDS", 150.0)
+    monkeypatch.setattr(api_server, "_MOMX_BOT_DESK_FRESH_SECONDS", 0.0)
+
+    class NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(api_server.threading, "Thread", NoThread)
+    assert api_server._momx_bot_desk(90) == {"copy": 2}
+    assert api_server._MOMX_BOT_DESK_BUILDING == set()
+
+
+def test_the_alpaca_account_is_served_with_the_scorecard(grade):
+    seed(grade)
+    path = grade / "momx_paper_mirror" / "paper3" / f"{DAY}.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["broker"] = {"at": DAY + "T12:29:00-05:00", "cash": 517.93, "optionsBuyingPower": 517.93, "buyingPower": 2071.72,
+                     "equity": 967.93, "lastEquity": 2809.79}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    with running_api() as api:
+        status, body = api.get("/api/momx-scanner/bot-desk?days=30", headers=ADMIN)
+    b = body["accounts"]["paper3"]["broker"]
+    assert status == 200 and (b["optionsBuyingPower"], b["equity"], b["lastEquity"]) == (517.93, 967.93, 2809.79)
+
+
+def test_all_trades_over_the_route_includes_the_bot_signals_not_ordered(grade):
+    seed(grade)
+    sig = {"rule": "level2", "symbol": "AVGO", "board": "Mag7", "at": DAY + "T09:44:00-05:00", "status": "open",
+           "eContract": "AVGO261113C00340000", "eEntry": 3.58, "eEntryBid": 3.5, "eEntryAsk": 3.65, "eLast": 5.2, "eBest": 8.35}
+    (grade / "momx_option_track").mkdir(parents=True, exist_ok=True)
+    (grade / "momx_option_track" / f"{DAY}.json").write_text(json.dumps({"trades": [sig]}), encoding="utf-8")
+    from momx import bot_desk, chatbot
+    chatbot._CACHE.clear()
+    bot_desk._SIGNALS.clear()
+    with running_api() as api:
+        status, body = api.get("/api/momx-scanner/bot-desk?days=30", headers=ADMIN)
+    log = body["accounts"]["paper3"]["tradeLog"]
+    row = next(t for t in log["rows"] if t["status"] == "signal")
+    assert status == 200 and log["counts"]["signal"] == 1
+    assert (row["symbol"], row["board"], row["pnl"], row["roiPct"], row["bestPct"]) == ("AVGO", "Mag7", None, 45.3, 133.2)
+    assert row["note"].startswith("Not ordered: ")
+
+
+def test_fill_labels_are_served_with_the_scorecard(grade):
+    seed(grade)
+    with running_api() as api:
+        status, body = api.get("/api/momx-scanner/bot-desk?days=30", headers=ADMIN)
+    acct = body["accounts"]["paper3"]
+    assert status == 200 and set(acct["fillChance"]) == {"high", "medium", "low"}
+    assert all("fillChance" in t for t in acct["tradeLog"]["rows"])

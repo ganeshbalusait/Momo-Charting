@@ -184,3 +184,112 @@ export function withoutExtendedHoursBadPrints(bars) {
   cleanedCache.set(bars, { signature, cleaned });
   return cleaned;
 }
+
+// The daily seed (2026-11-13). The D/W/M candles and every daily level read
+// the server's daily rows, and the newest of those are built from the SAME
+// unfiltered minutes: SPY's 2026-11-11 row kept low 711.4601 from the 16:38 /
+// 16:55 ET $711.46 prints after the minute candles had dropped them, so the
+// weekly candle and the chat's D/W/M week low said 711.46 while 3m and 4H said
+// 734.10. A closed day keeps its seed row, so the row itself is repaired:
+// only on a day where this rule repaired a minute, only the high/low that sits
+// on (within $0.05 of) a print it removed, and only when the minute tape holds
+// that whole day (it starts on an earlier day). That side goes back to the
+// cleaned minutes' range for the day, never past the row's own open/close.
+// A real after-hours move is never a removed print, so it always counts.
+const easternDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+const easternDateCache = new Map();
+
+function easternDateKey(epochSeconds) {
+  const utcHour = Math.floor(Number(epochSeconds) / 3600);
+  let key = easternDateCache.get(utcHour);
+  if (key === undefined) {
+    const parts = Object.fromEntries(
+      easternDateFormatter.formatToParts(new Date(utcHour * 3600 * 1000)).map((part) => [part.type, part.value]),
+    );
+    key = `${parts.year}-${parts.month}-${parts.day}`;
+    if (easternDateCache.size > 20000) easternDateCache.clear();
+    easternDateCache.set(utcHour, key);
+  }
+  return key;
+}
+
+// Returns the SAME seed array when nothing changed.
+export function reconcileDailySeedWithCleanedTape(seed, rawTape, cleanedTape) {
+  if (!Array.isArray(seed) || !seed.length || !Array.isArray(rawTape) || !Array.isArray(cleanedTape)
+    || cleanedTape === rawTape || cleanedTape.length !== rawTape.length) return seed;
+  const removed = new Map();
+  for (let index = 0; index < rawTape.length; index += 1) {
+    const before = rawTape[index];
+    const after = cleanedTape[index];
+    if (before === after) continue;
+    const day = easternDateKey(before.time);
+    let entry = removed.get(day);
+    if (!entry) {
+      entry = { lows: [], highs: [] };
+      removed.set(day, entry);
+    }
+    if (Number(before.low) < Number(after.low)) entry.lows.push(Number(before.low));
+    if (Number(before.high) > Number(after.high)) entry.highs.push(Number(before.high));
+  }
+  if (!removed.size) return seed;
+  const firstDay = easternDateKey(cleanedTape[0].time);
+  const ranges = new Map();
+  for (const bar of cleanedTape) {
+    const day = easternDateKey(bar.time);
+    if (day <= firstDay || !removed.has(day)) continue;
+    const high = Number(bar.high);
+    const low = Number(bar.low);
+    const held = ranges.get(day);
+    if (!held) {
+      ranges.set(day, { high, low });
+    } else {
+      if (high > held.high) held.high = high;
+      if (low < held.low) held.low = low;
+    }
+  }
+  let out = null;
+  seed.forEach((row, index) => {
+    const day = easternDateKey(row.time);
+    const clean = ranges.get(day);
+    if (!clean) return;
+    const { lows, highs } = removed.get(day);
+    const open = Number(row.open);
+    const close = Number(row.close);
+    let low = Number(row.low);
+    let high = Number(row.high);
+    if (low < clean.low && lows.some((bad) => Math.abs(low - bad) <= MIN_DOLLARS)) {
+      low = Math.min(clean.low, open, close);
+    }
+    if (high > clean.high && highs.some((bad) => Math.abs(high - bad) <= MIN_DOLLARS)) {
+      high = Math.max(clean.high, open, close);
+    }
+    if (low === Number(row.low) && high === Number(row.high)) return;
+    if (!out) out = seed.slice();
+    out[index] = { ...row, high, low, badPrintRemoved: true };
+  });
+  return out || seed;
+}
+
+// The chart panel runs this on every render. The minute tape is cleaned once
+// (withoutExtendedHoursBadPrints is cached), and an unchanged repair returns
+// the same array so the daily studies are not recomputed every tick.
+const seedCache = new WeakMap();
+
+export function withoutDailySeedBadPrints(seed, rawTape) {
+  if (!Array.isArray(seed) || !seed.length || !Array.isArray(rawTape)) return seed;
+  const result = reconcileDailySeedWithCleanedTape(seed, rawTape, withoutExtendedHoursBadPrints(rawTape));
+  if (result === seed) return seed;
+  let signature = "";
+  for (let index = 0; index < result.length; index += 1) {
+    if (result[index] !== seed[index]) signature += `${index}:${result[index].low}:${result[index].high}|`;
+  }
+  const held = seedCache.get(seed);
+  if (held && held.signature === signature) return held.result;
+  seedCache.set(seed, { signature, result });
+  return result;
+}

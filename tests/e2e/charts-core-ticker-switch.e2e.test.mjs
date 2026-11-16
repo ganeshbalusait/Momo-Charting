@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 
 import { e2eTest } from "./harness.mjs";
-import { card, cardData, waitForTape, withCharts } from "./charts-core.helpers.mjs";
+import { CARD, card, cardData, waitForTape, withCharts, workspaceStorage } from "./charts-core.helpers.mjs";
 
 const tickerInput = (page, index = 0) => card(page, index).locator('input[aria-label="Chart ticker"]');
 
@@ -64,8 +64,21 @@ e2eTest("a quick-ticker click switches the active panel and marks that ticker cu
   });
 }, { timeout: 240_000 });
 
+// Explicit TOS colour tags outrank the Link toggle (App.jsx panesShareOneLinkGroup,
+// f3d4c8ff 2026-09-27): panes tagged with different colours stay independent
+// even with Link on. The shared seed tags pane n with colour n+1, so this spec
+// tags both visible panes with the same colour - the case where the toggle
+// "keeps its original meaning".
+function oneColourWorkspace(options) {
+  const seeded = workspaceStorage(options);
+  const workspace = JSON.parse(seeded.oiFinderChartWorkspace);
+  workspace.panels = workspace.panels.map((panel) => ({ ...panel, linkGroup: 1 }));
+  return { ...seeded, oiFinderChartWorkspace: JSON.stringify(workspace) };
+}
+
 e2eTest("with Link ticker on both panels follow; with it off only the active panel changes", async () => {
-  await withCharts({ workspace: { layoutId: "two-columns", symbols: ["AAPL"], timeframes: ["5m", "15m"], syncSymbols: true } }, async (app) => {
+  const layout = { layoutId: "two-columns", symbols: ["AAPL"], timeframes: ["5m", "15m"], syncSymbols: true };
+  await withCharts({ workspace: layout, storage: oneColourWorkspace(layout) }, async (app) => {
     const { page } = app;
     await waitForTape(page, { index: 0, symbol: "AAPL" });
     await waitForTape(page, { index: 1, symbol: "AAPL" });
@@ -94,6 +107,14 @@ e2eTest("AAPL -> NVDA -> AAPL inside two seconds ends on AAPL's own candles", as
     const { page } = app;
     await waitForTape(page, { symbol: "AAPL" });
     await typeTicker(page, "NVDA");
+    // The panel must actually BE on NVDA before the trader goes back. Under
+    // load the NVDA switch can take seconds to reach the page; typing AAPL
+    // before it did let the wait below be answered by the ORIGINAL AAPL chart,
+    // and the hold loop then ran through the real NVDA -> AAPL reload. Only
+    // the ticker has to arrive, not NVDA's candles: going back while they are
+    // still loading is the point of this test.
+    await page.waitForFunction((selector) => document.querySelector(selector)?.dataset.chartSymbol === "NVDA",
+      CARD, { timeout: 60_000 });
     await page.waitForTimeout(400);
     await typeTicker(page, "AAPL");
     await waitForTape(page, { symbol: "AAPL" });

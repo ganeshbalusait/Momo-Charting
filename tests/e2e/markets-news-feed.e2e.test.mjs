@@ -172,7 +172,6 @@ e2eTest("a refused refresh shows the reason and the button comes back", async ()
 const manyRows = Array.from({ length: 60 }, (_, n) => row("NVDA", `Nvidia headline number ${n + 1}`, 1 + n, 1, "Neutral", "Other", 100 + n));
 test("desktop: a real mouse wheel reaches the last headline", {
   skip: marketHoursBlock() || false,
-  todo: "suspected: .news-workspace has no overflow inside the overflow:hidden .workspace",
   timeout: 180_000,
 }, async () => {
   const { fakeReads } = newsApp({ extraRows: manyRows });

@@ -116,11 +116,43 @@ export const GRADE_RECORD = {
   letters: { "A+": { count: 12, pctHigherClose: 58.3, avgToClose: 0.42 }, A: { count: 0 } },
 };
 
+// Stored headlines in the shape /api/news-feed/latest answers with, keyed by
+// ticker: storedNews({ NVDA: 10 }) is one NVDA headline published 10 hours ago.
+// The News cell shows its age ("10h"); past 3 hours it is the dim "stored"
+// state (td.momx-newscol.is-stored without .is-fresh).
+export function storedNews(hoursAgoBySymbol) {
+  return Object.fromEntries(Object.entries(hoursAgoBySymbol).map(([symbol, hours]) => [symbol, {
+    symbol,
+    headline: `${symbol} fixture headline`,
+    url: `https://example.com/news/${symbol.toLowerCase()}`,
+    source: "Fixture Wire",
+    via: "Fixture Wire",
+    publishedAt: HOURS_AGO(hours),
+    storedAt: HOURS_AGO(hours),
+    sentiment: "Neutral",
+    score: 1,
+    tags: "News",
+    summary: "",
+    relatedSymbols: [symbol],
+    articleId: `fixture-${symbol}`,
+  }]));
+}
+
 // Reads every board spec fakes: the board itself (bull or bear by ?dir=),
 // the lists, and the per-second live layers that would otherwise repaint the
 // fixture rows with the live market. Specs spread their own on top.
-export function boardReads({ lists = () => listsFixture() } = {}) {
+//
+// 2026-11-14: the stored-headline read (/api/news-feed/latest) is faked too.
+// It was left to the live server, so whatever the news store held that minute
+// was merged into the fixture rows' News column, and a spec's result changed
+// with the age of the live headlines. The default is "no stored headline";
+// a spec that wants one passes news: storedNews({...}).
+export function boardReads({ lists = () => listsFixture(), news = {} } = {}) {
   return {
+    "GET /api/news-feed/latest": () => ({ json: {
+      symbols: Object.keys(news), latest: news, feed: Object.values(news), count: Object.keys(news).length,
+      lookbackDays: 7, refreshing: false, refreshError: null,
+    } }),
     "GET /api/momx-scanner": (read) => {
       const params = new URLSearchParams(read.search);
       return { json: boardFor(params.get("list") || "Mag7", params.get("dir") === "bear" ? "bear" : "bull") };

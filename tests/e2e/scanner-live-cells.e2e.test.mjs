@@ -26,11 +26,19 @@ async function wholeBoard(page) {
 }
 
 async function paintedCells(page) {
+  // A painted RVOL / Skittles cell also carries its age stamp
+  // (span.momx-cell-age, e.g. "6h05", since f3d4c8ff 2026-09-27) right after
+  // the number, so the reading and the age are read separately: the td's whole
+  // textContent would glue them into "656h05".
   return page.locator(CELLS).evaluateAll((cells) => cells.map((td) => {
     const pill = td.querySelector(".momx-pill");
+    const ageNode = td.querySelector(".momx-cell-age");
+    const reading = td.cloneNode(true);
+    reading.querySelectorAll(".momx-cell-age").forEach((node) => node.remove());
     return {
       col: td.getAttribute("data-col"),
-      text: td.textContent.trim(),
+      text: reading.textContent.trim(),
+      age: ageNode ? ageNode.textContent.trim() : "",
       background: pill ? getComputedStyle(pill).backgroundColor : null,
       ink: pill ? getComputedStyle(pill).color : null,
     };
@@ -53,6 +61,9 @@ e2eTest("every RVOL / SQZ / Skittles cell is painted from his thinkScript palett
       assert.doesNotMatch(cell.text, /NaN|undefined|null|Infinity/, `${cell.col} printed "${cell.text}"`);
       if (cell.col.startsWith("rvol.") && cell.text) assert.match(cell.text, /^-?\d+\.\d$/, `${cell.col} "${cell.text}" is one decimal like TOS`);
       if (cell.col.startsWith("skittles.") && cell.text) assert.match(cell.text, /^-?\d+$/, `${cell.col} "${cell.text}" is rounded like TOS`);
+      // momxCells.cellAgeLabel: "42m", "6h", "6h05", "3d", "3d4".
+      if (cell.age) assert.match(cell.age, /^\d+(m|h(\d{2})?|d(\d+)?)$/, `${cell.col} age stamp "${cell.age}"`);
+      if (cell.age) assert.ok(cell.text, `${cell.col} has an age stamp "${cell.age}" but no reading`);
     }
     // The headers the trader reads them by.
     const groups = (await page.locator("section[data-testid='momx-scanner-view'] .momx-table thead").first().innerText()).replace(/\s+/g, " ");

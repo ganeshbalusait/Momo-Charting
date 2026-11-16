@@ -79,7 +79,6 @@ e2eTest("a non-admin with the Bot page remembered never sees the Bot workspace",
 for (const remembered of ["Paper Trading", "Option Paper Trading"]) {
   test(`a non-admin with '${remembered}' remembered never sees that trading page`, {
     skip: marketHoursBlock() || false,
-    todo: "App.jsx restores any stored nav label and renders the paper trading pages with no isAdmin check",
     timeout: 180_000,
   }, async () => {
     await withApp({ view: remembered, fakeReads: NON_ADMIN }, async (app) => {

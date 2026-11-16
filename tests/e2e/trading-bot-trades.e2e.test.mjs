@@ -81,7 +81,8 @@ e2eTest("the ROI header cycles high-to-low, low-to-high, then off", async () => 
 e2eTest("Compare contracts adds the ENTRY / 0DTE / Hold max columns", async () => {
   await withApp({ view: "Bot", fakeReads: reads, storage: { "bot.tab": "trades" } }, async (app) => {
     await openTrades(app);
-    const heads = async () => (await app.page.locator(`${CARD} thead th`).allInnerTexts()).map((h) => h.replace(/[▲▼]/g, "").trim());
+    // textContent, not innerText: .bot-table th is drawn in capitals, so innerText turned the plain "Entry" column into "ENTRY".
+    const heads = async () => (await app.page.locator(`${CARD} thead th`).allTextContents()).map((h) => h.replace(/[▲▼]/g, "").trim());
     const before = await heads();
     for (const added of ["ENTRY", "ENTRY %", "0DTE", "0DTE %", "Hold max"]) assert.ok(!before.includes(added), added);
     await app.page.locator(`${CARD} label.bot-hint input[type='checkbox']`).check();

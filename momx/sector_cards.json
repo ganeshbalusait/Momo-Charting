@@ -1,0 +1,2531 @@
+{
+ "source": "frontend/src/sectorHeatmap.js",
+ "cards": [
+  {
+   "name": "Technology",
+   "etf": "XLK",
+   "about": "Chipmakers, software, internet platforms and the hardware they run on.",
+   "leaders": [
+    {
+     "symbol": "NVDA",
+     "capB": 4400.0
+    },
+    {
+     "symbol": "AAPL",
+     "capB": 3900.0
+    },
+    {
+     "symbol": "MSFT",
+     "capB": 3800.0
+    },
+    {
+     "symbol": "GOOGL",
+     "capB": 2200.0
+    },
+    {
+     "symbol": "GOOG",
+     "capB": 2200.0
+    },
+    {
+     "symbol": "AMZN",
+     "capB": 2400.0
+    },
+    {
+     "symbol": "TSM",
+     "capB": 1200.0
+    },
+    {
+     "symbol": "META",
+     "capB": 1800.0
+    },
+    {
+     "symbol": "AVGO",
+     "capB": 1600.0
+    },
+    {
+     "symbol": "SKHY",
+     "capB": 500.0
+    },
+    {
+     "symbol": "MU",
+     "capB": 140.0
+    },
+    {
+     "symbol": "AMD",
+     "capB": 310.0
+    },
+    {
+     "symbol": "ASML",
+     "capB": 300.0
+    },
+    {
+     "symbol": "TCEHY",
+     "capB": 600.0
+    },
+    {
+     "symbol": "PLTR",
+     "capB": 420.0
+    },
+    {
+     "symbol": "CSCO",
+     "capB": 250.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "ORCL",
+     "capB": 600.0
+    },
+    {
+     "symbol": "CRM",
+     "capB": 250.0
+    },
+    {
+     "symbol": "IBM",
+     "capB": 250.0
+    },
+    {
+     "symbol": "NOW",
+     "capB": 190.0
+    },
+    {
+     "symbol": "INTU",
+     "capB": 180.0
+    },
+    {
+     "symbol": "QCOM",
+     "capB": 180.0
+    },
+    {
+     "symbol": "APP",
+     "capB": 180.0
+    },
+    {
+     "symbol": "TXN",
+     "capB": 170.0
+    },
+    {
+     "symbol": "ADBE",
+     "capB": 160.0
+    },
+    {
+     "symbol": "AMAT",
+     "capB": 160.0
+    },
+    {
+     "symbol": "INTC",
+     "capB": 150.0
+    },
+    {
+     "symbol": "ANET",
+     "capB": 150.0
+    },
+    {
+     "symbol": "PANW",
+     "capB": 130.0
+    },
+    {
+     "symbol": "LRCX",
+     "capB": 120.0
+    },
+    {
+     "symbol": "CRWD",
+     "capB": 120.0
+    },
+    {
+     "symbol": "ADI",
+     "capB": 115.0
+    },
+    {
+     "symbol": "KLAC",
+     "capB": 110.0
+    },
+    {
+     "symbol": "DELL",
+     "capB": 90.0
+    },
+    {
+     "symbol": "CDNS",
+     "capB": 85.0
+    },
+    {
+     "symbol": "SNPS",
+     "capB": 80.0
+    },
+    {
+     "symbol": "MRVL",
+     "capB": 70.0
+    },
+    {
+     "symbol": "NET",
+     "capB": 70.0
+    },
+    {
+     "symbol": "SHOP",
+     "capB": 200.0
+    },
+    {
+     "symbol": "SMCI",
+     "capB": 30.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Semiconductors",
+     "symbols": [
+      "NVDA",
+      "AVGO",
+      "TSM",
+      "AMD",
+      "MU",
+      "ASML",
+      "SKHY",
+      "QCOM",
+      "TXN",
+      "AMAT",
+      "INTC",
+      "LRCX",
+      "ADI",
+      "KLAC",
+      "MRVL"
+     ]
+    },
+    {
+     "label": "Software",
+     "symbols": [
+      "MSFT",
+      "ORCL",
+      "CRM",
+      "NOW",
+      "INTU",
+      "ADBE",
+      "PLTR",
+      "APP",
+      "PANW",
+      "CRWD",
+      "SNPS",
+      "CDNS",
+      "NET",
+      "SHOP"
+     ]
+    },
+    {
+     "label": "Internet",
+     "symbols": [
+      "GOOGL",
+      "GOOG",
+      "META",
+      "AMZN",
+      "TCEHY"
+     ]
+    },
+    {
+     "label": "Hardware",
+     "symbols": [
+      "AAPL",
+      "CSCO",
+      "ANET",
+      "DELL",
+      "SMCI",
+      "IBM"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Financials",
+   "etf": "XLF",
+   "about": "Banks, card networks and fintech, brokers and asset managers, and insurers.",
+   "leaders": [
+    {
+     "symbol": "JPM",
+     "capB": 820.0
+    },
+    {
+     "symbol": "V",
+     "capB": 680.0
+    },
+    {
+     "symbol": "MA",
+     "capB": 530.0
+    },
+    {
+     "symbol": "BAC",
+     "capB": 390.0
+    },
+    {
+     "symbol": "WFC",
+     "capB": 270.0
+    },
+    {
+     "symbol": "GS",
+     "capB": 240.0
+    },
+    {
+     "symbol": "MS",
+     "capB": 230.0
+    },
+    {
+     "symbol": "AXP",
+     "capB": 220.0
+    },
+    {
+     "symbol": "C",
+     "capB": 190.0
+    },
+    {
+     "symbol": "SCHW",
+     "capB": 170.0
+    },
+    {
+     "symbol": "BLK",
+     "capB": 170.0
+    },
+    {
+     "symbol": "SPGI",
+     "capB": 160.0
+    },
+    {
+     "symbol": "PGR",
+     "capB": 150.0
+    },
+    {
+     "symbol": "COF",
+     "capB": 140.0
+    },
+    {
+     "symbol": "HOOD",
+     "capB": 110.0
+    },
+    {
+     "symbol": "COIN",
+     "capB": 90.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "BX",
+     "capB": 200.0
+    },
+    {
+     "symbol": "KKR",
+     "capB": 120.0
+    },
+    {
+     "symbol": "CME",
+     "capB": 100.0
+    },
+    {
+     "symbol": "CB",
+     "capB": 110.0
+    },
+    {
+     "symbol": "MMC",
+     "capB": 110.0
+    },
+    {
+     "symbol": "ICE",
+     "capB": 95.0
+    },
+    {
+     "symbol": "MCO",
+     "capB": 90.0
+    },
+    {
+     "symbol": "IBKR",
+     "capB": 90.0
+    },
+    {
+     "symbol": "PNC",
+     "capB": 80.0
+    },
+    {
+     "symbol": "APO",
+     "capB": 80.0
+    },
+    {
+     "symbol": "AON",
+     "capB": 80.0
+    },
+    {
+     "symbol": "USB",
+     "capB": 75.0
+    },
+    {
+     "symbol": "PYPL",
+     "capB": 70.0
+    },
+    {
+     "symbol": "BK",
+     "capB": 70.0
+    },
+    {
+     "symbol": "TFC",
+     "capB": 60.0
+    },
+    {
+     "symbol": "TRV",
+     "capB": 60.0
+    },
+    {
+     "symbol": "MET",
+     "capB": 55.0
+    },
+    {
+     "symbol": "ALL",
+     "capB": 50.0
+    },
+    {
+     "symbol": "AIG",
+     "capB": 45.0
+    },
+    {
+     "symbol": "NDAQ",
+     "capB": 45.0
+    },
+    {
+     "symbol": "SOFI",
+     "capB": 30.0
+    },
+    {
+     "symbol": "STT",
+     "capB": 30.0
+    },
+    {
+     "symbol": "RJF",
+     "capB": 30.0
+    },
+    {
+     "symbol": "AFRM",
+     "capB": 25.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Banks",
+     "symbols": [
+      "JPM",
+      "BAC",
+      "WFC",
+      "C",
+      "PNC",
+      "USB",
+      "TFC",
+      "BK",
+      "STT",
+      "COF"
+     ]
+    },
+    {
+     "label": "Payments & fintech",
+     "symbols": [
+      "V",
+      "MA",
+      "AXP",
+      "PYPL",
+      "SOFI",
+      "AFRM",
+      "HOOD",
+      "COIN"
+     ]
+    },
+    {
+     "label": "Capital markets",
+     "symbols": [
+      "GS",
+      "MS",
+      "SCHW",
+      "BLK",
+      "BX",
+      "KKR",
+      "APO",
+      "IBKR",
+      "RJF",
+      "SPGI",
+      "MCO",
+      "CME",
+      "ICE",
+      "NDAQ"
+     ]
+    },
+    {
+     "label": "Insurance",
+     "symbols": [
+      "PGR",
+      "CB",
+      "MMC",
+      "AON",
+      "TRV",
+      "MET",
+      "ALL",
+      "AIG"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Healthcare",
+   "etf": "XLV",
+   "about": "Drugmakers, biotech, medical devices, insurers and providers, and lab tools.",
+   "leaders": [
+    {
+     "symbol": "LLY",
+     "capB": 900.0
+    },
+    {
+     "symbol": "JNJ",
+     "capB": 460.0
+    },
+    {
+     "symbol": "ABBV",
+     "capB": 390.0
+    },
+    {
+     "symbol": "UNH",
+     "capB": 300.0
+    },
+    {
+     "symbol": "ABT",
+     "capB": 230.0
+    },
+    {
+     "symbol": "MRK",
+     "capB": 230.0
+    },
+    {
+     "symbol": "TMO",
+     "capB": 200.0
+    },
+    {
+     "symbol": "ISRG",
+     "capB": 190.0
+    },
+    {
+     "symbol": "AMGN",
+     "capB": 170.0
+    },
+    {
+     "symbol": "BSX",
+     "capB": 150.0
+    },
+    {
+     "symbol": "PFE",
+     "capB": 145.0
+    },
+    {
+     "symbol": "GILD",
+     "capB": 140.0
+    },
+    {
+     "symbol": "SYK",
+     "capB": 140.0
+    },
+    {
+     "symbol": "DHR",
+     "capB": 140.0
+    },
+    {
+     "symbol": "VRTX",
+     "capB": 120.0
+    },
+    {
+     "symbol": "NVO",
+     "capB": 240.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "AZN",
+     "capB": 240.0
+    },
+    {
+     "symbol": "NVS",
+     "capB": 240.0
+    },
+    {
+     "symbol": "MDT",
+     "capB": 115.0
+    },
+    {
+     "symbol": "HCA",
+     "capB": 100.0
+    },
+    {
+     "symbol": "CVS",
+     "capB": 90.0
+    },
+    {
+     "symbol": "MCK",
+     "capB": 90.0
+    },
+    {
+     "symbol": "CI",
+     "capB": 80.0
+    },
+    {
+     "symbol": "ELV",
+     "capB": 80.0
+    },
+    {
+     "symbol": "ZTS",
+     "capB": 70.0
+    },
+    {
+     "symbol": "REGN",
+     "capB": 65.0
+    },
+    {
+     "symbol": "ALNY",
+     "capB": 60.0
+    },
+    {
+     "symbol": "BDX",
+     "capB": 55.0
+    },
+    {
+     "symbol": "COR",
+     "capB": 55.0
+    },
+    {
+     "symbol": "IDXX",
+     "capB": 50.0
+    },
+    {
+     "symbol": "EW",
+     "capB": 45.0
+    },
+    {
+     "symbol": "ARGX",
+     "capB": 45.0
+    },
+    {
+     "symbol": "A",
+     "capB": 40.0
+    },
+    {
+     "symbol": "IQV",
+     "capB": 35.0
+    },
+    {
+     "symbol": "DXCM",
+     "capB": 30.0
+    },
+    {
+     "symbol": "HUM",
+     "capB": 30.0
+    },
+    {
+     "symbol": "BIIB",
+     "capB": 20.0
+    },
+    {
+     "symbol": "MRNA",
+     "capB": 12.0
+    },
+    {
+     "symbol": "HIMS",
+     "capB": 12.0
+    },
+    {
+     "symbol": "TEM",
+     "capB": 12.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Pharma",
+     "symbols": [
+      "LLY",
+      "JNJ",
+      "ABBV",
+      "MRK",
+      "PFE",
+      "NVO",
+      "AZN",
+      "NVS",
+      "ZTS"
+     ]
+    },
+    {
+     "label": "Biotech",
+     "symbols": [
+      "AMGN",
+      "GILD",
+      "VRTX",
+      "REGN",
+      "ALNY",
+      "ARGX",
+      "BIIB",
+      "MRNA"
+     ]
+    },
+    {
+     "label": "Medical devices",
+     "symbols": [
+      "ABT",
+      "ISRG",
+      "BSX",
+      "SYK",
+      "MDT",
+      "BDX",
+      "EW",
+      "DXCM"
+     ]
+    },
+    {
+     "label": "Health services",
+     "symbols": [
+      "UNH",
+      "HCA",
+      "CVS",
+      "MCK",
+      "CI",
+      "ELV",
+      "COR",
+      "HUM",
+      "HIMS"
+     ]
+    },
+    {
+     "label": "Tools & diagnostics",
+     "symbols": [
+      "TMO",
+      "DHR",
+      "IDXX",
+      "A",
+      "IQV",
+      "TEM"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Consumer Cyclical",
+   "etf": "XLY",
+   "about": "What people buy when times are good: cars, stores, restaurants, travel and homes.",
+   "leaders": [
+    {
+     "symbol": "TSLA",
+     "capB": 1400.0
+    },
+    {
+     "symbol": "HD",
+     "capB": 380.0
+    },
+    {
+     "symbol": "MCD",
+     "capB": 220.0
+    },
+    {
+     "symbol": "BKNG",
+     "capB": 170.0
+    },
+    {
+     "symbol": "TJX",
+     "capB": 150.0
+    },
+    {
+     "symbol": "LOW",
+     "capB": 140.0
+    },
+    {
+     "symbol": "SBUX",
+     "capB": 100.0
+    },
+    {
+     "symbol": "NKE",
+     "capB": 95.0
+    },
+    {
+     "symbol": "ABNB",
+     "capB": 80.0
+    },
+    {
+     "symbol": "ORLY",
+     "capB": 80.0
+    },
+    {
+     "symbol": "CMG",
+     "capB": 60.0
+    },
+    {
+     "symbol": "MAR",
+     "capB": 75.0
+    },
+    {
+     "symbol": "RCL",
+     "capB": 85.0
+    },
+    {
+     "symbol": "DASH",
+     "capB": 110.0
+    },
+    {
+     "symbol": "GM",
+     "capB": 60.0
+    },
+    {
+     "symbol": "F",
+     "capB": 45.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "CVNA",
+     "capB": 70.0
+    },
+    {
+     "symbol": "AZO",
+     "capB": 65.0
+    },
+    {
+     "symbol": "HLT",
+     "capB": 65.0
+    },
+    {
+     "symbol": "ROST",
+     "capB": 50.0
+    },
+    {
+     "symbol": "DHI",
+     "capB": 50.0
+    },
+    {
+     "symbol": "YUM",
+     "capB": 40.0
+    },
+    {
+     "symbol": "EBAY",
+     "capB": 40.0
+    },
+    {
+     "symbol": "LEN",
+     "capB": 35.0
+    },
+    {
+     "symbol": "CCL",
+     "capB": 35.0
+    },
+    {
+     "symbol": "EXPE",
+     "capB": 30.0
+    },
+    {
+     "symbol": "TSCO",
+     "capB": 30.0
+    },
+    {
+     "symbol": "LULU",
+     "capB": 25.0
+    },
+    {
+     "symbol": "PHM",
+     "capB": 25.0
+    },
+    {
+     "symbol": "ULTA",
+     "capB": 25.0
+    },
+    {
+     "symbol": "WSM",
+     "capB": 25.0
+    },
+    {
+     "symbol": "DRI",
+     "capB": 25.0
+    },
+    {
+     "symbol": "DECK",
+     "capB": 20.0
+    },
+    {
+     "symbol": "RL",
+     "capB": 20.0
+    },
+    {
+     "symbol": "BBY",
+     "capB": 18.0
+    },
+    {
+     "symbol": "DPZ",
+     "capB": 15.0
+    },
+    {
+     "symbol": "APTV",
+     "capB": 15.0
+    },
+    {
+     "symbol": "RIVN",
+     "capB": 15.0
+    },
+    {
+     "symbol": "NCLH",
+     "capB": 12.0
+    },
+    {
+     "symbol": "POOL",
+     "capB": 12.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Autos",
+     "symbols": [
+      "TSLA",
+      "GM",
+      "F",
+      "RIVN",
+      "APTV",
+      "CVNA"
+     ]
+    },
+    {
+     "label": "Retail",
+     "symbols": [
+      "HD",
+      "LOW",
+      "TJX",
+      "ORLY",
+      "AZO",
+      "ROST",
+      "EBAY",
+      "TSCO",
+      "ULTA",
+      "WSM",
+      "BBY",
+      "POOL"
+     ]
+    },
+    {
+     "label": "Restaurants",
+     "symbols": [
+      "MCD",
+      "SBUX",
+      "CMG",
+      "YUM",
+      "DRI",
+      "DPZ",
+      "DASH"
+     ]
+    },
+    {
+     "label": "Travel & leisure",
+     "symbols": [
+      "BKNG",
+      "ABNB",
+      "MAR",
+      "RCL",
+      "HLT",
+      "CCL",
+      "EXPE",
+      "NCLH"
+     ]
+    },
+    {
+     "label": "Apparel",
+     "symbols": [
+      "NKE",
+      "LULU",
+      "DECK",
+      "RL"
+     ]
+    },
+    {
+     "label": "Homebuilders",
+     "symbols": [
+      "DHI",
+      "LEN",
+      "PHM"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Communication",
+   "etf": "XLC",
+   "about": "Telecom carriers, streaming and entertainment, games, and social and online media.",
+   "leaders": [
+    {
+     "symbol": "NFLX",
+     "capB": 510.0
+    },
+    {
+     "symbol": "TMUS",
+     "capB": 250.0
+    },
+    {
+     "symbol": "DIS",
+     "capB": 200.0
+    },
+    {
+     "symbol": "T",
+     "capB": 190.0
+    },
+    {
+     "symbol": "VZ",
+     "capB": 170.0
+    },
+    {
+     "symbol": "CMCSA",
+     "capB": 130.0
+    },
+    {
+     "symbol": "SPOT",
+     "capB": 130.0
+    },
+    {
+     "symbol": "RBLX",
+     "capB": 90.0
+    },
+    {
+     "symbol": "TTWO",
+     "capB": 45.0
+    },
+    {
+     "symbol": "EA",
+     "capB": 50.0
+    },
+    {
+     "symbol": "CHTR",
+     "capB": 50.0
+    },
+    {
+     "symbol": "WBD",
+     "capB": 40.0
+    },
+    {
+     "symbol": "RDDT",
+     "capB": 40.0
+    },
+    {
+     "symbol": "BIDU",
+     "capB": 35.0
+    },
+    {
+     "symbol": "LYV",
+     "capB": 33.0
+    },
+    {
+     "symbol": "TKO",
+     "capB": 30.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "SE",
+     "capB": 90.0
+    },
+    {
+     "symbol": "NTES",
+     "capB": 80.0
+    },
+    {
+     "symbol": "AMX",
+     "capB": 30.0
+    },
+    {
+     "symbol": "VOD",
+     "capB": 25.0
+    },
+    {
+     "symbol": "FOXA",
+     "capB": 25.0
+    },
+    {
+     "symbol": "PINS",
+     "capB": 22.0
+    },
+    {
+     "symbol": "TU",
+     "capB": 22.0
+    },
+    {
+     "symbol": "BCE",
+     "capB": 20.0
+    },
+    {
+     "symbol": "RCI",
+     "capB": 20.0
+    },
+    {
+     "symbol": "NWSA",
+     "capB": 16.0
+    },
+    {
+     "symbol": "SNAP",
+     "capB": 15.0
+    },
+    {
+     "symbol": "TME",
+     "capB": 15.0
+    },
+    {
+     "symbol": "OMC",
+     "capB": 15.0
+    },
+    {
+     "symbol": "ROKU",
+     "capB": 12.0
+    },
+    {
+     "symbol": "LBRDK",
+     "capB": 12.0
+    },
+    {
+     "symbol": "IPG",
+     "capB": 10.0
+    },
+    {
+     "symbol": "FYBR",
+     "capB": 9.0
+    },
+    {
+     "symbol": "NYT",
+     "capB": 9.0
+    },
+    {
+     "symbol": "MTCH",
+     "capB": 8.0
+    },
+    {
+     "symbol": "SIRI",
+     "capB": 8.0
+    },
+    {
+     "symbol": "PARA",
+     "capB": 8.0
+    },
+    {
+     "symbol": "BILI",
+     "capB": 8.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Telecom",
+     "symbols": [
+      "TMUS",
+      "T",
+      "VZ",
+      "CMCSA",
+      "CHTR",
+      "AMX",
+      "VOD",
+      "TU",
+      "BCE",
+      "RCI",
+      "LBRDK",
+      "FYBR"
+     ]
+    },
+    {
+     "label": "Entertainment",
+     "symbols": [
+      "NFLX",
+      "DIS",
+      "SPOT",
+      "WBD",
+      "LYV",
+      "TKO",
+      "FOXA",
+      "ROKU",
+      "PARA",
+      "SIRI",
+      "TME"
+     ]
+    },
+    {
+     "label": "Gaming",
+     "symbols": [
+      "RBLX",
+      "TTWO",
+      "EA",
+      "NTES",
+      "SE"
+     ]
+    },
+    {
+     "label": "Internet & media",
+     "symbols": [
+      "RDDT",
+      "BIDU",
+      "PINS",
+      "SNAP",
+      "MTCH",
+      "BILI",
+      "NWSA",
+      "NYT",
+      "OMC",
+      "IPG"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Industrials",
+   "etf": "XLI",
+   "about": "Aerospace and defense, machinery and electrical equipment, transport, and business services.",
+   "leaders": [
+    {
+     "symbol": "GE",
+     "capB": 300.0
+    },
+    {
+     "symbol": "CAT",
+     "capB": 250.0
+    },
+    {
+     "symbol": "RTX",
+     "capB": 230.0
+    },
+    {
+     "symbol": "UBER",
+     "capB": 190.0
+    },
+    {
+     "symbol": "BA",
+     "capB": 170.0
+    },
+    {
+     "symbol": "HON",
+     "capB": 130.0
+    },
+    {
+     "symbol": "UNP",
+     "capB": 140.0
+    },
+    {
+     "symbol": "GEV",
+     "capB": 170.0
+    },
+    {
+     "symbol": "ETN",
+     "capB": 140.0
+    },
+    {
+     "symbol": "DE",
+     "capB": 130.0
+    },
+    {
+     "symbol": "LMT",
+     "capB": 110.0
+    },
+    {
+     "symbol": "ADP",
+     "capB": 120.0
+    },
+    {
+     "symbol": "PH",
+     "capB": 95.0
+    },
+    {
+     "symbol": "UPS",
+     "capB": 80.0
+    },
+    {
+     "symbol": "WM",
+     "capB": 90.0
+    },
+    {
+     "symbol": "NOC",
+     "capB": 85.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "TT",
+     "capB": 90.0
+    },
+    {
+     "symbol": "CTAS",
+     "capB": 85.0
+    },
+    {
+     "symbol": "MMM",
+     "capB": 80.0
+    },
+    {
+     "symbol": "GD",
+     "capB": 80.0
+    },
+    {
+     "symbol": "TDG",
+     "capB": 80.0
+    },
+    {
+     "symbol": "ITW",
+     "capB": 75.0
+    },
+    {
+     "symbol": "EMR",
+     "capB": 75.0
+    },
+    {
+     "symbol": "RSG",
+     "capB": 70.0
+    },
+    {
+     "symbol": "CSX",
+     "capB": 65.0
+    },
+    {
+     "symbol": "PWR",
+     "capB": 60.0
+    },
+    {
+     "symbol": "FDX",
+     "capB": 60.0
+    },
+    {
+     "symbol": "CARR",
+     "capB": 60.0
+    },
+    {
+     "symbol": "JCI",
+     "capB": 60.0
+    },
+    {
+     "symbol": "HWM",
+     "capB": 60.0
+    },
+    {
+     "symbol": "NSC",
+     "capB": 55.0
+    },
+    {
+     "symbol": "PCAR",
+     "capB": 55.0
+    },
+    {
+     "symbol": "CPRT",
+     "capB": 50.0
+    },
+    {
+     "symbol": "LHX",
+     "capB": 50.0
+    },
+    {
+     "symbol": "AXON",
+     "capB": 50.0
+    },
+    {
+     "symbol": "URI",
+     "capB": 50.0
+    },
+    {
+     "symbol": "CMI",
+     "capB": 50.0
+    },
+    {
+     "symbol": "FAST",
+     "capB": 45.0
+    },
+    {
+     "symbol": "VRSK",
+     "capB": 40.0
+    },
+    {
+     "symbol": "ODFL",
+     "capB": 35.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Aerospace & defense",
+     "symbols": [
+      "GE",
+      "RTX",
+      "BA",
+      "LMT",
+      "NOC",
+      "GD",
+      "TDG",
+      "HWM",
+      "LHX",
+      "AXON"
+     ]
+    },
+    {
+     "label": "Machinery & equipment",
+     "symbols": [
+      "CAT",
+      "DE",
+      "PH",
+      "ITW",
+      "EMR",
+      "ETN",
+      "GEV",
+      "PWR",
+      "TT",
+      "CARR",
+      "JCI",
+      "CMI",
+      "PCAR",
+      "HON",
+      "MMM"
+     ]
+    },
+    {
+     "label": "Transport",
+     "symbols": [
+      "UBER",
+      "UNP",
+      "UPS",
+      "CSX",
+      "FDX",
+      "NSC",
+      "ODFL"
+     ]
+    },
+    {
+     "label": "Business services",
+     "symbols": [
+      "ADP",
+      "WM",
+      "CTAS",
+      "RSG",
+      "CPRT",
+      "URI",
+      "FAST",
+      "VRSK"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Consumer Defensive",
+   "etf": "XLP",
+   "about": "Everyday staples people buy in any economy: groceries, drinks, food and household goods.",
+   "leaders": [
+    {
+     "symbol": "WMT",
+     "capB": 830.0
+    },
+    {
+     "symbol": "COST",
+     "capB": 420.0
+    },
+    {
+     "symbol": "PG",
+     "capB": 360.0
+    },
+    {
+     "symbol": "KO",
+     "capB": 300.0
+    },
+    {
+     "symbol": "PM",
+     "capB": 250.0
+    },
+    {
+     "symbol": "PEP",
+     "capB": 200.0
+    },
+    {
+     "symbol": "MO",
+     "capB": 100.0
+    },
+    {
+     "symbol": "MDLZ",
+     "capB": 80.0
+    },
+    {
+     "symbol": "CL",
+     "capB": 70.0
+    },
+    {
+     "symbol": "TGT",
+     "capB": 45.0
+    },
+    {
+     "symbol": "KMB",
+     "capB": 40.0
+    },
+    {
+     "symbol": "KDP",
+     "capB": 45.0
+    },
+    {
+     "symbol": "MNST",
+     "capB": 65.0
+    },
+    {
+     "symbol": "KHC",
+     "capB": 30.0
+    },
+    {
+     "symbol": "GIS",
+     "capB": 30.0
+    },
+    {
+     "symbol": "HSY",
+     "capB": 35.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "UL",
+     "capB": 150.0
+    },
+    {
+     "symbol": "BTI",
+     "capB": 90.0
+    },
+    {
+     "symbol": "DEO",
+     "capB": 60.0
+    },
+    {
+     "symbol": "KR",
+     "capB": 45.0
+    },
+    {
+     "symbol": "KVUE",
+     "capB": 40.0
+    },
+    {
+     "symbol": "SYY",
+     "capB": 35.0
+    },
+    {
+     "symbol": "STZ",
+     "capB": 30.0
+    },
+    {
+     "symbol": "K",
+     "capB": 28.0
+    },
+    {
+     "symbol": "ADM",
+     "capB": 25.0
+    },
+    {
+     "symbol": "EL",
+     "capB": 25.0
+    },
+    {
+     "symbol": "CHD",
+     "capB": 25.0
+    },
+    {
+     "symbol": "DG",
+     "capB": 25.0
+    },
+    {
+     "symbol": "MKC",
+     "capB": 20.0
+    },
+    {
+     "symbol": "TSN",
+     "capB": 20.0
+    },
+    {
+     "symbol": "DLTR",
+     "capB": 20.0
+    },
+    {
+     "symbol": "CLX",
+     "capB": 17.0
+    },
+    {
+     "symbol": "HRL",
+     "capB": 15.0
+    },
+    {
+     "symbol": "BJ",
+     "capB": 13.0
+    },
+    {
+     "symbol": "CAG",
+     "capB": 12.0
+    },
+    {
+     "symbol": "SJM",
+     "capB": 12.0
+    },
+    {
+     "symbol": "CPB",
+     "capB": 12.0
+    },
+    {
+     "symbol": "TAP",
+     "capB": 12.0
+    },
+    {
+     "symbol": "CELH",
+     "capB": 10.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Retail",
+     "symbols": [
+      "WMT",
+      "COST",
+      "TGT",
+      "KR",
+      "DG",
+      "DLTR",
+      "BJ",
+      "SYY"
+     ]
+    },
+    {
+     "label": "Beverages",
+     "symbols": [
+      "KO",
+      "PEP",
+      "KDP",
+      "MNST",
+      "DEO",
+      "STZ",
+      "TAP",
+      "CELH"
+     ]
+    },
+    {
+     "label": "Food",
+     "symbols": [
+      "MDLZ",
+      "KHC",
+      "GIS",
+      "HSY",
+      "K",
+      "ADM",
+      "MKC",
+      "TSN",
+      "HRL",
+      "CAG",
+      "SJM",
+      "CPB"
+     ]
+    },
+    {
+     "label": "Household & personal",
+     "symbols": [
+      "PG",
+      "CL",
+      "KMB",
+      "UL",
+      "KVUE",
+      "EL",
+      "CHD",
+      "CLX"
+     ]
+    },
+    {
+     "label": "Tobacco",
+     "symbols": [
+      "PM",
+      "MO",
+      "BTI"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Energy",
+   "etf": "XLE",
+   "about": "Oil and gas producers, the majors, pipelines, refiners and oilfield services.",
+   "leaders": [
+    {
+     "symbol": "XOM",
+     "capB": 490.0
+    },
+    {
+     "symbol": "CVX",
+     "capB": 270.0
+    },
+    {
+     "symbol": "COP",
+     "capB": 120.0
+    },
+    {
+     "symbol": "EOG",
+     "capB": 65.0
+    },
+    {
+     "symbol": "WMB",
+     "capB": 70.0
+    },
+    {
+     "symbol": "KMI",
+     "capB": 60.0
+    },
+    {
+     "symbol": "EPD",
+     "capB": 70.0
+    },
+    {
+     "symbol": "SLB",
+     "capB": 50.0
+    },
+    {
+     "symbol": "ET",
+     "capB": 60.0
+    },
+    {
+     "symbol": "MPC",
+     "capB": 55.0
+    },
+    {
+     "symbol": "PSX",
+     "capB": 55.0
+    },
+    {
+     "symbol": "OXY",
+     "capB": 45.0
+    },
+    {
+     "symbol": "VLO",
+     "capB": 45.0
+    },
+    {
+     "symbol": "BKR",
+     "capB": 45.0
+    },
+    {
+     "symbol": "HAL",
+     "capB": 22.0
+    },
+    {
+     "symbol": "FANG",
+     "capB": 42.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "SHEL",
+     "capB": 210.0
+    },
+    {
+     "symbol": "TTE",
+     "capB": 140.0
+    },
+    {
+     "symbol": "ENB",
+     "capB": 95.0
+    },
+    {
+     "symbol": "BP",
+     "capB": 90.0
+    },
+    {
+     "symbol": "PBR",
+     "capB": 80.0
+    },
+    {
+     "symbol": "CNQ",
+     "capB": 65.0
+    },
+    {
+     "symbol": "EQNR",
+     "capB": 65.0
+    },
+    {
+     "symbol": "OKE",
+     "capB": 60.0
+    },
+    {
+     "symbol": "SU",
+     "capB": 50.0
+    },
+    {
+     "symbol": "LNG",
+     "capB": 50.0
+    },
+    {
+     "symbol": "TRGP",
+     "capB": 40.0
+    },
+    {
+     "symbol": "IMO",
+     "capB": 40.0
+    },
+    {
+     "symbol": "EQT",
+     "capB": 30.0
+    },
+    {
+     "symbol": "CVE",
+     "capB": 30.0
+    },
+    {
+     "symbol": "TPL",
+     "capB": 25.0
+    },
+    {
+     "symbol": "EXE",
+     "capB": 25.0
+    },
+    {
+     "symbol": "DVN",
+     "capB": 22.0
+    },
+    {
+     "symbol": "CTRA",
+     "capB": 20.0
+    },
+    {
+     "symbol": "AR",
+     "capB": 10.0
+    },
+    {
+     "symbol": "RRC",
+     "capB": 9.0
+    },
+    {
+     "symbol": "APA",
+     "capB": 8.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Integrated",
+     "symbols": [
+      "XOM",
+      "CVX",
+      "SHEL",
+      "TTE",
+      "BP",
+      "PBR",
+      "EQNR",
+      "SU",
+      "IMO",
+      "CVE",
+      "CNQ"
+     ]
+    },
+    {
+     "label": "Exploration & production",
+     "symbols": [
+      "COP",
+      "EOG",
+      "OXY",
+      "FANG",
+      "DVN",
+      "CTRA",
+      "EQT",
+      "EXE",
+      "AR",
+      "RRC",
+      "APA",
+      "TPL"
+     ]
+    },
+    {
+     "label": "Pipelines",
+     "symbols": [
+      "WMB",
+      "KMI",
+      "EPD",
+      "ET",
+      "OKE",
+      "ENB",
+      "LNG",
+      "TRGP"
+     ]
+    },
+    {
+     "label": "Refining",
+     "symbols": [
+      "MPC",
+      "PSX",
+      "VLO"
+     ]
+    },
+    {
+     "label": "Services",
+     "symbols": [
+      "SLB",
+      "BKR",
+      "HAL"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Utilities",
+   "etf": "XLU",
+   "about": "Electric, gas and water utilities, plus the power producers selling to data centers.",
+   "leaders": [
+    {
+     "symbol": "NEE",
+     "capB": 160.0
+    },
+    {
+     "symbol": "CEG",
+     "capB": 110.0
+    },
+    {
+     "symbol": "SO",
+     "capB": 100.0
+    },
+    {
+     "symbol": "DUK",
+     "capB": 95.0
+    },
+    {
+     "symbol": "VST",
+     "capB": 65.0
+    },
+    {
+     "symbol": "AEP",
+     "capB": 60.0
+    },
+    {
+     "symbol": "SRE",
+     "capB": 55.0
+    },
+    {
+     "symbol": "D",
+     "capB": 50.0
+    },
+    {
+     "symbol": "EXC",
+     "capB": 45.0
+    },
+    {
+     "symbol": "PCG",
+     "capB": 35.0
+    },
+    {
+     "symbol": "XEL",
+     "capB": 42.0
+    },
+    {
+     "symbol": "PEG",
+     "capB": 42.0
+    },
+    {
+     "symbol": "ED",
+     "capB": 36.0
+    },
+    {
+     "symbol": "ETR",
+     "capB": 38.0
+    },
+    {
+     "symbol": "WEC",
+     "capB": 35.0
+    },
+    {
+     "symbol": "NRG",
+     "capB": 30.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "AWK",
+     "capB": 28.0
+    },
+    {
+     "symbol": "DTE",
+     "capB": 28.0
+    },
+    {
+     "symbol": "AEE",
+     "capB": 27.0
+    },
+    {
+     "symbol": "PPL",
+     "capB": 26.0
+    },
+    {
+     "symbol": "FE",
+     "capB": 24.0
+    },
+    {
+     "symbol": "ATO",
+     "capB": 24.0
+    },
+    {
+     "symbol": "ES",
+     "capB": 22.0
+    },
+    {
+     "symbol": "CNP",
+     "capB": 22.0
+    },
+    {
+     "symbol": "EIX",
+     "capB": 22.0
+    },
+    {
+     "symbol": "CMS",
+     "capB": 21.0
+    },
+    {
+     "symbol": "NI",
+     "capB": 19.0
+    },
+    {
+     "symbol": "LNT",
+     "capB": 16.0
+    },
+    {
+     "symbol": "EVRG",
+     "capB": 16.0
+    },
+    {
+     "symbol": "TLN",
+     "capB": 15.0
+    },
+    {
+     "symbol": "OKLO",
+     "capB": 15.0
+    },
+    {
+     "symbol": "PNW",
+     "capB": 10.0
+    },
+    {
+     "symbol": "WTRG",
+     "capB": 10.0
+    },
+    {
+     "symbol": "AES",
+     "capB": 9.0
+    },
+    {
+     "symbol": "OGE",
+     "capB": 9.0
+    },
+    {
+     "symbol": "BEP",
+     "capB": 8.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Power producers",
+     "symbols": [
+      "CEG",
+      "VST",
+      "NRG",
+      "TLN",
+      "OKLO",
+      "AES",
+      "BEP"
+     ]
+    },
+    {
+     "label": "Electric utilities",
+     "symbols": [
+      "NEE",
+      "SO",
+      "DUK",
+      "AEP",
+      "SRE",
+      "D",
+      "EXC",
+      "PCG",
+      "XEL",
+      "PEG",
+      "ED",
+      "ETR",
+      "WEC",
+      "DTE",
+      "AEE",
+      "PPL",
+      "FE",
+      "ES",
+      "CNP",
+      "EIX",
+      "CMS",
+      "LNT",
+      "EVRG",
+      "PNW",
+      "OGE"
+     ]
+    },
+    {
+     "label": "Gas & water",
+     "symbols": [
+      "ATO",
+      "NI",
+      "AWK",
+      "WTRG"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Real Estate",
+   "etf": "XLRE",
+   "about": "REITs that own warehouses, data centers, towers, homes, stores and offices, plus real-estate services.",
+   "leaders": [
+    {
+     "symbol": "PLD",
+     "capB": 105.0
+    },
+    {
+     "symbol": "WELL",
+     "capB": 110.0
+    },
+    {
+     "symbol": "AMT",
+     "capB": 95.0
+    },
+    {
+     "symbol": "EQIX",
+     "capB": 80.0
+    },
+    {
+     "symbol": "SPG",
+     "capB": 60.0
+    },
+    {
+     "symbol": "O",
+     "capB": 52.0
+    },
+    {
+     "symbol": "DLR",
+     "capB": 55.0
+    },
+    {
+     "symbol": "PSA",
+     "capB": 50.0
+    },
+    {
+     "symbol": "CCI",
+     "capB": 45.0
+    },
+    {
+     "symbol": "CBRE",
+     "capB": 48.0
+    },
+    {
+     "symbol": "VICI",
+     "capB": 35.0
+    },
+    {
+     "symbol": "EXR",
+     "capB": 30.0
+    },
+    {
+     "symbol": "IRM",
+     "capB": 30.0
+    },
+    {
+     "symbol": "AVB",
+     "capB": 30.0
+    },
+    {
+     "symbol": "EQR",
+     "capB": 26.0
+    },
+    {
+     "symbol": "VTR",
+     "capB": 32.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "CSGP",
+     "capB": 30.0
+    },
+    {
+     "symbol": "SBAC",
+     "capB": 22.0
+    },
+    {
+     "symbol": "WY",
+     "capB": 20.0
+    },
+    {
+     "symbol": "INVH",
+     "capB": 20.0
+    },
+    {
+     "symbol": "ESS",
+     "capB": 18.0
+    },
+    {
+     "symbol": "MAA",
+     "capB": 17.0
+    },
+    {
+     "symbol": "Z",
+     "capB": 17.0
+    },
+    {
+     "symbol": "ARE",
+     "capB": 15.0
+    },
+    {
+     "symbol": "SUI",
+     "capB": 15.0
+    },
+    {
+     "symbol": "KIM",
+     "capB": 15.0
+    },
+    {
+     "symbol": "AMH",
+     "capB": 14.0
+    },
+    {
+     "symbol": "UDR",
+     "capB": 13.0
+    },
+    {
+     "symbol": "REG",
+     "capB": 13.0
+    },
+    {
+     "symbol": "GLPI",
+     "capB": 13.0
+    },
+    {
+     "symbol": "LAMR",
+     "capB": 13.0
+    },
+    {
+     "symbol": "CPT",
+     "capB": 12.0
+    },
+    {
+     "symbol": "HST",
+     "capB": 12.0
+    },
+    {
+     "symbol": "BXP",
+     "capB": 12.0
+    },
+    {
+     "symbol": "ELS",
+     "capB": 12.0
+    },
+    {
+     "symbol": "OHI",
+     "capB": 12.0
+    },
+    {
+     "symbol": "DOC",
+     "capB": 12.0
+    },
+    {
+     "symbol": "FRT",
+     "capB": 9.0
+    },
+    {
+     "symbol": "CUBE",
+     "capB": 9.0
+    },
+    {
+     "symbol": "NNN",
+     "capB": 8.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Industrial & data",
+     "symbols": [
+      "PLD",
+      "EQIX",
+      "DLR",
+      "IRM"
+     ]
+    },
+    {
+     "label": "Towers",
+     "symbols": [
+      "AMT",
+      "CCI",
+      "SBAC",
+      "LAMR"
+     ]
+    },
+    {
+     "label": "Residential",
+     "symbols": [
+      "AVB",
+      "EQR",
+      "INVH",
+      "ESS",
+      "MAA",
+      "AMH",
+      "UDR",
+      "CPT",
+      "ELS",
+      "SUI"
+     ]
+    },
+    {
+     "label": "Healthcare",
+     "symbols": [
+      "WELL",
+      "VTR",
+      "OHI",
+      "DOC"
+     ]
+    },
+    {
+     "label": "Retail & net lease",
+     "symbols": [
+      "SPG",
+      "O",
+      "KIM",
+      "REG",
+      "FRT",
+      "NNN",
+      "VICI",
+      "GLPI"
+     ]
+    },
+    {
+     "label": "Storage",
+     "symbols": [
+      "PSA",
+      "EXR",
+      "CUBE"
+     ]
+    },
+    {
+     "label": "Office & other",
+     "symbols": [
+      "ARE",
+      "BXP",
+      "HST",
+      "WY"
+     ]
+    },
+    {
+     "label": "Services",
+     "symbols": [
+      "CBRE",
+      "CSGP",
+      "Z"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Materials",
+   "etf": "XLB",
+   "about": "Chemicals, miners and metals, gold, construction materials and packaging.",
+   "leaders": [
+    {
+     "symbol": "LIN",
+     "capB": 220.0
+    },
+    {
+     "symbol": "SHW",
+     "capB": 85.0
+    },
+    {
+     "symbol": "NEM",
+     "capB": 90.0
+    },
+    {
+     "symbol": "ECL",
+     "capB": 75.0
+    },
+    {
+     "symbol": "FCX",
+     "capB": 60.0
+    },
+    {
+     "symbol": "APD",
+     "capB": 65.0
+    },
+    {
+     "symbol": "CRH",
+     "capB": 70.0
+    },
+    {
+     "symbol": "CTVA",
+     "capB": 42.0
+    },
+    {
+     "symbol": "NUE",
+     "capB": 32.0
+    },
+    {
+     "symbol": "VMC",
+     "capB": 37.0
+    },
+    {
+     "symbol": "MLM",
+     "capB": 35.0
+    },
+    {
+     "symbol": "DD",
+     "capB": 32.0
+    },
+    {
+     "symbol": "PPG",
+     "capB": 26.0
+    },
+    {
+     "symbol": "DOW",
+     "capB": 18.0
+    },
+    {
+     "symbol": "IFF",
+     "capB": 20.0
+    },
+    {
+     "symbol": "ALB",
+     "capB": 10.0
+    }
+   ],
+   "more": [
+    {
+     "symbol": "BHP",
+     "capB": 130.0
+    },
+    {
+     "symbol": "RIO",
+     "capB": 100.0
+    },
+    {
+     "symbol": "SCCO",
+     "capB": 90.0
+    },
+    {
+     "symbol": "AEM",
+     "capB": 70.0
+    },
+    {
+     "symbol": "VALE",
+     "capB": 45.0
+    },
+    {
+     "symbol": "WPM",
+     "capB": 45.0
+    },
+    {
+     "symbol": "FNV",
+     "capB": 35.0
+    },
+    {
+     "symbol": "IP",
+     "capB": 25.0
+    },
+    {
+     "symbol": "SW",
+     "capB": 22.0
+    },
+    {
+     "symbol": "LYB",
+     "capB": 20.0
+    },
+    {
+     "symbol": "STLD",
+     "capB": 20.0
+    },
+    {
+     "symbol": "PKG",
+     "capB": 19.0
+    },
+    {
+     "symbol": "RS",
+     "capB": 16.0
+    },
+    {
+     "symbol": "BALL",
+     "capB": 16.0
+    },
+    {
+     "symbol": "CF",
+     "capB": 15.0
+    },
+    {
+     "symbol": "AMCR",
+     "capB": 14.0
+    },
+    {
+     "symbol": "AVY",
+     "capB": 14.0
+    },
+    {
+     "symbol": "EMN",
+     "capB": 10.0
+    },
+    {
+     "symbol": "MP",
+     "capB": 10.0
+    },
+    {
+     "symbol": "AA",
+     "capB": 10.0
+    },
+    {
+     "symbol": "MOS",
+     "capB": 9.0
+    },
+    {
+     "symbol": "CLF",
+     "capB": 6.0
+    }
+   ],
+   "groups": [
+    {
+     "label": "Chemicals",
+     "symbols": [
+      "LIN",
+      "SHW",
+      "ECL",
+      "APD",
+      "DD",
+      "PPG",
+      "DOW",
+      "IFF",
+      "LYB",
+      "EMN",
+      "CTVA",
+      "CF",
+      "MOS"
+     ]
+    },
+    {
+     "label": "Mining & metals",
+     "symbols": [
+      "FCX",
+      "BHP",
+      "RIO",
+      "SCCO",
+      "VALE",
+      "ALB",
+      "MP",
+      "AA",
+      "NUE",
+      "STLD",
+      "RS",
+      "CLF"
+     ]
+    },
+    {
+     "label": "Gold & precious",
+     "symbols": [
+      "NEM",
+      "AEM",
+      "WPM",
+      "FNV"
+     ]
+    },
+    {
+     "label": "Construction materials",
+     "symbols": [
+      "CRH",
+      "VMC",
+      "MLM"
+     ]
+    },
+    {
+     "label": "Packaging",
+     "symbols": [
+      "IP",
+      "SW",
+      "PKG",
+      "BALL",
+      "AMCR",
+      "AVY"
+     ]
+    }
+   ]
+  }
+ ]
+}

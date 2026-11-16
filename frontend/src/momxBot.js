@@ -7,7 +7,7 @@
 // NO order is ever sent - paper numbers from real quotes.
 //
 // Every trade is scored four ways (his exits, 2026-09-28):
-//   exit   the weekly at the first 5m close below VWAP / EMA21, else 15:50
+//   exit   the weekly at the first 5m close below EMA21, else 15:50 (VWAP exit removed 2026-11-10)
 //   zero   the same signal on a 0DTE contract, closed at that exit / 15:50
 //   max    the weekly's best price until it expires ("hold max profit")
 //   close  the weekly at 15:50
@@ -53,9 +53,11 @@ export const BOT_RULE_LABELS = Object.freeze({
 // give me explanation ... so i know what is missing"). "Needs" = every
 // condition; the back-test line is Sep 1-25 on stock prices.
 export const BOT_RULE_HELP = Object.freeze({
-  level1: { what: "Rising-RVOL virtual strategy; MOM optional.", needs: "At least 3 cyan/green RVOL timeframes from 5m through Daily strictly increasing versus their prior valid publication, plus at least 3 of the 23 distinct Setup types. Existing call eligibility and 09:30-15:30 ET entry window apply.", tested: "Experimental virtual strategy. No calibrated win probability; no historical results backfilled. AI agents review completed trades afterward." },
-  level2: { what: "Level 1 with SQZ confirmation; MOM optional.", needs: "Level 1 plus ONE of 2h / 4h / Daily SQZ that is cyan, blank, or fired today. At least 3 Setup types total.", tested: "Experimental virtual strategy, recorded separately from Level 1. Levels overlap; not independent executions." },
-  level3: { what: "Level 2 with Skittles confirmation; MOM optional.", needs: "Level 2 plus one or more cyan/green Skittles background boxes from 2h through Monthly. At least 3 Setup types total.", tested: "Experimental virtual strategy, recorded separately from Levels 1/2. Higher confirmation has not been proven more profitable." },
+  // His rule 2026-11-10: 3+ Setup types, then RVOL OR SQZ OR Skittles; the
+  // level counts how many of the three confirms are on (no longer stacked).
+  level1: { what: "3+ Setup types and ANY ONE confirm (RVOL OR SQZ OR Skittles); MOM optional.", needs: "At least 3 of the 23 distinct Setup types, plus any one of: RVOL cyan/green on 3+ timeframes 5m-Daily (colour only, rising not needed); ONE of 2h / 4h / Daily SQZ cyan, blank, or fired today; a cyan/green Skittles box 2h-Monthly. Existing call eligibility and 09:30-15:30 ET entry window apply.", tested: "Experimental virtual strategy. No calibrated win probability; no historical results backfilled. AI agents review completed trades afterward. Before 2026-11-10 Level 1 meant RVOL rising." },
+  level2: { what: "3+ Setup types and ANY TWO of the three confirms; MOM optional.", needs: "Any two of RVOL cyan/green on 3+ timeframes, SQZ (one of 2h / 4h / Daily cyan, blank, or fired today), a cyan/green Skittles box 2h-Monthly. At least 3 Setup types total.", tested: "Experimental virtual strategy, recorded separately from Level 1. Levels overlap; not independent executions. Before 2026-11-10 Level 2 meant Level 1 + SQZ." },
+  level3: { what: "3+ Setup types and ALL THREE confirms; MOM optional.", needs: "RVOL cyan/green on 3+ timeframes AND SQZ (one of 2h / 4h / Daily cyan, blank, or fired today) AND one or more cyan/green Skittles boxes from 2h through Monthly. At least 3 Setup types total.", tested: "Experimental virtual strategy, recorded separately from Levels 1/2. Higher confirmation has not been proven more profitable." },
   news: { what: "News ▲: the scanner's NEWS ▲ list (BEAR: NEWS ▼).", needs: "The ticker is a scan match AND the headline in its News cell is one TypeSafe Jev reads as bullish (BEAR board: bearish) - the same tickers the scanner shows under NEWS ▲ with Scan matches only ticked. No ETFs. 09:30-15:30.", tested: "TEST - starts 2026-10-08. Back-look Oct 6-7 on stock prices: bullish-news stocks moved about the same as other news." },
   jev: { what: "Jev pick: TypeSafe Jev scored this scanner ticker as a TAKE.", needs: "The ticker is on the scanner (a match); Jev read its whole scanner picture - RVOL, Skittles, squeeze, momentum, VWAP, sector, SPY, news - and gave a take chance of 30% or more in the last 15 minutes. Re-scored when the picture changes (at most every 10 minutes). 09:30-15:30.", tested: "TEST - starts 2026-10-05; not back-tested (scanner scores did not exist before)." },
   goRvolMacd: { what: "GO, plus fresh buying volume and momentum turning up.", needs: "Everything GO needs, AND a cyan RVOL on 5m, 15m or 30m, AND 5-minute MACD above its signal line and rising, on completed candles.", tested: "Beat random picks in the back-test (small sample)." },

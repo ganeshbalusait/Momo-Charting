@@ -31,6 +31,8 @@ from typing import Iterable
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 CACHE_SECONDS = 86400
+#: How soon a load that failed (SEC not answering, no saved copy) is tried again.
+EMPTY_RETRY_SECONDS = 600
 
 # Tickers that are words / acronyms in headlines: never matched bare (still matched as "(CAR)" or "$CAR").
 WORD_TICKERS = {
@@ -138,7 +140,14 @@ class CompanyNames:
                 return json.loads(self.cache_path.read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001 - a bad cache just refetches
                 pass
-        data = self._fetch()
+        try:
+            data = self._fetch()
+        except Exception:  # noqa: BLE001
+            # An old list beats no list (2026-11-14): with the cache over a day old and SEC not answering, the names
+            # were thrown away and the morning brief called a headline naming the company "not about" its ticker.
+            if self.cache_path and self.cache_path.exists():
+                return json.loads(self.cache_path.read_text(encoding="utf-8"))
+            raise
         if self.cache_path:
             try:
                 self.cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,12 +158,13 @@ class CompanyNames:
 
     def names(self) -> dict[str, list[str]]:
         with self._lock:
-            if self._names and time.monotonic() - self._loaded < CACHE_SECONDS:
+            if (self._names or self._loaded != 0.0) and time.monotonic() - self._loaded < CACHE_SECONDS:
                 return self._names
+        failed = False
         try:
             raw = self._raw()
-        except Exception:  # noqa: BLE001 - no names today: tickers still match
-            raw = {}
+        except Exception:  # noqa: BLE001 - no names for now: tickers still match
+            raw, failed = {}, True
         out: dict[str, list[str]] = {}
         for row in (raw.values() if isinstance(raw, dict) else raw):
             ticker = str(row.get("ticker") or "").upper()
@@ -167,7 +177,9 @@ class CompanyNames:
             out.setdefault(ticker, [])
             out[ticker] = list(dict.fromkeys([*extra, *out[ticker]]))
         with self._lock:
-            self._names, self._loaded = out, time.monotonic()
+            # A failed load is tried again in a few minutes, not held for a whole day.
+            held = time.monotonic() - (CACHE_SECONDS - EMPTY_RETRY_SECONDS if failed else 0)
+            self._names, self._loaded = out, held
         return out
 
     # ------------------------------------------------------------------ match

@@ -81,7 +81,7 @@ e2eTest("a failed run shows the server's reason", async () => {
 });
 
 test("after a failed run the previous rows are not left standing under the error",
-  { skip: marketHoursBlock() || false, todo: "a failed Run check now keeps the earlier rows on screen beneath 'Checklist unavailable' (the GET path clears them; the POST path does not)", timeout: 180_000 },
+  { skip: marketHoursBlock() || false, timeout: 180_000 },
   async () => {
     await withApp({
       view: "Settings",

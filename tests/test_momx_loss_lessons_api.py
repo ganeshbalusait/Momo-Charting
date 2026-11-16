@@ -37,6 +37,7 @@ def paper(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_desk, "EVALUATION_START", day)
     at = day + "T09:40:00-05:00"
     row = lambda sym, pl, rule="level1": {"side": "bull", "rule": rule, "symbol": sym, "at": at, "qty": 5, "status": "closed",
+                                         "exitPlan": "chart",   # opened under the plan being judged
                                          "buyFill": 0.6, "botEntry": 0.6, "buyAt": at, "buyFillAt": at, "pl": pl, "leg": "entry",
                                          "closedAt": day + "T10:10:00-05:00", "spreadAtOrder": 0.3,
                                          "sells": [{"qty": 5, "price": 0.4, "why": "Bot exit: stop", "at": day + "T10:10:00-05:00"}]}

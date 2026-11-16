@@ -44,6 +44,11 @@ import {
   DEEP_NONE,
 } from "./longTerm";
 import { glossaryEntry, glossaryMatch } from "./longTermGlossary";
+import AnalystCard from "./AnalystCard.jsx";
+import TechnicalCard from "./TechnicalCard.jsx";
+import { analystCard } from "./analystGauge.js";
+import { technicalCard } from "./miniEventChart.js";
+import { technicalData } from "./chatReport.js";
 
 const POLL_MS = 30000;
 // A rows request that has not answered in this long is stuck, not slow (the
@@ -411,6 +416,53 @@ function SetupSection({ setup, signal, pass }) {
   );
 }
 
+// The long-term view on a ticker's detail (2026-11-11): the Analysts card and, when the server sends it with the
+// same reply, the Technical analysis card on its Long-Term pill. One read per ticker while the app stays open
+// (GET /api/long-term/analyst?symbol=), loaded when the ticker opens; no data hides the cards.
+const ANALYST_SEEN = new Map();
+// The read still on its way, per ticker: a drawer that re-mounts before it answers (closed and opened again, or
+// React's development double-run of effects) waits on the same read instead of asking a second time.
+const ANALYST_PENDING = new Map();
+function readAnalyst(key) {
+  if (!ANALYST_PENDING.has(key)) {
+    ANALYST_PENDING.set(key, fetch(`/api/long-term/analyst?symbol=${encodeURIComponent(key)}`)
+      .then((r) => (r.ok ? r.json() : false))
+      .catch(() => false)
+      .then((data) => {
+        const got = data && typeof data === "object" ? data : false;
+        ANALYST_SEEN.set(key, got);
+        ANALYST_PENDING.delete(key);
+        return got;
+      }));
+  }
+  return ANALYST_PENDING.get(key);
+}
+function LongTermView({ symbol, price = null }) {
+  const key = String(symbol || "").toUpperCase();
+  const [reply, setReply] = useState(() => ANALYST_SEEN.get(key) ?? null);
+  useEffect(() => {
+    if (!key) return undefined;
+    if (ANALYST_SEEN.has(key)) { setReply(ANALYST_SEEN.get(key)); return undefined; }
+    let current = true;
+    setReply(null);
+    readAnalyst(key).then((got) => { if (current) setReply(got); });
+    return () => { current = false; };
+  }, [key]);
+  // The route's `technical` may be the chat report's shape (views + miniChart) or the card's; technicalData reads both.
+  const technical = useMemo(() => (reply ? technicalData(reply.technical) : null), [reply]);
+  if (!reply || (!analystCard(reply) && !technicalCard(technical))) return null;
+  return (
+    <section className="long-term-view" data-testid="long-term-view">
+      <h4>Long term view</h4>
+      <div className="long-term-view-cards">
+        {technicalCard(technical) ? <TechnicalCard data={technical} initialTerm="long" /> : null}
+        {/* The route sends no price: the target bar is drawn against the price this page already shows. */}
+        <AnalystCard data={reply} price={typeof price === "number" && price > 0 ? price : null} />
+      </div>
+    </section>
+  );
+}
+
 function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, width }) {
   const detail = entry?.detail;
   const sections = useMemo(() => (detail ? drawerSections(detail) : null), [detail]);
@@ -431,6 +483,7 @@ function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, widt
       </header>
       {setup ? <SetupSection setup={setup} signal={row.signal} pass={isSetup(row)} /> : null}
       {wantsLeap(row) ? <LeapSection entry={leap} onRetry={onRetryLeap} /> : null}
+      <LongTermView symbol={row.symbol} price={row.price} />
       {!entry || entry.loading ? (
         <p className="long-term-dim">Loading the filings…</p>
       ) : entry.error ? (
@@ -511,6 +564,17 @@ export const LONG_TERM_SESSION = {
   data: null, acceptedAt: 0, tile: null, query: "", openSym: null, details: {}, leaps: {},
 };
 
+// A chat link to one company: search for it, open its row, and clear the tile so
+// it is not filtered away. Seeded here for a page about to open; a page already
+// open is told directly.
+const longTermLinkListeners = new Set();
+export function openLongTermTicker(symbol) {
+  const wanted = String(symbol || "").trim().toUpperCase();
+  if (!wanted) return;
+  Object.assign(LONG_TERM_SESSION, { query: wanted, openSym: wanted, tile: null });
+  longTermLinkListeners.forEach((listener) => listener(wanted));
+}
+
 export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   const S = LONG_TERM_SESSION;
   const [prefs, setPrefs] = useState(() => ({ ...readPrefs(safeStorage()), tile: S.tile }));
@@ -541,6 +605,16 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   const updatePrefs = useCallback((patch) => {
     setPrefs((current) => ({ ...current, ...patch }));
   }, []);
+
+  useEffect(() => {
+    const onLink = (wanted) => {
+      setQuery(wanted);
+      setOpenSym(wanted);
+      updatePrefs({ tile: null });
+    };
+    longTermLinkListeners.add(onLink);
+    return () => longTermLinkListeners.delete(onLink);
+  }, [updatePrefs]);
 
   // Save prefs after they change (not inside the state updater, which React
   // may run twice). The first render only read them, so it is skipped.

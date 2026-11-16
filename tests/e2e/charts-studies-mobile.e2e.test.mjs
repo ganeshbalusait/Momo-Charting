@@ -12,33 +12,47 @@ const TABS = 'nav.mobile-terminal-action-bar[data-testid="mobile-chart-section-t
 const SHELL = '[data-testid="app-shell"]';
 const phone = (extra = {}) => chartAppOptions({ viewport: PHONE, ...extra });
 
-e2eTest("the Chart and Chain tabs show one section at a time, with no sideways scroll", async () => {
+// Phone navigation is the fixed bottom bar (f3d4c8ff, 2026-09-27): at <=760px
+// index.css hides the older in-page Chart/Chain strip with display:none
+// !important ("The fixed five-item menu below owns phone navigation"), and the
+// bar's Options button always opens the full Quick Options workspace
+// (openMobileOptions in App.jsx). So on a phone the chart page shows the chart
+// alone, Options swaps it for Quick Options, and Chart brings the chart back.
+const BAR = 'nav.mobile-chart-bottom-nav[aria-label="Mobile primary navigation"]';
+
+e2eTest("on a phone the bottom bar's Chart and Options show one section at a time, with no sideways scroll", async () => {
   await withApp(phone(), async (app) => {
     await chartCard(app.page, "AAPL");
-    const tabs = app.page.locator(TABS);
-    await tabs.waitFor({ state: "visible", timeout: 30_000 });
-    const chartTab = tabs.locator("button", { hasText: "Chart" });
-    const chainTab = tabs.locator("button", { hasText: "Chain" });
+    const bar = app.page.locator(BAR);
+    await bar.waitFor({ state: "visible", timeout: 30_000 });
+    const chartTab = bar.locator("button", { hasText: "Chart" });
+    const optionsTab = bar.locator('[data-testid="mobile-primary-options"]');
     assert.match(await chartTab.getAttribute("class"), /\bis-active\b/);
+    assert.equal(await chartTab.getAttribute("aria-current"), "page");
     assert.match(await app.page.locator(SHELL).getAttribute("class"), /\bis-chart-tab\b/);
+    // The older strip is still rendered (wider screens use it) but never shown on a phone.
+    await app.page.locator(TABS).waitFor({ state: "attached", timeout: 10_000 });
+    assert.equal(await app.page.locator(TABS).isVisible(), false, "the old Chart/Chain strip doubles the bottom bar");
     assert.equal(await app.page.locator(".charts-oi-page-full .charts-oi-full-chart").isVisible(), true);
+    assert.equal(await app.page.locator(".charts-oi-page-full .charts-oi-tos-chain").first().isVisible().catch(() => false), false,
+      "the chain is showing on the Chart tab");
     assert.equal(await overflowsSideways(app.page), false, "the chart tab scrolls sideways");
 
-    await chainTab.click();
-    await app.page.locator(`${SHELL}.is-options-tab`).waitFor({ timeout: 10_000 });
-    assert.match(await chainTab.getAttribute("class"), /\bis-active\b/);
-    await app.page.locator(".charts-oi-page-full .charts-oi-tos-chain").first().waitFor({ state: "visible", timeout: 30_000 });
-    assert.equal(await app.page.locator(".charts-oi-page-full .charts-oi-full-chart").isVisible(), false, "the chart is still showing on the Chain tab");
-    assert.equal(await overflowsSideways(app.page), false, "the chain tab scrolls sideways");
+    await optionsTab.click();
+    await app.page.locator('[data-testid="quick-options-view"]').waitFor({ state: "visible", timeout: 30_000 });
+    assert.equal(await optionsTab.getAttribute("aria-current"), "page");
+    assert.doesNotMatch(await app.page.locator(SHELL).getAttribute("class"), /\bis-chart-tab\b/);
+    assert.equal(await app.page.locator(".charts-oi-page-full .charts-oi-full-chart").isVisible().catch(() => false), false,
+      "the chart is still showing on the Options tab");
+    assert.equal(await overflowsSideways(app.page), false, "the Options tab scrolls sideways");
 
     await chartTab.click();
-    await app.page.locator(`${SHELL}.is-chart-tab`).waitFor({ timeout: 10_000 });
-    await app.page.locator(".charts-oi-page-full .charts-oi-full-chart").waitFor({ state: "visible", timeout: 10_000 });
-    assert.equal(await app.page.locator(".charts-oi-page-full .charts-oi-tos-chain").first().isVisible().catch(() => false), false,
-      "the chain is still showing on the Chart tab");
-    // Back on the chart, the same AAPL tape is still there (hidden, never unmounted).
+    await app.page.locator(`${SHELL}.is-chart-tab`).waitFor({ timeout: 15_000 });
+    await app.page.locator(".charts-oi-page-full .charts-oi-full-chart").waitFor({ state: "visible", timeout: 30_000 });
+    assert.equal(await chartTab.getAttribute("aria-current"), "page");
+    // Back on the chart, the AAPL tape is there again.
     await chartCard(app.page, "AAPL");
-    assert.equal(await tabs.isVisible(), true);
+    assert.equal(await overflowsSideways(app.page), false);
     noPageErrors(app);
   });
 });

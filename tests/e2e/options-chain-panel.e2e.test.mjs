@@ -15,6 +15,12 @@ const CHAIN = "#charts-oi-option-chain";
 const TABS = `${CHAIN} .charts-oi-chain-view-tabs[aria-label="Option chain view"]`;
 const OPEN = `${CHAIN} .charts-oi-expiry-accordion .charts-oi-expiry-item.is-open`;
 const DEPTH = `${OPEN} select[aria-label="Strikes displayed above and below ATM"]`;
+// The page heading (ticker title, Hide/Show chain button, feed lamp) is
+// display:none on the charts workstation by design since 5e47c8cf (2026-08-10,
+// index.css ".charts-workstation .charts-oi-heading"). It still carries the
+// page's ticker, so it is read as attached text, never waited on as visible.
+const HEADING_TITLE = ".charts-oi-heading h2";
+const BACKGROUND_WRITES = new Set(["/api/news-feed/refresh", "/api/client-timing"]);
 
 async function chainShown(page) {
   await page.locator(CHAIN).waitFor({ state: "visible", timeout: 90_000 });
@@ -68,10 +74,15 @@ e2eTest("tapping a strike opens a price alert prefilled with that strike and sav
   await withApp(await options(), async (app) => {
     await chainShown(app.page);
     await openChainTab(app.page);
+    const before = app.writes.length;
     await app.page.locator(`${OPEN} button.tos-strike-alert[aria-label$=" at strike 105"]`).click();
     await app.page.waitForFunction(() => [...document.querySelectorAll('input[aria-label="Price alert value"]')]
       .some((input) => input.offsetParent !== null && input.value === "105.00"), null, { timeout: 15_000 });
-    assert.deepEqual(app.writes, [], "the alert form opens; nothing is sent until he saves it");
+    // The page itself posts in the background whatever he taps: the ticker's
+    // news refresh (App.jsx refreshOiFinderNews, 2368fac2) and the chart-load
+    // timing line (chartLoadTiming.js). Neither is the alert; anything else is.
+    const alertWrites = app.writes.slice(before).filter((write) => !BACKGROUND_WRITES.has(write.path));
+    assert.deepEqual(alertWrites, [], "the alert form opens; nothing is sent until he saves it");
     assert.deepEqual(app.pageErrors, []);
   });
 });
@@ -79,16 +90,17 @@ e2eTest("tapping a strike opens a price alert prefilled with that strike and sav
 e2eTest("Hide chain is remembered across a reload and Show chain brings it back", async () => {
   await withApp(await options(), async (app) => {
     await chainShown(app.page);
-    const toggle = app.page.locator(`${VIEW} button[aria-controls="charts-oi-option-chain"]`);
-    assert.match(await toggle.innerText(), /Hide chain/);
-    await toggle.click();
+    // The visible Hide control is the chevron in the chain's own header; the
+    // heading's "Hide chain" button is hidden with the heading (see HEADING_TITLE).
+    await app.page.locator(`${CHAIN} > header button[aria-label="Hide option chain"]`).click();
     await app.page.waitForFunction((selector) => !document.querySelector(selector), CHAIN);
     assert.equal(await app.page.evaluate(() => localStorage.getItem("chartsOiChainOpen")), "false");
     await app.page.reload({ waitUntil: "domcontentloaded" });
     await app.page.locator(VIEW).waitFor({ timeout: 90_000 });
     await sleep(2_000);
     assert.equal(await app.page.locator(CHAIN).count(), 0, "the hidden chain came back after a reload");
-    await app.page.locator(`${VIEW} button[aria-controls="charts-oi-option-chain"]`, { hasText: "Show chain" }).click();
+    // With the chain hidden, the chart workspace toolbar offers the way back.
+    await app.page.locator(`${VIEW} button[aria-label="Show the option chain"][aria-controls="charts-oi-option-chain"]`).click();
     await chainShown(app.page);
     assert.deepEqual(app.pageErrors, []);
   });
@@ -132,24 +144,30 @@ e2eTest("the docked Watchlist table switches the chart and chain to the ticker c
     await chainShown(app.page);
     const panel = app.page.locator(`${CHAIN} .charts-oi-chain-dock-panel[aria-label="Watchlist panel"]`);
     await panel.locator("td.is-symbol").first().waitFor({ timeout: 30_000 });
-    const current = (await app.page.locator(".charts-oi-heading h2").innerText()).split(" ")[0];
+    const current = (await app.page.locator(HEADING_TITLE).textContent()).trim().split(" ")[0];
     const target = current === "NVDA" ? "SPY" : "NVDA";
     await panel.locator("tr", { has: app.page.locator("td.is-symbol", { hasText: new RegExp(`^${target}$`) }) }).click();
-    await app.page.locator(".charts-oi-heading h2", { hasText: `${target} — Charts & OI` }).waitFor({ timeout: 30_000 });
+    await app.page.locator(HEADING_TITLE, { hasText: `${target} — Charts & OI` }).waitFor({ state: "attached", timeout: 30_000 });
     await panel.locator("tr.is-active td.is-symbol", { hasText: new RegExp(`^${target}$`) }).waitFor({ timeout: 15_000 });
     assert.ok(app.reads.some((read) => read.path === "/api/oi-finder-chain" && new URLSearchParams(read.search).get("symbol") === target));
     assert.deepEqual(app.pageErrors, []);
   });
 });
 
-e2eTest("on a phone the chart opens without the chain and the Chain tab reveals it", async () => {
+// Phones: the old Chart / Chain strip ([data-testid=mobile-chart-section-tabs])
+// is display:none !important at <=760px since f3d4c8ff (2026-09-27, index.css
+// "The fixed five-item menu below owns phone navigation"), and that menu's
+// Options tab always opens the full Quick Options chain (App.jsx
+// openMobileOptions: "A primary tab must have one destination").
+e2eTest("on a phone the chart opens without the chain and the Options tab brings up the chain", async () => {
   await withApp(await options({ viewport: PHONE }), async (app) => {
-    const tabs = app.page.locator('[data-testid="mobile-chart-section-tabs"]');
-    await tabs.waitFor({ state: "visible", timeout: 90_000 });
+    await app.page.locator(VIEW).waitFor({ state: "visible", timeout: 90_000 });
     await sleep(1_500);
     assert.equal(await app.page.locator(CHAIN).count(), 0, "phones start chart-only");
-    await tabs.locator("button", { hasText: "Chain" }).click();
-    await chainShown(app.page);
+    await app.page.locator('[data-testid="mobile-primary-options"]').click();
+    const surface = app.page.locator('[data-testid="mobile-full-option-chain"]');
+    await surface.waitFor({ state: "visible", timeout: 60_000 });
+    await app.page.locator('[data-testid="mobile-full-option-chain"] > header', { hasText: "Spot $100" }).waitFor({ timeout: 60_000 });
     assert.equal(await overflowsSideways(app.page), false);
     assert.deepEqual(app.pageErrors, []);
   });

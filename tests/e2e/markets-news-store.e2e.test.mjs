@@ -40,6 +40,17 @@ const LATEST = {
 async function openNews(app) {
   const toggle = app.page.locator('[data-testid="momx-news-toggle"]');
   await toggle.waitFor({ state: "visible", timeout: 90_000 });
+  // Press NEWS once the board has tickers, as the trader does: the refresh is
+  // asked for the tickers on the board (MomxScannerPanel.jsx refreshNewsFeed
+  // returns early on an empty list), so a press before the board fills sends
+  // nothing. The toggle shows before the first board answer. The panel reads
+  // the store (GET /api/news-feed/latest?symbols=...) only once that list is
+  // non-empty, so that read is the sign the board's tickers are in.
+  const deadline = Date.now() + 90_000;
+  while (!app.reads.some((read) => read.path === "/api/news-feed/latest" && /symbols=./.test(read.search))) {
+    assert.ok(Date.now() < deadline, "the board never listed a ticker, so NEWS has nothing to refresh");
+    await app.page.waitForTimeout(250);
+  }
   await toggle.click();
   assert.equal(await toggle.getAttribute("aria-pressed"), "true");
   await app.page.locator(BOX).waitFor({ state: "visible", timeout: 30_000 });

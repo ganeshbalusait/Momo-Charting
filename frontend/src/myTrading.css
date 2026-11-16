@@ -1,0 +1,93 @@
+/* My Trading (owner only, 2026-11-11). The view owns its one vertical scroller
+   (view scroll container contract): the shell pins main.workspace to
+   overflow:hidden, so without this nothing below the first screen is reachable.
+   The extra .app-shell .workspace selector outranks later @media rules in index.css. */
+.my-trading-view,
+.app-shell .workspace > .my-trading-view { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+
+.mt { --mt-line: rgba(92, 92, 103, .45); --mt-card: #151518; --mt-dim: #9a9aa6; --mt-up: #22d3ee; --mt-down: #f472d0; --mt-warn: #f0bd4d;
+  display: grid; gap: 14px; min-width: 0; max-width: 1280px; padding: 12px 16px 32px; color: #f1f1f4; }
+.mt > * { min-width: 0; }
+.mt .is-up { color: var(--mt-up); }
+.mt .is-down { color: var(--mt-down); }
+.mt h2, .mt h3, .mt h4 { margin: 0; }
+.mt h2 { font-size: 20px; }
+.mt h3 { font-size: 14.5px; }
+.mt h4 { font-size: 13.5px; }
+.mt-note { margin: 0; color: var(--mt-dim); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.mt-note.is-bad { color: var(--mt-down); }
+
+.mt-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 16px; }
+.mt-title { display: grid; gap: 3px; min-width: 0; }
+.mt-periods { display: inline-flex; border: 1px solid var(--mt-line); border-radius: 8px; overflow: hidden; }
+.mt-periods button { min-height: 32px; padding: 0 12px; border: 0; background: transparent; color: #d7d7de; font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.mt-periods button + button { border-left: 1px solid var(--mt-line); }
+.mt-periods button[aria-pressed="true"] { background: rgba(34, 211, 238, .14); color: #fff; }
+
+.mt-source { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 12px 14px;
+  border: 1px solid var(--mt-line); border-left-width: 4px; border-radius: 10px; background: var(--mt-card); }
+.mt-source > div { display: grid; gap: 3px; min-width: 0; }
+.mt-source.is-ok { border-left-color: var(--mt-up); }
+.mt-source.is-warn { border-left-color: var(--mt-warn); }
+.mt-source.is-bad { border-left-color: var(--mt-down); }
+.mt-source.is-bad strong { color: var(--mt-down); }
+.mt-source-tools { justify-items: end; }
+.mt-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid var(--mt-line); border-radius: 6px;
+  background: transparent; color: #d7d7de; font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.mt-btn:hover:not(:disabled) { border-color: var(--mt-up); color: #fff; }
+.mt-btn:disabled { opacity: .5; cursor: default; }
+.mt-reply { color: var(--mt-dim); font-size: 12px; }
+.mt-reply.is-ok { color: var(--mt-up); }
+.mt-reply.is-warn { color: var(--mt-warn); }
+.mt-reply.is-bad { color: var(--mt-down); }
+
+.mt-events { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.mt-events-label { color: var(--mt-dim); font-size: 11.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.mt-event { padding: 3px 8px; border: 1px solid var(--mt-line); border-radius: 999px; font-size: 12px; overflow-wrap: anywhere; }
+.mt-event.is-high { border-color: rgba(240, 189, 77, .6); }
+.mt-event.is-today { background: rgba(240, 189, 77, .12); }
+
+.mt-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); gap: 10px; }
+.mt-tile { display: grid; gap: 2px; align-content: start; min-width: 0; padding: 12px 14px; border: 1px solid var(--mt-line); border-radius: 10px; background: var(--mt-card); }
+.mt-tile.is-dim .mt-tile-value { color: #8a8a95; }
+.mt-tile-label { color: var(--mt-dim); font-size: 11.5px; }
+.mt-tile-value { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.mt-tile-sub { color: var(--mt-dim); font-size: 11.5px; }
+
+.mt-section { display: grid; gap: 10px; min-width: 0; }
+.mt-card { display: grid; gap: 10px; align-content: start; min-width: 0; padding: 14px 16px; border: 1px solid var(--mt-line); border-radius: 10px; background: var(--mt-card); }
+.mt-card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.mt-basis { color: var(--mt-dim); font-size: 11.5px; }
+
+/* Tables scroll sideways inside their own card on a phone, never the page. */
+.mt-table-wrap { min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; }
+.mt-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.mt-table th, .mt-table td { padding: 7px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid rgba(92, 92, 103, .3); }
+.mt-table th { color: var(--mt-dim); font-size: 11.5px; font-weight: 700; }
+.mt-table .is-left { text-align: left; }
+.mt-table tbody tr:last-child td { border-bottom: 0; }
+.mt-table tr.is-few td { color: #a5a5b0; }
+.mt-table tr.is-own td { font-weight: 800; }
+.mt-few { color: var(--mt-dim); font-size: 11px; font-weight: 400; }
+
+.mt-habits { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px; }
+.mt-habit { display: grid; gap: 6px; align-content: start; min-width: 0; padding: 12px 14px; border: 1px solid var(--mt-line); border-left-width: 4px;
+  border-left-color: var(--mt-down); border-radius: 10px; background: var(--mt-card); }
+.mt-habit.is-empty { border-left-color: var(--mt-line); opacity: .75; }
+.mt-habit-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mt-habit-cost { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.mt-habit-line { margin: 0; font-size: 13px; }
+.mt-link { justify-self: start; min-height: 28px; padding: 0; border: 0; background: transparent; color: #67e8f9; font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.mt-habit-trades, .mt-open { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.mt-habit-trades li, .mt-open li { display: flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.mt-when { color: var(--mt-dim); }
+.mt-contract { font-weight: 700; }
+.mt-exec { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); gap: 10px; }
+
+@media (max-width: 760px) {
+  .mt { padding: 10px 12px 28px; gap: 12px; }
+  .mt-card, .mt-habit, .mt-source { padding: 12px; }
+  .mt-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mt-tile-value { font-size: 17px; }
+  .mt-source-tools { justify-items: start; }
+}

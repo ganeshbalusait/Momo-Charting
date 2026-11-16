@@ -299,7 +299,9 @@ const STUDY = { updatedAt: "2026-11-10T17:30:00-05:00", startDay: "2026-11-10", 
       howToTest: "Compare the next 30 trades before and after 10:00." },
     { side: "bear", rule: "level3", losses: 2, wins: 1, netPnl: 15, status: "collecting", source: "none",
       lesson: "Not enough losing trades yet (2 of 10).", proposedChange: "", howToTest: "" }] };
-const FRESH = { ...DESK_DOC, asOf: "2026-11-10T17:45:00-05:00", startDay: "2026-11-10", strategy: "Level 1 / 2 / 3 on the 0.20-delta contract",
+// plan: "chart" = the server says the running paper bots trade the plan being judged (the page
+// shows "Evaluation started ..." only then; tests/e2e/trading-bot-plan.e2e.test.mjs covers the other case).
+const FRESH = { ...DESK_DOC, asOf: "2026-11-10T17:45:00-05:00", startDay: "2026-11-10", plan: "chart", strategy: "Level 1 / 2 / 3 on the 0.20-delta contract",
   lessons: STUDY, accounts: { paper3: { ...PAPER3, balance: 9660, from: "2026-11-10", through: "2026-11-10" }, paper5: EMPTY } };
 const LESSONS = "section[aria-label='AI lessons from losing trades']";
 
@@ -392,9 +394,9 @@ e2eTest("the three strategies are shown side by side with the best one named; an
     assert.match(await rows.nth(2).textContent(), /same trades as Level 2/);
     assert.deepEqual(await texts(rows.nth(0).locator("td").filter({ hasNot: app.page.locator("b") })),
       ["40", "54%", "+$900", "+7.5%", "+$23", "+$1,100 · 61% of 30", "−$200 · 33% of 10", "40 of 44"]);
-    // The card sits above the account curve, so it is seen without hunting.
+    // The card sits above the eight checks, so it is seen without hunting.
     const cardBox = await card.boundingBox();
-    const curveBox = await app.page.locator(`${DESK} section[aria-label='Account curve']`).boundingBox();
+    const curveBox = await app.page.locator(`${DESK} section[aria-label='Evaluation checks']`).boundingBox();
     assert.ok(cardBox && curveBox && cardBox.y < curveBox.y);
 
     await app.page.locator(`${DESK} [role='group'][aria-label='Paper account'] button`, { hasText: "Paper 5" }).click();
@@ -517,7 +519,7 @@ e2eTest("Journal: day, week and month profit with each strategy, the best one na
     await card.locator("details.desk-journal-trades summary").click();
     assert.equal((await card.locator("details.desk-journal-trades summary").textContent()).trim(), "Every closed trade (newest 2 of 3)");
     const trades = card.locator("details.desk-journal-trades tbody tr");
-    assert.deepEqual(await texts(trades.nth(1).locator("td")), ["11-10 09:58 ET", "NVDA", "Put", "Level 1", "5", "$1.20", "−$75", "−13%", "stop loss -50%"]);
+    assert.deepEqual(await texts(trades.nth(1).locator("td")), ["11-10 09:58 ET", "NVDA", "Put", "Level 1", "5", "$1.20", "–", "–", "–", "–", "−$75", "−13%", "stop loss -50%"]);   // before the chart plan: no stop / targets
     assert.match(await trades.nth(0).textContent(), /AAPL.*AI pick.*Call.*Level 3.*\+\$60.*stop at break-even/s);
 
     await app.page.reload({ waitUntil: "domcontentloaded" });                                   // the chosen period is remembered
@@ -546,3 +548,308 @@ e2eTest("phone width: the journal fits and its tables scroll inside the card", a
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// ---- the Scorecard opens on the numbers saved at the last visit (2026-11-10: "Taking too much time")
+e2eTest("a slow server: the Scorecard shows the saved numbers at once, marked as saved, then the new ones", async () => {
+  const saved = { ...DESK_DOC, asOf: "2026-11-09T15:55:00-05:00" };
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const slow = async () => { await gate; return { json: DESK_DOC }; };
+  await withApp({ view: "Bot", storage: { ...SCORECARD, "bot.deskSaved": JSON.stringify(saved) }, fakeReads: canned(slow) }, async (app) => {
+    const desk = app.page.locator(DESK);
+    await desk.locator(VERDICT).waitFor({ timeout: 60_000 });                           // painted while the server has not answered
+    assert.match(await desk.locator(".desk-asof").textContent(), /Saved numbers from 11-09 15:55 ET · updating…/);
+    assert.equal(await desk.locator(".desk-check").count(), 8);
+    assert.equal(await app.page.getByText("Loading the scorecard").count(), 0);
+    release();
+    await desk.locator(".desk-asof", { hasText: "Real paper fills · as of 11-09 18:30 ET" }).waitFor({ timeout: 15_000 });
+    assert.deepEqual(app.pageErrors, []);
+  });
+  // Nothing saved, or something unreadable saved: the plain loading line, then the numbers.
+  await withApp({ view: "Bot", storage: { ...SCORECARD, "bot.deskSaved": "{broken" }, fakeReads: canned(DESK_DOC) }, async (app) => {
+    await app.page.locator(`${DESK} ${VERDICT}`).waitFor({ timeout: 60_000 });
+    assert.match(await app.page.locator(`${DESK} .desk-asof`).textContent(), /Real paper fills · as of 11-09 18:30 ET/);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+// ---- the Scorecard opens as a journal dashboard (2026-11-10: "Scoreboard look like not a tradezella")
+const DASH_DOC = { ...DESK_DOC, asOf: "2026-11-12T16:30:00-05:00",
+  accounts: { paper3: { ...PAPER3, journal: { ...JOURNAL, periods: { ...JOURNAL.periods,
+    day: [...JOURNAL.periods.day, periodRow("2026-10-30", 4, 1250, lv([4, 1250], [0, 0], [0, 0]), "level1", 1250, 0)] } } }, paper5: { ...PAPER5, journal: { periods: { day: [], week: [], month: [] }, trades: [], tradeCount: 0 } } } };
+const TILES = "section[aria-label='Key numbers'] .desk-tile";
+const CALENDAR = "section[aria-label='Calendar']";
+const RECENT = "section[aria-label='Recent trades']";
+
+e2eTest("journal dashboard: the five tiles, both P&L charts, the month calendar and the latest trades come first", async () => {
+  await withApp({ view: "Bot", storage: SCORECARD, fakeReads: canned(DASH_DOC) }, async (app) => {
+    const desk = app.page.locator(DESK);
+    await desk.locator(TILES).first().waitFor({ timeout: 60_000 });
+    assert.deepEqual(await texts(desk.locator(`${TILES} .desk-tile-label`)), ["Net P&L", "Trade win %", "Profit factor", "Day win %", "Avg win / loss"]);
+    assert.deepEqual(await texts(desk.locator(`${TILES} .desk-tile-value`)), ["−$6,817", "25%", "0.59", "19%", "1.74"]);
+    assert.deepEqual(await texts(desk.locator(`${TILES} .desk-tile-sub`)), ["129 closed trades", "32 won · 95 lost", "dollars won per dollar lost", "3 green · 13 red", "+$300 · −$173"]);
+    assert.equal(await desk.locator(`${TILES} svg.desk-gauge`).count(), 4);                 // every tile but the money one
+    assert.match(await desk.locator(`${TILES} .desk-tile-value`).first().getAttribute("class"), /is-down/);
+
+    const bars = desk.locator("section[aria-label='Net daily P&L'] rect.desk-bar-day");
+    assert.equal(await bars.count(), 4);
+    assert.equal(await desk.locator("section[aria-label='Net daily P&L'] rect.desk-bar-day.is-up").count(), 2);
+
+    const cal = desk.locator(CALENDAR);
+    assert.equal((await cal.locator("h4").textContent()).trim(), "November 2026");
+    assert.equal((await cal.locator("[data-testid='desk-cal-total']").textContent()).trim(), "Month: +$15 · 2 days traded");
+    assert.deepEqual(await texts(cal.locator(".desk-cal-row.is-head span")), ["Mon", "Tue", "Wed", "Thu", "Fri", "Week"]);
+    const tenth = cal.locator("[data-day='2026-11-10']");
+    assert.match(await tenth.textContent(), /^10−\$452 trades$/);
+    assert.match(await tenth.getAttribute("class"), /is-down/);
+    const twelfth = cal.locator("[data-day='2026-11-12']");
+    assert.match(await twelfth.textContent(), /^12\+\$601 trade$/);
+    assert.match(await twelfth.getAttribute("class"), /is-up.*is-today/);
+    assert.equal((await cal.locator("[data-day='2026-11-11']").textContent()).trim(), "11");   // nothing traded: only the date
+    assert.deepEqual(await texts(cal.locator(".desk-cal-cell.is-week")), ["–", "+$152 days", "–", "–", "–"]);
+    assert.equal(await cal.locator("button[aria-label='Next month']").isDisabled(), true);      // nothing after the current month
+
+    await cal.locator("button[aria-label='Previous month']").click();
+    await cal.locator("h4", { hasText: "October 2026" }).waitFor({ timeout: 10_000 });
+    assert.equal((await cal.locator("[data-testid='desk-cal-total']").textContent()).trim(), "Month: +$1,250 · 1 day traded");
+    assert.match(await cal.locator("[data-day='2026-10-30']").textContent(), /^30\+\$1\.3k4 trades$/);
+    assert.equal(await cal.locator(".desk-cal-cell.is-today").count(), 0);
+    assert.equal(await cal.locator("button[aria-label='Previous month']").isDisabled(), true);   // nothing was traded before October
+    await cal.locator("button", { hasText: "This month" }).click();
+    await cal.locator("h4", { hasText: "November 2026" }).waitFor({ timeout: 10_000 });
+
+    const recent = desk.locator(`${RECENT} li`);
+    assert.equal(await recent.count(), 2);
+    assert.match(await recent.nth(0).textContent(), /^AAPL Call · Level 3AI pick\+\$6011-12 10:15 ET · stop at break-even$/);
+    assert.match(await recent.nth(1).textContent(), /^NVDA Put · Level 1−\$7511-10 09:58 ET · stop loss -50%$/);
+
+    // Reading order: numbers, charts, calendar, then the evaluation checks.
+    const y = async (sel) => (await desk.locator(sel).first().boundingBox()).y;
+    const order = [await y("section[aria-label='Key numbers']"), await y("section[aria-label='Account curve']"), await y(CALENDAR),
+      await y(JOURNAL_CARD), await y("section[aria-label='Evaluation checks']"), await y("section[aria-label='Trader statistics']")];
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    assert.equal(await overflowsSideways(app.page), false);
+    await shot(app, "desk-dashboard-desktop");
+
+    // An account with nothing closed in the journal: an empty month and a plain line, no made-up rows.
+    await desk.locator("[role='group'][aria-label='Paper account'] button", { hasText: "Paper 5" }).click();
+    await desk.locator(RECENT, { hasText: "No closed trades yet. They appear here as real paper trades close." }).waitFor({ timeout: 15_000 });
+    assert.equal((await cal.locator("[data-testid='desk-cal-total']").textContent()).trim(), "Month: $0 · 0 days traded");
+    assert.equal(await cal.locator("button[aria-label='Previous month']").isDisabled(), true);   // no earlier month to look at
+    assert.deepEqual(app.writes, []);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("phone width: the tiles, the calendar and the latest trades fit with no sideways scroll", async () => {
+  await withApp({ view: "Bot", viewport: PHONE, storage: SCORECARD, fakeReads: canned(DASH_DOC) }, async (app) => {
+    const desk = app.page.locator(DESK);
+    await desk.locator(TILES).first().waitFor({ timeout: 60_000 });
+    assert.equal(await overflowsSideways(app.page), false);
+    const targets = [desk.locator(CALENDAR), desk.locator(RECENT), desk.locator("section[aria-label='Net daily P&L']"),
+      desk.locator(`${CALENDAR} [data-testid='desk-cal-total']`), desk.locator(`${CALENDAR} button[aria-label='Next month']`)];
+    for (let i = 0; i < 5; i += 1) targets.push(desk.locator(TILES).nth(i));
+    for (const day of ["2026-11-09", "2026-11-10", "2026-11-13"]) targets.push(desk.locator(`${CALENDAR} [data-day='${day}']`));
+    targets.push(desk.locator(`${CALENDAR} .desk-cal-cell.is-week`).nth(1));
+    for (const target of targets) {
+      const box = await target.boundingBox();
+      assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, "cut off on a phone");
+    }
+    // The day's result is readable inside its cell, not spilling out of it.
+    const cell = await desk.locator(`${CALENDAR} [data-day='2026-11-10']`).boundingBox();
+    const text = await desk.locator(`${CALENDAR} [data-day='2026-11-10'] .desk-cal-pnl`).boundingBox();
+    assert.ok(text.x >= cell.x - 1 && text.x + text.width <= cell.x + cell.width + 1, "a day's result spills out of its cell");
+    await desk.locator(`${CALENDAR} button[aria-label='Previous month']`).tap();
+    await desk.locator(`${CALENDAR} h4`, { hasText: "October 2026" }).waitFor({ timeout: 10_000 });
+    assert.equal(await overflowsSideways(app.page), false);
+    await shot(app, "desk-dashboard-phone");
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+// ---- "All trades" on the Scorecard (2026-11-10: "Scoreboard I don't see all trade")
+const TRADE_LOG = { total: 6, counts: { open: 1, closed: 1, missed: 1, waiting: 1, skipped: 2 }, rows: [
+  { key: "k1", status: "open", symbol: "TSLA", side: "bull", rule: "level2", levels: ["level1", "level2"], at: "2026-11-12T09:34:00-05:00", qty: 3, buy: 1, pnl: 200, roiPct: 66.7, live: true, note: "part sold: +100%: sell 1 of 3", aiPicked: true },
+  { key: "k2", status: "waiting", symbol: "NVDA", side: "bear", rule: "level2", levels: ["level1", "level2"], at: "2026-11-12T09:33:00-05:00", qty: 5, buy: null, pnl: null, roiPct: null, live: false, note: "order sent, waiting for a fill" },
+  { key: "k3", status: "skipped", symbol: "IOT", side: "bull", rule: "level1", levels: ["level1"], at: "2026-11-12T09:32:00-05:00", qty: null, buy: null, pnl: null, note: "Spread 71% of the mid is over 15%" },
+  { key: "k4", status: "missed", symbol: "MSFT", side: "bull", rule: "level1", levels: ["level1"], at: "2026-11-12T09:31:00-05:00", qty: 2, buy: null, pnl: null, note: "the order did not fill" },
+  { key: "k5", status: "closed", symbol: "AAPL", side: "bull", rule: "level3", levels: ["level1", "level2", "level3"], at: "2026-11-12T09:30:00-05:00", qty: 3, buy: 1, pnl: -120, roiPct: -40, live: false, note: "stop loss -50%" }] };
+const LOG_DOC = { ...DASH_DOC, accounts: { ...DASH_DOC.accounts, paper3: { ...DASH_DOC.accounts.paper3, tradeLog: TRADE_LOG },
+  paper5: { ...DASH_DOC.accounts.paper5, tradeLog: { rows: [], counts: { open: 0, closed: 0, missed: 0, waiting: 0, skipped: 0 }, total: 0 } } } };
+const ALL_TRADES = "section[aria-label='All trades']";
+
+e2eTest("All trades: every signal with its status, the filters with counts, and the chosen filter is remembered", async () => {
+  await withApp({ view: "Bot", storage: SCORECARD, fakeReads: canned(LOG_DOC) }, async (app) => {
+    const card = app.page.locator(`${DESK} ${ALL_TRADES}`);
+    await card.waitFor({ timeout: 60_000 });
+    const filter = card.locator("[role='group'][aria-label='Trade filter'] button");
+    assert.deepEqual(await texts(filter), ["All 6", "Open 2", "Closed 1", "Not filled 1", "Skipped 2"]);
+    assert.deepEqual(await texts(card.locator("thead th")), ["Signal", "Ticker", "Side", "Strategy", "Status", "Contracts", "Bought at", "Entry (ask)", "Stop (stock)", "T1", "T2", "T3", "Real P/L", "Return", "What happened"]);
+    const rows = card.locator("tbody tr");
+    assert.equal(await rows.count(), 5);
+    assert.deepEqual(await texts(rows.nth(0).locator("td")), ["11-12 09:34 ET", "TSLAAI pick", "Call", "Level 2", "Open", "3", "$1.00", "–", "–", "–", "–", "–", "+$200 now", "+67%", "part sold: +100%: sell 1 of 3"]);
+    assert.deepEqual(await texts(rows.nth(3).locator("td")), ["11-12 09:31 ET", "MSFT", "Call", "Level 1", "Not filled", "2", "–", "–", "–", "–", "–", "–", "–", "–", "the order did not fill"]);
+    assert.deepEqual(await texts(rows.nth(4).locator("td")), ["11-12 09:30 ET", "AAPL", "Call", "Level 3", "Closed", "3", "$1.00", "–", "–", "–", "–", "–", "−$120", "−40%", "stop loss -50%"]);
+    assert.match(await card.textContent(), /Showing the newest 5 of 6\./);
+
+    await filter.filter({ hasText: "Open" }).click();
+    assert.deepEqual(await texts(card.locator("tbody tr td:nth-child(2) b")), ["TSLA", "NVDA"]);
+    await filter.filter({ hasText: "Skipped" }).click();
+    assert.deepEqual(await texts(card.locator("tbody tr td:last-child")), ["Spread 71% of the mid is over 15%"]);
+    await filter.filter({ hasText: "Closed" }).click();
+    assert.deepEqual(await texts(card.locator("tbody tr td:nth-child(2) b")), ["AAPL"]);
+
+    await app.page.reload({ waitUntil: "domcontentloaded" });                                   // the filter is remembered
+    await app.page.locator(`${DESK} ${ALL_TRADES} button[aria-pressed='true']`, { hasText: "Closed 1" }).waitFor({ timeout: 60_000 });
+    assert.deepEqual(await texts(app.page.locator(`${DESK} ${ALL_TRADES} tbody tr td:nth-child(2) b`)), ["AAPL"]);
+    // The card is the first thing under the controls: above the tiles, the charts and the calendar.
+    const y = async (sel) => (await app.page.locator(`${DESK} ${sel}`).first().boundingBox()).y;
+    assert.ok(await y(CONTROLS) < await y(ALL_TRADES) && await y(ALL_TRADES) < await y("section[aria-label='Key numbers']") && await y(ALL_TRADES) < await y(CALENDAR));
+    assert.equal(await overflowsSideways(app.page), false);
+    await shot(app, "desk-alltrades-desktop");
+
+    await app.page.locator(`${DESK} [role='group'][aria-label='Paper account'] button`, { hasText: "Paper 5" }).click();
+    await app.page.locator(`${DESK} [data-testid='desk-trades-empty']`, { hasText: "No trades yet. Every Level signal shows here the moment the bot acts on it." }).waitFor({ timeout: 15_000 });
+    assert.equal(await app.page.locator(`${DESK} ${ALL_TRADES} table`).count(), 0);
+    assert.deepEqual(app.writes, []);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("phone width: All trades fits, its table scrolls inside the card and the filters can be tapped", async () => {
+  await withApp({ view: "Bot", viewport: PHONE, storage: SCORECARD, fakeReads: canned(LOG_DOC) }, async (app) => {
+    const card = app.page.locator(`${DESK} ${ALL_TRADES}`);
+    await card.waitFor({ timeout: 60_000 });
+    assert.equal(await overflowsSideways(app.page), false);
+    const filter = card.locator("[role='group'][aria-label='Trade filter'] button");
+    for (const target of [card, card.locator(".desk-trades-scroll"), filter.nth(0), filter.nth(4)]) {
+      const box = await target.boundingBox();
+      assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, "cut off on a phone");
+    }
+    await filter.filter({ hasText: "Not filled" }).tap();
+    assert.deepEqual(await texts(card.locator("tbody tr td:nth-child(2) b")), ["MSFT"]);
+    assert.equal(await overflowsSideways(app.page), false);
+    await shot(app, "desk-alltrades-phone");
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+// ---- the Alpaca paper account's real money (2026-11-10: "scoreboard should show aplaca buying power")
+const BROKER_DOC = { ...DESK_DOC, asOf: "2026-11-10T12:30:00-05:00", accounts: { ...DESK_DOC.accounts,
+  paper3: { ...PAPER3, broker: { at: "2026-11-10T12:29:00-05:00", cash: 517.93, optionsBuyingPower: 217.93, buyingPower: 2071.72, equity: 967.93, lastEquity: 2809.79 } },
+  paper5: { ...PAPER5, broker: null } } };
+
+e2eTest("the Scorecard shows the Alpaca buying power, and warns when it is too low to buy", async () => {
+  await withApp({ view: "Bot", storage: SCORECARD, fakeReads: canned(BROKER_DOC) }, async (app) => {
+    const pill = app.page.locator(`${DESK} [data-testid='desk-broker']`);
+    await pill.waitFor({ timeout: 60_000 });
+    assert.equal((await pill.textContent()).replace(/\s+/g, " ").trim(), "Alpaca buying power $218 · account $968 · −$1,842 today");
+    assert.match(await pill.getAttribute("class"), /is-bad/);
+    assert.match(await app.page.locator(`${DESK} [data-testid='desk-broker-note']`).textContent(), /Under \$300 to spend: Alpaca will refuse most buys/);
+    await app.page.locator(`${DESK} [role='group'][aria-label='Paper account'] button`, { hasText: "Paper 5" }).click();
+    await app.page.locator(`${DESK} ${VERDICT}`).waitFor({ timeout: 15_000 });
+    await app.page.waitForFunction(() => !document.querySelector("[data-testid='desk-broker']"), null, { timeout: 15_000 });
+    assert.equal(await overflowsSideways(app.page), false);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("phone width: the Alpaca buying power fits", async () => {
+  await withApp({ view: "Bot", viewport: PHONE, storage: SCORECARD, fakeReads: canned(BROKER_DOC) }, async (app) => {
+    const pill = app.page.locator(`${DESK} [data-testid='desk-broker']`);
+    await pill.waitFor({ timeout: 60_000 });
+    for (const target of [pill, app.page.locator(`${DESK} [data-testid='desk-broker-note']`)]) {
+      const box = await target.boundingBox();
+      assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, "cut off on a phone");
+    }
+    assert.equal(await overflowsSideways(app.page), false);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+// ---- the Research list on the Scorecard (2026-11-10: "i dont see all trade from research")
+const SIGNAL_ROW = { key: "s1", status: "signal", symbol: "AVGO", side: "bull", rule: "level3", levels: ["level3"], at: "2026-11-12T09:44:00-05:00",
+  qty: null, buy: null, pnl: null, roiPct: 45.3, bestPct: 133.2, live: false, board: "Mag7",
+  note: "Not ordered: the daily loss stop was holding buys · 0.20-delta option $3.58, now +45%, best +133%" };
+const SIGNAL_DOC = { ...LOG_DOC, accounts: { ...LOG_DOC.accounts, paper3: { ...LOG_DOC.accounts.paper3,
+  tradeLog: { ...TRADE_LOG, total: 7, counts: { ...TRADE_LOG.counts, signal: 1 }, rows: [SIGNAL_ROW, ...TRADE_LOG.rows] } } } };
+
+e2eTest("All trades shows the Bot signals this bot did not order, with why and how the option moved", async () => {
+  await withApp({ view: "Bot", storage: SCORECARD, fakeReads: canned(SIGNAL_DOC) }, async (app) => {
+    const card = app.page.locator(`${DESK} ${ALL_TRADES}`);
+    await card.waitFor({ timeout: 60_000 });
+    const filter = card.locator("[role='group'][aria-label='Trade filter'] button");
+    assert.deepEqual(await texts(filter), ["All 7", "Open 2", "Closed 1", "Not filled 1", "Not ordered 1", "Skipped 2"]);
+    await filter.filter({ hasText: "Not ordered" }).click();
+    const rows = card.locator("tbody tr");
+    assert.equal(await rows.count(), 1);
+    // Contracts, Bought at, then the chart plan's Entry (ask) / Stop / T1 / T2 / T3 (2026-11-12; this
+    // 11-12 signal is from before the plan, so all dashes), then Real P/L.
+    assert.deepEqual(await texts(rows.nth(0).locator("td")), ["11-12 09:44 ET", "AVGO", "Call", "Level 3", "Not ordered", "–", "–", "–", "–", "–", "–", "–", "–", "+45%",
+      "Not ordered: the daily loss stop was holding buys · 0.20-delta option $3.58, now +45%, best +133%"]);
+    assert.equal(await rows.nth(0).getAttribute("data-status"), "signal");
+    assert.equal(await overflowsSideways(app.page), false);
+    assert.deepEqual(app.writes, []);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+// ---- fill likelihood like Robinhood (2026-11-10: "yes same like robinhood")
+const FILL_DOC = { ...LOG_DOC, accounts: { ...LOG_DOC.accounts, paper3: { ...LOG_DOC.accounts.paper3,
+  fillChance: { high: { orders: 25, filledAtMid: 18, filled: 22, midPct: 72, filledPct: 88, enough: true },
+    medium: { orders: 4, filledAtMid: 1, filled: 2, midPct: 25, filledPct: 50, enough: false }, low: { orders: 0, filledAtMid: 0, filled: 0, midPct: null, enough: false } },
+  tradeLog: { ...TRADE_LOG, rows: TRADE_LOG.rows.map((t, i) => (i === 0 ? { ...t, fillChance: "high" } : i === 3 ? { ...t, fillChance: "low" } : t)) } } } };
+
+e2eTest("All trades shows a Robinhood-style fill label on each order and how each label really did", async () => {
+  await withApp({ view: "Bot", storage: SCORECARD, fakeReads: canned(FILL_DOC) }, async (app) => {
+    const card = app.page.locator(`${DESK} ${ALL_TRADES}`);
+    await card.waitFor({ timeout: 60_000 });
+    assert.match(await card.locator("[data-testid='desk-fill-chance']").textContent(),
+      /High fill: 18 of 25 filled at the mid \(72%\) · Medium fill: 1 of 4 filled at the mid \(25%\) · too few yet · Low fill: no orders yet/);
+    const rows = card.locator("tbody tr");
+    assert.equal((await rows.nth(0).locator(".desk-fill").textContent()).trim(), "High fill");
+    assert.match(await rows.nth(0).locator(".desk-fill").getAttribute("class"), /is-high/);
+    assert.equal((await rows.nth(3).locator(".desk-fill").textContent()).trim(), "Low fill");
+    assert.equal(await rows.nth(4).locator(".desk-fill").count(), 0);
+    assert.equal(await overflowsSideways(app.page), false);
+    assert.deepEqual(app.writes, []);
+    assert.deepEqual(app.pageErrors, []);
+  });
+  await withApp({ view: "Bot", viewport: PHONE, storage: SCORECARD, fakeReads: canned(FILL_DOC) }, async (app) => {
+    const line = app.page.locator(`${DESK} [data-testid='desk-fill-chance']`);
+    await line.waitFor({ timeout: 60_000 });
+    const box = await line.boundingBox();
+    assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, "cut off on a phone");
+    assert.equal(await overflowsSideways(app.page), false);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+// ---- his manual method (2026-11-10): top of the board by H/L, the 5m chart check, 3 contracts within buying power
+const WHY_ROWS = [
+  { ...SIGNAL_ROW, key: "w1", symbol: "CMCSA", at: "2026-11-12T11:23:00-05:00", board: "Watchlist",
+    note: "Not ordered: CMCSA was #9 on the Watchlist by H/L (needs top 7 for 5 min)" },
+  { ...SIGNAL_ROW, key: "w2", symbol: "NVDA", side: "bear", at: "2026-11-12T10:30:00-05:00",
+    note: "Not ordered: the chart check failed: price above the 21 EMA" },
+  { ...SIGNAL_ROW, key: "w3", symbol: "AVGO", at: "2026-11-12T13:05:00-05:00",
+    note: "Not ordered: not enough buying power ($1,950 needed, $640 free)" },
+];
+const WHY_DOC = { ...LOG_DOC, accounts: { ...LOG_DOC.accounts, paper3: { ...LOG_DOC.accounts.paper3,
+  tradeLog: { ...TRADE_LOG, total: 9, counts: { ...TRADE_LOG.counts, signal: 3 }, rows: [...WHY_ROWS, ...TRADE_LOG.rows] } } } };
+
+for (const phone of [false, true]) {
+  e2eTest(`Not ordered names the top-of-board, chart and buying-power reasons${phone ? " (phone)" : ""}`, async () => {
+    await withApp({ view: "Bot", storage: SCORECARD, fakeReads: canned(WHY_DOC), ...(phone ? { viewport: PHONE } : {}) }, async (app) => {
+      const card = app.page.locator(`${DESK} ${ALL_TRADES}`);
+      await card.waitFor({ timeout: 60_000 });
+      await card.locator("[role='group'][aria-label='Trade filter'] button").filter({ hasText: "Not ordered" }).click();
+      const text = (await card.locator("tbody").innerText());
+      for (const want of ["#9 on the Watchlist by H/L (needs top 7 for 5 min)", "the chart check failed: price above the 21 EMA",
+        "not enough buying power ($1,950 needed, $640 free)"]) assert.ok(text.includes(want), `missing: ${want}`);
+      assert.equal(await card.locator("tbody tr").count(), 3);
+      assert.equal(await overflowsSideways(app.page), false);
+      assert.deepEqual(app.writes, []);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}

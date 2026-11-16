@@ -107,7 +107,7 @@ e2eTest("a temporary password holds the user on Settings with only Settings in t
     const rail = app.page.locator('aside.sidebar[data-testid="primary-navigation"] .nav-item');
     assert.equal(await rail.count(), 1);
     assert.equal(await rail.first().getAttribute("title"), "Settings");
-    assert.equal(await app.page.locator(".command-context h1").innerText(), "Settings", "the remembered page is overridden");
+    assert.equal(await app.page.locator(".command-context h1").textContent(), "Settings", "the remembered page is overridden");
     assert.equal(await app.page.locator('button[aria-label="Learn how to use AGX"]').count(), 0);
     assert.deepEqual(app.pageErrors, []);
   });

@@ -100,3 +100,45 @@ def test_law_firm_ads_and_ordinary_word_names_seen_after_going_live():
     n = CompanyNames(fetch=lambda: {"0": {"cik_str": 1, "ticker": "BKNG", "title": "Booking Holdings Inc."}})
     assert n.tickers_in("From Booking to Follow-Through: How Armor Health Connects Intake Findings", ["BKNG"]) == []
     assert n.tickers_in("Booking shares fall after travel outlook cut", ["BKNG"]) == ["BKNG"]
+
+
+# ---------------------------------------------------------------- a stale cache and a failed refetch (2026-11-14)
+def _boom():
+    raise OSError("SEC is not answering")
+
+
+def test_a_stale_cache_is_still_used_when_the_refetch_fails(tmp_path):
+    """The saved names list was thrown away once it was over a day old and the SEC refetch failed, so a headline
+    naming the company was called "related news, not about LIDR" in the morning brief."""
+    import json
+    import os
+    import time
+
+    cache = tmp_path / "sec_company_tickers.json"
+    cache.write_text(json.dumps({"0": {"ticker": "LIDR", "title": "AEye, Inc."}}), encoding="utf-8")
+    old = time.time() - 3 * 86400
+    os.utime(cache, (old, old))
+    names = CompanyNames(cache, fetch=_boom).names()
+    assert names.get("LIDR") == ["aeye"]
+    assert cache.exists()                                   # the old copy is kept for the next try
+
+
+def test_an_empty_load_is_tried_again_soon_not_a_day_later(tmp_path, monkeypatch):
+    import news_names
+
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("SEC is not answering")
+        return {"0": {"ticker": "LIDR", "title": "AEye, Inc."}}
+
+    table = CompanyNames(tmp_path / "none.json", fetch=fetch, aliases={"META": ["facebook"]})
+    clock = [1000.0]
+    monkeypatch.setattr(news_names.time, "monotonic", lambda: clock[0])
+    assert "LIDR" not in table.names()                      # the fetch failed: aliases only
+    clock[0] += 60
+    assert "LIDR" not in table.names() and len(calls) == 1  # not hammered every call
+    clock[0] += news_names.EMPTY_RETRY_SECONDS
+    assert table.names().get("LIDR") == ["aeye"] and len(calls) == 2

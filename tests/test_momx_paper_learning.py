@@ -82,7 +82,7 @@ def test_trade_first_never_requires_score_ai_availability_or_approval(tmp_path):
     m = PaperMirror({"bull": Book([_trade(jevP=None)])}, tmp_path, client_factory=lambda: client,
                     off=lambda: False, account="paper5", jev_cut=None, ai_policy=trade_first)
     m.tick(NOW)
-    assert len(client.calls) == 1 and client.calls[0][3] == 1.2
+    assert len(client.calls) == 1 and client.calls[0][3] == 1.25      # the ask (the chart plan's entry, 2026-11-12)
     assert m.status()["rows"][0]["aiDecision"]["mode"] == "post_trade"
 
 

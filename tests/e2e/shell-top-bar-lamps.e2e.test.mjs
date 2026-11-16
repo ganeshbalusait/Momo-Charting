@@ -74,7 +74,10 @@ e2eTest("a key Schwab refuses is red and its tooltip says so", async () => {
     fakeReads: { [STATUS]: schwab({ healthy: false, accepted: false, acceptedError: "invalid_client" }) },
   }, async (app) => {
     await header(app.page);
-    await app.page.locator(`${LAMPS}.is-down`, { hasText: "TOS MARKET" }).waitFor({ timeout: 15_000 });
+    // Before the first /api/schwab/status answer every lamp is already grey/red
+    // (is-down, "not connected" tooltip), so wait for the fixture's refusal to
+    // be drawn rather than for is-down alone.
+    await app.page.locator(`${LAMPS}.is-down[title^="Schwab is REFUSING"]`, { hasText: "TOS MARKET" }).waitFor({ timeout: 15_000 });
     assert.equal(await lamp(app.page, "TOS MARKET").getAttribute("title"),
       "Schwab is REFUSING this key: invalid_client. Re-enter the app key and secret in Settings.");
   });
@@ -91,12 +94,15 @@ e2eTest("ACCT KEY and the shared ALPACA stream lamp are admin-only", async () =>
   });
   await withApp({ view: "Release Notes", fakeReads: { [STATUS]: schwab() } }, async (app) => {
     await header(app.page);
+    // The lamp exists before the status fixture lands ("no key · 0 tickers");
+    // wait for the fixture's connected stream to light it, then read the tooltip.
+    await app.page.locator(`${LAMPS}.is-live`, { hasText: "ALPACA" }).waitFor({ timeout: 15_000 });
     assert.match(await lamp(app.page, "ALPACA").getAttribute("title"), /^Alpaca key: failover feed \(e2e · 3 tickers\)\. Connected\./);
   });
 });
 
 test("a member's own saved Alpaca key lights ALPACA on every page, not only after visiting Settings",
-  { skip: marketHoursBlock() || false, todo: "BUG: apiKeySummary loads only on Settings, so a member with a saved Alpaca key sees ALPACA red on Charts/Release Notes", timeout: 180_000 },
+  { skip: marketHoursBlock() || false, timeout: 180_000 },
   async () => {
     const keys = { json: { alpaca: { configured: true, keyIdMasked: "PKE2...ABCDEF" }, tradier: { configured: false, tokenMasked: "" } } };
     await withApp({ view: "Release Notes", fakeReads: { [STATUS]: schwab(), [AUTH]: asUser(), "GET /api/user/api-keys": keys } }, async (app) => {

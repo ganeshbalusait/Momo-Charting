@@ -89,7 +89,11 @@ e2eTest("a failed test shows the reason and the profile reads Connection test fa
 });
 
 e2eTest("without saved keys, Test and Renew are disabled", async () => {
-  const none = { credentialsConfigured: false, configured: false, hasRefreshToken: false, clientIdMasked: "", refreshTokenExpiresAt: null };
+  // The real no-keys shape (user_schwab.py, the not-connected status): no token
+  // at all, so accessTokenValid/refreshTokenValid are false too. Leaving them
+  // true from profile() drew "Authenticated · not tested" instead.
+  const none = { credentialsConfigured: false, configured: false, hasRefreshToken: false, clientIdMasked: "", refreshTokenExpiresAt: null,
+    accessTokenValid: false, refreshTokenValid: false, refreshTokenRemainingSeconds: null };
   await withApp({ view: "Settings", fakeReads: { [STATUS]: schwab({ marketData: none, trading: none }) } }, async (app) => {
     await card(app.page);
     await app.page.locator(".schwab-app-status b", { hasText: "not configured" }).first().waitFor({ timeout: 15_000 });
@@ -100,7 +104,8 @@ e2eTest("without saved keys, Test and Renew are disabled", async () => {
     }
     assert.equal(await app.page.locator(".schwab-renew-button").isDisabled(), true);
     const badge = app.page.locator(".schwab-app-status .schwab-expiry-badge").first();
-    assert.equal((await badge.locator("strong").innerText()).trim(), "Required");
+    // textContent: .schwab-expiry-badge is text-transform: uppercase (index.css), the word is "Required"
+    assert.equal((await badge.locator("strong").textContent()).trim(), "Required");
     assert.equal((await badge.textContent()).trim(), "OAuthRequiredauthenticate");
   });
 });
@@ -129,9 +134,10 @@ e2eTest("the expiry badge turns critical under a day and says Rejected for a ref
     const badges = app.page.locator(".schwab-app-status .schwab-expiry-badge");
     await badges.nth(1).waitFor({ timeout: 15_000 });
     assert.match(await badges.nth(0).getAttribute("class"), /\bis-critical\b/);
-    assert.equal((await badges.nth(0).locator("strong").innerText()).trim(), "0d 20h");
+    // textContent: the badge is drawn in capitals by CSS (index.css .schwab-expiry-badge), the text is "0d 20h"
+    assert.equal((await badges.nth(0).locator("strong").textContent()).trim(), "0d 20h");
     assert.equal((await badges.nth(0).textContent()).trim(), "Expiry0d 20hrefresh left");
-    assert.equal((await badges.nth(1).locator("strong").innerText()).trim(), "Rejected");
+    assert.equal((await badges.nth(1).locator("strong").textContent()).trim(), "Rejected");
     assert.equal((await badges.nth(1).textContent()).trim(), "KeyRejectedcheck app secret");
     assert.equal(await badges.nth(1).getAttribute("title"), "Schwab rejected the app credentials: invalid_client");
   });
