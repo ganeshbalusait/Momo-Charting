@@ -26,6 +26,20 @@ export function useOddsOpen(ticker) {
   return open.has(String(ticker || "").toUpperCase());
 }
 
+// The last answer per ticker, so the chart's lines can show the odds with
+// the card closed (withOddsOnLines checks it is for the plan on screen).
+let answers = new Map();
+const answerListeners = new Set();
+const subscribeAnswers = (listener) => { answerListeners.add(listener); return () => answerListeners.delete(listener); };
+const answersSnapshot = () => answers;
+function saveAnswer(ticker, payload) {
+  answers = new Map(answers).set(String(ticker || "").toUpperCase(), payload);
+  answerListeners.forEach((listener) => listener());
+}
+export function useOddsAnswer(ticker) {
+  return useSyncExternalStore(subscribeAnswers, answersSnapshot).get(String(ticker || "").toUpperCase()) || null;
+}
+
 const pct = (value) => `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(0)}%`;
 
 export default function ChartTimeMachine({ ticker = "", result = null }) {
@@ -47,13 +61,14 @@ export default function ChartTimeMachine({ ticker = "", result = null }) {
         const body = await response.json().catch(() => null);
         if (!response.ok) throw new Error(body?.error || body?.reason || `HTTP ${response.status}`);
         setState({ status: "done", payload: body, key: planKey });
+        saveAnswer(ticker, body);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
         setState({ status: "error", payload: { ok: false, reason: `Could not reach the server: ${error.message}` }, key: planKey });
       });
     return () => controller.abort();
-  }, [planKey, runs]);
+  }, [planKey, runs, ticker]);
 
   const payload = state.key === planKey ? state.payload : null;
   const view = useMemo(() => timeMachineView(payload, {

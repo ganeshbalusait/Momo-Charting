@@ -128,3 +128,22 @@ export function timeMachineFan(payload, { width = 360, height = 170, pad = 6 } =
     ],
   };
 }
+
+// Odds on the chart's own lines (2026-11-15, Ganesh: "In chart add odds like
+// that ... only target and stop loss and entry"): the plan's Target line gets
+// "target first %", the Stop line "stop first %", the Entry line "neither %".
+// Only when the answer is for this exact plan (side, target and stop); other
+// target lines (T1, T3...) are left as they are.
+export function withOddsOnLines(lines = [], payload = null, result = null) {
+  if (!payload?.ok || !result || !Array.isArray(lines) || !lines.length) return lines;
+  const same = (a, b) => Math.abs(Number(a) - Number(b)) < 0.006;
+  if (payload.side !== result.side || !same(payload.target, result.target) || !same(payload.stop, result.stopStock)) return lines;
+  const prefix = lines.some((line) => line.key.startsWith("c-") || line.key.startsWith("p-")) ? (result.side === "CALL" ? "c-" : "p-") : "";
+  const odds = payload.odds || {};
+  const add = {
+    entry: ` · ${Math.round(odds.neither || 0)}% neither`,
+    [`${prefix}target`]: ` · ${Math.round(odds.target || 0)}%`,
+    [`${prefix}stop`]: ` · ${Math.round(odds.stop || 0)}%`,
+  };
+  return lines.map((line) => (add[line.key] ? { ...line, title: `${line.title}${add[line.key]}` } : line));
+}

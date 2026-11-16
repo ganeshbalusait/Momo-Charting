@@ -66,3 +66,25 @@ test("the fan keeps every line inside the drawing and colours paths by outcome",
   assert.ok(fan.levels.find((level) => level.key === "target").y < fan.levels.find((level) => level.key === "stop").y);
   assert.equal(timeMachineFan({ ok: false }), null);
 });
+
+test("the odds go on the Target, Stop and Entry lines of the same plan only", async () => {
+  const { withOddsOnLines } = await import("./chartTimeMachine.js");
+  const lines = [
+    { key: "entry", title: "Entry 749.60  744P $0.99" },
+    { key: "t1", title: "T1 745.99  +92%" },
+    { key: "target", title: "T2 742.38  +226%" },
+    { key: "stop", title: "Stop 753.14  −50%" },
+  ];
+  const result = { side: "PUT", target: 742.38, stopStock: 753.14 };
+  const answer = { ok: true, side: "PUT", target: 742.38, stop: 753.14, odds: { target: 13.2, stop: 40.4, neither: 46.6 } };
+  assert.deepEqual(withOddsOnLines(lines, answer, result).map((line) => line.title), [
+    "Entry 749.60  744P $0.99 · 47% neither", "T1 745.99  +92%", "T2 742.38  +226% · 13%", "Stop 753.14  −50% · 40%",
+  ]);
+  // A moved target (or the other side) is a different plan: no odds shown.
+  assert.equal(withOddsOnLines(lines, answer, { ...result, target: 741 }), lines);
+  assert.equal(withOddsOnLines(lines, { ...answer, side: "CALL" }, result), lines);
+  assert.equal(withOddsOnLines(lines, null, result), lines);
+  // With Both on, only the planned side's lines get the odds.
+  const both = [{ key: "entry", title: "Entry" }, { key: "c-target", title: "C" }, { key: "p-target", title: "P" }, { key: "p-stop", title: "PS" }];
+  assert.deepEqual(withOddsOnLines(both, answer, result).map((line) => line.title), ["Entry · 47% neither", "C", "P · 13%", "PS · 40%"]);
+});

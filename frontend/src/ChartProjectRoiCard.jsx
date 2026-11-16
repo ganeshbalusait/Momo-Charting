@@ -20,7 +20,8 @@ import {
   writeProjectRoiPlans,
 } from "./chartProjectRoi.js";
 import { ChartProjectRoiPrimitive } from "./chartProjectRoiPrimitive.js";
-import ChartTimeMachine, { setOddsOpen, useOddsOpen } from "./ChartTimeMachine.jsx";
+import ChartTimeMachine, { setOddsOpen, useOddsAnswer, useOddsOpen } from "./ChartTimeMachine.jsx";
+import { withOddsOnLines } from "./chartTimeMachine.js";
 
 // One copy of the saved plans for the whole page. Every chart panel showing
 // the same ticker (multi-chart, big screen, the maximized chart) reads and
@@ -78,6 +79,12 @@ export default function ChartProjectRoiCard({
   const savedPlan = plans[ticker] || null;
   // Time Machine "Odds" section (2026-11-15), open per ticker.
   const oddsOpen = useOddsOpen(ticker);
+  const oddsAnswer = useOddsAnswer(ticker);
+  // The phone's Odds button opens this card itself (2026-11-15: "I don't see
+  // in phone" - the phone toolbar has no way to open the card once ROI is on).
+  const [selfOpen, setSelfOpen] = useState(false);
+  const shown = open || selfOpen;
+  const closeCard = () => { setSelfOpen(false); onClose?.(); };
 
   // Opening the card on a ticker with no plan starts one at the live price,
   // so the lines appear at once - the same as the card in his screenshot.
@@ -90,6 +97,7 @@ export default function ChartProjectRoiCard({
   useEffect(() => {
     setEntryDraft(null);
     setTargetDraft(null);
+    setSelfOpen(false);
   }, [ticker]);
 
   const updatePlan = (changes) => {
@@ -108,7 +116,7 @@ export default function ChartProjectRoiCard({
     const next = { ...getPlans() };
     delete next[ticker];
     savePlans(next);
-    onClose?.();
+    closeCard();
   };
 
   const expiryExpectedMoves = useMemo(
@@ -131,7 +139,10 @@ export default function ChartProjectRoiCard({
   // every line, box and zone and lets the price range forget the plan, but
   // keeps the plan itself, so On brings it back unchanged.
   const roiOn = savedPlan?.hidden !== true;
-  const lines = useMemo(() => (savedPlan && result && roiOn ? projectRoiPlanLines(result, otherResult) : []), [savedPlan, result, otherResult, roiOn]);
+  // With Odds on, the Target / Stop / Entry boxes carry the odds (2026-11-15).
+  const lines = useMemo(() => (savedPlan && result && roiOn
+    ? withOddsOnLines(projectRoiPlanLines(result, otherResult), oddsOpen ? oddsAnswer : null, result)
+    : []), [savedPlan, result, otherResult, roiOn, oddsOpen, oddsAnswer]);
   // Which lines exist decides create/remove; their price and label are
   // updated in place, so a live tick never removes and redraws them.
   const lineSet = lines.map((line) => line.key).join("|");
@@ -215,7 +226,16 @@ export default function ChartProjectRoiCard({
   // lists what was drawn (key:price:label) for the panel.
   // data-drawn: label boxes the overlay drew inside the pane (target|entry|stop).
   const marker = lines.length ? <i hidden ref={markerRef} data-testid="chart-project-roi-lines" data-lines={linesKey} /> : null;
-  if (!open || !result) return marker;
+  // Phone only (CSS): a small Odds button on the chart while ROI is on and the
+  // card is closed; it opens the card with the odds.
+  const oddsFab = savedPlan && roiOn && !shown ? <button
+    type="button"
+    className="chart-project-roi-odds-fab"
+    aria-label={`Odds from here for ${ticker}`}
+    onPointerDown={(event) => event.stopPropagation()}
+    onClick={(event) => { event.stopPropagation(); setOddsOpen(ticker, true); setSelfOpen(true); }}
+  >Odds</button> : null;
+  if (!shown || !result) return <>{marker}{oddsFab}</>;
 
   const contractName = result.contract ? `${ticker} ${formatStrike(result.strike)}${result.sideLetter} ${shortExpiry(result.expiry)}` : ticker;
   const gain = result.roiPercent != null && result.roiPercent >= 0;
@@ -254,7 +274,7 @@ export default function ChartProjectRoiCard({
     <>{marker}<aside className="chart-project-roi" aria-label={`Project ROI for ${ticker}`} data-testid="chart-project-roi" onPointerDown={(event) => event.stopPropagation()}>
       <header>
         <b>Project ROI</b>
-        <button type="button" className="chart-project-roi-close" aria-label="Close Project ROI (lines stay on the chart)" title="Close (lines stay on the chart)" onClick={() => onClose?.()}>×</button>
+        <button type="button" className="chart-project-roi-close" aria-label="Close Project ROI (lines stay on the chart)" title="Close (lines stay on the chart)" onClick={closeCard}>×</button>
       </header>
       {!result.ready ? <p className="chart-project-roi-empty">Waiting for {ticker}'s option chain…</p> : <>
         <div className="chart-project-roi-title">

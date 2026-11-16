@@ -110,3 +110,44 @@ e2eTest("phone: the ROI card's Odds from here button shows the odds without side
     noPageErrors(app);
   });
 });
+
+// 2026-11-15 "I don't see in phone": with ROI already on (a saved plan), the
+// phone toolbar shows only ROI and C, and nothing there opens the card. The
+// chart itself has an Odds button on a phone; it opens the card with the odds.
+e2eTest("phone, ROI already on: the Odds button on the chart opens the odds", async () => {
+  const asked = [];
+  const plan = { AAPL: { side: "CALL", both: false, contracts: 1, entrySpot: 0, createdAt: Date.now() - 60_000 } };
+  await withApp(options(asked, { viewport: PHONE, storage: { "agx.chartProjectRoi.v1": JSON.stringify(plan) } }), async (app) => {
+    const { page } = app;
+    const chart = await chartCard(page, "AAPL");
+    const fab = chart.locator("button.chart-project-roi-odds-fab");
+    await fab.waitFor({ state: "visible", timeout: 60_000 });
+    assert.equal(await chart.locator(ROI).isVisible(), false, "the card starts closed");
+    await fab.click();
+    const roi = chart.locator(ROI);
+    await roi.locator(".chart-project-roi-title").waitFor({ state: "visible", timeout: 120_000 });
+    await checkOdds(roi, asked);
+    assert.equal(await fab.count(), 0, "the button goes while the card is open");
+    await roi.locator(".chart-project-roi-close").click();
+    await fab.waitFor({ state: "visible", timeout: 10_000 });
+    // The odds stay on the chart's own Target / Stop / Entry boxes (2026-11-15:
+    // "In chart add odds ... only target and stop loss and entry").
+    const drawn = String(await chart.locator('[data-testid="chart-project-roi-lines"]').getAttribute("data-lines")).split("|");
+    const title = (key) => (drawn.find((item) => item.startsWith(`${key}:`)) || "").split(":").slice(2).join(":");
+    assert.match(title("target"), / · 41%$/);
+    assert.match(title("stop"), / · 28%$/);
+    assert.match(title("entry"), / · 31% neither$/);
+    assert.ok(drawn.filter((item) => item.startsWith("t1:") || item.startsWith("t3:")).every((item) => !item.includes("%  ·") && !/ · d+%$/.test(item)), "T1 / T3 carry no odds");
+    assert.equal(await overflowsSideways(page), false);
+    noPageErrors(app);
+  });
+});
+
+e2eTest("desktop: no floating Odds button (the toolbar has one)", async () => {
+  const plan = { AAPL: { side: "CALL", both: false, contracts: 1, entrySpot: 0, createdAt: Date.now() - 60_000 } };
+  await withApp(options([], { storage: { "agx.chartProjectRoi.v1": JSON.stringify(plan) } }), async (app) => {
+    const chart = await chartCard(app.page, "AAPL");
+    await chart.locator("button.oi-finder-chart-roi-odds").waitFor({ state: "visible", timeout: 60_000 });
+    assert.equal(await chart.locator("button.chart-project-roi-odds-fab").isVisible(), false);
+  });
+});
