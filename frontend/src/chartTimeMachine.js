@@ -5,7 +5,7 @@
 // module turns that answer into what the Odds card shows. Read-only: it never
 // places, blocks or changes a trade.
 
-import { formatPercent, projectRoiOptionValue } from "./chartProjectRoi.js";
+import { formatPercent, formatStrike, projectRoiOptionValue } from "./chartProjectRoi.js";
 
 export const TIME_MACHINE_COLORS = {
   target: "oklch(78% 0.16 150)",
@@ -159,10 +159,15 @@ export function oddsOnlyLines(result = null, payload = null) {
   const odds = fresh ? payload.odds || {} : null;
   const tag = (value, word) => (odds ? ` · ${Math.round(value || 0)}% ${word}` : " · odds…");
   const entry = result.entrySpot > 0 ? result.entrySpot : result.spot;
-  const targetPct = result.roiPercent == null ? "" : `  ${formatPercent(result.roiPercent)}`;
-  const stopPct = result.stopPremium > 0 ? "  −50%" : "";
+  // The option's price at each line, as the ROI boxes show it (2026-11-15:
+  // "I don't see option price in odds"): the contract and its entry on Entry,
+  // the projected price on Target, the -50% stop price on Stop.
+  const money = (value) => (Number(value) > 0 ? `  $${Number(value).toFixed(2)}` : "");
+  const contract = result.strike > 0 && result.sideLetter ? `  ${formatStrike(result.strike)}${result.sideLetter}` : "";
+  const targetPct = `${result.roiPercent == null ? "" : `  ${formatPercent(result.roiPercent)}`}${money(result.projectedValue)}`;
+  const stopPct = result.stopPremium > 0 ? `  −50%${money(result.stopPremium)}` : "";
   return [
-    { key: "entry", price: entry, color: "#e8f4ff", title: `Entry ${Number(entry).toFixed(2)}${tag(odds?.neither, "neither")}` },
+    { key: "entry", price: entry, color: "#e8f4ff", title: `Entry ${Number(entry).toFixed(2)}${contract}${money(result.entry)}${tag(odds?.neither, "neither")}` },
     { key: "target", price: result.target, color: "#3dff8a", title: `Target ${Number(result.target).toFixed(2)}${targetPct}${tag(odds?.target, "odds")}` },
     { key: "stop", price: result.stopStock, color: "#ff5a6a", title: `Stop ${Number(result.stopStock).toFixed(2)}${stopPct}${tag(odds?.stop, "odds")}` },
   ];
