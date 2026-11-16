@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-15T19:19:07-05:00",
+      "heading": "Chart: show ROI, Odds or Both",
+      "items": [
+        "ROI card: a new \"On chart\" switch picks what the chart draws: ROI (the ROI boxes, as before), Odds (just three lines: Entry, Target and Stop, each with its odds) or Both (the ROI boxes with the odds on Entry, Target and Stop). It is remembered per ticker.",
+        "The odds are worked out only when the chart shows them. The desktop Odds button and the phone's Odds button on the chart turn the odds on (Both) and open the card."
+      ]
+    },
+    {
       "at": "2026-11-15T19:05:09-05:00",
       "heading": "Odds on the chart lines, and an Odds button on the phone",
       "items": [

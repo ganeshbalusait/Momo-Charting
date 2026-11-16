@@ -20,8 +20,8 @@ import {
   writeProjectRoiPlans,
 } from "./chartProjectRoi.js";
 import { ChartProjectRoiPrimitive } from "./chartProjectRoiPrimitive.js";
-import ChartTimeMachine, { setOddsOpen, useOddsAnswer, useOddsOpen } from "./ChartTimeMachine.jsx";
-import { withOddsOnLines } from "./chartTimeMachine.js";
+import ChartTimeMachine, { CHART_SHOW_OPTIONS, chartShowOf, useTimeMachine } from "./ChartTimeMachine.jsx";
+import { chartPlanLines } from "./chartTimeMachine.js";
 
 // One copy of the saved plans for the whole page. Every chart panel showing
 // the same ticker (multi-chart, big screen, the maximized chart) reads and
@@ -77,9 +77,9 @@ export default function ChartProjectRoiCard({
   const [entryDraft, setEntryDraft] = useState(null);
   const [targetDraft, setTargetDraft] = useState(null);
   const savedPlan = plans[ticker] || null;
-  // Time Machine "Odds" section (2026-11-15), open per ticker.
-  const oddsOpen = useOddsOpen(ticker);
-  const oddsAnswer = useOddsAnswer(ticker);
+  // What the chart shows (2026-11-15): ROI boxes, only the odds lines, or
+  // both; the odds are asked for only when they are shown.
+  const show = chartShowOf(savedPlan);
   // The phone's Odds button opens this card itself (2026-11-15: "I don't see
   // in phone" - the phone toolbar has no way to open the card once ROI is on).
   const [selfOpen, setSelfOpen] = useState(false);
@@ -139,10 +139,11 @@ export default function ChartProjectRoiCard({
   // every line, box and zone and lets the price range forget the plan, but
   // keeps the plan itself, so On brings it back unchanged.
   const roiOn = savedPlan?.hidden !== true;
-  // With Odds on, the Target / Stop / Entry boxes carry the odds (2026-11-15).
+  const machine = useTimeMachine(ticker, result, Boolean(savedPlan) && roiOn && show !== "roi");
+  const oddsPayload = machine.payload;
   const lines = useMemo(() => (savedPlan && result && roiOn
-    ? withOddsOnLines(projectRoiPlanLines(result, otherResult), oddsOpen ? oddsAnswer : null, result)
-    : []), [savedPlan, result, otherResult, roiOn, oddsOpen, oddsAnswer]);
+    ? chartPlanLines(show, projectRoiPlanLines(result, otherResult), result, oddsPayload)
+    : []), [savedPlan, result, otherResult, roiOn, show, oddsPayload]);
   // Which lines exist decides create/remove; their price and label are
   // updated in place, so a live tick never removes and redraws them.
   const lineSet = lines.map((line) => line.key).join("|");
@@ -233,7 +234,7 @@ export default function ChartProjectRoiCard({
     className="chart-project-roi-odds-fab"
     aria-label={`Odds from here for ${ticker}`}
     onPointerDown={(event) => event.stopPropagation()}
-    onClick={(event) => { event.stopPropagation(); setOddsOpen(ticker, true); setSelfOpen(true); }}
+    onClick={(event) => { event.stopPropagation(); if (show === "roi") updatePlan({ show: "both" }); setSelfOpen(true); }}
   >Odds</button> : null;
   if (!shown || !result) return <>{marker}{oddsFab}</>;
 
@@ -289,8 +290,20 @@ export default function ChartProjectRoiCard({
           <span>{result.profit == null ? "" : formatDollars(result.profit)}</span>
         </div>
         <p className="chart-project-roi-if">if {ticker} is at {result.target.toFixed(2)}</p>
-        <button type="button" className="chart-project-roi-odds-toggle" aria-pressed={oddsOpen} onClick={() => setOddsOpen(ticker, !oddsOpen)} title="Replay the rest of the day 10,000 times from this stock's own candles: odds of target vs stop">{oddsOpen ? "Hide odds" : "Odds from here"}</button>
-        {oddsOpen ? <ChartTimeMachine ticker={ticker} result={result} /> : null}
+        {/* On the chart: ROI boxes, only the odds lines, or both (his ask,
+            2026-11-15: "I want only odds or ROI in chart or both"). */}
+        <div className="chart-project-roi-show" role="group" aria-label="Show on the chart">
+          <small>On chart</small>
+          {CHART_SHOW_OPTIONS.map(([value, label]) => <button
+            key={value}
+            type="button"
+            className={show === value ? "is-active" : ""}
+            aria-pressed={show === value}
+            title={value === "roi" ? "ROI boxes only" : value === "odds" ? "Only Entry / Target / Stop with their odds" : "ROI boxes with the odds"}
+            onClick={() => updatePlan({ show: value })}
+          >{label}</button>)}
+        </div>
+        {show !== "roi" ? <ChartTimeMachine ticker={ticker} result={result} machine={machine} /> : null}
         <input
           className="chart-project-roi-slider"
           type="range"
@@ -426,7 +439,7 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
   const plans = useSyncExternalStore(subscribePlans, getPlans);
   const plan = plans[ticker] || null;
   const on = Boolean(plan) && plan.hidden !== true;
-  const oddsOpen = useOddsOpen(ticker);
+  const show = chartShowOf(plan);
   const view = !plan ? "" : plan.both === true ? "BOTH" : sideOfPlan(plan);
   const save = (next) => savePlans({ ...getPlans(), [ticker]: next });
   const fresh = () => ({ side: "CALL", both: false, contracts: 1, entrySpot: Math.round((Number(spot) || 0) * 100) / 100, createdAt: Date.now() });
@@ -473,17 +486,17 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
       {/* Time Machine (2026-11-15): opens the ROI card with its odds. Desktop
           only; on a phone the card has the same button. */}
       {on ? <button
-        className={`oi-finder-chart-roi-odds${oddsOpen && cardOpen ? " is-active" : ""}`}
+        className={`oi-finder-chart-roi-odds${show !== "roi" ? " is-active" : ""}`}
         type="button"
         onClick={(event) => {
           event.stopPropagation();
-          const show = !(oddsOpen && cardOpen);
-          setOddsOpen(ticker, show);
-          if (show) onCardOpenChange?.(true);
+          // Odds on the chart on / off; on also opens the card with the odds.
+          save({ ...plan, show: show === "roi" ? "both" : "roi" });
+          if (show === "roi") onCardOpenChange?.(true);
         }}
         title={`Odds from here: replay the rest of the day 10,000 times from ${ticker}'s own candles`}
         aria-label={`Odds from here for ${ticker}`}
-        aria-pressed={oddsOpen && cardOpen}
+        aria-pressed={show !== "roi"}
       >Odds</button> : null}
       {/* Phone (CSS shows this and hides the three above): the toolbar row has
           room for one more 24 px button, not three - three pushed the row

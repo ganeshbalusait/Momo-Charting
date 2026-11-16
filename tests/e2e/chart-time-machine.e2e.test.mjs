@@ -1,7 +1,7 @@
 // Chart Time Machine (2026-11-15), end to end in the real app.
 //
-// On the AAPL chart: ROI on, then Odds (toolbar on a desktop, the card's
-// "Odds from here" button on a phone) shows the odds of target vs stop, the
+// On the AAPL chart: ROI on, then Odds (toolbar on a desktop, the Odds
+// button on the chart on a phone, or the card's ROI / Odds / Both switch) shows the odds of target vs stop, the
 // fan of replayed paths, the same trade on past days and the verdict. The
 // replay answer (/api/time-machine) is faked so the numbers are fixed; the
 // request it gets must carry the ROI card's own target and stop. The chart
@@ -70,13 +70,33 @@ async function checkOdds(roi, asked) {
   return odds;
 }
 
-e2eTest("desktop: Odds on the chart toolbar opens the ROI card with the odds from here", async () => {
+const LINES = '[data-testid="chart-project-roi-lines"]';
+async function drawn(chart) {
+  return String(await chart.locator(LINES).getAttribute("data-lines")).split("|").map((item) => {
+    const [key, price, ...rest] = item.split(":");
+    return { key, price: Number(price), title: rest.join(":") };
+  });
+}
+const pick = (roi, label) => roi.locator(`.chart-project-roi-show button`, { hasText: new RegExp(`^${label}$`) });
+async function waitTitles(page, chart, test) {
+  for (let i = 0; i < 100; i += 1) {
+    if (await chart.locator(LINES).count() && test(await drawn(chart))) return drawn(chart);
+    await page.waitForTimeout(100);
+  }
+  return drawn(chart);
+}
+const savedShow = (page) => page.evaluate(() => JSON.parse(localStorage.getItem("agx.chartProjectRoi.v1") || "{}").AAPL?.show);
+
+e2eTest("desktop: Odds on the toolbar turns the odds on; the card switch picks ROI, Odds or Both on the chart", async () => {
   const asked = [];
   await withApp(options(asked), async (app) => {
     const { page } = app;
     const chart = await chartCard(page, "AAPL");
-    await roiOn(chart);
-    const roi = chart.locator(ROI);
+    const roi = await roiOn(chart);
+    // ROI only by default: no odds asked, none on the lines.
+    assert.equal(await roi.locator(ODDS).count(), 0);
+    assert.equal(asked.length, 0, "no replay asked while the chart shows ROI only");
+    assert.equal(await pick(roi, "ROI").getAttribute("aria-pressed"), "true");
     await chart.locator('button.oi-finder-chart-roi-side[aria-pressed="true"]').click(); // close the card
     await roi.waitFor({ state: "hidden", timeout: 10_000 });
     const oddsButton = chart.locator("button.oi-finder-chart-roi-odds");
@@ -84,27 +104,44 @@ e2eTest("desktop: Odds on the chart toolbar opens the ROI card with the odds fro
     await roi.waitFor({ state: "visible", timeout: 10_000 });
     const odds = await checkOdds(roi, asked);
     assert.equal(await oddsButton.getAttribute("aria-pressed"), "true");
-    // Run again asks once more; Hide odds closes the section, the card stays.
+    assert.equal(await pick(roi, "Both").getAttribute("aria-pressed"), "true");
+    // Both: the ROI boxes, with the odds on Entry / Target / Stop only.
+    let lines = await waitTitles(page, chart, (all) => all.some((line) => / · 41%$/.test(line.title)));
+    assert.ok(lines.some((line) => line.key === "t1"), "ROI targets still drawn");
+    assert.match(lines.find((line) => line.key === "target").title, /^T\d .* · 41%$/);
+    assert.match(lines.find((line) => line.key === "stop").title, /−50% .* · 28%$/);
+    assert.match(lines.find((line) => line.key === "entry").title, / · 31% neither$/);
+    // Odds: just three lines, each only its price and odds.
+    await pick(roi, "Odds").click();
+    lines = await waitTitles(page, chart, (all) => all.length === 3);
+    assert.deepEqual(lines.map((line) => line.key), ["entry", "target", "stop"]);
+    assert.match(lines[0].title, /^Entry \d+\.\d\d · 31% neither$/);
+    assert.match(lines[1].title, /^Target \d+\.\d\d · 41%$/);
+    assert.match(lines[2].title, /^Stop \d+\.\d\d · 28%$/);
+    assert.equal(await savedShow(page), "odds");
+    // Run again asks once more.
     const before = asked.length;
     await odds.locator(".chart-time-machine-rerun").click();
     for (let i = 0; i < 50 && asked.length <= before; i += 1) await page.waitForTimeout(100);
     assert.ok(asked.length > before, "Run again asked the server again");
-    await odds.locator(".chart-time-machine-verdict").waitFor({ state: "visible" });
-    await roi.locator(".chart-project-roi-odds-toggle").click();
+    // ROI: the ROI boxes without odds, the odds section goes, the toolbar Odds is off.
+    await pick(roi, "ROI").click();
     await roi.locator(ODDS).waitFor({ state: "detached", timeout: 10_000 });
-    assert.ok(await roi.isVisible());
+    lines = await waitTitles(page, chart, (all) => all.length > 3);
+    assert.ok(lines.every((line) => !/ · \d+%( neither)?$/.test(line.title)), "no odds on the ROI boxes");
+    assert.equal(await oddsButton.getAttribute("aria-pressed"), "false");
     noPageErrors(app);
   });
 });
 
-e2eTest("phone: the ROI card's Odds from here button shows the odds without sideways scroll", async () => {
+e2eTest("phone: the card switch shows the odds without sideways scroll", async () => {
   const asked = [];
   await withApp(options(asked, { viewport: PHONE }), async (app) => {
     const { page } = app;
     const chart = await chartCard(page, "AAPL");
     assert.equal(await chart.locator("button.oi-finder-chart-roi-odds").isVisible(), false, "toolbar Odds is desktop only");
     const roi = await roiOn(chart);
-    await roi.locator(".chart-project-roi-odds-toggle").click();
+    await pick(roi, "Both").click();
     await checkOdds(roi, asked);
     assert.equal(await overflowsSideways(page), false);
     noPageErrors(app);
@@ -114,7 +151,7 @@ e2eTest("phone: the ROI card's Odds from here button shows the odds without side
 // 2026-11-15 "I don't see in phone": with ROI already on (a saved plan), the
 // phone toolbar shows only ROI and C, and nothing there opens the card. The
 // chart itself has an Odds button on a phone; it opens the card with the odds.
-e2eTest("phone, ROI already on: the Odds button on the chart opens the odds", async () => {
+e2eTest("phone, ROI already on: the Odds button on the chart opens the odds; Odds only stays after closing", async () => {
   const asked = [];
   const plan = { AAPL: { side: "CALL", both: false, contracts: 1, entrySpot: 0, createdAt: Date.now() - 60_000 } };
   await withApp(options(asked, { viewport: PHONE, storage: { "agx.chartProjectRoi.v1": JSON.stringify(plan) } }), async (app) => {
@@ -128,16 +165,11 @@ e2eTest("phone, ROI already on: the Odds button on the chart opens the odds", as
     await roi.locator(".chart-project-roi-title").waitFor({ state: "visible", timeout: 120_000 });
     await checkOdds(roi, asked);
     assert.equal(await fab.count(), 0, "the button goes while the card is open");
+    await pick(roi, "Odds").click();
     await roi.locator(".chart-project-roi-close").click();
     await fab.waitFor({ state: "visible", timeout: 10_000 });
-    // The odds stay on the chart's own Target / Stop / Entry boxes (2026-11-15:
-    // "In chart add odds ... only target and stop loss and entry").
-    const drawn = String(await chart.locator('[data-testid="chart-project-roi-lines"]').getAttribute("data-lines")).split("|");
-    const title = (key) => (drawn.find((item) => item.startsWith(`${key}:`)) || "").split(":").slice(2).join(":");
-    assert.match(title("target"), / · 41%$/);
-    assert.match(title("stop"), / · 28%$/);
-    assert.match(title("entry"), / · 31% neither$/);
-    assert.ok(drawn.filter((item) => item.startsWith("t1:") || item.startsWith("t3:")).every((item) => !item.includes("%  ·") && !/ · d+%$/.test(item)), "T1 / T3 carry no odds");
+    const lines = await waitTitles(page, chart, (all) => all.length === 3 && / · 41%$/.test(all[1].title));
+    assert.deepEqual(lines.map((line) => line.title.replace(/\d+\.\d\d/, "#")), ["Entry # · 31% neither", "Target # · 41%", "Stop # · 28%"]);
     assert.equal(await overflowsSideways(page), false);
     noPageErrors(app);
   });

@@ -147,3 +147,28 @@ export function withOddsOnLines(lines = [], payload = null, result = null) {
   };
   return lines.map((line) => (add[line.key] ? { ...line, title: `${line.title}${add[line.key]}` } : line));
 }
+
+// "Odds" on the chart (2026-11-15, "I want only odds or ROI in chart or
+// both"): just three lines, Entry / Target / Stop, each with its odds and
+// nothing else. While the answer is on its way the lines say "odds…".
+export function oddsOnlyLines(result = null, payload = null) {
+  if (!result?.ready || !(result.target > 0) || !(result.stopStock > 0)) return [];
+  const same = (a, b) => Math.abs(Number(a) - Number(b)) < 0.006;
+  const fresh = payload?.ok && payload.side === result.side && same(payload.target, result.target) && same(payload.stop, result.stopStock);
+  const odds = fresh ? payload.odds || {} : null;
+  const tag = (value, word = "") => (odds ? ` · ${Math.round(value || 0)}%${word}` : " · odds…");
+  const entry = result.entrySpot > 0 ? result.entrySpot : result.spot;
+  return [
+    { key: "entry", price: entry, color: "#e8f4ff", title: `Entry ${Number(entry).toFixed(2)}${tag(odds?.neither, " neither")}` },
+    { key: "target", price: result.target, color: "#3dff8a", title: `Target ${Number(result.target).toFixed(2)}${tag(odds?.target)}` },
+    { key: "stop", price: result.stopStock, color: "#ff5a6a", title: `Stop ${Number(result.stopStock).toFixed(2)}${tag(odds?.stop)}` },
+  ];
+}
+
+// The lines the chart draws for each choice: "roi" the ROI boxes, "odds" only
+// the three odds lines, "both" the ROI boxes with the odds added.
+export function chartPlanLines(show, roiLines = [], result = null, payload = null) {
+  if (show === "odds") return oddsOnlyLines(result, payload);
+  if (show === "both") return withOddsOnLines(roiLines, payload, result);
+  return roiLines;
+}

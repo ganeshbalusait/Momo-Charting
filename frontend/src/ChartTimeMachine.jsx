@@ -3,55 +3,32 @@
 // (time_machine.py). Its own component, so a fetch or a re-render here never
 // touches the chart component.
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { roiAtPrice, timeMachineFan, timeMachinePlan, timeMachineView } from "./chartTimeMachine.js";
 import "./chartTimeMachine.css";
 
-// Which tickers have Odds open: one copy for the page, shared by the toolbar
-// button and every chart panel's ROI card. Kept for this page only.
-let openTickers = new Set();
-const listeners = new Set();
-const subscribe = (listener) => { listeners.add(listener); return () => listeners.delete(listener); };
-const snapshot = () => openTickers;
-export function setOddsOpen(ticker, open) {
-  const key = String(ticker || "").toUpperCase();
-  if (!key || openTickers.has(key) === Boolean(open)) return;
-  const next = new Set(openTickers);
-  if (open) next.add(key); else next.delete(key);
-  openTickers = next;
-  listeners.forEach((listener) => listener());
-}
-export function useOddsOpen(ticker) {
-  const open = useSyncExternalStore(subscribe, snapshot);
-  return open.has(String(ticker || "").toUpperCase());
-}
-
-// The last answer per ticker, so the chart's lines can show the odds with
-// the card closed (withOddsOnLines checks it is for the plan on screen).
-let answers = new Map();
-const answerListeners = new Set();
-const subscribeAnswers = (listener) => { answerListeners.add(listener); return () => answerListeners.delete(listener); };
-const answersSnapshot = () => answers;
-function saveAnswer(ticker, payload) {
-  answers = new Map(answers).set(String(ticker || "").toUpperCase(), payload);
-  answerListeners.forEach((listener) => listener());
-}
-export function useOddsAnswer(ticker) {
-  return useSyncExternalStore(subscribeAnswers, answersSnapshot).get(String(ticker || "").toUpperCase()) || null;
-}
-
 const pct = (value) => `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(0)}%`;
 
-export default function ChartTimeMachine({ ticker = "", result = null }) {
+// What the chart shows for a ROI plan (2026-11-15, Ganesh: "I want only odds
+// or ROI in chart or both. Give me that option"): "roi" (the ROI boxes),
+// "odds" (only Entry / Target / Stop with their odds) or "both". Kept in the
+// plan, per ticker. Old plans have none: ROI.
+export const CHART_SHOW_OPTIONS = [["roi", "ROI"], ["odds", "Odds"], ["both", "Both"]];
+export function chartShowOf(plan) {
+  const value = String(plan?.show || "").toLowerCase();
+  return value === "odds" || value === "both" ? value : "roi";
+}
+
+// The replay for one plan. Asked again when the plan changes (side, target,
+// stop), not on every live tick of the price: the price is read when the
+// question is asked. Off (enabled false): asks nothing.
+export function useTimeMachine(ticker, result, enabled) {
   const plan = timeMachinePlan(result, ticker);
-  // Asked again when the plan changes (side, target, stop), not on every
-  // live tick of the price: the price is read when the question is asked.
-  const planKey = plan.url ? plan.url.replace(/&spot=[^&]*/, "") : "";
+  const planKey = enabled && plan.url ? plan.url.replace(/&spot=[^&]*/, "") : "";
   const urlRef = useRef(plan.url);
   urlRef.current = plan.url;
   const [state, setState] = useState({ status: "idle", payload: null, key: "" });
   const [runs, setRuns] = useState(0);
-
   useEffect(() => {
     if (!planKey) return undefined;
     const controller = new AbortController();
@@ -61,16 +38,25 @@ export default function ChartTimeMachine({ ticker = "", result = null }) {
         const body = await response.json().catch(() => null);
         if (!response.ok) throw new Error(body?.error || body?.reason || `HTTP ${response.status}`);
         setState({ status: "done", payload: body, key: planKey });
-        saveAnswer(ticker, body);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
         setState({ status: "error", payload: { ok: false, reason: `Could not reach the server: ${error.message}` }, key: planKey });
       });
     return () => controller.abort();
-  }, [planKey, runs, ticker]);
+  }, [planKey, runs]);
+  return {
+    plan,
+    planKey,
+    status: state.status,
+    payload: state.key === planKey ? state.payload : null,
+    rerun: () => setRuns((count) => count + 1),
+  };
+}
 
-  const payload = state.key === planKey ? state.payload : null;
+export default function ChartTimeMachine({ ticker = "", result = null, machine }) {
+  const { plan, planKey, payload } = machine;
+  const state = { status: machine.status };
   const view = useMemo(() => timeMachineView(payload, {
     roiAtTarget: result?.roiPercent ?? null,
     roiAtStop: result?.stopPremium && result?.entry ? -50 : null,
@@ -82,7 +68,7 @@ export default function ChartTimeMachine({ ticker = "", result = null }) {
     <section className="chart-time-machine" aria-label={`Odds from here for ${ticker}`} data-testid="chart-time-machine">
       <header>
         <b>Odds from here</b>
-        <button type="button" className="chart-time-machine-rerun" onClick={() => setRuns((count) => count + 1)} disabled={!planKey || state.status === "loading"} title="Replay again from the price now">↻ Run again</button>
+        <button type="button" className="chart-time-machine-rerun" onClick={machine.rerun} disabled={!planKey || state.status === "loading"} title="Replay again from the price now">↻ Run again</button>
       </header>
       {!plan.url ? <p className="chart-time-machine-note" role="status">{plan.reason}</p>
         : state.status === "loading" && !view.ready ? <p className="chart-time-machine-note" role="status">Replaying the rest of the day 10,000 times…</p>

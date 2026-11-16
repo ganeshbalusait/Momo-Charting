@@ -31,8 +31,6 @@
 .chart-time-machine-option b.is-loss { color: oklch(70% 0.19 25); }
 .chart-time-machine-option small { color: var(--hm-muted, #a6b0bf); font-size: .58rem; }
 .chart-time-machine-verdict { margin: 0; padding: 5px 7px; border-left: 3px solid var(--hm-accent, #3ddcff); border-radius: 4px; background: oklch(30% 0.07 240 / .45); font-size: .64rem; color: var(--hm-ink, #fff); }
-.chart-project-roi-odds-toggle { justify-self: start; min-height: 24px; border: 1px solid var(--hm-accent, #3ddcff); border-radius: 6px; padding: 2px 9px; background: oklch(30% 0.07 240 / .6); color: var(--hm-ink, #fff); font: inherit; font-size: .64rem; font-weight: 700; cursor: pointer; }
-.chart-project-roi-odds-toggle[aria-pressed="true"] { background: var(--hm-accent, #3ddcff); color: var(--hm-accent-ink, #05070c); }
 /* Toolbar Odds button: desktop only (the phone row has room for one more
    button and the C / P / B one uses it); on a phone it is in the ROI card. */
 .app-shell .oi-finder-chart-card .oi-finder-chart-roi-odds {
@@ -54,3 +52,8 @@
     background: oklch(30% 0.07 240 / .92); color: #fff; font: inherit; font-size: .72rem; font-weight: 700; cursor: pointer;
   }
 }
+/* ROI card: what the chart shows, ROI / Odds / Both (2026-11-15). */
+.chart-project-roi-show { display: flex; align-items: center; gap: 4px; }
+.chart-project-roi-show small { color: var(--hm-muted, #a6b0bf); font-size: .62rem; margin-right: 2px; }
+.chart-project-roi-show button { min-height: 24px; border: 1px solid var(--hm-rule-2, rgba(255, 255, 255, .25)); border-radius: 6px; padding: 2px 10px; background: var(--hm-paper-2, transparent); color: var(--hm-ink-2, #dfe7f2); font: inherit; font-size: .64rem; font-weight: 700; cursor: pointer; }
+.chart-project-roi-show button.is-active { border-color: var(--hm-accent, #3ddcff); background: var(--hm-accent, #3ddcff); color: var(--hm-accent-ink, #05070c); }
