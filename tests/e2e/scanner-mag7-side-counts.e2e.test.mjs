@@ -73,6 +73,16 @@ e2eTest("on a phone the bear table fits under the board", async () => {
     await app.page.locator(OTHER_SIDE).waitFor({ state: "visible", timeout: 20_000 });
     await app.page.waitForFunction((sel) => document.querySelectorAll(sel + " tbody tr .momx-symbol").length === 1, OTHER_SIDE, { timeout: 20_000 });
     assert.equal(await overflowsSideways(app.page), false);
+    // 2026-11-16 "bear scanner little came right": the bear table starts at the
+    // same left edge as the board and is not cut off on the right.
+    const edges = await app.page.evaluate((sel) => {
+      const board = document.querySelector("table.momx-table").getBoundingClientRect();
+      const wrap = document.querySelector(sel + " .momx-table-scroll");
+      const table = wrap.querySelector("table").getBoundingClientRect();
+      return { boardLeft: board.left, tableLeft: table.left, clipped: table.width - wrap.getBoundingClientRect().width };
+    }, OTHER_SIDE);
+    assert.ok(Math.abs(edges.boardLeft - edges.tableLeft) <= 1, `left edges ${JSON.stringify(edges)}`);
+    assert.ok(edges.clipped <= 1, `bear table cut off by ${edges.clipped}px`);
     assert.deepEqual(app.pageErrors, []);
   });
 });

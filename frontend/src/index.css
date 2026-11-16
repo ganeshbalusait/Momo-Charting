@@ -17198,7 +17198,14 @@ button.avatar {
    now-table-wide panel). Requires container-type:inline-size on
    .momx-scanner-view. Browsers without cqw ignore the cap and degrade to
    full-width widgets that pan with the table - harmless. */
-.momx-scanner-panel > :not(.momx-table-scroll) {
+.momx-scanner-panel > :not(.momx-table-scroll, .momx-other-side) {
+  position: sticky;
+  left: var(--momx-gutter);
+  max-width: calc(100cqw - 2 * var(--momx-gutter));
+}
+/* The Mag7 other-side table (2026-11-16) lines up with the board and pans
+   sideways with it; only its title stays pinned like the widgets above. */
+.momx-scanner-panel > .momx-other-side > .momx-other-side-title {
   position: sticky;
   left: var(--momx-gutter);
   max-width: calc(100cqw - 2 * var(--momx-gutter));
