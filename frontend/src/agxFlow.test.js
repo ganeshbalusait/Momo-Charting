@@ -85,3 +85,21 @@ test("reading progress and query", () => {
   assert.equal(flowQuery(["AAPL", "BRK.B"]), "/api/agx-flow?symbols=AAPL%2CBRK.B");
   assert.equal(MAG7_BOARD.length, 9);
 });
+
+test("watchlist board: Mag7 + SPY/QQQ first, then the watchlist, no repeats, at most 400", async () => {
+  const { watchlistBoard, MAG7_BOARD: board } = await import("./agxFlow.js");
+  assert.deepEqual(watchlistBoard(["pltr", "NVDA", "bad ticker", "SOFI"]), [...board, "PLTR", "SOFI"]);
+  const lots = Array.from({ length: 500 }, (_, i) => `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26) % 26)}${String.fromCharCode(65 + Math.floor(i / 676))}`);
+  assert.equal(watchlistBoard(lots).length, 400);
+  assert.deepEqual(watchlistBoard(null), board);
+});
+
+test("strip keeps the 12 tickers with the most option dollars when the board is big", async () => {
+  const { stripTickers } = await import("./agxFlow.js");
+  const few = [{ ticker: "A", callPremium: 1 }, { ticker: "B", callPremium: 5 }];
+  assert.deepEqual(stripTickers(few), few);
+  const many = Array.from({ length: 30 }, (_, i) => ({ ticker: `T${i}`, callPremium: i * 10, putPremium: i }));
+  const shown = stripTickers(many);
+  assert.equal(shown.length, 12);
+  assert.equal(shown[0].ticker, "T29");
+});

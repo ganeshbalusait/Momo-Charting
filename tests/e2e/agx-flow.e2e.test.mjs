@@ -63,3 +63,24 @@ e2eTest("AGX Flow shows cards and nothing runs off the side on a phone", async (
     assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, "the card fits the phone width");
   });
 });
+
+// 2026-11-17 "I see only mag7 tickets what about other tickets from watchlist": the Watchlist button reads the whole
+// watchlist after Mag7 + SPY/QQQ, and the strip shows only the 12 tickers with the most option dollars.
+for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]) {
+  e2eTest(`AGX Flow Watchlist button reads the whole watchlist at ${label}`, async () => {
+    const watchlist = Array.from({ length: 30 }, (_, i) => `W${String.fromCharCode(65 + (i % 26))}${i >= 26 ? "X" : ""}`);
+    const many = { ...BOARD, tickers: watchlist.map((ticker, i) => ({ ...BOARD.tickers[0], ticker, callPremium: i * 1000, putPremium: 0 })) };
+    const reads = { "GET /api/agx-flow": { json: many }, "GET /api/watchlist": { json: { tickers: watchlist } } };
+    await withApp({ view: "AGX Flow", ...(viewport ? { viewport } : {}), fakeReads: reads, storage: { agxFlowPrefs: JSON.stringify({ board: "watchlist" }) } }, async (app) => {
+      const view = app.page.locator('[data-testid="agx-flow-view"]');
+      await view.waitFor({ timeout: 60_000 });
+      await view.locator('[data-testid="agx-flow-row"]').first().waitFor({ timeout: 30_000 });
+      const read = app.reads.find((r) => r.path === "/api/agx-flow");
+      assert.equal(decodeURIComponent(read.search), `?symbols=AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,SPY,QQQ,${watchlist.join(",")}`);
+      assert.equal(await view.locator(".agx-flow-strip > *").count(), 12);
+      assert.equal(await view.getByRole("button", { name: "Watchlist", exact: true }).getAttribute("aria-pressed"), "true");
+      if (viewport) assert.equal(await overflowsSideways(app.page), false);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}

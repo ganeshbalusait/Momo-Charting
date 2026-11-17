@@ -218,9 +218,12 @@ def reset() -> None:
         _RECENT.clear()
 
 
-def chain_for(ticker: str, root: Path, now: datetime) -> dict:
+def chain_for(ticker: str, root: Path, now: datetime, *, count: bool = True, keep: bool = True) -> dict:
     """{"symbol", "fetchedAt", "spot", "rows", "cached"} for one ticker, from a copy younger than CACHE_SECONDS or one
-    new Schwab request. Raises Unavailable with a plain reason."""
+    new Schwab request. Raises Unavailable with a plain reason.
+
+    count=False: the request is paced by the caller (the LEAP OI Scanner's daily watchlist read) and does not use the
+    chat's hourly allowance. keep=False: saved to disk only, not held in memory (hundreds of tickers would be heavy)."""
     ticker = str(ticker or "").upper()
     with _STATE:
         held = _MEMORY.get(ticker)
@@ -238,7 +241,7 @@ def chain_for(ticker: str, root: Path, now: datetime) -> dict:
             raise Unavailable(f"Schwab did not answer for {ticker} a few minutes ago. Try again in a few minutes.")
         while _RECENT and mono - _RECENT[0] > 3600:
             _RECENT.popleft()
-        if len(_RECENT) >= FETCHES_PER_HOUR:
+        if count and len(_RECENT) >= FETCHES_PER_HOUR:
             raise Unavailable("The chat has asked Schwab for many long-dated chains this hour. Try again later.")
     if not _LOCK.acquire(timeout=WAIT_SECONDS):
         raise Unavailable("Another long-dated chain is loading right now. Try again in a minute.")
@@ -247,8 +250,9 @@ def chain_for(ticker: str, root: Path, now: datetime) -> dict:
             held = _MEMORY.get(ticker)
         if held and _fresh(held[1], now):
             return {**held[1], "cached": True}
-        with _STATE:
-            _RECENT.append(time.monotonic())
+        if count:
+            with _STATE:
+                _RECENT.append(time.monotonic())
         try:
             chain = fetch(ticker, now.date())
         except Unavailable:
@@ -264,7 +268,8 @@ def chain_for(ticker: str, root: Path, now: datetime) -> dict:
             raise Unavailable(f"Schwab has no options 1 to 12 months out for {ticker}.")
         doc = {"schema": SCHEMA, "symbol": ticker, "fetchedAt": now.isoformat(), "spot": spot, "rows": rows}
         with _STATE:
-            _MEMORY[ticker] = (time.monotonic(), doc)
+            if keep:
+                _MEMORY[ticker] = (time.monotonic(), doc)
             _FAILED.pop(ticker, None)
         _write_disk(root, ticker, doc)
         return {**doc, "cached": False}

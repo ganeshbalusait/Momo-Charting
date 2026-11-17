@@ -47,3 +47,9 @@
   .leapoi-cards { display: block; }
   .leapoi-filters { gap: 8px; }
 }
+.leapoi-search { width: 100%; max-width: 320px; box-sizing: border-box; background: #141a24; color: #e8ecf2; border: 1px solid #2a3344; border-radius: 10px; padding: 8px 12px; font-size: 14px; margin: 4px 0 10px; }
+.leapoi-bytk { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 8px; }
+.leapoi-bytk-card { margin-bottom: 0; }
+.leapoi-bytk-grid dd { font-size: 12.5px; }
+.leapoi-more { margin-top: 10px; }
+@media (max-width: 760px) { .leapoi-bytk { grid-template-columns: minmax(0, 1fr); } .leapoi-bytk-grid { grid-template-columns: minmax(0, 1fr); } }

@@ -1,7 +1,7 @@
 // LEAP OI Scanner page helpers (2026-11-17): pure functions so node --test can check them.
 
 export const MAG7 = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"];
-export const MAX_TICKERS = 25;
+export const MAX_TICKERS = 400; // Mag7 + the whole watchlist (2026-11-17: "what about other tickers from watchlist")
 
 export const RANGES = [
   { id: "leap", label: "LEAP 3–12", from: 3, to: 12 },
@@ -101,7 +101,9 @@ export function progressText(payload) {
   const tickers = Array.isArray(payload?.tickers) ? payload.tickers : [];
   const waiting = tickers.filter((t) => t.state === "pending").length;
   if (!tickers.length || !waiting) return "";
-  return `Reading Schwab… ${tickers.length - waiting} of ${tickers.length} tickers ready`;
+  const base = `Reading Schwab… ${tickers.length - waiting} of ${tickers.length} tickers ready`;
+  // The whole watchlist is read one ticker every ~3.5 s (gentle on Schwab), once a day.
+  return waiting > 10 ? `${base} · about ${Math.max(1, Math.round((waiting * 3.5) / 60))} min left, once a day` : base;
 }
 
 // "Read 8:31 AM ET" from the oldest ready ticker's read time.
@@ -114,4 +116,15 @@ export function readAtText(payload) {
   const oldest = new Date(Math.min(...times.map((d) => d.getTime())));
   const text = oldest.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
   return `Read from Schwab ${text} ET`;
+}
+
+// By-ticker list (2026-11-17, "what about other tickers from watchlist"): search by ticker start, then show at most
+// `limit` lines unless the trader asks for all.
+export const BY_TICKER_PREVIEW = 40;
+
+export function filterByTicker(list, query, showAll = false) {
+  const rows = Array.isArray(list) ? list : [];
+  const q = String(query || "").trim().toUpperCase();
+  const matched = q ? rows.filter((line) => String(line?.ticker || "").startsWith(q)) : rows;
+  return { shown: showAll ? matched : matched.slice(0, BY_TICKER_PREVIEW), total: matched.length };
 }

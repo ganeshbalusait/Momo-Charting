@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import "./agxFlow.css";
 import {
   MAG7_BOARD,
+  stripTickers,
+  watchlistBoard,
   MIN_PREMIUMS,
   POLL_MS,
   SIDE_FILTERS,
@@ -32,7 +34,7 @@ function readPrefs() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(PREFS_KEY) || "{}");
     return {
-      board: parsed?.board === "custom" ? "custom" : "mag7",
+      board: ["custom", "watchlist"].includes(parsed?.board) ? parsed.board : "mag7",
       custom: typeof parsed?.custom === "string" ? parsed.custom : "",
       side: SIDE_FILTERS.includes(parsed?.side) ? parsed.side : "both",
       minPremium: MIN_PREMIUMS.includes(parsed?.minPremium) ? parsed.minPremium : MIN_PREMIUMS[0],
@@ -160,10 +162,22 @@ export default function AgxFlowPanel({ onOpenChart }) {
     return next;
   });
 
+  // Watchlist board (2026-11-17, "what about other tickers from watchlist"): Mag7 + SPY/QQQ + the whole watchlist.
+  const [watchlist, setWatchlist] = useState(null);
+  useEffect(() => {
+    if (prefs.board !== "watchlist" || watchlist !== null) return undefined;
+    let alive = true;
+    fetch("/api/watchlist")
+      .then((r) => (r.ok ? r.json() : { tickers: [] }))
+      .then((body) => { if (alive) setWatchlist(Array.isArray(body?.tickers) ? body.tickers : []); })
+      .catch(() => { if (alive) setWatchlist([]); });
+    return () => { alive = false; };
+  }, [prefs.board, watchlist]);
   const symbols = useMemo(() => {
+    if (prefs.board === "watchlist") return watchlist === null ? [] : watchlistBoard(watchlist);
     const custom = parseTickers(prefs.custom);
     return prefs.board === "custom" && custom.length ? custom : MAG7_BOARD;
-  }, [prefs.board, prefs.custom]);
+  }, [prefs.board, prefs.custom, watchlist]);
   const symbolKey = symbols.join(",");
   const progress = readingProgress(data?.tickers);
   const reading = progress.pending > 0;
@@ -173,6 +187,7 @@ export default function AgxFlowPanel({ onOpenChart }) {
     let timer = null;
     const load = async () => {
       if (typeof document !== "undefined" && document.hidden) return;
+      if (!symbolKey) return;                              // the watchlist has not answered yet
       setLoading(true);
       try {
         const response = await fetch(flowQuery(symbolKey.split(",")));
@@ -207,6 +222,7 @@ export default function AgxFlowPanel({ onOpenChart }) {
     if (!reading) return undefined;
     const quick = setTimeout(async () => {
       try {
+        if (!symbolKey) return;
         const response = await fetch(flowQuery(symbolKey.split(",")));
         if (response.ok) setData(await response.json());
       } catch { /* the minute poll will try again */ }
@@ -227,6 +243,7 @@ export default function AgxFlowPanel({ onOpenChart }) {
         <div className="agx-flow-controls">
           <span className="agx-flow-switch" role="group" aria-label="Board">
             <button type="button" aria-pressed={prefs.board === "mag7"} onClick={() => updatePrefs({ board: "mag7" })}>Mag7 + SPY/QQQ</button>
+            <button type="button" aria-pressed={prefs.board === "watchlist"} onClick={() => updatePrefs({ board: "watchlist" })}>Watchlist</button>
             <button type="button" aria-pressed={prefs.board === "custom"} onClick={() => updatePrefs({ board: "custom" })}>My tickers</button>
           </span>
           <span className="agx-flow-switch" role="group" aria-label="Side">
@@ -263,7 +280,7 @@ export default function AgxFlowPanel({ onOpenChart }) {
       {!data && loading ? <p className="agx-flow-status">Loading…</p> : null}
       {error ? <p className="agx-flow-status is-error">{error}</p> : null}
 
-      {tickers.length ? <TickerStrip tickers={tickers} /> : null}
+      {tickers.length ? <TickerStrip tickers={stripTickers(tickers)} /> : null}
 
       {data && !rows.length ? (
         <p className="agx-flow-empty">

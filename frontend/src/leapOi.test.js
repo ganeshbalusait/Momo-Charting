@@ -6,11 +6,13 @@ import {
   progressText, readAtText, scannerUrl,
 } from "./leapOi.js";
 
-test("board tickers: Mag7 first, watchlist after, no repeats, junk dropped, capped at 25", () => {
+test("board tickers: Mag7 first, watchlist after, no repeats, junk dropped, capped at 400", () => {
   assert.deepEqual(boardTickers("mag7", ["PLTR"]), MAG7);
   assert.deepEqual(boardTickers("both", ["pltr", "NVDA", "", "BAD TICKER", "amd"]), [...MAG7, "PLTR", "AMD"]);
   const many = Array.from({ length: 40 }, (_, i) => `T${String.fromCharCode(65 + (i % 26))}${i >= 26 ? "X" : ""}`);
-  assert.equal(boardTickers("both", many).length, 25);
+  assert.equal(boardTickers("both", many).length, 47);
+  const lots = Array.from({ length: 500 }, (_, i) => `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26) % 26)}${String.fromCharCode(65 + Math.floor(i / 676))}`);
+  assert.equal(boardTickers("both", lots).length, 400);
   assert.deepEqual(boardTickers("both", null), MAG7);
 });
 
@@ -61,4 +63,19 @@ test("read time shows the oldest ready read in ET", () => {
   ] });
   assert.equal(text, "Read from Schwab 8:31 AM ET");
   assert.equal(readAtText({ tickers: [] }), "");
+});
+
+test("by-ticker search: starts-with match, preview of 40 unless show all", async () => {
+  const { filterByTicker } = await import("./leapOi.js");
+  const list = Array.from({ length: 100 }, (_, i) => ({ ticker: `T${String(i).padStart(3, "0")}` })).concat([{ ticker: "PLTR" }, { ticker: "PL" }]);
+  assert.deepEqual(filterByTicker(list, "pl").shown.map((l) => l.ticker), ["PLTR", "PL"]);
+  assert.equal(filterByTicker(list, "").shown.length, 40);
+  assert.equal(filterByTicker(list, "").total, 102);
+  assert.equal(filterByTicker(list, "", true).shown.length, 102);
+  assert.deepEqual(filterByTicker(null, "x"), { shown: [], total: 0 });
+});
+
+test("progress on a whole-watchlist read says roughly how long is left", () => {
+  const tickers = [...Array(20).fill({ state: "ready" }), ...Array(340).fill({ state: "pending" })];
+  assert.equal(progressText({ tickers }), "Reading Schwab… 20 of 360 tickers ready · about 20 min left, once a day");
 });

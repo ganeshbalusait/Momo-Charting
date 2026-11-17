@@ -27,7 +27,8 @@ def _drain():
 
 
 @pytest.fixture(autouse=True)
-def clean():
+def clean(monkeypatch):
+    monkeypatch.setattr(scanner, "PACE_SECONDS", 0.0)
     _drain()
     long_oi.reset()
     yield
@@ -51,7 +52,8 @@ def fake(monkeypatch):
 def test_tickers_are_cleaned_and_capped():
     assert scanner.clean_symbols("nvda, AAPL,,nvda, bad ticker, BRK.B") == ["NVDA", "AAPL", "BRK.B"]
     assert scanner.clean_symbols(["x" * 9, "", None, "msft"]) == ["MSFT"]
-    assert len(scanner.clean_symbols([f"A{chr(65 + i % 26)}{chr(65 + i // 26)}" for i in range(60)])) == scanner.MAX_SYMBOLS
+    many = [f"{chr(65 + i % 26)}{chr(65 + i // 26 % 26)}{chr(65 + i // 676)}" for i in range(500)]
+    assert len(scanner.clean_symbols(many)) == scanner.MAX_SYMBOLS == 400
 
 
 @pytest.mark.parametrize("months,days", [((3, 12), (88, 366)), ((1, 12), (28, 366)), ((1, 3), (28, 92)), ((12, 1), (358, 366))])
@@ -141,3 +143,38 @@ def test_a_ticker_schwab_refused_shows_its_reason_and_is_not_asked_again(tmp_pat
     assert out["tickers"][0]["state"] == "error" and "Schwab did not answer for ZZZ" in out["tickers"][0]["error"]
     later = scanner.board(["ZZZ"], tmp_path, NOW)
     assert later["tickers"][0]["state"] == "error" and later["pending"] == [] and asked == ["ZZZ"]
+
+
+def test_whole_watchlist_by_ticker_list_and_its_own_allowance(tmp_path, fake, monkeypatch):
+    """2026-11-17 "I see only mag7 tickets what about other tickets from watchlist": every ticker gets a By-ticker line
+    even when Mag7's open interest fills the top of the list, and the watchlist read does not use the chat's hourly
+    allowance."""
+    monkeypatch.setattr(long_oi, "FETCHES_PER_HOUR", 1)
+    tickers = ["NVDA", "PLTR", "SOFI", "AMD"]
+    out = scanner.board(tickers, tmp_path, NOW, months_from=1, wait=True)
+    assert sorted(fake) == sorted(tickers)                                    # 4 reads past a chat cap of 1
+    assert [t["ticker"] for t in out["byTicker"]] == ["AMD", "NVDA", "PLTR", "SOFI"]
+    line = out["byTicker"][0]
+    assert line["call"]["strike"] == 200.0 and line["put"]["strike"] == 140.0
+    assert line["entryCall"]["entry"] and line["entryPut"]["entry"]
+    assert line["callOi"] > 0 and line["putOi"] > 0
+    assert long_oi._MEMORY == {}                                              # full chains are not held in memory
+
+
+def test_compact_copy_keeps_every_row_the_page_can_show(tmp_path, fake):
+    full = scanner.board(["NVDA"], tmp_path, NOW, months_from=1, wait=True)
+    scanner.reset()
+    long_oi.reset()
+    again = scanner.board(["NVDA"], tmp_path, NOW, months_from=1)                # read back from the small file
+    assert again["rows"] == full["rows"] and again["entries"] == full["entries"]
+    small = scanner.compact({"symbol": "NVDA", "fetchedAt": NOW.isoformat(), **dict(zip(("spot", "rows"), long_oi.rows_from_chain(chain(), TODAY)))})
+    assert all(abs(r["delta"]) >= 0.10 for r in small["rows"])                    # lottery strikes dropped
+
+
+def test_the_background_reader_waits_between_schwab_requests(tmp_path, fake, monkeypatch):
+    naps: list = []
+    monkeypatch.setattr(scanner, "PACE_SECONDS", 3.0)
+    monkeypatch.setattr(scanner.time, "sleep", lambda seconds: naps.append(seconds))
+    scanner.board(["NVDA", "AAPL"], tmp_path, NOW)
+    scanner._WORKER["thread"].join(5)
+    assert naps == [3.0, 3.0] and sorted(fake) == ["AAPL", "NVDA"]

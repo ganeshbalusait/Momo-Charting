@@ -3,8 +3,57 @@ import { useEffect, useMemo, useState } from "react";
 import "./leapOi.css";
 import {
   DELTAS, RANGES, SIDES, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi,
-  priceText, progressText, readAtText, scannerUrl,
+  filterByTicker, priceText, progressText, readAtText, scannerUrl,
 } from "./leapOi.js";
+
+function Pick({ label, row }) {
+  if (!row) return <div><dt>{label}</dt><dd className="leapoi-dim">—</dd></div>;
+  const tone = row.side === "PUT" ? "is-put" : "is-call";
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd><b className={tone}>{contractLabel(row)}</b> {expiryLabel(row.expiry)} · OI <b>{formatOi(row.oi)}</b> · Δ {deltaText(row.delta)}</dd>
+    </div>
+  );
+}
+
+// By ticker (2026-11-17, "I see only mag7 tickets what about other tickets from watchlist"): one line per ticker, so
+// the small names are not buried under Mag7's huge open interest in the ranked lists.
+function ByTicker({ list, onOpenChart }) {
+  const [query, setQuery] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const { shown, total } = filterByTicker(list, query, showAll);
+  return (
+    <>
+      <h3>By ticker</h3>
+      <p className="leapoi-sub">Every ticker on the board: its biggest call and put open interest, and its biggest ENTRY call and put.</p>
+      <input className="leapoi-search" type="search" placeholder="Find a ticker" value={query} aria-label="Find a ticker"
+        onChange={(event) => setQuery(event.target.value)} />
+      <div className="leapoi-bytk">
+        {shown.map((line) => (
+          <div className="leapoi-card leapoi-bytk-card" key={line.ticker} data-testid="leap-oi-ticker">
+            <div className="leapoi-card-head">
+              <b className="leapoi-tk">{line.ticker}</b>
+              <small className="leapoi-dim">{priceText(line.spot)}</small>
+              <small className="leapoi-dim">Calls {formatOi(line.callOi)} · Puts {formatOi(line.putOi)}</small>
+              <button type="button" onClick={() => onOpenChart?.(line.ticker)}>Chart ›</button>
+            </div>
+            <dl className="leapoi-card-grid leapoi-bytk-grid">
+              <Pick label="Most call OI" row={line.call} />
+              <Pick label="Most put OI" row={line.put} />
+              <Pick label="ENTRY call" row={line.entryCall} />
+              <Pick label="ENTRY put" row={line.entryPut} />
+            </dl>
+          </div>
+        ))}
+      </div>
+      {!shown.length ? <p className="leapoi-empty">{query ? "No ticker on the board starts with that." : "Nothing read yet."}</p> : null}
+      {total > shown.length ? (
+        <button type="button" className="leapoi-more" onClick={() => setShowAll(true)}>Show all {total} tickers</button>
+      ) : null}
+    </>
+  );
+}
 
 // LEAP OI Scanner (2026-11-17): strikes 1-12 months out with the most open interest across Mag7 + the watchlist,
 // with delta and the option chain's ENTRY tag. Facts only.
@@ -199,6 +248,7 @@ export default function LeapOiScannerPanel({ onOpenChart }) {
           <h3>All strikes with the most open interest</h3>
           <p className="leapoi-sub">Biggest open interest at the delta you picked. ENTRY tag when that strike is the chain's ENTRY.</p>
           <Rows rows={payload.rows || []} onOpenChart={onOpenChart} testId="leap-oi-row" />
+          <ByTicker list={payload.byTicker || []} onOpenChart={onOpenChart} />
           {errors.length ? <p className="leapoi-sub">Not read: {errors.map((t) => t.ticker).join(", ")} ({errors[0].error})</p> : null}
           <p className="leapoi-note">{payload.note}</p>
         </>

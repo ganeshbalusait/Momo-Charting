@@ -60,9 +60,10 @@ def schwab(monkeypatch):
     agx_flow.reset()
 
 
-def test_parse_symbols_rejects_garbage_and_caps_at_twenty():
+def test_parse_symbols_rejects_garbage_and_caps_at_four_hundred():
     assert agx_flow.parse_symbols("aapl, NVDA,nvda,BRK.B,  ,12AB,TOOLONGX,<x>,SPY") == ["AAPL", "NVDA", "BRK.B", "SPY"]
-    assert len(agx_flow.parse_symbols([f"A{chr(65 + i % 26)}{chr(65 + i // 26)}" for i in range(40)])) == 20
+    assert len(agx_flow.parse_symbols([f"A{chr(65 + i % 26)}{chr(65 + i // 26)}" for i in range(40)])) == 40
+    assert len(agx_flow.parse_symbols([f"{chr(65 + i % 26)}{chr(65 + i // 26 % 26)}{chr(65 + i // 676)}" for i in range(500)])) == agx_flow.MAX_SYMBOLS == 400
     assert agx_flow.parse_symbols(None) == []
 
 
@@ -179,3 +180,24 @@ def test_top_sixty_sorted_by_premium(schwab, tmp_path):
     rows = agx_flow.board(["SPY"], tmp_path, NOW, wait=True)["rows"]
     assert len(rows) == 60 and rows[0]["strike"] == 179.0
     assert [r["premium"] for r in rows] == sorted((r["premium"] for r in rows), reverse=True)
+
+
+def test_whole_watchlist_is_read_in_the_background_paced_and_untraded_contracts_are_dropped(schwab, tmp_path, monkeypatch):
+    """2026-11-17 "what about other tickers from watchlist": the Watchlist board sends ~360 tickers. They are read one
+    at a time, PACE_SECONDS apart, and only contracts that traded are kept."""
+    asked, replies = schwab
+    naps: list = []
+    monkeypatch.setattr(agx_flow, "PACE_SECONDS", 3.5)
+    monkeypatch.setattr(agx_flow.time, "sleep", lambda seconds: naps.append(seconds))
+    quiet = chain()
+    quiet["callExpDateMap"][_key(3)]["190.0"][0]["totalVolume"] = 0
+    replies["SOFI"] = quiet
+    tickers = ["NVDA", "PLTR", "SOFI"]
+    agx_flow.board(tickers, tmp_path)
+    assert agx_flow.wait_idle(5)
+    assert asked == tickers and naps == [3.5, 3.5, 3.5]
+    doc = agx_flow._held("SOFI", tmp_path)
+    assert doc["contracts"] and all(row["volume"] > 0 for row in doc["contracts"])
+    assert not any(row["strike"] == 190 for row in doc["contracts"])
+    out = agx_flow.board(tickers, tmp_path)
+    assert {t["ticker"] for t in out["tickers"]} == set(tickers) and all(t["cached"] for t in out["tickers"])

@@ -41,6 +41,7 @@ def world(tmp_path, monkeypatch):
         return doc
 
     monkeypatch.setenv("AGX_MOMX_GRADE_DIR", str(tmp_path))
+    monkeypatch.setattr(leap_oi_scanner, "PACE_SECONDS", 0.0)       # the real pace is 3 s between Schwab requests
     monkeypatch.setattr(long_oi, "fetch", fetch)
     long_oi.reset()
     leap_oi_scanner.reset()
@@ -72,6 +73,7 @@ def test_the_page_reads_schwab_in_the_background_then_shows_the_board(world, tmp
     assert all(abs(r["delta"]) >= 0.10 for r in body["rows"])
     assert body["entries"] and all(r["entry"] for r in body["entries"])
     assert again_status == 200 and sorted(world) == ["AAPL", "NVDA"]       # one Schwab read per ticker
+    assert [t["ticker"] for t in body["byTicker"]] == ["AAPL", "NVDA"] and body["byTicker"][0]["call"]["strike"] == 200.0
     assert (tmp_path / "long_oi_cache" / "NVDA.json.gz").exists()
     capture = os.environ.get("LEAP_OI_CAPTURE")
     if capture:

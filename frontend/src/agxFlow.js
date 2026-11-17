@@ -110,3 +110,27 @@ export function flowQuery(symbols) {
 export function rowKey(row) {
   return `${row?.ticker}|${row?.side}|${row?.expiry}|${row?.strike}`;
 }
+
+// Watchlist board (2026-11-17, "what about other tickers from watchlist"): Mag7 + SPY/QQQ first (read first), then
+// the whole watchlist, no repeats, at most WATCHLIST_MAX.
+export const WATCHLIST_MAX = 400;
+
+export function watchlistBoard(watchlist) {
+  const out = [];
+  for (const raw of [...MAG7_BOARD, ...(Array.isArray(watchlist) ? watchlist : [])]) {
+    const ticker = String(raw || "").trim().toUpperCase();
+    if (SYMBOL.test(ticker) && !out.includes(ticker)) out.push(ticker);
+    if (out.length >= WATCHLIST_MAX) break;
+  }
+  return out;
+}
+
+// With a big board the strip shows only the STRIP_MAX tickers with the most option dollars today.
+export const STRIP_MAX = 12;
+
+export function stripTickers(tickers) {
+  const list = Array.isArray(tickers) ? tickers : [];
+  if (list.length <= STRIP_MAX) return list;
+  const total = (t) => (Number(t?.callPremium) || 0) + (Number(t?.putPremium) || 0);
+  return [...list].sort((a, b) => total(b) - total(a)).slice(0, STRIP_MAX);
+}

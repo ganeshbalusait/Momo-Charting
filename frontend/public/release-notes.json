@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-17T09:11:15-05:00",
+      "heading": "LEAP OI Scanner and AGX Flow now cover your whole watchlist",
+      "items": [
+        "LEAP OI Scanner reads Mag7 plus every ticker on your watchlist (about 360), not just the first 18. The first read of the day takes about 20 minutes because it asks Schwab gently, one ticker every 3 seconds; the page shows how far along it is. After that it is instant all day.",
+        "New 'By ticker' list on LEAP OI Scanner: one card per ticker with its biggest call and put open interest and its ENTRY call and put, so small names are not buried under Mag7. Type in 'Find a ticker' to jump to one.",
+        "AGX Flow has a new Watchlist button: Mag7 + SPY/QQQ first, then your whole watchlist, read one ticker every few seconds and refreshed about every 20 minutes. The strip at the top shows the 12 tickers with the most option dollars today."
+      ]
+    },
+    {
       "at": "2026-11-17T08:25:52-05:00",
       "heading": "New pages: LEAP OI Scanner and AGX Flow (free options flow from Schwab)",
       "items": [

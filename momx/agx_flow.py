@@ -37,9 +37,10 @@ FETCH_MAX_DAYS = 45
 STRIKE_COUNT = 40
 CACHE_SECONDS = 5 * 60
 FAIL_SECONDS = 5 * 60
-FETCHES_PER_HOUR = 240
+FETCHES_PER_HOUR = 1000       # whole watchlist (~360) about every 20 min, paced below; Schwab allows 120 a MINUTE
+PACE_SECONDS = 3.5            # the background reader waits this long after each Schwab request
 LOCK_WAIT_SECONDS = 30.0
-MAX_SYMBOLS = 20
+MAX_SYMBOLS = 400             # Mag7 + SPY/QQQ + his whole watchlist (2026-11-17: "what about other tickers")
 MIN_VOLUME = 500
 TOP_ROWS = 60
 SCHEMA = 1
@@ -309,6 +310,7 @@ def refresh(ticker: str, root: Path, now: datetime) -> dict:
             _fail(ticker, message)
             raise Unavailable(message)
         with_new_volume(rows, held, now)
+        rows = [row for row in rows if row["volume"] > 0]  # untraded contracts add nothing; 400 tickers stay light
         doc = {"schema": SCHEMA, "symbol": ticker, "fetchedAt": now.isoformat(), "spot": spot, "contracts": rows}
         with _STATE:
             _MEMORY[ticker] = doc
@@ -330,8 +332,11 @@ def _work() -> None:
                 return
             ticker = next(iter(_PENDING))
             root = _PENDING[ticker]
+        asked = False
         try:
-            refresh(ticker, root, datetime.now(ET))
+            now = datetime.now(ET)
+            asked = not _fresh(_held(ticker, root), now) and not _failure(ticker)
+            refresh(ticker, root, now)
         except Unavailable:
             pass                                           # remembered in _FAILED; the board shows it
         except Exception as exc:  # noqa: BLE001 - never let the thread die with tickers queued
@@ -339,6 +344,8 @@ def _work() -> None:
         finally:
             with _STATE:
                 _PENDING.pop(ticker, None)
+        if asked and PACE_SECONDS > 0:
+            time.sleep(PACE_SECONDS)                       # gentle on Schwab: charts and chains share its limit
 
 
 def _queue(tickers: list[str], root: Path) -> None:

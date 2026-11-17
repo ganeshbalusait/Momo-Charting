@@ -63,6 +63,14 @@ for (const [label, viewport] of WIDTHS) {
       await page.waitForFunction((n) => window.__leapAsked === undefined || true, asked.length);
       for (let i = 0; i < 50 && !asked.some((s) => s.includes("entry_only=1")); i += 1) await page.waitForTimeout(100);
       assert.ok(asked.some((s) => s.includes("entry_only=1")), asked.join("\n"));
+      // By ticker (2026-11-17, "what about other tickers from watchlist"): one card per ticker, searchable.
+      const lines = view.locator("[data-testid='leap-oi-ticker']");
+      assert.equal(await lines.count(), real.byTicker.length);
+      assert.match(await lines.first().innerText(), /AAPL[\s\S]*Most call OI[\s\S]*200 Call[\s\S]*ENTRY call/);
+      await view.getByRole("searchbox", { name: "Find a ticker" }).fill("nv");
+      for (let i = 0; i < 30 && (await lines.count()) !== 1; i += 1) await page.waitForTimeout(100);
+      assert.equal(await lines.count(), 1);
+      assert.match(await lines.first().innerText(), /NVDA/);
       if (phone) assert.equal(await overflowsSideways(page), false);
       assert.deepEqual(app.pageErrors, []);
       // Chart opens the chart page for that ticker.
