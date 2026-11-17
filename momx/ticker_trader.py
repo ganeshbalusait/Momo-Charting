@@ -1,5 +1,12 @@
 """Ticker trader (2026-11-13): he types a ticker, picks Call or Put, and the app
-trades it by the chart's plan in a SIMULATED $10,000 account of its own.
+trades it by the chart's plan in ONE SIMULATED account shared by every ticker.
+
+One account (2026-11-16, his "why each trade 2k ?" and "2k account reset but it will
+reduce amount so I know how my account size in real loss or profit"): every ticker
+spends from the same cash. A buy takes its cost out of the cash, a sale puts the
+proceeds back, so the account reads like a real one. Only the starting size is
+stored; cash = start + every trade's profit or loss - what the open trades cost.
+Reset starts the whole account fresh at a size he picks.
 
 His words (2026-11-12): "I will type the ticker and you trade start with 10k
 fresh account entry and target and exit you have to pick it from charts" and
@@ -17,7 +24,10 @@ The numbers are the chart's own (momx/chart_plan.py, the tested port of the
 chart's Project ROI card): the contract the chart would pick for that side, the
 stop where the option is down 50%, and T1 / T2 / T3.
 
-    size     3 contracts, never more than 10% of the account in one trade
+    size     3 contracts, fewer when 3 would cost more than 10% of the account;
+             when 10% is too small for even one, ONE contract is still bought as
+             long as the account can pay for it (2026-11-16: LLY at $440 a contract
+             was skipped on his $2,000 account, "Bot is not taking trade properly")
     stop     the stock trades through the stop -> everything is sold
     targets  one contract at each (2 contracts: T1 and T2; 1 contract: T2);
              the stop moves to break-even after T1 and to T1 after T2
@@ -195,11 +205,23 @@ def clean_size(value: Any, default: float = START_BALANCE) -> float:
     return amount
 
 
-def size_for(balance: float, ask: float) -> int:
-    """3 contracts, fewer when 3 would cost more than 10% of the balance; 0 = none fits."""
+def size_for(balance: float, ask: float, cash: float | None = None) -> int:
+    """3 contracts, fewer when 3 would cost more than 10% of the account (`balance`) or more
+    than the `cash` left in it. When 10% does not cover even one, one contract is bought if
+    the cash can pay for it; 0 = it cannot."""
     if not ask or ask <= 0:
         return 0
-    return max(0, min(CONTRACTS, int((balance * MAX_TRADE_SHARE + 1e-9) // (ask * 100))))
+    cost = ask * 100
+    cash = balance if cash is None else cash
+    fits = max(0, min(CONTRACTS, int((balance * MAX_TRADE_SHARE + 1e-9) // cost), int((cash + 1e-9) // cost)))
+    return fits or (1 if cash + 1e-9 >= cost else 0)
+
+
+def _held_cost(trade: Any) -> float:
+    """What the contracts still held in this open trade cost."""
+    if not isinstance(trade, Mapping):
+        return 0.0
+    return (_num(trade.get("entry")) or 0.0) * 100 * int(_num(trade.get("held")) or 0)
 
 
 def chart_pick(chain: Any, side: str, spot: float, today: str) -> dict | None:
@@ -243,6 +265,7 @@ class TickerTrader:
         self._clock = clock or (lambda: datetime.now(ET))
         self._lock = threading.RLock()
         self._runs: dict[str, dict] = {}
+        self._account: dict = {"startBalance": START_BALANCE}
         self._load()
         # The journal's notes (per trade) and today's AI reviews (per run, and "all"): momx/ticker_journal.py.
         self._notes: dict = ticker_journal.read_json(self.directory / ticker_journal.NOTES_FILE, {})
@@ -258,13 +281,63 @@ class TickerTrader:
         runs = doc.get("runs") if isinstance(doc, Mapping) else None
         if isinstance(runs, Mapping):
             self._runs = {str(k): v for k, v in runs.items() if isinstance(v, dict)}
+        account = doc.get("account") if isinstance(doc, Mapping) else None
+        if isinstance(account, Mapping) and _pos(account.get("startBalance")):
+            self._account = {**account, "startBalance": float(_pos(account["startBalance"]))}
+        elif self._runs:
+            # A file from before the one account: each run had its own. The newest run's size is the account's.
+            newest = max(self._runs.values(), key=lambda r: str(r.get("createdAt") or ""))
+            self._account = {"startBalance": float(_pos(newest.get("startBalance")) or START_BALANCE)}
+        for run in self._runs.values():
+            run.pop("balance", None)
+            run.pop("startBalance", None)
 
     def _save(self) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self.directory / STATE_FILE
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps({"version": 1, "runs": self._runs}, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps({"version": 2, "account": self._account, "runs": self._runs}, indent=1), encoding="utf-8")
         os.replace(tmp, path)
+
+    # ---- the one account ------------------------------------------------
+    def _start_size(self) -> float:
+        return float(_pos(self._account.get("startBalance")) or START_BALANCE)
+
+    def _realized(self) -> float:
+        total = 0.0
+        for run in self._runs.values():
+            total += sum(_num(t.get("pl")) or 0.0 for t in run.get("trades") or [] if isinstance(t, Mapping))
+            if isinstance(run.get("open"), Mapping):
+                total += _num(run["open"].get("pl")) or 0.0
+        return total
+
+    def _invested(self) -> float:
+        return sum(_held_cost(run.get("open")) for run in self._runs.values())
+
+    def _equity(self) -> float:
+        """The account with every open trade counted at what it cost: the start plus all profit and loss so far."""
+        return round(self._start_size() + self._realized(), 2)
+
+    def _cash(self) -> float:
+        return round(self._equity() - self._invested(), 2)
+
+    def account(self) -> dict:
+        """What the screen shows: the cash left, what the open trades cost, and the account's value
+        with each open trade at its last bid (at its cost until a bid has been seen)."""
+        with self._lock:
+            start, cash, worth, count = self._start_size(), self._cash(), 0.0, 0
+            for run in self._runs.values():
+                trade = run.get("open")
+                if not isinstance(trade, Mapping):
+                    continue
+                count += 1
+                bid = _num(trade.get("bid"))
+                price = bid if bid is not None and bid >= 0 else (_num(trade.get("entry")) or 0.0)
+                worth += price * 100 * int(_num(trade.get("held")) or 0)
+            value = round(cash + worth, 2)
+            return {"startBalance": start, "cash": cash, "invested": round(self._invested(), 2), "openValue": round(worth, 2),
+                    "value": value, "net": round(value - start, 2), "realized": round(self._realized(), 2), "openTrades": count,
+                    "resetAt": self._account.get("resetAt")}
 
     # ---- helpers --------------------------------------------------------
     def _chain(self, ticker: str) -> Any:
@@ -300,8 +373,10 @@ class TickerTrader:
             if run is None:
                 if len(self._runs) >= MAX_RUNS:
                     raise TraderError(409, f"The Ticker trader runs at most {MAX_RUNS} tickers at once.")
-                run = {"id": run_id, "ticker": name, "side": which, "status": "idle", "balance": amount,
-                       "startBalance": amount, "createdAt": stamp, "open": None, "trades": [], "pick": None}
+                if not self._runs and size is not None:
+                    self._account = {"startBalance": amount, "resetAt": stamp}      # the very first ticker may name the size
+                run = {"id": run_id, "ticker": name, "side": which, "status": "idle",
+                       "createdAt": stamp, "open": None, "trades": [], "pick": None}
                 self._runs[run_id] = run
             if not run.get("open") and run.get("status") != "waiting":
                 self._arm(run, now, stamp)
@@ -337,12 +412,14 @@ class TickerTrader:
             # No quote call here: the loop's next tick sells at the fresh bid.
             return self._public(run)
 
-    def reset(self, run_id: Any, size: Any = None) -> dict:
+    def reset(self, run_id: Any = None, size: Any = None) -> dict | None:
+        """Start the ONE account fresh at `size` (its own starting size when none is given): every ticker's
+        open trade and history are cleared. `run_id` only says which run's screen asked (it is answered back)."""
         with self._lock:
-            run = self._run(run_id)
-            amount = clean_size(size, _pos(run.get("startBalance")) or START_BALANCE)
+            asked = self._run(run_id) if run_id not in (None, "", ticker_journal.ALL) else None
+            amount = clean_size(size, self._start_size())
             stamp = self._clock().replace(microsecond=0).isoformat()
-            gone = [str(t.get("id")) for t in run.get("trades") or [] if isinstance(t, Mapping)]
+            gone = [str(t.get("id")) for r in self._runs.values() for t in r.get("trades") or [] if isinstance(t, Mapping)]
             if any(k in self._notes for k in gone):
                 # The history is cleared, so are its notes.
                 for k in gone:
@@ -352,23 +429,27 @@ class TickerTrader:
             # so the next review is written from the fresh account (2026-11-13 review).
             # Marked "tried", not removed, so a reset cannot buy a second AI call the same day.
             entries = self._today_reviews(self._clock().date().isoformat())
-            keys = {str(run_id), str(run.get("id")), ticker_journal.ALL}
-            if any(k in entries for k in keys):
-                for k in keys & set(entries):
+            if entries:
+                for k in list(entries):
                     entries[k] = {"status": "tried", "at": stamp, "why": "reset"}
                 ticker_journal.write_json(self.directory / ticker_journal.REVIEWS_FILE, self._reviews)
-            run.update(status="idle", balance=amount, startBalance=amount, open=None, trades=[], pick=None, stopping=False)
-            self._note(run, f"Reset: fresh ${amount:,.0f}. Tap Trade again to start.", stamp)
+            self._account = {"startBalance": amount, "resetAt": stamp}
+            for run in self._runs.values():
+                run.update(status="idle", open=None, trades=[], pick=None, stopping=False)
+                self._note(run, f"Reset: fresh ${amount:,.0f}. Tap Trade again to start.", stamp)
             self._save()
-            return self._public(run)
+            return self._public(asked) if asked is not None else None
 
     # ---- read -----------------------------------------------------------
-    @staticmethod
-    def _public(run: Mapping) -> dict:
+    def _public(self, run: Mapping) -> dict:
+        """One run for the screen. `balance` is the shared account's cash, `startBalance` its starting
+        size, `net` this ticker's own profit or loss so far."""
         out = json.loads(json.dumps(run))
-        out["startBalance"] = _pos(out.get("startBalance")) or START_BALANCE
+        account = self.account()
+        out["startBalance"], out["balance"], out["account"] = account["startBalance"], account["cash"], account
         trades = out.get("trades") or []
-        out["net"] = round(float(out.get("balance") or 0) - out["startBalance"], 2)
+        held = out.get("open") if isinstance(out.get("open"), Mapping) else {}
+        out["net"] = round(sum(_num(t.get("pl")) or 0.0 for t in trades) + (_num(held.get("pl")) or 0.0), 2)
         out["tradeCount"] = len(trades)
         out["wins"] = sum(1 for t in trades if (t.get("pl") or 0) > 0)
         return out
@@ -376,7 +457,7 @@ class TickerTrader:
     def snapshot(self) -> dict:
         with self._lock:
             now = self._clock()
-            return {"runs": [self._public(r) for r in self._runs.values()], "maxRuns": MAX_RUNS,
+            return {"runs": [self._public(r) for r in self._runs.values()], "maxRuns": MAX_RUNS, "account": self.account(),
                     "startBalance": START_BALANCE, "minSize": MIN_SIZE, "maxSize": MAX_SIZE, "contracts": CONTRACTS, "maxTradeShare": MAX_TRADE_SHARE,
                     "quoteSeconds": QUOTE_SECONDS,
                     "marketOpen": session_open(now), "asOf": now.replace(microsecond=0).isoformat(),
@@ -395,8 +476,9 @@ class TickerTrader:
             runs = json.loads(json.dumps(list(self._runs.values())))
             notes = json.loads(json.dumps(self._notes))
             reviews = dict(self._today_reviews(now.date().isoformat()))
+            start = self._start_size()
         try:
-            return ticker_journal.build(runs, scope, notes, reviews, now)
+            return ticker_journal.build(runs, scope, notes, reviews, now, account_start=start)
         except KeyError:
             raise TraderError(404, "That ticker is not in the Ticker trader.") from None
 
@@ -426,6 +508,7 @@ class TickerTrader:
         with self._lock:
             now = self._clock()
             runs = json.loads(json.dumps(list(self._runs.values())))
+            start = self._start_size()
             try:
                 key, _ = ticker_journal.scope_runs(runs, scope)
             except KeyError:
@@ -437,7 +520,7 @@ class TickerTrader:
                 return {"review": None, "status": "writing", "cached": False}
             self._reviewing.add(key)
         try:
-            doc = ticker_journal.build(runs, key, {}, {}, now)
+            doc = ticker_journal.build(runs, key, {}, {}, now, account_start=start)
             why = ticker_journal.skip_reason(doc, real=ask is None)
             if why:
                 return {"review": None, "status": "skipped", "why": why, "cached": False}
@@ -551,10 +634,11 @@ class TickerTrader:
         levels = [(plan or {}).get(k) for k in ("stopStock", "t1", "t2", "t3")]
         if not plan or any(not _pos(v) for v in levels):
             return self._idle(run, "Not bought: the chart has no stop or targets for this contract (the saved option chain has no expected move).", stamp)
-        balance = float(run.get("balance") or 0)
-        qty = size_for(balance, ask)
+        balance, cash = self._equity(), self._cash()
+        qty = size_for(balance, ask, cash)
         if qty < 1:
-            return self._idle(run, f"Not bought: one contract costs ${ask * 100:,.0f}, more than 10% of the ${balance:,.0f} account.", stamp)
+            return self._idle(run, f"Not bought: one contract costs ${ask * 100:,.0f}, more than the ${cash:,.0f} cash left in the account.", stamp)
+        by_share = min(CONTRACTS, int((balance * MAX_TRADE_SHARE + 1e-9) // (ask * 100)))
         number = len(run.get("trades") or []) + 1
         run["open"] = {
             "id": f"{run['id']}-{number}-{int(now.timestamp())}", "day": day, "ticker": ticker, "side": side,
@@ -567,7 +651,12 @@ class TickerTrader:
             "expectedMove": plan.get("expectedMove"), "chainAt": plan.get("chainAt"),
             "hits": [], "sells": [], "events": [], "status": "open", "pl": 0.0,
             "why": f"You picked {side.title()}. Bought {qty} at the ask ${ask:.2f} with {ticker} at {plan['entrySpot']:.2f}."
-                   + ("" if qty == CONTRACTS else f" {qty} not {CONTRACTS}: 10% of the account is the most for one trade."),
+                   + ("" if qty == CONTRACTS else
+                      f" 1 not {CONTRACTS}: one contract costs more than 10% of the account, so the bot bought just one."
+                      if by_share < 1 else
+                      f" {qty} not {CONTRACTS}: that is all the cash left in the account buys."
+                      if qty < by_share else
+                      f" {qty} not {CONTRACTS}: 10% of the account is the most for one trade."),
         }
         run.update(status="open", pick=None, stock=round(spot, 2), stockAt=stamp)
         self._note(run, f"In a trade: {qty} x {pick['strike']:g} {side.title()}", stamp)
@@ -578,14 +667,13 @@ class TickerTrader:
         trade["held"] -= qty
         trade["pl"] = round(trade["pl"] + gain, 2)
         trade["sells"].append({"at": stamp, "qty": qty, "price": round(bid, 2), "pl": gain})
-        run["balance"] = round(float(run.get("balance") or 0) + gain, 2)
         trade["events"].append({"at": stamp, "text": text})
 
     def _close(self, run: dict, trade: dict, stamp: str) -> None:
         trade.update(status="closed", closedAt=stamp, held=0,
                      reason=" ".join(e["text"] for e in trade["events"]),
                      plPct=round(trade["pl"] / trade["cost"] * 100, 1) if trade.get("cost") else None,
-                     balanceAfter=run["balance"])
+                     balanceAfter=self._equity())
         run.setdefault("trades", []).append(trade)
         stopped = bool(run.get("stopping"))
         run.update(open=None, status="stopped" if stopped else "idle", stopping=False)

@@ -133,6 +133,26 @@
   },
   {
    "source": "page",
+   "title": "LEAP OI Scanner page",
+   "text": "Strikes 1 to 12 months out with the most open interest, with delta and the chain's ENTRY. Also called: .",
+   "scope": "all",
+   "link": {
+    "label": "Open LEAP OI Scanner",
+    "view": "LEAP OI Scanner"
+   }
+  },
+  {
+   "source": "page",
+   "title": "AGX Flow page",
+   "text": "Today's unusual option volume from Schwab: volume above open interest, biggest premium first. Also called: .",
+   "scope": "all",
+   "link": {
+    "label": "Open AGX Flow",
+    "view": "AGX Flow"
+   }
+  },
+  {
+   "source": "page",
    "title": "News Feed page",
    "text": "Headlines and catalysts across MAG7 and your watchlist. Also called: news headlines.",
    "scope": "all",

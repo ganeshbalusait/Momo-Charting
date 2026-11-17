@@ -102,7 +102,7 @@ def test_buys_the_charts_contract_at_the_ask_with_the_charts_levels(world):
     assert run["status"] == "open" and trade["contract"] == CALL and trade["strike"] == 104
     assert trade["entry"] == 1.1 and trade["qty"] == 3 and trade["cost"] == 330.0 and trade["split"] == [1, 1, 1]
     assert (trade["stopStock"], trade["t1"], trade["t2"], trade["t3"]) == (plan["stopStock"], 102.0, 104.0, 106.0)
-    assert trade["stopStock"] < 100 and run["balance"] == 10000.0
+    assert trade["stopStock"] < 100 and run["balance"] == 9670.0 and run["startBalance"] == 10000.0   # the buy took $330 of cash
     assert all(len(call) == len(set(call)) for call in world.calls) and len(world.calls) == 2   # one batched call per tick
 
 
@@ -110,10 +110,30 @@ def test_at_most_ten_percent_of_the_account_in_one_trade(world):
     trader = bought(world, ask=4.0)                          # $400 a contract: 2 fit in $1,000
     assert run_of(trader)["open"]["qty"] == 2
     world2 = World(world.dir.parent / "b")
-    trader2 = bought(world2, ask=12.0)                       # $1,200 a contract: none fits
-    run = run_of(trader2)
-    assert run["open"] is None and run["status"] == "idle" and run["tradeCount"] == 0
-    assert "one contract costs $1,200, more than 10%" in run["note"]
+    trader2 = bought(world2, ask=12.0)                       # $1,200 a contract: over 10%, so just one (2026-11-16)
+    trade = run_of(trader2)["open"]
+    assert trade["qty"] == 1 and trade["cost"] == 1200.0 and trade["split"] == chart_plan.split_contracts(1)
+    assert "1 not 3: one contract costs more than 10% of the account" in trade["why"]
+
+
+@pytest.mark.parametrize("balance, ask, qty", [
+    (10000, 1.0, 3), (10000, 4.0, 2), (10000, 10.0, 1), (10000, 12.0, 1), (10000, 100.0, 1), (10000, 100.01, 0),
+    (2000, 0.72, 2), (2000, 4.4, 1), (2000, 3.9, 1), (2000, 20.0, 1), (2000, 20.5, 0), (500, 6.0, 0), (2000, 0, 0),
+])
+def test_size_three_within_ten_percent_else_one_the_account_can_pay_for(balance, ask, qty):
+    assert ticker_trader.size_for(balance, ask) == qty
+
+
+def test_his_lly_morning_a_440_contract_on_a_2000_account_is_bought_once(tmp_path):
+    world = World(tmp_path / "lly")
+    trader = world.trader()
+    world.set(100.0, bid=4.3, ask=4.4)
+    trader.start("nvda", "CALL", 2000)
+    world.step(trader)
+    world.step(trader)
+    run = run_of(trader)
+    assert run["status"] == "open" and run["open"]["qty"] == 1 and run["open"]["cost"] == 440.0
+    assert "Not bought" not in run["note"]
 
 
 def test_stock_through_the_stop_sells_everything_at_the_bid(world):
@@ -237,7 +257,7 @@ def test_a_restart_resumes_the_open_trade_without_selling_twice(world):
     world.step(again)
     trade = run_of(again)["open"]
     assert trade["held"] == 2 and len(trade["sells"]) == 1 and len(trade["hits"]) == 1
-    assert run_of(again)["balance"] == 10070.0
+    assert run_of(again)["balance"] == 9850.0 and run_of(again)["net"] == 70.0      # $10,000 + $70 - the $220 still held
     saved = json.loads((world.dir / "state.json").read_text(encoding="utf-8"))
     assert saved["runs"]["NVDA-CALL"]["open"]["held"] == 2 and not (world.dir / "state.json.tmp").exists()
 
@@ -591,8 +611,12 @@ def test_the_account_size_is_picked_at_start_and_defaults_to_10000(world):
     assert run["balance"] == 5000.0 and run["startBalance"] == 5000.0 and run["net"] == 0
     world.chains["AMD"] = chain()
     other = trader.start("amd", "CALL")
-    assert other["balance"] == 10000.0 and other["startBalance"] == 10000.0
-    assert trader.start("nvda", "PUT", "2500.4")["startBalance"] == 2500.0       # whole dollars
+    assert other["balance"] == 5000.0 and other["startBalance"] == 5000.0       # the same account, not a second one
+    assert trader.start("nvda", "PUT", "2500.4")["startBalance"] == 5000.0       # a later ticker cannot change the size
+    fresh = TickerTrader(world.dir.parent / "fresh", quotes_fetch=world.fetch, chain_fetch=world.chain_of, clock=lambda: world.now)
+    assert fresh.start("nvda", "CALL")["startBalance"] == 10000.0               # no size named: $10,000
+    whole = TickerTrader(world.dir.parent / "whole", quotes_fetch=world.fetch, chain_fetch=world.chain_of, clock=lambda: world.now)
+    assert whole.start("nvda", "CALL", "2500.4")["startBalance"] == 2500.0      # whole dollars
     again = world.trader()                                                     # saved and reloaded
     assert run_of(again)["startBalance"] == 5000.0
 
@@ -618,29 +642,30 @@ def test_reset_starts_fresh_at_the_new_size_and_net_follows_it(world):
     assert run["balance"] == 2000.0 and run["startBalance"] == 2000.0 and run["net"] == 0
     assert run["open"] is None and run["trades"] == [] and run["status"] == "idle"
     assert "fresh $2,000" in run["note"]
-    trader.reset("NVDA-CALL")                       # no size: keeps the run's own starting size
+    trader.reset("NVDA-CALL")                       # no size: keeps the account's own starting size
     assert run_of(trader)["startBalance"] == 2000.0
 
 
 def test_a_state_file_from_before_sizes_still_loads_at_10000(world):
     world.dir.mkdir(parents=True)
+    won = {"id": "NVDA-CALL-1-1", "day": "2026-11-12", "status": "closed", "pl": 250.0, "qty": 3, "entry": 1.0}
     old = {"id": "NVDA-CALL", "ticker": "NVDA", "side": "CALL", "status": "idle", "balance": 10250.0,
-           "open": None, "trades": [], "pick": None}
+           "open": None, "trades": [won], "pick": None}
     (world.dir / "state.json").write_text(json.dumps({"version": 1, "runs": {"NVDA-CALL": old}}), encoding="utf-8")
     run = run_of(world.trader())
-    assert run["startBalance"] == 10000.0 and run["net"] == 250.0
+    assert run["startBalance"] == 10000.0 and run["net"] == 250.0 and run["balance"] == 10250.0
 
 
 def test_the_ten_percent_cap_follows_the_account_size(tmp_path):
     small = World(tmp_path / "a")
     trader = small.trader()
-    small.set(100.0, bid=2.4, ask=2.5)
-    trader.start("nvda", "CALL", 2000)
+    small.set(100.0, bid=5.9, ask=6.0)
+    trader.start("nvda", "CALL", 500)                # $600 a contract: more than the whole $500 account
     small.step(trader)
     small.step(trader)
     run = run_of(trader)
     assert run["open"] is None and run["status"] == "idle"
-    assert "one contract costs $250, more than 10% of the $2,000 account" in run["note"]
+    assert "one contract costs $600, more than the $500 cash left in the account" in run["note"]
     fits = World(tmp_path / "b")
     trader2 = fits.trader()
     fits.set(100.0, bid=1.4, ask=1.5)
@@ -648,3 +673,123 @@ def test_the_ten_percent_cap_follows_the_account_size(tmp_path):
     fits.step(trader2)
     fits.step(trader2)
     assert run_of(trader2)["open"]["qty"] == 1
+
+
+# ---- one account for every ticker (2026-11-16: "why each trade 2k ?", "2k account reset but it will reduce
+# amount so I know how my account size in real loss or profit") ----
+
+AMD_CALL = "AMD   261120C00104000"
+
+
+def amd_chain():
+    doc = chain()
+    for row in doc["selectedExpiryChainRows"]:
+        row["symbol"] = row["symbol"].replace("NVDA ", "AMD  ")
+    return doc
+
+
+def two_tickers(tmp_path, size=2000, nvda_ask=0.72, amd_ask=4.4):
+    world = World(tmp_path / "shared")
+    world.chains["AMD"] = amd_chain()
+    trader = world.trader()
+    world.set(100.0, bid=nvda_ask - 0.02, ask=nvda_ask)
+    world.quotes["AMD"] = {"last": 100.0}
+    world.quotes[AMD_CALL] = {"bid": amd_ask - 0.1, "ask": amd_ask}
+    trader.start("nvda", "CALL", size)
+    world.step(trader)
+    world.step(trader)
+    trader.start("amd", "CALL")
+    world.step(trader)
+    world.step(trader)
+    return world, trader
+
+
+def test_every_ticker_spends_from_the_same_account_and_a_buy_takes_the_cash_down(tmp_path):
+    world, trader = two_tickers(tmp_path)                    # his morning: a $144 trade, then a $440 one, on $2,000
+    nvda, amd = run_of(trader), run_of(trader, "AMD-CALL")
+    assert nvda["open"]["qty"] == 2 and nvda["open"]["cost"] == 144.0
+    assert amd["open"]["qty"] == 1 and amd["open"]["cost"] == 440.0
+    account = trader.snapshot()["account"]
+    assert account["startBalance"] == 2000.0 and account["cash"] == 1416.0 and account["invested"] == 584.0
+    assert account["openTrades"] == 2 and account["realized"] == 0.0
+    # Both runs show the same account: its cash and its starting size.
+    assert nvda["balance"] == amd["balance"] == 1416.0 and nvda["startBalance"] == amd["startBalance"] == 2000.0
+    assert nvda["account"] == amd["account"] == account
+
+
+def test_the_account_value_follows_the_open_trades_last_bid_and_a_sale_puts_the_money_back(tmp_path):
+    world, trader = two_tickers(tmp_path)
+    world.step(trader)                                       # holding: each open trade now carries its bid
+    account = trader.snapshot()["account"]
+    # 2 x $0.70 bid + 1 x $4.30 bid = $570 for what cost $584: the account is worth $14 less.
+    assert account["openValue"] == 570.0 and account["value"] == 1986.0 and account["net"] == -14.0
+    trader.stop("AMD-CALL")
+    world.step(trader)                                       # sold 1 at the $4.30 bid: -$10
+    account = trader.snapshot()["account"]
+    amd = run_of(trader, "AMD-CALL")
+    assert amd["trades"][0]["pl"] == -10.0 and amd["net"] == -10.0 and run_of(trader)["net"] == 0
+    assert account["cash"] == 1846.0 and account["invested"] == 144.0 and account["realized"] == -10.0
+    assert amd["trades"][0]["balanceAfter"] == 1990.0        # the account after that trade, open trades at cost
+
+
+def test_two_trades_cannot_spend_the_same_cash(tmp_path):
+    # $600 account: the first trade takes $440, so the second ($440 again) no longer fits the $160 left.
+    world, trader = two_tickers(tmp_path, size=600, nvda_ask=4.4, amd_ask=4.4)
+    assert run_of(trader)["open"]["cost"] == 440.0
+    amd = run_of(trader, "AMD-CALL")
+    assert amd["open"] is None and amd["status"] == "idle"
+    assert amd["note"] == "Not bought: one contract costs $440, more than the $160 cash left in the account."
+    assert trader.snapshot()["account"]["cash"] == 160.0
+
+
+def test_fewer_contracts_when_the_cash_left_is_short_and_the_trade_says_so(tmp_path):
+    # $1,000 account: $920 is tied up. 10% would allow 2 x $0.45, but only $80 cash is left: one.
+    world = World(tmp_path / "short")
+    world.chains["AMD"] = amd_chain()
+    trader = world.trader()
+    world.set(100.0, bid=9.1, ask=9.2)                       # one $920 contract (over 10%: bought once)
+    world.quotes["AMD"] = {"last": 100.0}
+    world.quotes[AMD_CALL] = {"bid": 0.4, "ask": 0.45}
+    trader.start("nvda", "CALL", 1000)
+    world.step(trader)
+    world.step(trader)
+    trader.start("amd", "CALL")
+    world.step(trader)
+    world.step(trader)
+    amd = run_of(trader, "AMD-CALL")["open"]
+    assert amd["qty"] == 1 and "1 not 3: that is all the cash left in the account buys." in amd["why"]
+    assert run_of(trader)["open"]["cost"] == 920.0 and trader.snapshot()["account"]["cash"] == 35.0
+
+
+def test_reset_starts_the_whole_account_fresh_for_every_ticker(tmp_path):
+    world, trader = two_tickers(tmp_path)
+    out = trader.reset("AMD-CALL", 5000)
+    assert out["id"] == "AMD-CALL" and out["balance"] == 5000.0
+    for run in trader.snapshot()["runs"]:
+        assert run["open"] is None and run["trades"] == [] and run["status"] == "idle" and "fresh $5,000" in run["note"]
+    account = trader.snapshot()["account"]
+    assert account["startBalance"] == account["cash"] == account["value"] == 5000.0 and account["net"] == 0
+    assert trader.reset(None, 2000) is None and trader.snapshot()["account"]["cash"] == 2000.0   # from the list page
+    with pytest.raises(TraderError) as err:
+        trader.reset("ZZZ-CALL", 2000)
+    assert err.value.status == 404
+    again = world.trader()                                   # saved and reloaded
+    assert again.snapshot()["account"]["startBalance"] == 2000.0
+
+
+def test_his_file_from_this_morning_becomes_one_2000_account(world):
+    """Two runs saved with $2,000 each (SPY Put open at $144, LLY idle): one $2,000 account, $1,856 cash."""
+    world.dir.mkdir(parents=True)
+    held = {"id": "NVDA-PUT-1-1", "day": "2026-11-13", "ticker": "NVDA", "side": "PUT", "contract": PUT, "strike": 96, "expiry": EXPIRY,
+            "qty": 2, "held": 2, "split": [1, 1, 0], "entry": 0.72, "entrySpot": 100.0, "cost": 144.0, "pl": 0.0, "status": "open",
+            "stopStock": 104.0, "stopStart": 104.0, "stopKind": "stop", "t1": 98.0, "t2": 96.0, "t3": 94.0,
+            "hits": [], "sells": [], "events": [], "targets": []}
+    runs = {
+        "NVDA-PUT": {"id": "NVDA-PUT", "ticker": "NVDA", "side": "PUT", "status": "open", "balance": 2000.0, "startBalance": 2000.0,
+                     "createdAt": "2026-11-13T09:30:00-05:00", "open": held, "trades": [], "pick": None},
+        "AMD-CALL": {"id": "AMD-CALL", "ticker": "AMD", "side": "CALL", "status": "idle", "balance": 2000.0, "startBalance": 2000.0,
+                     "createdAt": "2026-11-13T09:36:00-05:00", "open": None, "trades": [], "pick": None},
+    }
+    (world.dir / "state.json").write_text(json.dumps({"version": 1, "runs": runs}), encoding="utf-8")
+    account = world.trader().snapshot()["account"]
+    assert account["startBalance"] == 2000.0 and account["cash"] == 1856.0 and account["invested"] == 144.0

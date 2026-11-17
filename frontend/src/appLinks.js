@@ -9,7 +9,7 @@ export const ADMIN_VIEWS = ["Bot", "My Trading", "Option Paper Trading", "Paper 
 /** Every page a link may open (the left rail's view keys). */
 export const LINK_VIEWS = [
   "Charts & OI", "Quick Options", "Auto Alert", "Premarket Scanner", "MomX Scanner", "Long Term", "Learn + Setup",
-  "Watchlist", "Sectors", "News Feed", "Earnings Calendar", "Mag7 Scanner", "ROI Calc", "OI Level Script TOS",
+  "Watchlist", "Sectors", "LEAP OI Scanner", "AGX Flow", "News Feed", "Earnings Calendar", "Mag7 Scanner", "ROI Calc", "OI Level Script TOS",
   "Release Notes", "Settings", ...ADMIN_VIEWS,
 ];
 

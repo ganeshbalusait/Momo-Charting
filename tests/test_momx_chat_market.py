@@ -93,7 +93,7 @@ def text(reply):
 
 def test_every_tool_has_the_contract_shape(base):
     assert sorted(market.TOOLS) == sorted(["chain", "walls", "expected_move", "max_pain", "sectors", "premarket",
-                                           "news", "earnings", "long_term", "morning_brief", "quote", "price_outlook"])
+                                           "news", "earnings", "long_term", "morning_brief", "quote", "price_outlook", "long_oi"])
     for name, tool in market.TOOLS.items():
         assert tool["scope"] == "all" and tool["description"] and tool["args"]["type"] == "object", name
         reply = tool["handler"]({"ticker": "ZZZ"}, ctx(base))

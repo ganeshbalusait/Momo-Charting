@@ -175,3 +175,46 @@ def test_the_account_size_passes_through_the_proxy_and_bad_sizes_are_refused(tmp
     assert too_big[0] == 400 and "between $500 and $1,000,000" in too_big[1]["error"]
     assert reset[0] == 200 and reset[1]["run"]["startBalance"] == 100000.0 and reset[1]["run"]["balance"] == 100000.0
     assert reset[1]["run"]["trades"] == [] and "fresh $100,000" in reset[1]["run"]["note"]
+
+
+def test_a_contract_over_ten_percent_is_still_bought_once_when_the_account_can_pay(tmp_path, monkeypatch, trader):
+    # 2026-11-16: LLY at $440 a contract was skipped on his $2,000 account ("Bot is not taking trade properly").
+    trader._quotes_fetch = lambda symbols, at=datetime(2026, 11, 13, 10, 0, 0, tzinfo=ticker_trader.ET).timestamp() - 1: {
+        "asOf": at, "quotes": {s: {**q, "quoteAt": at} for s, q in {"NVDA": {"last": 100.0}, CALL: {"bid": 4.3, "ask": 4.4}}.items() if s in symbols}}
+    with running_worker(tmp_path, monkeypatch) as worker:
+        worker.as_admin(monkeypatch, email=OWNER)
+        with running_api(worker_port=worker.port) as api:
+            status, started = api.post(ROUTE + "/start", {"ticker": "nvda", "side": "call", "size": 2000}, headers=ADMIN)
+            trader.tick()
+            trader.tick()
+            _, after = api.get(ROUTE, headers=ADMIN)
+    run = after["runs"][0]
+    assert status == 200 and started["run"]["startBalance"] == 2000.0
+    assert run["status"] == "open" and run["open"]["qty"] == 1 and run["open"]["cost"] == 440.0
+    assert "1 not 3: one contract costs more than 10% of the account" in run["open"]["why"]
+    assert "Not bought" not in run["note"]
+
+
+def test_one_account_for_every_ticker_through_the_proxy_and_reset_from_the_list_page(tmp_path, monkeypatch, trader):
+    """2026-11-16: the read carries the one account; a buy takes its cash down; Reset with no id resets all of it."""
+    with running_worker(tmp_path, monkeypatch) as worker:
+        worker.as_admin(monkeypatch, email=OWNER)
+        with running_api(worker_port=worker.port) as api:
+            _, before = api.get(ROUTE, headers=ADMIN)
+            api.post(ROUTE + "/start", {"ticker": "nvda", "side": "call", "size": 2000}, headers=ADMIN)
+            trader.tick()
+            trader.tick()
+            _, bought = api.get(ROUTE, headers=ADMIN)
+            reset_status, reset = api.post(ROUTE + "/reset", {"size": 5000}, headers=ADMIN)
+            _, after = api.get(ROUTE, headers=ADMIN)
+            bad_status, bad = api.post(ROUTE + "/reset", {"size": 100}, headers=ADMIN)
+            user_status, _ = api.post(ROUTE + "/reset", {"size": 5000}, headers=USER)
+    assert before["account"]["startBalance"] == 10000.0 and before["account"]["cash"] == 10000.0
+    account = bought["account"]
+    # 2 x $1.10 = $220 is 10% of $2,000 at most ($200 fits one... 1 contract): the cash is down by what was paid.
+    cost = bought["runs"][0]["open"]["cost"]
+    assert account["startBalance"] == 2000.0 and account["cash"] == 2000.0 - cost and account["invested"] == cost
+    assert bought["runs"][0]["balance"] == account["cash"] and bought["runs"][0]["account"] == account
+    assert reset_status == 200 and reset["ok"] is True and reset["run"] is None and reset["account"]["cash"] == 5000.0
+    assert after["account"]["startBalance"] == 5000.0 and after["runs"][0]["open"] is None and after["runs"][0]["trades"] == []
+    assert bad_status == 400 and "Account size" in bad["error"] and user_status == 403

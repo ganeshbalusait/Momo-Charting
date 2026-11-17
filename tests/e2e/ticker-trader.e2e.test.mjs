@@ -30,15 +30,20 @@ const CLOSED = { id: "NVDA-CALL-1", day: "2026-11-12", ticker: "NVDA", side: "CA
   boughtAt: "2026-11-12T10:00:00-05:00", closedAt: "2026-11-12T10:20:00-05:00", status: "closed", pl: -142,
   reason: "Stop: stock traded through 166.80, sold 3 at $0.73.", balanceAfter: 9858 };
 const NVDA = { id: "NVDA-CALL", ticker: "NVDA", side: "CALL", status: "open", note: "In a trade: holding 2 of 3", noteAt: "2026-11-13T10:42:00-05:00",
-  balance: 9923, startBalance: 10000, net: -77, tradeCount: 1, wins: 0, stock: 161.2, stockAt: "2026-11-13T10:42:00-05:00",
+  balance: 9633, startBalance: 10000, net: -77, tradeCount: 1, wins: 0, stock: 161.2, stockAt: "2026-11-13T10:42:00-05:00",
   open: TRADE, trades: [CLOSED] };
+// One account for every ticker (2026-11-16): $10,000, -$142 closed and +$65 banked, 2 contracts held that cost $290
+// and are worth $400 at the $2.00 bid.
+const ACCOUNT = { startBalance: 10000, cash: 9633, invested: 290, openValue: 400, value: 10033, net: 33, realized: -77, openTrades: 1 };
+const fresh = (size) => ({ startBalance: size, cash: size, invested: 0, openValue: 0, value: size, net: 0, realized: 0, openTrades: 0 });
 const waiting = (ticker, side) => ({ id: `${ticker}-${side}`, ticker, side, status: "waiting", note: "Market closed: buys at the 9:30 open",
   noteAt: "2026-11-13T08:00:00-05:00", balance: 10000, startBalance: 10000, net: 0, tradeCount: 0, wins: 0, open: null, trades: [] });
 
 /** A tiny stand-in for the server: the runs, and what each button does to them. */
-function fakeServer(initial = [NVDA]) {
-  const state = { runs: initial.map((r) => structuredClone(r)) };
-  const doc = () => ({ runs: state.runs, maxRuns: 10, startBalance: 10000, marketOpen: true, asOf: "2026-11-13T10:42:05-05:00", simulated: true });
+function fakeServer(initial = [NVDA], account = ACCOUNT) {
+  const state = { runs: initial.map((r) => structuredClone(r)), account: structuredClone(account) };
+  const doc = () => ({ runs: state.runs.map((r) => ({ ...r, account: state.account })), account: state.account, maxRuns: 10, startBalance: 10000,
+    marketOpen: true, asOf: "2026-11-13T10:42:05-05:00", simulated: true });
   const find = (write) => state.runs.find((r) => r.id === JSON.parse(write.body).id);
   const fakeReads = {
     [READ]: () => ({ json: doc() }),
@@ -47,14 +52,15 @@ function fakeServer(initial = [NVDA]) {
   };
   const fakeWrites = {
     [START]: (write) => {
-      const { ticker, side, size } = JSON.parse(write.body);
+      const { ticker, side } = JSON.parse(write.body);
       if (ticker === "ZZZZ") return { status: 400, json: { ok: false, error: "No saved option chain for ZZZZ. Open its chart once, then try again." } };
-      const run = { ...waiting(ticker, side), balance: size, startBalance: size };
+      const run = { ...waiting(ticker, side), balance: state.account.cash, startBalance: state.account.startBalance };
       state.runs.push(run);
       return { json: { ok: true, run } };
     },
     [STOP]: (write) => {
       const run = find(write);
+      state.account = { ...fresh(10000), cash: 10033, value: 10033, net: 33, realized: 33 };
       Object.assign(run, { status: "stopped", open: null, note: "Stopped. Tap Trade again for the next one.", tradeCount: 2, wins: 1, balance: 10033, net: 33,
         trades: [...run.trades, { ...TRADE, status: "closed", closedAt: "2026-11-13T10:43:00-05:00", pl: 175, balanceAfter: 10033,
           reason: "T1 hit: sold 1 at $2.10, stop to break-even. Stopped by you: sold 2 at the bid $2.00." }] });
@@ -66,11 +72,15 @@ function fakeServer(initial = [NVDA]) {
       return { json: { ok: true, run } };
     },
     [RESET]: (write) => {
-      const run = find(write);
+      // Reset is the whole account: every ticker's trade and history go, with or without a run id.
+      const run = find(write) || null;
       const { size } = JSON.parse(write.body);
-      Object.assign(run, { status: "idle", open: null, trades: [], tradeCount: 0, wins: 0, balance: size, startBalance: size, net: 0,
-        note: `Reset: fresh $${size.toLocaleString("en-US")}. Tap Trade again to start.` });
-      return { json: { ok: true, run } };
+      state.account = fresh(size);
+      for (const each of state.runs) {
+        Object.assign(each, { status: "idle", open: null, trades: [], tradeCount: 0, wins: 0, balance: size, startBalance: size, net: 0,
+          note: `Reset: fresh $${size.toLocaleString("en-US")}. Tap Trade again to start.` });
+      }
+      return { json: { ok: true, run, account: state.account } };
     },
   };
   return { fakeReads, fakeWrites, state };
@@ -93,7 +103,7 @@ e2eTest("Research has a Ticker trader button beside All trades; typing a ticker 
     await panel.locator("[data-testid='tt-row']").first().waitFor({ timeout: 30_000 });
     assert.match(await panel.locator("[data-testid='tt-simulated']").textContent(), /Simulated inside the app\. No order goes to any broker\./);
     assert.equal(await panel.locator("[aria-label='Call or Put'] button[aria-pressed='true']").textContent(), "Call");
-    assert.match(await panel.locator("[data-testid='tt-row']").first().textContent(), /NVDA · Call.*In a trade: holding 2 of 3.*\$9,923/s);
+    assert.match(await panel.locator("[data-testid='tt-row']").first().textContent(), /NVDA · Call.*In a trade: holding 2 of 3.*−\$77/s);
 
     // A ticker that cannot be sent is refused on the screen, with no request.
     await panel.locator("#tt-ticker").fill("nv1da");
@@ -105,36 +115,44 @@ e2eTest("Research has a Ticker trader button beside All trades; typing a ticker 
     await panel.locator("[data-testid='tt-trade']").click();
     await panel.locator("[data-testid='tt-error']", { hasText: "No saved option chain for ZZZZ" }).waitFor();
 
-    // Account size: $10K is picked by default; an amount out of range is explained and nothing is sent.
-    assert.deepEqual(await texts(panel.locator("[aria-label='Account size'] button")), ["$2K", "$5K", "$10K", "$100K"]);
-    assert.equal(await panel.locator("[aria-label='Account size'] button[aria-pressed='true']").textContent(), "$10K");
-    assert.equal(await panel.locator("[data-testid='tt-size-input']").inputValue(), "10000");
-    const tries = sent(app, START).length;
-    await panel.locator("[data-testid='tt-size-input']").fill("100");
-    await panel.locator("[data-testid='tt-trade']").click();
-    await panel.locator("[data-testid='tt-error']", { hasText: "at least $500" }).waitFor();
-    await panel.locator("[data-testid='tt-size-input']").fill("100k");
-    await panel.locator("[data-testid='tt-trade']").click();
-    await panel.locator("[data-testid='tt-error']", { hasText: "digits only" }).waitFor();
-    assert.equal(sent(app, START).length, tries);
-    await panel.locator("[data-testid='tt-size-5000']").click();
-    assert.equal(await panel.locator("[data-testid='tt-size-input']").inputValue(), "5000");
+    // One account for every ticker (2026-11-16): what it is worth now, the cash left, up or down.
+    const account = panel.locator("[data-testid='tt-account']");
+    assert.deepEqual(await texts(account.locator(".tt-tile b")), ["$10,033", "$9,633", "+$33"]);
+    assert.match(await account.textContent(), /One account for every ticker.*from \$10,000.*\$290 in 1 open trade/s);
+    // The start form has no account size any more: the size belongs to the account (Reset account).
+    assert.equal(await panel.locator("[data-testid='tt-size']").count(), 0);
 
     await panel.locator("[aria-label='Call or Put'] button", { hasText: "Put" }).click();
     await panel.locator("[aria-label='Quick tickers'] button", { hasText: "SPY" }).click();
     await panel.locator("[data-testid='tt-trade']").click();
     await panel.locator("[data-testid='tt-run']").waitFor({ timeout: 15_000 });
-    assert.deepEqual(sent(app, START).at(-1), { ticker: "SPY", side: "PUT", size: 5000 });
-    assert.equal(await page.evaluate(() => window.localStorage.getItem("bot.tickerTrader.size")), "5000");
+    assert.deepEqual(sent(app, START).at(-1), { ticker: "SPY", side: "PUT" });
     assert.equal((await panel.locator("[data-testid='tt-status']").textContent()).trim(), "Waiting to buy");
     assert.match(await panel.locator("[data-testid='tt-note']").textContent(), /Market closed: buys at the 9:30 open/);
-    assert.equal((await panel.locator("[data-testid='tt-balance']").textContent()).trim(), "$5,000");
-    assert.equal((await panel.locator("[data-testid='tt-from']").textContent()).trim(), "from $5,000");
+    // The new ticker shows the SAME account: its cash and its starting size, not a second $10,000.
+    assert.equal((await panel.locator("[data-testid='tt-balance']").textContent()).trim(), "$9,633");
+    assert.equal((await panel.locator("[data-testid='tt-from']").textContent()).trim(), "from $10,000");
+    assert.match(await panel.locator("[data-testid='tt-account-line']").textContent(), /Account now \$10,033 \(\+\$33 from \$10,000\).*shared by every ticker/s);
 
     await panel.locator("button", { hasText: "‹ Ticker trader" }).click();
-    // The size he used stays picked for the next one.
-    assert.equal(await panel.locator("[data-testid='tt-size-input']").inputValue(), "5000");
     assert.equal(await panel.locator("[data-testid='tt-row']").count(), 2);
+    // Reset account from the list page: the size picker, an amount out of range refused, then the whole account fresh.
+    await account.locator("[data-testid='tt-account-reset']").click();
+    const picker = account.locator("[data-testid='tt-reset-panel']");
+    await picker.waitFor();
+    assert.deepEqual(await texts(picker.locator("[aria-label='Account size'] button")), ["$2K", "$5K", "$10K", "$100K"]);
+    assert.equal(await picker.locator("[data-testid='tt-size-input']").inputValue(), "10000");
+    await picker.locator("[data-testid='tt-size-input']").fill("100");
+    await picker.locator("[data-testid='tt-reset-go']").click();
+    await picker.locator("[data-testid='tt-reset-error']", { hasText: "at least $500" }).waitFor();
+    assert.deepEqual(sent(app, RESET), []);
+    await picker.locator("[data-testid='tt-size-2000']").click();
+    await picker.locator("[data-testid='tt-reset-go']").click();
+    await account.locator("[data-testid='tt-account-value']", { hasText: "$2,000" }).waitFor({ timeout: 15_000 });
+    assert.deepEqual(sent(app, RESET), [{ size: 2000 }]);
+    assert.deepEqual(await texts(account.locator(".tt-tile b")), ["$2,000", "$2,000", "$0"]);
+    assert.match(await account.textContent(), /from \$2,000.*nothing in trades/s);
+    assert.equal(await account.locator("[data-testid='tt-reset-panel']").count(), 0);
     // Back to the All trades view, untouched.
     await page.locator("[role='group'][aria-label='Which bot'] button", { hasText: "All trades" }).click();
     await page.locator("section.bot-kpis[aria-label='Totals']").waitFor({ timeout: 60_000 });
@@ -181,7 +199,7 @@ e2eTest("a run shows the chart's ladder, the trades with reasons, and Stop / Tra
     const run = panel.locator("[data-testid='tt-run']");
     await run.waitFor();
     assert.equal((await run.locator("[data-testid='tt-status']").textContent()).trim(), "In a trade · CALL");
-    assert.deepEqual(await texts(run.locator(".tt-tile b")), ["$9,923", "−$77", "0 of 1"]);
+    assert.deepEqual(await texts(run.locator(".tt-tile b")), ["$9,633", "−$77", "0 of 1"]);
     assert.deepEqual(await texts(run.locator(".tt-level b")), ["T3", "T2", "T1 ✓", "Entry", "Stop"]);
     assert.match(await run.locator("[data-testid='tt-level-T1']").textContent(), /161\.00.*hit 10:31 ET · sold 1/s);
     assert.match(await run.locator("[data-testid='tt-level-Entry']").textContent(), /158\.40 · ask \$1\.45.*3 contracts/s);
@@ -244,8 +262,8 @@ e2eTest("phone width: the Ticker trader list and a run fit with no sideways scro
     await panel.locator("[data-testid='tt-row']").first().waitFor({ timeout: 60_000 });
     await shot(app, "tt-phone-list");
     assert.equal(await overflowsSideways(page), false);
-    for (const selector of ["#tt-ticker", "[data-testid='tt-trade']", "[data-testid='tt-row']", "[data-testid='tt-size-input']",
-      "[data-testid='tt-size-100000']"]) {
+    for (const selector of ["#tt-ticker", "[data-testid='tt-trade']", "[data-testid='tt-row']", "[data-testid='tt-account']",
+      "[data-testid='tt-account-reset']", "[data-testid='tt-account-value']", "[data-testid='tt-account-cash']", "[data-testid='tt-account-net']"]) {
       const box = await panel.locator(selector).first().boundingBox();
       assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `${selector} is cut off on a phone`);
     }
@@ -284,3 +302,42 @@ e2eTest("a refused read says so in plain words", async () => {
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// 2026-11-16: a contract that costs more than 10% of the account is bought once (LLY at $440 on his $2,000 account).
+const ONE = { ...TRADE, id: "LLY-CALL-1", ticker: "LLY", contract: "LLY   261120C01100000", strike: 1100, expiry: "2026-11-20", qty: 1, held: 1,
+  split: [0, 1, 0], entry: 4.4, entrySpot: 1052.3, cost: 440, stopStart: 1040, stopStock: 1040, stopKind: "stop", t1: 1062, t2: 1071, t3: 1080,
+  bid: 4.6, hits: [], sells: [], events: [], pl: 0,
+  targets: [{ label: "T1", stock: 1062, reason: "half the expected move" }, { label: "T2", stock: 1071, reason: "full expected move" },
+    { label: "T3", stock: 1080, reason: "OI level past the move" }],
+  why: "You picked Call. Bought 1 at the ask $4.40 with LLY at 1052.30. 1 not 3: one contract costs more than 10% of the account, so the bot bought just one." };
+const LLY = { id: "LLY-CALL", ticker: "LLY", side: "CALL", status: "open", note: "In a trade: 1 x 1100 Call", noteAt: "2026-11-13T10:42:00-05:00",
+  balance: 1560, startBalance: 2000, net: 0, tradeCount: 0, wins: 0, stock: 1053.1, stockAt: "2026-11-13T10:42:00-05:00", open: ONE, trades: [] };
+const LLY_ACCOUNT = { startBalance: 2000, cash: 1560, invested: 440, openValue: 460, value: 2020, net: 20, realized: 0, openTrades: 1 };
+
+for (const [name, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
+  e2eTest(`${name}: a contract over 10% of a $2,000 account is shown bought once, with the reason`, async () => {
+    const server = fakeServer([LLY], LLY_ACCOUNT);
+    await withApp({ view: "Bot", viewport, storage: OPEN_ON_IT, fakeReads: server.fakeReads, fakeWrites: server.fakeWrites }, async (app) => {
+      const panel = app.page.locator(PANEL);
+      // The rule on the list page says so before he starts.
+      await panel.locator(".tt-rules", { hasText: "still bought, one only, when the account can pay for it" }).waitFor({ timeout: 60_000 });
+      // The buy took $440 out of the $2,000: the account card says so before he opens the ticker.
+      // (The rules are on the page before the first read lands; the card comes with the read.)
+      await panel.locator("[data-testid='tt-account-value']").waitFor({ timeout: 60_000 });
+      assert.deepEqual(await texts(panel.locator("[data-testid='tt-account'] .tt-tile b")), ["$2,020", "$1,560", "+$20"]);
+      assert.match(await panel.locator("[data-testid='tt-account']").textContent(), /from \$2,000.*\$440 in 1 open trade/s);
+      await panel.locator("[data-testid='tt-row']").first().click();
+      const run = panel.locator("[data-testid='tt-run']");
+      await run.waitFor();
+      assert.equal((await run.locator("[data-testid='tt-status']").textContent()).trim(), "In a trade · CALL");
+      assert.equal((await run.locator("[data-testid='tt-balance']").textContent()).trim(), "$1,560");
+      assert.equal((await run.locator("[data-testid='tt-from']").textContent()).trim(), "from $2,000");
+      assert.match(await run.locator("[data-testid='tt-level-Entry']").textContent(), /ask \$4\.40.*1 contract(?!s)/s);
+      assert.match(await run.locator("[data-testid='tt-open']").textContent(), /LLY 1100 Call.*1 not 3: one contract costs more than 10% of the account/s);
+      assert.equal(await run.getByText("Not bought").count(), 0);
+      assert.equal(await overflowsSideways(app.page), false);
+      await shot(app, `tt-${name}-one-contract`);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}

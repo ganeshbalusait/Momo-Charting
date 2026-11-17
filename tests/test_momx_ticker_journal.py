@@ -272,3 +272,26 @@ def test_reset_drops_todays_review_for_that_run_and_for_all(world):
     assert saved["entries"]["NVDA-CALL"]["status"] == "tried" and saved["entries"][ticker_journal.ALL]["status"] == "tried"
     # A reset never buys a second AI call the same day.
     assert trader.review("NVDA-CALL", ask=ask)["status"] == "tried" and len(ask.calls) == 2
+
+
+def test_with_one_shared_account_the_journal_starts_from_it_not_from_a_sum_of_runs():
+    """2026-11-16: every ticker spends from one account, so "all tickers" starts at that account's size once."""
+    from datetime import datetime as _dt
+    now = _dt(2026, 11, 16, 12, 0, tzinfo=ticker_journal.ET)
+    doc_all = ticker_journal.build(_SHARED_RUNS(), "all", {}, {}, now, account_start=2000.0)
+    total = round(sum(t["pl"] for r in _SHARED_RUNS() for t in r["trades"]), 2)
+    assert doc_all["startBalance"] == 2000.0 and doc_all["balance"] == round(2000.0 + total, 2)
+    assert doc_all["equity"][-1]["balance"] == doc_all["balance"]
+    one = _SHARED_RUNS()[0]
+    doc_one = ticker_journal.build(_SHARED_RUNS(), one["id"], {}, {}, now, account_start=2000.0)
+    assert doc_one["startBalance"] == 2000.0 and doc_one["balance"] == round(2000.0 + sum(t["pl"] for t in one["trades"]), 2)
+
+
+def _SHARED_RUNS():
+    def closed(run_id, n, pl):
+        return {"id": f"{run_id}-{n}", "day": "2026-11-16", "ticker": run_id.split("-")[0], "side": run_id.split("-")[1], "strike": 100,
+                "expiry": "2026-11-20", "qty": 1, "entry": 1.0, "cost": 100.0, "pl": pl, "status": "closed",
+                "boughtAt": f"2026-11-16T10:0{n}:00-05:00", "closedAt": f"2026-11-16T10:3{n}:00-05:00", "reason": "Stop", "sells": [], "hits": [],
+                "events": []}
+    return [{"id": "NVDA-CALL", "ticker": "NVDA", "side": "CALL", "trades": [closed("NVDA-CALL", 1, 40.0)], "open": None},
+            {"id": "AMD-PUT", "ticker": "AMD", "side": "PUT", "trades": [closed("AMD-PUT", 2, -25.0)], "open": None}]

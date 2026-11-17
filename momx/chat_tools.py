@@ -29,7 +29,7 @@ MAX_TABLE_ROWS = 40
 _CELL_MAX = 160
 _MAG_BOARDS = ("Mag7", "Watchlist")
 #: Where a tool's answer lives, for the "which ticker?" reply.
-_TOOL_PAGE = {"chain": "Quick Options", "walls": "Quick Options", "expected_move": "Quick Options", "price_outlook": "Quick Options", "max_pain": "Quick Options",
+_TOOL_PAGE = {"chain": "Quick Options", "walls": "Quick Options", "long_oi": "Charts & OI", "expected_move": "Quick Options", "price_outlook": "Quick Options", "max_pain": "Quick Options",
               "chart_levels": "Charts & OI", "chart_signals": "Charts & OI", "quote": "Charts & OI", "open_chart": "Charts & OI",
               "news": "News Feed", "latest_news": "News Feed", "why_move": "Charts & OI", "earnings": "Earnings Calendar", "long_term": "Long Term", "sectors": "Sectors", "premarket": "Premarket Scanner",
               "scanner_day": "MomX Scanner", "scanner_ticker": "MomX Scanner", "scanner_list": "MomX Scanner", "scanner_top": "MomX Scanner"}

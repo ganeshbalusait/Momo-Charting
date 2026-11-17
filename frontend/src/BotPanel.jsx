@@ -1018,7 +1018,7 @@ function BotResearch({ viewSwitch }) {
           {viewSwitch}
           <div className="bot-seg" role="group" aria-label="Which bot">
             <button type="button" className={book === "all" ? "is-on" : ""} onClick={() => setBook("all")} title="Every trade the rules took">All trades</button>
-            <button type="button" data-testid="open-ticker-trader" onClick={() => setTickerTrader(true)} title="Type a ticker: the bot trades it from the chart in a simulated $10,000 account">Ticker trader</button>
+            <button type="button" data-testid="open-ticker-trader" onClick={() => setTickerTrader(true)} title="Type a ticker: the bot trades it from the chart in one simulated account">Ticker trader</button>
           </div>
           <form className="bot-quick-trade" data-testid="bot-quick-trade" aria-label="Trade a ticker" onSubmit={openQuick}>
             <span className="bot-quick-title">Trade a ticker</span>

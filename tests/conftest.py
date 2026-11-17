@@ -143,6 +143,39 @@ def _no_real_alpaca_keys_in_tests(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_schwab_for_long_oi(monkeypatch):
+    """The Ask chat's long-dated OI answer (momx/long_oi.py, 2026-11-16) is the one chat answer that asks Schwab. No
+    test may reach the real one through it: tests that run every chat tool on a made-up ticker would otherwise send a
+    real chain request. A test that means to exercise the real door sets long_oi.fetch itself, which overrides this."""
+    from momx import long_oi
+
+    def refused(ticker, today):
+        raise long_oi.Unavailable("Schwab is not reached in tests.")
+    monkeypatch.setattr(long_oi, "fetch", refused)
+    long_oi.reset()
+    from momx import leap_oi_scanner                       # the LEAP OI Scanner page reads through long_oi too
+    leap_oi_scanner.reset()
+    yield
+    long_oi.reset()
+    leap_oi_scanner.reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_schwab_for_agx_flow(monkeypatch):
+    """AGX Flow (momx/agx_flow.py, 2026-11-17) asks Schwab for option chains. No test may reach the real one through
+    it. A test that means to exercise it sets agx_flow.fetch itself, which overrides this."""
+    from momx import agx_flow
+
+    def refused(ticker, today):
+        raise agx_flow.Unavailable("Schwab is not reached in tests.")
+    monkeypatch.setattr(agx_flow, "fetch", refused)
+    agx_flow.reset()
+    yield
+    agx_flow.wait_idle(5)
+    agx_flow.reset()
+
+
+@pytest.fixture(autouse=True)
 def _guard_coverage_tests(request):
     """The coverage tests written 2026-11-04 (tests/test_cov_*.py) run under the
     live guards for every test, not just inside a harness: no connection may

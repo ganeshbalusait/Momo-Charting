@@ -744,6 +744,43 @@ _EARN = re.compile(r"\bearnings?\b")
 _SECTOR = re.compile(r"\bsectors?\b|\bheat\s?map\b")
 _PREMARKET = re.compile(r"\bpre\s?-?market\b")
 _LONG_TERM = re.compile(r"\blong\s*term\b|\bbuffett\b")
+#: Open interest on expiries months out (2026-11-16, "Nvda check the leap which one had more OI", "I want any stocks 1 months
+#: to 12 months which strikes have high oi with delta"): both words, an OI word and a months word, or it is not this.
+_OI_WORD = re.compile(r"\b(?:oi|open\s+interest)\b")
+_MONTHS_SPAN = re.compile(r"\bleaps?\b|\blong[\s-]*dated\b|\bmonths?\b|\bmonthly\s+expir\w*\b|\b(?:1|one)\s*(?:yr|years?)\b")
+_NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+                 "ten": "10", "eleven": "11", "twelve": "12"}
+
+
+def months_asked(low: str) -> tuple[int, int]:
+    """(from, to) months out. "1 months to 12 months", "3-12 months", "6 months" (1 to 6), "a year" (1 to 12), "leap" alone
+    (3 to 12: the app's LEAP window, Ganesh 2026-11-06 "Leap I will take 3 months to 12 months"), else 1 to 12."""
+    text = re.sub(r"\b(" + "|".join(_NUMBER_WORDS) + r")\b", lambda m: _NUMBER_WORDS[m.group(1)], low)
+    both = re.search(r"\b(\d{1,2})\s*(?:months?|mo)?\s*(?:to|-|–|through|and|till|until)\s*(\d{1,2})\s*(?:months?|mo)\b", text)
+    if both:
+        lo, hi = sorted((int(both.group(1)), int(both.group(2))))
+        return max(1, min(lo, 12)), max(1, min(hi, 12))
+    one = re.search(r"\b(\d{1,2})\s*(?:months?|mo)\b", text)
+    if one:
+        return 1, max(1, min(int(one.group(1)), 12))
+    if re.search(r"\b1\s*(?:yr|years?)\b", text):
+        return 1, 12
+    if re.search(r"\bleaps?\b", text):
+        return 3, 12
+    return 1, 12
+
+
+def delta_asked(low: str) -> float | None:
+    """A delta the question names: "0.20 delta", "delta .3", "20 delta". None when it names none."""
+    found = re.search(r"(?<![\d.])0?\.(\d{1,2})\s*(?:delta|Δ)\b|\bdelta\s*(?:of|at|around|near|about|=|is)?\s*0?\.(\d{1,2})\b|\b(\d{1,2})\s*delta\b", low)
+    if not found:
+        return None
+    if found.group(3):
+        value = int(found.group(3)) / 100
+    else:
+        digits = found.group(1) or found.group(2)
+        value = float("0." + digits)
+    return value if 0.05 <= value <= 0.95 else None
 _BRIEF = re.compile(r"\bmorning\s+brief\b|\bbrief(?:ing)?\b")
 _QUOTE = re.compile(r"\b(?:price|quote)\b|\bhow\s+much\s+is\b|\btrading\s+at\b")
 #: Where a price is going (2026-11-15, "Can we predict the prize of app?" got release notes that mention "predictions").
@@ -1027,6 +1064,14 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
     ticker = _named_ticker(text, known)
     minute = chat_scanner.read_minute(text, chatbot.parse_time(text, scanner=True))
     clock = f"{minute // 60:02d}:{minute % 60:02d}" if minute is not None else None
+    # Open interest months out ("nvda leap which one had more oi", "spy strikes with high oi 1 to 12 months with delta"):
+    # the long-dated board, before "leap" reaches the Long Term view and "high oi" the short-dated High OI board.
+    if _OI_WORD.search(low) and _MONTHS_SPAN.search(low) and minute is None and not re.search(r"\b(?:what\s+is|what\s+does|meaning\s+of|define)\b", low):
+        months_from, months_to = months_asked(low)
+        wants_puts, wants_calls = bool(re.search(r"\bputs?\b", low)), bool(re.search(r"\bcalls?\b", low))
+        side = "bear" if wants_puts and not wants_calls else "bull" if wants_calls and not wants_puts else None
+        return {"calls": [_call("long_oi", ticker=_resolved(ticker, low, ctx), months_from=months_from, months_to=months_to,
+                                delta=delta_asked(low), side=side)]}
     # A definition whose term is a glossary entry longer than the ticker word ("what is an iron condor", "what is a gap
     # up", "what is the live bolt") is the glossary, even when IRON, GAP or BOLT is a real ticker (2026-11-11 review rv7).
     # Exact match only, and never the ticker word alone: "what is IRON" and "what is GAP" stay ticker questions.

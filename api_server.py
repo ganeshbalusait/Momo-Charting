@@ -23745,6 +23745,53 @@ class ApiHandler(BaseHTTPRequestHandler):
                     rows = _with_sector_profiles(rows, symbols)
                 self._send_json(HTTPStatus.OK, {"rows": rows})
                 return
+            # LEAP OI Scanner and AGX Flow pages (2026-11-17). Both read
+            # Schwab option chains through their own guarded modules: saved
+            # copies only on this request path, missing tickers read by ONE
+            # background thread. Read-only; nothing here places an order.
+            if parsed.path in {"/api/leap-oi-scanner", "/api/agx-flow"}:
+                query = parse_qs(parsed.query)
+                raw_symbols = str(query.get("symbols", [""])[0])
+                from momx.chat_market import _root as _momx_artifacts_root
+                root = _momx_artifacts_root({})
+                try:
+                    if parsed.path == "/api/leap-oi-scanner":
+                        from momx import leap_oi_scanner
+                        symbols = leap_oi_scanner.clean_symbols(raw_symbols)
+                        if not symbols:
+                            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Add at least one ticker."})
+                            return
+                        def _int(name, default):
+                            try:
+                                return int(str(query.get(name, [default])[0]))
+                            except ValueError:
+                                return int(default)
+                        try:
+                            min_delta = float(str(query.get("min_delta", ["0.10"])[0]))
+                        except ValueError:
+                            min_delta = 0.10
+                        payload = leap_oi_scanner.board(
+                            symbols, root,
+                            months_from=_int("from", 3), months_to=_int("to", 12),
+                            side=str(query.get("side", ["both"])[0]).lower(), min_delta=min_delta,
+                            entry_only=str(query.get("entry_only", [""])[0]).lower() in {"1", "true"},
+                        )
+                    else:
+                        from momx import agx_flow
+                        symbols = [s for s in raw_symbols.replace(" ", "").upper().split(",") if s]
+                        if not symbols:
+                            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Add at least one ticker."})
+                            return
+                        try:
+                            payload = agx_flow.board(symbols, root)
+                        except ValueError as exc:
+                            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                            return
+                except Exception as exc:  # noqa: BLE001 - the page shows the reason
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": f"Could not read option chains ({type(exc).__name__})."})
+                    return
+                self._send_json(HTTPStatus.OK, payload)
+                return
             if parsed.path == "/api/live-chart-quotes":
                 query = parse_qs(parsed.query)
                 raw_symbols = str(query.get("symbols", [""])[0])

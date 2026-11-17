@@ -1041,6 +1041,108 @@ def _long_term_tool(args: Mapping, ctx: Mapping) -> dict:
     return _reply(lines, facts, [link], table, as_of)
 
 
+# ---------------------------------------------------------------- open interest 1 to 12 months out
+
+LONG_OI_ROWS = 10
+LONG_OI_BAND = 0.05
+
+
+def _month_day(day: str) -> str:
+    parsed = _day(day)
+    return parsed.strftime("%b %d %Y").replace(" 0", " ") if parsed else str(day)
+
+
+def _delta_text(delta: float) -> str:
+    """Two decimals, but three just under 0.20: an ENTRY at 0.198 must not read "0.20", which looks outside the
+    under-0.20 rule."""
+    size = abs(delta)
+    return f"{delta:.3f}" if 0.195 <= size < 0.20 else f"{delta:.2f}"
+
+
+def _oi_row_text(row: Mapping) -> str:
+    side = "call" if row["side"] == "CALL" else "put"
+    delta = f"delta {_delta_text(row['delta'])}" if row.get("delta") is not None else "no delta"
+    entry = " (ENTRY)" if row.get("entry") else ""
+    return f"{_strike(row['strike'])} {side}{entry}, {_month_day(row['expiry'])} ({row['days']} days), OI {_whole(row['oi'])}, {delta}"
+
+
+def _long_oi_tool(args: Mapping, ctx: Mapping) -> dict:
+    """The strikes 1 to 12 months out with the most open interest, calls and puts, with delta. The one chat answer that
+    may ask Schwab, once per ticker per 30 minutes (momx/long_oi.py)."""
+    from momx import long_oi
+    ticker = _ticker(args, ctx)
+    if not ticker:
+        return _ask_ticker("open interest 1 to 12 months out", _quick())
+    now = _now(ctx)
+    months_from = _bounded(args.get("months_from"), 1, 1, 12)
+    months_to = max(months_from, _bounded(args.get("months_to"), 12, 1, 12))
+    delta = _num(args.get("delta"))
+    delta = delta if delta is not None and 0.05 <= delta <= 0.95 else None
+    side = str(args.get("side") or "").lower()
+    link = _chart(ticker)
+    try:
+        doc = long_oi.chain_for(ticker, _root(ctx), now)
+    except long_oi.Unavailable as exc:
+        return _reply([str(exc)], {"ticker": ticker, "missing": True}, [link])
+    fetched = _when(doc.get("fetchedAt")) or now
+    long_oi.mark_entries(doc["rows"], _num(doc.get("spot")))
+    # 1 month = 28 days (so the monthly expiry 4 weeks out counts), 12 months = 366 days.
+    min_days = 28 if months_from == 1 else months_from * 30 - 2
+    max_days = 366 if months_to == 12 else months_to * 30 + 2
+    sides = [("CALL", "Calls")] if side == "bull" else [("PUT", "Puts")] if side == "bear" else [("CALL", "Calls"), ("PUT", "Puts")]
+    picked = {key: long_oi.top_strikes(doc["rows"], side=key, min_days=min_days, max_days=max_days, delta=delta,
+                                       band=LONG_OI_BAND, n=LONG_OI_ROWS, min_delta=long_oi.MIN_DELTA) for key, _ in sides}
+    window = [row for row in doc["rows"] if min_days <= row["days"] <= max_days]
+    expiries = sorted({row["expiry"] for row in window})
+    span = f"{months_from} to {months_to} months out" if months_from != months_to else f"about {months_to} months out"
+    filter_text = f", delta near {delta:.2f} (+/- {LONG_OI_BAND:.2f})" if delta is not None else ""
+    spot = _num(doc.get("spot"))
+    lines = [f"{ticker} strikes with the most open interest, expiries {span}"
+             + (f" ({_month_day(expiries[0])} to {_month_day(expiries[-1])}, {len(expiries)} expiries)" if expiries else "")
+             + filter_text + (f". Price {_money(spot)}" if spot else "") + f" (Schwab, {_clock(fetched, now)})."]
+    for key, label in sides:
+        best = picked[key]
+        word = "call" if key == "CALL" else "put"
+        lines.append(f"Most {word} OI: {_oi_row_text(best[0])}." if best else
+                     f"No {word}s{filter_text} with open interest {span}.")
+    # The option chain's ENTRY (just under 0.20 delta) on each expiry in the window; the one holding the most OI.
+    for key, label in sides:
+        word = "call" if key == "CALL" else "put"
+        entries = sorted((row for row in window if row["side"] == key and row.get("entry") and row["oi"] > 0
+                          and abs(row["delta"]) >= long_oi.MIN_DELTA - 1e-9),
+                         key=lambda row: (-row["oi"], row["days"]))
+        if entries:
+            lines.append(f"ENTRY {word} with the most OI (the option chain's ENTRY rule, delta just under 0.20): {_oi_row_text(entries[0])}.")
+    lines.append(f"Only strikes with delta {long_oi.MIN_DELTA:.2f} or more: no far-away lottery strikes. "
+                 "ENTRY marks the contract the option chain marks ENTRY on that expiry.")
+    lines.append("Open interest is the number of contracts still open; Schwab updates it once a day, before the open. "
+                 "Delta is how much the option moves for a $1 move in the stock. Facts only, not a pick.")
+    # Calls and puts take turns (1st call, 1st put, 2nd call ...): the chat shows the first few rows as cards, and both
+    # sides belong in them. Each card is headed by its contract, "185 Call".
+    rows = []
+    for rank in range(LONG_OI_ROWS):
+        for key, _ in sides:
+            if rank < len(picked[key]):
+                row = picked[key][rank]
+                rows.append({"contract": f"{_strike(row['strike'])} {'Call' if key == 'CALL' else 'Put'}" + (" · ENTRY" if row.get("entry") else ""),
+                             "expiry": row["expiry"],
+                             "days": row["days"], "oi": _whole(row["oi"]),
+                             "delta": _delta_text(row["delta"]) if row.get("delta") is not None else "-",
+                             "bid": _quote_cell(row.get("bid")), "ask": _quote_cell(row.get("ask"))})
+    if not rows:
+        return _reply(lines, {"ticker": ticker, "monthsFrom": months_from, "monthsTo": months_to, "delta": delta, "rows": 0}, [link],
+                      as_of=_as_of(fetched, now))
+    table = _rows_table(f"{ticker} most open interest, {span}" + (f", delta ~{delta:.2f}" if delta is not None else ""),
+                        [("contract", "Contract"), ("expiry", "Expiry"), ("days", "Days", "right"),
+                         ("oi", "OI", "right"), ("delta", "Delta", "right"), ("bid", "Bid", "right"), ("ask", "Ask", "right")],
+                        rows, note=f"Top {LONG_OI_ROWS} per side by open interest. Schwab chain read {_clock(fetched, now)}"
+                                   + (", a copy under 30 minutes old." if doc.get("cached") else "."))
+    facts = {"ticker": ticker, "monthsFrom": months_from, "monthsTo": months_to, "delta": delta, "spot": spot,
+             "fetchedAt": doc.get("fetchedAt"), "expiries": expiries, "rows": len(rows),
+             "top": {key: [{k: row[k] for k in ("strike", "expiry", "days", "oi", "delta")} for row in picked[key][:3]] for key, _ in sides}}
+    return _reply(lines, facts, [link], table, _as_of(fetched, now))
+
+
 # ---------------------------------------------------------------- registry
 
 def _guarded(name: str, handler: Callable[[Mapping, Mapping], dict]) -> Callable[[dict, dict], dict]:
@@ -1104,4 +1206,11 @@ TOOLS: dict[str, dict] = {
                         _long_term_tool, ticker=_TICKER_ARG),
     "morning_brief": _entry("morning_brief", "Today's morning brief.", _morning_brief_tool),
     "quote": _entry("quote", "Latest held price for one ticker, with its age.", _quote_tool, ticker=_TICKER_ARG),
+    "long_oi": _entry("long_oi", "Strikes with the most open interest on expiries 1 to 12 months out (LEAPs, long-dated options), "
+                      "calls and puts, with each strike's delta. Optional: months_from/months_to (1-12), a delta to match, calls or puts.",
+                      _long_oi_tool, ticker=_TICKER_ARG,
+                      months_from={"type": "integer", "minimum": 1, "maximum": 12},
+                      months_to={"type": "integer", "minimum": 1, "maximum": 12},
+                      delta={"type": "number", "minimum": 0.05, "maximum": 0.95, "description": "e.g. 0.20 for strikes near 0.20 delta"},
+                      side={"type": "string", "enum": ["bull", "bear"], "description": "bull for calls only, bear for puts only."}),
 }

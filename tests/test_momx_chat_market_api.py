@@ -22,7 +22,7 @@ from api_harness import RELAYED, api_server, running_api, seed_user
 from cf_access_auth import ACCESS_EMAIL_HEADER
 from data import schwab_client
 from long_term import service as long_term_service
-from momx import chat_ai, chat_limits, chat_market, chat_state, chat_tools
+from momx import chat_ai, chat_limits, chat_market, chat_state, chat_tools, long_oi
 from news_feed_store import MomxNewsStore
 
 ET = ZoneInfo("America/New_York")
@@ -146,20 +146,49 @@ def test_market_tools_are_offered_to_every_session():
         assert set(MARKET_TOOLS) <= set(chat_tools.registry(scope))
 
 
-def test_no_chat_tool_starts_schwab_a_build_or_a_push(scratch, spy):
-    """Every tool in the registry, owner tools too, inside the running server."""
+def test_no_chat_tool_starts_schwab_a_build_or_a_push(scratch, spy, monkeypatch):
+    """Every tool in the registry, owner tools too, inside the running server.
+
+    One exception since 2026-11-16: long_oi (open interest 1 to 12 months out) has no saved chain to read, so it may
+    ask Schwab, and ONLY through momx.long_oi.fetch (one guarded request per ticker, see the next test). Here that
+    one door is replaced by a recorder, so any other way out still counts, for long_oi too."""
+    through_the_door: dict[str, int] = {}
+    current = {"name": None}
+
+    def door(ticker, today):
+        through_the_door[current["name"]] = through_the_door.get(current["name"], 0) + 1
+        return {}
+    monkeypatch.setattr(long_oi, "fetch", door)
+    long_oi.reset()
     with running_api():
         names = sorted(chat_tools.registry("owner"))
         assert set(MARKET_TOOLS) <= set(names)
         offenders: dict[str, list[str]] = {}
         for name in names:
+            current["name"] = name
             for args in ({"ticker": "NVDA"}, {"ticker": "NOPE"}, {}):
                 before = len(spy)
                 reply = chat_tools.run(name, args, _ctx("owner"))
                 assert isinstance(reply["lines"], list), name
                 if len(spy) > before:
                     offenders.setdefault(name, []).extend(spy[before:])
+    long_oi.reset()
     assert offenders == {} and spy == [], (offenders, spy, STACKS[:2])
+    assert set(through_the_door) == {"long_oi"}, through_the_door
+
+
+def test_long_oi_reaches_schwab_once_per_ticker_even_when_it_fails(scratch, spy, monkeypatch):
+    """The real long_oi.fetch, behind the spy: one SchwabClient per ticker, then the failure is remembered."""
+    monkeypatch.setattr(long_oi, "fetch", long_oi._schwab_fetch)   # conftest shuts this door for every other test
+    long_oi.reset()
+    try:
+        with running_api():
+            for _ in range(3):
+                reply = chat_tools.run("long_oi", {"ticker": "NVDA"}, _ctx())
+                assert reply["table"] is None and "NVDA" in reply["lines"][0]
+    finally:
+        long_oi.reset()
+    assert spy == ["SchwabClient()"]
 
 
 @pytest.mark.parametrize("method", FORBIDDEN_STATE_METHODS)

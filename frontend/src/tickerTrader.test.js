@@ -66,8 +66,8 @@ test("a run says what it is doing", () => {
   assert.equal(statusLabel({ side: "CALL", open: OPEN }), "In a trade · CALL");
   assert.equal(runLine({ status: "idle", tradeCount: 4, wins: 2 }), "4 trades · 2 wins");
   assert.equal(runLine({ status: "idle", tradeCount: 1, wins: 1 }), "1 trade · 1 win");
-  assert.equal(runLine({ status: "idle", tradeCount: 0, note: "Not bought: one contract costs $1,200, more than 10% of the $10,000 account." }),
-    "Not bought: one contract costs $1,200, more than 10% of the $10,000 account.");
+  assert.equal(runLine({ status: "idle", tradeCount: 0, note: "Not bought: one contract costs $1,200, more than the $1,000 cash left in the account." }),
+    "Not bought: one contract costs $1,200, more than the $1,000 cash left in the account.");
   assert.equal(winsLabel({ tradeCount: 3, wins: 2 }), "2 of 3");
   assert.equal(winsLabel({ tradeCount: 0, wins: 0 }), "–");
   assert.equal(statusLabel({ status: "stopped" }), "Stopped");
@@ -144,4 +144,17 @@ test("the size is remembered on the device, and a broken store falls back to $10
   assert.equal(savedSize(throwing), 10000);
   assert.doesNotThrow(() => saveSize(throwing, 2000));
   assert.equal(savedSize(null), 10000);
+});
+
+test("the one account's tiles: worth now, cash left, up or down (2026-11-16)", async () => {
+  const { accountTiles } = await import("./tickerTrader.js");
+  // His morning: $2,000, a $144 trade and a $440 trade open, worth $570 at the bid.
+  assert.deepEqual(accountTiles({ startBalance: 2000, cash: 1416, invested: 584, openValue: 570, value: 1986, net: -14, realized: 0, openTrades: 2 }),
+    { value: "$1,986", from: "from $2,000", cash: "$1,416", inTrades: "$584 in 2 open trades", net: "\u2212$14", tone: accountTiles({ startBalance: 1, cash: 1, value: 1, net: -14 }).tone, start: 2000 });
+  assert.equal(accountTiles({ startBalance: 2000, cash: 1560, invested: 440, value: 2020, net: 20, openTrades: 1 }).inTrades, "$440 in 1 open trade");
+  const flat = accountTiles({ startBalance: 2000, cash: 2000, invested: 0, value: 2000, net: 0, openTrades: 0 });
+  assert.equal(flat.inTrades, "nothing in trades");
+  assert.equal(flat.net, "$0");
+  assert.equal(accountTiles(null), null);                       // an older server sends no account: no card
+  assert.equal(accountTiles({ startBalance: 2000 }), null);
 });

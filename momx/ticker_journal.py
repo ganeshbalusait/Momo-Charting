@@ -280,7 +280,7 @@ def scope_label(key: str, runs: list[Mapping]) -> str:
 
 
 def build(runs: list[Mapping], scope: Any = ALL, notes: Mapping | None = None, reviews: Mapping | None = None,
-          now: datetime | None = None) -> dict:
+          now: datetime | None = None, account_start: float | None = None) -> dict:
     """The journal for one run or all runs. Raises KeyError for an unknown run."""
     now = now or datetime.now(ET)
     key, chosen = scope_runs(runs, scope)
@@ -299,7 +299,10 @@ def build(runs: list[Mapping], scope: Any = ALL, notes: Mapping | None = None, r
     stats = bot_desk._trade_stats(rows)
     days, summary = bot_desk._days(rows, rows)
     summary.pop("dailyLimitBreaks", None)
-    start = round(sum(_num(r.get("startBalance")) or 0.0 for r in chosen), 2)
+    # One account for every ticker (2026-11-16): `account_start` is its starting size, and "now" is that start plus
+    # the chosen trades' profit and loss. Without it (an older caller), each run's own figures are added up.
+    shared = _num(account_start)
+    start = round(shared if shared is not None else sum(_num(r.get("startBalance")) or 0.0 for r in chosen), 2)
     balance, equity = start, []
     for c in cards:
         balance = round(balance + float(c["pl"]), 2)
@@ -316,7 +319,8 @@ def build(runs: list[Mapping], scope: Any = ALL, notes: Mapping | None = None, r
     return {
         "scope": key, "label": scope_label(key, chosen), "simulated": True, "asOf": now.replace(microsecond=0).isoformat(),
         "runs": [{"id": r.get("id"), "ticker": r.get("ticker"), "side": r.get("side")} for r in runs],
-        "startBalance": start, "balance": round(sum(_num(r.get("balance")) or 0.0 for r in chosen), 2),
+        "startBalance": start, "balance": round(start + sum(float(c["pl"]) for c in cards), 2) if shared is not None
+        else round(sum(_num(r.get("balance")) or 0.0 for r in chosen), 2),
         "openTrades": sum(1 for r in chosen if r.get("open")),
         "stats": stats, "daySummary": summary, "days": days, "journal": {"periods": _periods(cards)},
         "equity": equity, "bestId": best.get("id") if best else None, "worstId": worst.get("id") if worst else None,

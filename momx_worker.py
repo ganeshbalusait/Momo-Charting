@@ -782,7 +782,7 @@ class Handler(BaseHTTPRequestHandler):
                 except ticker_trader.TraderError as exc:
                     self._json(HTTPStatus(exc.status), {"ok": False, "error": exc.message})
                     return
-                self._json(HTTPStatus.OK, {"ok": True, "run": _tt_run})
+                self._json(HTTPStatus.OK, {"ok": True, "run": _tt_run, "account": _tt.account()})
                 return
             if path == "/api/momx-scanner/paper-control":
                 # Scorecard buttons (2026-11-09, his "Yes" + "stuck orders give

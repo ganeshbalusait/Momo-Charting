@@ -1,16 +1,17 @@
 // Ticker trader (2026-11-13, his "I will type the ticker and you trade start with 10k fresh
 // account entry and target and exit you have to pick it from charts"): BOT workspace > Research.
 // He types a ticker and picks Call or Put; the server (momx/ticker_trader.py) trades it by the
-// chart's plan in a simulated $10,000 account. Nothing here or there sends an order to a broker.
+// chart's plan in ONE simulated account shared by every ticker (2026-11-16: a buy takes its cost out of
+// the cash, so the account reads like a real one). Nothing here or there sends an order to a broker.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bot } from "lucide-react";
 import { openAppLink } from "./appLinks.js";
 import { DailyBars, Gauge } from "./BotDesk.jsx";
 import { deskCalendar, deskCurve, deskKpis, deskMonthKey } from "./botDesk.js";
 import {
-  ALL_SCOPE, DEFAULT_SIZE, JOURNAL_POLL_MS, NOTE_MAX, NOTE_URL, REVIEW_LABEL, REVIEW_URL, SIMULATED_NOTE, SIZE_CHOICES, TICKER_CHIPS,
+  ALL_SCOPE, DEFAULT_SIZE, JOURNAL_POLL_MS, accountTiles, NOTE_MAX, NOTE_URL, REVIEW_LABEL, REVIEW_URL, SIMULATED_NOTE, SIZE_CHOICES, TICKER_CHIPS,
   TICKER_TRADER_POLL_MS, TICKER_TRADER_URL, breakdownTables, chartLink, cleanTicker, contractLabel, equityDays, failureText, improveItems,
-  journalStats, journalTrades, journalUrl, ladder, money, noteProblem, openGain, parseSize, runLine, saveSize, savedSize, shouldAskReview,
+  journalStats, journalTrades, journalUrl, ladder, money, noteProblem, openGain, parseSize, runLine, saveSize, shouldAskReview,
   sideLabel, signedMoney, sizeChip, sizeProblem, statusLabel, tickerProblem, timeEt, tone, tradeDetail, tradeRows, winsLabel,
 } from "./tickerTrader.js";
 import "./tickerTrader.css";
@@ -20,7 +21,8 @@ const RULES = [
   ["Entry", "The option's ask, the same contract as the chart's Entry line."],
   ["Stop", "The stock price where the option is down 50%."],
   ["Targets", "T1, T2, T3 from the chart. One contract sold at each. Stop to break-even after T1, to T1 after T2."],
-  ["Size", "3 contracts, at most 10% of the account in one trade."],
+  ["Size", "3 contracts, fewer when 3 cost more than 10% of the account. A contract that costs more than 10% is still bought, one only, when the account can pay for it."],
+  ["Account", "One account for every ticker. A buy takes its cost out of the cash; a sale puts the money back."],
   ["Hours", "Buys the moment you tap Trade while the market is open. Everything is closed at 3:50 PM ET."],
 ];
 
@@ -42,6 +44,56 @@ function SizePicker({ text, onText }) {
         <input type="text" inputMode="numeric" autoComplete="off" spellCheck="false" aria-label="Account size in dollars"
           data-testid="tt-size-input" maxLength={12} value={text} onChange={(e) => onText(e.target.value)} />
       </div>
+    </div>
+  );
+}
+
+/** Reset the one account: the size picker, filled with the account's starting size. */
+function ResetPanel({ startSize, busy, onReset, onClose }) {
+  const [text, setText] = useState(String(startSize));
+  const [error, setError] = useState("");
+  const size = parseSize(text);
+  const go = async () => {
+    const problem = sizeProblem(text);
+    if (problem) { setError(problem); return; }
+    if (await onReset(size)) { saveSize(localStore(), size); onClose(); }
+  };
+  return (
+    <div className="tt-card" data-testid="tt-reset-panel">
+      <div className="tt-card-head"><h4>RESET ACCOUNT</h4></div>
+      <span className="tt-why">Closes every open trade, clears every ticker's history and starts the one account fresh at this size.</span>
+      <SizePicker text={text} onText={(t) => { setText(t); setError(""); }} />
+      {error ? <p className="bot-error" role="alert" data-testid="tt-reset-error">{error}</p> : null}
+      <div className="tt-entry">
+        <button type="button" className="tt-primary" disabled={Boolean(busy)} data-testid="tt-reset-go" onClick={go}>
+          {size !== null && !sizeProblem(text) ? `Reset to ${money(size)}` : "Reset"}
+        </button>
+        <button type="button" className="tt-ghost" data-testid="tt-reset-cancel" onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/** The one account every ticker spends from: worth now, cash left, up or down, and its Reset. */
+function AccountCard({ account, busy, onAct }) {
+  const [resetting, setResetting] = useState(false);
+  const tiles = accountTiles(account);
+  if (!tiles) return null;
+  return (
+    <div className="tt-card" data-testid="tt-account">
+      <div className="tt-card-head">
+        <h4>ACCOUNT</h4>
+        <button type="button" className="tt-ghost" disabled={Boolean(busy) || resetting} data-testid="tt-account-reset"
+          onClick={() => setResetting(true)} title="Start the account fresh at a size you pick, with an empty history">Reset account</button>
+      </div>
+      <span className="tt-why">One account for every ticker. A buy takes its cost out of the cash; a sale puts the money back.</span>
+      <div className="tt-tiles">
+        <div className="tt-tile"><span>ACCOUNT NOW</span><b data-testid="tt-account-value">{tiles.value}</b><small className="tt-dim">{tiles.from}</small></div>
+        <div className="tt-tile"><span>CASH LEFT</span><b data-testid="tt-account-cash">{tiles.cash}</b><small className="tt-dim">{tiles.inTrades}</small></div>
+        <div className="tt-tile"><span>UP / DOWN</span><b className={tiles.tone} data-testid="tt-account-net">{tiles.net}</b></div>
+      </div>
+      {resetting ? <ResetPanel startSize={tiles.start} busy={busy} onClose={() => setResetting(false)}
+        onReset={async (size) => Boolean(await onAct("reset", { size }))} /> : null}
     </div>
   );
 }
@@ -335,17 +387,10 @@ function Journal({ scope, runs, onScope, onBack }) {
 }
 
 function RunView({ run, busy, onBack, onAct, onJournal }) {
-  // Reset opens the size picker, filled with this run's starting size.
-  const [resetText, setResetText] = useState(null);
-  const [resetError, setResetError] = useState("");
+  // Reset opens the size picker, filled with the account's starting size. It resets the ONE account.
+  const [resetting, setResetting] = useState(false);
   const startSize = Number(run.startBalance) || DEFAULT_SIZE;
-  const resetSize = resetText === null ? null : parseSize(resetText);
-  const doReset = async () => {
-    const problem = sizeProblem(resetText);
-    if (problem) { setResetError(problem); return; }
-    const done = await onAct("reset", { id: run.id, size: resetSize });
-    if (done) { setResetText(null); setResetError(""); saveSize(localStore(), resetSize); }
-  };
+  const account = accountTiles(run.account);
   const trade = run.open;
   const rows = tradeRows(run);
   const gain = openGain(trade);
@@ -357,26 +402,13 @@ function RunView({ run, busy, onBack, onAct, onJournal }) {
         <div className="tt-run-actions">
           <button type="button" className="tt-ghost" disabled={Boolean(busy) || run.status === "stopped" || (!trade && run.status !== "waiting")}
             onClick={() => onAct("stop", { id: run.id })} title="Sell now at the bid and stop this ticker">Stop</button>
-          <button type="button" className="tt-ghost" disabled={Boolean(busy) || resetText !== null} data-testid="tt-reset"
-            onClick={() => { setResetText(String(startSize)); setResetError(""); }}
-            title="Start fresh at an account size you pick, with an empty history">Reset</button>
+          <button type="button" className="tt-ghost" disabled={Boolean(busy) || resetting} data-testid="tt-reset"
+            onClick={() => setResetting(true)}
+            title="Start the whole account fresh at a size you pick, with an empty history">Reset account</button>
         </div>
       </div>
-      {resetText !== null ? (
-        <div className="tt-card" data-testid="tt-reset-panel">
-          <div className="tt-card-head"><h4>RESET</h4></div>
-          <span className="tt-why">Closes any open trade, clears the history and starts fresh at this size.</span>
-          <SizePicker text={resetText} onText={(t) => { setResetText(t); setResetError(""); }} />
-          {resetError ? <p className="bot-error" role="alert" data-testid="tt-reset-error">{resetError}</p> : null}
-          <div className="tt-entry">
-            <button type="button" className="tt-primary" disabled={Boolean(busy)} data-testid="tt-reset-go" onClick={doReset}>
-              {resetSize !== null && !sizeProblem(resetText) ? `Reset to ${money(resetSize)}` : "Reset"}
-            </button>
-            <button type="button" className="tt-ghost" data-testid="tt-reset-cancel"
-              onClick={() => { setResetText(null); setResetError(""); }}>Cancel</button>
-          </div>
-        </div>
-      ) : null}
+      {resetting ? <ResetPanel startSize={startSize} busy={busy} onClose={() => setResetting(false)}
+        onReset={async (size) => Boolean(await onAct("reset", { id: run.id, size }))} /> : null}
       <div className="tt-run-head">
         <div>
           <h3>{run.ticker}</h3>
@@ -385,10 +417,15 @@ function RunView({ run, busy, onBack, onAct, onJournal }) {
         <span className={"tt-pill" + (trade ? " is-live" : "")} data-testid="tt-status">{statusLabel(run)}</span>
       </div>
       <div className="tt-tiles">
-        <div className="tt-tile"><span>BALANCE</span><b data-testid="tt-balance">{money(run.balance)}</b><small className="tt-dim" data-testid="tt-from">from {money(startSize)}</small></div>
-        <div className="tt-tile"><span>NET</span><b className={tone(run.net)}>{signedMoney(run.net)}</b></div>
+        <div className="tt-tile"><span>CASH LEFT</span><b data-testid="tt-balance">{money(run.balance)}</b><small className="tt-dim" data-testid="tt-from">from {money(startSize)}</small></div>
+        <div className="tt-tile"><span>{run.ticker} NET</span><b className={tone(run.net)}>{signedMoney(run.net)}</b></div>
         <div className="tt-tile"><span>WINS</span><b>{winsLabel(run)}</b></div>
       </div>
+      {account ? (
+        <p className="tt-note" data-testid="tt-account-line">
+          Account now {account.value} ({account.net} {account.from}) · {account.inTrades} · shared by every ticker
+        </p>
+      ) : null}
       {run.note ? <p className="tt-note" role="status" data-testid="tt-note">{run.note}{run.noteAt ? ` · ${timeEt(run.noteAt)}` : ""}</p> : null}
       {trade ? (
         <div className="tt-card" data-testid="tt-open">
@@ -429,7 +466,7 @@ function RunView({ run, busy, onBack, onAct, onJournal }) {
           <div key={row.key} className={"tt-trade " + row.tone} data-testid="tt-trade">
             <div className="tt-card-head"><b>{row.title}</b><b className={row.tone}>{row.plText}</b></div>
             <span className="tt-why">{row.reason}</span>
-            <span className="tt-dim">{row.when} · balance after {row.balanceAfter}</span>
+            <span className="tt-dim">{row.when} · account after {row.balanceAfter}</span>
           </div>
         ))}
       </div>
@@ -447,7 +484,6 @@ export default function TickerTrader({ viewSwitch, onAllTrades, initialTicker = 
   const [busy, setBusy] = useState("");
   const [openId, setOpenId] = useState(null);
   const [journal, setJournal] = useState(null);         // null = not open; "all" or a run id
-  const [sizeText, setSizeText] = useState(() => String(savedSize(localStore())));
   const alive = useRef(true);
 
   const load = useCallback(async () => {
@@ -479,7 +515,7 @@ export default function TickerTrader({ viewSwitch, onAllTrades, initialTicker = 
       if (!alive.current) return null;
       if (!res.ok || !out?.ok) { setFormError(failureText(res.status, out)); return null; }
       await load();
-      return out.run;
+      return out.run || out;
     } catch {
       if (alive.current) setFormError(failureText(0, null));
       return null;
@@ -491,11 +527,9 @@ export default function TickerTrader({ viewSwitch, onAllTrades, initialTicker = 
   const trade = async (raw) => {
     const problem = tickerProblem(raw);
     if (problem) { setFormError(problem); return; }
-    const badSize = sizeProblem(sizeText);
-    if (badSize) { setFormError(badSize); return; }
-    const size = parseSize(sizeText);
-    const run = await act("start", { ticker: cleanTicker(raw), side, size });
-    if (run) { setTicker(""); setOpenId(run.id); saveSize(localStore(), size); }
+    // No size here: every ticker trades from the one account. Its size is set with Reset account.
+    const run = await act("start", { ticker: cleanTicker(raw), side });
+    if (run) { setTicker(""); setOpenId(run.id); }
   };
 
   const runs = doc?.runs || [];
@@ -523,15 +557,15 @@ export default function TickerTrader({ viewSwitch, onAllTrades, initialTicker = 
       {journal ? <Journal scope={journal} runs={runs} onScope={setJournal} onBack={() => setJournal(null)} />
         : shown ? <RunView run={shown} busy={busy} onBack={() => setOpenId(null)} onAct={act} onJournal={setJournal} /> : (
         <>
+          <AccountCard account={doc?.account} busy={busy} onAct={act} />
           <form className="tt-card" onSubmit={(e) => { e.preventDefault(); trade(ticker); }}>
-            <label htmlFor="tt-ticker" className="tt-dim">Type a ticker and pick Call or Put. The bot trades it from the chart in a fresh simulated account.</label>
+            <label htmlFor="tt-ticker" className="tt-dim">Type a ticker and pick Call or Put. The bot trades it from the chart, out of the one simulated account above.</label>
             <div className="tt-side" role="group" aria-label="Call or Put">
               {["CALL", "PUT"].map((s) => (
                 <button key={s} type="button" aria-pressed={side === s} className={(side === s ? "is-on " : "") + (s === "PUT" ? "is-put" : "is-call")}
                   onClick={() => setSide(s)}>{sideLabel(s)}</button>
               ))}
             </div>
-            <SizePicker text={sizeText} onText={(t) => { setSizeText(t); setFormError(""); }} />
             <div className="tt-entry">
               <input id="tt-ticker" type="text" inputMode="text" autoCapitalize="characters" autoCorrect="off" autoComplete="off" spellCheck="false"
                 maxLength={7} placeholder="NVDA" value={ticker} onChange={(e) => { setTicker(e.target.value.toUpperCase()); setFormError(""); }} />
@@ -548,7 +582,7 @@ export default function TickerTrader({ viewSwitch, onAllTrades, initialTicker = 
             {runs.map((run) => (
               <button key={run.id} type="button" className="tt-row" data-testid="tt-row" onClick={() => setOpenId(run.id)}>
                 <span className="tt-row-main"><b>{run.ticker} · {sideLabel(run.side)}</b><small>{runLine(run)}</small></span>
-                <span className={"tt-row-money " + tone(run.net)}>{money(run.balance)}</span>
+                <span className={"tt-row-money " + tone(run.net)}>{signedMoney(run.net)}</span>
               </button>
             ))}
             {runs.length ? (

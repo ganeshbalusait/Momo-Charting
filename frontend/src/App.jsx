@@ -34,6 +34,8 @@ import {
   Landmark,
   LayoutDashboard,
   LayoutGrid,
+  Layers,
+  Waves,
   LayoutPanelTop,
   Link2,
   LogOut,
@@ -72,6 +74,8 @@ import BotPanel, { openBotLink } from "./BotPanel.jsx";
 import MyTradingPanel from "./MyTradingPanel.jsx";
 import { OPEN_LINK_EVENT, cleanLink, linkAllowed } from "./appLinks.js";
 import SectorHeatmapPanel from "./SectorHeatmapPanel.jsx";
+import LeapOiScannerPanel from "./LeapOiScannerPanel.jsx";
+import AgxFlowPanel from "./AgxFlowPanel.jsx";
 import LongTermPanel, { openLongTermTicker } from "./LongTermPanel.jsx";
 import { CHART_LINK_CHANNEL, CHART_LINK_EVENT, TOS_LINK_GROUPS } from "./tosLinkGroups.js";
 import MomoAlertWatcher from "./MomoAlertWatcher.jsx";
@@ -1213,6 +1217,10 @@ const optionNavItems = [
   // style sector heatmap as its own page, so the phone reaches it from the
   // More sheet. It is also a panel in the option chain's + menu on desktop.
   { label: "Sectors", icon: LayoutGrid },
+  // LEAP OI Scanner + AGX Flow (2026-11-17, "Build all 3 now"): long-dated
+  // open interest across Mag7 + watchlist, and today's unusual option volume.
+  { label: "LEAP OI Scanner", icon: Layers },
+  { label: "AGX Flow", icon: Waves },
   { label: "News Feed", icon: Newspaper },
   { label: "Earnings Calendar", icon: CalendarDays },
   { label: "Mag7 Scanner", displayLabel: "Mag7 Watchlist", icon: Trophy },
@@ -1235,6 +1243,8 @@ function viewDescription(view) {
   if (view === "Paper Trading") return "Stock paper positions, automation, and risk controls";
   if (view === "Watchlist") return "Your saved tickers, shared by the scanners and the chart rails";
   if (view === "Sectors") return "Sector heatmap: each sector's top stocks, sized by market cap, colored by today's move";
+  if (view === "LEAP OI Scanner") return "Strikes 1 to 12 months out with the most open interest, with delta and the chain's ENTRY";
+  if (view === "AGX Flow") return "Today's unusual option volume from Schwab: volume above open interest, biggest premium first";
   if (view === "Long Term") return "Rule #1 / Buffett screen: ten years of filings, sticker price, safety price, BUY / WAIT / AVOID and a LEAPS flag for every ticker you follow";
   if (view === "News Feed") return "Headlines and catalysts across MAG7 and your watchlist";
   if (view === "Earnings Calendar") return "Upcoming earnings releases for your saved watchlist";
@@ -31645,6 +31655,28 @@ function TradingWorkspace({ authUser, onLogout }) {
                 // chart request without a timeframe or link colour is ignored.
                 setMobileChartSection("chart");
                 openChartSignalChart(symbol, "5m", "sectors");
+              }}
+            />
+          </section>
+        )}
+
+        {activeView === "LEAP OI Scanner" && (
+          <section className="leap-oi-page">
+            <LeapOiScannerPanel
+              onOpenChart={(symbol) => {
+                setMobileChartSection("chart");
+                openChartSignalChart(symbol, "5m", "leap-oi");
+              }}
+            />
+          </section>
+        )}
+
+        {activeView === "AGX Flow" && (
+          <section className="agx-flow-page">
+            <AgxFlowPanel
+              onOpenChart={(symbol) => {
+                setMobileChartSection("chart");
+                openChartSignalChart(symbol, "5m", "agx-flow");
               }}
             />
           </section>

@@ -205,6 +205,19 @@ export function journalUrl(scope) {
 
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 
+/** The one account every ticker spends from (2026-11-16): what it is worth now, the cash left, up or down.
+ * null = the server has not sent an account (an older server). */
+export function accountTiles(account) {
+  const a = account || {};
+  if (![a.startBalance, a.cash, a.value].every(isNum)) return null;
+  const open = Number(a.openTrades) || 0;
+  return {
+    value: money(a.value), from: `from ${money(a.startBalance)}`,
+    cash: money(a.cash), inTrades: open ? `${money(a.invested)} in ${open} open ${open === 1 ? "trade" : "trades"}` : "nothing in trades",
+    net: signedMoney(a.net), tone: tone(a.net), start: a.startBalance,
+  };
+}
+
 /** Average win, average loss, expectancy, best and worst trade: the small tiles under the five big ones. */
 export function journalStats(doc) {
   const s = doc?.stats || {};
