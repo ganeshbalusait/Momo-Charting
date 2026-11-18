@@ -19,9 +19,13 @@ import {
   formatVolOi,
   parseTickers,
   readingProgress,
+  readingText,
+  hasData,
+  updatedText,
   rowKey,
   splitPct,
 } from "./agxFlow";
+import { LeftOut } from "./LeapOiScannerPanel.jsx";
 
 // AGX Flow (2026-11-17): a free, Unusual-Whales-style options flow board from
 // Schwab's option chain. Facts only; nothing here places an order.
@@ -66,7 +70,7 @@ function TickerStrip({ tickers }) {
           <div key={t.ticker} className={`agx-flow-chip${t.error ? " is-error" : ""}`} title={t.error || `${t.ticker}: calls ${formatPremium(t.callPremium)} · puts ${formatPremium(t.putPremium)}`}>
             <div className="agx-flow-chip-head">
               <b>{t.ticker}</b>
-              <small>{t.pending ? "reading…" : t.error ? "no data" : `${t.unusualCount} unusual`}</small>
+              <small>{t.pending && !hasData(t) ? "reading…" : t.error && !hasData(t) ? "no data" : `${t.unusualCount} unusual`}</small>
             </div>
             <div className="agx-flow-split" aria-label={`${t.ticker} calls ${pct}% of premium`}>
               <span className="is-call" style={{ width: `${pct}%` }} />
@@ -162,7 +166,7 @@ export default function AgxFlowPanel({ onOpenChart }) {
     return next;
   });
 
-  // Watchlist board (2026-11-17, "what about other tickers from watchlist"): Mag7 + SPY/QQQ + the whole watchlist.
+  // Watchlist board (2026-11-17, "what about other tickers from watchlist"): Mag7 + the whole watchlist (stocks only).
   const [watchlist, setWatchlist] = useState(null);
   useEffect(() => {
     if (prefs.board !== "watchlist" || watchlist !== null) return undefined;
@@ -180,7 +184,9 @@ export default function AgxFlowPanel({ onOpenChart }) {
   }, [prefs.board, prefs.custom, watchlist]);
   const symbolKey = symbols.join(",");
   const progress = readingProgress(data?.tickers);
-  const reading = progress.pending > 0;
+  const reading = progress.pending > 0;                  // tickers with no numbers yet
+  const busy = reading || progress.updating > 0;         // look again sooner while anything is being read
+  const updated = updatedText(data?.tickers);
 
   useEffect(() => {
     let cancelled = false;
@@ -219,7 +225,7 @@ export default function AgxFlowPanel({ onOpenChart }) {
 
   // While Schwab is still being read, look again sooner than the minute poll.
   useEffect(() => {
-    if (!reading) return undefined;
+    if (!busy) return undefined;
     const quick = setTimeout(async () => {
       try {
         if (!symbolKey) return;
@@ -228,7 +234,7 @@ export default function AgxFlowPanel({ onOpenChart }) {
       } catch { /* the minute poll will try again */ }
     }, 5000);
     return () => clearTimeout(quick);
-  }, [reading, data, symbolKey]);
+  }, [busy, data, symbolKey]);
 
   const rows = filterRows(data?.rows, { side: prefs.side, minPremium: prefs.minPremium });
   const tickers = Array.isArray(data?.tickers) ? data.tickers : [];
@@ -242,7 +248,7 @@ export default function AgxFlowPanel({ onOpenChart }) {
         </div>
         <div className="agx-flow-controls">
           <span className="agx-flow-switch" role="group" aria-label="Board">
-            <button type="button" aria-pressed={prefs.board === "mag7"} onClick={() => updatePrefs({ board: "mag7" })}>Mag7 + SPY/QQQ</button>
+            <button type="button" aria-pressed={prefs.board === "mag7"} onClick={() => updatePrefs({ board: "mag7" })}>Mag7</button>
             <button type="button" aria-pressed={prefs.board === "watchlist"} onClick={() => updatePrefs({ board: "watchlist" })}>Watchlist</button>
             <button type="button" aria-pressed={prefs.board === "custom"} onClick={() => updatePrefs({ board: "custom" })}>My tickers</button>
           </span>
@@ -276,7 +282,8 @@ export default function AgxFlowPanel({ onOpenChart }) {
         ) : null}
       </header>
 
-      {reading ? <p className="agx-flow-status">Reading Schwab… ({progress.done} of {progress.total})</p> : null}
+      {reading ? <p className="agx-flow-status">{readingText(progress)}</p> : null}
+      {!reading && updated ? <p className="agx-flow-updated">{updated}{progress.updating ? " · refreshing" : ""}</p> : null}
       {!data && loading ? <p className="agx-flow-status">Loading…</p> : null}
       {error ? <p className="agx-flow-status is-error">{error}</p> : null}
 
@@ -289,6 +296,7 @@ export default function AgxFlowPanel({ onOpenChart }) {
       ) : null}
       {rows.length ? (phone ? <FlowCards rows={rows} onOpenChart={onOpenChart} /> : <FlowTable rows={rows} onOpenChart={onOpenChart} />) : null}
 
+      <LeftOut excluded={data?.excluded} minPrice={data?.minPrice} className="agx-flow-updated" />
       <p className="agx-flow-note">{data?.note || "Facts only, not a direction signal."} Unusual = volume of at least 500 and above open interest. Paper only; nothing here places an order.</p>
     </section>
   );

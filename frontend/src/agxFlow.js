@@ -1,7 +1,9 @@
 // AGX Flow page logic (2026-11-17): formatting and filtering for the options
 // flow board read from GET /api/agx-flow. Pure functions, tested with node --test.
 
-export const MAG7_BOARD = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "SPY", "QQQ"];
+// Stocks only (2026-11-17 "No need spy, qqq and small stocks and etf"): no SPY/QQQ; the server also drops ETFs and
+// stocks under $10 from every board.
+export const MAG7_BOARD = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"];
 export const SIDE_FILTERS = ["both", "calls", "puts"];
 export const MIN_PREMIUMS = [100_000, 500_000, 1_000_000];
 export const POLL_MS = 60_000;
@@ -95,11 +97,35 @@ export function parseTickers(text) {
   return out;
 }
 
-// { pending, total } for the "Reading Schwab… (n of m)" line.
+// A ticker being re-read that already has numbers is "updating", not "waiting" (2026-11-17 "Not loading properly":
+// every 5 minutes each card flipped to "reading…" while still showing its numbers).
+export function hasData(t) {
+  return Boolean(t?.fetchedAt);
+}
+
+// pending = tickers with no numbers yet (the "Reading Schwab… (n of m)" line); updating = being re-read, numbers shown.
 export function readingProgress(tickers) {
   const list = Array.isArray(tickers) ? tickers : [];
-  const pending = list.filter((t) => t?.pending).length;
-  return { pending, done: list.length - pending, total: list.length };
+  const pending = list.filter((t) => t?.pending && !hasData(t)).length;
+  const updating = list.filter((t) => t?.pending && hasData(t)).length;
+  return { pending, updating, done: list.length - pending, total: list.length };
+}
+
+// "Reading Schwab… (n of m)", plus roughly how long is left when many tickers wait (two readers, ~2 s a ticker).
+export function readingText(progress) {
+  if (!progress?.pending) return "";
+  const base = `Reading Schwab… (${progress.done} of ${progress.total})`;
+  return progress.pending > 15 ? `${base} · about ${Math.max(1, Math.round((progress.pending * 2) / 60))} min left` : base;
+}
+
+// "Updated 1:25 PM ET" from the oldest read on the board.
+export function updatedText(tickers) {
+  const times = (Array.isArray(tickers) ? tickers : [])
+    .map((t) => new Date(t?.fetchedAt || ""))
+    .filter((d) => !Number.isNaN(d.getTime()));
+  if (!times.length) return "";
+  const oldest = new Date(Math.min(...times.map((d) => d.getTime())));
+  return `Updated ${oldest.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} ET`;
 }
 
 export function flowQuery(symbols) {
@@ -111,7 +137,7 @@ export function rowKey(row) {
   return `${row?.ticker}|${row?.side}|${row?.expiry}|${row?.strike}`;
 }
 
-// Watchlist board (2026-11-17, "what about other tickers from watchlist"): Mag7 + SPY/QQQ first (read first), then
+// Watchlist board (2026-11-17, "what about other tickers from watchlist"): Mag7 first (read first), then
 // the whole watchlist, no repeats, at most WATCHLIST_MAX.
 export const WATCHLIST_MAX = 400;
 

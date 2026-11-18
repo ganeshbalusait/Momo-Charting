@@ -69,13 +69,21 @@ test("by-ticker search: starts-with match, preview of 40 unless show all", async
   const { filterByTicker } = await import("./leapOi.js");
   const list = Array.from({ length: 100 }, (_, i) => ({ ticker: `T${String(i).padStart(3, "0")}` })).concat([{ ticker: "PLTR" }, { ticker: "PL" }]);
   assert.deepEqual(filterByTicker(list, "pl").shown.map((l) => l.ticker), ["PLTR", "PL"]);
-  assert.equal(filterByTicker(list, "").shown.length, 40);
+  assert.equal(filterByTicker(list, "").shown.length, 102);                    // every ticker, no 40-ticker preview
   assert.equal(filterByTicker(list, "").total, 102);
-  assert.equal(filterByTicker(list, "", true).shown.length, 102);
   assert.deepEqual(filterByTicker(null, "x"), { shown: [], total: 0 });
 });
 
 test("progress on a whole-watchlist read says roughly how long is left", () => {
   const tickers = [...Array(20).fill({ state: "ready" }), ...Array(340).fill({ state: "pending" })];
   assert.equal(progressText({ tickers }), "Reading Schwab… 20 of 360 tickers ready · about 20 min left, once a day");
+});
+
+test("left-out line counts ETFs and stocks under $10 (2026-11-17 'No need spy, qqq and small stocks and etf')", async () => {
+  const { leftOutText } = await import("./leapOi.js");
+  assert.equal(leftOutText([{ ticker: "SPY", reason: "ETF" }, { ticker: "QQQ", reason: "ETF" }, { ticker: "NIO", reason: "under $10" }], 10),
+    "Left out: 2 ETFs · 1 stock under $10");
+  assert.equal(leftOutText([{ ticker: "SPY", reason: "ETF" }]), "Left out: 1 ETF");
+  assert.equal(leftOutText([]), "");
+  assert.equal(leftOutText(undefined), "");
 });

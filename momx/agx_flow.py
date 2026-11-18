@@ -30,6 +30,8 @@ from collections import deque
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
+
+from momx import board_filter
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
@@ -37,8 +39,11 @@ FETCH_MAX_DAYS = 45
 STRIKE_COUNT = 40
 CACHE_SECONDS = 5 * 60
 FAIL_SECONDS = 5 * 60
-FETCHES_PER_HOUR = 1000       # whole watchlist (~360) about every 20 min, paced below; Schwab allows 120 a MINUTE
-PACE_SECONDS = 3.5            # the background reader waits this long after each Schwab request
+FETCHES_PER_HOUR = 1500       # whole watchlist (~370) about every 12 min in market hours; Schwab allows 120 a MINUTE
+PACE_SECONDS = 1.5            # each background reader waits this long after each Schwab request
+READERS = 2                   # 2026-11-17 "Still I don't see full loading": one reader took ~36 min for the watchlist;
+                              # two readers 1.5 s apart read it in ~12 min at ~30 requests a minute (a quarter of Schwab's)
+WARM_EVERY_SECONDS = 60       # the warm-up looks for stale watchlist tickers this often
 LOCK_WAIT_SECONDS = 30.0
 MAX_SYMBOLS = 400             # Mag7 + SPY/QQQ + his whole watchlist (2026-11-17: "what about other tickers")
 MIN_VOLUME = 500
@@ -50,14 +55,16 @@ NOTE = ("Volume and prices from Schwab's option chain. 'Bought/Sold' is a guess 
 
 _SYMBOL = re.compile(r"^[A-Z][A-Z.\-]{0,5}$")
 
-_LOCK = threading.Lock()                                   # one Schwab request at a time
+_LOCK = threading.BoundedSemaphore(READERS)               # at most READERS Schwab requests at a time
 _STATE = threading.Lock()                                  # guards the small dicts below
 _MEMORY: dict[str, dict] = {}
 _FAILED: dict[str, tuple[float, str]] = {}
 _RECENT: deque = deque()
 _PENDING: dict[str, Path] = {}                             # ticker -> root, waiting for the background thread
 _SKIPPED: dict[str, str] = {}                              # ticker -> why the last refresh did not ask (hourly cap, busy)
-_WORKER: threading.Thread | None = None
+_WORKERS: list[threading.Thread] = []
+_TAKEN: set[str] = set()                                   # tickers a reader is reading right now
+_WARMER: dict[str, Any] = {"thread": None}
 
 
 class Unavailable(Exception):
@@ -227,10 +234,32 @@ def _write_disk(root: Path, ticker: str, doc: dict) -> None:
         pass                                               # the memory copy still answers
 
 
+def market_open(now: datetime) -> bool:
+    """Regular session, 9:30-16:00 ET on a weekday (holidays count as open; that only costs one extra read)."""
+    et = now.astimezone(ET)
+    return et.weekday() < 5 and (9, 30) <= (et.hour, et.minute) < (16, 0)
+
+
+def last_close(now: datetime) -> datetime:
+    """The most recent 16:00 ET close at or before now, on a weekday."""
+    et = now.astimezone(ET)
+    day = et.date() if (et.hour, et.minute) >= (16, 0) else et.date() - timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return datetime(day.year, day.month, day.day, 16, 0, tzinfo=ET)
+
+
 def _fresh(doc: dict | None, now: datetime) -> bool:
+    """Younger than CACHE_SECONDS in market hours. Outside them, a read taken after the last close is fresh until the
+    next open: option volume does not move then, so the whole watchlist is not read again all night."""
     try:
         saved = datetime.fromisoformat(str((doc or {}).get("fetchedAt")))
-        return 0 <= (now - saved).total_seconds() < CACHE_SECONDS
+        age = (now - saved).total_seconds()
+        if age < 0:
+            return False
+        if not market_open(now):
+            return saved >= last_close(now)                # one read after the close gets the day's final volume
+        return age < CACHE_SECONDS
     except (ValueError, TypeError):
         return False
 
@@ -267,6 +296,7 @@ def reset() -> None:
         _RECENT.clear()
         _PENDING.clear()
         _SKIPPED.clear()
+        _TAKEN.clear()
 
 
 def refresh(ticker: str, root: Path, now: datetime) -> dict:
@@ -285,7 +315,7 @@ def refresh(ticker: str, root: Path, now: datetime) -> dict:
         if len(_RECENT) >= FETCHES_PER_HOUR:
             _SKIPPED[ticker] = "AGX Flow has asked Schwab for many chains this hour. It will read again later."
             raise Unavailable(_SKIPPED[ticker])
-    if not _LOCK.acquire(timeout=LOCK_WAIT_SECONDS):
+    if not _LOCK.acquire(timeout=LOCK_WAIT_SECONDS):       # noqa: SIM115 - released in finally
         with _STATE:
             _SKIPPED[ticker] = "Another chain is loading. Trying again in a minute."
         raise Unavailable(_SKIPPED[ticker])
@@ -323,14 +353,16 @@ def refresh(ticker: str, root: Path, now: datetime) -> dict:
 
 
 def _work() -> None:
-    """The one background thread: refresh queued tickers in turn until none are left."""
-    global _WORKER
+    """One of READERS background threads: take the next queued ticker nobody else is reading, until none are left."""
+    me = threading.current_thread()
     while True:
         with _STATE:
-            if not _PENDING:
-                _WORKER = None
+            ticker = next((t for t in _PENDING if t not in _TAKEN), None)
+            if ticker is None:
+                if me in _WORKERS:
+                    _WORKERS.remove(me)
                 return
-            ticker = next(iter(_PENDING))
+            _TAKEN.add(ticker)
             root = _PENDING[ticker]
         asked = False
         try:
@@ -344,34 +376,79 @@ def _work() -> None:
         finally:
             with _STATE:
                 _PENDING.pop(ticker, None)
+                _TAKEN.discard(ticker)
         if asked and PACE_SECONDS > 0:
             time.sleep(PACE_SECONDS)                       # gentle on Schwab: charts and chains share its limit
 
 
 def _queue(tickers: list[str], root: Path) -> None:
-    global _WORKER
     with _STATE:
         for ticker in tickers:
             _PENDING.setdefault(ticker, Path(root))
-        if _WORKER is None or not _WORKER.is_alive():
-            _WORKER = threading.Thread(target=_work, name="agx-flow-refresh", daemon=True)
-            _WORKER.start()
+        _WORKERS[:] = [w for w in _WORKERS if w.is_alive()]
+        want = min(READERS, len(_PENDING) - len(_TAKEN))
+        while len(_WORKERS) < want:
+            worker = threading.Thread(target=_work, name=f"agx-flow-reader-{len(_WORKERS) + 1}", daemon=True)
+            _WORKERS.append(worker)
+            worker.start()
+
+
+def warm(symbols: Any, root: Path, now: datetime | None = None) -> int:
+    """Queue every stale ticker for the background readers without building a board. Returns how many were queued."""
+    tickers, _ = board_filter.drop_etfs(parse_symbols(symbols))
+    now = now or datetime.now(ET)
+    stale = [t for t in tickers if _wanted(t, root, now)]
+    if stale:
+        _queue(stale, Path(root))
+    return len(stale)
+
+
+def start_warmer(get_symbols: Callable[[], list[str]], root: Path) -> None:
+    """Keep the whole watchlist read in the background, so AGX Flow's Watchlist board is full when it opens (2026-11-17
+    "Still I don't see full loading"). In market hours every ticker is re-read about every 12 minutes; after the close
+    each is read once and then left alone until the next open (see _fresh)."""
+    def loop() -> None:
+        while True:
+            try:
+                warm(get_symbols(), root)
+            except Exception:  # noqa: BLE001 - the warm-up never stops; the page still reads on demand
+                pass
+            time.sleep(WARM_EVERY_SECONDS)
+    with _STATE:
+        if _WARMER["thread"] is not None:
+            return
+        _WARMER["thread"] = threading.Thread(target=loop, name="agx-flow-warmer", daemon=True)
+        _WARMER["thread"].start()
 
 
 def wait_idle(timeout: float = 10.0) -> bool:
-    """Wait for the background thread to finish its queue (tests). True when idle."""
+    """Wait for the background readers to finish their queue (tests). True when idle."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         with _STATE:
-            worker = _WORKER
+            workers = [w for w in _WORKERS if w.is_alive()]
             busy = bool(_PENDING)
-        if worker is None and not busy:
+        if not workers and not busy:
             return True
-        if worker is not None:
-            worker.join(timeout=0.05)
+        if workers:
+            workers[0].join(timeout=0.05)
         else:
             time.sleep(0.02)
     return False
+
+
+def _wanted(ticker: str, root: Path, now: datetime) -> bool:
+    """Should the background readers read this ticker now? Not when fresh, failed recently, or read TODAY and found
+    under $10 (it is left off the board; a new day checks the price again)."""
+    doc = _held(ticker, root)
+    if _fresh(doc, now) or _failure(ticker):
+        return False
+    if doc and board_filter.too_small(doc.get("spot")):
+        try:
+            return datetime.fromisoformat(str(doc.get("fetchedAt"))).astimezone(ET).date() != now.astimezone(ET).date()
+        except (ValueError, TypeError):
+            return True
+    return True
 
 
 def _flow_row(ticker: str, spot: float | None, row: dict) -> dict:
@@ -396,6 +473,9 @@ def board(symbols: Any, root: Path, now: datetime | None = None, wait: bool = Fa
     tickers = parse_symbols(symbols)
     if not tickers:
         raise ValueError("Give at least one ticker, e.g. symbols=AAPL,NVDA.")
+    tickers, excluded = board_filter.drop_etfs(tickers)    # "No need spy, qqq ... and etf" (2026-11-17)
+    if not tickers:
+        raise ValueError("AGX Flow shows stocks only, and every ticker given is an ETF.")
     now = now or datetime.now(ET)
     root = Path(root)
     if wait:
@@ -405,7 +485,7 @@ def board(symbols: Any, root: Path, now: datetime | None = None, wait: bool = Fa
             except Unavailable:
                 pass
     else:
-        stale = [t for t in tickers if not _fresh(_held(t, root), now) and not _failure(t)]
+        stale = [t for t in tickers if _wanted(t, root, now)]
         if stale:
             _queue(stale, root)
     with _STATE:
@@ -414,6 +494,9 @@ def board(symbols: Any, root: Path, now: datetime | None = None, wait: bool = Fa
     rows: list[dict] = []
     for ticker in tickers:
         doc = _held(ticker, root)
+        if doc and board_filter.too_small(doc.get("spot")):  # "... and small stocks": under $10 left off the board
+            excluded.append(board_filter.small(ticker))
+            continue
         fresh = _fresh(doc, now)
         with _STATE:
             skipped = None if fresh else _SKIPPED.get(ticker)
@@ -434,4 +517,5 @@ def board(symbols: Any, root: Path, now: datetime | None = None, wait: bool = Fa
                     rows.append(flow)
         summary.append(entry)
     rows.sort(key=lambda r: (-r["premium"], -r["volume"], r["ticker"], r["days"], r["strike"]))
-    return {"asOf": now.isoformat(), "tickers": summary, "rows": rows[:TOP_ROWS], "note": NOTE}
+    return {"asOf": now.isoformat(), "tickers": summary, "rows": rows[:TOP_ROWS], "note": NOTE,
+            "excluded": excluded, "minPrice": board_filter.MIN_PRICE}

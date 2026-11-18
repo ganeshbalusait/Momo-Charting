@@ -80,13 +80,13 @@ test("ticker box cleans what the trader types", () => {
 });
 
 test("reading progress and query", () => {
-  assert.deepEqual(readingProgress([{ pending: true }, { pending: false }, {}]), { pending: 1, done: 2, total: 3 });
-  assert.deepEqual(readingProgress(undefined), { pending: 0, done: 0, total: 0 });
+  assert.deepEqual(readingProgress([{ pending: true }, { pending: false }, {}]), { pending: 1, updating: 0, done: 2, total: 3 });
+  assert.deepEqual(readingProgress(undefined), { pending: 0, updating: 0, done: 0, total: 0 });
   assert.equal(flowQuery(["AAPL", "BRK.B"]), "/api/agx-flow?symbols=AAPL%2CBRK.B");
-  assert.equal(MAG7_BOARD.length, 9);
+  assert.deepEqual(MAG7_BOARD, ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]);   // no SPY/QQQ (2026-11-17)
 });
 
-test("watchlist board: Mag7 + SPY/QQQ first, then the watchlist, no repeats, at most 400", async () => {
+test("watchlist board: Mag7 first, then the watchlist, no repeats, at most 400", async () => {
   const { watchlistBoard, MAG7_BOARD: board } = await import("./agxFlow.js");
   assert.deepEqual(watchlistBoard(["pltr", "NVDA", "bad ticker", "SOFI"]), [...board, "PLTR", "SOFI"]);
   const lots = Array.from({ length: 500 }, (_, i) => `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26) % 26)}${String.fromCharCode(65 + Math.floor(i / 676))}`);
@@ -102,4 +102,26 @@ test("strip keeps the 12 tickers with the most option dollars when the board is 
   const shown = stripTickers(many);
   assert.equal(shown.length, 12);
   assert.equal(shown[0].ticker, "T29");
+});
+
+test("a ticker being re-read keeps its numbers: updating, not waiting (2026-11-17 'Not loading properly')", async () => {
+  const { readingProgress: progress, hasData, updatedText } = await import("./agxFlow.js");
+  const board = [
+    { ticker: "AAPL", pending: false, fetchedAt: "2026-11-17T13:25:43-05:00" },
+    { ticker: "AMZN", pending: true, fetchedAt: "2026-11-17T13:20:02-05:00" },  // refresh queued, old numbers shown
+    { ticker: "NEW", pending: true, fetchedAt: null },                        // never read yet
+  ];
+  assert.deepEqual(progress(board), { pending: 1, updating: 1, done: 2, total: 3 });
+  assert.equal(hasData(board[1]), true);
+  assert.equal(hasData(board[2]), false);
+  assert.equal(updatedText(board), "Updated 1:20 PM ET");
+  assert.equal(updatedText([{ fetchedAt: null }]), "");
+  assert.deepEqual(progress(board.slice(0, 2)), { pending: 0, updating: 1, done: 2, total: 2 });
+});
+
+test("whole-watchlist first read says roughly how long is left", async () => {
+  const { readingText } = await import("./agxFlow.js");
+  assert.equal(readingText({ pending: 3, done: 6, total: 9 }), "Reading Schwab… (6 of 9)");
+  assert.equal(readingText({ pending: 360, done: 9, total: 369 }), "Reading Schwab… (9 of 369) · about 12 min left");
+  assert.equal(readingText({ pending: 0, done: 9, total: 9 }), "");
 });

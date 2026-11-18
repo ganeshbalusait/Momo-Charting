@@ -767,6 +767,8 @@ export const LEARN_GLOSSARY = Object.freeze([
 export const LEARN_ELSEWHERE = Object.freeze([
   { goTo: "Watchlist", goToLabel: "Watchlist", oneLiner: "Your saved tickers, shared by the scanners and the chart." },
   { goTo: "Sectors", goToLabel: "Sectors", oneLiner: "A heatmap of every sector's top stocks: bigger company, bigger tile; green up, orange down; tap a tile to chart it." },
+  { goTo: "LEAP OI Scanner", goToLabel: "LEAP OI Scanner", oneLiner: "The strikes with the most open interest 1 to 12 months out across Mag7 and your watchlist, stocks only, delta 0.10 and up, with each expiry's ENTRY contract marked." },
+  { goTo: "AGX Flow", goToLabel: "AGX Flow", oneLiner: "Today's unusual option volume (volume above open interest) for Mag7 and your watchlist, stocks only, biggest dollar trades first." },
   { goTo: "Long Term", goToLabel: "Long Term", oneLiner: "The Buffett / Rule #1 screen: ten years of filings per ticker, a sticker price, a safety price, and BUY / WAIT / AVOID with a LEAPS flag." },
   { goTo: "News Feed", goToLabel: "News Feed", oneLiner: "Headlines and catalysts for the big names and your watchlist." },
   { goTo: "Earnings Calendar", goToLabel: "Earnings Calendar", oneLiner: "Which of your saved tickers report, and when." },

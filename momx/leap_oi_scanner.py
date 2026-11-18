@@ -25,12 +25,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from momx import long_oi
+from momx import board_filter, long_oi
 
 BOARD_MAX_AGE = 12 * 3600          # open interest is once a day; bid/ask in the copy are "as of" its read time
 MAX_SYMBOLS = 400                  # Mag7 + his whole watchlist (about 360 on 2026-11-17)
 PACE_SECONDS = 3.0                 # the background reader waits this long after each Schwab request
 BOARD_FETCHES_PER_HOUR = 400       # its own allowance, separate from the chat's
+BOARD_FAIL_SECONDS = 3600          # a ticker Schwab has no chain for (KITT, LIDR, PALU on 2026-11-17) is asked again
+                                   # after an hour, not every 5 minutes (that kept "Reading Schwab… 366 of 369" up)
 ROWS_PER_SIDE = 10                 # per ticker, before the board-wide ranking
 KEEP_PER_EXPIRY = 10               # per side and expiry, for each delta floor the page offers (0.10 and 0.20)
 BOARD_ROWS = 60
@@ -48,6 +50,7 @@ _QUEUE: list[str] = []
 _WORKER: dict[str, Any] = {"thread": None}
 _COMPACT: dict[str, dict] = {}     # ticker -> compact copy (only the rows the page can show)
 _FETCHED: deque = deque()          # monotonic times of this page's own Schwab requests
+_GAVE_UP: dict[str, tuple[float, str]] = {}   # ticker -> (monotonic time, Schwab's reason) for BOARD_FAIL_SECONDS
 
 
 def clean_symbols(raw: Any) -> list[str]:
@@ -187,10 +190,10 @@ def _refresh_loop(root: Path) -> None:
                 asked = True
                 doc = long_oi.chain_for(ticker, root, now, count=False, keep=False)
                 _save_compact(root, ticker, compact(doc))
-        except long_oi.Unavailable:
-            pass                                           # remembered by long_oi; the board shows the reason
-        except Exception:  # noqa: BLE001 - one bad ticker never stops the rest
-            pass
+        except long_oi.Unavailable as exc:
+            _give_up(ticker, str(exc))                     # the board shows the reason and stops asking for an hour
+        except Exception as exc:  # noqa: BLE001 - one bad ticker never stops the rest
+            _give_up(ticker, f"Schwab did not answer for {ticker} ({type(exc).__name__}).")
         if asked and PACE_SECONDS > 0:
             time.sleep(PACE_SECONDS)                       # gentle on Schwab: charts and chains share its limit
 
@@ -206,6 +209,54 @@ def _schedule(tickers: list[str], root: Path) -> None:
             thread.start()
 
 
+def _give_up(ticker: str, reason: str) -> None:
+    with _REFRESH:
+        _GAVE_UP[ticker] = (time.monotonic(), reason)
+
+
+def _given_up(ticker: str) -> str | None:
+    with _REFRESH:
+        held = _GAVE_UP.get(ticker)
+        if held and time.monotonic() - held[0] < BOARD_FAIL_SECONDS:
+            return held[1]
+        _GAVE_UP.pop(ticker, None)
+        return None
+
+
+WARM_EVERY_SECONDS = 5 * 60
+_WARMER: dict[str, Any] = {"thread": None}
+
+
+def warm(symbols: Any, root: Path, now: datetime | None = None) -> int:
+    """Queue every ticker with no copy younger than BOARD_MAX_AGE (and no failure in the last hour) for the background
+    reader, without building a board. Returns how many were queued."""
+    now = now or datetime.now().astimezone()
+    stocks, _ = board_filter.drop_etfs(clean_symbols(symbols))
+    missing = [t for t in stocks
+               if held(t, root, now) is None and _given_up(t) is None and not long_oi.failed_recently(t)]
+    if missing:
+        _schedule(missing, root)
+    return len(missing)
+
+
+def start_warmer(get_symbols: Any, root: Path) -> None:
+    """Keep Mag7 + the whole watchlist read in the background (2026-11-17 "Still I don't see full loading"), so the page
+    is full when it opens instead of reading for ~20 minutes then. Open interest is once a day, so each ticker is read
+    about once every 12 hours."""
+    def loop() -> None:
+        while True:
+            try:
+                warm(get_symbols(), root)
+            except Exception:  # noqa: BLE001 - the warm-up never stops; the page still reads on demand
+                pass
+            time.sleep(WARM_EVERY_SECONDS)
+    with _REFRESH:
+        if _WARMER["thread"] is not None:
+            return
+        _WARMER["thread"] = threading.Thread(target=loop, name="leap-oi-warmer", daemon=True)
+        _WARMER["thread"].start()
+
+
 def pending() -> list[str]:
     with _REFRESH:
         return list(_QUEUE)
@@ -216,6 +267,7 @@ def reset() -> None:
         _QUEUE.clear()
         _COMPACT.clear()
         _FETCHED.clear()
+        _GAVE_UP.clear()
 
 
 def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from: int = 3, months_to: int = 12,
@@ -223,7 +275,7 @@ def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from:
     """The page's whole answer. Reads saved copies only; tickers without one are queued for the background reader
     (or read right here with wait=True, for tests)."""
     now = now or datetime.now().astimezone()
-    tickers = clean_symbols(symbols)
+    tickers, excluded = board_filter.drop_etfs(clean_symbols(symbols))   # "No need spy, qqq ... and etf" (2026-11-17)
     side = side if side in {"both", "calls", "puts"} else "both"
     min_delta = max(long_oi.MIN_DELTA, min(0.9, float(min_delta)))
     min_days, max_days = day_range(months_from, months_to)
@@ -240,12 +292,18 @@ def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from:
                 _save_compact(root, ticker, doc)
             except long_oi.Unavailable as exc:
                 error = str(exc)
+                _give_up(ticker, error)
         if doc is None:
+            if error is None:
+                error = _given_up(ticker)
             if error is None and long_oi.failed_recently(ticker):
                 error = f"Schwab did not answer for {ticker} a few minutes ago."
             if error is None:
                 missing.append(ticker)
             status.append({"ticker": ticker, "state": "error" if error else "pending", "error": error})
+            continue
+        if board_filter.too_small(doc.get("spot")):        # "... and small stocks": under $10 left off the board
+            excluded.append(board_filter.small(ticker))
             continue
         found = ticker_rows(doc, min_days=min_days, max_days=max_days, side=side, min_delta=min_delta, entry_only=entry_only)
         rows.extend(found)
@@ -266,5 +324,6 @@ def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from:
         "tickers": status, "pending": [s["ticker"] for s in status if s["state"] == "pending"],
         "biggestCall": calls[0] if calls else None, "biggestPut": puts[0] if puts else None,
         "entries": entries, "rows": rows[:BOARD_ROWS], "byTicker": sorted(by_ticker, key=lambda t: t["ticker"]),
+        "excluded": excluded, "minPrice": board_filter.MIN_PRICE,
         "note": NOTE,
     }

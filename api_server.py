@@ -25678,6 +25678,16 @@ def main() -> None:
         STATE.start_watchlist_chart_warmer()
     except Exception:
         pass
+    # LEAP OI Scanner + AGX Flow (2026-11-17 "Still I don't see full loading"): read Mag7 + the whole watchlist in
+    # the background, paced, so both pages are full when they open instead of reading while the trader waits.
+    try:
+        from momx import agx_flow, chat_market, leap_oi_scanner
+        _flow_root = chat_market._root({})
+        _mag7 = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]
+        leap_oi_scanner.start_warmer(lambda: _mag7 + list(settings.scanner.default_universe or []), _flow_root)
+        agx_flow.start_warmer(lambda: _mag7 + list(settings.scanner.default_universe or []), _flow_root)
+    except Exception:
+        pass
     # Daily 08:45 ET health checklist + one phone push with the verdict.
     # Started here, not at import, so only the serving process schedules
     # healing actions (see _start_preflight_scheduler).

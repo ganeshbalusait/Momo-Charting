@@ -176,8 +176,8 @@ def test_top_sixty_sorted_by_premium(schwab, tmp_path):
     def big():
         strikes = {f"{100 + i}.0": [_contract(100 + i, 1000 + i, 1, mark=1.0)] for i in range(80)}
         return {"underlyingPrice": 150, "callExpDateMap": {_key(5): strikes}, "putExpDateMap": {}}
-    replies["SPY"] = big
-    rows = agx_flow.board(["SPY"], tmp_path, NOW, wait=True)["rows"]
+    replies["AMD"] = big
+    rows = agx_flow.board(["AMD"], tmp_path, NOW, wait=True)["rows"]
     assert len(rows) == 60 and rows[0]["strike"] == 179.0
     assert [r["premium"] for r in rows] == sorted((r["premium"] for r in rows), reverse=True)
 
@@ -188,16 +188,95 @@ def test_whole_watchlist_is_read_in_the_background_paced_and_untraded_contracts_
     asked, replies = schwab
     naps: list = []
     monkeypatch.setattr(agx_flow, "PACE_SECONDS", 3.5)
-    monkeypatch.setattr(agx_flow.time, "sleep", lambda seconds: naps.append(seconds))
+    import threading
+    import time as _time
+    real_sleep = _time.sleep
+    # time.sleep is the whole program's: count only the readers' own pauses, let every other thread sleep as usual.
+    monkeypatch.setattr(agx_flow.time, "sleep", lambda seconds: naps.append(seconds)
+                        if threading.current_thread().name.startswith("agx-flow-reader") else real_sleep(seconds))
     quiet = chain()
     quiet["callExpDateMap"][_key(3)]["190.0"][0]["totalVolume"] = 0
     replies["SOFI"] = quiet
     tickers = ["NVDA", "PLTR", "SOFI"]
     agx_flow.board(tickers, tmp_path)
     assert agx_flow.wait_idle(5)
-    assert asked == tickers and naps == [3.5, 3.5, 3.5]
+    assert sorted(asked) == sorted(tickers) and naps == [3.5, 3.5, 3.5]   # two readers: order may interleave
     doc = agx_flow._held("SOFI", tmp_path)
     assert doc["contracts"] and all(row["volume"] > 0 for row in doc["contracts"])
     assert not any(row["strike"] == 190 for row in doc["contracts"])
     out = agx_flow.board(tickers, tmp_path)
     assert {t["ticker"] for t in out["tickers"]} == set(tickers) and all(t["cached"] for t in out["tickers"])
+
+
+def test_two_readers_read_at_the_same_time_and_never_the_same_ticker(schwab, tmp_path):
+    """2026-11-17 "Still I don't see full loading": one reader took ~36 minutes for the watchlist. Two readers work at
+    once (never more than READERS Schwab requests in flight) and no ticker is read twice."""
+    import threading
+    import time as _time
+    asked, replies = schwab
+    inside = {"now": 0, "most": 0}
+    guard = threading.Lock()
+
+    def slow():
+        with guard:
+            inside["now"] += 1
+            inside["most"] = max(inside["most"], inside["now"])
+        _time.sleep(0.05)
+        with guard:
+            inside["now"] -= 1
+        return chain()
+    tickers = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+    for t in tickers:
+        replies[t] = slow
+    agx_flow.board(tickers, tmp_path)
+    assert agx_flow.wait_idle(5)
+    assert sorted(asked) == tickers                                # each once
+    assert inside["most"] == agx_flow.READERS == 2
+
+
+def test_after_the_close_a_read_stays_fresh_until_the_next_open(schwab, tmp_path):
+    """Option volume does not move after 16:00 ET, so the whole watchlist is read once after the close and then left
+    alone overnight and over the weekend; at 9:30 it is read again."""
+    asked, _ = schwab
+    friday_close = datetime(2026, 11, 20, 16, 5, tzinfo=ET)       # Friday
+    agx_flow.board(["NVDA"], tmp_path, friday_close, wait=True)
+    for later in (datetime(2026, 11, 20, 23, 0, tzinfo=ET), datetime(2026, 11, 22, 12, 0, tzinfo=ET),
+                  datetime(2026, 11, 23, 9, 29, tzinfo=ET)):
+        agx_flow.board(["NVDA"], tmp_path, later, wait=True)
+    assert asked == ["NVDA"]
+    agx_flow.board(["NVDA"], tmp_path, datetime(2026, 11, 23, 9, 31, tzinfo=ET), wait=True)
+    assert asked == ["NVDA", "NVDA"]                               # Monday's open reads again
+    # A read from before the close is re-read once after it (to get the day's final volume).
+    agx_flow.board(["TSLA"], tmp_path, datetime(2026, 11, 23, 15, 58, tzinfo=ET), wait=True)
+    agx_flow.board(["TSLA"], tmp_path, datetime(2026, 11, 23, 16, 1, tzinfo=ET), wait=True)
+    assert asked.count("TSLA") == 2
+    assert agx_flow.last_close(datetime(2026, 11, 23, 9, 0, tzinfo=ET)) == datetime(2026, 11, 20, 16, 0, tzinfo=ET)
+
+
+def test_warm_queues_only_stale_tickers_without_a_page_open(schwab, tmp_path):
+    asked, replies = schwab
+    replies["BAD"] = RuntimeError("no chain")
+    agx_flow.board(["NVDA"], tmp_path, wait=True)                  # NVDA fresh now
+    queued = agx_flow.warm(["NVDA", "PLTR", "BAD", "bad ticker"], tmp_path)
+    assert queued == 2 and agx_flow.wait_idle(5)
+    assert sorted(asked) == ["BAD", "NVDA", "PLTR"]
+    assert agx_flow.warm(["NVDA", "PLTR", "BAD"], tmp_path) == 0   # fresh, fresh, failed recently
+
+
+def test_no_etfs_and_no_stocks_under_ten_dollars(schwab, tmp_path):
+    """2026-11-17 "No need spy, qqq and small stocks and etf": ETFs are never read or shown, and a stock read under $10
+    is left off the board and not read again that day."""
+    asked, replies = schwab
+    replies["NIO"] = lambda: chain(spot=4.2)
+    out = agx_flow.board(["SPY", "NVDA", "QQQ", "NIO", "MSTU"], tmp_path, NOW, wait=True)
+    assert asked == ["NVDA", "NIO"]                                     # ETFs never asked
+    assert [t["ticker"] for t in out["tickers"]] == ["NVDA"]
+    assert {r["ticker"] for r in out["rows"]} == {"NVDA"}
+    assert out["excluded"] == [{"ticker": "SPY", "reason": "ETF"}, {"ticker": "QQQ", "reason": "ETF"},
+                               {"ticker": "MSTU", "reason": "ETF"}, {"ticker": "NIO", "reason": "under $10"}]
+    assert out["minPrice"] == 10.0
+    assert agx_flow.warm(["NIO", "SPY"], tmp_path, NOW + timedelta(minutes=30)) == 0   # NIO stays out today
+    assert agx_flow.warm(["NIO"], tmp_path, NOW + timedelta(days=1)) == 1              # a new day checks the price
+    assert agx_flow.wait_idle(5)
+    with pytest.raises(ValueError, match="stocks only"):
+        agx_flow.board(["SPY", "QQQ"], tmp_path, NOW)

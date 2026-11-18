@@ -238,3 +238,24 @@ export async function withApp(options, fn) {
 export async function overflowsSideways(page) {
   return page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
 }
+
+// 2026-11-17 "See this": on a phone both pages stopped mid-list, because the page had no scroll area of its own.
+// A real wheel over the content (a script setting scrollTop works even on an unscrollable page) must move the page and
+// bring the last card fully into view above the tab bar.
+export async function scrollsToTheEnd(page, pageSelector, lastSelector) {
+  const box = await page.locator(pageSelector).boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + Math.min(box.height / 2, 200));
+  const top = () => page.locator(pageSelector).evaluate((el) => el.scrollTop);
+  await page.mouse.wheel(0, 600);
+  for (let i = 0; i < 20 && (await top()) === 0; i += 1) await page.waitForTimeout(50);
+  if ((await top()) === 0) return { moved: false };
+  for (let i = 0; i < 400; i += 1) {
+    const atEnd = await page.locator(pageSelector).evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 2);
+    if (atEnd) break;
+    await page.mouse.wheel(0, 2400);
+    await page.waitForTimeout(20);
+  }
+  const last = await page.locator(lastSelector).last().boundingBox();
+  const area = await page.locator(pageSelector).boundingBox();
+  return { moved: true, lastBottom: last.y + last.height, areaBottom: area.y + area.height };
+}

@@ -106,6 +106,18 @@ export function progressText(payload) {
   return waiting > 10 ? `${base} · about ${Math.max(1, Math.round((waiting * 3.5) / 60))} min left, once a day` : base;
 }
 
+// "Left out: 34 ETFs · 41 stocks under $10" from the board's excluded list (2026-11-17 "No need spy, qqq and small
+// stocks and etf"). Empty when nothing was left out. Shared by LEAP OI Scanner and AGX Flow.
+export function leftOutText(excluded, minPrice = 10) {
+  const list = Array.isArray(excluded) ? excluded : [];
+  const etfs = list.filter((x) => x?.reason === "ETF").length;
+  const small = list.length - etfs;
+  const parts = [];
+  if (etfs) parts.push(`${etfs} ETF${etfs === 1 ? "" : "s"}`);
+  if (small) parts.push(`${small} stock${small === 1 ? "" : "s"} under $${Math.round(Number(minPrice) || 10)}`);
+  return parts.length ? `Left out: ${parts.join(" · ")}` : "";
+}
+
 // "Read 8:31 AM ET" from the oldest ready ticker's read time.
 export function readAtText(payload) {
   const times = (payload?.tickers || [])
@@ -120,11 +132,11 @@ export function readAtText(payload) {
 
 // By-ticker list (2026-11-17, "what about other tickers from watchlist"): search by ticker start, then show at most
 // `limit` lines unless the trader asks for all.
-export const BY_TICKER_PREVIEW = 40;
 
-export function filterByTicker(list, query, showAll = false) {
+// Every ticker shows (2026-11-17 "Still I don't see full loading": a 40-ticker preview behind "Show all" read as not loaded).
+export function filterByTicker(list, query) {
   const rows = Array.isArray(list) ? list : [];
   const q = String(query || "").trim().toUpperCase();
   const matched = q ? rows.filter((line) => String(line?.ticker || "").startsWith(q)) : rows;
-  return { shown: showAll ? matched : matched.slice(0, BY_TICKER_PREVIEW), total: matched.length };
+  return { shown: matched, total: matched.length };
 }

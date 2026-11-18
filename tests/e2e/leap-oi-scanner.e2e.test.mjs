@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PHONE, e2eTest, marketHoursBlock, overflowsSideways, withApp } from "./harness.mjs";
+import { PHONE, e2eTest, marketHoursBlock, overflowsSideways, scrollsToTheEnd, withApp } from "./harness.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const VIEW = "[data-testid='leap-oi-view']";
@@ -66,12 +66,19 @@ for (const [label, viewport] of WIDTHS) {
       // By ticker (2026-11-17, "what about other tickers from watchlist"): one card per ticker, searchable.
       const lines = view.locator("[data-testid='leap-oi-ticker']");
       assert.equal(await lines.count(), real.byTicker.length);
+      // Every ticker shows at once: no "Show all" tap (2026-11-17 "Still I don't see full loading").
+      assert.equal(await view.getByRole("button", { name: /Show all/ }).count(), 0);
+      assert.match(await view.innerText(), new RegExp(`All ${real.byTicker.length} tickers on the board`));
       assert.match(await lines.first().innerText(), /AAPL[\s\S]*Most call OI[\s\S]*200 Call[\s\S]*ENTRY call/);
       await view.getByRole("searchbox", { name: "Find a ticker" }).fill("nv");
       for (let i = 0; i < 30 && (await lines.count()) !== 1; i += 1) await page.waitForTimeout(100);
       assert.equal(await lines.count(), 1);
       assert.match(await lines.first().innerText(), /NVDA/);
       if (phone) assert.equal(await overflowsSideways(page), false);
+      await view.getByRole("searchbox", { name: "Find a ticker" }).fill("");
+      const end = await scrollsToTheEnd(page, ".leap-oi-page", "[data-testid='leap-oi-ticker']");
+      assert.equal(end.moved, true, "the page did not scroll with the wheel");
+      assert.ok(end.lastBottom <= end.areaBottom + 1, `last card cut off: ${JSON.stringify(end)}`);
       assert.deepEqual(app.pageErrors, []);
       // Chart opens the chart page for that ticker.
       const chart = view.getByRole("button", { name: "Chart ›" }).first();

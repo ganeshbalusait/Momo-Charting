@@ -1073,6 +1073,26 @@
   },
   {
    "source": "page",
+   "title": "LEAP OI Scanner page",
+   "text": "The strikes with the most open interest 1 to 12 months out across Mag7 and your watchlist, stocks only, delta 0.10 and up, with each expiry's ENTRY contract marked.",
+   "scope": "all",
+   "link": {
+    "label": "Open LEAP OI Scanner",
+    "view": "LEAP OI Scanner"
+   }
+  },
+  {
+   "source": "page",
+   "title": "AGX Flow page",
+   "text": "Today's unusual option volume (volume above open interest) for Mag7 and your watchlist, stocks only, biggest dollar trades first.",
+   "scope": "all",
+   "link": {
+    "label": "Open AGX Flow",
+    "view": "AGX Flow"
+   }
+  },
+  {
+   "source": "page",
    "title": "Long Term page",
    "text": "The Buffett / Rule #1 screen: ten years of filings per ticker, a sticker price, a safety price, and BUY / WAIT / AVOID with a LEAPS flag.",
    "scope": "all",

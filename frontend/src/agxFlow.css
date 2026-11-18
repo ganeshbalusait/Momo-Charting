@@ -47,6 +47,7 @@
 
 .agx-flow-status { margin: 6px 0; color: var(--agx-flow-dim); }
 .agx-flow-status.is-error { color: var(--agx-flow-put); }
+.agx-flow-updated { margin: 6px 0; color: var(--agx-flow-dim); font-size: 12px; }
 .agx-flow-empty { color: var(--agx-flow-dim); padding: 24px 0; text-align: center; }
 
 .agx-flow-strip {

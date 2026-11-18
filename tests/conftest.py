@@ -169,7 +169,9 @@ def _no_real_schwab_for_agx_flow(monkeypatch):
     def refused(ticker, today):
         raise agx_flow.Unavailable("Schwab is not reached in tests.")
     monkeypatch.setattr(agx_flow, "fetch", refused)
-    monkeypatch.setattr(agx_flow, "PACE_SECONDS", 0.0)      # the real pace is 3.5 s between Schwab requests
+    monkeypatch.setattr(agx_flow, "PACE_SECONDS", 0.0)      # the real pace is 1.5 s between Schwab requests
+    from momx import board_filter                           # both boards drop ETFs: a fixed set, never the downloaded list
+    monkeypatch.setattr(board_filter, "is_etf", lambda symbol: str(symbol).upper() in {"SPY", "QQQ", "IWM", "TQQQ", "MSTU"})
     agx_flow.reset()
     yield
     agx_flow.wait_idle(5)

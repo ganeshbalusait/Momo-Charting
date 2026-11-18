@@ -1601,6 +1601,10 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
    down", only 3 sectors on the phone). Exactly one scroller - the panel body
    inside sets no overflow on the page. */
 .sectors-view { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+/* LEAP OI Scanner + AGX Flow (2026-11-17 "See this": both stopped mid-list on a phone). The workspace does not
+   scroll, so each page owns its one scroll area, like Sectors; bottom room so the last card clears the tab bar. */
+.app-shell .workspace > .leap-oi-page,
+.app-shell .workspace > .agx-flow-page { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 96px; }
 /* Sectors page (sidebar / phone More sheet): same panel, full height. */
 .sector-heatmap-page { display: grid; gap: 10px; padding: 12px 0 24px; }
 .sector-heatmap-page > header { display: flex; align-items: center; gap: 8px; padding: 0 8px; }

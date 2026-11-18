@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import "./leapOi.css";
 import {
   DELTAS, RANGES, SIDES, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi,
-  filterByTicker, priceText, progressText, readAtText, scannerUrl,
+  filterByTicker, leftOutText, priceText, progressText, readAtText, scannerUrl,
 } from "./leapOi.js";
 
 function Pick({ label, row }) {
@@ -17,16 +17,27 @@ function Pick({ label, row }) {
   );
 }
 
+// One grey line, tap to see the names: what the board leaves out (ETFs, stocks under $10).
+export function LeftOut({ excluded, minPrice, className }) {
+  const text = leftOutText(excluded, minPrice);
+  if (!text) return null;
+  return (
+    <details className={className} data-testid="board-left-out">
+      <summary>{text}</summary>
+      {(excluded || []).map((x) => x.ticker).join(", ")}
+    </details>
+  );
+}
+
 // By ticker (2026-11-17, "I see only mag7 tickets what about other tickets from watchlist"): one line per ticker, so
 // the small names are not buried under Mag7's huge open interest in the ranked lists.
 function ByTicker({ list, onOpenChart }) {
   const [query, setQuery] = useState("");
-  const [showAll, setShowAll] = useState(false);
-  const { shown, total } = filterByTicker(list, query, showAll);
+  const { shown, total } = filterByTicker(list, query);
   return (
     <>
       <h3>By ticker</h3>
-      <p className="leapoi-sub">Every ticker on the board: its biggest call and put open interest, and its biggest ENTRY call and put.</p>
+      <p className="leapoi-sub">All {total} tickers on the board: each one's biggest call and put open interest, and its biggest ENTRY call and put.</p>
       <input className="leapoi-search" type="search" placeholder="Find a ticker" value={query} aria-label="Find a ticker"
         onChange={(event) => setQuery(event.target.value)} />
       <div className="leapoi-bytk">
@@ -48,9 +59,6 @@ function ByTicker({ list, onOpenChart }) {
         ))}
       </div>
       {!shown.length ? <p className="leapoi-empty">{query ? "No ticker on the board starts with that." : "Nothing read yet."}</p> : null}
-      {total > shown.length ? (
-        <button type="button" className="leapoi-more" onClick={() => setShowAll(true)}>Show all {total} tickers</button>
-      ) : null}
     </>
   );
 }
@@ -250,6 +258,7 @@ export default function LeapOiScannerPanel({ onOpenChart }) {
           <Rows rows={payload.rows || []} onOpenChart={onOpenChart} testId="leap-oi-row" />
           <ByTicker list={payload.byTicker || []} onOpenChart={onOpenChart} />
           {errors.length ? <p className="leapoi-sub">Not read: {errors.map((t) => t.ticker).join(", ")} ({errors[0].error})</p> : null}
+          <LeftOut excluded={payload.excluded} minPrice={payload.minPrice} className="leapoi-sub" />
           <p className="leapoi-note">{payload.note}</p>
         </>
       ) : null}

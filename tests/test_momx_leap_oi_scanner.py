@@ -174,7 +174,74 @@ def test_compact_copy_keeps_every_row_the_page_can_show(tmp_path, fake):
 def test_the_background_reader_waits_between_schwab_requests(tmp_path, fake, monkeypatch):
     naps: list = []
     monkeypatch.setattr(scanner, "PACE_SECONDS", 3.0)
-    monkeypatch.setattr(scanner.time, "sleep", lambda seconds: naps.append(seconds))
+    real_sleep = time.sleep
+    # time.sleep is the whole program's: count only the reader's own pauses, let every other thread sleep as usual.
+    monkeypatch.setattr(scanner.time, "sleep", lambda seconds: naps.append(seconds)
+                        if threading.current_thread().name == "leap-oi-board" else real_sleep(seconds))
     scanner.board(["NVDA", "AAPL"], tmp_path, NOW)
     scanner._WORKER["thread"].join(5)
     assert naps == [3.0, 3.0] and sorted(fake) == ["AAPL", "NVDA"]
+
+
+def test_a_ticker_with_no_chain_is_not_asked_again_every_five_minutes(tmp_path, monkeypatch):
+    """2026-11-17 "Not loading properly": KITT, LIDR and PALU have no options at Schwab. long_oi forgets a failure after
+    5 minutes, so the board re-queued them, flipped them back to "pending" and the page showed "Reading Schwab… 366 of
+    369" again, all day. The board now remembers the failure an hour, with Schwab's own reason."""
+    asked: list = []
+
+    def no_options(ticker, today):
+        asked.append(ticker)
+        return {"symbol": ticker, "underlyingPrice": 2.0, "callExpDateMap": {}, "putExpDateMap": {}}
+    monkeypatch.setattr(long_oi, "fetch", no_options)
+    clock = [1000.0]
+    monkeypatch.setattr(scanner.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(long_oi.time, "monotonic", lambda: clock[0])
+    scanner.board(["KITT"], tmp_path, NOW)
+    scanner._WORKER["thread"].join(5)
+    assert asked == ["KITT"]
+    clock[0] += 6 * 60                                                         # past long_oi's 5-minute memory
+    later = scanner.board(["KITT"], tmp_path, NOW)
+    assert later["pending"] == [] and later["tickers"][0]["state"] == "error"
+    assert "no options" in later["tickers"][0]["error"]
+    assert scanner._WORKER["thread"] is None and asked == ["KITT"]
+    clock[0] += 61 * 60                                                        # an hour on, it is tried once more
+    scanner.board(["KITT"], tmp_path, NOW)
+    scanner._WORKER["thread"] and scanner._WORKER["thread"].join(5)
+    assert asked == ["KITT", "KITT"]
+
+
+
+def test_warm_queues_tickers_with_no_copy_without_a_page_open(tmp_path, fake):
+    """2026-11-17 "Still I don't see full loading": the server reads the watchlist in the background, so the page is
+    full when it opens. warm() only queues tickers with no copy younger than 12 hours."""
+    scanner.board(["NVDA"], tmp_path, wait=True)                 # the reader stamps the real clock, so this test does too
+    assert scanner.warm(["NVDA", "PLTR", "AMD"], tmp_path) == 2
+    deadline = time.monotonic() + 5
+    while scanner._WORKER["thread"] is not None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert sorted(fake) == ["AMD", "NVDA", "PLTR"]
+    assert scanner.warm(["NVDA", "PLTR", "AMD"], tmp_path) == 0
+
+
+
+def test_no_etfs_and_no_stocks_under_ten_dollars(tmp_path, monkeypatch):
+    """2026-11-17 "No need spy, qqq and small stocks and etf": QQQ was the biggest put on the board; ETFs are never
+    read, and a stock under $10 (NIO's 2 put was the top ENTRY) is left off every list."""
+    asked: list = []
+
+    def fetch(ticker, today):
+        asked.append(ticker)
+        doc = chain()
+        doc["symbol"] = ticker
+        if ticker == "NIO":
+            doc["underlyingPrice"] = 4.2
+        return doc
+    monkeypatch.setattr(long_oi, "fetch", fetch)
+    out = scanner.board(["QQQ", "NVDA", "NIO", "SPY"], tmp_path, NOW, months_from=1, wait=True)
+    assert asked == ["NVDA", "NIO"]
+    assert {r["ticker"] for r in out["rows"]} == {"NVDA"} and {r["ticker"] for r in out["entries"]} == {"NVDA"}
+    assert [t["ticker"] for t in out["byTicker"]] == ["NVDA"]
+    assert [t["ticker"] for t in out["tickers"]] == ["NVDA"]
+    assert out["excluded"] == [{"ticker": "QQQ", "reason": "ETF"}, {"ticker": "SPY", "reason": "ETF"},
+                               {"ticker": "NIO", "reason": "under $10"}]
+    assert scanner.warm(["QQQ", "SPY"], tmp_path, NOW) == 0
