@@ -23749,6 +23749,23 @@ class ApiHandler(BaseHTTPRequestHandler):
             # Schwab option chains through their own guarded modules: saved
             # copies only on this request path, missing tickers read by ONE
             # background thread. Read-only; nothing here places an order.
+            # AGX Flow phone alert switch (2026-11-17 "All six"): this account's own setting, and whether a phone
+            # channel (the Momo Alert ntfy topic) is set up. Never shows the topic itself.
+            if parsed.path == "/api/agx-flow/alert":
+                from momx import agx_flow_alert as _afa, momo_alert as _ma_flow
+                from momx.chat_market import _root as _afa_root
+                _afa_user = self._session_user()
+                _afa_email = str((_afa_user or {}).get("email") or "")
+                _afa_config = _ma_flow.load_user_config(_afa_email)
+                _afa_window = _afa_config.get("pushWindow") or {}
+                self._send_json(HTTPStatus.OK, {
+                    "on": _afa.is_on(_afa_root({}), _afa_email) if _afa_email else False,
+                    "signedIn": bool(_afa_email),
+                    "hasPhone": bool(str(_afa_config.get("ntfyTopic") or "").strip()),
+                    "minPremium": _afa.ALERT_PREMIUM,
+                    "windowStart": _afa_window.get("start"), "windowEnd": _afa_window.get("end"),
+                })
+                return
             if parsed.path in {"/api/leap-oi-scanner", "/api/agx-flow"}:
                 query = parse_qs(parsed.query)
                 raw_symbols = str(query.get("symbols", [""])[0])
@@ -23783,7 +23800,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Add at least one ticker."})
                             return
                         try:
-                            payload = agx_flow.board(symbols, root)
+                            payload = agx_flow.board(
+                                symbols, root,
+                                expiry=str(query.get("expiry", ["all"])[0]).lower(),
+                                order=str(query.get("order", ["premium"])[0]).lower(),
+                            )
                         except ValueError as exc:
                             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                             return
@@ -24454,6 +24475,19 @@ class ApiHandler(BaseHTTPRequestHandler):
                     current_device_token=cookies.get(AUTH_DEVICE_COOKIE, ""),
                 )
                 self._send_json(HTTPStatus.OK, result)
+                return
+            if parsed.path == "/api/agx-flow/alert":
+                # The AGX Flow page's phone alert switch: THIS account only.
+                _afa_user = self._require_session_user()
+                if _afa_user is None:
+                    return
+                from momx import agx_flow_alert as _afa
+                from momx.chat_market import _root as _afa_root
+                if not isinstance(body.get("on"), bool):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "on must be true or false."})
+                    return
+                _afa_on = _afa.set_on(_afa_root({}), str(_afa_user.get("email") or ""), body["on"])
+                self._send_json(HTTPStatus.OK, {"on": _afa_on})
                 return
             if parsed.path == "/api/momo-alert/test-push":
                 # The Send-test button: one push to THIS account's own topic,
@@ -25686,6 +25720,9 @@ def main() -> None:
         _mag7 = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]
         leap_oi_scanner.start_warmer(lambda: _mag7 + list(settings.scanner.default_universe or []), _flow_root)
         agx_flow.start_warmer(lambda: _mag7 + list(settings.scanner.default_universe or []), _flow_root)
+        # AGX Flow phone alert (2026-11-17 "All six"): $1M+ unusual on a watchlist stock, accounts that turned it on.
+        from momx import agx_flow_alert
+        agx_flow_alert.start(lambda: list(settings.scanner.default_universe or []), _flow_root)
     except Exception:
         pass
     # Daily 08:45 ET health checklist + one phone push with the verdict.

@@ -39,6 +39,8 @@ FETCH_MAX_DAYS = 45
 STRIKE_COUNT = 40
 CACHE_SECONDS = 5 * 60
 FAIL_SECONDS = 5 * 60
+NO_CHAIN_SECONDS = 3600       # a ticker Schwab has no options for (KITT, LIDR) is asked again after an hour, not every
+                              # 5 minutes: that kept 'Reading Schwab... (260 of 261)' on the page (2026-11-17)
 FETCHES_PER_HOUR = 1500       # whole watchlist (~370) about every 12 min in market hours; Schwab allows 120 a MINUTE
 PACE_SECONDS = 1.5            # each background reader waits this long after each Schwab request
 READERS = 2                   # 2026-11-17 "Still I don't see full loading": one reader took ~36 min for the watchlist;
@@ -58,7 +60,7 @@ _SYMBOL = re.compile(r"^[A-Z][A-Z.\-]{0,5}$")
 _LOCK = threading.BoundedSemaphore(READERS)               # at most READERS Schwab requests at a time
 _STATE = threading.Lock()                                  # guards the small dicts below
 _MEMORY: dict[str, dict] = {}
-_FAILED: dict[str, tuple[float, str]] = {}
+_FAILED: dict[str, tuple[float, str, float]] = {}   # ticker -> (when, why, how long it is remembered)
 _RECENT: deque = deque()
 _PENDING: dict[str, Path] = {}                             # ticker -> root, waiting for the background thread
 _SKIPPED: dict[str, str] = {}                              # ticker -> why the last refresh did not ask (hourly cap, busy)
@@ -235,9 +237,27 @@ def _write_disk(root: Path, ticker: str, doc: dict) -> None:
 
 
 def market_open(now: datetime) -> bool:
-    """Regular session, 9:30-16:00 ET on a weekday (holidays count as open; that only costs one extra read)."""
+    """Regular session, 9:30-16:00 ET on a weekday that is not a market holiday (review 2026-11-17: a holiday counted
+    as open let the phone alert push the previous session's volume as new)."""
     et = now.astimezone(ET)
-    return et.weekday() < 5 and (9, 30) <= (et.hour, et.minute) < (16, 0)
+    if et.weekday() >= 5 or not (9, 30) <= (et.hour, et.minute) < (16, 0):
+        return False
+    try:
+        from momx.chart_levels import MARKET_HOLIDAYS
+    except Exception:  # noqa: BLE001 - without the calendar, a weekday counts as open
+        return True
+    return et.date().isoformat() not in MARKET_HOLIDAYS
+
+
+def read_this_session(doc: dict | None, now: datetime) -> bool:
+    """Was this copy read during the session that is open now? (Hot right now and the phone alert use only these.)"""
+    if not market_open(now):
+        return False
+    try:
+        at = datetime.fromisoformat(str((doc or {}).get("fetchedAt"))).astimezone(ET)
+    except (TypeError, ValueError):
+        return False
+    return at.date() == now.astimezone(ET).date() and market_open(at)
 
 
 def last_close(now: datetime) -> datetime:
@@ -278,14 +298,14 @@ def _held(ticker: str, root: Path) -> dict | None:
 def _failure(ticker: str) -> str | None:
     with _STATE:
         failed = _FAILED.get(ticker)
-    if failed and time.monotonic() - failed[0] < FAIL_SECONDS:
+    if failed and time.monotonic() - failed[0] < failed[2]:
         return failed[1]
     return None
 
 
-def _fail(ticker: str, message: str) -> None:
+def _fail(ticker: str, message: str, seconds: float | None = None) -> None:
     with _STATE:
-        _FAILED[ticker] = (time.monotonic(), message)
+        _FAILED[ticker] = (time.monotonic(), message, FAIL_SECONDS if seconds is None else seconds)
 
 
 def reset() -> None:
@@ -337,7 +357,7 @@ def refresh(ticker: str, root: Path, now: datetime) -> dict:
         spot, rows = contracts_from_chain(chain, now.date())
         if not rows:
             message = f"Schwab has no options 0 to {FETCH_MAX_DAYS} days out for {ticker}."
-            _fail(ticker, message)
+            _fail(ticker, message, NO_CHAIN_SECONDS)
             raise Unavailable(message)
         with_new_volume(rows, held, now)
         rows = [row for row in rows if row["volume"] > 0]  # untraded contracts add nothing; 400 tickers stay light
@@ -381,8 +401,16 @@ def _work() -> None:
             time.sleep(PACE_SECONDS)                       # gentle on Schwab: charts and chains share its limit
 
 
-def _queue(tickers: list[str], root: Path) -> None:
+def _queue(tickers: list[str], root: Path, front: bool = False) -> None:
+    """Queue tickers for the readers. front=True (an open page, e.g. a ticker search, 2026-11-17 "Add search ticker
+    also") puts them ahead of the warm-up's long queue; readers take _PENDING in order."""
     with _STATE:
+        if front:
+            waiting = dict(_PENDING)
+            _PENDING.clear()
+            for ticker in tickers:
+                _PENDING.setdefault(ticker, waiting.pop(ticker, Path(root)))
+            _PENDING.update(waiting)
         for ticker in tickers:
             _PENDING.setdefault(ticker, Path(root))
         _WORKERS[:] = [w for w in _WORKERS if w.is_alive()]
@@ -451,6 +479,35 @@ def _wanted(ticker: str, root: Path, now: datetime) -> bool:
     return True
 
 
+EXPIRIES = ("all", "week", "next", "month")   # 2026-11-17 "All six": This week / Next week / 30 days
+ORDERS = ("premium", "hot")                     # biggest premium today / most volume added since the last read
+
+
+def expiry_window(bucket: str, today: date) -> tuple[date | None, date | None]:
+    """Which expiries a bucket keeps, as (after, through), both ET dates; None = no edge.
+    week = through this week's Friday (on a weekend, the coming Friday; a Thursday holiday expiry is still inside),
+    next = after that Friday through the next one, month = through 30 days out, all = everything read (0-45 days)."""
+    friday = today + timedelta(days=(4 - today.weekday()) % 7)
+    if bucket == "week":
+        return None, friday
+    if bucket == "next":
+        return friday, friday + timedelta(days=7)
+    if bucket == "month":
+        return None, today + timedelta(days=30)
+    return None, None
+
+
+def in_window(expiry: Any, window: tuple[date | None, date | None]) -> bool:
+    after, through = window
+    if after is None and through is None:
+        return True
+    try:
+        day = date.fromisoformat(str(expiry)[:10])
+    except ValueError:
+        return False
+    return (after is None or day > after) and (through is None or day <= through)
+
+
 def _flow_row(ticker: str, spot: float | None, row: dict) -> dict:
     premium = row["volume"] * (row.get("mark") or 0) * 100
     oi = row["oi"]
@@ -461,15 +518,21 @@ def _flow_row(ticker: str, spot: float | None, row: dict) -> dict:
         "last": row.get("last"), "bid": row.get("bid"), "ask": row.get("ask"), "premium": round(premium),
         "delta": row.get("delta"), "iv": row.get("iv"),
         "fill": fill_guess(row.get("last"), row.get("bid"), row.get("ask")), "newVolume": int(row.get("newVolume") or 0),
+        "newPremium": round(int(row.get("newVolume") or 0) * (row.get("mark") or 0) * 100),
     }
 
 
-def board(symbols: Any, root: Path, now: datetime | None = None, wait: bool = False) -> dict:
+def board(symbols: Any, root: Path, now: datetime | None = None, wait: bool = False, *, expiry: str = "all",
+          order: str = "premium") -> dict:
     """The flow board for up to MAX_SYMBOLS tickers. Answers at once from what is held; stale tickers are refreshed
     on one background thread (synchronously with wait=True). Raises ValueError when no ticker is valid.
 
     Per ticker: callPremium / putPremium / callVolume / putVolume over every contract read (not only unusual ones),
-    unusualCount, cached (a fresh copy answered), pending (a read is queued), error (plain words, or None)."""
+    unusualCount, cached (a fresh copy answered), pending (a read is queued), error (plain words, or None).
+    expiry (EXPIRIES) keeps only contracts in that window, totals included; order="hot" ranks by volume added since the
+    last read (newPremium) and keeps only contracts that traded since then."""
+    expiry = expiry if expiry in EXPIRIES else "all"
+    order = order if order in ORDERS else "premium"
     tickers = parse_symbols(symbols)
     if not tickers:
         raise ValueError("Give at least one ticker, e.g. symbols=AAPL,NVDA.")
@@ -478,6 +541,7 @@ def board(symbols: Any, root: Path, now: datetime | None = None, wait: bool = Fa
         raise ValueError("AGX Flow shows stocks only, and every ticker given is an ETF.")
     now = now or datetime.now(ET)
     root = Path(root)
+    window = expiry_window(expiry, now.astimezone(ET).date())
     if wait:
         for ticker in tickers:
             try:
@@ -487,7 +551,7 @@ def board(symbols: Any, root: Path, now: datetime | None = None, wait: bool = Fa
     else:
         stale = [t for t in tickers if _wanted(t, root, now)]
         if stale:
-            _queue(stale, root)
+            _queue(stale, root, front=True)                # what is on screen is read before the warm-up's queue
     with _STATE:
         pending = set(_PENDING)
     summary: list[dict] = []
@@ -507,15 +571,24 @@ def board(symbols: Any, root: Path, now: datetime | None = None, wait: bool = Fa
         if doc:
             spot = doc.get("spot")
             entry["spot"] = spot
+            live = read_this_session(doc, now)
             for contract in doc.get("contracts") or []:
+                if not in_window(contract.get("expiry"), window):
+                    continue
                 flow = _flow_row(ticker, spot, contract)
                 prefix = "call" if contract["side"] == "CALL" else "put"
                 entry[f"{prefix}Premium"] += flow["premium"]
                 entry[f"{prefix}Volume"] += flow["volume"]
                 if is_unusual(flow["volume"], flow["oi"]):
                     entry["unusualCount"] += 1
-                    rows.append(flow)
+                    if order != "hot" or live:             # yesterday's after-close volume is never "hot right now"
+                        rows.append(flow)
         summary.append(entry)
-    rows.sort(key=lambda r: (-r["premium"], -r["volume"], r["ticker"], r["days"], r["strike"]))
+    if order == "hot":
+        rows = [r for r in rows if r["newVolume"] > 0]
+        rows.sort(key=lambda r: (-r["newPremium"], -r["newVolume"], -r["premium"], r["ticker"], r["days"], r["strike"]))
+    else:
+        rows.sort(key=lambda r: (-r["premium"], -r["volume"], r["ticker"], r["days"], r["strike"]))
     return {"asOf": now.isoformat(), "tickers": summary, "rows": rows[:TOP_ROWS], "note": NOTE,
-            "excluded": excluded, "minPrice": board_filter.MIN_PRICE}
+            "excluded": excluded, "minPrice": board_filter.MIN_PRICE, "expiry": expiry, "order": order,
+            "marketOpen": market_open(now)}

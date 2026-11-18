@@ -100,3 +100,54 @@ def test_signed_out_gets_nothing_from_schwab(world):
     assert status in (401, 403)
     time.sleep(0.3)
     assert world == []
+
+
+def test_a_searched_ticker_over_http_jumps_the_warm_up_queue(world, tmp_path, monkeypatch):
+    """2026-11-17 "Add search ticker also": the page asks the real route for one typed ticker while the warm-up is
+    busy with the watchlist; that ticker is read next, then shows on the board."""
+    import threading
+    gate, started = threading.Event(), threading.Event()
+    real_fetch = long_oi.fetch
+
+    def fetch(ticker, day):
+        if ticker == "AAPL":
+            started.set()
+            gate.wait(5)
+        return real_fetch(ticker, day)
+    monkeypatch.setattr(long_oi, "fetch", fetch)
+    path = "/api/leap-oi-scanner?symbols=pltr&from=1&to=12"
+    with running_api() as api:
+        assert leap_oi_scanner.warm(["AAPL", "MSFT", "AMZN"], tmp_path) == 3
+        assert started.wait(5)
+        status, first = api.get(path, headers=REGULAR)
+        assert status == 200 and first["pending"] == ["PLTR"], first
+        assert leap_oi_scanner.pending()[0] == "PLTR"
+        gate.set()
+        status, body = _wait_ready(api, path, REGULAR)
+    assert status == 200 and [t["ticker"] for t in body["byTicker"]] == ["PLTR"], body
+    assert world[:2] == ["AAPL", "PLTR"]
+
+
+def test_open_interest_change_shows_after_a_second_days_read(world, tmp_path):
+    """2026-11-17 "All six": the first day shows no change; once yesterday's copy is on disk, the next read of the
+    same contracts shows today's open interest minus yesterday's."""
+    import gzip
+    path = "/api/leap-oi-scanner?symbols=NVDA&from=1&to=12"
+    with running_api() as api:
+        status, first = _wait_ready(api, path, REGULAR)
+        assert status == 200 and first["rows"] and all(r["oiChange"] is None for r in first["rows"])
+        disk = tmp_path / "leap_oi_board" / "NVDA.json.gz"
+        with gzip.open(disk, "rt", encoding="utf-8") as handle:
+            doc = json.load(handle)
+        doc["fetchedAt"] = (datetime.now(ET) - timedelta(days=1, hours=1)).isoformat()   # yesterday's read
+        for row in doc["rows"]:
+            row["oi"] -= 1000
+        assert doc["allOi"]                                                              # the whole chain is kept
+        doc["allOi"] = {key: oi - 1000 for key, oi in doc["allOi"].items()}
+        with gzip.open(disk, "wt", encoding="utf-8") as handle:
+            json.dump(doc, handle)
+        leap_oi_scanner.reset()                                                          # as after a restart
+        status, second = _wait_ready(api, path, REGULAR)
+    assert status == 200 and second["rows"]
+    assert all(r["oiChange"] == 1000 and r["oiChangeSince"] == doc["fetchedAt"] for r in second["rows"]), second["rows"][0]
+    assert sorted(world) == ["NVDA"]                                                     # no extra Schwab read

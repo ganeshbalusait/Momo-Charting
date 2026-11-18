@@ -37,6 +37,8 @@ PAGES: tuple[Page, ...] = (
     Page("Learn + Setup", "Learn + Setup", ("learn", "help", "how to", "setup page"), ()),
     Page("Watchlist", "Watchlist", ("watchlist", "my tickers"), ()),
     Page("Sectors", "Sectors", ("sectors", "heatmap", "heat map", "sector"), ()),
+    Page("LEAP OI Scanner", "LEAP OI Scanner", ("leap oi scanner", "leap scanner", "leap oi", "leaps"), ()),
+    Page("AGX Flow", "AGX Flow", ("agx flow", "options flow", "option flow", "unusual options", "unusual flow", "whale flow"), ()),
     Page("News Feed", "News Feed", ("news", "headlines", "news feed"), ("ticker",)),
     Page("Earnings Calendar", "Earnings Calendar", ("earnings", "earnings calendar"), ()),
     Page("Mag7 Scanner", "Mag7 Watchlist", ("mag7 watchlist", "mag7 scanner"), ()),

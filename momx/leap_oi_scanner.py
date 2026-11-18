@@ -24,6 +24,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from momx import board_filter, long_oi
 
@@ -40,6 +41,7 @@ ENTRY_ROWS = 30
 COMPACT_SCHEMA = 1
 MAG7 = ("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA")
 _TICKER = re.compile(r"^[A-Z][A-Z.\-]{0,5}$")
+ET = ZoneInfo("America/New_York")
 NOTE = ("Open interest is how many contracts are still open; it updates once a day before the open. Delta 0.10 and up "
         "only, so far-away lottery strikes never show. ENTRY marks the contract the option chain marks ENTRY on that "
         "expiry (out of the money, delta just under 0.20). Big open interest is not a direction signal: our test on "
@@ -94,17 +96,91 @@ def compact(doc: dict) -> dict:
         for floor in (long_oi.MIN_DELTA, 0.20):
             for row in [r for r in group if abs(r["delta"]) >= floor - 1e-9][:KEEP_PER_EXPIRY]:
                 keep[id(row)] = row
+    # allOi: every contract's open interest (not only the rows kept), on disk only, so tomorrow's change can be shown
+    # for a strike that was NOT in today's top rows - the biggest new build-up is exactly that strike (review 11-17).
+    all_oi = {contract_key(row): int(row.get("oi") or 0) for row in rows if int(row.get("oi") or 0) > 0}
     return {"schema": COMPACT_SCHEMA, "symbol": doc.get("symbol"), "fetchedAt": doc.get("fetchedAt"), "spot": spot,
-            "rows": list(keep.values())}
+            "rows": list(keep.values()), "allOi": all_oi}
 
 
 def _compact_path(root: Path, ticker: str) -> Path:
     return Path(root) / "leap_oi_board" / f"{ticker}.json.gz"
 
 
-def _save_compact(root: Path, ticker: str, doc: dict) -> None:
+def _read_compact_disk(root: Path, ticker: str) -> dict | None:
+    try:
+        with gzip.open(_compact_path(root, ticker), "rt", encoding="utf-8") as handle:
+            disk = json.load(handle)
+    except (OSError, ValueError, EOFError):
+        return None
+    if isinstance(disk, dict) and disk.get("schema") == COMPACT_SCHEMA and disk.get("symbol") == ticker:
+        return disk
+    return None
+
+
+def contract_key(row: dict) -> str:
+    """'CALL|2027-03-19|120' - one contract, the same on every day's read."""
+    return f"{row.get('side')}|{str(row.get('expiry'))[:10]}|{float(row.get('strike') or 0):g}"
+
+
+def _et_day(stamp: Any) -> str | None:
+    try:
+        return datetime.fromisoformat(str(stamp)).astimezone(ET).date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _oi_map(doc: dict) -> tuple[dict[str, int], bool]:
+    """(contract -> open interest, complete?). complete = the whole chain (allOi), so a contract missing from it had
+    no open interest; otherwise only the kept rows are known."""
+    whole = doc.get("allOi")
+    if isinstance(whole, dict) and whole:
+        return {str(k): int(v or 0) for k, v in whole.items()}, True
+    return {contract_key(r): int(r.get("oi") or 0) for r in doc.get("rows") or [] if isinstance(r, dict)}, False
+
+
+def with_previous(old: dict | None, new: dict) -> dict:
+    """Open interest change since the previous posting (2026-11-17 "See any features we can add" -> "All six").
+
+    The OCC posts open interest once a trading-day morning, so the new copy keeps, as prevOi, the open interest of the
+    last read on an EARLIER ET day - but only when the numbers actually moved since then. A weekend, holiday or
+    after-midnight read sees the same numbers again and keeps the last real change (review 2026-11-17: otherwise every
+    row read "no change" all weekend). A later read the same day carries prevOi forward. Contracts with no open
+    interest yesterday count from 0 when the whole chain was kept, so a brand-new build-up shows in full.
+    No earlier day read yet -> no prevOi (the page shows nothing rather than a made-up change)."""
+    new_day = _et_day(new.get("fetchedAt"))
+    old_day = _et_day((old or {}).get("fetchedAt"))
+    if not new_day or not old_day or old_day > new_day:
+        return new
+    old_prev = old.get("prevOi") if isinstance(old.get("prevOi"), dict) and old.get("prevOi") else None
+    carry = {**new, "prevOi": old_prev, "prevAt": old.get("prevAt")} if old_prev else new
+    if old_day == new_day:
+        return carry
+    old_oi, complete = _oi_map(old)
+    new_oi = {contract_key(r): int(r.get("oi") or 0) for r in new.get("rows") or [] if isinstance(r, dict)}
+    seen = [k for k in new_oi if k in old_oi]
+    if old_prev and seen and all(old_oi[k] == new_oi[k] for k in seen):
+        return carry                                       # nothing posted since: keep the last real change
+    prev = {k: old_oi.get(k, 0) for k in new_oi if complete or k in old_oi}
+    return {**new, "prevOi": prev, "prevAt": old.get("fetchedAt")} if prev else new
+
+
+def _slim(doc: dict) -> dict:
+    """The copy kept in memory: without allOi (the whole chain's open interest stays on disk only)."""
+    return {k: v for k, v in doc.items() if k != "allOi"} if "allOi" in doc else doc
+
+
+def _save_compact(root: Path, ticker: str, doc: dict) -> dict:
+    """Keep and write this ticker's compact copy; returns it (without allOi) with the previous day's open interest
+    attached (with_previous). The earlier copy comes from disk first, since only the disk copy has allOi."""
+    old = _read_compact_disk(root, ticker)
+    if old is None:
+        with _REFRESH:
+            old = _COMPACT.get(ticker)
+    if old is not doc:
+        doc = with_previous(old, doc)
     with _REFRESH:
-        _COMPACT[ticker] = doc
+        _COMPACT[ticker] = _slim(doc)
     path = _compact_path(root, ticker)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,6 +190,7 @@ def _save_compact(root: Path, ticker: str, doc: dict) -> None:
         temp.replace(path)
     except OSError:
         pass
+    return _slim(doc)
 
 
 def held(ticker: str, root: Path, now: datetime) -> dict | None:
@@ -123,21 +200,15 @@ def held(ticker: str, root: Path, now: datetime) -> dict | None:
         doc = _COMPACT.get(ticker)
     if long_oi._fresh(doc, now, BOARD_MAX_AGE):
         return doc
-    try:
-        with gzip.open(_compact_path(root, ticker), "rt", encoding="utf-8") as handle:
-            disk = json.load(handle)
-    except (OSError, ValueError, EOFError):
-        disk = None
-    if (isinstance(disk, dict) and disk.get("schema") == COMPACT_SCHEMA and disk.get("symbol") == ticker
-            and long_oi._fresh(disk, now, BOARD_MAX_AGE)):
+    disk = _read_compact_disk(root, ticker)
+    if disk is not None and long_oi._fresh(disk, now, BOARD_MAX_AGE):
+        disk = _slim(disk)
         with _REFRESH:
             _COMPACT[ticker] = disk
         return disk
     full = long_oi._read_disk(root, ticker)
     if long_oi._fresh(full, now, BOARD_MAX_AGE):
-        small = compact(full)
-        _save_compact(root, ticker, small)
-        return small
+        return _save_compact(root, ticker, compact(full))
     return None
 
 
@@ -147,13 +218,17 @@ def ticker_rows(doc: dict, *, min_days: int, max_days: int, side: str = "both", 
     ticker/spot/away."""
     spot = doc.get("spot")
     rows = doc.get("rows") or []
-    sides = [s for s in ("CALL", "PUT") if side == "both" or (side == "calls" and s == "CALL") or (side == "puts" and s == "PUT")]
+    prev = doc.get("prevOi") if isinstance(doc.get("prevOi"), dict) else {}
+    sides =[s for s in ("CALL", "PUT") if side == "both" or (side == "calls" and s == "CALL") or (side == "puts" and s == "PUT")]
     out: list[dict] = []
     for s in sides:
         pool = [row for row in rows if row.get("entry")] if entry_only else rows
         for row in long_oi.top_strikes(pool, side=s, min_days=min_days, max_days=max_days, n=ROWS_PER_SIDE,
                                        min_delta=min_delta):
-            out.append({**row, "ticker": doc.get("symbol"), "spot": spot, "away": _away(row["strike"], spot)})
+            before = prev.get(contract_key(row))
+            out.append({**row, "ticker": doc.get("symbol"), "spot": spot, "away": _away(row["strike"], spot),
+                        "oiChange": (int(row["oi"]) - int(before)) if before is not None else None,
+                        "oiChangeSince": doc.get("prevAt") if before is not None else None})
     return out
 
 
@@ -198,8 +273,13 @@ def _refresh_loop(root: Path) -> None:
             time.sleep(PACE_SECONDS)                       # gentle on Schwab: charts and chains share its limit
 
 
-def _schedule(tickers: list[str], root: Path) -> None:
+def _schedule(tickers: list[str], root: Path, front: bool = False) -> None:
+    """Queue tickers for the background reader. front=True (an open page, e.g. a ticker search, 2026-11-17 "Add search
+    ticker also") puts them ahead of the warm-up's long queue, so the trader is not left waiting behind 260 names."""
     with _REFRESH:
+        if front:
+            ahead = list(dict.fromkeys(tickers))
+            _QUEUE[:] = ahead + [t for t in _QUEUE if t not in ahead]
         for ticker in tickers:
             if ticker not in _QUEUE:
                 _QUEUE.append(ticker)
@@ -288,8 +368,7 @@ def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from:
         error = None
         if doc is None and wait:
             try:
-                doc = compact(long_oi.chain_for(ticker, root, now, count=False, keep=False))
-                _save_compact(root, ticker, doc)
+                doc = _save_compact(root, ticker, compact(long_oi.chain_for(ticker, root, now, count=False, keep=False)))
             except long_oi.Unavailable as exc:
                 error = str(exc)
                 _give_up(ticker, error)
@@ -313,7 +392,7 @@ def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from:
                        "callOi": calls, "putOi": puts, "rows": len(found)})
         by_ticker.append(_ticker_summary(ticker, doc.get("spot"), found))
     if missing:
-        _schedule(missing, root)
+        _schedule(missing, root, front=True)               # what is on screen is read before the warm-up's queue
     rows.sort(key=lambda r: (-r["oi"], -r["volume"], r["days"], r["strike"]))
     entries = [r for r in rows if r.get("entry")][:ENTRY_ROWS]
     calls = [r for r in rows if r["side"] == "CALL"]

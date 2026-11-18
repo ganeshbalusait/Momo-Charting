@@ -280,3 +280,102 @@ def test_no_etfs_and_no_stocks_under_ten_dollars(schwab, tmp_path):
     assert agx_flow.wait_idle(5)
     with pytest.raises(ValueError, match="stocks only"):
         agx_flow.board(["SPY", "QQQ"], tmp_path, NOW)
+
+
+def test_a_ticker_with_no_options_is_not_asked_again_for_an_hour(schwab, tmp_path, monkeypatch):
+    """2026-11-17 screenshot "Reading Schwab... (260 of 261)": KITT and LIDR have no options. Their failure was forgotten
+    after 5 minutes, so they were queued again and the page went back to "reading". Now remembered an hour; a Schwab
+    hiccup on a real ticker is still retried after 5 minutes."""
+    asked, replies = schwab
+    replies["KITT"] = {}
+    replies["TSLA"] = RuntimeError("boom")
+    clock = [5000.0]
+    monkeypatch.setattr(agx_flow.time, "monotonic", lambda: clock[0])
+    agx_flow.board(["KITT", "TSLA"], tmp_path, NOW, wait=True)
+    assert asked == ["KITT", "TSLA"]
+    clock[0] += 6 * 60
+    out = agx_flow.board(["KITT"], tmp_path, NOW + timedelta(minutes=6))
+    assert out["tickers"][0]["pending"] is False and "no options" in out["tickers"][0]["error"]
+    assert agx_flow.warm(["KITT", "TSLA"], tmp_path, NOW + timedelta(minutes=6)) == 1   # only TSLA is retried
+    assert agx_flow.wait_idle(5) and asked == ["KITT", "TSLA", "TSLA"]
+    clock[0] += 61 * 60
+    assert agx_flow.warm(["KITT"], tmp_path, NOW + timedelta(minutes=70)) == 1
+    assert agx_flow.wait_idle(5) and asked[-1] == "KITT"
+
+
+def test_a_searched_ticker_is_read_before_the_warm_up_queue(schwab, tmp_path, monkeypatch):
+    """2026-11-17 "Add search ticker also": a ticker typed into the search box jumps ahead of the warm-up's long
+    queue (about 260 names), so the trader is not left waiting minutes for it."""
+    import threading as _threading
+    asked, replies = schwab
+    monkeypatch.setattr(agx_flow, "READERS", 1)
+    gate = _threading.Event()
+    started = _threading.Event()
+
+    def slow():
+        started.set()
+        gate.wait(5)                                       # the reader is busy on the first warm-up ticker
+        return chain()
+    replies["AAPL"] = slow
+    assert agx_flow.warm(["AAPL", "MSFT", "AMZN"], tmp_path) == 3
+    assert started.wait(5)
+    out = agx_flow.board(["PLTR"], tmp_path)              # the search: not read yet, so queued at the front
+    assert out["tickers"][0]["pending"] is True
+    with agx_flow._STATE:
+        waiting = [t for t in agx_flow._PENDING if t not in agx_flow._TAKEN]
+    assert waiting == ["PLTR", "MSFT", "AMZN"]
+    gate.set()
+    assert agx_flow.wait_idle(5)
+    assert asked == ["AAPL", "PLTR", "MSFT", "AMZN"]
+
+
+def test_expiry_windows_this_week_next_week_30_days():
+    """2026-11-17 "All six": This week = through this Friday (the coming Friday on a weekend), Next week = the week
+    after, 30 days = through 30 days out."""
+    from datetime import date
+    tue, fri, sat = date(2026, 11, 17), date(2026, 11, 20), date(2026, 11, 21)
+    assert agx_flow.expiry_window("week", tue) == (None, fri)
+    assert agx_flow.expiry_window("week", fri) == (None, fri)
+    assert agx_flow.expiry_window("week", sat) == (None, date(2026, 11, 27))
+    assert agx_flow.expiry_window("next", tue) == (fri, date(2026, 11, 27))
+    assert agx_flow.expiry_window("month", tue) == (None, date(2026, 12, 17))
+    assert agx_flow.expiry_window("all", tue) == (None, None)
+    assert agx_flow.in_window("2026-11-20", (None, fri)) and not agx_flow.in_window("2026-11-20", (fri, date(2026, 11, 27)))
+    assert agx_flow.in_window("2026-11-19", (None, fri)) and agx_flow.in_window("anything", (None, None))
+    assert not agx_flow.in_window("not a date", (None, fri))
+
+
+def test_expiry_filter_and_hot_right_now_order(schwab, tmp_path):
+    asked, replies = schwab
+    week = agx_flow.board(["NVDA"], tmp_path, NOW, wait=True, expiry="week")     # call Nov 20, put Nov 27
+    assert [(r["side"], r["strike"]) for r in week["rows"]] == [("CALL", 185.0)] and week["expiry"] == "week"
+    assert week["tickers"][0]["putPremium"] == 0 and week["tickers"][0]["callPremium"] > 0
+    nxt = agx_flow.board(["NVDA"], tmp_path, NOW, expiry="next")
+    assert [(r["side"], r["strike"]) for r in nxt["rows"]] == [("PUT", 170.0)] and nxt["tickers"][0]["callPremium"] == 0
+    assert len(agx_flow.board(["NVDA"], tmp_path, NOW, expiry="month")["rows"]) == 2
+    # Hot right now: only what traded since the last read, most new dollars first.
+    assert agx_flow.board(["NVDA"], tmp_path, NOW, order="hot")["rows"] == []        # first read: nothing "new" yet
+    replies["NVDA"] = lambda: chain(volume_185=7000)
+    later = NOW + timedelta(minutes=6)
+    hot = agx_flow.board(["NVDA"], tmp_path, later, wait=True, order="hot")
+    assert [(r["strike"], r["newVolume"], r["newPremium"]) for r in hot["rows"]] == [(185.0, 1000, 200_000)]
+    odd = agx_flow.board(["NVDA"], tmp_path, later, expiry="bogus", order="bogus")
+    assert odd["expiry"] == "all" and odd["order"] == "premium" and len(odd["rows"]) == 2
+
+
+
+def test_market_holidays_are_closed_and_hot_uses_only_this_sessions_reads(schwab, tmp_path):
+    """Review 2026-11-17: Thanksgiving is not a session; and Hot right now never shows yesterday's after-close volume
+    before the open (it is empty and says the market is closed)."""
+    assert agx_flow.market_open(NOW) is True
+    assert agx_flow.market_open(datetime(2026, 11, 26, 11, 0, tzinfo=ET)) is False       # Thanksgiving
+    asked, replies = schwab
+    close = NOW.replace(hour=15, minute=50)
+    agx_flow.board(["NVDA"], tmp_path, close, wait=True)
+    replies["NVDA"] = lambda: chain(volume_185=7000)
+    after = NOW.replace(hour=16, minute=5)
+    agx_flow.board(["NVDA"], tmp_path, after, wait=True)                                    # +1000 after the close
+    premarket = (NOW + timedelta(days=1)).replace(hour=8, minute=30)
+    out = agx_flow.board(["NVDA"], tmp_path, premarket, order="hot")
+    assert out["rows"] == [] and out["marketOpen"] is False
+    assert agx_flow.board(["NVDA"], tmp_path, premarket)["rows"]                          # Biggest $ still shows them

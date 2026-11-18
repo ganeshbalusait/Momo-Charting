@@ -3,17 +3,47 @@ import test from "node:test";
 
 import {
   MAG7, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi, priceText,
-  progressText, readAtText, scannerUrl,
+  progressText, readAtText, scannerUrl, cleanTicker, searchNote,
+  addRecent, contractFacts, moveText, oiChangeText, oiChangeTone, sinceText, RECENT_MAX,
 } from "./leapOi.js";
 
-test("board tickers: Mag7 first, watchlist after, no repeats, junk dropped, capped at 400", () => {
+test("search box: typed text becomes a ticker the server accepts, anything else is refused", () => {
+  assert.equal(cleanTicker("nvda"), "NVDA");
+  assert.equal(cleanTicker("  $pltr "), "PLTR");
+  assert.equal(cleanTicker("brk.b"), "BRK.B");
+  for (const bad of ["", "   ", null, undefined, "TOOLONGX", "12AB", "NV DA", "AAPL,MSFT", "<x>", "$"]) {
+    assert.equal(cleanTicker(bad), "", String(bad));
+  }
+});
+
+test("search note: says why a searched ticker shows nothing, on both pages", () => {
+  const leap = (line, extra = {}) => ({ tickers: [line], excluded: [], minPrice: 10, ...extra });
+  assert.equal(searchNote(null, "NVDA"), "");
+  assert.equal(searchNote(leap({ ticker: "NVDA", state: "ready", rows: 12 }), ""), "");
+  assert.equal(searchNote(leap({ ticker: "NVDA", state: "ready", rows: 12 }), "NVDA", "LEAP OI Scanner"), "");
+  assert.equal(searchNote(leap({ ticker: "NVDA", state: "pending" }), "NVDA"), "");          // the progress line covers it
+  assert.equal(searchNote(leap({ ticker: "KITT", state: "error", error: "Schwab has no LEAPs for KITT." }), "KITT"),
+    "Schwab has no LEAPs for KITT.");
+  assert.match(searchNote(leap({ ticker: "NVDA", state: "ready", rows: 0 }), "NVDA"), /No NVDA strikes match these filters/);
+  assert.equal(searchNote({ tickers: [], excluded: [{ ticker: "SPY", reason: "ETF" }] }, "SPY", "LEAP OI Scanner"),
+    "SPY is an ETF. LEAP OI Scanner shows stocks only.");
+  assert.equal(searchNote({ tickers: [], excluded: [{ ticker: "NIO", reason: "under $10" }], minPrice: 10 }, "NIO", "AGX Flow"),
+    "NIO is under $10, so AGX Flow leaves it off.");
+  // AGX Flow ticker lines have no "state": an error with nothing read shows; an error after a good read does not.
+  assert.equal(searchNote({ tickers: [{ ticker: "LIDR", error: "Schwab has no options 0 to 45 days out for LIDR.", fetchedAt: null }] }, "LIDR"),
+    "Schwab has no options 0 to 45 days out for LIDR.");
+  assert.equal(searchNote({ tickers: [{ ticker: "TSLA", error: "hiccup", fetchedAt: "2026-11-17T15:00:00-05:00" }] }, "TSLA"), "");
+});
+
+test("board tickers: Mag7 and Watchlist are separate boards, no repeats, junk dropped, capped at 400", () => {
   assert.deepEqual(boardTickers("mag7", ["PLTR"]), MAG7);
-  assert.deepEqual(boardTickers("both", ["pltr", "NVDA", "", "BAD TICKER", "amd"]), [...MAG7, "PLTR", "AMD"]);
+  // Separate boards (2026-11-17): Watchlist never carries the Mag7 names.
+  assert.deepEqual(boardTickers("watchlist", ["pltr", "NVDA", "", "BAD TICKER", "amd", "tsla"]), ["PLTR", "AMD"]);
   const many = Array.from({ length: 40 }, (_, i) => `T${String.fromCharCode(65 + (i % 26))}${i >= 26 ? "X" : ""}`);
-  assert.equal(boardTickers("both", many).length, 47);
+  assert.equal(boardTickers("watchlist", many).length, 40);
   const lots = Array.from({ length: 500 }, (_, i) => `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26) % 26)}${String.fromCharCode(65 + Math.floor(i / 676))}`);
-  assert.equal(boardTickers("both", lots).length, 400);
-  assert.deepEqual(boardTickers("both", null), MAG7);
+  assert.equal(boardTickers("watchlist", lots).length, 400);
+  assert.deepEqual(boardTickers("watchlist", null), []);
 });
 
 test("scanner url carries range, delta, side and the entry-only switch", () => {
@@ -87,3 +117,84 @@ test("left-out line counts ETFs and stocks under $10 (2026-11-17 'No need spy, q
   assert.equal(leftOutText([]), "");
   assert.equal(leftOutText(undefined), "");
 });
+
+test("who leads, calls or puts: 55% or more leads, closer is about even (2026-11-17 'who is dominating call or put?')", async () => {
+  const { dominance, boardTotals } = await import("./leapOi.js");
+  assert.deepEqual(dominance(620, 380), { callPct: 62, putPct: 38, leader: "calls", text: "Calls lead · 62%" });
+  assert.deepEqual(dominance(300, 700), { callPct: 30, putPct: 70, leader: "puts", text: "Puts lead · 70%" });
+  assert.equal(dominance(52, 48).text, "About even · calls 52% / puts 48%");
+  assert.equal(dominance(55, 45).leader, "calls");
+  assert.equal(dominance(0, 0).leader, "none");
+  assert.equal(dominance(null, "x").text, "No calls or puts yet");
+  assert.equal(dominance(10, 0).text, "Calls lead · 100%");
+  assert.deepEqual(boardTotals([{ callOi: 10, putOi: 4 }, { callOi: 5 }, null]), { calls: 15, puts: 4 });
+  assert.deepEqual(boardTotals(undefined), { calls: 0, puts: 0 });
+});
+
+test("mid price, cost of one contract and spread (2026-11-17 'give me mid prize also')", async () => {
+  const { midPrice, midText, costText, spreadText } = await import("./leapOi.js");
+  assert.equal(midPrice(2.7, 2.85), 2.78);                  // 2.775 to the cent
+  assert.equal(midPrice(0, 0.06), 0.03);
+  assert.equal(midPrice(1, 0), null);                       // no ask: no real market
+  assert.equal(midPrice(null, 2), null);
+  assert.equal(midPrice("x", 2), null);
+  assert.equal(midText({ bid: 2.4, ask: 2.5 }), "2.45");
+  assert.equal(midText({ bid: null, ask: 2.5 }), "—");
+  assert.equal(costText({ bid: 2.4, ask: 2.5 }), "$245");
+  assert.equal(costText({ bid: 12.3, ask: 12.5 }), "$1,240");
+  assert.equal(costText({}), "—");
+  assert.equal(spreadText({ bid: 2.47, ask: 2.75 }), "10.7%");
+  assert.equal(spreadText({ bid: null, ask: 1 }), "—");
+});
+
+test("by-ticker order: A-Z, most call-heavy, most put-heavy; nothing open goes last", async () => {
+  const { sortByTicker } = await import("./leapOi.js");
+  const list = [
+    { ticker: "MU", callOi: 63, putOi: 37 },
+    { ticker: "AAA", callOi: 0, putOi: 0 },
+    { ticker: "TSM", callOi: 28, putOi: 72 },
+    { ticker: "CVX", callOi: 100, putOi: 0 },
+  ];
+  assert.deepEqual(sortByTicker(list, "az").map((l) => l.ticker), ["AAA", "CVX", "MU", "TSM"]);
+  assert.deepEqual(sortByTicker(list, "calls").map((l) => l.ticker), ["CVX", "MU", "TSM", "AAA"]);
+  assert.deepEqual(sortByTicker(list, "puts").map((l) => l.ticker), ["TSM", "MU", "CVX", "AAA"]);
+  assert.deepEqual(sortByTicker(null, "calls"), []);
+  assert.equal(list[0].ticker, "MU");                        // the board's own list is not reordered
+});
+
+test("open interest change: signed, with thousands, nothing when there is no earlier day (2026-11-17 'All six')", () => {
+  assert.equal(oiChangeText(12400), "+12,400");
+  assert.equal(oiChangeText(-3100), "−3,100");
+  assert.equal(oiChangeText(0), "no change");
+  assert.equal(oiChangeText(null), "");
+  assert.equal(oiChangeText(undefined), "");
+  assert.equal(oiChangeTone(5), "is-up");
+  assert.equal(oiChangeTone(-5), "is-down");
+  assert.equal(oiChangeTone(0), "is-flat");
+  assert.equal(oiChangeTone(null), "is-flat");
+  assert.equal(sinceText("2026-11-16T20:00:00-05:00"), "since Nov 16");
+  assert.equal(sinceText(null), "since yesterday");
+});
+
+test("contract facts: break-even and the stock move to reach it, call and put", () => {
+  const call = contractFacts({ side: "CALL", strike: 120, bid: 1.06, ask: 1.21, spot: 100 });
+  assert.deepEqual(call, { mid: 1.14, breakeven: 121.14, move: 21.1, cost: 114 });
+  const put = contractFacts({ side: "PUT", strike: 85, bid: 20.25, ask: 21.05, spot: 100 });
+  assert.equal(put.breakeven, 64.35);
+  assert.equal(put.move, -35.7);
+  assert.deepEqual(contractFacts({ side: "CALL", strike: 100, bid: null, ask: 1 }), { mid: null, breakeven: null, move: null, cost: null });
+  assert.equal(contractFacts({ side: "CALL", strike: 100, bid: 1, ask: 1.2 }).move, null);   // no stock price
+  assert.equal(moveText(21.1), "+21.1%");
+  assert.equal(moveText(-35.7), "−35.7%");
+  assert.equal(moveText(null), "—");
+});
+
+test("recent searches: newest first, no repeats, junk dropped, at most 5", () => {
+  let list = [];
+  for (const t of ["nvda", "PLTR", "hood", "NVDA", "12ab", "amd", "tsla", "coin"]) list = addRecent(list, t);
+  assert.deepEqual(list, ["COIN", "TSLA", "AMD", "NVDA", "HOOD"]);
+  assert.equal(list.length, RECENT_MAX);
+  assert.deepEqual(addRecent(["nvda", "NVDA", "bad ticker"], ""), ["NVDA"]);
+  assert.deepEqual(addRecent(null, "pltr"), ["PLTR"]);
+});
+

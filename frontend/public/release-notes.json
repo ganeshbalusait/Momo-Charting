@@ -2,6 +2,63 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-17T23:53:00-05:00",
+      "heading": "LEAP OI Scanner and AGX Flow: OI change, expiry filter, Hot right now, contract card, recent searches, phone alert",
+      "items": [
+        "LEAP OI Scanner shows how much open interest changed since the previous day next to each strike: green when contracts were added, red when closed. It starts showing once a second day has been read, and over weekends and holidays it keeps the last real change.",
+        "AGX Flow has an Expiry row: All, This week, Next week, 30 days. The board, the totals and the calls-vs-puts bar all follow it.",
+        "AGX Flow has an Order row: Biggest $ or Hot right now. Hot right now lists the contracts with the most option dollars added since the last read, a few minutes ago. It works while the market is open, so yesterday's late trades never show as hot.",
+        "Tap any contract on either page for its facts card: bid, mid, ask, cost of one contract, spread, delta, open interest, volume, break-even at expiry, and how far the stock has to move to reach it. Chart and Options page buttons are on the card.",
+        "Your last 5 searches sit under the search box as one-tap buttons, on both pages.",
+        "AGX Flow phone alert (switch at the bottom of the page): one buzz when a watchlist stock, not Mag7, gets an unusual contract worth $1M or more. Bundled, at most every 10 minutes, market hours, inside your Momo Alert phone window. Each account turns it on for itself.",
+        "The Ask chat can now open LEAP OI Scanner and AGX Flow when you ask for them."
+      ]
+    },
+    {
+      "at": "2026-11-17T23:13:00-05:00",
+      "heading": "LEAP OI Scanner and AGX Flow: search any ticker",
+      "items": [
+        "Both pages have a 'Search any ticker' box at the top. Type a ticker (for example PLTR) and press Search or Enter: the page shows only that ticker, even if it is not on Mag7 or your watchlist. Tap 'Back to board' to return.",
+        "A ticker that has never been read is read first, ahead of the background warm-up, so you are not left waiting behind the whole watchlist.",
+        "If there is nothing to show, the page says why in plain words: no options at Schwab, an ETF (these pages are stocks only), or under $10.",
+        "The small box in LEAP OI Scanner's By ticker list is now called 'Filter this list', so the two boxes are not confused."
+      ]
+    },
+    {
+      "at": "2026-11-17T20:42:39-05:00",
+      "heading": "LEAP OI Scanner and AGX Flow: mid price, cost of one contract, and order by who leads",
+      "items": [
+        "Every contract on LEAP OI Scanner now shows the mid price (halfway between bid and ask), what one contract costs at the mid (mid x 100), and how wide the bid-ask spread is. The two headline cards show bid, mid and ask too.",
+        "AGX Flow rows show bid, mid and ask for each contract.",
+        "LEAP OI Scanner's By ticker list has a new Order row: A-Z, Most call-heavy, or Most put-heavy, so you can see at a glance which tickers lean hardest to calls or to puts.",
+        "AGX Flow's Watchlist no longer sits on 'Reading Schwab... (260 of 261)': tickers with no options (KITT, LIDR) are asked again after an hour, not every 5 minutes."
+      ]
+    },
+    {
+      "at": "2026-11-17T19:55:23-05:00",
+      "heading": "AGX Flow has two boards only: Mag7 and Watchlist",
+      "items": [
+        "The 'My tickers' button is gone from AGX Flow. The page now has just Mag7 and Watchlist, the same as LEAP OI Scanner."
+      ]
+    },
+    {
+      "at": "2026-11-17T19:52:15-05:00",
+      "heading": "LEAP OI Scanner and AGX Flow show who leads: calls or puts",
+      "items": [
+        "LEAP OI Scanner has a new 'Calls vs puts on this board' bar under the two headline cards: green is calls, red is puts, and it says who leads, like 'Calls lead · 62%'. Every ticker card in By ticker has its own small bar too.",
+        "AGX Flow has the same bar for today's option dollars across the board, and each ticker card says 'Calls lead' or 'Puts lead' with the percent.",
+        "A side leads from 55% of the total; closer than that reads 'About even'. This is what is open or traded, not a direction call."
+      ]
+    },
+    {
+      "at": "2026-11-17T19:49:49-05:00",
+      "heading": "LEAP OI Scanner and AGX Flow: Mag7 and Watchlist are separate boards",
+      "items": [
+        "LEAP OI Scanner's Board buttons are now 'Mag7' and 'Watchlist' (was 'Mag7 + Watchlist'). Watchlist shows your watchlist stocks without the seven Mag7 names, so NVDA and the rest no longer fill the top of it.",
+        "AGX Flow's Watchlist button works the same way: your watchlist without Mag7. Mag7 stays on its own button."
+      ]
+    },
+    {
       "at": "2026-11-17T18:06:40-05:00",
       "heading": "LEAP OI Scanner and AGX Flow scroll all the way down on the phone",
       "items": [

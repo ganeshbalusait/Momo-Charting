@@ -31667,6 +31667,15 @@ function TradingWorkspace({ authUser, onLogout }) {
                 setMobileChartSection("chart");
                 openChartSignalChart(symbol, "5m", "leap-oi");
               }}
+              onOpenOptions={(symbol) => {
+                // Tap a contract -> Options page (2026-11-17 "All six"): the Options page on that ticker. Same ticker
+                // already open -> no forced Schwab refresh; warm the phone chain like the Options tab does (review 11-17).
+                const target = String(symbol || "").trim().toUpperCase();
+                if (!target) return;
+                if (target !== oiFinderSymbol) chooseOiFinderTicker(target);
+                warmMobileQuickOptions(target).catch(() => {});
+                navigateMobileTerminal("Quick Options");
+              }}
             />
           </section>
         )}
@@ -31677,6 +31686,15 @@ function TradingWorkspace({ authUser, onLogout }) {
               onOpenChart={(symbol) => {
                 setMobileChartSection("chart");
                 openChartSignalChart(symbol, "5m", "agx-flow");
+              }}
+              onOpenOptions={(symbol) => {
+                // Tap a contract -> Options page (2026-11-17 "All six"): the Options page on that ticker. Same ticker
+                // already open -> no forced Schwab refresh; warm the phone chain like the Options tab does (review 11-17).
+                const target = String(symbol || "").trim().toUpperCase();
+                if (!target) return;
+                if (target !== oiFinderSymbol) chooseOiFinderTicker(target);
+                warmMobileQuickOptions(target).catch(() => {});
+                navigateMobileTerminal("Quick Options");
               }}
             />
           </section>

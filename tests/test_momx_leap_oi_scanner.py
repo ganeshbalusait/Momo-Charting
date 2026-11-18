@@ -245,3 +245,94 @@ def test_no_etfs_and_no_stocks_under_ten_dollars(tmp_path, monkeypatch):
     assert out["excluded"] == [{"ticker": "QQQ", "reason": "ETF"}, {"ticker": "SPY", "reason": "ETF"},
                                {"ticker": "NIO", "reason": "under $10"}]
     assert scanner.warm(["QQQ", "SPY"], tmp_path, NOW) == 0
+
+
+def test_a_searched_ticker_is_read_before_the_warm_up_queue(tmp_path, monkeypatch):
+    """2026-11-17 "Add search ticker also": a ticker typed into the search box jumps ahead of the warm-up's long
+    queue (about 260 names), so the trader is not left waiting minutes for it."""
+    import threading as _threading
+    gate = _threading.Event()
+    started = _threading.Event()
+    asked: list = []
+
+    def fetch(ticker, today):
+        asked.append(ticker)
+        if ticker == "AAPL":
+            started.set()
+            gate.wait(5)                                   # the reader is busy on the first warm-up ticker
+        doc = chain()
+        doc["symbol"] = ticker
+        return doc
+    monkeypatch.setattr(long_oi, "fetch", fetch)
+    assert scanner.warm(["AAPL", "MSFT", "AMZN"], tmp_path) == 3
+    assert started.wait(5)
+    out = scanner.board(["PLTR"], tmp_path)              # the search: not read yet, so queued at the front
+    assert [t["state"] for t in out["tickers"]] == ["pending"]
+    assert scanner.pending()[0] == "PLTR"
+    gate.set()
+    scanner._WORKER["thread"].join(5)
+    assert asked == ["AAPL", "PLTR", "MSFT", "AMZN"]
+    assert [t["state"] for t in scanner.board(["PLTR"], tmp_path)["tickers"]] == ["ready"]
+
+
+def _doc(stamp, oi):
+    return {"schema": scanner.COMPACT_SCHEMA, "symbol": "NVDA", "fetchedAt": stamp, "spot": 180.0,
+            "rows": [{"side": "CALL", "expiry": "2027-03-19", "strike": 200.0, "oi": oi, "volume": 10, "delta": 0.2,
+                      "days": 122, "bid": 5.0, "ask": 5.2}]}
+
+
+def test_open_interest_change_is_against_the_previous_day_not_the_last_read(tmp_path):
+    """2026-11-17 "All six": the change is vs the last read on an EARLIER day (the OCC posts open interest once a
+    day), carried through later reads the same day; no earlier day -> no change shown, never a made-up 0."""
+    monday = _doc("2026-11-16T20:00:00-05:00", 1000)
+    tuesday = _doc("2026-11-17T08:00:00-05:00", 1500)
+    tuesday_later = _doc("2026-11-17T13:00:00-05:00", 1500)
+    assert "prevOi" not in scanner.with_previous(None, monday)
+    assert "prevOi" not in scanner.with_previous(tuesday, tuesday_later)        # same day, nothing earlier
+    second = scanner.with_previous(monday, tuesday)
+    assert second["prevOi"] == {"CALL|2027-03-19|200": 1000} and second["prevAt"] == monday["fetchedAt"]
+    carried = scanner.with_previous(second, tuesday_later)
+    assert carried["prevOi"] == second["prevOi"] and carried["prevAt"] == monday["fetchedAt"]
+    row, = scanner.ticker_rows(carried, min_days=1, max_days=400, side="calls")
+    assert row["oiChange"] == 500 and row["oiChangeSince"] == monday["fetchedAt"]
+    first, = scanner.ticker_rows(monday, min_days=1, max_days=400, side="calls")
+    assert first["oiChange"] is None and first["oiChangeSince"] is None
+
+
+def test_the_previous_day_survives_a_restart(tmp_path):
+    scanner._save_compact(tmp_path, "NVDA", _doc("2026-11-16T20:00:00-05:00", 1000))
+    scanner.reset()                                                              # memory gone, the file stays
+    saved = scanner._save_compact(tmp_path, "NVDA", _doc("2026-11-17T08:00:00-05:00", 900))
+    assert saved["prevOi"] == {"CALL|2027-03-19|200": 1000}
+    row, = scanner.ticker_rows(saved, min_days=1, max_days=400, side="calls")
+    assert row["oiChange"] == -100
+
+
+
+def test_a_weekend_read_keeps_fridays_real_change(tmp_path):
+    """Review 2026-11-17: Saturday and Sunday reads see Friday's numbers again; the page must keep showing Friday's
+    real change, not "no change" on every row."""
+    thursday = _doc("2026-11-12T20:00:00-05:00", 1000)
+    friday = scanner.with_previous(thursday, _doc("2026-11-13T09:00:00-05:00", 1400))
+    saturday = scanner.with_previous(friday, _doc("2026-11-14T09:00:00-05:00", 1400))
+    sunday = scanner.with_previous(saturday, _doc("2026-11-15T09:00:00-05:00", 1400))
+    for doc in (friday, saturday, sunday):
+        row, = scanner.ticker_rows(doc, min_days=1, max_days=400, side="calls")
+        assert row["oiChange"] == 400 and row["oiChangeSince"] == thursday["fetchedAt"]
+    monday = scanner.with_previous(sunday, _doc("2026-11-16T09:00:00-05:00", 1300))   # the next real posting
+    row, = scanner.ticker_rows(monday, min_days=1, max_days=400, side="calls")
+    assert row["oiChange"] == -100 and row["oiChangeSince"] == sunday["fetchedAt"]
+
+
+def test_a_brand_new_build_up_shows_its_whole_change(tmp_path):
+    """Review 2026-11-17: a strike outside yesterday's kept rows (or with no open interest) still gets a change, from
+    the whole chain's open interest kept on disk (allOi)."""
+    yesterday = {**_doc("2026-11-16T20:00:00-05:00", 1000), "allOi": {"CALL|2027-03-19|200": 1000, "CALL|2027-03-19|210": 2000}}
+    today = _doc("2026-11-17T09:00:00-05:00", 1500)
+    today["rows"] += [{**today["rows"][0], "strike": 210.0, "oi": 40000}, {**today["rows"][0], "strike": 230.0, "oi": 9000}]
+    scanner._save_compact(tmp_path, "NVDA", yesterday)
+    saved = scanner._save_compact(tmp_path, "NVDA", today)
+    assert "allOi" not in saved and "allOi" not in scanner._COMPACT["NVDA"]      # memory stays small
+    changes = {r["strike"]: r["oiChange"] for r in scanner.ticker_rows(saved, min_days=1, max_days=400, side="calls")}
+    assert changes == {200.0: 500, 210.0: 38000, 230.0: 9000}
+    assert set(scanner.compact({"symbol": "NVDA", "fetchedAt": "x", "spot": 180.0, "rows": []})) >= {"allOi"}

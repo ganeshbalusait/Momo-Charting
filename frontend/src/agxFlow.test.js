@@ -86,12 +86,13 @@ test("reading progress and query", () => {
   assert.deepEqual(MAG7_BOARD, ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]);   // no SPY/QQQ (2026-11-17)
 });
 
-test("watchlist board: Mag7 first, then the watchlist, no repeats, at most 400", async () => {
+test("watchlist board: the watchlist without the Mag7 names, no repeats, at most 400", async () => {
   const { watchlistBoard, MAG7_BOARD: board } = await import("./agxFlow.js");
-  assert.deepEqual(watchlistBoard(["pltr", "NVDA", "bad ticker", "SOFI"]), [...board, "PLTR", "SOFI"]);
+  assert.deepEqual(watchlistBoard(["pltr", "NVDA", "bad ticker", "SOFI", "pltr"]), ["PLTR", "SOFI"]);
   const lots = Array.from({ length: 500 }, (_, i) => `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + Math.floor(i / 26) % 26)}${String.fromCharCode(65 + Math.floor(i / 676))}`);
   assert.equal(watchlistBoard(lots).length, 400);
-  assert.deepEqual(watchlistBoard(null), board);
+  assert.deepEqual(watchlistBoard(null), []);
+  assert.equal(board.length, 7);
 });
 
 test("strip keeps the 12 tickers with the most option dollars when the board is big", async () => {
@@ -125,3 +126,14 @@ test("whole-watchlist first read says roughly how long is left", async () => {
   assert.equal(readingText({ pending: 360, done: 9, total: 369 }), "Reading Schwab… (9 of 369) · about 12 min left");
   assert.equal(readingText({ pending: 0, done: 9, total: 9 }), "");
 });
+
+test("flow query carries expiry and order only when they are not the defaults (2026-11-17 'All six')", async () => {
+  const { flowQuery, EXPIRY_FILTERS, ORDERS } = await import("./agxFlow.js");
+  assert.equal(flowQuery(["NVDA", "AAPL"]), "/api/agx-flow?symbols=NVDA%2CAAPL");
+  assert.equal(flowQuery(["NVDA"], { expiry: "all", order: "premium" }), "/api/agx-flow?symbols=NVDA");
+  assert.equal(flowQuery(["NVDA"], { expiry: "week" }), "/api/agx-flow?symbols=NVDA&expiry=week");
+  assert.equal(flowQuery(["NVDA"], { expiry: "next", order: "hot" }), "/api/agx-flow?symbols=NVDA&expiry=next&order=hot");
+  assert.deepEqual(EXPIRY_FILTERS.map((e) => e.label), ["All", "This week", "Next week", "30 days"]);
+  assert.deepEqual(ORDERS.map((o) => o.label), ["Biggest $", "Hot right now"]);
+});
+

@@ -128,8 +128,18 @@ export function updatedText(tickers) {
   return `Updated ${oldest.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} ET`;
 }
 
-export function flowQuery(symbols) {
-  return `/api/agx-flow?symbols=${encodeURIComponent(symbols.join(","))}`;
+// Expiry and order (2026-11-17 "All six"): the server applies both before it picks the top 60, so a short-dated
+// filter is not left with the few rows that happened to make the all-expiry top 60.
+export const EXPIRY_FILTERS = [
+  { id: "all", label: "All" }, { id: "week", label: "This week" }, { id: "next", label: "Next week" }, { id: "month", label: "30 days" },
+];
+export const ORDERS = [{ id: "premium", label: "Biggest $" }, { id: "hot", label: "Hot right now" }];
+
+export function flowQuery(symbols, { expiry = "all", order = "premium" } = {}) {
+  let url = `/api/agx-flow?symbols=${encodeURIComponent(symbols.join(","))}`;
+  if (expiry && expiry !== "all") url += `&expiry=${encodeURIComponent(expiry)}`;
+  if (order && order !== "premium") url += `&order=${encodeURIComponent(order)}`;
+  return url;
 }
 
 // A stable React key for a flow row.
@@ -143,9 +153,10 @@ export const WATCHLIST_MAX = 400;
 
 export function watchlistBoard(watchlist) {
   const out = [];
-  for (const raw of [...MAG7_BOARD, ...(Array.isArray(watchlist) ? watchlist : [])]) {
+  // Separate boards (2026-11-17 "give me separate mag7 and watchlist"): the watchlist without the Mag7 names.
+  for (const raw of Array.isArray(watchlist) ? watchlist : []) {
     const ticker = String(raw || "").trim().toUpperCase();
-    if (SYMBOL.test(ticker) && !out.includes(ticker)) out.push(ticker);
+    if (SYMBOL.test(ticker) && !MAG7_BOARD.includes(ticker) && !out.includes(ticker)) out.push(ticker);
     if (out.length >= WATCHLIST_MAX) break;
   }
   return out;
