@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { cleanLink } from "./appLinks.js";
 import {
-  SIMULATED_NOTE, chartLink, cleanTicker, contractLabel, dayLabel, failureText, ladder, money, openGain, runLine, signedMoney,
+  SIMULATED_NOTE, chartLink, cleanTicker, contractLabel, dayLabel, failureText, ladder, money, openGain, latestTradeFacts, rowMoney, rowPercent, runLine, signedMoney, sortRuns, tickersDashboard,
   statusLabel, tickerProblem, timeEt, tradeRows, winsLabel,
 } from "./tickerTrader.js";
 
@@ -71,6 +71,62 @@ test("a run says what it is doing", () => {
   assert.equal(winsLabel({ tradeCount: 3, wins: 2 }), "2 of 3");
   assert.equal(winsLabel({ tradeCount: 0, wins: 0 }), "–");
   assert.equal(statusLabel({ status: "stopped" }), "Stopped");
+});
+
+test("the ticker list shows the open trade's profit at the bid next to the ticker (2026-11-18)", () => {
+  // OPEN: 2 held, bought at $1.45, bid $2.00 -> +$110 open, +38%; $30 already banked from T1.
+  const run = { ticker: "NVDA", side: "CALL", open: OPEN, note: "In a trade: holding 2 of 3", net: 30, openPl: 110, liveNet: 140 };
+  assert.equal(rowMoney(run), 140);
+  assert.equal(signedMoney(rowMoney(run)), "+$140");
+  assert.equal(runLine(run), "In a trade: holding 2 of 3 · open +$110 (+38%)");
+  // No bid seen yet: no open figure, the list keeps the banked money.
+  assert.equal(runLine({ ...run, openPl: null, liveNet: 30 }), "In a trade: holding 2 of 3");
+  assert.equal(rowMoney({ ...run, openPl: null, liveNet: 30 }), 30);
+  // A server not yet restarted (no openPl / liveNet): worked out from the open trade's bid, entry and held.
+  const older = { ticker: "NVDA", side: "CALL", open: OPEN, note: "In a trade: holding 2 of 3", net: 30 };
+  assert.equal(rowMoney(older), 140);
+  assert.equal(runLine(older), "In a trade: holding 2 of 3 · open +$110 (+38%)");
+  assert.equal(rowMoney({ ...older, open: { ...OPEN, bid: null } }), 30);
+  assert.equal(rowMoney({ net: -12 }), -12);
+  // The % under the money: +$140 on the $435 the 3 contracts cost (cost missing -> entry x 100 x qty) = +32%.
+  assert.equal(rowPercent(run), "+32%");
+  // A closed trade: -$142 on $360 spent.
+  assert.equal(rowPercent({ net: -142, trades: [{ cost: 360, pl: -142 }] }), "−39%");
+  assert.equal(rowPercent({ net: 0, trades: [] }), "");                    // never bought: no %
+  assert.equal(runLine({ status: "idle", tradeCount: 1, wins: 1, openPl: 50 }), "1 trade · 1 win");
+});
+
+test("Your Tickers: newest trade first, with its contract, expiry, date and time (2026-11-18)", () => {
+  const spy = { id: "SPY-PUT", ticker: "SPY", side: "PUT", open: null, trades: [
+    { strike: 590, side: "PUT", expiry: "2026-11-14", day: "2026-11-13", boughtAt: "2026-11-13T09:31:00-05:00", closedAt: "2026-11-13T09:52:00-05:00" }] };
+  const avgo = { id: "AVGO-CALL", ticker: "AVGO", side: "CALL", trades: [],
+    open: { strike: 410, side: "CALL", expiry: "2026-11-21", boughtAt: "2026-11-18T10:05:00-05:00" } };
+  const lly = { id: "LLY-CALL", ticker: "LLY", side: "CALL", open: null, trades: [], noteAt: "2026-11-18T10:30:00-05:00" };
+  assert.deepEqual(sortRuns([spy, lly, avgo]).map((r) => r.ticker), ["AVGO", "SPY", "LLY"]);   // never bought goes last
+  assert.deepEqual(latestTradeFacts(avgo), { contract: "410 Call · exp Nov 21", when: "Bought Nov 18, 10:05 ET" });
+  assert.deepEqual(latestTradeFacts(spy), { contract: "590 Put · exp Nov 14", when: "Nov 13, 9:31 → 9:52 ET" });
+  assert.equal(latestTradeFacts(lly), null);
+  // A later close beats an earlier buy; a trade held overnight names its close day.
+  const old = { ...spy, trades: [{ ...spy.trades[0], closedAt: "2026-11-18T10:40:00-05:00" }] };
+  assert.equal(sortRuns([avgo, old])[0].ticker, "SPY");
+  assert.equal(latestTradeFacts(old).when, "Nov 13, 9:31 → 10:40 ET (Nov 18)");
+});
+
+test("the Your Tickers dashboard: today, win rate, trades, best and worst (2026-11-18)", () => {
+  const runs = [
+    { ticker: "SPY", trades: [{ pl: 5, closedAt: "2026-11-16T13:11:00-05:00" }], net: 5, open: null },
+    { ticker: "AVGO", trades: [{ pl: -183, closedAt: "2026-11-18T11:39:00-05:00" }], net: -183, open: null },
+    { ticker: "NVDA", trades: [], net: 30, open: { ...OPEN, pl: 30 }, note: "In a trade" },    // +$110 at the bid, $30 sold
+    { ticker: "LLY", trades: [], net: 0, open: null },
+  ];
+  const d = tickersDashboard(runs, "2026-11-18T18:15:00-05:00");
+  assert.deepEqual(d.today, { text: "−$43", tone: "is-down", note: "+$140 in 1 open" });     // -183 today + 140 open
+  assert.deepEqual(d.winRate, { text: "50%", note: "1 of 2 won" });
+  assert.deepEqual(d.trades, { text: "3", note: "2 closed · 1 open" });
+  assert.deepEqual(d.best, { text: "NVDA +$140", tone: "is-up", note: "worst AVGO −$183" });  // LLY never bought: left out
+  const none = tickersDashboard([{ ticker: "LLY", trades: [], open: null, net: 0 }], "2026-11-18T10:00:00-05:00");
+  assert.equal(none.winRate.text, "–");
+  assert.equal(none.best.text, "–");
 });
 
 test("closed trades are listed newest first with their reason", () => {

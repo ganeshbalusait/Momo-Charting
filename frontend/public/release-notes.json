@@ -2,6 +2,25 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-18T10:40:00-05:00",
+      "heading": "BOT Ticker trader: a dashboard, latest trade first, with contract, expiry, time, live P&L and %",
+      "items": [
+        "Your Tickers on the BOT page now shows each ticker's money including the trade it is still in, at the last bid. A ticker in a trade no longer shows $0.",
+        "The line under the ticker says how the open part is doing, for example \"In a trade: holding 3 of 3 · open −$69 (−35%)\". The tickers add up to the account's Up / Down.",
+        "Your Tickers is now a dashboard: four tiles on top (Today's P&L with open trades at the bid, Win rate, Trades, Best and worst ticker), then a tile per ticker, two across on a computer and one on the phone.",
+        "Your Tickers lists the latest trade first. Each ticker shows that trade's contract and expiry (\"362.5 Call · exp Nov 18\") and when it was bought, or bought and sold (\"Nov 16, 9:32 → 13:11 ET\"). Tickers never bought go last.",
+        "Next to each ticker's dollars is its percent: that money over what its trades cost to buy (for example −$90 and −45% on AVGO's $198)."
+      ]
+    },
+    {
+      "at": "2026-11-18T10:05:00-05:00",
+      "heading": "Chart ROI card: the close button no longer scrolls away",
+      "items": [
+        "On the phone, typing your entry scrolled the ROI card and its × went off the top, leaving only Delete. The × now stays pinned at the top of the card and is bigger to tap.",
+        "There is also a Close button at the bottom next to Delete. Closing keeps your plan and its lines on the chart; Delete still removes them."
+      ]
+    },
+    {
       "at": "2026-11-17T23:53:00-05:00",
       "heading": "LEAP OI Scanner and AGX Flow: OI change, expiry filter, Hot right now, contract card, recent searches, phone alert",
       "items": [

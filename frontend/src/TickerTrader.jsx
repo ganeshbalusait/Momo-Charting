@@ -11,7 +11,7 @@ import { deskCalendar, deskCurve, deskKpis, deskMonthKey } from "./botDesk.js";
 import {
   ALL_SCOPE, DEFAULT_SIZE, JOURNAL_POLL_MS, accountTiles, NOTE_MAX, NOTE_URL, REVIEW_LABEL, REVIEW_URL, SIMULATED_NOTE, SIZE_CHOICES, TICKER_CHIPS,
   TICKER_TRADER_POLL_MS, TICKER_TRADER_URL, breakdownTables, chartLink, cleanTicker, contractLabel, equityDays, failureText, improveItems,
-  journalStats, journalTrades, journalUrl, ladder, money, noteProblem, openGain, parseSize, runLine, saveSize, shouldAskReview,
+  journalStats, journalTrades, journalUrl, ladder, money, noteProblem, openGain, latestTradeFacts, parseSize, tickersDashboard, rowMoney, rowPercent, runLine, sortRuns, saveSize, shouldAskReview,
   sideLabel, signedMoney, sizeChip, sizeProblem, statusLabel, tickerProblem, timeEt, tone, tradeDetail, tradeRows, winsLabel,
 } from "./tickerTrader.js";
 import "./tickerTrader.css";
@@ -94,6 +94,24 @@ function AccountCard({ account, busy, onAct }) {
       </div>
       {resetting ? <ResetPanel startSize={tiles.start} busy={busy} onClose={() => setResetting(false)}
         onReset={async (size) => Boolean(await onAct("reset", { size }))} /> : null}
+    </div>
+  );
+}
+
+/** Four tiles over Your Tickers (2026-11-18 "Make it a dashboard"): today, win rate, trades, best / worst. */
+function TickersDashboard({ runs, asOf }) {
+  const d = useMemo(() => tickersDashboard(runs, asOf), [runs, asOf]);
+  const tile = (key, label, item) => (
+    <div className="tt-tile" data-testid={`tt-dash-${key}`}>
+      <span>{label}</span><b className={item.tone || ""}>{item.text}</b>{item.note ? <small className="tt-dim">{item.note}</small> : null}
+    </div>
+  );
+  return (
+    <div className="tt-dash" data-testid="tt-dash">
+      {tile("today", "TODAY", d.today)}
+      {tile("win", "WIN RATE", d.winRate)}
+      {tile("trades", "TRADES", d.trades)}
+      {tile("best", "BEST TICKER", d.best)}
     </div>
   );
 }
@@ -579,12 +597,25 @@ export default function TickerTrader({ viewSwitch, onAllTrades, initialTicker = 
             <div className="tt-card-head"><h4>YOUR TICKERS</h4><span className="tt-dim">{runs.length ? `${runs.length} of ${doc?.maxRuns || 10}` : ""}</span></div>
             {doc && !runs.length ? <span className="tt-why">None yet. Type a ticker above and tap Trade.</span> : null}
             {!doc && !error ? <span className="tt-why" role="status">Loading…</span> : null}
-            {runs.map((run) => (
+            {runs.length ? <TickersDashboard runs={runs} asOf={doc?.asOf} /> : null}
+            <div className="tt-grid">
+            {sortRuns(runs).map((run) => {
+              const facts = latestTradeFacts(run);
+              return (
               <button key={run.id} type="button" className="tt-row" data-testid="tt-row" onClick={() => setOpenId(run.id)}>
-                <span className="tt-row-main"><b>{run.ticker} · {sideLabel(run.side)}</b><small>{runLine(run)}</small></span>
-                <span className={"tt-row-money " + tone(run.net)}>{signedMoney(run.net)}</span>
+                <span className="tt-row-main">
+                  <b>{run.ticker} · {sideLabel(run.side)}</b>
+                  {facts ? <span className="tt-row-trade" data-testid="tt-row-trade"><em>{facts.contract}</em><em>{facts.when}</em></span> : null}
+                  <small>{runLine(run)}</small>
+                </span>
+                <span className={"tt-row-money " + tone(rowMoney(run))}>
+                  {signedMoney(rowMoney(run))}
+                  {rowPercent(run) ? <small className="tt-row-pct" data-testid="tt-row-pct">{rowPercent(run)}</small> : null}
+                </span>
               </button>
-            ))}
+              );
+            })}
+            </div>
             {runs.length ? (
               <button type="button" className="tt-chart" data-testid="tt-journal-all" onClick={() => setJournal(ALL_SCOPE)}>
                 Journal and AI review, all tickers ›

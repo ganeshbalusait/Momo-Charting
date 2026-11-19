@@ -70,6 +70,79 @@ export function contractLabel(trade) {
   return expiry ? `${parts} · ${expiry}` : parts;
 }
 
+/** The ticker's latest trade: the open one, else the last closed one. Null when nothing was bought. */
+export function latestTrade(run) {
+  if (run?.open) return run.open;
+  const trades = run?.trades || [];
+  return trades.length ? trades[trades.length - 1] : null;
+}
+
+/** When the ticker last did something, for the newest-first order (2026-11-18 "show me latest trade top"). */
+export function latestAt(run) {
+  const trade = latestTrade(run);
+  return String(trade?.closedAt || trade?.boughtAt || run?.noteAt || "");
+}
+
+/** Your Tickers, newest trade first; tickers never bought go after the ones with a trade. ET stamps from one
+ *  server sort as text. */
+export function sortRuns(runs) {
+  return [...(runs || [])].sort((a, b) => {
+    const traded = Number(Boolean(latestTrade(b))) - Number(Boolean(latestTrade(a)));
+    return traded || latestAt(b).localeCompare(latestAt(a));
+  });
+}
+
+/** The latest trade's contract and times for the list (2026-11-18 "with date and time and expiry, con[tract]"):
+ *  contract "410 Call · exp Nov 21" (the ticker is the row's title) and when "Bought Nov 18, 10:05 ET" / "Nov 17, 10:00 → 10:20 ET". */
+export function latestTradeFacts(run) {
+  const trade = latestTrade(run);
+  if (!trade) return null;
+  const strike = Number(trade.strike);
+  const expiry = dayLabel(trade.expiry);
+  const contract = [Number.isFinite(strike) && strike > 0 ? String(strike) : "", sideLabel(trade.side || run?.side)]
+    .filter(Boolean).join(" ") + (expiry ? ` · exp ${expiry}` : "");
+  const day = dayLabel(trade.boughtAt || trade.day);
+  const bought = timeEt(trade.boughtAt);
+  const closed = timeEt(trade.closedAt);
+  const when = run?.open === trade || !trade.closedAt
+    ? `Bought ${day}${bought ? `, ${bought}` : ""}`
+    : `${day}, ${bought.replace(" ET", "")} → ${closed}${dayLabel(trade.closedAt) !== day ? ` (${dayLabel(trade.closedAt)})` : ""}`;
+  return { contract, when };
+}
+
+/** The tiles over Your Tickers (2026-11-18 "This like dashboard" -> "Make it a dashboard"). `asOf` is the server's ET
+ *  stamp; "today" is its date. Today = trades closed today + every open trade at its bid (incl. any part already sold).
+ *  The account card already shows the all-time Up / Down, so it is not repeated here. */
+export function tickersDashboard(runs, asOf) {
+  const today = String(asOf || "").slice(0, 10);
+  let todayPl = 0, closed = 0, wins = 0, open = 0, openMoney = 0;
+  const perTicker = [];
+  for (const run of runs || []) {
+    for (const t of run.trades || []) {
+      closed += 1;
+      if (Number(t.pl) > 0) wins += 1;
+      if (today && String(t.closedAt || "").slice(0, 10) === today) todayPl += Number(t.pl) || 0;
+    }
+    if (run.open) {
+      open += 1;
+      const live = (openPl(run) || 0) + (Number(run.open.pl) || 0);
+      todayPl += live;
+      openMoney += live;
+    }
+    if (latestTrade(run)) perTicker.push({ ticker: run.ticker, money: Number(rowMoney(run)) || 0 });
+  }
+  perTicker.sort((a, b) => b.money - a.money);
+  const best = perTicker[0], worst = perTicker[perTicker.length - 1];
+  const round = (n) => Math.round(n * 100) / 100;
+  return {
+    today: { text: signedMoney(round(todayPl)), tone: tone(todayPl), note: open ? `${signedMoney(round(openMoney))} in ${open} open` : "nothing open" },
+    winRate: { text: closed ? `${Math.round((wins / closed) * 100)}%` : "–", note: closed ? `${wins} of ${closed} won` : "no closed trades" },
+    trades: { text: String(closed + open), note: `${closed} closed · ${open} open` },
+    best: best ? { text: `${best.ticker} ${signedMoney(best.money)}`, tone: tone(best.money),
+      note: worst && worst !== best ? `worst ${worst.ticker} ${signedMoney(worst.money)}` : "" } : { text: "–", tone: "", note: "" },
+  };
+}
+
 /** The pill beside the ticker: what the run is doing, in his words. */
 export function statusLabel(run) {
   if (!run) return "";
@@ -80,9 +153,52 @@ export function statusLabel(run) {
 }
 
 /** The small line under "NVDA · Call" in the list. */
+/** The ticker's money on the list: closed trades plus the open trade at its last bid (2026-11-18 "show pnl next
+ *  to tickers"). Falls back to `net` from a server that does not send liveNet yet. */
+export function rowMoney(run) {
+  const live = Number(run?.liveNet);
+  if (run?.liveNet !== null && run?.liveNet !== undefined && Number.isFinite(live)) return live;
+  const open = openPl(run);
+  return open === null ? run?.net : Math.round(((Number(run?.net) || 0) + open) * 100) / 100;
+}
+
+/** The held contracts at their last bid: the server's openPl, or worked out from the open trade (a server that has
+ *  not been restarted since 2026-11-18 sends bid, entry and held but not openPl). Null until a bid has been seen. */
+export function openPl(run) {
+  if (!run?.open) return null;
+  if (run.openPl !== undefined) return run.openPl === null || !Number.isFinite(Number(run.openPl)) ? null : Number(run.openPl);
+  const { bid, entry, held } = run.open;
+  if (bid === null || bid === undefined || !Number.isFinite(Number(bid)) || Number(bid) < 0 || !(Number(entry) > 0) || !(Number(held) > 0)) return null;
+  return Math.round((Number(bid) - Number(entry)) * 100 * Number(held) * 100) / 100;
+}
+
+/** "−38%" under the ticker's money (2026-11-18 "I don't see percentage"): the money (closed trades + the open one at
+ *  its bid) over what those trades cost to buy. "" when nothing was bought. */
+export function rowPercent(run) {
+  const costOf = (t) => {
+    const cost = Number(t?.cost);
+    if (cost > 0) return cost;
+    const entry = Number(t?.entry), qty = Number(t?.qty);
+    return entry > 0 && qty > 0 ? entry * 100 * qty : 0;
+  };
+  const spent = (run?.trades || []).reduce((sum, t) => sum + costOf(t), 0) + (run?.open ? costOf(run.open) : 0);
+  const value = Number(rowMoney(run));
+  if (!(spent > 0) || !Number.isFinite(value)) return "";
+  const pct = Math.round((value / spent) * 100);
+  return `${pct > 0 ? "+" : pct < 0 ? "−" : ""}${Math.abs(pct)}%`;
+}
+
+/** " · open +$42 (+12%)" for a trade still held, once a bid has been seen. */
+export function openPlText(run) {
+  const pl = openPl(run);
+  if (pl === null) return "";
+  const gain = openGain(run.open);
+  return ` · open ${signedMoney(pl)}${gain ? ` (${gain})` : ""}`;
+}
+
 export function runLine(run) {
   if (!run) return "";
-  if (run.open || run.status === "waiting") return run.note || statusLabel(run);
+  if (run.open || run.status === "waiting") return (run.note || statusLabel(run)) + openPlText(run);
   const count = Number(run.tradeCount) || 0;
   if (!count) return run.note || "No trades yet";
   const wins = Number(run.wins) || 0;

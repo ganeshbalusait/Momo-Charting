@@ -723,11 +723,16 @@ def test_the_account_value_follows_the_open_trades_last_bid_and_a_sale_puts_the_
     account = trader.snapshot()["account"]
     # 2 x $0.70 bid + 1 x $4.30 bid = $570 for what cost $584: the account is worth $14 less.
     assert account["openValue"] == 570.0 and account["value"] == 1986.0 and account["net"] == -14.0
+    # Each ticker's own open profit at that bid (2026-11-18 "show pnl next to tickers"): the two add up to the account's.
+    nvda, amd = run_of(trader), run_of(trader, "AMD-CALL")
+    assert nvda["openPl"] == -4.0 and amd["openPl"] == -10.0 and nvda["net"] == amd["net"] == 0
+    assert nvda["liveNet"] == -4.0 and amd["liveNet"] == -10.0
     trader.stop("AMD-CALL")
     world.step(trader)                                       # sold 1 at the $4.30 bid: -$10
     account = trader.snapshot()["account"]
     amd = run_of(trader, "AMD-CALL")
     assert amd["trades"][0]["pl"] == -10.0 and amd["net"] == -10.0 and run_of(trader)["net"] == 0
+    assert amd["openPl"] is None and amd["liveNet"] == -10.0                    # sold: nothing open, the loss is banked
     assert account["cash"] == 1846.0 and account["invested"] == 144.0 and account["realized"] == -10.0
     assert amd["trades"][0]["balanceAfter"] == 1990.0        # the account after that trade, open trades at cost
 

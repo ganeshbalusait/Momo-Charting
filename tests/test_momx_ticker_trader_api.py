@@ -55,6 +55,7 @@ def test_owner_runs_a_ticker_through_the_proxy(tmp_path, monkeypatch, trader):
             status, started = api.post(ROUTE + "/start", {"ticker": "nvda", "side": "call"}, headers=ADMIN)
             trader.tick()
             trader.tick()
+            trader.tick()                                     # a price update after the buy records the bid
             _, after = api.get(ROUTE, headers=ADMIN)
             stop_status, stopping = api.post(ROUTE + "/stop", {"id": "NVDA-CALL"}, headers=ADMIN)
             trader.tick()                                     # Stop answers at once; the next tick sells
@@ -66,6 +67,9 @@ def test_owner_runs_a_ticker_through_the_proxy(tmp_path, monkeypatch, trader):
     assert status == 200 and started["ok"] is True and started["run"]["id"] == "NVDA-CALL" and started["run"]["status"] == "waiting"
     run = after["runs"][0]
     assert run["status"] == "open" and run["open"]["contract"] == CALL and run["open"]["entry"] == 1.1 and run["open"]["qty"] == 3
+    # The list's money next to the ticker (2026-11-18): 3 held, bought at $1.10, bid $1.00 -> -$30 open.
+    assert run["openPl"] == -30.0 and run["net"] == 0 and run["liveNet"] == -30.0
+    assert stopped["run"]["openPl"] is None and stopped["run"]["liveNet"] == -30.0
     assert stopping["run"]["stopping"] is True and stopping["run"]["open"]["held"] == 3
     assert stop_status == 200 and stopped["run"]["status"] == "stopped" and stopped["run"]["trades"][0]["pl"] == -30.0
     assert again_status == 200 and again["run"]["status"] == "waiting"

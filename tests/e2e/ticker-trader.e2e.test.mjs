@@ -30,7 +30,7 @@ const CLOSED = { id: "NVDA-CALL-1", day: "2026-11-12", ticker: "NVDA", side: "CA
   boughtAt: "2026-11-12T10:00:00-05:00", closedAt: "2026-11-12T10:20:00-05:00", status: "closed", pl: -142,
   reason: "Stop: stock traded through 166.80, sold 3 at $0.73.", balanceAfter: 9858 };
 const NVDA = { id: "NVDA-CALL", ticker: "NVDA", side: "CALL", status: "open", note: "In a trade: holding 2 of 3", noteAt: "2026-11-13T10:42:00-05:00",
-  balance: 9633, startBalance: 10000, net: -77, tradeCount: 1, wins: 0, stock: 161.2, stockAt: "2026-11-13T10:42:00-05:00",
+  balance: 9633, startBalance: 10000, net: -77, openPl: 110, liveNet: 33, tradeCount: 1, wins: 0, stock: 161.2, stockAt: "2026-11-13T10:42:00-05:00",
   open: TRADE, trades: [CLOSED] };
 // One account for every ticker (2026-11-16): $10,000, -$142 closed and +$65 banked, 2 contracts held that cost $290
 // and are worth $400 at the $2.00 bid.
@@ -61,7 +61,7 @@ function fakeServer(initial = [NVDA], account = ACCOUNT) {
     [STOP]: (write) => {
       const run = find(write);
       state.account = { ...fresh(10000), cash: 10033, value: 10033, net: 33, realized: 33 };
-      Object.assign(run, { status: "stopped", open: null, note: "Stopped. Tap Trade again for the next one.", tradeCount: 2, wins: 1, balance: 10033, net: 33,
+      Object.assign(run, { status: "stopped", open: null, note: "Stopped. Tap Trade again for the next one.", tradeCount: 2, wins: 1, balance: 10033, net: 33, openPl: null, liveNet: 33,
         trades: [...run.trades, { ...TRADE, status: "closed", closedAt: "2026-11-13T10:43:00-05:00", pl: 175, balanceAfter: 10033,
           reason: "T1 hit: sold 1 at $2.10, stop to break-even. Stopped by you: sold 2 at the bid $2.00." }] });
       return { json: { ok: true, run } };
@@ -103,7 +103,15 @@ e2eTest("Research has a Ticker trader button beside All trades; typing a ticker 
     await panel.locator("[data-testid='tt-row']").first().waitFor({ timeout: 30_000 });
     assert.match(await panel.locator("[data-testid='tt-simulated']").textContent(), /Simulated inside the app\. No order goes to any broker\./);
     assert.equal(await panel.locator("[aria-label='Call or Put'] button[aria-pressed='true']").textContent(), "Call");
-    assert.match(await panel.locator("[data-testid='tt-row']").first().textContent(), /NVDA · Call.*In a trade: holding 2 of 3.*−\$77/s);
+    assert.match(await panel.locator("[data-testid='tt-row']").first().textContent(), /NVDA · Call.*In a trade: holding 2 of 3 · open \+\$110 \(\+38%\).*\+\$33/s);   // closed −$77 + $110 open (2026-11-18)
+    // "show me latest trade top with date and time and expiry, con[tract]" (2026-11-18).
+    assert.deepEqual(await texts(panel.locator("[data-testid='tt-row']").first().locator("[data-testid='tt-row-trade'] em")),
+      ["165 Call · exp Nov 14", "Bought Nov 13, 10:05 ET"]);
+    // "Make it a dashboard" (2026-11-18): four tiles over the list. 1 closed (-$142, a loss), 1 open worth +$175 at the
+    // bid with T1's $65 banked; asOf is Nov 13, the closed trade was Nov 12, so today is the open trade alone.
+    assert.deepEqual(await texts(panel.locator("[data-testid='tt-dash'] .tt-tile b")), ["+$175", "0%", "2", "NVDA +$33"]);
+    // "I don't see percentage": +$33 on the $360 + $435 the two trades cost = +4%, under the money.
+    assert.equal(await panel.locator("[data-testid='tt-row'] [data-testid='tt-row-pct']").first().textContent(), "+4%");
 
     // A ticker that cannot be sent is refused on the screen, with no request.
     await panel.locator("#tt-ticker").fill("nv1da");

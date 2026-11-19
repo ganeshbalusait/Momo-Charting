@@ -275,7 +275,7 @@ export default function ChartProjectRoiCard({
   </div>;
 
   return (
-    <>{marker}<aside className="chart-project-roi" aria-label={`Project ROI for ${ticker}`} data-testid="chart-project-roi" onPointerDown={(event) => event.stopPropagation()}>
+    <>{marker}<aside className="chart-project-roi" aria-label={`Project ROI for ${ticker}`} data-testid="chart-project-roi" onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") closeCard(); }}>
       <header>
         <b>Project ROI</b>
         <button type="button" className="chart-project-roi-close" aria-label="Close Project ROI (lines stay on the chart)" title="Close (lines stay on the chart)" onClick={closeCard}>×</button>
@@ -426,7 +426,12 @@ export default function ChartProjectRoiCard({
         {otherResult?.ready && otherResult.contract ? sidePlan(otherResult, `${otherResult.side === "CALL" ? "Call" : "Put"} side · ${ticker} ${formatStrike(otherResult.strike)}${otherResult.sideLetter} entry $${otherResult.entry.toFixed(2)}`) : null}
         <p className="chart-project-roi-note">Estimate from the contract's live price, delta and gamma - not a promise. Time decay is not included.</p>
       </>}
-      <button type="button" className="chart-project-roi-delete" onClick={deletePlan}>Delete</button>
+      {/* Close at the bottom too (2026-11-18 "I entered manually my entry unable to close"): typing the entry
+          scrolls the card on a phone, taking the top × out of view. */}
+      <footer className="chart-project-roi-foot">
+        <button type="button" className="chart-project-roi-delete" onClick={deletePlan}>Delete</button>
+        <button type="button" className="chart-project-roi-done" aria-label="Close the ROI card (lines stay on the chart)" onClick={closeCard}>Close</button>
+      </footer>
     </aside></>
   );
 }

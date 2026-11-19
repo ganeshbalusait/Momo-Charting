@@ -193,6 +193,36 @@ e2eTest("on a phone the ROI card fits the screen and scrolls inside itself", asy
   });
 });
 
+e2eTest("on a phone, after typing an entry and scrolling, the × is still on screen and closes the card", async () => {
+  // 2026-11-18 "I entered manually my entry unable to close": the × scrolled away with the card.
+  await withApp(chartAppOptions({ viewport: PHONE }), async (app) => {
+    const { page } = app;
+    const chart = await chartCard(page, "AAPL");
+    const roi = await openCard(chart);
+    const entry = roi.locator('input[aria-label="Entry option price"]');
+    await entry.fill("0.51");
+    await entry.press("Enter");
+    await roi.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    const card = await roi.boundingBox();
+    const close = await roi.locator(".chart-project-roi-close").boundingBox();
+    assert.ok(close && close.y >= card.y - 1 && close.y + close.height <= card.y + card.height, "the × stays inside the visible card");
+    assert.ok(close.width >= 30 && close.height >= 30, "the × is big enough for a finger");
+    await roi.locator(".chart-project-roi-close").click();
+    await roi.waitFor({ state: "detached" });
+    assert.ok((await drawnLines(chart)).length >= 2, "closing keeps the lines");
+    // On a phone the Call/Put/Both buttons are hidden: ROI off then on brings the card back (plan kept).
+    const roiButton = chart.locator("button.oi-finder-chart-roi");
+    await roiButton.click();
+    await roiButton.click();
+    const again = chart.locator(ROI);
+    await again.waitFor({ state: "visible", timeout: 30_000 });
+    await again.locator(".chart-project-roi-done").scrollIntoViewIfNeeded();
+    await again.locator(".chart-project-roi-done").click();
+    await again.waitFor({ state: "detached" });
+    noPageErrors(app);
+  });
+});
+
 e2eTest("two AAPL charts share one plan: a fill typed in one moves the other's Entry line", async () => {
   await withCharts({ workspace: { layoutId: "two-columns", symbols: ["AAPL"], timeframes: ["5m", "15m"] } }, async (app) => {
     const { page } = app;

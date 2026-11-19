@@ -450,6 +450,11 @@ class TickerTrader:
         trades = out.get("trades") or []
         held = out.get("open") if isinstance(out.get("open"), Mapping) else {}
         out["net"] = round(sum(_num(t.get("pl")) or 0.0 for t in trades) + (_num(held.get("pl")) or 0.0), 2)
+        # The open trade's contracts still held, at their last bid (2026-11-18 "Bot trade show pnl next to tickers").
+        # None until a bid has been seen; the account card counts them the same way (account()).
+        bid, entry, left = _num(held.get("bid")), _num(held.get("entry")), int(_num(held.get("held")) or 0)
+        out["openPl"] = round((bid - entry) * 100 * left, 2) if held and bid is not None and bid >= 0 and entry and left > 0 else None
+        out["liveNet"] = round(out["net"] + (out["openPl"] or 0.0), 2)
         out["tradeCount"] = len(trades)
         out["wins"] = sum(1 for t in trades if (t.get("pl") or 0) > 0)
         return out
