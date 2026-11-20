@@ -764,6 +764,64 @@ def _level_lines(levels: dict, focus: str | None) -> list[str]:
     return [line for line in (chosen or [averages, today, prior, pivot]) if line]
 
 
+#: Support and resistance asked by name (2026-11-20, "Why chatbot not showing support and resistance?": the answer
+#: listed every level but never said which were support and which resistance).
+_SR_WORDS = re.compile(r"\bsupports?\b|\bresistances?\b|\bs\s*/\s*r\b|\bsr\b")
+SR_PER_SIDE = 3
+
+
+def support_resistance(levels: dict) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """(support below the close, nearest first; resistance above it, nearest first), up to SR_PER_SIDE each, from the
+    chart's own levels: averages, premarket / today / this week / previous day high and low, day and week pivots."""
+    close = levels.get("lastClose")
+    if not isinstance(close, (int, float)) or close <= 0:
+        return [], []
+    session, previous, pivots = levels.get("session") or {}, levels.get("previous") or {}, levels.get("pivots") or {}
+    found: list[tuple[str, float]] = []
+
+    def add(name: str, value: Any) -> None:
+        if isinstance(value, (int, float)) and value > 0:
+            found.append((name, float(value)))
+
+    # Price levels only, plus the 200 SMA: the 9/21/50 EMAs sit cents from the price on a 5m chart and would crowd out
+    # the levels that matter (they are still listed in the lines below).
+    add("SMA 200", levels.get("sma200"))
+    for key, name in (("pm", "premarket"), ("day", "today's"), ("week", "this week's")):
+        row = session.get(key) or {}
+        add(f"{name} high".capitalize(), row.get("high"))
+        add(f"{name} low".capitalize(), row.get("low"))
+    prior = previous.get("DAY") or {}
+    add("Previous day high", prior.get("high"))
+    add("Previous day low", prior.get("low"))
+    for frame, word in (("DAY", "Day"), ("WEEK", "Week")):
+        row = pivots.get(frame) or {}
+        for key in ("R2", "R1", "PP", "S1", "S2"):
+            add(f"{word} pivot {key}", row.get(key))
+    seen: set[float] = set()
+    below, above = [], []
+    for name, value in sorted(found, key=lambda item: abs(item[1] - close)):
+        key = round(value, 2)
+        if key in seen or key == round(close, 2):
+            continue
+        seen.add(key)
+        (below if value < close else above).append((name, value))
+    return below[:SR_PER_SIDE], above[:SR_PER_SIDE]
+
+
+def sr_lines(symbol: str, levels: dict) -> list[str]:
+    """Plain support and resistance lines, a beginner can follow (what the words mean, then the nearest prices)."""
+    below, above = support_resistance(levels)
+    if not below and not above:
+        return []
+    close = _money(levels.get("lastClose"))
+    words = lambda rows: "; ".join(f"{_money(value)} ({name})" for name, value in rows)
+    lines = [f"Support = price levels BELOW {symbol}'s {close} that traders watch as a floor. "
+             f"Resistance = price levels ABOVE it that traders watch as a ceiling. They are levels to watch, not a forecast."]
+    lines.append(f"Nearest resistance above {close}: {words(above)}." if above else f"No resistance level above {close} on this chart.")
+    lines.append(f"Nearest support below {close}: {words(below)}." if below else f"No support level below {close} on this chart.")
+    return lines
+
+
 #: The trader's rule (2026-11-11, "Don't use vwap"): the chat's analysis never uses VWAP; the chart still draws it.
 VWAP_LINE = "VWAP is not used in the app's analysis; it is drawn on the chart."
 
@@ -783,6 +841,8 @@ def chart_levels_tool(args: Mapping, ctx: Mapping) -> dict:
         return reply
     levels, tape = result["levels"], result.get("tape") or {}
     lines = [f"{symbol} chart levels, {timeframe}. Newest candle {_candle_words(levels['lastTime'], timeframe)}, close {_money(levels['lastClose'])}."]
+    if _SR_WORDS.search(str(args.get("question") or "").lower()):
+        lines += sr_lines(symbol, levels)
     lines += _level_lines(levels, _focus(args))
     if tape.get("historyLoading"):
         lines.append("The chart's history is still loading, so these can change.")

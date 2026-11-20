@@ -1128,6 +1128,14 @@ def _today_cell(flow: Mapping | None) -> str:
     return f"{int(flow['volume']):,} " + {"ask": "Bought", "bid": "Sold"}.get(flow.get("fill"), "?")
 
 
+def _opened_closed(change: Any) -> str:
+    """'+52,569 opened' / '2,166 closed' / 'no change' / '-' (no earlier reading)."""
+    if change is None:
+        return "-"
+    change = int(change)
+    return f"+{change:,} opened" if change > 0 else f"{-change:,} closed" if change < 0 else "no change"
+
+
 def _signed(value: int) -> str:
     return f"+{value:,}" if value > 0 else f"{value:,}" if value < 0 else "0"
 
@@ -1222,7 +1230,7 @@ def _long_oi_tool(args: Mapping, ctx: Mapping) -> dict:
         return {"contract": f"{_strike(row['strike'])} {'Call' if row['side'] == 'CALL' else 'Put'}"
                             + (" · NEW" if new else "") + (" · ENTRY" if row.get("entry") else ""),
                 "expiry": row["expiry"], "days": row["days"], "oi": _whole(row["oi"]),
-                "change": _signed(change) if change is not None else "-",
+                "change": _opened_closed(change),
                 "today": _today_cell(flows.get(leap_oi_scanner.contract_key(row))),
                 "delta": _delta_text(row["delta"]) if row.get("delta") is not None else "-",
                 "bid": _quote_cell(row.get("bid")), "ask": _quote_cell(row.get("ask"))}
@@ -1239,13 +1247,13 @@ def _long_oi_tool(args: Mapping, ctx: Mapping) -> dict:
                       as_of=_as_of(fetched, now))
     table = _rows_table(f"{ticker} most open interest, {span}" + (f", delta ~{delta:.2f}" if delta is not None else ""),
                         [("contract", "Contract"), ("expiry", "Expiry"), ("days", "Days", "right"),
-                         ("oi", "OI", "right"), *([("change", "Change", "right")] if changes else []),
+                         ("oi", "OI", "right"), *([("change", f"Opened or closed since {_month_day(since)}" if since else "Opened or closed since last reading", "right")] if changes else []),
                          *([("today", "Traded today", "right")] if flows else []),
                          ("delta", "Delta", "right"), ("bid", "Bid", "right"), ("ask", "Ask", "right")],
                         [{k: v for k, v in row.items() if (k != "change" or changes) and (k != "today" or flows)} for row in rows],
                         note=(f"NEW rows first: the biggest new open interest {since_text}. " if new_rows else "")
                              + f"Top {LONG_OI_ROWS} per side by open interest. "
-                             + (f"Change is open interest {since_text}; '-' where the app has no earlier reading. " if changes else "")
+                             + (f"Opened or closed: how many contracts people opened (+) or closed (-) {since_text}; '-' where the app has no earlier reading. " if changes else "")
                              + f"Schwab chain read {_clock(fetched, now)}"
                              + (", a copy under 30 minutes old." if doc.get("cached") else "."))
     facts = {"ticker": ticker, "monthsFrom": months_from, "monthsTo": months_to, "delta": delta, "spot": spot,

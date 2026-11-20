@@ -153,13 +153,13 @@ for (const [label, viewport] of WIDTHS) {
       "Biggest new open interest since the Nov 18 2026 reading: 175 call Feb 19 2027, +52,569 (now 62,247); 130 put Jun 17 2027, +24,032 (now 46,441). New open interest means positions were opened; it cannot show whether they were bought or sold."],
       table: { kind: "rows", title: "NVDA most open interest, 3 to 12 months out",
         columns: [{ key: "contract", label: "Contract" }, { key: "expiry", label: "Expiry" }, { key: "days", label: "Days", align: "right" },
-          { key: "oi", label: "OI", align: "right" }, { key: "change", label: "Change", align: "right" }, { key: "delta", label: "Delta", align: "right" },
+          { key: "oi", label: "OI", align: "right" }, { key: "change", label: "Opened or closed since Nov 18 2026", align: "right" }, { key: "delta", label: "Delta", align: "right" },
           { key: "bid", label: "Bid", align: "right" }, { key: "ask", label: "Ask", align: "right" }],
         rows: [
-          { contract: "175 Call · NEW", expiry: "2027-02-19", days: "92", oi: "62,247", change: "+52,569", delta: "0.26", bid: "4.65", ask: "4.85" },
-          { contract: "130 Put · NEW", expiry: "2027-06-17", days: "210", oi: "46,441", change: "+24,032", delta: "-0.31", bid: "12.05", ask: "12.30" },
-          { contract: "185 Call · ENTRY", expiry: "2027-02-19", days: "92", oi: "108,672", change: "-2,166", delta: "0.19", bid: "3.00", ask: "3.15" },
-          { contract: "140 Put", expiry: "2027-06-17", days: "210", oi: "98,663", change: "+1,136", delta: "-0.39", bid: "16.10", ask: "16.40" }],
+          { contract: "175 Call · NEW", expiry: "2027-02-19", days: "92", oi: "62,247", change: "+52,569 opened", delta: "0.26", bid: "4.65", ask: "4.85" },
+          { contract: "130 Put · NEW", expiry: "2027-06-17", days: "210", oi: "46,441", change: "+24,032 opened", delta: "-0.31", bid: "12.05", ask: "12.30" },
+          { contract: "185 Call · ENTRY", expiry: "2027-02-19", days: "92", oi: "108,672", change: "2,166 closed", delta: "0.19", bid: "3.00", ask: "3.15" },
+          { contract: "140 Put", expiry: "2027-06-17", days: "210", oi: "98,663", change: "+1,136 opened", delta: "-0.39", bid: "16.10", ask: "16.40" }],
         note: "NEW rows first: the biggest new open interest since the Nov 18 2026 reading." },
       links: [{ label: "Open NVDA chart", view: "Charts & OI", ticker: "NVDA", timeframe: "5m" }] };
     await withApp({ view: "Release Notes", viewport, fakeWrites: chatWrites(reply) }, async (app) => {
@@ -170,10 +170,34 @@ for (const [label, viewport] of WIDTHS) {
       assert.match(text, /Biggest new open interest since the Nov 18 2026 reading: 175 call Feb 19 2027, \+52,569/);
       const first = text.indexOf("175 Call");
       assert.ok(first >= 0 && first < text.indexOf("185 Call"), "the new 175 call comes before the biggest wall");
-      assert.match(text, /Change[\s\S]{0,40}\+52,569/);
-      assert.match(text, /-2,166/);
+      assert.match(text, /Opened or closed since Nov 18 2026[\s\S]{0,40}\+52,569 opened/);
+      assert.match(text, /2,166 closed/);
       const box = await answer.boundingBox();
       assert.ok(box && box.x >= 0 && box.x + box.width <= page.viewportSize().width + 1, "the answer is cut off at the side");
+      assert.equal(await overflowsSideways(page), false);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }, { timeout: 240_000 });
+
+  // 5. "Why chatbot not showing support and resistance?" (2026-11-20): the levels answer now says which are which, in
+  //    plain words, before the full list (server: tests/test_momx_chat_chart_api.py).
+  e2eTest(`Ask: support and resistance are named at the top of the levels answer (${label})`, async () => {
+    const reply = { intent: "chart_levels", ticker: "NVDA", lines: [
+      "NVDA chart levels, 5m. Newest candle Thu Nov 19 23:50 ET, close 143.74.",
+      "Support = price levels BELOW NVDA's 143.74 that traders watch as a floor. Resistance = price levels ABOVE it that traders watch as a ceiling. They are levels to watch, not a forecast.",
+      "Nearest resistance above 143.74: 147.59 (Day pivot S1); 148.19 (SMA 200); 149.88 (Previous day low).",
+      "Nearest support below 143.74: 143.00 (Today's low).",
+      "EMA 9 143.79, EMA 21 143.94, EMA 50 144.32, SMA 200 148.19 (chart defaults 9/21/50 and SMA 200)."],
+      links: [{ label: "Open NVDA chart, 5m", view: "Charts & OI", ticker: "NVDA", timeframe: "5m" }] };
+    await withApp({ view: "Release Notes", viewport, fakeWrites: chatWrites(reply) }, async (app) => {
+      const { page } = app;
+      const answer = await ask(page, "What is support and resistance for nvda?", tap);
+      const text = await answer.innerText();
+      const sr = text.indexOf("Support = price levels BELOW");
+      assert.ok(sr >= 0 && sr < text.indexOf("EMA 9"), "support and resistance come before the full list");
+      assert.match(text, /Nearest resistance above 143\.74: 147\.59 \(Day pivot S1\)/);
+      assert.match(text, /Nearest support below 143\.74: 143\.00 \(Today's low\)/);
+      assert.match(text, /not a forecast/);
       assert.equal(await overflowsSideways(page), false);
       assert.deepEqual(app.pageErrors, []);
     });

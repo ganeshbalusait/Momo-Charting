@@ -446,3 +446,48 @@ def test_the_home_card_shows_levels_and_signals_for_the_ticker_on_screen(route_c
     card = next(card for card in body["home"]["cards"] if card["kind"] == "ticker")
     assert "AAPL chart levels, 5m" in " ".join(card["lines"])
     assert charts["calls"] == [] and charts["memory"] == {}
+
+
+# ---------------------------------------------------------------- support and resistance, 2026-11-20
+def test_what_is_support_and_resistance_says_which_levels_are_which(route_charts):
+    """His "What is support and resistance for nvda?" got every level but never said which were support and which
+    resistance ("Why chatbot not showing support and resistance?"). Now: what the words mean, then the nearest
+    levels below the close (support) and above it (resistance), each named, from the same chart levels."""
+    charts = route_charts
+    levels = _expected("SPY", "5m")["levels"]
+    below, above = chat_chart.support_resistance(levels)
+    with running_api() as api:
+        status, body = api.post(ROUTE, {"question": "What is support and resistance for spy?"}, headers=REGULAR)
+    assert status == 200
+    lines = body["lines"]
+    close = f"{levels['lastClose']:.2f}"
+    assert lines[1].startswith(f"Support = price levels BELOW SPY's {close} that traders watch as a floor."), lines
+    assert "not a forecast" in lines[1]
+    assert lines[2].startswith(f"Nearest resistance above {close}: ") or lines[2] == f"No resistance level above {close} on this chart."
+    assert lines[3].startswith(f"Nearest support below {close}: ") or lines[3] == f"No support level below {close} on this chart."
+    for name, value in above:
+        assert f"{value:.2f} ({name})" in lines[2] and value > levels["lastClose"]
+    for name, value in below:
+        assert f"{value:.2f} ({name})" in lines[3] and value < levels["lastClose"]
+    assert "chart defaults 9/21/50 and SMA 200" in _text(body)            # the full level list still follows
+    assert charts["calls"] == []
+
+
+def test_plain_levels_question_has_no_support_resistance_block(route_charts):
+    with running_api() as api:
+        _, body = api.post(ROUTE, {"question": "chart levels spy"}, headers=REGULAR)
+    assert not any(line.startswith("Support = ") for line in body["lines"])
+
+
+def test_support_resistance_sorts_by_distance_and_skips_the_short_emas():
+    levels = {"lastClose": 143.74, "ema9": 143.79, "ema21": 143.94, "ema50": 144.32, "sma200": 148.19,
+              "session": {"pm": {"high": 154.67, "low": 150.58}, "day": {"high": 158.13, "low": 143.0}, "week": {"high": 163.86, "low": 143.0}},
+              "previous": {"DAY": {"high": 161.26, "low": 149.88}},
+              "pivots": {"DAY": {"R1": 158.97, "PP": 154.42, "S1": 147.59}, "WEEK": {"R1": 176.81, "PP": 167.79, "S1": 152.49}}}
+    below, above = chat_chart.support_resistance(levels)
+    assert above == [("Day pivot S1", 147.59), ("SMA 200", 148.19), ("Previous day low", 149.88)]
+    assert below == [("Today's low", 143.0)]                                 # the week's low is the same price: listed once
+    assert chat_chart.sr_lines("NVDA", levels)[1:] == [
+        "Nearest resistance above 143.74: 147.59 (Day pivot S1); 148.19 (SMA 200); 149.88 (Previous day low).",
+        "Nearest support below 143.74: 143.00 (Today's low)."]
+    assert chat_chart.support_resistance({"lastClose": None}) == ([], [])

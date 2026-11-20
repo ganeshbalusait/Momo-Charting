@@ -148,11 +148,12 @@ def test_new_open_interest_since_yesterday_goes_on_top_with_a_change_column(worl
     assert f"Biggest new open interest since the Nov 18 2026 reading: {strike} call" in said and "+3,000" in said, said
     assert "cannot show whether they were bought or sold" in said
     columns = [c["label"] for c in body["table"]["columns"]]
-    assert columns == ["Contract", "Expiry", "Days", "OI", "Change", "Delta", "Bid", "Ask"]
+    # 2026-11-20 "What is change?": the column says what the number is.
+    assert columns == ["Contract", "Expiry", "Days", "OI", "Opened or closed since Nov 18 2026", "Delta", "Bid", "Ask"]
     top = body["table"]["rows"][0]
-    assert top["contract"].startswith(f"{strike} Call · NEW") and top["change"] == "+3,000", top
+    assert top["contract"].startswith(f"{strike} Call · NEW") and top["change"] == "+3,000 opened", top
     changed = {r["contract"].split(" ·")[0] + r["expiry"]: r["change"] for r in body["table"]["rows"]}
-    assert changed[f"{small['strike']:g} Call{small['expiry']}"] == "-500"
+    assert changed[f"{small['strike']:g} Call{small['expiry']}"] == "500 closed"
     assert sum(1 for r in body["table"]["rows"] if "NEW" in r["contract"]) == 1      # under 1,000 is not "new"
     assert len({(r["contract"].replace(" · NEW", ""), r["expiry"]) for r in body["table"]["rows"]}) == len(body["table"]["rows"])
     assert "NEW rows first" in body["table"]["note"]
@@ -171,7 +172,7 @@ def test_a_saved_copy_from_another_posting_gives_no_change(world, tmp_path):
             json.dump(saved, handle)
         status, body = api.post(ROUTE, {"question": "Nvda leap oi", "context": {"pageTicker": "NVDA"}}, headers=REGULAR)
     assert status == 200
-    assert "Change" not in [c["label"] for c in body["table"]["columns"]] and "Biggest new" not in "\n".join(body["lines"])
+    assert not any(c["label"].startswith("Opened or closed") for c in body["table"]["columns"]) and "Biggest new" not in "\n".join(body["lines"])
     assert not any("NEW" in r["contract"] for r in body["table"]["rows"])
 
 

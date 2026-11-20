@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-20T01:15:00-05:00",
+      "heading": "Ask: support and resistance in plain words, and the LEAP \"Change\" column says what it means",
+      "items": [
+        "Ask \"What is support and resistance for NVDA?\" and the answer now starts by saying which levels are which: the nearest resistance above the price (for example \"147.59 (Day pivot S1); 148.19 (SMA 200); 149.88 (Previous day low)\") and the nearest support below it (\"143.00 (Today's low)\"). It first says what the words mean: support is a floor traders watch below the price, resistance a ceiling above it. These are levels to watch, not a forecast. The full list of levels still follows.",
+        "In Ask's LEAP answer the column that said \"Change\" is now \"Opened or closed since Nov 18\", and each cell says it in words: \"+52,569 opened\" (new bets people opened) or \"2,166 closed\" (bets people got out of)."
+      ]
+    },
+    {
       "at": "2026-11-20T01:05:55-05:00",
       "heading": "Long Term: the Peter view is now Peter only, no longer mixed with Warren's rule",
       "items": [
