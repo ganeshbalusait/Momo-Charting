@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import "./leapOi.css";
+import "./simpleWhy.css";
 import {
   DELTAS, RANGES, SIDES, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi,
   BYTK_SORTS, boardTotals, cleanTicker, costText, dominance, filterByTicker, leftOutText, midText, searchNote, sortByTicker, spreadText, priceText, progressText, readAtText, scannerUrl,
@@ -9,6 +10,7 @@ import {
 import { LIVE_PRICE_POLL_MS, awayFrom, changeTone, quotesFrom, stockPrice, stockText, tickersOnScreen } from "./leapLivePrice.js";
 import { flowCell } from "./leapFlow.js";
 import BeginnerGuide from "./BeginnerGuide.jsx";
+import { MARKS, leapWhy } from "./simpleWhy.js";
 
 // Today's trades on this contract, from AGX Flow's latest read: count, dollars, and Bought / Sold / Can't tell, so the
 // trader does not have to open AGX Flow to know (2026-11-20).
@@ -102,7 +104,25 @@ function Fact({ label, children }) {
 // The Options page holds contracts up to 31 days out, so a LEAP opens there on its ticker, not on this contract.
 // Facts only: break-even is simple arithmetic at expiry, not a forecast or a pick.
 // volumeLabel: AGX Flow reads every few minutes ("Volume today"); LEAP copies are up to 12 hours old (review 11-17).
-export function ContractSheet({ row, onClose, onOpenChart, onOpenOptions, volumeLabel = "Volume today", quotes = null }) {
+// "In simple words" (2026-11-20): why this contract is on the list, for a 10-year-old or a first-time trader.
+export function SimpleWhy({ why }) {
+  if (!why) return null;
+  return (
+    <section className="simple-why" data-testid="simple-why" aria-label="In simple words">
+      <h4>In simple words</h4>
+      <p className="simple-why-verdict">{why.verdict}</p>
+      <ul>
+        {why.checks.map((check) => (
+          <li key={check.text} className={`is-${check.mark}`}><span aria-hidden="true">{MARKS[check.mark]}</span> {check.text}</li>
+        ))}
+      </ul>
+      <p className="simple-why-meaning"><b>What this means: </b>{why.meaning}</p>
+      <p className="simple-why-advice">{why.notAdvice}</p>
+    </section>
+  );
+}
+
+export function ContractSheet({ row, onClose, onOpenChart, onOpenOptions, volumeLabel = "Volume today", quotes = null, why = null }) {
   useEffect(() => {
     if (!row) return undefined;
     const onKey = (event) => { if (event.key === "Escape") onClose(); };
@@ -125,6 +145,7 @@ export function ContractSheet({ row, onClose, onOpenChart, onOpenOptions, volume
           <button type="button" className="ck-sheet-close" aria-label="Close" onClick={onClose}>✕</button>
         </div>
         <p className="ck-sheet-sub">{expiryLabel(row.expiry)}{Number.isFinite(days) ? ` · ${days} days out` : ""}{quotes ? null : has("spot") ? ` · stock ${priceText(row.spot)}` : ""}</p>
+        <SimpleWhy why={why} />
         <dl className="ck-sheet-grid">
           {quotes ? <Fact label="Stock price"><StockPrice row={row} quotes={quotes} /></Fact> : null}
           {quotes ? <Fact label="From price">{awayNow(row, quotes)}</Fact> : null}
@@ -309,7 +330,7 @@ function Rows({ rows, onOpenChart, onPick, testId, quotes }) {
           {rows.map((row, index) => {
             const tone = row.side === "PUT" ? "is-put" : "is-call";
             return (
-              <tr key={`${row.ticker}-${row.side}-${row.expiry}-${row.strike}`} data-testid={testId} className="leapoi-tap" {...pickProps(row, onPick)}>
+              <tr key={`${row.ticker}-${row.side}-${row.expiry}-${row.strike}`} data-testid={testId} className="leapoi-tap" {...pickProps({ ...row, rank: index }, onPick)}>
                 <td className="leapoi-rank">{index + 1}</td>
                 <td><b className="leapoi-tk">{row.ticker}</b><small><StockPrice row={row} quotes={quotes} /></small></td>
                 <td><b className={tone}>{contractLabel(row)}</b>{row.entry ? <span className="leapoi-tag">ENTRY</span> : null}</td>
@@ -330,7 +351,7 @@ function Rows({ rows, onOpenChart, onPick, testId, quotes }) {
         {rows.map((row, index) => {
           const tone = row.side === "PUT" ? "is-put" : "is-call";
           return (
-            <div className="leapoi-card leapoi-tap" key={`${row.ticker}-${row.side}-${row.expiry}-${row.strike}`} data-testid={`${testId}-card`} {...pickProps(row, onPick)}>
+            <div className="leapoi-card leapoi-tap" key={`${row.ticker}-${row.side}-${row.expiry}-${row.strike}`} data-testid={`${testId}-card`} {...pickProps({ ...row, rank: index }, onPick)}>
               <div className="leapoi-card-head">
                 <span className="leapoi-rank">{index + 1}</span>
                 <b className="leapoi-tk">{row.ticker}</b>
@@ -350,6 +371,7 @@ function Rows({ rows, onOpenChart, onPick, testId, quotes }) {
                 <div><dt>Bid-ask spread</dt><dd>{spreadText(row)}</dd></div>
                 <div><dt>From price</dt><dd>{awayNow(row, quotes)}</dd></div>
               </dl>
+              <p className="simple-why-line" data-testid="why-line"><b>Why it's here:</b> {leapWhy(row, { rank: index }).verdict} <span>Tap for the simple explanation.</span></p>
               <i className={`leapoi-bar ${tone}`} style={{ width: `${barWidth(row.oi, top)}%` }} />
             </div>
           );
@@ -496,6 +518,7 @@ export default function LeapOiScannerPanel({ onOpenChart, onOpenOptions }) {
         </>
       ) : null}
       <ContractSheet row={picked} onClose={closePick} onOpenChart={onOpenChart} onOpenOptions={onOpenOptions} quotes={quotes}
+        why={picked ? leapWhy(picked, { rank: Number.isInteger(picked.rank) ? picked.rank : null, price: stockPrice(picked, quotes).price }) : null}
         volumeLabel={`Volume at last read${readAt ? ` (${readAt.replace(/^Read /, "")})` : ""}`} />
     </div>
   );

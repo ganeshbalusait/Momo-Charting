@@ -307,3 +307,28 @@ for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]
     });
   });
 }
+
+// 2026-11-20 "I need justification why ... Build like this 10 kid can understand": a flow card says why it is here,
+// and its details card explains it in simple words. Desktop and phone width.
+for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]) {
+  const phone = Boolean(viewport);
+  e2eTest(`AGX Flow explains each bet in simple words at ${label}`, async () => {
+    await withApp({ view: "AGX Flow", ...(viewport ? { viewport } : {}), fakeReads }, async (app) => {
+      const { page } = app;
+      const view = page.locator('[data-testid="agx-flow-view"]');
+      const rows = view.locator('[data-testid="agx-flow-row"]');
+      await rows.first().waitFor({ timeout: 60_000 });
+      if (phone) assert.match(await rows.first().locator("[data-testid='why-line']").innerText(), /Why it's here: About \$[\d,.]+( million)? was spent on this (Call|Put) today/);
+      await (phone ? rows.first().locator(".agx-flow-card-body").tap() : rows.first().locator("td").first().click());
+      const why = page.getByTestId("contract-sheet").getByTestId("simple-why");
+      await why.waitFor({ timeout: 10_000 });
+      const said = await why.innerText();
+      assert.match(said, /In simple words[\s\S]*was spent on this (Call|Put) today/i);
+      assert.match(said, /contracts, each covering 100 shares/);
+      assert.match(said, /What this means: A (Call|Put) is a bet that pays/);
+      assert.match(said, /not advice/);
+      if (phone) assert.equal(await overflowsSideways(page), false);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}

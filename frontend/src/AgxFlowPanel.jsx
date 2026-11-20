@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import "./agxFlow.css";
 import BeginnerGuide from "./BeginnerGuide.jsx";
+import { flowWhy } from "./simpleWhy.js";
 import {
   MAG7_BOARD,
   EXPIRY_FILTERS,
@@ -154,6 +155,7 @@ function FlowCards({ rows, onOpenChart, onPick }) {
             {row.newVolume > 0 ? <span>+{formatCount(row.newVolume)} new</span> : null}
             <FillTag fill={row.fill} />
           </div>
+          <p className="simple-why-line" data-testid="why-line"><b>Why it's here:</b> {flowWhy(row).verdict} <span>Tap for the simple explanation.</span></p>
           <button type="button" className="agx-flow-chart" onClick={() => onOpenChart?.(row.ticker)} aria-label={`Open ${row.ticker} chart`}>Chart ›</button>
         </li>
       ))}
@@ -371,7 +373,7 @@ export default function AgxFlowPanel({ onOpenChart, onOpenOptions }) {
       <LeftOut excluded={data?.excluded} minPrice={data?.minPrice} className="agx-flow-updated" />
       <AlertSwitch />
       <p className="agx-flow-note">{data?.note || "Facts only, not a direction signal."} Unusual = volume of at least 500 and above open interest. Paper only; nothing here places an order.</p>
-      <ContractSheet row={picked} onClose={closePick} onOpenChart={onOpenChart} onOpenOptions={onOpenOptions} />
+      <ContractSheet row={picked} onClose={closePick} onOpenChart={onOpenChart} onOpenOptions={onOpenOptions} why={picked ? flowWhy(picked) : null} />
     </section>
   );
 }

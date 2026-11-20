@@ -1,0 +1,13 @@
+/* "In simple words" box in the contract details card, and the one-line "Why it's here" on each card (2026-11-20). */
+.simple-why { margin: 8px 0 12px; padding: 10px 12px; border-radius: 10px; background: rgba(60, 110, 255, .08);
+  border: 1px solid rgba(120, 160, 255, .25); font-size: 14px; line-height: 1.45; color: #dfe4ee; }
+.simple-why h4 { margin: 0 0 4px; font-size: 13px; color: #8fb4ff; text-transform: uppercase; letter-spacing: .04em; }
+.simple-why-verdict { margin: 0 0 6px; font-weight: 700; color: #f2f4f8; }
+.simple-why ul { margin: 0 0 6px; padding: 0; list-style: none; display: grid; gap: 4px; }
+.simple-why li.is-yes span { color: #34c77b; font-weight: 700; }
+.simple-why li.is-no span { color: #ff6b6b; font-weight: 700; }
+.simple-why li.is-info span { color: #8b95a5; }
+.simple-why-meaning { margin: 6px 0 4px; }
+.simple-why-advice { margin: 0; color: #f3bd37; font-size: 13px; }
+.simple-why-line { margin: 6px 0 4px; font-size: 13px; line-height: 1.4; color: #c9cfdb; white-space: normal; }
+.simple-why-line span { color: #8b95a5; }

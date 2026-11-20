@@ -73,6 +73,22 @@ for (const [label, viewport] of WIDTHS) {
       for (let i = 0; i < 30 && (await guide.getAttribute("open")) !== null; i += 1) await page.waitForTimeout(100);
       assert.equal(await guide.getAttribute("open"), null, "the guide closes");
       assert.equal(await page.evaluate(() => localStorage.getItem("beginnerGuideSeen:leapOi")), "1");
+      // 2026-11-20 "I need justification why ... Build like this 10 kid can understand": why each card is here.
+      if (phone) {
+        assert.match(await view.locator(cardSel).first().locator("[data-testid='why-line']").innerText(),
+          /Why it's here: More people hold this (call|put) than any other one on this list\. Tap for the simple explanation\./);
+      }
+      await (phone ? view.locator(cardSel).first().tap() : view.locator(cardSel).first().locator("td").nth(2).click());
+      const why = page.getByTestId("contract-sheet").getByTestId("simple-why");
+      await why.waitFor({ timeout: 10_000 });
+      const said = await why.innerText();
+      assert.match(said, /In simple words[\s\S]*More people hold this (call|put) than any other one on this list\./i);
+      assert.match(said, /✓ [\d,]+ contracts are open\./);
+      assert.match(said, /Today 1,200 traded, about \$273,600; the last trade looked like a buyer/);
+      assert.match(said, /What this means: A (Call|Put) is a bet that pays/);
+      assert.match(said, /not advice[\s\S]*paper trading/);
+      const box = await why.boundingBox();
+      assert.ok(box && box.x >= 0 && box.x + box.width <= page.viewportSize().width + 1, "the explanation is cut off");
       if (phone) assert.equal(await overflowsSideways(page), false);
       assert.deepEqual(app.pageErrors, []);
     });
