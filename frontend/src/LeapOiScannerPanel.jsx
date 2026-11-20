@@ -6,6 +6,38 @@ import {
   BYTK_SORTS, boardTotals, cleanTicker, costText, dominance, filterByTicker, leftOutText, midText, searchNote, sortByTicker, spreadText, priceText, progressText, readAtText, scannerUrl,
   addRecent, contractFacts, moveText, oiChangeText, oiChangeTone, readRecent, saveRecent, sinceText,
 } from "./leapOi.js";
+import { LIVE_PRICE_POLL_MS, awayFrom, changeTone, quotesFrom, stockPrice, stockText, tickersOnScreen } from "./leapLivePrice.js";
+import { flowCell } from "./leapFlow.js";
+import BeginnerGuide from "./BeginnerGuide.jsx";
+
+// Today's trades on this contract, from AGX Flow's latest read: count, dollars, and Bought / Sold / Can't tell, so the
+// trader does not have to open AGX Flow to know (2026-11-20).
+function TodayFlow({ row }) {
+  const cell = flowCell(row);
+  return (
+    <span className={`leapoi-flow ${cell.tone}`} title={cell.title} data-testid="leap-oi-flow">
+      {cell.text}
+      {cell.word ? <b className="leapoi-flow-word">{cell.word}</b> : null}
+      {cell.unusual ? <span className="leapoi-flow-unusual">Unusual</span> : null}
+    </span>
+  );
+}
+
+// The stock's current price (live quote once a minute, else the price at the chain read), shared by every card.
+function StockPrice({ row, quotes }) {
+  const stock = stockPrice(row, quotes);
+  return (
+    <span className={`leapoi-stock ${changeTone(stock)}`} data-testid="leap-oi-stock"
+      title={stock.live ? "Current stock price and today's change" : "Stock price when the option chain was read"}>
+      {stockText(stock)}
+    </span>
+  );
+}
+
+function awayNow(row, quotes) {
+  const away = awayFrom(row, stockPrice(row, quotes));
+  return awayText(away === null ? row.away : away);
+}
 
 // Search any ticker (2026-11-17 "Add search ticker also"): type a ticker, the page shows only that one, even when it is
 // not on Mag7 or the watchlist. "Back to board" returns. Shared with AGX Flow. The last 5 searches sit under the box
@@ -70,7 +102,7 @@ function Fact({ label, children }) {
 // The Options page holds contracts up to 31 days out, so a LEAP opens there on its ticker, not on this contract.
 // Facts only: break-even is simple arithmetic at expiry, not a forecast or a pick.
 // volumeLabel: AGX Flow reads every few minutes ("Volume today"); LEAP copies are up to 12 hours old (review 11-17).
-export function ContractSheet({ row, onClose, onOpenChart, onOpenOptions, volumeLabel = "Volume today" }) {
+export function ContractSheet({ row, onClose, onOpenChart, onOpenOptions, volumeLabel = "Volume today", quotes = null }) {
   useEffect(() => {
     if (!row) return undefined;
     const onKey = (event) => { if (event.key === "Escape") onClose(); };
@@ -92,8 +124,11 @@ export function ContractSheet({ row, onClose, onOpenChart, onOpenOptions, volume
           {row.entry ? <span className="leapoi-tag">ENTRY</span> : null}
           <button type="button" className="ck-sheet-close" aria-label="Close" onClick={onClose}>✕</button>
         </div>
-        <p className="ck-sheet-sub">{expiryLabel(row.expiry)}{Number.isFinite(days) ? ` · ${days} days out` : ""}{has("spot") ? ` · stock ${priceText(row.spot)}` : ""}</p>
+        <p className="ck-sheet-sub">{expiryLabel(row.expiry)}{Number.isFinite(days) ? ` · ${days} days out` : ""}{quotes ? null : has("spot") ? ` · stock ${priceText(row.spot)}` : ""}</p>
         <dl className="ck-sheet-grid">
+          {quotes ? <Fact label="Stock price"><StockPrice row={row} quotes={quotes} /></Fact> : null}
+          {quotes ? <Fact label="From price">{awayNow(row, quotes)}</Fact> : null}
+          {quotes ? <Fact label="Today's trades"><TodayFlow row={row} /></Fact> : null}
           <Fact label="Bid">{priceText(row.bid)}</Fact>
           <Fact label="Mid"><b>{priceText(facts.mid)}</b></Fact>
           <Fact label="Ask">{priceText(row.ask)}</Fact>
@@ -178,7 +213,7 @@ export function LeftOut({ excluded, minPrice, className }) {
 
 // By ticker (2026-11-17, "I see only mag7 tickets what about other tickets from watchlist"): one line per ticker, so
 // the small names are not buried under Mag7's huge open interest in the ranked lists.
-function ByTicker({ list, onOpenChart, onPick }) {
+function ByTicker({ list, onOpenChart, onPick, quotes }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("az");
   const { shown, total } = filterByTicker(sortByTicker(list, sort), query);
@@ -194,7 +229,7 @@ function ByTicker({ list, onOpenChart, onPick }) {
           <div className="leapoi-card leapoi-bytk-card" key={line.ticker} data-testid="leap-oi-ticker">
             <div className="leapoi-card-head">
               <b className="leapoi-tk">{line.ticker}</b>
-              <small className="leapoi-dim">{priceText(line.spot)}</small>
+              <small><StockPrice row={line} quotes={quotes} /></small>
               <small className="leapoi-dim">Calls {formatOi(line.callOi)} · Puts {formatOi(line.putOi)}</small>
               <button type="button" onClick={() => onOpenChart?.(line.ticker)}>Chart ›</button>
             </div>
@@ -245,13 +280,15 @@ function Chips({ label, items, value, onChange }) {
   );
 }
 
-function Hero({ title, row, onOpenChart, onPick }) {
+function Hero({ title, row, onOpenChart, onPick, quotes }) {
   if (!row) return null;
   const tone = row.side === "PUT" ? "is-put" : "is-call";
   return (
     <div className="leapoi-hero" {...pickProps(row, onPick)}>
       <small>{title}</small>
       <b><span className="leapoi-tk">{row.ticker}</span> <span className={tone}>{contractLabel(row)}</span>{row.entry ? <span className="leapoi-tag">ENTRY</span> : null}</b>
+      <span>Stock <StockPrice row={row} quotes={quotes} /> · strike {awayNow(row, quotes)} from price</span>
+      <span>Today's trades: <TodayFlow row={row} /></span>
       <span>{expiryLabel(row.expiry)} · {row.days}d · OI <b>{formatOi(row.oi)}</b> <OiChange row={row} /> · Δ {deltaText(row.delta)}</span>
       <span>Bid {priceText(row.bid)} · <b>Mid {midText(row)}</b> · Ask {priceText(row.ask)} · 1 contract {costText(row)}</span>
       <button type="button" onClick={() => onOpenChart?.(row.ticker)}>Chart ›</button>
@@ -259,7 +296,7 @@ function Hero({ title, row, onOpenChart, onPick }) {
   );
 }
 
-function Rows({ rows, onOpenChart, onPick, testId }) {
+function Rows({ rows, onOpenChart, onPick, testId, quotes }) {
   const top = rows.length ? Math.max(...rows.map((r) => r.oi || 0)) : 0;
   if (!rows.length) return <p className="leapoi-empty">Nothing in this range yet.</p>;
   return (
@@ -274,15 +311,15 @@ function Rows({ rows, onOpenChart, onPick, testId }) {
             return (
               <tr key={`${row.ticker}-${row.side}-${row.expiry}-${row.strike}`} data-testid={testId} className="leapoi-tap" {...pickProps(row, onPick)}>
                 <td className="leapoi-rank">{index + 1}</td>
-                <td><b className="leapoi-tk">{row.ticker}</b><small>{priceText(row.spot)}</small></td>
+                <td><b className="leapoi-tk">{row.ticker}</b><small><StockPrice row={row} quotes={quotes} /></small></td>
                 <td><b className={tone}>{contractLabel(row)}</b>{row.entry ? <span className="leapoi-tag">ENTRY</span> : null}</td>
                 <td>{expiryLabel(row.expiry)} <small>{row.days}d</small></td>
-                <td className="num"><b>{formatOi(row.oi)}</b><OiChange row={row} short /><i className={`leapoi-bar ${tone}`} style={{ width: `${barWidth(row.oi, top)}%` }} /></td>
+                <td className="num"><b>{formatOi(row.oi)}</b><OiChange row={row} short /><i className={`leapoi-bar ${tone}`} style={{ width: `${barWidth(row.oi, top)}%` }} /><small><TodayFlow row={row} /></small></td>
                 <td className="num">{deltaText(row.delta)}</td>
                 <td className="num">{priceText(row.bid)} / {priceText(row.ask)}</td>
                 <td className="num"><b>{midText(row)}</b></td>
                 <td className="num">{costText(row)}</td>
-                <td className="num leapoi-dim">{awayText(row.away)}</td>
+                <td className="num leapoi-dim">{awayNow(row, quotes)}</td>
                 <td><button type="button" onClick={() => onOpenChart?.(row.ticker)}>Chart ›</button></td>
               </tr>
             );
@@ -302,6 +339,8 @@ function Rows({ rows, onOpenChart, onPick, testId }) {
                 <button type="button" onClick={() => onOpenChart?.(row.ticker)}>Chart ›</button>
               </div>
               <dl className="leapoi-card-grid">
+                <div><dt>Stock price</dt><dd><StockPrice row={row} quotes={quotes} /></dd></div>
+                <div className="leapoi-flow-fact"><dt>Today's trades (bought or sold)</dt><dd><TodayFlow row={row} /></dd></div>
                 <div><dt>Expiry</dt><dd>{expiryLabel(row.expiry)} · {row.days}d</dd></div>
                 <div><dt>OI</dt><dd><b>{formatOi(row.oi)}</b> <OiChange row={row} short /></dd></div>
                 <div><dt>Delta</dt><dd>{deltaText(row.delta)}</dd></div>
@@ -309,7 +348,7 @@ function Rows({ rows, onOpenChart, onPick, testId }) {
                 <div><dt>Mid</dt><dd><b>{midText(row)}</b></dd></div>
                 <div><dt>1 contract at mid</dt><dd>{costText(row)}</dd></div>
                 <div><dt>Bid-ask spread</dt><dd>{spreadText(row)}</dd></div>
-                <div><dt>From price</dt><dd>{awayText(row.away)}</dd></div>
+                <div><dt>From price</dt><dd>{awayNow(row, quotes)}</dd></div>
               </dl>
               <i className={`leapoi-bar ${tone}`} style={{ width: `${barWidth(row.oi, top)}%` }} />
             </div>
@@ -387,6 +426,25 @@ export default function LeapOiScannerPanel({ onOpenChart, onOpenOptions }) {
     return () => { alive = false; if (timer) window.clearTimeout(timer); };
   }, [url]);
 
+  // Current stock prices for every ticker on screen, once a minute (the chain copy's price can be 12 hours old).
+  const [quotes, setQuotes] = useState({});
+  const quoteKey = useMemo(() => tickersOnScreen(payload).join(","), [payload]);
+  useEffect(() => {
+    if (!quoteKey) return undefined;
+    let alive = true;
+    let timer = null;
+    const load = async () => {
+      try {
+        const response = await fetch(`/api/watchlist-quotes?symbols=${encodeURIComponent(quoteKey)}`);
+        const next = response.ok ? quotesFrom(await response.json().catch(() => null)) : {};
+        if (alive && Object.keys(next).length) setQuotes(next);
+      } catch { /* keep the last prices; the card falls back to the price at read */ }
+      if (alive) timer = window.setTimeout(load, LIVE_PRICE_POLL_MS);
+    };
+    load();
+    return () => { alive = false; if (timer) window.clearTimeout(timer); };
+  }, [quoteKey]);
+
   const progress = progressText(payload);
   const closePick = useCallback(() => setPicked(null), []);
   const anyChange = (payload?.rows || []).some((r) => r.oiChange !== null && r.oiChange !== undefined);
@@ -399,6 +457,7 @@ export default function LeapOiScannerPanel({ onOpenChart, onOpenOptions }) {
         <h2>LEAP OI Scanner</h2>
         <p>Strikes with the most open interest, {RANGES.find((r) => r.id === prefs.range)?.label.replace("LEAP ", "")} months out · {search ? `${search} only` : prefs.board === "mag7" ? "Mag7" : "Watchlist"}{readAt ? ` · ${readAt}` : ""}</p>
       </header>
+      <BeginnerGuide page="leapOi" />
       <TickerSearch active={search} onSearch={startSearch} onClear={endSearch} />
       <div className="leapoi-filters">
         <Chips label="Board" value={search ? "" : prefs.board} onChange={(v) => { endSearch(); setPref("board", v); }}
@@ -415,28 +474,28 @@ export default function LeapOiScannerPanel({ onOpenChart, onOpenOptions }) {
       {payload ? (
         <>
           <div className="leapoi-heros">
-            <Hero title="Biggest call open interest" row={payload.biggestCall} onOpenChart={onOpenChart} onPick={setPicked} />
-            <Hero title="Biggest put open interest" row={payload.biggestPut} onOpenChart={onOpenChart} onPick={setPicked} />
+            <Hero title="Biggest call open interest" row={payload.biggestCall} onOpenChart={onOpenChart} onPick={setPicked} quotes={quotes} />
+            <Hero title="Biggest put open interest" row={payload.biggestPut} onOpenChart={onOpenChart} onPick={setPicked} quotes={quotes} />
           </div>
           {payload.side === "both" ? (
             <Dominance title="Calls vs puts on this board" {...boardTotals(payload.byTicker)} />
           ) : null}
           <h3>ENTRY contracts with the most open interest</h3>
           <p className="leapoi-sub">Each expiry's ENTRY, picked exactly like the option chain: out of the money, delta just under 0.20.</p>
-          <Rows rows={(payload.entries || []).slice(0, 15)} onOpenChart={onOpenChart} onPick={setPicked} testId="leap-oi-entry-row" />
+          <Rows rows={(payload.entries || []).slice(0, 15)} onOpenChart={onOpenChart} onPick={setPicked} testId="leap-oi-entry-row" quotes={quotes} />
           <h3>All strikes with the most open interest</h3>
           <p className="leapoi-sub">Biggest open interest at the delta you picked. ENTRY tag when that strike is the chain's ENTRY. Tap a contract for its details.</p>
           <p className="leapoi-sub" data-testid="oi-change-note">{anyChange
             ? "Green or red next to open interest: the change since the previous day's read (new contracts opened or closed)."
             : "Open interest change since the previous day shows once a second day has been read."}</p>
-          <Rows rows={payload.rows || []} onOpenChart={onOpenChart} onPick={setPicked} testId="leap-oi-row" />
-          <ByTicker list={payload.byTicker || []} onOpenChart={onOpenChart} onPick={setPicked} />
+          <Rows rows={payload.rows || []} onOpenChart={onOpenChart} onPick={setPicked} testId="leap-oi-row" quotes={quotes} />
+          <ByTicker list={payload.byTicker || []} onOpenChart={onOpenChart} onPick={setPicked} quotes={quotes} />
           {errors.length ? <p className="leapoi-sub">Not read: {errors.map((t) => t.ticker).join(", ")} ({errors[0].error})</p> : null}
           <LeftOut excluded={payload.excluded} minPrice={payload.minPrice} className="leapoi-sub" />
           <p className="leapoi-note">{payload.note}</p>
         </>
       ) : null}
-      <ContractSheet row={picked} onClose={closePick} onOpenChart={onOpenChart} onOpenOptions={onOpenOptions}
+      <ContractSheet row={picked} onClose={closePick} onOpenChart={onOpenChart} onOpenOptions={onOpenOptions} quotes={quotes}
         volumeLabel={`Volume at last read${readAt ? ` (${readAt.replace(/^Read /, "")})` : ""}`} />
     </div>
   );

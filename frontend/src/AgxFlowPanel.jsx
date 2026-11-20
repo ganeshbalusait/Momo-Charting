@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import "./agxFlow.css";
+import BeginnerGuide from "./BeginnerGuide.jsx";
 import {
   MAG7_BOARD,
   EXPIRY_FILTERS,
@@ -307,8 +308,9 @@ export default function AgxFlowPanel({ onOpenChart, onOpenOptions }) {
       <header className="agx-flow-head">
         <div className="agx-flow-title">
           <h2>AGX Flow</h2>
-          <small>Unusual option volume · Schwab chain · facts only</small>
+          <small>Big option bets placed today, and whether they were bought or sold · facts only</small>
         </div>
+        <BeginnerGuide page="agxFlow" />
         <div className="agx-flow-controls">
           <span className="agx-flow-switch" role="group" aria-label="Board">
             <button type="button" aria-pressed={!search && prefs.board === "mag7"} onClick={() => pickBoard("mag7")}>Mag7</button>

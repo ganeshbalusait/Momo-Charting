@@ -133,7 +133,15 @@ test("flow query carries expiry and order only when they are not the defaults (2
   assert.equal(flowQuery(["NVDA"], { expiry: "all", order: "premium" }), "/api/agx-flow?symbols=NVDA");
   assert.equal(flowQuery(["NVDA"], { expiry: "week" }), "/api/agx-flow?symbols=NVDA&expiry=week");
   assert.equal(flowQuery(["NVDA"], { expiry: "next", order: "hot" }), "/api/agx-flow?symbols=NVDA&expiry=next&order=hot");
-  assert.deepEqual(EXPIRY_FILTERS.map((e) => e.label), ["All", "This week", "Next week", "30 days"]);
+  assert.deepEqual(EXPIRY_FILTERS.map((e) => e.label), ["All", "This week", "Next week", "30 days", "1–3 months", "3–6 months", "6–12 months"]);
   assert.deepEqual(ORDERS.map((o) => o.label), ["Biggest $", "Hot right now"]);
 });
 
+
+test("2026-11-19 'add up to 12 months': each month band asks the server for its own window", async () => {
+  const { EXPIRY_FILTERS } = await import("./agxFlow.js");
+  for (const id of ["m3", "m6", "m12"]) {
+    assert.ok(EXPIRY_FILTERS.some((e) => e.id === id), id);
+    assert.equal(flowQuery(["NVDA"], { expiry: id }), `/api/agx-flow?symbols=NVDA&expiry=${id}`);
+  }
+});

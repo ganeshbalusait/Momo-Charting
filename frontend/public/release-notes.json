@@ -2,6 +2,19 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-19T23:52:00-05:00",
+      "heading": "LEAP OI Scanner shows bought or sold on every card; AGX Flow goes out to 12 months; plain-word help boxes",
+      "items": [
+        "Every LEAP OI Scanner card now has a \"Today's trades\" line: how many contracts traded today, about how many dollars, and Bought (green), Sold (red) or Can't tell. You no longer need to open AGX Flow to find out. Busy contracts also get an \"Unusual\" tag.",
+        "Bought or Sold is the app's guess from where the last trade printed: at the asking price means a buyer was probably eager, at the bid price means a seller was. It is a guess, not exchange data.",
+        "AGX Flow now reads option bets up to 12 months out, with new buttons: 1–3 months, 3–6 months and 6–12 months (the 6–12 month ones are LEAPs). On a phone the buttons now wrap onto a second line instead of running off the screen.",
+        "Ask about LEAPs (\"Nvda leap oi\") and the answer adds a \"Traded today\" column and line, for example \"1,200 contracts, about $370K, Bought\".",
+        "Both pages have a \"What is this page?\" box that explains every word in plain language (option, Call, Put, open interest, delta, bought or sold) for someone who has never traded. It opens the first time; tap it to close.",
+        "The LEAP Today's trades line fills in from the next market open, as AGX Flow reads each ticker 12 months out. Facts only, not a pick.",
+        "Tonight only: about 97 tickers on AGX Flow show no trades until 9:30 AM. A night re-read picked up Schwab's overnight zero volume and replaced the day's numbers. That is fixed: a night read can no longer replace a day's numbers."
+      ]
+    },
+    {
       "at": "2026-11-19T23:51:57-05:00",
       "heading": "Long Term Peter view: tap a card for details, Mag7 and Watchlist groups, dividends, back-test",
       "items": [
@@ -14,6 +27,16 @@
         "So read CHEAP as the price you pay, not as a buy signal. The result is on the page behind one small line under the star sheet; tap it to read the numbers.",
         "The cards look the same as before. The dividend and inventory numbers fill in after the next filings refresh.",
         "Limits of the back-test: only companies still on the watchlist today (failed ones are missing), yearly data, and no dividend in the historical PEG."
+      ]
+    },
+    {
+      "at": "2026-11-19T23:32:00-05:00",
+      "heading": "LEAP OI Scanner: every card shows the stock's current price",
+      "items": [
+        "Each card on the LEAP OI Scanner now has a Stock price line: the current price and today's change, for example \"54.60 (+1.2%)\", green when up and red when down. It refreshes once a minute.",
+        "\"From price\" (how far the strike is from the stock) is now worked out from that current price, not from the price when the option chain was read, which can be hours old.",
+        "The two big cards at the top, the By ticker list and the contract details card show the current price too.",
+        "If the app cannot get a live price, the card shows the price from the chain read and says \"at read\"."
       ]
     },
     {

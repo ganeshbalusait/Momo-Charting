@@ -1,0 +1,13 @@
+/* "What is this page?" box (2026-11-20, beginner words). */
+.bg-guide { margin: 10px 0 14px; padding: 10px 14px; border: 1px solid rgba(120, 160, 255, .28); border-radius: 12px;
+  background: rgba(60, 110, 255, .07); color: #dfe4ee; font-size: 14px; line-height: 1.45; }
+.bg-guide summary { cursor: pointer; font-weight: 700; color: #8fb4ff; list-style: revert; }
+.bg-guide dl { margin: 10px 0 6px; display: grid; gap: 8px; }
+.bg-guide dl > div { display: grid; grid-template-columns: minmax(110px, 180px) 1fr; gap: 10px; }
+.bg-guide dt { font-weight: 700; color: #f2f4f8; }
+.bg-guide dd { margin: 0; color: #c9cfdb; }
+.bg-guide-warn { margin: 8px 0 2px; color: #f3bd37; font-size: 13px; }
+@media (max-width: 600px) {
+  .bg-guide dl > div { grid-template-columns: 1fr; gap: 2px; }
+}
+.agx-flow-head > .bg-guide { flex: 1 1 100%; margin: 0; }

@@ -111,3 +111,18 @@
 .oi-dom.is-compact .oi-dom-head { margin-bottom: 4px; }
 .oi-dom.is-compact .oi-dom-head b { font-size: 12.5px; }
 .oi-dom.is-compact .oi-dom-bar { height: 5px; }
+
+/* Stock price on every card (2026-11-19 "Add current prices also"): live price with the day's change. */
+.leapoi-stock { white-space: nowrap; font-weight: 600; }
+.leapoi-stock.is-up { color: #34c77b; }
+.leapoi-stock.is-down { color: #ff6b6b; }
+
+/* Today's trades on each LEAP contract (2026-11-20): AGX Flow's numbers, Bought / Sold / Can't tell. */
+.leapoi-flow { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.leapoi-flow.is-none { color: #8b95a5; }
+.leapoi-flow-word { padding: 1px 8px; border-radius: 6px; font-size: 12px; }
+.leapoi-flow.is-bought .leapoi-flow-word { background: rgba(52, 199, 123, .16); color: #34c77b; }
+.leapoi-flow.is-sold .leapoi-flow-word { background: rgba(255, 107, 107, .16); color: #ff6b6b; }
+.leapoi-flow.is-mid .leapoi-flow-word { background: rgba(139, 149, 165, .18); color: #c3c9d4; }
+.leapoi-flow-unusual { padding: 1px 8px; border-radius: 6px; font-size: 12px; background: rgba(243, 189, 55, .16); color: #f3bd37; }
+.leapoi-card-grid .leapoi-flow-fact { grid-column: 1 / -1; }

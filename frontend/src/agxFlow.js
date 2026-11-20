@@ -129,9 +129,11 @@ export function updatedText(tickers) {
 }
 
 // Expiry and order (2026-11-17 "All six"): the server applies both before it picks the top 60, so a short-dated
-// filter is not left with the few rows that happened to make the all-expiry top 60.
+// filter is not left with the few rows that happened to make the all-expiry top 60. 2026-11-19 "I see only 30 days
+// add up to 12 months": the board reads 12 months out, with bands past 30 days so LEAP flow is easy to find.
 export const EXPIRY_FILTERS = [
   { id: "all", label: "All" }, { id: "week", label: "This week" }, { id: "next", label: "Next week" }, { id: "month", label: "30 days" },
+  { id: "m3", label: "1–3 months" }, { id: "m6", label: "3–6 months" }, { id: "m12", label: "6–12 months" },
 ];
 export const ORDERS = [{ id: "premium", label: "Biggest $" }, { id: "hot", label: "Hot right now" }];
 

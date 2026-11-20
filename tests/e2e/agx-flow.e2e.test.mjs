@@ -270,3 +270,40 @@ for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]
     });
   });
 }
+
+// 2026-11-19 "I see only 30 days add up to 12 months": three month bands past 30 days. Each asks the server for its own
+// window, the bar says which, and the buttons fit a phone. Desktop and phone width.
+for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]) {
+  const phone = Boolean(viewport);
+  e2eTest(`AGX Flow 1-3, 3-6 and 6-12 month buttons at ${label}`, async () => {
+    const leap = { ...BOARD.rows[0], expiry: "2027-06-17", days: 210, strike: 250 };
+    const reads = {
+      "GET /api/agx-flow": (read) => ({ json: decodeURIComponent(read.search).includes("expiry=m12") ? { ...BOARD, rows: [leap] } : BOARD }),
+    };
+    await withApp({ view: "AGX Flow", ...(viewport ? { viewport } : {}), fakeReads: reads }, async (app) => {
+      const { page } = app;
+      const view = page.locator('[data-testid="agx-flow-view"]');
+      const rows = view.locator('[data-testid="agx-flow-row"]');
+      await rows.first().waitFor({ timeout: 60_000 });
+      const tap = (el) => (phone ? el.tap() : el.click());
+      const searches = () => app.reads.filter((r) => r.path === "/api/agx-flow").map((r) => decodeURIComponent(r.search));
+      const group = view.getByRole("group", { name: "Expiry" });
+      assert.deepEqual((await group.getByRole("button").allInnerTexts()).map((t) => t.trim()),
+        ["All", "This week", "Next week", "30 days", "1–3 months", "3–6 months", "6–12 months"]);
+      for (const [name, id] of [["1–3 months", "m3"], ["3–6 months", "m6"], ["6–12 months", "m12"]]) {
+        await tap(group.getByRole("button", { name }));
+        for (let i = 0; i < 80 && !searches().some((s) => s.includes(`expiry=${id}`)); i += 1) await page.waitForTimeout(100);
+        assert.ok(searches().some((s) => s.includes(`expiry=${id}`)), searches().join("\n"));
+        await view.getByText(new RegExp(`Calls vs puts today, option dollars · ${name}`)).waitFor({ timeout: 10_000 });
+      }
+      for (let i = 0; i < 50 && !(await rows.first().innerText()).includes("250"); i += 1) await page.waitForTimeout(100);
+      assert.match(await rows.first().innerText(), /250/);
+      if (phone) {
+        const boxes = await group.getByRole("button").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().right));
+        assert.ok(boxes.every((right) => right <= 376), `an expiry button runs off the phone: ${boxes}`);
+        assert.equal(await overflowsSideways(page), false);
+      }
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}

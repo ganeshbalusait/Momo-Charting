@@ -26,13 +26,14 @@ def _contract(strike, volume, oi, *, last=2.0, bid=1.9, ask=2.1, mark=2.0, delta
 
 def chain(volume_185=6000, spot=180.0):
     """NVDA-like: a 185 call bought at the ask with volume over OI, a 170 put sold at the bid, a quiet 190 call,
-    a 160 put below MIN_VOLUME, and an expiry 60 days out that is outside the window."""
+    a 160 put below MIN_VOLUME, and an expiry 400 days out that is outside the 12-month window (was 60 days when
+    the window was 45 days; 2026-11-19 "add up to 12 months")."""
     return {
         "underlyingPrice": spot,
         "callExpDateMap": {
             _key(3): {"185.0": [_contract(185, volume_185, 1200, last=2.15, mark=2.0, delta=0.35)],
                       "190.0": [_contract(190, 900, 5000, delta=0.2)]},
-            _key(60): {"185.0": [_contract(185, 99999, 1, mark=5.0)]},
+            _key(400): {"185.0": [_contract(185, 99999, 1, mark=5.0)]},
         },
         "putExpDateMap": {
             _key(10): {"170.0": [_contract(170, 3000, 400, last=1.0, bid=1.0, ask=1.2, mark=None, delta=-0.3, vol=-999)],
@@ -87,7 +88,7 @@ def test_board_rows_premium_fill_and_window(schwab, tmp_path):
     out = agx_flow.board("NVDA", tmp_path, NOW, wait=True)
     assert asked == ["NVDA"]
     rows = out["rows"]
-    assert [(r["side"], r["strike"]) for r in rows] == [("CALL", 185.0), ("PUT", 170.0)]   # 60-day and quiet ones left out
+    assert [(r["side"], r["strike"]) for r in rows] == [("CALL", 185.0), ("PUT", 170.0)]   # 400-day and quiet ones left out
     call, put = rows
     assert call["premium"] == 6000 * 2.0 * 100 and call["fill"] == "ask" and call["volOi"] == 5.0 and call["days"] == 3
     assert put["premium"] == round(3000 * 1.1 * 100) and put["fill"] == "bid" and put["iv"] is None and put["delta"] == -0.3
@@ -379,3 +380,41 @@ def test_market_holidays_are_closed_and_hot_uses_only_this_sessions_reads(schwab
     out = agx_flow.board(["NVDA"], tmp_path, premarket, order="hot")
     assert out["rows"] == [] and out["marketOpen"] is False
     assert agx_flow.board(["NVDA"], tmp_path, premarket)["rows"]                          # Biggest $ still shows them
+
+
+
+def test_the_board_reads_12_months_out_with_bands_past_30_days():
+    """2026-11-19 "I see only 30 days add up to 12 months": the chain is read 12 months out, and 1-3 / 3-6 / 6-12
+    months each keep only their own expiries, with no gap and no overlap between them or with 30 days."""
+    from datetime import date
+    tue = date(2026, 11, 17)
+    assert agx_flow.FETCH_MAX_DAYS == 366
+    windows = {b: agx_flow.expiry_window(b, tue) for b in ("month", "m3", "m6", "m12")}
+    assert windows["m3"] == (date(2026, 12, 17), date(2027, 2, 17))
+    assert windows["m6"] == (date(2027, 2, 17), date(2027, 5, 19))
+    assert windows["m12"] == (date(2027, 5, 19), date(2027, 11, 18))
+    for offset in range(0, 367):
+        day = (tue + timedelta(days=offset)).isoformat()
+        hits = [b for b, w in windows.items() if agx_flow.in_window(day, w)]
+        assert len(hits) == 1, (day, hits)                       # every day 0..366 is in exactly one band
+    spot, rows = agx_flow.contracts_from_chain({"underlyingPrice": 100, "callExpDateMap": {
+        "2027-06-17:212": {"150.0": [{"strikePrice": 150, "totalVolume": 900, "openInterest": 10, "bid": 1, "ask": 1.2}]},
+        "2027-12-17:395": {"150.0": [{"strikePrice": 150, "totalVolume": 900, "openInterest": 10, "bid": 1, "ask": 1.2}]}}}, tue)
+    assert [r["expiry"] for r in rows] == ["2027-06-17"]           # 12 months in, past 12 months out
+
+
+def test_a_leap_band_shows_only_leap_flow(schwab, tmp_path):
+    """A 6-12 month print appears under 6-12 months and All, never under 30 days."""
+    today = NOW.astimezone(ET).date()
+    leap = (today + timedelta(days=210)).isoformat()
+    near = (today + timedelta(days=3)).isoformat()
+    chain = {"underlyingPrice": 180.0, "callExpDateMap": {
+        f"{leap}:210": {"200.0": [_contract(200, 5000, 100)]},
+        f"{near}:3": {"190.0": [_contract(190, 6000, 100)]}}}
+    _, replies = schwab
+    replies["NVDA"] = chain
+    expiries = lambda bucket: [r["expiry"] for r in agx_flow.board(["NVDA"], tmp_path, NOW, wait=True, expiry=bucket)["rows"]]
+    assert expiries("m12") == [leap]
+    assert expiries("month") == [near]
+    assert sorted(expiries("all")) == sorted([leap, near])
+    assert expiries("m3") == [] and expiries("m6") == []

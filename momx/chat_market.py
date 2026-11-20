@@ -1116,6 +1116,18 @@ def _long_oi_changes(ticker: str, rows: list[dict], root: Path) -> tuple[dict[st
     return changes, leap_oi_scanner._et_day(saved.get("prevAt"))
 
 
+def _money_short(value: Any) -> str:
+    n = float(value or 0)
+    return f"${n / 1_000_000:.1f}M" if n >= 1_000_000 else f"${round(n / 1000):,}K" if n >= 1000 else f"${round(n)}"
+
+
+def _today_cell(flow: Mapping | None) -> str:
+    """'1,200 Bought' / '800 Sold' / '5 ?' for the chat table; '-' when the contract did not trade."""
+    if not flow or not flow.get("volume"):
+        return "-"
+    return f"{int(flow['volume']):,} " + {"ask": "Bought", "bid": "Sold"}.get(flow.get("fill"), "?")
+
+
 def _signed(value: int) -> str:
     return f"+{value:,}" if value > 0 else f"{value:,}" if value < 0 else "0"
 
@@ -1185,8 +1197,24 @@ def _long_oi_tool(args: Mapping, ctx: Mapping) -> dict:
             lines.append(f"ENTRY {word} with the most OI (the option chain's ENTRY rule, delta just under 0.20): {_oi_row_text(entries[0])}.")
     lines.append(f"Only strikes with delta {long_oi.MIN_DELTA:.2f} or more: no far-away lottery strikes. "
                  "ENTRY marks the contract the option chain marks ENTRY on that expiry.")
-    lines.append("Open interest is the number of contracts still open; Schwab updates it once a day, before the open. "
-                 "Delta is how much the option moves for a $1 move in the stock. Facts only, not a pick.")
+    lines.append("Open interest = how many of these option tickets people are holding right now (it updates once a day, "
+                 "before the open). Delta = roughly the chance the option ends up worth something: 0.20 is about 1 in 5. "
+                 "Facts only, not a pick.")
+    # Today's trades on these strikes (2026-11-20): AGX Flow's numbers for the same contracts, so the answer says
+    # bought or sold without sending the trader to AGX Flow.
+    flow_rows = [{**row, "ticker": ticker} for row in window]
+    leap_oi_scanner.with_flow(flow_rows, _root(ctx))
+    flows = {leap_oi_scanner.contract_key(row): row["flow"] for row in flow_rows if row.get("flow")}
+    fill_word = {"ask": "Bought", "bid": "Sold"}
+    traded = sorted((row for row in flow_rows if row.get("flow") and row["side"] in wanted_sides
+                     and abs(row.get("delta") or 0) >= long_oi.MIN_DELTA - 1e-9),
+                    key=lambda row: -row["flow"]["premium"])[:3]
+    if traded:
+        lines.append("Traded today (the app's guess from where the last trade printed: at the ask = Bought, at the bid = "
+                     "Sold): " + "; ".join(
+                         f"{_strike(row['strike'])} {'call' if row['side'] == 'CALL' else 'put'} {_month_day(row['expiry'])}, "
+                         f"{_whole(row['flow']['volume'])} contracts, about {_money_short(row['flow']['premium'])}, "
+                         f"{fill_word.get(row['flow']['fill'], 'can not tell')}" for row in traded) + ".")
     # Calls and puts take turns (1st call, 1st put, 2nd call ...): the chat shows the first few rows as cards, and both
     # sides belong in them. Each card is headed by its contract, "185 Call".
     def table_row(row: Mapping, new: bool = False) -> dict:
@@ -1195,6 +1223,7 @@ def _long_oi_tool(args: Mapping, ctx: Mapping) -> dict:
                             + (" · NEW" if new else "") + (" · ENTRY" if row.get("entry") else ""),
                 "expiry": row["expiry"], "days": row["days"], "oi": _whole(row["oi"]),
                 "change": _signed(change) if change is not None else "-",
+                "today": _today_cell(flows.get(leap_oi_scanner.contract_key(row))),
                 "delta": _delta_text(row["delta"]) if row.get("delta") is not None else "-",
                 "bid": _quote_cell(row.get("bid")), "ask": _quote_cell(row.get("ask"))}
 
@@ -1211,8 +1240,9 @@ def _long_oi_tool(args: Mapping, ctx: Mapping) -> dict:
     table = _rows_table(f"{ticker} most open interest, {span}" + (f", delta ~{delta:.2f}" if delta is not None else ""),
                         [("contract", "Contract"), ("expiry", "Expiry"), ("days", "Days", "right"),
                          ("oi", "OI", "right"), *([("change", "Change", "right")] if changes else []),
+                         *([("today", "Traded today", "right")] if flows else []),
                          ("delta", "Delta", "right"), ("bid", "Bid", "right"), ("ask", "Ask", "right")],
-                        rows if changes else [{k: v for k, v in row.items() if k != "change"} for row in rows],
+                        [{k: v for k, v in row.items() if (k != "change" or changes) and (k != "today" or flows)} for row in rows],
                         note=(f"NEW rows first: the biggest new open interest {since_text}. " if new_rows else "")
                              + f"Top {LONG_OI_ROWS} per side by open interest. "
                              + (f"Change is open interest {since_text}; '-' where the app has no earlier reading. " if changes else "")

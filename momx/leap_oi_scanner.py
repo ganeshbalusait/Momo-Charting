@@ -42,10 +42,11 @@ COMPACT_SCHEMA = 1
 MAG7 = ("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA")
 _TICKER = re.compile(r"^[A-Z][A-Z.\-]{0,5}$")
 ET = ZoneInfo("America/New_York")
-NOTE = ("Open interest is how many contracts are still open; it updates once a day before the open. Delta 0.10 and up "
-        "only, so far-away lottery strikes never show. ENTRY marks the contract the option chain marks ENTRY on that "
-        "expiry (out of the money, delta just under 0.20). Big open interest is not a direction signal: our test on "
-        "15,896 cases found it a coin flip. Facts only, not a pick.")
+NOTE = ("Open interest = how many of these option contracts people are holding right now. It updates once a day, "
+        "before the market opens. Delta = roughly the chance the option ends up worth something (0.20 is about 1 in 5); "
+        "only 0.10 and up shows, so long-shot strikes stay off. ENTRY = the contract our option chain marks ENTRY "
+        "(delta just under 0.20). A big number does not tell you which way the stock goes: our test on 15,896 cases "
+        "found it a coin flip. Facts only, not a pick.")
 
 _REFRESH = threading.Lock()
 _QUEUE: list[str] = []
@@ -350,6 +351,29 @@ def reset() -> None:
         _GAVE_UP.clear()
 
 
+def with_flow(rows: list[dict], root: Path) -> list[dict]:
+    """Put today's trades on each LEAP row (2026-11-20, "If I see leap oi scanner like INTC I don't know anything like
+    buyers or seller ... then I have to search agx flow ... I feel little confusion"): the SAME contract's numbers from
+    AGX Flow's latest read (momx/agx_flow.py, which reads 12 months out), so both pages agree and the trader does not
+    have to switch. row["flow"] = {volume, premium, fill ("ask"/"bid"/"mid"), unusual, at} or nothing when AGX Flow
+    has not read that ticker or the contract did not trade. Never asks Schwab."""
+    from momx import agx_flow
+    by_ticker: dict[str, dict[str, dict]] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or "")
+        if ticker not in by_ticker:
+            doc = agx_flow._held(ticker, Path(root)) if ticker else None
+            contracts = (doc or {}).get("contracts") or []
+            by_ticker[ticker] = {contract_key(c): {**c, "_at": (doc or {}).get("fetchedAt")} for c in contracts if isinstance(c, dict)}
+        hit = by_ticker[ticker].get(contract_key(row))
+        if not hit or int(hit.get("volume") or 0) <= 0:
+            continue
+        flow = agx_flow._flow_row(ticker, None, hit)
+        row["flow"] = {"volume": flow["volume"], "premium": flow["premium"], "fill": flow["fill"],
+                       "unusual": agx_flow.is_unusual(flow["volume"], flow["oi"]), "at": hit.get("_at")}
+    return rows
+
+
 def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from: int = 3, months_to: int = 12,
           side: str = "both", min_delta: float = long_oi.MIN_DELTA, entry_only: bool = False, wait: bool = False) -> dict:
     """The page's whole answer. Reads saved copies only; tickers without one are queued for the background reader
@@ -393,6 +417,7 @@ def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from:
         by_ticker.append(_ticker_summary(ticker, doc.get("spot"), found))
     if missing:
         _schedule(missing, root, front=True)               # what is on screen is read before the warm-up's queue
+    with_flow(rows, root)
     rows.sort(key=lambda r: (-r["oi"], -r["volume"], r["days"], r["strike"]))
     entries = [r for r in rows if r.get("entry")][:ENTRY_ROWS]
     calls = [r for r in rows if r["side"] == "CALL"]

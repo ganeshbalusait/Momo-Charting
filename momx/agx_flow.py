@@ -35,7 +35,7 @@ from momx import board_filter
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
-FETCH_MAX_DAYS = 45
+FETCH_MAX_DAYS = 366          # 12 months (2026-11-19 "I see only 30 days add up to 12 months"); was 45
 STRIKE_COUNT = 40
 CACHE_SECONDS = 5 * 60
 FAIL_SECONDS = 5 * 60
@@ -52,8 +52,9 @@ MIN_VOLUME = 500
 TOP_ROWS = 60
 SCHEMA = 1
 
-NOTE = ("Volume and prices from Schwab's option chain. 'Bought/Sold' is a guess from where the last trade printed vs "
-        "the bid/ask. Unusual = today's volume above open interest. Facts only, not a direction signal.")
+NOTE = ("Numbers come from Schwab. 'Bought' or 'Sold' is the app's guess: a trade at the asking price was probably a "
+        "buyer, a trade at the bid price was probably a seller. 'Unusual' means more contracts traded today than were "
+        "open before. Big money is not proof the stock will move: facts only, not a direction signal.")
 
 _SYMBOL = re.compile(r"^[A-Z][A-Z.\-]{0,5}$")
 
@@ -272,6 +273,8 @@ def last_close(now: datetime) -> datetime:
 def _fresh(doc: dict | None, now: datetime) -> bool:
     """Younger than CACHE_SECONDS in market hours. Outside them, a read taken after the last close is fresh until the
     next open: option volume does not move then, so the whole watchlist is not read again all night."""
+    if (doc or {}).get("maxDays") != FETCH_MAX_DAYS and market_open(now):
+        return False                                       # a copy read over a shorter window (45 days before 11-19)
     try:
         saved = datetime.fromisoformat(str((doc or {}).get("fetchedAt")))
         age = (now - saved).total_seconds()
@@ -356,12 +359,16 @@ def refresh(ticker: str, root: Path, now: datetime) -> dict:
             raise Unavailable(message) from exc
         spot, rows = contracts_from_chain(chain, now.date())
         if not rows:
-            message = f"Schwab has no options 0 to {FETCH_MAX_DAYS} days out for {ticker}."
+            message = f"Schwab has no options in the next 12 months for {ticker}."
             _fail(ticker, message, NO_CHAIN_SECONDS)
             raise Unavailable(message)
         with_new_volume(rows, held, now)
         rows = [row for row in rows if row["volume"] > 0]  # untraded contracts add nothing; 400 tickers stay light
-        doc = {"schema": SCHEMA, "symbol": ticker, "fetchedAt": now.isoformat(), "spot": spot, "contracts": rows}
+        if not rows and (held or {}).get("contracts") and not market_open(now):
+            # Schwab reports 0 volume overnight: keep the session's numbers rather than an empty copy (2026-11-19).
+            return held
+        doc = {"schema": SCHEMA, "symbol": ticker, "fetchedAt": now.isoformat(), "spot": spot, "contracts": rows,
+               "maxDays": FETCH_MAX_DAYS}
         with _STATE:
             _MEMORY[ticker] = doc
             _FAILED.pop(ticker, None)
@@ -479,14 +486,19 @@ def _wanted(ticker: str, root: Path, now: datetime) -> bool:
     return True
 
 
-EXPIRIES = ("all", "week", "next", "month")   # 2026-11-17 "All six": This week / Next week / 30 days
+#: 2026-11-17 "All six": This week / Next week / 30 days. 2026-11-19 "I see only 30 days add up to 12 months": three
+#: bands past 30 days, so LEAP flow is not buried under this week's: 1-3, 3-6 and 6-12 months out.
+EXPIRIES = ("all", "week", "next", "month", "m3", "m6", "m12")
+#: (after, through) in days from today for the month bands.
+MONTH_BANDS = {"m3": (30, 92), "m6": (92, 183), "m12": (183, FETCH_MAX_DAYS)}
 ORDERS = ("premium", "hot")                     # biggest premium today / most volume added since the last read
 
 
 def expiry_window(bucket: str, today: date) -> tuple[date | None, date | None]:
     """Which expiries a bucket keeps, as (after, through), both ET dates; None = no edge.
     week = through this week's Friday (on a weekend, the coming Friday; a Thursday holiday expiry is still inside),
-    next = after that Friday through the next one, month = through 30 days out, all = everything read (0-45 days)."""
+    next = after that Friday through the next one, month = through 30 days out, m3 / m6 / m12 = 1-3, 3-6 and 6-12
+    months out (MONTH_BANDS), all = everything read (0 to 12 months)."""
     friday = today + timedelta(days=(4 - today.weekday()) % 7)
     if bucket == "week":
         return None, friday
@@ -494,6 +506,9 @@ def expiry_window(bucket: str, today: date) -> tuple[date | None, date | None]:
         return friday, friday + timedelta(days=7)
     if bucket == "month":
         return None, today + timedelta(days=30)
+    if bucket in MONTH_BANDS:
+        after, through = MONTH_BANDS[bucket]
+        return today + timedelta(days=after), today + timedelta(days=through)
     return None, None
 
 

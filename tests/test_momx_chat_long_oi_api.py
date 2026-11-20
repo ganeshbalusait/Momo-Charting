@@ -173,3 +173,35 @@ def test_a_saved_copy_from_another_posting_gives_no_change(world, tmp_path):
     assert status == 200
     assert "Change" not in [c["label"] for c in body["table"]["columns"]] and "Biggest new" not in "\n".join(body["lines"])
     assert not any("NEW" in r["contract"] for r in body["table"]["rows"])
+
+
+def test_the_leap_answer_says_what_traded_today_bought_or_sold(world, tmp_path):
+    """2026-11-20 "I have to search agx flow ... I feel little confusion": the LEAP answer carries today's trades on its
+    strikes (AGX Flow's copy of the same contracts), so the trader learns bought or sold in one place."""
+    import gzip
+    from momx import agx_flow
+    agx_flow.reset()
+    with running_api() as api:
+        api.post(ROUTE, {"question": "Nvda leap oi", "context": {"pageTicker": "NVDA"}}, headers=REGULAR)
+        full = long_oi._read_disk(tmp_path, "NVDA")
+        row = max((r for r in full["rows"] if r["side"] == "CALL" and r["days"] >= 88 and abs(r["delta"] or 0) >= 0.1), key=lambda r: r["oi"])
+        flow = {"schema": agx_flow.SCHEMA, "symbol": "NVDA", "fetchedAt": full["fetchedAt"], "spot": full.get("spot"),
+                "maxDays": agx_flow.FETCH_MAX_DAYS, "contracts": [
+                    {"side": "CALL", "expiry": row["expiry"], "days": row["days"], "strike": row["strike"], "volume": 1200,
+                     "oi": row["oi"], "last": 3.15, "bid": 3.0, "ask": 3.15, "mark": 3.08, "delta": row["delta"], "iv": 40.0,
+                     "newVolume": 0}]}
+        (tmp_path / "agx_flow_cache").mkdir(exist_ok=True)
+        with gzip.open(tmp_path / "agx_flow_cache" / "NVDA.json.gz", "wt", encoding="utf-8") as handle:
+            json.dump(flow, handle)
+        status, body = api.post(ROUTE, {"question": "Nvda leap oi buyers or sellers?", "context": {"pageTicker": "NVDA"}}, headers=REGULAR)
+    agx_flow.reset()
+    assert status == 200, body
+    said = "\n".join(body["lines"])
+    strike = f"{row['strike']:g}"
+    assert f"Traded today (the app's guess from where the last trade printed: at the ask = Bought, at the bid = Sold): {strike} call" in said, said
+    assert "1,200 contracts, about $370K, Bought" in said, said
+    assert "Traded today" in [c["label"] for c in body["table"]["columns"]]
+    cells = {r["contract"].split(" ·")[0] + r["expiry"]: r["today"] for r in body["table"]["rows"]}
+    assert cells[f"{strike} Call{row['expiry']}"] == "1,200 Bought"
+    assert "Delta = roughly the chance" in said
+    assert world["ai"] == []
