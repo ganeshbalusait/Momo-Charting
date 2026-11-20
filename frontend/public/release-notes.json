@@ -2,6 +2,17 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-19T23:07:43-05:00",
+      "heading": "Long Term Peter view: cyclical companies are now labelled",
+      "items": [
+        "Chip, oil and gas, metals and mining, auto, heavy machinery, airline, cruise line, homebuilder, chemical and tire companies are now marked CYCLICAL on the Peter list (for example MU, NVDA, AVGO, MPC, CAT, SCCO, WDC).",
+        "A cyclical is never tagged CHEAP any more. Its P/E is lowest when earnings are at the top of the cycle, so a low PEG there is not a bargain sign. The card says so in one line.",
+        "The PEG is still shown on the card, but it earns no star: a cyclical is scored out of 4 stars instead of 5.",
+        "There is a new CYCLICAL tile next to CHEAP / FAIR / PRICEY to see only those names.",
+        "The mark comes from the company's official SEC industry code, so it is by industry, not a judgement on one company. QCOM files under radio equipment and is not marked."
+      ]
+    },
+    {
       "at": "2026-11-19T23:20:00-05:00",
       "heading": "Ask: LEAP answers show what is NEW since yesterday, on top, with a Change column",
       "items": [

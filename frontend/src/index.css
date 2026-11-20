@@ -23314,6 +23314,8 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-lynch-sheet li.is-na { color: #7c7c8a; }
 .long-term-lynch-sheet li.is-na b { color: #8b8b97; font-weight: 500; }
 .long-term-lynch-chart { justify-self: start; }
+.long-term-lynch-warn { margin: 0; color: #f0a6ff; font-size: 11px; line-height: 1.4; }
+.long-term-lynch-card.is-setup { border-color: rgba(232, 121, 249, .4); }
 
 @media (max-width: 1100px) {
   .long-term-drawer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

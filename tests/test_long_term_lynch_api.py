@@ -80,9 +80,28 @@ def test_peter_list_is_the_quality_rows_of_the_real_route_with_their_peg(monkeyp
         "most stars first, then the lowest PEG"
     for symbol, peg, stars, of, verdict in sheet:
         assert 0 <= stars <= of <= 5
-        assert verdict == ("CHEAP" if peg <= 1 else "FAIR" if peg <= 2 else "PRICEY"), symbol
     by_symbol = {r["symbol"]: r for r in body["rows"]}
+    for symbol, peg, stars, of, verdict in sheet:
+        priced = "CHEAP" if peg <= 1 else "FAIR" if peg <= 2 else "PRICEY"
+        assert verdict == ("CYCLICAL" if by_symbol[symbol].get("cyclical") else priced), symbol
     assert all(by_symbol[symbol]["quality"] == "HIGH" for symbol, *_ in sheet), "quality companies only"
+
+
+def test_rows_carry_the_cyclical_industry_and_a_cyclical_is_never_called_cheap(monkeypatch, store_dir):
+    """2026-11-19 "add a cyclical warning label": the route marks each row from the company's SIC code
+    (NVDA and TSM file under semiconductors, ASML under chip-making equipment), and the Peter view
+    shows a marked company as CYCLICAL whatever its PEG."""
+    table = {s: {"last_price": fixture_price(s), "quote_time_ms": NOW_MS, "description": s}
+             for s in SYMBOLS if fixture_price(s)}
+    body = _served(monkeypatch, store_dir, table)
+    marks = {r["symbol"]: r["cyclical"] for r in body["rows"]}
+    assert (marks["NVDA"], marks["TSM"], marks["ASML"]) == ("chips", "chips", "chips")
+    assert (marks["AAPL"], marks["GOOGL"], marks["MCD"], marks["JPM"]) == (None, None, None, None)
+    sheet = {symbol: verdict for symbol, _, _, _, verdict in _sheet(body)}
+    cyclical = {s for s in sheet if marks[s]}
+    assert cyclical, "at least one cyclical fixture company is on Peter's list"
+    assert all(sheet[s] == "CYCLICAL" for s in cyclical)
+    assert all(sheet[s] != "CYCLICAL" for s in sheet if not marks[s])
 
 
 def test_without_prices_nobody_is_on_peters_list(monkeypatch, store_dir):

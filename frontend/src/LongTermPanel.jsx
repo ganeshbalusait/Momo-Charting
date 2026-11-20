@@ -556,8 +556,9 @@ function Card({ row, open, onToggle, leap, onRetryLeap, leapQueued }) {
 
 // Peter view (2026-11-19): one quality company with Peter Lynch's five-star
 // sheet. The sheet is always open: each line is one star, won or lost.
-const LYNCH_TONE = { CHEAP: "buy", FAIR: "wait", PRICEY: "avoid" };
+const LYNCH_TONE = { CHEAP: "buy", FAIR: "wait", PRICEY: "avoid", CYCLICAL: "setup" };
 const LYNCH_TILE_TITLE = {
+  CYCLICAL: "Chips, oil and gas, metals, autos, heavy machinery, airlines, homebuilders: never called CHEAP, because the P/E is lowest at the top of the cycle",
   CHEAP: "PEG 1 or less: the P/E is no higher than the yearly earnings growth",
   FAIR: "PEG between 1 and 2",
   PRICEY: "PEG above 2: the price is far ahead of the growth",
@@ -573,7 +574,7 @@ function LynchCard({ row, sheet, onChart }) {
       </span>
       <span className="long-term-card-mid">
         <Pill tone={LYNCH_TONE[sheet.verdict]} testId={`long-term-lynch-verdict-${row.symbol}`}>{sheet.verdict}</Pill>
-        <Pill tone="muted">{sheet.type}</Pill>
+        {sheet.cyclical ? <Pill tone="muted">{sheet.cyclical}</Pill> : <Pill tone="muted">{sheet.type}</Pill>}
         <span
           className="long-term-lynch-stars"
           role="img"
@@ -598,6 +599,11 @@ function LynchCard({ row, sheet, onChart }) {
           </li>
         ))}
       </ul>
+      {sheet.cyclical ? (
+        <p className="long-term-lynch-warn" data-testid={`long-term-lynch-cyclical-${row.symbol}`}>
+          Cyclical ({sheet.cyclical}): the P/E is lowest when earnings are at the top of the cycle, so a low PEG here is not a bargain sign.
+        </p>
+      ) : null}
       <button type="button" className="long-term-btn long-term-lynch-chart" onClick={() => onChart(row.symbol)}>
         <BarChart3 size={13} /> Chart
       </button>
@@ -1189,7 +1195,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
       {peter ? (
         <>
           <p className="long-term-lynch-legend" data-testid="long-term-lynch-legend">
-            <b>The star sheet:</b> ★ earnings grew 10–50% a year · ★ sales grew 5%+ a year · ★ debt at most 0.8× equity · ★ free cash flow growing · ★ PEG 1 or less. Most stars first, then the lowest PEG.
+            <b>The star sheet:</b> ★ earnings grew 10–50% a year · ★ sales grew 5%+ a year · ★ debt at most 0.8× equity · ★ free cash flow growing · ★ PEG 1 or less. Most stars first, then the lowest PEG. Cyclicals (chips, oil, metals, autos…) are never called cheap and get no price star.
           </p>
           <div className="long-term-tiles" role="group" aria-label="Filter by price for growth">
             {LYNCH_TILES.map((t) => {

@@ -56,6 +56,26 @@ test("a bank is not judged on debt or cash flow: those stars are left out, not f
   assert.deepEqual([sheet.stars, sheet.of], [3, 3]);
 });
 
+// 2026-11-19 "add a cyclical warning label": a chip, oil or metals company
+// looks cheapest when its earnings are at the top of the cycle.
+test("a cyclical is never called CHEAP: it reads CYCLICAL and the price star is left out", () => {
+  const sheet = lynchSheet(row({ symbol: "MU", cyclical: "chips", pe: 9.1, epsGrowth: 0.21 }));
+  assert.deepEqual([sheet.verdict, sheet.type, sheet.cyclical], ["CYCLICAL", "Cyclical · chips", "chips"]);
+  assert.equal(sheet.peg, 0.43, "the PEG is still shown");
+  assert.equal(passed(sheet).price, null);
+  assert.match(sheet.checks[4].text, /PEG 0\.43, not judged/);
+  assert.deepEqual([sheet.stars, sheet.of], [4, 4]);
+  // a pricey cyclical is CYCLICAL too: one tile holds them all
+  assert.equal(lynchSheet(row({ cyclical: "oil & gas", pe: 60 })).verdict, "CYCLICAL");
+  // rows from a server that does not send the mark yet behave as before
+  assert.equal(lynchSheet(row({ cyclical: undefined })).verdict, "CHEAP");
+  assert.equal(lynchSheet(row({ cyclical: null })).verdict, "CHEAP");
+  assert.equal(lynchSheet(row({ cyclical: "" })).verdict, "CHEAP");
+  const list = lynchRows([row({ symbol: "MU", cyclical: "chips" }), row({})]);
+  assert.deepEqual(lynchCounts(list), { CHEAP: 1, FAIR: 0, PRICEY: 0, CYCLICAL: 1 });
+  assert.deepEqual(lynchRows([row({ symbol: "MU", cyclical: "chips" }), row({})], { tile: "CYCLICAL" }).map((x) => x.row.symbol), ["MU"]);
+});
+
 test("only quality companies with a price, a profit and a growth record get a sheet", () => {
   assert.equal(lynchSheet(row({ quality: "LOW" })), null);
   assert.equal(lynchSheet(row({ young: true })), null);
@@ -77,8 +97,8 @@ test("the list is most stars first, then lowest PEG; a tile or the search narrow
   ];
   const list = lynchRows(rows);
   assert.deepEqual(list.map((x) => x.row.symbol), ["DECK", "ADBE", "MSFT", "COST"]);
-  assert.deepEqual(lynchCounts(list), { CHEAP: 2, FAIR: 1, PRICEY: 1 });
-  assert.deepEqual(LYNCH_TILES, ["CHEAP", "FAIR", "PRICEY"]);
+  assert.deepEqual(lynchCounts(list), { CHEAP: 2, FAIR: 1, PRICEY: 1, CYCLICAL: 0 });
+  assert.deepEqual(LYNCH_TILES, ["CHEAP", "FAIR", "PRICEY", "CYCLICAL"]);
   assert.deepEqual(lynchRows(rows, { tile: "PRICEY" }).map((x) => x.row.symbol), ["COST"]);
   assert.deepEqual(lynchRows(rows, { query: "micro" }).map((x) => x.row.symbol), ["MSFT"]);
   assert.deepEqual(lynchRows(rows, { query: "deck" }).map((x) => x.row.symbol), ["DECK"]);

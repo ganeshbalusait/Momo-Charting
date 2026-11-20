@@ -15,7 +15,13 @@
 //   price   PEG (P/E / growth %) is 1 or less
 // A bank is not judged on debt or cash flow; those two are left out for it.
 
-export const LYNCH_TILES = ["CHEAP", "FAIR", "PRICEY"];
+//
+// Cyclicals (same day, "add a cyclical warning label"): the server marks a row
+// with its cyclical industry (chips, oil & gas, metals & mining, autos...). A
+// cyclical's P/E is lowest when its earnings are at the top of the cycle, so it
+// is never called CHEAP: it reads CYCLICAL and its price star is left out.
+
+export const LYNCH_TILES = ["CHEAP", "FAIR", "PRICEY", "CYCLICAL"];
 export const LYNCH_RULES = Object.freeze({
   growthMin: 10, growthMax: 50, salesMin: 5, debtMax: 0.8, pegCheap: 1, pegFair: 2, stalwartFrom: 10, fastFrom: 20,
 });
@@ -31,6 +37,7 @@ export function lynchSheet(row) {
   if (!isNum(row.pe) || row.pe <= 0 || growth == null || growth <= 0) return null;
   const R = LYNCH_RULES;
   const bank = !!row.financial;
+  const cyclical = typeof row.cyclical === "string" && row.cyclical.trim() ? row.cyclical.trim() : null;
   const peg = Math.round((row.pe / Math.min(growth, R.growthMax)) * 100) / 100;
   const sales = pct(row.salesGrowth);
   const cash = pct(row.fcfGrowth);
@@ -48,13 +55,17 @@ export function lynchSheet(row) {
     bank
       ? { key: "cash", label: "Cash flow", text: "bank, not judged", passed: null }
       : { key: "cash", label: "Cash flow", text: cash == null ? "no figure" : `${whole(cash)}/yr`, passed: cash != null && cash > 0 },
-    { key: "price", label: "Price for growth", text: `PEG ${peg.toFixed(2)}`, passed: peg <= R.pegCheap },
+    cyclical
+      ? { key: "price", label: "Price for growth", text: `PEG ${peg.toFixed(2)}, not judged`, passed: null }
+      : { key: "price", label: "Price for growth", text: `PEG ${peg.toFixed(2)}`, passed: peg <= R.pegCheap },
   ];
+  const grower = growth < R.stalwartFrom ? "Slow grower" : growth < R.fastFrom ? "Stalwart" : "Fast grower";
   return {
     peg,
     growthPct: growth,
-    type: growth < R.stalwartFrom ? "Slow grower" : growth < R.fastFrom ? "Stalwart" : "Fast grower",
-    verdict: peg <= R.pegCheap ? "CHEAP" : peg <= R.pegFair ? "FAIR" : "PRICEY",
+    cyclical,
+    type: cyclical ? `Cyclical · ${cyclical}` : grower,
+    verdict: cyclical ? "CYCLICAL" : peg <= R.pegCheap ? "CHEAP" : peg <= R.pegFair ? "FAIR" : "PRICEY",
     stars: checks.filter((c) => c.passed === true).length,
     of: checks.filter((c) => c.passed !== null).length,
     checks,
@@ -77,7 +88,7 @@ export function lynchRows(rows, { tile = null, query = "" } = {}) {
 }
 
 export function lynchCounts(list) {
-  const counts = { CHEAP: 0, FAIR: 0, PRICEY: 0 };
+  const counts = { CHEAP: 0, FAIR: 0, PRICEY: 0, CYCLICAL: 0 };
   for (const item of Array.isArray(list) ? list : []) counts[item.sheet.verdict] += 1;
   return counts;
 }

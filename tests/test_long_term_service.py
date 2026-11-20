@@ -40,6 +40,8 @@ EXPECTED_ROW_KEYS = {
     "fcfGrowth", "equityGrowth", "marketCap", "filedEnd", "years", "currency", "young",
     # re-pinned 2026-11-08 (LEAP setup): every row now also carries the setup state and its verdict
     "setup", "setupPass",
+    # re-pinned 2026-11-19 (Peter view): the cyclical industry from the SIC code, or None
+    "cyclical",
 }
 
 

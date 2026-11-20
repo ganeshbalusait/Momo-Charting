@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from long_term.cyclical import cyclical_group
 from long_term.edgar import (EXTRA_CIKS, NEEDS_ACCESSION_FILTER, EdgarBlocked, EdgarClient, Snapshot, build_snapshot,
                              merge_companyfacts)
 from long_term.finnhub import FinnhubExtract, FinnhubPacer, fetch_metrics
@@ -74,6 +75,7 @@ ROW_KEYS = (
     "leapsBelow", "buyZonePct", "safetyBuy", "sticker", "buffett", "fairValue", "payback", "roic", "roe",
     "financial", "big5", "big5Na", "quality", "pe", "debtToEquity", "salesGrowth", "epsGrowth",
     "fcfGrowth", "equityGrowth", "marketCap", "filedEnd", "years", "currency", "young", "setup", "setupPass",
+    "cyclical",     # 2026-11-19: the cyclical industry (from the SIC code) for the Peter view, or None
 )
 _METRICS_FIELDS = frozenset(f.name for f in dataclasses.fields(Metrics))
 _VALUATION_FIELDS = frozenset(f.name for f in dataclasses.fields(Valuation))
@@ -843,6 +845,10 @@ class LongTermService:
                 row.update(signal="ETF", reason="ETF")
                 return row
             row.update(setup=self._served_setup(rec, now))
+            sic = rec.get("sic")
+            if sic is None and isinstance(rec.get("snapshot"), dict):
+                sic = rec["snapshot"].get("sic")
+            row.update(cyclical=cyclical_group(sic))
             c = self._entry(sym, rec)
             if c.get("computing"):
                 row.update(signal="CHECK_DATA", reason="computing")

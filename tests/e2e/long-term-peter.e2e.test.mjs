@@ -26,8 +26,11 @@ const rows = () => [
   row({ symbol: "HD", name: "Home Depot", signal: "AVOID", quality: "LOW", reason: "debt 3.6× FCF" }),
   row({ symbol: "COST", name: "Costco", pe: 52, debtToEquity: 1.2 }),
   row({ symbol: "NVDA", name: "Nvidia Corp", pe: 45, epsGrowth: 0.3 }),
+  // MU: PEG 9.1 / 21 = 0.43 would read CHEAP, but the server marks it a chip maker (cyclical).
+  row({ symbol: "MU", name: "Micron", pe: 9.1, epsGrowth: 0.21, cyclical: "chips" }),
   row({}),
 ];
+const ALL = ["AAPL 5/5", "MU 4/4", "NVDA 4/5", "COST 3/5"];
 
 const reads = () => ({
   "GET /api/long-term": (read) => ({ json: {
@@ -58,8 +61,19 @@ e2eTest("Peter, next to the MOS buttons, shows the star sheet for the quality co
     await p.getByTestId("long-term-lynch-list").waitFor({ timeout: 20_000 });
     assert.equal(await pressed(p, "long-term-peter"), "true");
     assert.equal(await pressed(p, "long-term-mos-50"), "false");
-    assert.deepEqual(await listed(p), ["AAPL 5/5", "NVDA 4/5", "COST 3/5"], "most stars first; HD is not a quality company");
-    assert.deepEqual([await tile(p, "CHEAP"), await tile(p, "FAIR"), await tile(p, "PRICEY")], ["1", "1", "1"]);
+    assert.deepEqual(await listed(p), ALL, "most stars first; HD is not a quality company");
+    assert.deepEqual(
+      [await tile(p, "CHEAP"), await tile(p, "FAIR"), await tile(p, "PRICEY"), await tile(p, "CYCLICAL")],
+      ["1", "1", "1", "1"],
+    );
+    // 2026-11-19 "add a cyclical warning label": a chip maker at PEG 0.43 is CYCLICAL, never CHEAP
+    assert.equal((await p.getByTestId("long-term-lynch-verdict-MU").innerText()).trim(), "CYCLICAL");
+    assert.match(await p.getByTestId("long-term-lynch-cyclical-MU").innerText(), /Cyclical \(chips\).*not a bargain sign/);
+    assert.match(await p.getByTestId("long-term-lynch-sheet-MU").innerText(), /PEG 0\.43, not judged/);
+    assert.equal(await p.getByTestId("long-term-lynch-cyclical-AAPL").count(), 0);
+    await p.getByTestId("long-term-lynch-tile-CYCLICAL").click();
+    assert.deepEqual(await listed(p), ["MU 4/4"]);
+    await p.getByTestId("long-term-lynch-tile-CYCLICAL").click();
     assert.equal(await p.getByTestId("long-term-table").count(), 0, "the Rule #1 table is replaced");
     // the star sheet: five lines, one per star
     const sheet = p.getByTestId("long-term-lynch-sheet-AAPL");
@@ -94,8 +108,10 @@ e2eTest("on a phone the Peter list fits the screen and the footer stays under it
     assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `Peter button at ${JSON.stringify(box)}`);
     await button.click();
     await p.getByTestId("long-term-lynch-list").waitFor({ timeout: 20_000 });
-    assert.deepEqual(await listed(p), ["AAPL 5/5", "NVDA 4/5", "COST 3/5"]);
+    assert.deepEqual(await listed(p), ALL);
     assert.equal(await overflowsSideways(p), false);
+    const warn = await p.getByTestId("long-term-lynch-cyclical-MU").boundingBox();
+    assert.ok(warn && warn.x >= 0 && warn.x + warn.width <= PHONE.width + 1, `cyclical warning cut off: ${JSON.stringify(warn)}`);
     const edges = await p.evaluate(() => {
       const list = document.querySelector("[data-testid='long-term-lynch-list']").getBoundingClientRect();
       const footer = document.querySelector("[data-testid='long-term-footer']").getBoundingClientRect();
