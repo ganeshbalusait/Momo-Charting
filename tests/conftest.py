@@ -128,6 +128,32 @@ def _reset_schwab_gate():
         _feed._tos_reset()
 
 
+#: The Ask chat's background threads: the "more" job (owner AI summary, momx/chat_why.start) and Google News fills.
+_CHAT_THREAD_PREFIXES = ("chat-more", "chat-google")
+
+
+def _finish_chat_threads(timeout: float = 20.0) -> None:
+    import threading
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    for thread in list(threading.enumerate()):
+        if thread.name.startswith(_CHAT_THREAD_PREFIXES) and thread.is_alive():
+            thread.join(max(0.0, deadline - _time.monotonic()))
+
+
+@pytest.fixture(autouse=True)
+def _chat_background_work_ends_with_its_test():
+    """Let a test's own Ask background work finish before the next test starts (2026-11-20).
+
+    An owner question starts a background job that asks the (faked) AI for a summary a few seconds later. In a full run
+    that job outlived its test and called the NEXT test's fake AI: test_momx_chat_predict_api's owner case and
+    test_momx_chat_tools' "a sure match asks no AI" failed only in a group, with "an AI call was made". Each test now
+    starts with no leftover chat thread and waits for its own before it ends."""
+    _finish_chat_threads()
+    yield
+    _finish_chat_threads()
+
+
 @pytest.fixture(autouse=True)
 def _no_real_alpaca_keys_in_tests(monkeypatch):
     """No test may reach Alpaca with the real .env keys (2026-10-04). The owner Alpaca

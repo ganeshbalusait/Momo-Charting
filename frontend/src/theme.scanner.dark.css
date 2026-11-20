@@ -169,6 +169,18 @@
   color: var(--momx-down);
 }
 
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-other-side.is-bear .momx-other-side-title b {
+  color: var(--momx-down);
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-other-side.is-bull .momx-other-side-title b {
+  color: var(--momx-up);
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-other-side-title small {
+  color: var(--momx-muted, #8d97a8);
+}
+
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-news-btn {
   color: #fbbf24;
 }
