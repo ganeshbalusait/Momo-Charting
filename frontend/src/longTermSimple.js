@@ -8,7 +8,7 @@
 // Every sentence is a number already on the row, said plainly; nothing here
 // predicts a price. Pure functions, no React.
 
-import { lynchMissing, lynchNoSheet, lynchSheet } from "./longTermLynch.js";
+import { LYNCH_RULES, lynchMissing, lynchNoSheet, lynchSheet, nearLimit } from "./longTermLynch.js";
 
 export const SIMPLE_FOOT = "These are two famous investors' checklists, worked out from the company's own reports. They explain; they do not tell you what to do with your money.";
 
@@ -23,11 +23,14 @@ const whole = (v) => Math.round(Math.abs(v) * 100);
 const dollars = (v) => (v >= 10 ? `$${Math.round(v).toLocaleString("en-US")}` : `$${v.toFixed(2)}`);
 const line = (mark, text) => ({ mark, text });
 // debt / equity: equity is the owners' money, not everything the company owns
-const owes = (ratio) => `It has borrowed $${Math.round(ratio * 100)} for every $100 of its owners' money.`;
+const owes = (ratio, ...limits) => `It has borrowed $${limits.length ? nearLimit(ratio * 100, ...limits) : Math.round(ratio * 100)} for every $100 of its owners' money.`;
 
-function grows(value, what, wants) {
-  if (value >= 0) return `${what} ${whole(value)}% ${what.startsWith("It sells") ? "more every year" : "a year"}.${wants ? ` ${wants}` : ""}`;
-  return what.startsWith("It sells") ? `It sells ${whole(value)}% less every year.` : `${what.replace("grows", "shrinks")} ${whole(value)}% a year.`;
+// value is a fraction (0.17); limits are the percent limits of the check beside it, so a figure
+// that misses a limit is never rounded onto it (review 11-20: "grows 10%" beside a failed 10%).
+function grows(value, what, wants, ...limits) {
+  const shown = limits.length ? nearLimit(value * 100, ...limits) : String(whole(value));
+  if (value >= 0) return `${what} ${shown}% ${what.startsWith("It sells") ? "more every year" : "a year"}.${wants ? ` ${wants}` : ""}`;
+  return what.startsWith("It sells") ? `It sells ${shown}% less every year.` : `${what.replace("grows", "shrinks")} ${shown}% a year.`;
 }
 
 function warrenSide(row) {
@@ -41,9 +44,9 @@ function warrenSide(row) {
     const where = row.financial ? "For every $100 its owners have in it" : "For every $100 put into the business";
     lines.push(line(earns >= 0.15 ? "yes" : "no", `${where}, it earns $${Math.round(earns * 100)} a year. Warren wants $15 or more.`));
   }
-  if (isNum(row.salesGrowth)) lines.push(line(row.salesGrowth >= 0.1 ? "yes" : "no", grows(row.salesGrowth, "It sells", "Warren wants 10% or more.")));
-  if (isNum(row.epsGrowth)) lines.push(line(row.epsGrowth >= 0.1 ? "yes" : "no", grows(row.epsGrowth, "Its profit grows")));
-  if (!row.financial && isNum(row.fcfGrowth)) lines.push(line(row.fcfGrowth >= 0.1 ? "yes" : "no", grows(row.fcfGrowth, "The cash it has left over grows")));
+  if (isNum(row.salesGrowth)) lines.push(line(row.salesGrowth >= 0.1 ? "yes" : "no", grows(row.salesGrowth, "It sells", "Warren wants 10% or more.", 10)));
+  if (isNum(row.epsGrowth)) lines.push(line(row.epsGrowth >= 0.1 ? "yes" : "no", grows(row.epsGrowth, "Its profit grows", "", 10)));
+  if (!row.financial && isNum(row.fcfGrowth)) lines.push(line(row.fcfGrowth >= 0.1 ? "yes" : "no", grows(row.fcfGrowth, "The cash it has left over grows", "", 10)));
   if (!row.financial && isNum(row.debtToEquity) && row.debtToEquity >= 0) {
     const size = row.debtToEquity <= 0.3 ? "That is very little." : row.debtToEquity <= 1 ? "That is a fair amount." : "That is a lot.";
     lines.push(line("info", `${owes(row.debtToEquity)} ${size}`));
@@ -80,7 +83,8 @@ const PETER_HEAD = {
   WAIT: "Would Peter buy it? Not at this price.",
   NO: "Would Peter buy it? No.",
   CAREFUL: "Would Peter buy it? Only with care.",
-  OFFLIST: "Would Peter buy it? This page does not score it.",
+  OFFLIST: "Would Peter buy it? This page gives no buy answer.",
+  CANNOT: "Would Peter buy it? He cannot tell.",
 };
 const PETER_CAVEAT = " In our test, the cheap ones did not do better than other good companies, so this is his checklist, not a promise.";
 
@@ -95,35 +99,40 @@ function peterSide(row) {
   }
   const by = Object.fromEntries(sheet.checks.map((c) => [c.key, c]));
   const mark = (c) => (c.passed === true ? "yes" : c.passed === false ? "no" : "info");
-  const growth = Math.round(sheet.growthPct);
+  const R = LYNCH_RULES;
+  // the same figure the card prints beside the same check (review 11-20)
+  const growth = nearLimit(sheet.growthPct, R.growthMin, R.stalwartFrom, R.fastFrom, R.growthMax);
   const lines = [];
   if (sheet.lowQuality) lines.push(line("info", "It earns less than $20 a year on every $100 put in, so it is not on the quality list."));
-  lines.push(line(mark(by.growth), sheet.growthPct > 50
-    ? `Its profit grows ${growth}% a year. That is too fast to last.`
-    : `Its profit grows ${growth}% a year. Peter likes 10% to 50%.`));
-  if (isNum(row.salesGrowth)) lines.push(line(mark(by.sales), grows(row.salesGrowth, "It sells", "Peter wants 5% or more.")));
-  if (row.financial) lines.push(line("info", "It is a bank, so Peter does not judge what it owes this way."));
-  else if (isNum(row.debtToEquity)) lines.push(line(mark(by.debt), `${owes(row.debtToEquity)} Peter wants $80 or less.`));
-  if (!row.financial && isNum(row.fcfGrowth)) lines.push(line(mark(by.cash), grows(row.fcfGrowth, "The cash it has left over grows")));
-  const pe = Math.round(row.pe * 10) / 10;
-  const used = Math.min(growth, 50);
+  // the limits are this page's own; his favourites grew 20% to 25% (review 11-20)
+  lines.push(line(mark(by.growth), sheet.growthPct > R.growthMax
+    ? `Its profit grows ${growth}% a year. That is over this page's 50% limit; Peter was wary of growth that fast.`
+    : `Its profit grows ${growth}% a year. This page looks for 10% to 50% (his favourites grew 20% to 25%).`));
+  if (isNum(row.salesGrowth)) lines.push(line(mark(by.sales), grows(row.salesGrowth, "It sells", "This page looks for 5% or more.", R.salesMin)));
+  if (row.financial) lines.push(line("info", "It is a finance company, so this page does not judge what it owes this way."));
+  else if (isNum(row.debtToEquity)) lines.push(line(mark(by.debt), `${owes(row.debtToEquity, R.debtMax * 100)} This page looks for $80 or less.`));
+  if (!row.financial && isNum(row.fcfGrowth)) lines.push(line(mark(by.cash), grows(row.fcfGrowth, "The cash it has left over grows", "", 0)));
+  // the sum divides the very numbers the score came from, so it always works out (review 11-20)
+  const pe = row.pe.toFixed(2);
+  const used = Number.isInteger(sheet.counted) ? String(sheet.counted) : sheet.counted.toFixed(1);
   const pays = sheet.dividendPct > 0 ? ` and pays you ${sheet.dividendPct.toFixed(1)}% a year` : "";
   const sum = sheet.dividendPct > 0 ? `${pe} ÷ (${used} + ${sheet.dividendPct.toFixed(1)})` : `${pe} ÷ ${used}`;
-  const capped = growth > used ? " (the page counts at most 50%)" : "";
-  const paying = `You pay $${row.pe.toFixed(2)} for every $1 it earns in a year, and its profit grows ${growth}% a year${capped}${pays}. Divide the first by the second: ${sum} = ${sheet.peg.toFixed(2)}.`;
+  const capped = sheet.growthPct > R.growthMax ? " (this page counts at most 50%)" : "";
+  const paying = `You pay $${pe} for every $1 it earns in a year, and its profit grows ${growth}% a year${capped}${pays}. Divide the first by the second: ${sum} = ${sheet.peg.toFixed(2)}.`;
   if (sheet.cyclical) {
     lines.push(line("info", `${paying} For this kind of business a low price can be a trap: it can look cheapest when its best year is ending.`));
   } else {
-    lines.push(line(mark(by.price), `${paying} 1 or less is a low price for the growth.`));
+    lines.push(line(mark(by.price), `${paying} 1 or less means the price is at or under his fair price; half of that he called very good.`));
   }
   if (sheet.inventoryWarning) lines.push(line("no", "Its shelves are filling up: unsold goods are growing faster than what it sells."));
   const { buy, plan } = sheet;
-  // buy.why is plain already; "Peter's price: $X or less" is the next line, so cut it here
-  const why = buy.why.replace(/ Peter's price: .*$/, "");
+  // buy.why is plain already; "His fair price works out to $X." is the next line, so cut it here
+  const why = buy.why.replace(/ His fair price works out to .*$/, "");
   return {
     headline: `${PETER_HEAD[buy.answer]} ${why}`,
     lines,
-    todo: `Peter's buy price: ${plan.buyText}${buy.answer === "YES" ? PETER_CAVEAT : ""}`,
+    // the plan line already names his fair price when there is one; otherwise it needs the label
+    todo: `${/fair price works out/.test(plan.buyText) ? "" : "Peter's fair price: "}${plan.buyText}${buy.answer === "YES" ? PETER_CAVEAT : ""}`,
     sell: plan.exitText ? `When would he sell? ${plan.exitText}` : null,
   };
 }

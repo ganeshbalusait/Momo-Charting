@@ -23309,7 +23309,8 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-lynch-stars { margin-left: auto; color: #45454f; font-size: 15px; letter-spacing: 1px; line-height: 1; white-space: nowrap; }
 .long-term-lynch-stars i { color: var(--lt-amber); font-style: normal; }
 .long-term-lynch-sheet { display: grid; gap: 3px; margin: 2px 0 0; padding: 6px 0 0; border-top: 1px solid var(--lt-line); list-style: none; }
-.long-term-lynch-sheet li { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: baseline; gap: 6px; color: #a6a6b0; font-size: 11.5px; }
+.long-term-lynch-sheet li { display: grid; grid-template-columns: 14px minmax(6.5em, max-content) minmax(0, 1fr); align-items: baseline; gap: 6px; color: #a6a6b0; font-size: 11.5px; }
+.long-term-lynch-sheet li b { min-width: 0; overflow-wrap: anywhere; }
 .long-term-lynch-sheet li b { color: #dcdce2; font-weight: 700; text-align: right; }
 .long-term-lynch-sheet li.is-pass > span:first-child { color: var(--lt-amber); }
 .long-term-lynch-sheet li.is-fail > span:first-child { color: var(--lt-red); }
@@ -23348,14 +23349,10 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-card > .long-term-lynch-plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
 .long-term-lynch-plan-k { color: #a6a6b0; font-size: 11.5px; font-weight: 700; }
 .long-term-lynch-plan-k + .long-term-lynch-plan-v + .long-term-lynch-plan-k { margin-top: 5px; }
-.long-term-lynch-more + .long-term-lynch-more { margin-top: -4px; }
 .long-term-lynch-plan-v { min-width: 0; color: #f1f1f4; font-size: 12.5px; font-weight: 600; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
 .long-term-simple-grid.is-one { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 760px) {
   .long-term-simple-grid { grid-template-columns: minmax(0, 1fr); }
-  /* four group buttons do not fit one row on a 375px phone ("Peter would buy" is long): wrap */
-  .long-term-lynch-scope { display: flex; flex-wrap: wrap; align-self: stretch; }
-  .long-term-lynch-scope button { flex: 1 1 auto; border-bottom: 1px solid var(--lt-line); margin-bottom: -1px; }
 }
 /* Tap a card for its details: the open card and its drawer take the whole row. */
 .long-term-lynch-card { cursor: pointer; }
@@ -23367,6 +23364,13 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-lynch-scope { max-width: 100%; }
 .long-term-lynch-scope button { padding: 0 9px; white-space: nowrap; }
 .long-term-lynch-scope button.is-both { color: var(--lt-green); }
+@media (max-width: 760px) {
+  /* four group buttons do not fit one row on a 375px phone ("Peter would buy" is long): wrap.
+     Kept after the rules above so it wins (review 11-20); each button draws its own border. */
+  .long-term-lynch-scope { display: flex; flex-wrap: wrap; align-self: stretch; border: 0; overflow: visible; }
+  .long-term-lynch-scope button { flex: 1 1 auto; border: 1px solid var(--lt-line); margin: 0 -1px -1px 0; }
+  .long-term-lynch-scope button + button { border-left: 1px solid var(--lt-line); }
+}
 .long-term-lynch-scope button.is-both[aria-pressed="true"] { background: rgba(57, 255, 136, .16); color: #d9ffe8; }
 .long-term-lynch-warn { margin: 0; color: #f0a6ff; font-size: 11px; line-height: 1.4; }
 .long-term-lynch-warn.is-inventory { color: var(--lt-amber); }

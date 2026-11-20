@@ -198,7 +198,8 @@ def test_every_served_row_gets_a_plain_words_explanation_that_matches_its_verdic
             seen.add(r["signal"])
         said = " ".join([warren["headline"], *(line["text"] for line in warren["lines"]), warren["todo"] or ""])
         if why["peter"]:
-            said += " " + " ".join([why["peter"]["headline"], *(line["text"] for line in why["peter"]["lines"])])
+            said += " " + " ".join([why["peter"]["headline"], *(line["text"] for line in why["peter"]["lines"]),
+                                    why["peter"]["todo"] or "", why["peter"]["sell"] or ""])
         # the AVOID line quotes the rule's own reason, which may name a ratio: every other line is plain
         plain = " ".join(part for part in said.split("The rule it failed:")[:1])
         assert not any(word in plain for word in JARGON), (r["symbol"], plain)
@@ -208,13 +209,13 @@ def test_every_served_row_gets_a_plain_words_explanation_that_matches_its_verdic
     assert f"it earns ${round(row['roic'] * 100)} a year" in aapl["warren"]["lines"][0]["text"]
     answers = ("Would Peter buy it? Yes.", "Would Peter buy it? Not at this price.", "Would Peter buy it? No.",
                "Would Peter buy it? Only with care.", "Would Peter buy it? He cannot tell:",
-               "Would Peter buy it? This page does not score it.")
+               "Would Peter buy it? This page gives no buy answer.", "Would Peter buy it? He cannot tell.")
     for symbol, why in simple.items():
         if why["peter"]:
             assert why["peter"]["headline"].startswith(answers), symbol
             # a sell line only where he would own it, and never a fixed profit target as a rule
             if why["peter"]["headline"].startswith(("Would Peter buy it? No.", "Would Peter buy it? He cannot tell:",
-                                                    "Would Peter buy it? This page does not score it.")):
+                                                    "Would Peter buy it? This page gives no buy answer.", "Would Peter buy it? He cannot tell.")):
                 assert why["peter"]["sell"] is None, symbol
             else:
                 assert why["peter"]["sell"].startswith("When would he sell?"), symbol

@@ -51,12 +51,15 @@ const limited = (v) => (v >= 100 ? Math.floor(v + 1e-9) : Math.floor(v * 100 + 1
 const limit = (v) => (v >= 100 ? `$${limited(v).toLocaleString("en-US")}` : `$${limited(v).toFixed(2)}`);
 const cents = (v) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const pct = (v) => (isNum(v) ? Math.round(v * 1000) / 10 : null);
-const whole = (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(Math.round(v))}%`;
-// A percent next to a check: whole, unless rounding would put it on the other side of the
-// check's limit (9.96% must not print "+10%" beside a failed "10% or more"): then one decimal.
-const beside = (v, ...limits) => (limits.some((limit) => (v < limit) !== (Math.round(v) < limit) || (v > limit) !== (Math.round(v) > limit))
-  ? `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(1)}%`
-  : whole(v));
+// A number next to a check: whole, unless rounding would put it on the other side of one of the
+// check's limits (9.96 must not print "10" beside a failed "10 or more"): then one decimal.
+// Shared by the card and the simple-words box so both always print the same figure.
+export function nearLimit(v, ...limits) {
+  const r = Math.round(v);
+  const flips = limits.some((limit) => (v < limit) !== (r < limit) || (v > limit) !== (r > limit));
+  return flips ? Math.abs(v).toFixed(1) : String(Math.abs(r));
+}
+const beside = (v, ...limits) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${nearLimit(v, ...limits)}%`;
 
 // Groups (same day, "add mag7 tickers and watchlist tickers separate also"):
 // Quality = every quality company (the list as first built); Mag7 = every Mag7
@@ -108,30 +111,38 @@ const BUY_NO = {
 };
 const lower = (s) => `${s.charAt(0).toLowerCase()}${s.slice(1)}`;
 
-function wouldBuy({ checks, verdict, fair, growth, cyclical, note, inventoryWarning, lowQuality }) {
+function wouldBuy({ checks, verdict, fair, growth, cyclical, note, inventoryWarning, lowQuality, foreign, priced: hasPrice }) {
   const failed = checks.find((c) => c.key !== "price" && c.passed === false);
   const failedWhy = !failed ? null
     : failed.key === "growth"
-      ? (growth > LYNCH_RULES.growthMax ? "Its profit growth is too fast to last." : "Its profit grows too slowly.")
+      ? (growth > LYNCH_RULES.growthMax ? "Its profit grew faster than this page's 50% limit; Peter was wary of growth that fast." : "Its profit grows too slowly.")
       : BUY_NO[failed.key];
-  if (cyclical) {
-    // the explanation of the word IS the reason, so the reader meets it right under the answer
-    return { answer: "CAREFUL", why: `${note}${failedWhy ? ` Also: ${lower(failedWhy)}` : ""}`, price: null, failedWhy };
-  }
   // Only quality companies are scored (his "look only quality stocks"). The Mag7 group also shows
-  // the others, and for those the page must not answer YES or print a price (audit 11-20: AMZN).
+  // the others, and for those the page gives no buy answer and no price (audit 11-20: AMZN), also
+  // when the company is a cyclical (review 11-20).
   if (lowQuality) {
     return {
       answer: "OFFLIST", price: null, failedWhy,
-      why: "This page only scores quality companies: ones that earn $20 or more a year on every $100 put in. This one earns less, so no buy price is worked out.",
+      why: `${note ? `${note} ` : ""}This page only scores quality companies: ones that earn $20 or more a year on every $100 put in. This one earns less, so it is off the quality list and the checks below are for reading only.`,
     };
+  }
+  if (cyclical) {
+    // the explanation of the word comes first, right under the answer; a failed check or his own
+    // sell sign is a NO for a cyclical as for anyone (review 11-20)
+    if (failedWhy) return { answer: "NO", why: `${note} It also fails a check: ${lower(failedWhy)}`, price: null, failedWhy };
+    if (inventoryWarning) {
+      return { answer: "NO", why: `${note} Unsold goods are piling up, which Peter read as a sign to sell this kind of business, not to buy.`, price: null, failedWhy: null };
+    }
+    return { answer: "CAREFUL", why: note, price: null, failedWhy: null };
   }
   if (failedWhy) return { answer: "NO", why: failedWhy, price: null, failedWhy };
   if (inventoryWarning) return { answer: "NO", why: "Unsold goods are piling up faster than it sells.", price: null, failedWhy: null };
-  if (verdict === "CHEAP") return { answer: "YES", why: "Every check passes and the price is low for its growth.", price: null, failedWhy: null };
-  const base = "A good business, but the price is too high for its growth.";
-  if (fair == null) return { answer: "WAIT", why: base, price: null, failedWhy: null };
-  return { answer: "WAIT", why: `${base} Peter's price: ${limit(fair)} or less.`, price: limited(fair), failedWhy: null };
+  // no YES without a price the page could judge (review 11-20: a HKD row or no fresh price)
+  if (foreign) return { answer: "CANNOT", why: `A good business, but its profit is reported in ${foreign}, so the page cannot judge its price in dollars.`, price: null, failedWhy: null };
+  if (!hasPrice) return { answer: "CANNOT", why: "A good business, but there is no fresh price right now to judge.", price: null, failedWhy: null };
+  if (verdict === "CHEAP") return { answer: "YES", why: "Every check passes and the price is at or under his fair price for its growth.", price: null, failedWhy: null };
+  const base = "A good business, but the price is above his fair price for its growth.";
+  return { answer: "WAIT", why: `${base} His fair price works out to ${limit(fair)}.`, price: limited(fair), failedWhy: null };
 }
 
 // "Which price would Peter buy at, and where is the exit?" (2026-11-20, Ganesh: "I need Peter
@@ -186,18 +197,23 @@ const KEEP_FAST = "He had no set selling price. He kept a fast grower while its 
 const SELL_STEADY = "He had no set selling price, but he often sold a steady grower once it was up 30% to 50% from what he paid.";
 const NOT_OWNED = "He would not own it at today's price.";
 
-function peterPlan({ buy, fair, price, grower, cyclical, inventoryWarning, inventoryKnown, bank, foreign }) {
+// "Fair price" is HIS word; the dollars are the page's sum (review 11-20: never "the most he would
+// pay" or "his buy price", and say once on the line that he never gave a dollar price).
+const SUM_NOTE = " He never gave a dollar price; this is the page's sum of his rule at this year's profit.";
+
+function peterPlan({ buy, fair, price, grower, cyclical, inventoryWarning, inventoryKnown, bank, foreign, verdict, negative }) {
   const none = { buyPrice: null, goodPrice: null, exitLow: null, exitHigh: null, exitFar: null };
+  if (buy.answer === "OFFLIST") return { ...none, buyText: "None worked out: it is not on the quality list.", exitText: null };
   if (cyclical) {
+    const exitText = inventoryKnown
+      ? `He had no set selling price. He sold when the good years looked close to ending; unsold goods piling up was one of his signs.${inventoryWarning ? " That sign shows in its last yearly report." : ""}`
+      : "He had no set selling price. He sold when the good years looked close to ending, for example when the price of what it sells, or its orders, start to fall. This page cannot check that for you.";
     return {
       ...none,
       buyText: `No set price. He bought this kind of business when its bad years were ending and its profit was low, not because the price looked low.${buy.failedWhy ? ` It also fails a check: ${lower(buy.failedWhy)}` : ""}`,
-      exitText: inventoryKnown
-        ? `He had no set selling price. He sold when the good years looked close to ending; unsold goods piling up was one of his signs.${inventoryWarning ? " That sign shows in its last yearly report." : ""}`
-        : "He had no set selling price. He sold when the good years looked close to ending, for example when the price of what it sells, or its orders, start to fall. This page cannot check that for you.",
+      exitText: buy.answer === "NO" && buy.failedWhy ? null : exitText,
     };
   }
-  if (buy.answer === "OFFLIST") return { ...none, buyText: "None worked out. It is not on the quality list.", exitText: null };
   if (buy.answer === "NO") {
     return { ...none, buyText: `None. He would not buy it while it fails a check: ${lower(buy.why.replace(/\.$/, ""))}.`, exitText: null };
   }
@@ -206,46 +222,58 @@ function peterPlan({ buy, fair, price, grower, cyclical, inventoryWarning, inven
     return { ...none, buyText: `No dollar price worked out: its profit is reported in ${foreign}, so its growth is not measured in dollars.`, exitText: fast ? KEEP_FAST : SELL_STEADY };
   }
   if (fair == null) {
-    return { ...none, buyText: "There is no fresh price right now, so no buy price.", exitText: fast ? KEEP_FAST : SELL_STEADY };
+    return { ...none, buyText: "There is no fresh price right now, so no fair price is worked out.", exitText: fast ? KEEP_FAST : SELL_STEADY };
   }
-  // every later figure is worked from the limit as shown, so the reader's own sums agree
-  const most = limited(fair);
+  // A limit is rounded down; if that would put it under today's price on a YES (fair price within
+  // $1 above today), it is shown to the cent so the line never says less than today (review 11-20).
+  const mostRaw = limited(fair);
+  const most = buy.answer === "YES" && mostRaw < price ? Math.floor(fair * 100 + 1e-9) / 100 : mostRaw;
+  const show = (v) => (v >= 100 && !Number.isInteger(v) ? cents(v) : limit(v));
   const half = limited(most / 2);
-  const far = most * 2;
+  // where the score reaches 2: twice the fair price without a dividend, a little less with one
+  const far = dividendLevel(most, fair, negative);
+  const farWords = `${money(far)}, where the price is twice his fair level for this growth,`;
   const fewer = bank ? " Debt and cash are not judged for a finance company, so this rests on fewer checks." : "";
   const prices = { ...none, buyPrice: most, goodPrice: half };
   if (buy.answer === "YES") {
     const wide = price < half;
-    const buyText = `Today's ${cents(price)} passes his price test. The most he would pay at this year's profit is ${limit(most)}, his fair price; ${limit(half)} or less he called a very good price.${wide ? " Today is under even that. A gap this wide can mean this year's profit had a one-off jump, so check that first." : ""}${fewer}`;
+    const buyText = `Today's ${cents(price)} passes his price test. His fair price works out to ${show(most)}; ${limit(half)} or less he called a very good price.${SUM_NOTE}${wide ? " Today is under even the very good price. A gap this wide can mean this year's profit had a one-off jump, so check that first." : ""}${fewer}`;
     if (fast) {
       return {
         ...prices, buyText, exitFar: wide ? null : Math.round(far),
-        exitText: wide ? KEEP_FAST : `${KEEP_FAST} A price near ${money(far)}, twice his fair price, he called very negative. That is a warning level at this year's profit, not a target.`,
+        exitText: wide ? KEEP_FAST : `${KEEP_FAST} A price near ${farWords} he called very negative. That is a warning level at this year's profit, not a target.`,
       };
     }
     const low = price * 1.3;
     const high = price * 1.5;
     return {
       ...prices, buyText, exitLow: priced(low), exitHigh: priced(high),
-      exitText: `${SELL_STEADY} From today's ${cents(price)} that is about ${money(low)} to ${money(high)}.${high < most ? ` His price test would still pass there (up to ${limit(most)}), so he might hold longer.` : ""}`,
+      exitText: `${SELL_STEADY} From today's ${cents(price)} that is about ${money(low)} to ${money(high)}.${high < most ? ` His price test would still pass there (up to ${show(most)}), so he might hold longer.` : ""}`,
     };
   }
   // WAIT: he would not buy today
   const times = price / most;
-  const buyText = `${limit(most)} or less at this year's profit, his fair price; ${limit(half)} or less he called a very good price. Today's ${cents(price)} is above it${times >= 2 ? `: ${times.toFixed(1)} times his fair price` : ""}.${fewer}`;
+  const buyText = `His fair price works out to ${limit(most)}; ${limit(half)} or less he called a very good price.${SUM_NOTE} Today's ${cents(price)} is above it${verdict === "PRICEY" ? `: ${times.toFixed(1)} times his fair price` : ""}.${fewer}`;
   if (fast) {
     return {
       ...prices, buyText, exitFar: Math.round(far),
-      exitText: `${NOT_OWNED} A price near ${money(far)}, twice his fair price, he called very negative${price >= far ? `; today's ${cents(price)} is already past that` : ""}.`,
+      exitText: `${NOT_OWNED} A price near ${farWords} he called very negative${price >= far ? `; today's ${cents(price)} is already past that` : ""}.`,
     };
   }
-  if (times >= 2) return { ...prices, buyText, exitText: NOT_OWNED };
+  if (verdict === "PRICEY") return { ...prices, buyText, exitText: NOT_OWNED };
   const low = most * 1.3;
   const high = most * 1.5;
   return {
     ...prices, buyText, exitLow: priced(low), exitHigh: priced(high),
     exitText: `${NOT_OWNED} Had he bought at his fair price of ${limit(most)}, a 30% to 50% rise is about ${money(low)} to ${money(high)}${price > high ? `; today's ${cents(price)} is already past that` : ""}.`,
   };
+}
+
+// With no dividend the very-negative level is exactly twice the fair price shown (so the reader's
+// own sum agrees); with one, the root where the score reaches 2 (it is a little under twice).
+function dividendLevel(most, fair, negative) {
+  if (negative == null || Math.abs(negative - 2 * fair) < 1e-6 * Math.max(1, fair)) return most * 2;
+  return negative;
 }
 
 // The card of a company with no star sheet (2026-11-20, "Why I don't see data for tsla"): it
@@ -289,19 +317,19 @@ export function lynchSheet(row, { anyQuality = false } = {}) {
   const sales = pct(row.salesGrowth);
   const cash = pct(row.fcfGrowth);
   const debt = isNum(row.debtToEquity) ? row.debtToEquity : null;
-  const SKIP = "finance company: Peter skips this check";
+  const SKIP = "finance company: this page skips this check";
   const MISSING = "number missing";
   // Plain labels and values (2026-11-20 audit: no PEG, P/E, "x equity" or "/yr" on the card).
   const checks = [
     {
       key: "growth", label: "Profit growth",
-      text: growth > R.growthMax ? `${beside(growth, R.growthMax)} a year, too fast to last` : `${beside(growth, R.growthMin, R.growthMax)} a year`,
+      text: growth > R.growthMax ? `${beside(growth, R.growthMax)} a year, over this page's 50% limit` : `${beside(growth, R.growthMin, R.stalwartFrom, R.fastFrom, R.growthMax)} a year`,
       passed: growth >= R.growthMin && growth <= R.growthMax,
     },
     { key: "sales", label: "Sales growth", text: sales == null ? MISSING : `${beside(sales, R.salesMin)} a year`, passed: sales != null && sales >= R.salesMin },
     bank
       ? { key: "debt", label: "Borrowed", text: SKIP, passed: null }
-      : { key: "debt", label: "Borrowed", text: debt == null ? MISSING : `$${Math.round(debt * 100)} per $100 of owners' money`, passed: debt != null && debt <= R.debtMax },
+      : { key: "debt", label: "Borrowed", text: debt == null ? MISSING : `$${nearLimit(debt * 100, R.debtMax * 100)} per $100 of owners' money`, passed: debt != null && debt <= R.debtMax },
     bank
       ? { key: "cash", label: "Cash left over", text: SKIP, passed: null }
       : { key: "cash", label: "Cash left over", text: cash == null ? MISSING : `${beside(cash, 0)} a year`, passed: cash != null && cash > 0 },
@@ -309,7 +337,7 @@ export function lynchSheet(row, { anyQuality = false } = {}) {
       ? { key: "price", label: "Price for growth", text: `${pegShown}, not used for this kind of business`, passed: null }
       : {
         key: "price", label: "Price for growth",
-        text: `${pegShown}${dividendPct > 0 ? ` with its ${dividendPct.toFixed(1)}% yearly payout` : ""} (1 or less is low)`,
+        text: `${pegShown}${dividendPct > 0 ? ` with its ${dividendPct.toFixed(1)}% yearly payout` : ""} (1 or less: at or under his fair price)`,
         passed: peg <= R.pegCheap,
       },
   ];
@@ -329,15 +357,24 @@ export function lynchSheet(row, { anyQuality = false } = {}) {
   }
   const note = cyclicalNote(cyclical);
   const lowQuality = row.quality !== "HIGH";
-  const buy = wouldBuy({ checks, verdict, fair, growth, cyclical, note, inventoryWarning, lowQuality });
+  const buy = wouldBuy({ checks, verdict, fair, growth, cyclical, note, inventoryWarning, lowQuality, foreign, priced: price != null });
   return {
     peg,
     grower,
     buy,
-    plan: peterPlan({ buy, fair, price, grower, cyclical, inventoryWarning, inventoryKnown: turn != null, bank, foreign }),
+    plan: peterPlan({
+      buy, fair, price, grower, cyclical, inventoryWarning, inventoryKnown: turn != null, bank, foreign, verdict,
+      // where the score reaches 2, the level he called very negative: P^2 - 2*E*g*P - 200*E*D = 0
+      negative: fair == null ? null : (() => {
+        const profit = price / row.pe;
+        const reach = 2 * profit * counted;
+        return (reach + Math.sqrt(reach * reach + 800 * profit * ((price * dividendPct) / 100))) / 2;
+      })(),
+    }),
     cyclicalNote: note,
     kind: cyclicalKind(cyclical),
     growthPct: growth,
+    counted,
     cyclical,
     dividendPct,
     inventoryWarning,

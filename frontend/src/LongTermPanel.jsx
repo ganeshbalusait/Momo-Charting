@@ -614,14 +614,18 @@ function Card({ row, open, onToggle, leap, onRetryLeap, leapQueued }) {
 // Peter view (2026-11-19): one quality company with Peter Lynch's five-star
 // sheet. The sheet is always open: each line is one star, won or lost.
 const LYNCH_TONE = { CHEAP: "buy", FAIR: "wait", PRICEY: "avoid", CYCLICAL: "setup" };
-const LYNCH_BUY_WORD = { YES: "YES", WAIT: "NOT AT THIS PRICE", NO: "NO", CAREFUL: "ONLY WITH CARE", OFFLIST: "NOT ON THE LIST" };
-const PLAN_BUY_LABEL = "Peter's buy price (the most he would pay)";
+const LYNCH_BUY_WORD = { YES: "YES", WAIT: "NOT AT THIS PRICE", NO: "NO", CAREFUL: "ONLY WITH CARE", OFFLIST: "NOT ON THE LIST", CANNOT: "CANNOT TELL" };
+// "Fair price" is his word; the dollars are the page's sum of it (review 11-20)
+const PLAN_BUY_LABEL = "Peter's fair price (his rule, worked out by this page)";
+// The card frame follows the ANSWER: green only for a YES (review 11-20: a NO wore the green frame)
+const LYNCH_CARD_TONE = { YES: "buy", WAIT: "wait", NO: "avoid", CAREFUL: "setup", OFFLIST: "muted", CANNOT: "muted" };
 const PLAN_EXIT_LABEL = "Peter's exit (when he would sell)";
+// plain hover text (review 11-20: the titles still said PEG and P/E)
 const LYNCH_TILE_TITLE = {
-  CYCLICAL: "Boom-and-slump businesses (chips, oil and gas, metals, autos, heavy machinery, airlines, homebuilders): never called CHEAP, because the price looks lowest next to the profit of a boom year",
-  CHEAP: "PEG 1 or less: the P/E is no higher than the yearly earnings growth",
-  FAIR: "PEG between 1 and 2",
-  PRICEY: "PEG above 2: the price is far ahead of the growth",
+  CYCLICAL: "Good-years-and-bad-years businesses (chips, oil and gas, metals, cars, heavy machinery, airlines, homebuilders): never called CHEAP, because the price looks lowest next to the profit of a good year",
+  CHEAP: "Score 1 or less: at or under Peter's fair price for the growth",
+  FAIR: "Score 1 to 2: above his fair price, up to twice it",
+  PRICEY: "Score above 2: more than twice his fair price, the level he called very negative",
 };
 
 function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
@@ -629,9 +633,10 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
   // click"): the same Why drawer as a Rule #1 row. A div, not a button, because
   // it holds the Details and Chart buttons.
   const tone = sheet ? LYNCH_TONE[sheet.verdict] : "muted";
+  const cardTone = sheet ? LYNCH_CARD_TONE[sheet.buy.answer] || "muted" : "muted";
   return (
     <div
-      className={`long-term-card long-term-lynch-card is-${tone}${open ? " is-open" : ""}`}
+      className={`long-term-card long-term-lynch-card is-${cardTone}${open ? " is-open" : ""}`}
       data-testid={`long-term-lynch-${row.symbol}`}
       role="button"
       tabIndex={0}
@@ -664,13 +669,13 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
             <span className="long-term-lynch-plan-v" data-testid={`long-term-lynch-buyprice-${row.symbol}`}>{sheet.plan.buyText}</span>
             <span className="long-term-lynch-plan-k">{PLAN_EXIT_LABEL}</span>
             <span className="long-term-lynch-plan-v" data-testid={`long-term-lynch-exit-${row.symbol}`}>
-              {sheet.plan.exitText || "None. He would not own it."}
+              {sheet.plan.exitText || (sheet.buy.answer === "OFFLIST" ? "None worked out: it is not on the quality list." : "None. He would not own it.")}
             </span>
           </span>
           <span className="long-term-card-mid">
             <Pill tone={tone} testId={`long-term-lynch-verdict-${row.symbol}`}>{LYNCH_VERDICT_LABEL[sheet.verdict]}</Pill>
             <Pill tone="muted">{sheet.cyclical ? sheet.kind : sheet.grower}</Pill>
-            {sheet.lowQuality ? <Pill tone="avoid" testId={`long-term-lynch-lowq-${row.symbol}`} title="Return on capital under 20%: not on the quality list">Not quality</Pill> : null}
+            {sheet.lowQuality ? <Pill tone="avoid" testId={`long-term-lynch-lowq-${row.symbol}`} title="Earns under $20 a year on every $100 put in: not on the quality list">Not quality</Pill> : null}
             <span
               className="long-term-lynch-stars"
               role="img"
@@ -1366,7 +1371,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
       {peter ? (
         <>
           <p className="long-term-lynch-legend" data-testid="long-term-lynch-legend">
-            <b>The star sheet:</b> Peter&apos;s five checks, one star each: ★ profit grew 10% to 50% a year · ★ sales grew 5% or more a year · ★ it has borrowed $80 or less for every $100 of its owners&apos; money · ★ the cash left over each year is growing · ★ the price is low for how fast the profit grows (score 1 or less). The score is what you pay for every $1 of yearly profit, divided by how fast the profit grows. Cyclical means good years and bad years take turns (chips, oil, metals, cars…): it is never called cheap and the price check is not used for it.
+            <b>The star sheet:</b> five checks built on Peter&apos;s ideas, one star each (the limits are this page&apos;s own): ★ profit grew 10% to 50% a year · ★ sales grew 5% or more a year · ★ it has borrowed $80 or less for every $100 of its owners&apos; money · ★ the cash left over each year is growing · ★ the price is at or under his fair price for how fast the profit grows (score 1 or less). The score is what you pay for every $1 of yearly profit, divided by how fast the profit grows. Cyclical means good years and bad years take turns (chips, oil, metals, cars…): it is never called cheap and the price check is not used for it.
           </p>
           {/* Closed by default so the top of the page stays as short as before (Ganesh 11-19: "this looks good"). */}
           <details className="long-term-lynch-more" data-testid="long-term-lynch-backtest">
@@ -1383,8 +1388,8 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
                 aria-pressed={peterScope === s}
                 data-testid={`long-term-lynch-scope-${s}`}
                 className={s === "Best" ? "is-both" : undefined}
-                title={s === "Best" ? "Every check passes and the price is low for the growth"
-                  : s === "Quality" ? "Every quality company (return on capital 20%+)"
+                title={s === "Best" ? "Every check passes and the price is at or under his fair price for the growth"
+                  : s === "Quality" ? "Every quality company (earns $20 or more a year on every $100 put in)"
                   : s === "Mag7" ? "Every Mag7 company, quality or not" : "The quality companies on your Watchlist"}
                 onClick={() => {
                   setOpenSym(null);
@@ -1397,7 +1402,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
           </div>
           {peterScope === "Best" ? (
             <p className="long-term-lynch-legend" data-testid="long-term-lynch-best-note">
-              <b>Peter would buy:</b> every check passes, and the price is low for the growth. Tap a card to read why, and when he would sell. His checklist is not a promise the price goes up.
+              <b>Peter would buy:</b> every check passes, and the price is at or under his fair price for the growth. Tap a card to read why, and when he would sell. His checklist is not a promise the price goes up.
             </p>
           ) : null}
           <details className="long-term-lynch-more" data-testid="long-term-lynch-tiles-note">

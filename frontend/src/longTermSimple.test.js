@@ -72,42 +72,42 @@ test("missing numbers drop their line; a fund and a row without data say so plai
 
 test("Would Peter buy it? Yes: every check, a low price, the sum shown as a child would do it", () => {
   const { peter } = simpleWhy(row());
-  assert.equal(peter.headline, "Would Peter buy it? Yes. Every check passes and the price is low for its growth.");
+  assert.equal(peter.headline, "Would Peter buy it? Yes. Every check passes and the price is at or under his fair price for its growth.");
   assert.deepEqual(marks(peter), ["yes", "yes", "yes", "yes", "yes"]);
-  assert.match(text(peter), /Its profit grows 21% a year\. Peter likes 10% to 50%\./);
-  assert.match(text(peter), /It has borrowed \$54 for every \$100 of its owners' money\. Peter wants \$80 or less\./);
-  assert.match(text(peter), /You pay \$12\.30 for every \$1 it earns in a year, and its profit grows 21% a year\. Divide the first by the second: 12\.3 ÷ 21 = 0\.59\. 1 or less is a low price for the growth\./);
+  assert.match(text(peter), /Its profit grows 21% a year\. This page looks for 10% to 50% \(his favourites grew 20% to 25%\)\./);
+  assert.match(text(peter), /It has borrowed \$54 for every \$100 of its owners' money\. This page looks for \$80 or less\./);
+  assert.match(text(peter), /You pay \$12\.30 for every \$1 it earns in a year, and its profit grows 21% a year\. Divide the first by the second: 12\.30 ÷ 21 = 0\.59\. 1 or less means the price is at or under his fair price; half of that he called very good\./);
   // "which prize he will buy": 220.6 x 21 / 12.3 = $377
-  assert.equal(peter.todo, "Peter's buy price: Today's $220.60 passes his price test. The most he would pay at this year's profit is $376, his fair price; $188 or less he called a very good price. In our test, the cheap ones did not do better than other good companies, so this is his checklist, not a promise.");
+  assert.equal(peter.todo, "Today's $220.60 passes his price test. His fair price works out to $376; $188 or less he called a very good price. He never gave a dollar price; this is the page's sum of his rule at this year's profit. In our test, the cheap ones did not do better than other good companies, so this is his checklist, not a promise.");
   assert.ok(!JARGON.test(all(peter)), "plain words only");
 });
 
 test("Would Peter buy it? Not at this price names his price; No says why; a cyclical needs care", () => {
   // P/E 30 on 21% growth = 1.43: his price is where the two are equal, 220.6 / 1.43 = $154
   const wait = simpleWhy(row({ pe: 30 })).peter;
-  assert.equal(wait.headline, "Would Peter buy it? Not at this price. A good business, but the price is too high for its growth.");
-  assert.equal(wait.todo, "Peter's buy price: $154 or less at this year's profit, his fair price; $77.00 or less he called a very good price. Today's $220.60 is above it.");
+  assert.equal(wait.headline, "Would Peter buy it? Not at this price. A good business, but the price is above his fair price for its growth.");
+  assert.equal(wait.todo, "His fair price works out to $154; $77.00 or less he called a very good price. He never gave a dollar price; this is the page's sum of his rule at this year's profit. Today's $220.60 is above it.");
   assert.equal(wait.lines.at(-1).mark, "no");
   const no = simpleWhy(row({ debtToEquity: 2 })).peter;
   assert.equal(no.headline, "Would Peter buy it? No. It owes too much.");
-  assert.deepEqual([no.todo, no.sell], ["Peter's buy price: None. He would not buy it while it fails a check: it owes too much.", null]);
+  assert.deepEqual([no.todo, no.sell], ["Peter's fair price: None. He would not buy it while it fails a check: it owes too much.", null]);
   const chips = simpleWhy(row({ cyclical: "chips" })).peter;
   // "Nvda what is cyclical?": the headline explains the word right after the answer
   assert.equal(chips.headline, "Would Peter buy it? Only with care. Cyclical means good years and bad years take turns: a chip maker earns a lot in a good year and far less in a bad one. In a good year its profit is so big that the price looks low next to it, so here a low price is not a reason to buy.");
   assert.equal(chips.lines.at(-1).mark, "info");
   assert.match(chips.lines.at(-1).text, /a low price can be a trap: it can look cheapest when its best year is ending\.$/);
-  assert.equal(chips.todo, "Peter's buy price: No set price. He bought this kind of business when its bad years were ending and its profit was low, not because the price looked low.");
+  assert.equal(chips.todo, "Peter's fair price: No set price. He bought this kind of business when its bad years were ending and its profit was low, not because the price looked low.");
   assert.equal(chips.sell, "When would he sell? He had no set selling price. He sold when the good years looked close to ending, for example when the price of what it sells, or its orders, start to fall. This page cannot check that for you.");
   const shelves = simpleWhy(row({ inventoryTurnChange: -0.2 })).peter;
   assert.equal(shelves.headline, "Would Peter buy it? No. Unsold goods are piling up faster than it sells.");
   assert.deepEqual(shelves.lines.at(-1), { mark: "no", text: "Its shelves are filling up: unsold goods are growing faster than what it sells." });
-  assert.equal(simpleWhy(row({ epsGrowth: 0.82 })).peter.headline, "Would Peter buy it? No. Its profit growth is too fast to last.");
+  assert.equal(simpleWhy(row({ epsGrowth: 0.82 })).peter.headline, "Would Peter buy it? No. Its profit grew faster than this page's 50% limit; Peter was wary of growth that fast.");
 });
 
 test("Peter: a dividend joins the sum, and a company off the quality list is marked", () => {
-  assert.match(text(simpleWhy(row({ dividendYield: 0.02 })).peter), /its profit grows 21% a year and pays you 2\.0% a year\. Divide the first by the second: 12\.3 ÷ \(21 \+ 2\.0\) = 0\.53\./);
+  assert.match(text(simpleWhy(row({ dividendYield: 0.02 })).peter), /its profit grows 21% a year and pays you 2\.0% a year\. Divide the first by the second: 12\.30 ÷ \(21 \+ 2\.0\) = 0\.53\./);
   // growth above 50% is counted as 50, and the box says whose choice that is
-  assert.match(text(simpleWhy(row({ epsGrowth: 0.82, pe: 18.3 })).peter), /its profit grows 82% a year \(the page counts at most 50%\)\. Divide the first by the second: 18\.3 ÷ 50 = 0\.37\./);
+  assert.match(text(simpleWhy(row({ epsGrowth: 0.82, pe: 18.3 })).peter), /its profit grows 82% a year \(this page counts at most 50%\)\. Divide the first by the second: 18\.30 ÷ 50 = 0\.37\./);
   const low = simpleWhy(row({ quality: "LOW", roic: 0.12 })).peter;
   assert.deepEqual(low.lines[0], { mark: "info", text: "It earns less than $20 a year on every $100 put in, so it is not on the quality list." });
 });
@@ -116,15 +116,15 @@ test("Peter: a dividend joins the sum, and a company off the quality list is mar
 test("when Peter would sell: no profit target, and it depends on the kind of company", () => {
   // fast grower (21%): kept while it grows; his "very negative" level is twice his buy price: 2 x $376.63
   const fast = simpleWhy(row()).peter.sell;
-  assert.equal(fast, "When would he sell? He had no set selling price. He kept a fast grower while its profit kept growing, and thought about selling when the growth slowed. A price near $752, twice his fair price, he called very negative. That is a warning level at this year's profit, not a target.");
+  assert.equal(fast, "When would he sell? He had no set selling price. He kept a fast grower while its profit kept growing, and thought about selling when the growth slowed. A price near $752, where the price is twice his fair level for this growth, he called very negative. That is a warning level at this year's profit, not a target.");
   // steady grower (15%) at 12 times profit, $220.60: he would buy today, so 30% to 50% above today's price
   assert.equal(simpleWhy(row({ epsGrowth: 0.15, pe: 12 })).peter.sell,
     "When would he sell? He had no set selling price, but he often sold a steady grower once it was up 30% to 50% from what he paid. From today's $220.60 that is about $287 to $331.");
   assert.match(simpleWhy(row({ cyclical: "chips", inventoryTurnChange: -0.13 })).peter.sell, /unsold goods piling up was one of his signs\. That sign shows in its last yearly report\.$/);
   // a company off the quality list: the box says the page does not score it, and gives no price
   const off = simpleWhy(row({ quality: "LOW" })).peter;
-  assert.match(off.headline, /^Would Peter buy it\? This page does not score it\. This page only scores quality companies/);
-  assert.deepEqual([off.todo, off.sell], ["Peter's buy price: None worked out. It is not on the quality list.", null]);
+  assert.match(off.headline, /^Would Peter buy it\? This page gives no buy answer\. This page only scores quality companies/);
+  assert.deepEqual([off.todo, off.sell], ["Peter's fair price: None worked out: it is not on the quality list.", null]);
   assert.ok(!JARGON.test(fast));
 });
 
@@ -155,4 +155,24 @@ test("asked for one side, the other is left out", () => {
   assert.ok(simpleWhy(row()).warren && simpleWhy(row()).peter, "no side named: both");
   assert.match(SIMPLE_FOOT_ONE.peter, /Peter Lynch's checklist/);
   assert.ok(!/Warren/.test(SIMPLE_FOOT_ONE.peter) && !/Peter/.test(SIMPLE_FOOT_ONE.warren));
+});
+
+// Independent review 2026-11-20: the box prints the card's figures, and its sum always works out.
+test("review: the box never rounds a figure onto a limit, and the printed division equals the printed score", () => {
+  const box = simpleWhy(row({ pe: 20, epsGrowth: 0.095, salesGrowth: 0.046, fcfGrowth: -0.004, debtToEquity: 0.804 }), "peter").peter;
+  const said = box.lines.map((l) => `${l.mark} ${l.text}`).join("\n");
+  assert.match(said, /no Its profit grows 9\.5% a year\./);
+  assert.match(said, /no It sells 4\.6% more every year\./);
+  assert.match(said, /no It has borrowed \$80\.4 for every \$100/);
+  assert.match(said, /no The cash it has left over shrinks 0\.4% a year\./);
+  for (const over of [{ pe: 20.4, epsGrowth: 0.204 }, { pe: 10.45, epsGrowth: 0.104 }, { pe: 30, epsGrowth: 0.296, dividendYield: 0.024 }, { pe: 20, epsGrowth: 0.095 }]) {
+    const text = simpleWhy(row(over), "peter").peter.lines.map((l) => l.text).join(" ");
+    const m = text.match(/: ([\d.]+) ÷ \(?([\d.]+)(?: \+ ([\d.]+))?\)? = ([\d.]+)\./);
+    assert.ok(m, JSON.stringify(over));
+    const result = Number(m[1]) / (Number(m[2]) + Number(m[3] || 0));
+    assert.ok(Math.abs(result - Number(m[4])) <= 0.0051 || (Number(m[4]) > 1 && result > 1 && result < Number(m[4])), `${m[0]} does not work out`);
+  }
+  // the page's limits are the page's, never put in Peter's mouth
+  const all = simpleWhy(row(), "peter").peter.lines.map((l) => l.text).join(" ");
+  assert.ok(!/Peter (likes|wants)/.test(all));
 });

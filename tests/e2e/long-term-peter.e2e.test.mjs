@@ -95,7 +95,7 @@ e2eTest("Peter, next to the MOS buttons, shows the star sheet for the quality co
     assert.match(await p.getByTestId("long-term-lynch-sheet-MU").innerText(), /0\.43, not used for this kind of business/);
     assert.equal(await p.getByTestId("long-term-lynch-cyclical-AAPL").count(), 0);
     // "fix all issue": the dividend joins the PEG, and slow inventory is a warning line
-    assert.match(await p.getByTestId("long-term-lynch-sheet-COST").innerText(), /3\.25 with its 1\.0% yearly payout \(1 or less is low\)/);
+    assert.match(await p.getByTestId("long-term-lynch-sheet-COST").innerText(), /3\.25 with its 1\.0% yearly payout \(1 or less: at or under his fair price\)/);
     assert.match(await p.getByTestId("long-term-lynch-inventory-COST").innerText(), /18% slower than a year ago/);
     assert.equal(await p.getByTestId("long-term-lynch-inventory-AAPL").count(), 0);
     // the back-test result is one closed line (the top of the page stays short); a tap opens it
@@ -112,7 +112,7 @@ e2eTest("Peter, next to the MOS buttons, shows the star sheet for the quality co
     // the star sheet: five lines, one per star
     const sheet = p.getByTestId("long-term-lynch-sheet-AAPL");
     assert.equal(await sheet.locator("li").count(), 5);
-    assert.match(await sheet.innerText(), /Profit growth\s+\+15% a year[\s\S]*Borrowed\s+\$70 per \$100 of owners' money[\s\S]*0\.74 \(1 or less is low\)/);
+    assert.match(await sheet.innerText(), /Profit growth\s+\+15% a year[\s\S]*Borrowed\s+\$70 per \$100 of owners' money[\s\S]*0\.74 \(1 or less: at or under his fair price\)/);
     // 2026-11-20 audit: a card reads without trading shorthand
     const cards = await p.getByTestId("long-term-lynch-list").innerText();
     assert.ok(!/\bPEG\b|P\/E|× equity|\/yr|Stalwart|Earnings growth|Cash flow/.test(cards), "trading shorthand on a Peter card");
@@ -194,9 +194,9 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
       await p.getByTestId(`long-term-lynch-buy-${sym}`).getAttribute("data-answer"),
       (await p.getByTestId(`long-term-lynch-buy-${sym}`).innerText()).replace(/\s+/g, " ").trim(),
     ];
-    assert.deepEqual(await answer("AAPL"), ["YES", "Would Peter buy it? YES Every check passes and the price is low for its growth."]);
+    assert.deepEqual(await answer("AAPL"), ["YES", "Would Peter buy it? YES Every check passes and the price is at or under his fair price for its growth."]);
     // NVDA: a good business at 45 times profit on 30% growth = 1.5; his price is $100 / 1.5 = $67
-    assert.deepEqual(await answer("NVDA"), ["WAIT", "Would Peter buy it? NOT AT THIS PRICE A good business, but the price is too high for its growth. Peter's price: $66.66 or less."]);
+    assert.deepEqual(await answer("NVDA"), ["WAIT", "Would Peter buy it? NOT AT THIS PRICE A good business, but the price is above his fair price for its growth. His fair price works out to $66.66."]);
     assert.deepEqual(await answer("COST"), ["NO", "Would Peter buy it? NO It owes too much."]);
     assert.equal((await answer("MU"))[0], "CAREFUL");
     assert.match((await answer("MU"))[1], /ONLY WITH CARE Cyclical means good years and bad years take turns: a chip maker earns/);
@@ -207,13 +207,13 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     ];
     // AAPL: $100 at 11.1 times profit growing 15%: 100 x 15 / 11.1 = $135; a steady grower's exit is 30-50% above it
     assert.deepEqual(await plan("AAPL"), [
-      "Today's $100.00 passes his price test. The most he would pay at this year's profit is $135, his fair price; $67.50 or less he called a very good price.",
+      "Today's $100.00 passes his price test. His fair price works out to $135; $67.50 or less he called a very good price. He never gave a dollar price; this is the page's sum of his rule at this year's profit.",
       "He had no set selling price, but he often sold a steady grower once it was up 30% to 50% from what he paid. From today's $100.00 that is about $130 to $150.",
     ]);
     // NVDA: 100 x 30 / 45 = $67; a fast grower: twice that
     assert.deepEqual(await plan("NVDA"), [
-      "$66.66 or less at this year's profit, his fair price; $33.33 or less he called a very good price. Today's $100.00 is above it.",
-      "He would not own it at today's price. A price near $133, twice his fair price, he called very negative.",
+      "His fair price works out to $66.66; $33.33 or less he called a very good price. He never gave a dollar price; this is the page's sum of his rule at this year's profit. Today's $100.00 is above it.",
+      "He would not own it at today's price. A price near $133, where the price is twice his fair level for this growth, he called very negative.",
     ]);
     assert.deepEqual(await plan("COST"), ["None. He would not buy it while it fails a check: it owes too much.", "None. He would not own it."]);
     assert.deepEqual(await plan("MU"), [
@@ -227,17 +227,17 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     await card.click();
     const drawer = p.getByTestId("long-term-drawer");
     await drawer.waitFor({ timeout: 20_000 });
-    assert.match(await drawer.innerText(), /Ten years/i);
+    await drawer.getByText(/Ten years/i).first().waitFor({ timeout: 20_000 }); // the filings part loads after the simple box
     assert.equal(await card.getAttribute("aria-expanded"), "true");
     // 2026-11-20 "justification why ... a 10 kid can understand" + "Peter one don't mixed with
     // Warren": the details start with PETER's checklist in plain sentences, and nothing of Warren's.
     const peter = await p.getByTestId("long-term-simple-peter").innerText();
-    assert.match(peter, /Would Peter buy it\? Yes\. Every check passes and the price is low for its growth\./);
+    assert.match(peter, /Would Peter buy it\? Yes\. Every check passes and the price is at or under his fair price for its growth\./);
     // "Did Peter use profit target?": AAPL grows 15% a year, a steady grower
     assert.match(await p.getByTestId("long-term-simple-peter-sell").innerText(),
       /When would he sell\? He had no set selling price, but he often sold a steady grower once it was up 30% to 50% from what he paid\. From today's \$100\.00 that is about \$130 to \$150\./);
-    assert.match(peter, /Peter's buy price: Today's \$100\.00 passes his price test\. The most he would pay at this year's profit is \$135, his fair price; \$67\.50 or less he called a very good price\./);
-    assert.match(peter, /You pay \$11\.10 for every \$1 it earns in a year, and its profit grows 15% a year\. Divide the first by the second: 11\.1 ÷ 15 = 0\.74\. 1 or less is a low price for the growth\./);
+    assert.match(peter, /Today's \$100\.00 passes his price test\. His fair price works out to \$135; \$67\.50 or less he called a very good price\./);
+    assert.match(peter, /You pay \$11\.10 for every \$1 it earns in a year, and its profit grows 15% a year\. Divide the first by the second: 11\.10 ÷ 15 = 0\.74\. 1 or less means the price is at or under his fair price; half of that he called very good\./);
     const simple = await p.getByTestId("long-term-simple").innerText();
     assert.ok(!/\b(ROIC|EPS|PEG|FCF|P\/E)\b/.test(simple), "no trading words in the simple box");
     assert.match(simple, /This is Peter Lynch's checklist[\s\S]*does not tell you what to do with your money\./);
@@ -259,7 +259,7 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     // audit 11-20: a company off the quality list is never a YES and gets no dollar figure
     assert.equal(await p.getByTestId("long-term-lynch-buy-TSLA").getAttribute("data-answer"), "OFFLIST");
     assert.match((await p.getByTestId("long-term-lynch-buy-TSLA").innerText()).replace(/\s+/g, " "), /NOT ON THE LIST This page only scores quality companies/);
-    assert.equal((await p.getByTestId("long-term-lynch-buyprice-TSLA").innerText()).trim(), "None worked out. It is not on the quality list.");
+    assert.equal((await p.getByTestId("long-term-lynch-buyprice-TSLA").innerText()).trim(), "None worked out: it is not on the quality list.");
     // a card with no star sheet still has both lines ("every card")
     assert.equal((await p.getByTestId("long-term-lynch-buyprice-AMZN").innerText()).trim(), "Cannot be worked out: its profit did not grow over the ten years.");
     assert.equal((await p.getByTestId("long-term-lynch-exit-AMZN").innerText()).trim(), "None.");
