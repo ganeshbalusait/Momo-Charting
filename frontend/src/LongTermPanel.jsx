@@ -488,6 +488,7 @@ function SimpleSide({ who, side, testId }) {
         </ul>
       ) : null}
       {side.todo ? <p className="long-term-simple-todo">{side.todo}</p> : null}
+      {side.sell ? <p className="long-term-simple-sell" data-testid={`${testId}-sell`}>{side.sell}</p> : null}
     </div>
   );
 }
@@ -609,6 +610,7 @@ function Card({ row, open, onToggle, leap, onRetryLeap, leapQueued }) {
 // Peter view (2026-11-19): one quality company with Peter Lynch's five-star
 // sheet. The sheet is always open: each line is one star, won or lost.
 const LYNCH_TONE = { CHEAP: "buy", FAIR: "wait", PRICEY: "avoid", CYCLICAL: "setup" };
+const LYNCH_BUY_WORD = { YES: "YES", WAIT: "NOT AT THIS PRICE", NO: "NO", CAREFUL: "ONLY WITH CARE" };
 const LYNCH_TILE_TITLE = {
   CYCLICAL: "Chips, oil and gas, metals, autos, heavy machinery, airlines, homebuilders: never called CHEAP, because the P/E is lowest at the top of the cycle",
   CHEAP: "PEG 1 or less: the P/E is no higher than the yearly earnings growth",
@@ -644,6 +646,12 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
       </span>
       {sheet ? (
         <>
+          {/* The one question the card answers (Ganesh 11-20: "if Peter was there did he buy it or not?"). */}
+          <span className={`long-term-lynch-buy is-${sheet.buy.answer.toLowerCase()}`} data-testid={`long-term-lynch-buy-${row.symbol}`} data-answer={sheet.buy.answer}>
+            <span className="long-term-lynch-buy-q">Would Peter buy it?</span>
+            <b>{LYNCH_BUY_WORD[sheet.buy.answer]}</b>
+            <span className="long-term-lynch-buy-why">{sheet.buy.why}</span>
+          </span>
           <span className="long-term-card-mid">
             <Pill tone={tone} testId={`long-term-lynch-verdict-${row.symbol}`}>{sheet.verdict}</Pill>
             {sheet.cyclical ? <Pill tone="muted">{sheet.cyclical}</Pill> : <Pill tone="muted">{sheet.type}</Pill>}
@@ -1131,7 +1139,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
       <div className="long-term-empty">
         {peterAll.length
           ? `No company matches${query ? ` “${query}”` : ""}.`
-          : peterScope === "Best" ? "No company has every star and a low price today. Tap Quality to see every quality company."
+          : peterScope === "Best" ? "Peter would not buy any of them at today's prices. Tap Quality to see every quality company and his answer for each."
             : peterScope === "Quality" ? "No quality company can be scored right now."
             : peterLists ? `No ${peterScope} company to show.` : `The ${peterScope} list has not loaded yet.`}
       </div>
@@ -1355,7 +1363,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
                 aria-pressed={peterScope === s}
                 data-testid={`long-term-lynch-scope-${s}`}
                 className={s === "Best" ? "is-both" : undefined}
-                title={s === "Best" ? "Every star earned and the price is low for the growth"
+                title={s === "Best" ? "Every check passes and the price is low for the growth"
                   : s === "Quality" ? "Every quality company (return on capital 20%+)"
                   : s === "Mag7" ? "Every Mag7 company, quality or not" : "The quality companies on your Watchlist"}
                 onClick={() => {
@@ -1369,7 +1377,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
           </div>
           {peterScope === "Best" ? (
             <p className="long-term-lynch-legend" data-testid="long-term-lynch-best-note">
-              <b>Peter&apos;s best:</b> every star earned, and the price is low for the growth. Tap a card to read why in simple words. Full marks are not a promise the price goes up.
+              <b>Peter would buy:</b> every check passes, and the price is low for the growth. Tap a card to read why, and when he would sell. His checklist is not a promise the price goes up.
             </p>
           ) : null}
           <div className="long-term-tiles" role="group" aria-label="Filter by price for growth">

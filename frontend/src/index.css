@@ -23332,9 +23332,23 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-simple-side li.is-no > span:first-child { color: var(--lt-red); font-weight: 800; }
 .long-term-simple-side li.is-info > span:first-child { color: #8b8b97; }
 .long-term-simple-todo { margin: 2px 0 0; color: #f3d58f; font-size: 13px; font-weight: 600; line-height: 1.45; }
+.long-term-simple-sell { margin: 0; color: #b6dff0; font-size: 13px; line-height: 1.45; }
+/* "Would Peter buy it?" - the one answer on a Peter card. */
+.long-term-card > .long-term-lynch-buy { flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 7px 9px; border-radius: 7px; background: rgba(124, 124, 138, .12); }
+.long-term-lynch-buy-q { color: #a6a6b0; font-size: 12px; font-weight: 600; }
+.long-term-lynch-buy b { font-size: 14px; font-weight: 800; letter-spacing: .03em; }
+.long-term-lynch-buy-why { flex: 1 1 100%; min-width: 0; color: #dcdce2; font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+.long-term-lynch-buy.is-yes { background: rgba(57, 255, 136, .1); }
+.long-term-lynch-buy.is-yes b { color: var(--lt-green); }
+.long-term-lynch-buy.is-wait b { color: var(--lt-amber); }
+.long-term-lynch-buy.is-no b { color: var(--lt-red); }
+.long-term-lynch-buy.is-careful b { color: #f0a6ff; }
 .long-term-simple-grid.is-one { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 760px) {
   .long-term-simple-grid { grid-template-columns: minmax(0, 1fr); }
+  /* four group buttons do not fit one row on a 375px phone ("Peter would buy" is long): wrap */
+  .long-term-lynch-scope { display: flex; flex-wrap: wrap; align-self: stretch; }
+  .long-term-lynch-scope button { flex: 1 1 auto; border-bottom: 1px solid var(--lt-line); margin-bottom: -1px; }
 }
 /* Tap a card for its details: the open card and its drawer take the whole row. */
 .long-term-lynch-card { cursor: pointer; }

@@ -158,7 +158,7 @@ test("Peter's best lists the companies with every star and a CHEAP price, whatev
   assert.deepEqual(lynchRows(rows, { scope: "Best", query: "qcom" }).map((x) => x.row.symbol), ["QCOM"]);
   assert.deepEqual(lynchRows([row({ pe: 60 })], { scope: "Best" }), []);
   assert.equal(LYNCH_SCOPES[0], "Best");
-  assert.equal(LYNCH_SCOPE_LABEL.Best, "Peter's best");
+  assert.equal(LYNCH_SCOPE_LABEL.Best, "Peter would buy");
   assert.ok(!LYNCH_SCOPES.includes("Both"), "no group mixes the two checklists");
 });
 
@@ -167,6 +167,40 @@ test("the Peter view opens on Peter's best when it has a company, else on Qualit
   assert.equal(defaultLynchScope([row({ pe: 60 }), row({ debtToEquity: 2 })]), "Quality");
   assert.equal(defaultLynchScope([]), "Quality");
   assert.equal(defaultLynchScope(null), "Quality");
+});
+
+// 2026-11-20 "if Peter was there did he buy it or not? Simple question ... Think like you are
+// Peter": one answer per card, from his own checks.
+test("Would Peter buy it? YES with every check and a low price; WAIT names his price; NO says why", () => {
+  const yes = lynchSheet(row()).buy;
+  assert.deepEqual(yes, { answer: "YES", why: "Every check passes and the price is low for its growth.", price: null });
+  // a good business at too high a price: wait, and the price where P/E equals growth (PEG 1)
+  const wait = lynchSheet(row({ pe: 40, price: 400 })).buy;                       // PEG 2.0 -> $200
+  assert.deepEqual(wait, { answer: "WAIT", why: "A good business, but the price is too high for its growth. Peter's price: $200 or less.", price: 200 });
+  assert.equal(lynchSheet(row({ pe: 42, price: null })).buy.why, "A good business, but the price is too high for its growth.");
+  // a failed business check is a NO, whatever the price; the first failed check is the reason
+  assert.deepEqual(lynchSheet(row({ debtToEquity: 2 })).buy, { answer: "NO", why: "It owes too much.", price: null });
+  assert.equal(lynchSheet(row({ epsGrowth: 0.06 })).buy.why, "Its profit grows too slowly.");
+  assert.equal(lynchSheet(row({ epsGrowth: 0.8 })).buy.why, "Its profit growth is too fast to last.");
+  assert.equal(lynchSheet(row({ salesGrowth: 0.01 })).buy.why, "Its sales are barely growing.");
+  assert.equal(lynchSheet(row({ fcfGrowth: -0.1 })).buy.why, "Its spare cash is shrinking.");
+  assert.equal(lynchSheet(row({ fcfGrowth: -0.1, pe: 60 })).buy.answer, "NO", "a failed check outranks the price");
+  // stock piling up is his warning sign: not a buy today even with full marks
+  assert.deepEqual(lynchSheet(row({ inventoryTurnChange: -0.2 })).buy, { answer: "NO", why: "Unsold goods are piling up faster than it sells.", price: null });
+  // a cyclical: he bought those on the cycle, never on a low price
+  const careful = lynchSheet(row({ cyclical: "chips" })).buy;
+  assert.equal(careful.answer, "CAREFUL");
+  assert.match(careful.why, /good years and bad years/);
+  // a bank is judged on the checks that apply to it
+  assert.equal(lynchSheet(row({ financial: true, debtToEquity: 5 })).buy.answer, "YES");
+});
+
+test("the Peter would buy group is exactly the YES answers", () => {
+  const rows = [row({ symbol: "A" }), row({ symbol: "B", pe: 42 }), row({ symbol: "C", debtToEquity: 2 }),
+    row({ symbol: "D", inventoryTurnChange: -0.3 }), row({ symbol: "E", cyclical: "chips" })];
+  assert.deepEqual(lynchRows(rows, { scope: "Best" }).map((x) => x.row.symbol), ["A"]);
+  assert.equal(LYNCH_SCOPE_LABEL.Best, "Peter would buy");
+  assert.deepEqual(lynchRows(rows).map((x) => `${x.row.symbol} ${x.sheet.buy.answer}`).sort(), ["A YES", "B WAIT", "C NO", "D NO", "E CAREFUL"]);
 });
 
 test("why a Mag7 company has no star sheet", () => {

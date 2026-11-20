@@ -182,8 +182,9 @@ def test_every_served_row_gets_a_plain_words_explanation_that_matches_its_verdic
                           capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
     assert view.returncode == 0, view.stderr
     simple = json.loads(view.stdout)
-    opening = {"BUY": "Warren would buy this.", "WAIT": "Warren would wait.", "AVOID": "Warren would skip this one.",
-               "ETF": "This is a fund"}
+    # 2026-11-20 "if Peter was there did he buy it or not? ... Think like you are Peter and Warren"
+    opening = {"BUY": "Would Warren buy it? Yes.", "WAIT": "Would Warren buy it? Not yet.",
+               "AVOID": "Would Warren buy it? No.", "ETF": "This is a fund"}
     seen = set()
     for r in body["rows"]:
         why = simple[r["symbol"]]
@@ -201,7 +202,17 @@ def test_every_served_row_gets_a_plain_words_explanation_that_matches_its_verdic
     assert {"AVOID", "ETF"} <= seen and seen & {"BUY", "WAIT"}, seen
     aapl, row = simple["AAPL"], next(r for r in body["rows"] if r["symbol"] == "AAPL")
     assert f"it earns ${round(row['roic'] * 100)} a year" in aapl["warren"]["lines"][0]["text"]
-    assert aapl["peter"]["headline"].startswith(("Peter would", "Peter has no opinion"))
+    answers = ("Would Peter buy it? Yes.", "Would Peter buy it? Not at this price.", "Would Peter buy it? No.",
+               "Would Peter buy it? Only with care.", "Would Peter buy it? He cannot tell:")
+    for symbol, why in simple.items():
+        if why["peter"]:
+            assert why["peter"]["headline"].startswith(answers), symbol
+            # a sell line only where he would own it, and never a fixed profit target as a rule
+            if why["peter"]["headline"].startswith(("Would Peter buy it? No.", "Would Peter buy it? He cannot tell:")):
+                assert why["peter"]["sell"] is None, symbol
+            else:
+                assert why["peter"]["sell"].startswith("When would he sell?"), symbol
+    assert aapl["warren"]["sell"] is None or aapl["warren"]["sell"].startswith("When would he sell? This rule sells when")
 
 
 def test_a_broken_lists_file_gives_no_groups_and_the_page_still_answers(monkeypatch, store_dir):

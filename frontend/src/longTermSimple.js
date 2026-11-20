@@ -32,7 +32,7 @@ function grows(value, what, wants) {
 function warrenSide(row) {
   const s = row.signal;
   if (s === "ETF") {
-    return { headline: "This is a fund (a basket of many companies), not one business, so Warren's checklist does not fit it.", lines: [], todo: null };
+    return { headline: "This is a fund (a basket of many companies), not one business, so Warren's checklist does not fit it.", lines: [], todo: null, sell: null };
   }
   const lines = [];
   const earns = row.financial ? row.roe : row.roic;
@@ -52,36 +52,59 @@ function warrenSide(row) {
     lines.push(line(sale ? "yes" : "no",
       `A fair price is about ${dollars(row.sticker)} a share. Warren only buys at a big discount: ${dollars(row.safetyBuy)} or less. Today it costs ${dollars(row.price)}, so it is ${sale ? "on sale" : "not on sale yet"}.`));
   }
+  // "Did he use a profit target?": this rule's only sell point is the fair price.
+  const sell = isNum(row.sticker)
+    ? `When would he sell? This rule sells when the price reaches the fair price, about ${dollars(row.sticker)}. It has no other profit target, and Warren himself likes to keep a great business for many years.`
+    : null;
   if (s === "BUY") {
-    return { headline: "Warren would buy this. It is a great business and today it is on sale.", lines, todo: "What his rule says: this is a price where he would buy." };
+    return { headline: "Would Warren buy it? Yes. It is a great business and today it is on sale.", lines, todo: "What his rule says: this is a price where he would buy.", sell };
   }
   if (s === "WAIT") {
     const at = isNum(row.buyBelow) ? ` Look again if the price drops to ${dollars(row.buyBelow)} or less.` : "";
-    return { headline: "Warren would wait. It is a good business, but the price is too high today.", lines, todo: `What his rule says: do nothing now.${at}` };
+    return { headline: "Would Warren buy it? Not yet. It is a good business, but the price is too high today.", lines, todo: `What his rule says: do nothing now.${at}`, sell };
   }
   if (s === "AVOID") {
     if (row.reason) lines.push(line("no", `The rule it failed: ${String(row.reason).replace(/\.$/, "")}.`));
-    return { headline: "Warren would skip this one.", lines, todo: "What his rule says: leave it alone." };
+    return { headline: "Would Warren buy it? No. It does not pass his checklist.", lines, todo: "What his rule says: leave it alone.", sell: null };
   }
-  if (s === "NO_PRICE") return { headline: "We cannot say today: there is no fresh price for it.", lines, todo: null };
-  return { headline: "We cannot say yet: there is not enough fresh information on this company.", lines, todo: null };
+  if (s === "NO_PRICE") return { headline: "Would Warren buy it? We cannot say today: there is no fresh price for it.", lines, todo: null, sell: null };
+  return { headline: "Would Warren buy it? We cannot say yet: there is not enough fresh information on this company.", lines, todo: null, sell: null };
 }
 
+// "Would Peter buy it?" comes from sheet.buy (longTermLynch.js). "Did Peter use profit target?"
+// (Ganesh 11-20): he had no fixed target. What he wrote in One Up on Wall Street depends on the
+// kind of company: a fast grower is kept while it grows, a steady or slow grower is often sold
+// after a 30-50% gain, a cyclical before the good years end.
 const PETER_HEAD = {
-  CHEAP: "Peter would like this. It is growing fast and the price is low for that growth.",
-  FAIR: "Peter would call the price fair. You pay about what its growth is worth.",
-  PRICEY: "Peter would call this expensive. People already pay a lot for its growth.",
+  YES: "Would Peter buy it? Yes.",
+  WAIT: "Would Peter buy it? Not at this price.",
+  NO: "Would Peter buy it? No.",
+  CAREFUL: "Would Peter buy it? Only with care.",
 };
 const PETER_TODO = {
-  CHEAP: "What his rule says: worth a closer look. In our test, the cheap ones did not do better than other good companies, so a low price alone is not a reason to buy.",
-  FAIR: "What his rule says: fine to own, but it is no bargain.",
-  PRICEY: "What his rule says: wait for a lower price.",
-  CYCLICAL: "What his rule says: be careful, and do not trust the low price.",
+  YES: "What his rule says: he would buy at this price. In our test, the cheap ones did not do better than other good companies, so this is his checklist, not a promise.",
+  NO: "What his rule says: leave it alone.",
+  CAREFUL: "What his rule says: be careful, and do not trust the low price.",
 };
+
+function peterSell(sheet, row) {
+  if (sheet.buy.answer === "NO") return null;
+  if (sheet.cyclical) {
+    return "When would he sell? He had no profit target. He sold this kind of business when the good years looked close to ending, for example when unsold goods started piling up.";
+  }
+  if (sheet.grower === "Fast grower") {
+    const far = isNum(row.price) && row.price > 0 ? ` (for this one, about ${dollars((row.price / sheet.peg) * 2)})` : "";
+    return `When would he sell? He had no profit target. He kept a fast grower for as long as it kept growing, and sold when the growth slowed or the price ran far ahead of the growth${far}.`;
+  }
+  if (sheet.grower === "Stalwart") {
+    return "When would he sell? He had no fixed target, but with a steady grower like this he often took a 30% to 50% gain and moved to another one.";
+  }
+  return "When would he sell? After a 30% to 50% gain, or sooner if the business got worse. He had no other target.";
+}
 
 function peterSide(row) {
   const sheet = lynchSheet(row, { anyQuality: true });
-  if (!sheet) return { headline: `Peter has no opinion here: ${lynchMissing(row) || "it cannot be scored"}.`, lines: [], todo: null };
+  if (!sheet) return { headline: `Would Peter buy it? He cannot tell: ${lynchMissing(row) || "it cannot be scored"}.`, lines: [], todo: null, sell: null };
   const by = Object.fromEntries(sheet.checks.map((c) => [c.key, c]));
   const mark = (c) => (c.passed === true ? "yes" : c.passed === false ? "no" : "info");
   const growth = Math.round(sheet.growthPct);
@@ -105,16 +128,16 @@ function peterSide(row) {
     lines.push(line(mark(by.price), `${paying} Under 1 is a low price for the growth.`));
   }
   if (sheet.inventoryWarning) lines.push(line("no", "Its shelves are filling up: unsold goods are growing faster than what it sells."));
-  if (sheet.cyclical) {
-    return {
-      headline: `Peter would be careful. This kind of business (${sheet.cyclical}) has good years and bad years, so today's profit may not last.`,
-      lines, todo: PETER_TODO.CYCLICAL,
-    };
-  }
-  return { headline: PETER_HEAD[sheet.verdict], lines, todo: PETER_TODO[sheet.verdict] };
+  const buy = sheet.buy;
+  const todo = buy.answer === "WAIT"
+    ? `What his rule says: wait.${buy.price != null ? ` Look again at ${dollars(buy.price)} or less.` : ""}`
+    : PETER_TODO[buy.answer];
+  // buy.why is plain already; "Peter's price: $X or less" is repeated in the todo, so cut it here
+  const why = buy.why.replace(/ Peter's price: .*$/, "");
+  return { headline: `${PETER_HEAD[buy.answer]} ${why}`, lines, todo, sell: peterSell(sheet, row) };
 }
 
-// { warren: { headline, lines: [{ mark: "yes" | "no" | "info", text }], todo }, peter: {...} } or null.
+// { warren: { headline, lines: [{ mark: "yes" | "no" | "info", text }], todo, sell }, peter: {...} } or null.
 // only = "warren" | "peter" leaves the other side out (2026-11-20, "Peter one don't mixed with
 // Warren": the Rule #1 table explains Warren's checklist, the Peter view Peter's).
 export function simpleWhy(row, only = null) {

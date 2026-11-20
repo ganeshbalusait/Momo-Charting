@@ -160,10 +160,21 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     // the three groups, with how many cards each holds
     assert.deepEqual(
       await p.locator(".long-term-lynch-scope button").evaluateAll((els) => els.map((el) => el.innerText.replace(/\s+/g, " ").trim())),
-      ["Peter's best 1", "Quality 4", "Mag7 4", "Watchlist 1"],
+      ["Peter would buy 1", "Quality 4", "Mag7 4", "Watchlist 1"],
     );
-    assert.equal(await pressed(p, "long-term-lynch-scope-Best"), "true", "opens on Peter's best");
+    assert.equal(await pressed(p, "long-term-lynch-scope-Best"), "true", "opens on Peter would buy");
     await p.getByTestId("long-term-lynch-scope-Quality").click();
+    // 2026-11-20 "if Peter was there did he buy it or not? Simple question": one answer per card.
+    const answer = async (sym) => [
+      await p.getByTestId(`long-term-lynch-buy-${sym}`).getAttribute("data-answer"),
+      (await p.getByTestId(`long-term-lynch-buy-${sym}`).innerText()).replace(/\s+/g, " ").trim(),
+    ];
+    assert.deepEqual(await answer("AAPL"), ["YES", "Would Peter buy it? YES Every check passes and the price is low for its growth."]);
+    // NVDA: a good business at 45 times profit on 30% growth = 1.5; his price is $100 / 1.5 = $67
+    assert.deepEqual(await answer("NVDA"), ["WAIT", "Would Peter buy it? NOT AT THIS PRICE A good business, but the price is too high for its growth. Peter's price: $67 or less."]);
+    assert.deepEqual(await answer("COST"), ["NO", "Would Peter buy it? NO It owes too much."]);
+    assert.equal((await answer("MU"))[0], "CAREFUL");
+    assert.match((await answer("MU"))[1], /ONLY WITH CARE This kind of business \(chips\) has good years and bad years/);
     // tap the card: the Why drawer opens under it; tap again: it closes
     const card = p.getByTestId("long-term-lynch-AAPL");
     assert.equal(await card.getAttribute("aria-expanded"), "false");
@@ -175,7 +186,10 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     // 2026-11-20 "justification why ... a 10 kid can understand" + "Peter one don't mixed with
     // Warren": the details start with PETER's checklist in plain sentences, and nothing of Warren's.
     const peter = await p.getByTestId("long-term-simple-peter").innerText();
-    assert.match(peter, /Peter would like this\. It is growing fast and the price is low for that growth\./);
+    assert.match(peter, /Would Peter buy it\? Yes\. Every check passes and the price is low for its growth\./);
+    // "Did Peter use profit target?": AAPL grows 15% a year, a steady grower
+    assert.match(await p.getByTestId("long-term-simple-peter-sell").innerText(),
+      /When would he sell\? He had no fixed target, but with a steady grower like this he often took a 30% to 50% gain/);
     assert.match(peter, /You pay \$11\.10 for every \$1 it earns in a year, and it grows 15% a year\. 11\.1 ÷ 15 = 0\.74\./);
     const simple = await p.getByTestId("long-term-simple").innerText();
     assert.ok(!/\b(ROIC|EPS|PEG|FCF|P\/E)\b/.test(simple), "no trading words in the simple box");
@@ -235,8 +249,8 @@ e2eTest("on a phone the groups fit and a tapped card shows its details without s
 });
 
 // 2026-11-20 "Confused here which one buy?" then "Peter one don't mixed with Warren".
-e2eTest("Peter opens on Peter's best: every star and CHEAP, whatever Warren's rule says", async () => {
-  // ZM: full marks from Peter while Warren's rule says AVOID. It is still one of Peter's best.
+e2eTest("Peter opens on Peter would buy: his YES answers, whatever Warren's rule says", async () => {
+  // ZM: a YES from Peter while Warren's rule says AVOID. It is still on Peter's list.
   const list = () => [...rows(), row({ symbol: "ZM", name: "Zoom", signal: "AVOID", pe: 7.8, reason: "not a Rule #1 business" })];
   for (const viewport of [undefined, PHONE]) {
     await withApp({ view: VIEW, viewport, fakeReads: reads(list) }, async (app) => {
@@ -244,10 +258,11 @@ e2eTest("Peter opens on Peter's best: every star and CHEAP, whatever Warren's ru
       await p.getByTestId(viewport ? "long-term-card-AAPL" : "long-term-row-AAPL").waitFor({ timeout: 90_000 });
       await p.getByTestId("long-term-peter").click();
       await p.getByTestId("long-term-lynch-list").waitFor({ timeout: 20_000 });
-      assert.equal(await pressed(p, "long-term-lynch-scope-Best"), "true", "opens on Peter's best");
-      assert.equal((await p.getByTestId("long-term-lynch-scope-Best").innerText()).replace(/\s+/g, " ").trim(), "Peter's best 2");
+      assert.equal(await pressed(p, "long-term-lynch-scope-Best"), "true", "opens on Peter would buy");
+      assert.equal((await p.getByTestId("long-term-lynch-scope-Best").innerText()).replace(/\s+/g, " ").trim(), "Peter would buy 2");
+      assert.deepEqual(await p.locator("[data-testid^='long-term-lynch-buy-']").evaluateAll((els) => els.map((el) => el.dataset.answer)), ["YES", "YES"]);
       assert.deepEqual(await listed(p), ["ZM 5/5", "AAPL 5/5"]);
-      assert.match(await p.getByTestId("long-term-lynch-best-note").innerText(), /Peter's best:[\s\S]*not a promise the price goes up/);
+      assert.match(await p.getByTestId("long-term-lynch-best-note").innerText(), /Peter would buy:[\s\S]*not a promise the price goes up/);
       // the card carries Peter's numbers only: no Rule #1 verdict on it
       const card = await p.getByTestId("long-term-lynch-ZM").innerText();
       assert.match(card, /PEG\s*0\.52[\s\S]*P\/E\s*7\.8[\s\S]*Growth\s*15%\/yr/);
@@ -271,7 +286,10 @@ e2eTest("the Rule #1 table's details explain Warren's checklist only", async () 
     const drawer = p.getByTestId("long-term-drawer");
     await drawer.waitFor({ timeout: 20_000 });
     const warren = await p.getByTestId("long-term-simple-warren").innerText();
-    assert.match(warren, /Warren would wait\. It is a good business, but the price is too high today\./);
+    assert.match(warren, /Would Warren buy it\? Not yet\. It is a good business, but the price is too high today\./);
+    // "profit target": this rule's only sell point is the fair price
+    assert.match(await p.getByTestId("long-term-simple-warren-sell").innerText(),
+      /When would he sell\? This rule sells when the price reaches the fair price, about \$200\. It has no other profit target/);
     assert.match(warren, /For every \$100 put into the business, it earns \$55 a year\. Warren wants \$15 or more\./);
     assert.match(warren, /Warren only buys at a big discount: \$80 or less\. Today it costs \$100, so it is not on sale yet\./);
     assert.match(warren, /What his rule says: do nothing now\. Look again if the price drops to \$80 or less\./);

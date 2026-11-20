@@ -48,7 +48,7 @@ const whole = (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(Math.round(v
 // Peter's own top marks: every judged star earned and the price CHEAP. Nothing in the Peter view
 // reads Warren's (Rule #1) verdict. The view opens on Best when it has a company.
 export const LYNCH_SCOPES = ["Best", "Quality", "Mag7", "Watchlist"];
-export const LYNCH_SCOPE_LABEL = { Best: "Peter's best", Quality: "Quality", Mag7: "Mag7", Watchlist: "Watchlist" };
+export const LYNCH_SCOPE_LABEL = { Best: "Peter would buy", Quality: "Quality", Mag7: "Mag7", Watchlist: "Watchlist" };
 
 export function defaultLynchScope(rows) {
   return lynchRows(rows, { scope: "Best" }).length ? "Best" : "Quality";
@@ -70,6 +70,41 @@ export function lynchMissing(row) {
   if (growth == null) return "no earnings growth figure";
   if (growth <= 0) return "earnings did not grow";
   return null;
+}
+
+// "Would Peter buy it?" (2026-11-20, Ganesh: "if Peter was there did he buy it or not? Simple
+// question ... Think like you are Peter"). One answer from his own checks, never Warren's:
+//   YES      every judged check passes, the price is low for the growth (PEG 1 or less), and no
+//            stock is piling up
+//   WAIT     the business passes, the price does not; his price is where the P/E equals the
+//            growth (PEG 1), so today's price / PEG
+//   NO       a business check fails (growth, sales, debt, cash) or unsold goods are piling up
+//   CAREFUL  a cyclical: he bought those on the turn of the cycle, never because the P/E was low
+// This is the page's reading of his published checklist, not a forecast.
+const BUY_NO = {
+  sales: "Its sales are barely growing.",
+  debt: "It owes too much.",
+  cash: "Its spare cash is shrinking.",
+};
+
+function wouldBuy({ row, checks, verdict, peg, growth, cyclical, inventoryWarning }) {
+  if (cyclical) {
+    return { answer: "CAREFUL", why: `This kind of business (${cyclical}) has good years and bad years, so a low price can be the top of a good year.`, price: null };
+  }
+  const failed = checks.find((c) => c.key !== "price" && c.passed === false);
+  if (failed) {
+    const why = failed.key === "growth"
+      ? (growth > LYNCH_RULES.growthMax ? "Its profit growth is too fast to last." : "Its profit grows too slowly.")
+      : BUY_NO[failed.key];
+    return { answer: "NO", why, price: null };
+  }
+  if (inventoryWarning) return { answer: "NO", why: "Unsold goods are piling up faster than it sells.", price: null };
+  if (verdict === "CHEAP") return { answer: "YES", why: "Every check passes and the price is low for its growth.", price: null };
+  const base = "A good business, but the price is too high for its growth.";
+  if (!isNum(row.price) || row.price <= 0) return { answer: "WAIT", why: base, price: null };
+  const at = row.price / peg;
+  const price = at >= 10 ? Math.round(at) : Math.round(at * 100) / 100;
+  return { answer: "WAIT", why: `${base} Peter's price: $${price.toLocaleString("en-US")} or less.`, price };
 }
 
 export function lynchSheet(row, { anyQuality = false } = {}) {
@@ -109,15 +144,18 @@ export function lynchSheet(row, { anyQuality = false } = {}) {
       : { key: "price", label: "Price for growth", text: pegText, passed: peg <= R.pegCheap },
   ];
   const grower = growth < R.stalwartFrom ? "Slow grower" : growth < R.fastFrom ? "Stalwart" : "Fast grower";
+  const verdict = cyclical ? "CYCLICAL" : peg <= R.pegCheap ? "CHEAP" : peg <= R.pegFair ? "FAIR" : "PRICEY";
   return {
     peg,
+    grower,
+    buy: wouldBuy({ row, checks, verdict, peg, growth, cyclical, inventoryWarning }),
     growthPct: growth,
     cyclical,
     dividendPct,
     inventoryWarning,
     lowQuality: row.quality !== "HIGH",
     type: cyclical ? `Cyclical · ${cyclical}` : grower,
-    verdict: cyclical ? "CYCLICAL" : peg <= R.pegCheap ? "CHEAP" : peg <= R.pegFair ? "FAIR" : "PRICEY",
+    verdict,
     stars: checks.filter((c) => c.passed === true).length,
     of: checks.filter((c) => c.passed !== null).length,
     checks,
@@ -142,7 +180,7 @@ export function lynchRows(rows, { tile = null, query = "", scope = null, lists =
       if (everyMember && !tile && row.signal !== "ETF") bare.push({ row, sheet: null, reason: lynchMissing(row) || "not scored" });
       continue;
     }
-    if (best && !(sheet.verdict === "CHEAP" && sheet.stars === sheet.of)) continue;
+    if (best && sheet.buy.answer !== "YES") continue;
     if (tile && sheet.verdict !== tile) continue;
     list.push({ row, sheet });
   }
