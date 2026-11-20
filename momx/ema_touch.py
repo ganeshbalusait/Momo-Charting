@@ -53,6 +53,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from config import ARTIFACTS_DIR
+from momx import monthly_breakout
 
 LENGTHS = (21, 50)
 #: picker order; name -> (Alpaca timeframe, days of history, period key length)
@@ -287,6 +288,27 @@ def touchers(symbols: Iterable[str], length: int, tf: str | None = None) -> list
         return [s for s in universe if ((table.get(s) or {}).get(key) or {}).get("pass")]
 
 
+def cached_states(symbols: Iterable[str], key: str) -> dict[str, Any]:
+    """``{symbol: table[symbol][key]}`` in the given order, from the last refresh.
+
+    Shared with momx/monthly_breakout.py, whose verdicts ride in this cache
+    (one monthly fetch feeds both). Same rules as :func:`touchers`: a symbol
+    never fetched is queued; a stale cache answers nothing.
+    """
+    universe = [str(s) for s in symbols or []]
+    if not enabled() or not universe:
+        return {}
+    _reload_from_disk()
+    with _LOCK:
+        table = _CACHE.get("symbols") or {}
+        missing = [s for s in universe if s not in table]
+        if missing:
+            _WANTED.update(missing)
+        if not _fresh(_CACHE.get("fetchedAt")):
+            return {}
+        return {s: (table.get(s) or {}).get(key) for s in universe if s in table}
+
+
 def detail(symbol: str) -> dict:
     """``{"21:Monthly": {...}, ...}`` for one symbol, for display/debug."""
     _reload_from_disk()
@@ -359,6 +381,19 @@ def refresh(symbols: Iterable[str] | None = None, now: datetime | None = None) -
             rows = bars.get(sym) or []
             for n in LENGTHS:
                 table[sym][f"{n}:{tf}"] = touch_state(rows, n, latest) if latest else None
+            if tf == "Monthly":
+                # The Monthly Breakout / Breakdown lists read the same bars.
+                try:
+                    table[sym][monthly_breakout.CACHE_KEY] = (
+                        monthly_breakout.breakout_state(rows, latest) if latest else None
+                    )
+                except Exception:  # noqa: BLE001 - one bad tape must not sink the refresh
+                    table[sym][monthly_breakout.CACHE_KEY] = None
+        if tf == "Monthly":
+            for direction in ("up", "down"):
+                summary[f"breakout:{direction}"] = sum(
+                    1 for v in table.values() if (v.get(monthly_breakout.CACHE_KEY) or {}).get(direction)
+                )
         for n in LENGTHS:
             summary[f"{n}:{tf}"] = sum(1 for v in table.values() if (v.get(f"{n}:{tf}") or {}).get("pass"))
     document = {"fetchedAt": now.isoformat(), "periods": periods, "symbols": table}
@@ -424,6 +459,7 @@ __all__ = [
     "LENGTHS",
     "TIMEFRAMES",
     "cache_path",
+    "cached_states",
     "current_lists",
     "detail",
     "ema",

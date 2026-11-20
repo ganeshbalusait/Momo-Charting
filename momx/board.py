@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from config import ARTIFACTS_DIR, refresh_watchlist_if_changed, settings
-from momx import buckets, columns, ema_touch, feed, flags, grade, live_rvol, news, scan
+from momx import buckets, columns, ema_touch, feed, flags, grade, live_rvol, monthly_breakout, news, scan
 from momx.industries import industry_for
 from momx.industry_lookup import resolve as resolve_industries
 
@@ -1763,8 +1763,12 @@ def _document_from_raw(raw: Any) -> dict:
     # read and never saved.
     for name, length in ema_touch.current_lists().items():
         ordered[name] = ema_touch.touchers(ordered.get(WATCHLIST_LIST_NAME) or [], length)
+    # Monthly Breakout / Breakdown (momx/monthly_breakout.py): the Watchlist's
+    # tickers with a monthly chart-pattern break, from the same monthly cache.
+    for name in monthly_breakout.current_lists():
+        ordered[name] = monthly_breakout.members(ordered.get(WATCHLIST_LIST_NAME) or [], name)
     for name, symbols in lists.items():
-        if ema_touch.is_derived(name):
+        if is_derived(name):
             continue
         if name not in ordered:
             ordered[name] = symbols or _seed_for(name)
@@ -1807,12 +1811,12 @@ def _read_list_metadata(path: Any = None) -> dict:
     except (OSError, ValueError, TypeError):
         raw = None
     names = list(LIST_SEEDS)
-    names.extend(name for name in ema_touch.current_lists() if name not in names)
+    names.extend(name for name in derived_list_names() if name not in names)
     requested = ''
     if isinstance(raw, Mapping) and isinstance(raw.get('lists'), Mapping):
         for name in raw['lists']:
             name = str(name or '').strip()
-            if name and name not in names and not ema_touch.is_derived(name):
+            if name and name not in names and not is_derived(name):
                 names.append(name)
         requested = str(raw.get('active') or '').strip()
     else:
@@ -1849,7 +1853,7 @@ def _write_document(document: Mapping[str, Any], path: Any = None) -> None:
         current = list(symbols)
         if name in LIST_SEEDS and current == list(_seed_for(name)):
             continue
-        if ema_touch.is_derived(name):
+        if is_derived(name):
             continue  # computed on read, never a saved copy
         kept[name] = current
     payload = {
@@ -1918,19 +1922,34 @@ def resolve_list_name(
     raise UnknownListError(wanted, list(lists))
 
 
+def is_derived(name: Any) -> bool:
+    """A list computed from the Watchlist on every read (EMA Touch, Monthly
+    Breakout / Breakdown): never saved, never edited, no list slot used."""
+    return ema_touch.is_derived(name) or monthly_breakout.is_derived(name)
+
+
+def derived_list_names() -> list[str]:
+    """The computed lists, in picker order."""
+    return ema_touch.list_names() + monthly_breakout.list_names()
+
+
 def is_builtin(name: Any) -> bool:
     """Seeded lists and the computed EMA-touch lists: no rename/delete/edit."""
-    return name in LIST_SEEDS or ema_touch.is_derived(name)
+    return name in LIST_SEEDS or is_derived(name)
 
 
 def _refuse_derived(target: str) -> None:
-    if ema_touch.is_derived(target):
+    if is_derived(target):
+        why = (
+            "tickers with a monthly chart-pattern break" if monthly_breakout.is_derived(target)
+            else "tickers touching the monthly EMA"
+        )
         raise UnknownListError(
             target,
-            list(LIST_SEEDS.keys()) + ema_touch.list_names(),
+            list(LIST_SEEDS.keys()) + derived_list_names(),
             message=(
-                f"{target} fills itself from your Watchlist (tickers touching the "
-                f"monthly EMA), so tickers cannot be added, removed, renamed or deleted here."
+                f"{target} fills itself from your Watchlist ({why}), "
+                f"so tickers cannot be added, removed, renamed or deleted here."
             ),
         )
 
@@ -2141,7 +2160,7 @@ def rename_list(name: Any, new_name: Any, *, path: Any = None) -> dict:
     target = resolve_list_name(name, document=document)
     fresh = str(new_name or "").strip()
     _refuse_derived(target)
-    if ema_touch.is_derived(fresh):
+    if is_derived(fresh):
         raise UnknownListError(target, list(LIST_SEEDS.keys()), message=f"{fresh} is a built-in list name.")
     if target in LIST_SEEDS:
         raise UnknownListError(

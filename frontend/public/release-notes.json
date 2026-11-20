@@ -2,6 +2,17 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-20T17:48:21-05:00",
+      "heading": "MomX Scanner: Monthly Breakout and Monthly Breakdown lists",
+      "items": [
+        "Two new built-in lists in the WATCHLISTS dropdown: \"Monthly Breakout\" (bull) and \"Monthly Breakdown\" (bear). They fill themselves from your Watchlist, the same way the EMA Touch lists do.",
+        "A ticker joins when its MONTHLY candle closes through one of the four chart patterns from your pictures: higher lows + resistance, symmetrical triangle, range, or lower highs + support. The EMAs must agree: for a breakout, price above the 21 EMA and the 21 above the 50; for a breakdown, the opposite.",
+        "Under the list name, a chip for each ticker shows the pattern, the line it broke and whether the month has closed. \"Nov 26 not closed\" can still fail; \"Oct 26 close\" is confirmed. Hover a chip for the measured target.",
+        "Back-test on 338 Watchlist tickers: a year after a breakout, 69-78% were higher, against 62% for any month. Breakdowns did NOT reliably lead to a fall, so the bear list is for information, not a put signal. Weekly and daily versions showed no edge, so only monthly is built.",
+        "Fixed: the dropdown said \"List limit reached\" with 6 lists showing, although the EMA Touch lists do not count toward your 6. You can add your own lists again, and the two new lists do not use a slot either."
+      ]
+    },
+    {
       "at": "2026-11-20T09:06:29-05:00",
       "heading": "Long Term Peter view: fixes from an independent review",
       "items": [

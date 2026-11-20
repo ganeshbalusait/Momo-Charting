@@ -1685,3 +1685,23 @@
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel td.momx-spreadcol.is-none {
   color: var(--momx-muted, #8e8e93);
 }
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-breakout-chip {
+  color: #b9f3ec;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-breakout-row.is-down .momx-breakout-chip {
+  color: #ffc9c7;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-breakout-chip em {
+  color: #a1a1a6;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-breakout-empty {
+  color: #a1a1a6;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-breakout-note {
+  color: #a1a1a6;
+}

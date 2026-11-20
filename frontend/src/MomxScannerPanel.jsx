@@ -221,6 +221,7 @@ import {
   spreadMapFrom,
   spreadSortValue,
 } from "./momxSpread.js";
+import { breakoutChips, breakoutNote, pickerFull } from "./monthlyBreakout.js";
 
 // MomX Scanner board - the trader's MomoX/MomoScan window, replayed.
 //
@@ -1165,7 +1166,7 @@ function MomxListPicker({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const full = lists.length >= maxLists;
+  const full = pickerFull(lists, maxLists);
   const style =
     box && !box.centered
       ? { left: box.left, width: box.width, top: box.top, bottom: box.bottom, maxHeight: box.maxHeight }
@@ -6972,6 +6973,34 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
             ))}
           </select>
           {listError ? <span className="momx-ema-tf-error">{listError}</span> : null}
+        </div>
+      ) : null}
+
+      {/* Monthly Breakout / Breakdown (momx/monthly_breakout.py): which
+          pattern each member broke, the line, and whether the month has
+          closed. Same spot as the EMA row, so it shows on Live and History. */}
+      {lists.length > 0 && (activeMeta.breakout === "up" || activeMeta.breakout === "down") ? (
+        <div
+          className={`momx-breakout-row is-${activeMeta.breakout}`}
+          data-testid="momx-breakout-row"
+        >
+          <div className="momx-breakout-chips" role="list" aria-label={`${activeMeta.name} patterns`}>
+            {breakoutChips(activeMeta).map((chip) => (
+              <span
+                key={chip.symbol}
+                role="listitem"
+                className={`momx-breakout-chip${chip.live ? " is-live" : ""}`}
+                title={chip.title}
+                data-testid="momx-breakout-chip"
+              >
+                <b>{chip.symbol}</b> {chip.arrow} {chip.text} <em>{chip.when}</em>
+              </span>
+            ))}
+            {breakoutChips(activeMeta).length === 0 ? (
+              <span className="momx-breakout-empty">No monthly {activeMeta.breakout === "up" ? "breakouts" : "breakdowns"} on the Watchlist right now.</span>
+            ) : null}
+          </div>
+          <p className="momx-breakout-note">{breakoutNote(activeMeta.breakout)}</p>
         </div>
       ) : null}
 
