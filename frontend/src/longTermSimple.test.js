@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SIMPLE_FOOT, simpleWhy } from "./longTermSimple.js";
+import { SIMPLE_FOOT, SIMPLE_FOOT_ONE, simpleWhy } from "./longTermSimple.js";
 
 const row = (over = {}) => ({
   symbol: "ADBE", name: "Adobe", signal: "BUY", quality: "HIGH", young: false, financial: false, price: 220.6,
@@ -98,4 +98,17 @@ test("Peter has no opinion when the company cannot be scored, and says why", () 
 
 test("the footer says these explain and do not tell you what to do", () => {
   assert.match(SIMPLE_FOOT, /They explain; they do not tell you what to do with your money\.$/);
+});
+
+// 2026-11-20 "Peter one don't mixed with Warren": each view explains its own checklist only.
+test("asked for one side, the other is left out", () => {
+  const peterOnly = simpleWhy(row(), "peter");
+  assert.equal(peterOnly.warren, null);
+  assert.match(peterOnly.peter.headline, /^Peter would like this/);
+  const warrenOnly = simpleWhy(row(), "warren");
+  assert.equal(warrenOnly.peter, null);
+  assert.match(warrenOnly.warren.headline, /^Warren would buy this/);
+  assert.ok(simpleWhy(row()).warren && simpleWhy(row()).peter, "no side named: both");
+  assert.match(SIMPLE_FOOT_ONE.peter, /Peter Lynch's checklist/);
+  assert.ok(!/Warren/.test(SIMPLE_FOOT_ONE.peter) && !/Peter/.test(SIMPLE_FOOT_ONE.warren));
 });

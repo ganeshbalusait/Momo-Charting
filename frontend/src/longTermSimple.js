@@ -12,6 +12,12 @@ import { lynchMissing, lynchSheet } from "./longTermLynch.js";
 
 export const SIMPLE_FOOT = "These are two famous investors' checklists, worked out from the company's own reports. They explain; they do not tell you what to do with your money.";
 
+const FOOT_TAIL = "worked out from the company's own reports. It explains; it does not tell you what to do with your money.";
+export const SIMPLE_FOOT_ONE = {
+  warren: `This is Warren Buffett's checklist, ${FOOT_TAIL}`,
+  peter: `This is Peter Lynch's checklist, ${FOOT_TAIL}`,
+};
+
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 const whole = (v) => Math.round(Math.abs(v) * 100);
 const dollars = (v) => (v >= 10 ? `$${Math.round(v).toLocaleString("en-US")}` : `$${v.toFixed(2)}`);
@@ -109,7 +115,12 @@ function peterSide(row) {
 }
 
 // { warren: { headline, lines: [{ mark: "yes" | "no" | "info", text }], todo }, peter: {...} } or null.
-export function simpleWhy(row) {
+// only = "warren" | "peter" leaves the other side out (2026-11-20, "Peter one don't mixed with
+// Warren": the Rule #1 table explains Warren's checklist, the Peter view Peter's).
+export function simpleWhy(row, only = null) {
   if (!row || typeof row !== "object") return null;
-  return { warren: warrenSide(row), peter: row.signal === "ETF" ? null : peterSide(row) };
+  return {
+    warren: only === "peter" ? null : warrenSide(row),
+    peter: only === "warren" || row.signal === "ETF" ? null : peterSide(row),
+  };
 }

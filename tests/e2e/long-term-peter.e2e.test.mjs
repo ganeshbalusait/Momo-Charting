@@ -71,6 +71,7 @@ e2eTest("Peter, next to the MOS buttons, shows the star sheet for the quality co
     );
     await p.getByTestId("long-term-peter").click();
     await p.getByTestId("long-term-lynch-list").waitFor({ timeout: 20_000 });
+    await p.getByTestId("long-term-lynch-scope-Quality").click();
     assert.equal(await pressed(p, "long-term-peter"), "true");
     assert.equal(await pressed(p, "long-term-mos-50"), "false");
     assert.deepEqual(await listed(p), ALL, "most stars first; HD is not a quality company");
@@ -131,6 +132,7 @@ e2eTest("on a phone the Peter list fits the screen and the footer stays under it
     assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `Peter button at ${JSON.stringify(box)}`);
     await button.click();
     await p.getByTestId("long-term-lynch-list").waitFor({ timeout: 20_000 });
+    await p.getByTestId("long-term-lynch-scope-Quality").click();
     assert.deepEqual(await listed(p), ALL);
     assert.equal(await overflowsSideways(p), false);
     const warn = await p.getByTestId("long-term-lynch-cyclical-MU").boundingBox();
@@ -158,30 +160,31 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     // the three groups, with how many cards each holds
     assert.deepEqual(
       await p.locator(".long-term-lynch-scope button").evaluateAll((els) => els.map((el) => el.innerText.replace(/\s+/g, " ").trim())),
-      ["Both agree 0", "Quality 4", "Mag7 4", "Watchlist 1"],
+      ["Peter's best 1", "Quality 4", "Mag7 4", "Watchlist 1"],
     );
-    assert.equal(await pressed(p, "long-term-lynch-scope-Quality"), "true");
+    assert.equal(await pressed(p, "long-term-lynch-scope-Best"), "true", "opens on Peter's best");
+    await p.getByTestId("long-term-lynch-scope-Quality").click();
     // tap the card: the Why drawer opens under it; tap again: it closes
     const card = p.getByTestId("long-term-lynch-AAPL");
     assert.equal(await card.getAttribute("aria-expanded"), "false");
     await card.click();
     const drawer = p.getByTestId("long-term-drawer");
     await drawer.waitFor({ timeout: 20_000 });
-    assert.match(await drawer.innerText(), /ROIC now/);
+    assert.match(await drawer.innerText(), /Ten years/i);
     assert.equal(await card.getAttribute("aria-expanded"), "true");
-    // 2026-11-20 "justification why Warren or Peter chose that stocks ... a 10 kid can understand":
-    // the details start with both checklists in plain sentences (AAPL: WAIT at $100, safe price $80).
-    const warren = await p.getByTestId("long-term-simple-warren").innerText();
-    assert.match(warren, /Warren would wait\. It is a good business, but the price is too high today\./);
-    assert.match(warren, /For every \$100 put into the business, it earns \$55 a year\. Warren wants \$15 or more\./);
-    assert.match(warren, /Warren only buys at a big discount: \$80 or less\. Today it costs \$100, so it is not on sale yet\./);
-    assert.match(warren, /What his rule says: do nothing now\. Look again if the price drops to \$80 or less\./);
+    // 2026-11-20 "justification why ... a 10 kid can understand" + "Peter one don't mixed with
+    // Warren": the details start with PETER's checklist in plain sentences, and nothing of Warren's.
     const peter = await p.getByTestId("long-term-simple-peter").innerText();
     assert.match(peter, /Peter would like this\. It is growing fast and the price is low for that growth\./);
     assert.match(peter, /You pay \$11\.10 for every \$1 it earns in a year, and it grows 15% a year\. 11\.1 ÷ 15 = 0\.74\./);
     const simple = await p.getByTestId("long-term-simple").innerText();
     assert.ok(!/\b(ROIC|EPS|PEG|FCF|P\/E)\b/.test(simple), "no trading words in the simple box");
-    assert.match(simple, /They explain; they do not tell you what to do with your money\./);
+    assert.match(simple, /This is Peter Lynch's checklist[\s\S]*does not tell you what to do with your money\./);
+    assert.equal(await p.getByTestId("long-term-simple-warren").count(), 0, "no Warren side in the Peter view");
+    const whole = await drawer.innerText();
+    assert.ok(!/Warren|Rule #1|Safety Buy|safety buy|Sticker|LEAP/i.test(whole), `Warren's rule in the Peter details: ${whole.slice(0, 300)}`);
+    assert.match(whole, /Ten years/i, "the ten-year table stays");
+    assert.ok(!/Rule #1/.test(await p.getByTestId("long-term-panel").innerText()), "no Rule #1 text anywhere on the Peter page");
     // it is the first thing in the details
     assert.equal(await drawer.evaluate((el) => el.querySelector("header + *")?.getAttribute("data-testid")), "long-term-simple");
     assert.ok(app.reads.some((r) => r.path === "/api/long-term/AAPL"), "the details were read");
@@ -211,7 +214,7 @@ e2eTest("on a phone the groups fit and a tapped card shows its details without s
     await p.getByTestId("long-term-card-AAPL").waitFor({ timeout: 90_000 });
     await p.getByTestId("long-term-peter").click();
     await p.getByTestId("long-term-lynch-list").waitFor({ timeout: 20_000 });
-    for (const scope of ["Both", "Quality", "Mag7", "Watchlist"]) {
+    for (const scope of ["Best", "Quality", "Mag7", "Watchlist"]) {
       const box = await p.getByTestId(`long-term-lynch-scope-${scope}`).boundingBox();
       assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `${scope} button at ${JSON.stringify(box)}`);
     }
@@ -222,40 +225,60 @@ e2eTest("on a phone the groups fit and a tapped card shows its details without s
     await drawer.waitFor({ timeout: 20_000 });
     const box = await drawer.boundingBox();
     assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `drawer at ${JSON.stringify(box)}`);
-    // the simple-words box: one column on a phone, Peter under Warren, nothing cut off
-    const sides = await p.evaluate(() => ["warren", "peter"].map((who) => {
-      const r = document.querySelector(`[data-testid='long-term-simple-${who}']`).getBoundingClientRect();
-      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
-    }));
-    assert.ok(sides[1].top >= sides[0].bottom - 1, `Peter beside Warren on a phone: ${JSON.stringify(sides)}`);
-    assert.ok(sides.every((s) => s.left >= 0 && s.right <= PHONE.width + 1), `simple box cut off: ${JSON.stringify(sides)}`);
+    // the simple-words box: Peter's side only, nothing cut off
+    const side = await p.getByTestId("long-term-simple-peter").boundingBox();
+    assert.ok(side && side.x >= 0 && side.x + side.width <= PHONE.width + 1, `simple box cut off: ${JSON.stringify(side)}`);
+    assert.equal(await p.getByTestId("long-term-simple-warren").count(), 0);
     assert.equal(await overflowsSideways(p), false);
     assert.deepEqual(app.pageErrors, []);
   });
 });
 
-// 2026-11-20 "Confused here which one buy?": the first card on the list was a Rule #1 AVOID.
-e2eTest("with a company both checklists like, Peter opens on Both agree and shows only those", async () => {
-  // ADBE: a Rule #1 BUY that Peter tags CHEAP. AAPL (WAIT) and the others are not on Both agree.
-  const list = () => [...rows(), row({ symbol: "ADBE", name: "Adobe", signal: "BUY", price: 70, refPrice: 70, pe: 7.8, reason: "price $70 ≤ Safety Buy $80" })];
+// 2026-11-20 "Confused here which one buy?" then "Peter one don't mixed with Warren".
+e2eTest("Peter opens on Peter's best: every star and CHEAP, whatever Warren's rule says", async () => {
+  // ZM: full marks from Peter while Warren's rule says AVOID. It is still one of Peter's best.
+  const list = () => [...rows(), row({ symbol: "ZM", name: "Zoom", signal: "AVOID", pe: 7.8, reason: "not a Rule #1 business" })];
   for (const viewport of [undefined, PHONE]) {
     await withApp({ view: VIEW, viewport, fakeReads: reads(list) }, async (app) => {
       const p = app.page;
       await p.getByTestId(viewport ? "long-term-card-AAPL" : "long-term-row-AAPL").waitFor({ timeout: 90_000 });
       await p.getByTestId("long-term-peter").click();
       await p.getByTestId("long-term-lynch-list").waitFor({ timeout: 20_000 });
-      assert.equal(await pressed(p, "long-term-lynch-scope-Both"), "true", "opens on Both agree");
-      assert.equal((await p.getByTestId("long-term-lynch-scope-Both").innerText()).replace(/\s+/g, " ").trim(), "Both agree 1");
-      assert.deepEqual(await listed(p), ["ADBE 5/5"]);
-      assert.match(await p.getByTestId("long-term-lynch-both-note").innerText(), /Both agree:[\s\S]*not a promise the price goes up/);
-      const row4 = await p.locator(".long-term-lynch-scope").boundingBox();
-      assert.ok(row4 && row4.x >= 0 && row4.x + row4.width <= (viewport ? PHONE.width : 4000) + 1, `group buttons at ${JSON.stringify(row4)}`);
-      // his own pick sticks: Quality shows everything again, with ADBE in it
+      assert.equal(await pressed(p, "long-term-lynch-scope-Best"), "true", "opens on Peter's best");
+      assert.equal((await p.getByTestId("long-term-lynch-scope-Best").innerText()).replace(/\s+/g, " ").trim(), "Peter's best 2");
+      assert.deepEqual(await listed(p), ["ZM 5/5", "AAPL 5/5"]);
+      assert.match(await p.getByTestId("long-term-lynch-best-note").innerText(), /Peter's best:[\s\S]*not a promise the price goes up/);
+      // the card carries Peter's numbers only: no Rule #1 verdict on it
+      const card = await p.getByTestId("long-term-lynch-ZM").innerText();
+      assert.match(card, /PEG\s*0\.52[\s\S]*P\/E\s*7\.8[\s\S]*Growth\s*15%\/yr/);
+      assert.ok(!/Rule #1|AVOID|Warren/.test(await p.getByTestId("long-term-panel").innerText()), "nothing of Warren's on the Peter page");
+      const group = await p.locator(".long-term-lynch-scope").boundingBox();
+      assert.ok(group && group.x >= 0 && group.x + group.width <= (viewport ? PHONE.width : 4000) + 1, `group buttons at ${JSON.stringify(group)}`);
       await p.getByTestId("long-term-lynch-scope-Quality").click();
-      assert.deepEqual(await listed(p), ["ADBE 5/5", "AAPL 5/5", "MU 4/4", "NVDA 4/5", "COST 3/5"]);
-      assert.equal(await p.getByTestId("long-term-lynch-both-note").count(), 0);
+      assert.deepEqual(await listed(p), ["ZM 5/5", "AAPL 5/5", "MU 4/4", "NVDA 4/5", "COST 3/5"]);
+      assert.equal(await p.getByTestId("long-term-lynch-best-note").count(), 0);
       if (viewport) assert.equal(await overflowsSideways(p), false);
       assert.deepEqual(app.pageErrors, []);
     });
   }
+});
+
+e2eTest("the Rule #1 table's details explain Warren's checklist only", async () => {
+  await withApp({ view: VIEW, fakeReads: reads() }, async (app) => {
+    const p = app.page;
+    await p.getByTestId("long-term-row-AAPL").waitFor({ timeout: 90_000 });
+    await p.getByTestId("long-term-row-AAPL").click();
+    const drawer = p.getByTestId("long-term-drawer");
+    await drawer.waitFor({ timeout: 20_000 });
+    const warren = await p.getByTestId("long-term-simple-warren").innerText();
+    assert.match(warren, /Warren would wait\. It is a good business, but the price is too high today\./);
+    assert.match(warren, /For every \$100 put into the business, it earns \$55 a year\. Warren wants \$15 or more\./);
+    assert.match(warren, /Warren only buys at a big discount: \$80 or less\. Today it costs \$100, so it is not on sale yet\./);
+    assert.match(warren, /What his rule says: do nothing now\. Look again if the price drops to \$80 or less\./);
+    assert.equal(await p.getByTestId("long-term-simple-peter").count(), 0, "no Peter side in the Rule #1 details");
+    assert.match(await p.getByTestId("long-term-simple").innerText(), /This is Warren Buffett's checklist/);
+    await drawer.getByText(/ROIC now/).first().waitFor({ timeout: 20_000 }); // the filings part loads after the box
+    assert.match(await drawer.innerText(), /Checklist[\s\S]*ROIC now[\s\S]*Valuation/i, "the Rule #1 checklist and valuation stay");
+    assert.deepEqual(app.pageErrors, []);
+  });
 });

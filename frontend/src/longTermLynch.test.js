@@ -137,31 +137,34 @@ test("Mag7 lists every Mag7 company, quality or not; Watchlist keeps to quality 
   // a list the server did not send is empty, never everything
   assert.deepEqual(lynchRows(rows, { scope: "Mag7", lists: {} }), []);
   assert.deepEqual(lynchRows(rows, { scope: "Mag7" }), []);
-  assert.deepEqual(LYNCH_SCOPES, ["Both", "Quality", "Mag7", "Watchlist"]);
+  assert.deepEqual(LYNCH_SCOPES, ["Best", "Quality", "Mag7", "Watchlist"]);
 });
 
-// 2026-11-20 "Confused here which one buy?": the first card was a Rule #1 AVOID.
-// "Both agree" = Warren's rule says BUY today AND Peter's tag is CHEAP.
-test("Both agree lists only the companies that are a Rule #1 BUY and Peter CHEAP", () => {
+// 2026-11-20 "Confused here which one buy?" then "Peter one don't mixed with Warren":
+// Peter's best is Peter's own answer - every judged star earned and the price CHEAP. Warren's
+// verdict plays no part anywhere in the Peter view.
+test("Peter's best lists the companies with every star and a CHEAP price, whatever Warren's rule says", () => {
   const rows = [
-    row({ symbol: "ZM", signal: "AVOID", pe: 7.8, epsGrowth: 0.37 }),            // Peter CHEAP, Warren skips
-    row({ symbol: "QCOM", signal: "WAIT" }),                                    // Peter CHEAP, Warren waits
-    row({ symbol: "DECK", signal: "BUY", pe: 10.5, epsGrowth: 0.36 }),          // both
-    row({ symbol: "ADBE", signal: "BUY" }),                                     // both
-    row({ symbol: "COST", signal: "BUY", pe: 52 }),                             // Warren BUY but Peter PRICEY
-    row({ symbol: "MU", signal: "BUY", cyclical: "chips" }),                    // a cyclical is never CHEAP
+    row({ symbol: "ZM", signal: "AVOID", pe: 7.8, epsGrowth: 0.37 }),            // full marks, Warren skips: still listed
+    row({ symbol: "QCOM", signal: "WAIT" }),                                    // full marks
+    row({ symbol: "ADBE", signal: "BUY" }),                                     // full marks
+    row({ symbol: "BRBR", signal: "BUY", debtToEquity: 2 }),                    // CHEAP but lost the debt star
+    row({ symbol: "COST", signal: "BUY", pe: 52 }),                             // all other stars, PRICEY
+    row({ symbol: "MU", signal: "BUY", cyclical: "chips" }),                    // 4/4 but a cyclical is never CHEAP
+    row({ symbol: "AXP", signal: "WAIT", financial: true }),                    // a bank: 3 of 3 judged stars, CHEAP
     row({ symbol: "TSLA", signal: "BUY", quality: "LOW" }),                     // not a quality company
   ];
-  assert.deepEqual(lynchRows(rows, { scope: "Both" }).map((x) => x.row.symbol), ["DECK", "ADBE"]);
-  assert.deepEqual(lynchRows(rows, { scope: "Both", query: "adbe" }).map((x) => x.row.symbol), ["ADBE"]);
-  assert.deepEqual(lynchRows([row({ signal: "WAIT" })], { scope: "Both" }), []);
-  assert.equal(LYNCH_SCOPES[0], "Both");
-  assert.equal(LYNCH_SCOPE_LABEL.Both, "Both agree");
+  assert.deepEqual(lynchRows(rows, { scope: "Best" }).map((x) => x.row.symbol), ["ZM", "ADBE", "QCOM", "AXP"]);
+  assert.deepEqual(lynchRows(rows, { scope: "Best", query: "qcom" }).map((x) => x.row.symbol), ["QCOM"]);
+  assert.deepEqual(lynchRows([row({ pe: 60 })], { scope: "Best" }), []);
+  assert.equal(LYNCH_SCOPES[0], "Best");
+  assert.equal(LYNCH_SCOPE_LABEL.Best, "Peter's best");
+  assert.ok(!LYNCH_SCOPES.includes("Both"), "no group mixes the two checklists");
 });
 
-test("the Peter view opens on Both agree when it has a company, else on Quality", () => {
-  assert.equal(defaultLynchScope([row({ signal: "BUY" })]), "Both");
-  assert.equal(defaultLynchScope([row({ signal: "WAIT" }), row({ signal: "AVOID" })]), "Quality");
+test("the Peter view opens on Peter's best when it has a company, else on Quality", () => {
+  assert.equal(defaultLynchScope([row({ signal: "AVOID" })]), "Best", "Warren's verdict does not matter");
+  assert.equal(defaultLynchScope([row({ pe: 60 }), row({ debtToEquity: 2 })]), "Quality");
   assert.equal(defaultLynchScope([]), "Quality");
   assert.equal(defaultLynchScope(null), "Quality");
 });

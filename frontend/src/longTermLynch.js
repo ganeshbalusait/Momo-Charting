@@ -44,14 +44,14 @@ const whole = (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(Math.round(v
 // company, quality or not, so none of them is missing (a non-quality one is
 // marked, one that cannot be scored says why); Watchlist = the quality
 // companies on his Watchlist. The server sends who is on each list.
-// Both (2026-11-20, "Confused here which one buy?": the first card on the list
-// was a Rule #1 AVOID) = the companies BOTH checklists like today: a Rule #1
-// BUY that Peter tags CHEAP. The view opens there when it has a company.
-export const LYNCH_SCOPES = ["Both", "Quality", "Mag7", "Watchlist"];
-export const LYNCH_SCOPE_LABEL = { Both: "Both agree", Quality: "Quality", Mag7: "Mag7", Watchlist: "Watchlist" };
+// Best (2026-11-20, "Confused here which one buy?" then "Peter one don't mixed with Warren") =
+// Peter's own top marks: every judged star earned and the price CHEAP. Nothing in the Peter view
+// reads Warren's (Rule #1) verdict. The view opens on Best when it has a company.
+export const LYNCH_SCOPES = ["Best", "Quality", "Mag7", "Watchlist"];
+export const LYNCH_SCOPE_LABEL = { Best: "Peter's best", Quality: "Quality", Mag7: "Mag7", Watchlist: "Watchlist" };
 
 export function defaultLynchScope(rows) {
-  return lynchRows(rows, { scope: "Both" }).length ? "Both" : "Quality";
+  return lynchRows(rows, { scope: "Best" }).length ? "Best" : "Quality";
 }
 
 // Why a company has no star sheet (null when it can have one). Quality is not
@@ -128,8 +128,8 @@ export function lynchSheet(row, { anyQuality = false } = {}) {
 // returns { row, sheet: null, reason } at the end for a member with no sheet.
 export function lynchRows(rows, { tile = null, query = "", scope = null, lists = null } = {}) {
   const wanted = String(query || "").trim().toLowerCase();
-  const both = scope === "Both";
-  const listed = scope && scope !== "Quality" && !both;
+  const best = scope === "Best";
+  const listed = scope && scope !== "Quality" && !best;
   const members = listed ? new Set(Array.isArray(lists?.[scope]) ? lists[scope].map((s) => String(s).toUpperCase()) : []) : null;
   const everyMember = scope === "Mag7";
   const list = [];
@@ -142,7 +142,7 @@ export function lynchRows(rows, { tile = null, query = "", scope = null, lists =
       if (everyMember && !tile && row.signal !== "ETF") bare.push({ row, sheet: null, reason: lynchMissing(row) || "not scored" });
       continue;
     }
-    if (both && !(row.signal === "BUY" && sheet.verdict === "CHEAP")) continue;
+    if (best && !(sheet.verdict === "CHEAP" && sheet.stars === sheet.of)) continue;
     if (tile && sheet.verdict !== tile) continue;
     list.push({ row, sheet });
   }

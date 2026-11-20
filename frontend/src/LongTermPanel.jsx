@@ -44,7 +44,7 @@ import {
   DEEP_NONE,
 } from "./longTerm";
 import { glossaryEntry, glossaryMatch } from "./longTermGlossary";
-import { SIMPLE_FOOT, simpleWhy } from "./longTermSimple.js";
+import { SIMPLE_FOOT, SIMPLE_FOOT_ONE, simpleWhy } from "./longTermSimple.js";
 import {
   LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_SCOPE_LABEL, LYNCH_TILES, defaultLynchScope, lynchCounts, lynchRows,
 } from "./longTermLynch.js";
@@ -492,22 +492,26 @@ function SimpleSide({ who, side, testId }) {
   );
 }
 
-function SimpleWhy({ row }) {
-  const why = useMemo(() => simpleWhy(row), [row]);
-  if (!why) return null;
+function SimpleWhy({ row, only = null }) {
+  const why = useMemo(() => simpleWhy(row, only), [row, only]);
+  if (!why || (!why.warren && !why.peter)) return null;
   return (
     <section className="long-term-simple" data-testid="long-term-simple" aria-label="In simple words">
       <h4>In simple words</h4>
-      <div className="long-term-simple-grid">
+      <div className={`long-term-simple-grid${only ? " is-one" : ""}`}>
         <SimpleSide who="Warren Buffett's checklist" side={why.warren} testId="long-term-simple-warren" />
         <SimpleSide who="Peter Lynch's checklist" side={why.peter} testId="long-term-simple-peter" />
       </div>
-      <p className="long-term-note">{SIMPLE_FOOT}</p>
+      <p className="long-term-note">{only ? SIMPLE_FOOT_ONE[only] : SIMPLE_FOOT}</p>
     </section>
   );
 }
 
-function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, width }) {
+// peterOnly (2026-11-20, "Peter one don't mixed with Warren"): opened from a Peter card, the
+// drawer leaves out everything that is Warren's rule - the Rule #1 reason, the LEAP setup and
+// LEAP to buy (both hang off the Rule #1 verdict), the Rule #1 checklist and its valuation.
+// Opened from the Rule #1 table it explains Warren's checklist only.
+function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, width, peterOnly = false }) {
   const detail = entry?.detail;
   const sections = useMemo(() => (detail ? drawerSections(detail) : null), [detail]);
   const setup = row.setup && typeof row.setup === "object" ? row.setup : detail?.setup && typeof detail.setup === "object" ? detail.setup : null;
@@ -517,7 +521,7 @@ function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, widt
       <header>
         <b>Why {row.symbol}</b>
         <span className="long-term-dim long-term-drawer-name">{row.name}</span>
-        <span className="long-term-drawer-reason">{reasonText(row)}</span>
+        {peterOnly ? <span className="long-term-drawer-reason" /> : <span className="long-term-drawer-reason">{reasonText(row)}</span>}
         <button type="button" className="long-term-btn is-accent" onClick={() => onChart(row.symbol)}>
           <BarChart3 size={13} /> Chart
         </button>
@@ -525,9 +529,9 @@ function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, widt
           <X size={14} />
         </button>
       </header>
-      <SimpleWhy row={row} />
-      {setup ? <SetupSection setup={setup} signal={row.signal} pass={isSetup(row)} /> : null}
-      {wantsLeap(row) ? <LeapSection entry={leap} onRetry={onRetryLeap} /> : null}
+      <SimpleWhy row={row} only={peterOnly ? "peter" : "warren"} />
+      {setup && !peterOnly ? <SetupSection setup={setup} signal={row.signal} pass={isSetup(row)} /> : null}
+      {wantsLeap(row) && !peterOnly ? <LeapSection entry={leap} onRetry={onRetryLeap} /> : null}
       <LongTermView symbol={row.symbol} price={row.price} />
       {!entry || entry.loading ? (
         <p className="long-term-dim">Loading the filings…</p>
@@ -538,14 +542,18 @@ function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, widt
         </p>
       ) : (
         <div className="long-term-drawer-grid">
-          <section>
-            <h4>Checklist</h4>
-            <LineList lines={byTitle("Checklist")} marks info />
-          </section>
-          <section>
-            <h4>Valuation</h4>
-            <LineList lines={byTitle("Valuation")} info />
-          </section>
+          {peterOnly ? null : (
+            <>
+              <section>
+                <h4>Checklist</h4>
+                <LineList lines={byTitle("Checklist")} marks info />
+              </section>
+              <section>
+                <h4>Valuation</h4>
+                <LineList lines={byTitle("Valuation")} info />
+              </section>
+            </>
+          )}
           <section>
             <WithInfo k="years">
               <h4>Ten years{detail?.unit ? <small> · {detail.unit}</small> : null}</h4>
@@ -653,7 +661,7 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
           <span className="long-term-card-bottom">
             <span>PEG <b>{sheet.peg.toFixed(2)}</b></span>
             <span>P/E <b>{row.pe.toFixed(1)}</b></span>
-            <span>Rule #1 <b>{SIGNAL_LABEL[row.signal] || row.signal}</b></span>
+            <span>Growth <b>{Math.round(sheet.growthPct)}%/yr</b></span>
           </span>
           <ul className="long-term-lynch-sheet" data-testid={`long-term-lynch-sheet-${row.symbol}`}>
             {sheet.checks.map((c) => (
@@ -678,7 +686,6 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
       ) : (
         <span className="long-term-card-bottom" data-testid={`long-term-lynch-nosheet-${row.symbol}`}>
           <span>No star sheet: <b>{reason}</b></span>
-          <span>Rule #1 <b>{SIGNAL_LABEL[row.signal] || row.signal}</b></span>
         </span>
       )}
       <span className="long-term-lynch-actions">
@@ -754,9 +761,10 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   // in place of the Rule #1 table. Kept for this visit only, like a tile.
   const [peter, setPeter] = useState(() => !!S.peter);
   const [peterTile, setPeterTile] = useState(() => S.peterTile || null);
-  // Both agree (Rule #1 BUY and Peter CHEAP) | Quality (every quality company) | Mag7 (every Mag7
-  // company) | Watchlist (its quality companies). Until he picks one (null), the view opens on Both
-  // agree when it has a company, else on Quality ("Confused here which one buy?", 11-20).
+  // Peter's best (every star and CHEAP) | Quality (every quality company) | Mag7 (every Mag7
+  // company) | Watchlist (its quality companies). Until he picks one (null), the view opens on
+  // Peter's best when it has a company, else on Quality. Nothing here reads Warren's verdict
+  // ("Peter one don't mixed with Warren", 11-20).
   const [pickedScope, setPeterScope] = useState(() => (LYNCH_SCOPES.includes(S.peterScope) ? S.peterScope : null));
   // keep the session copy current (cheap: references, no copies)
   useEffect(() => {
@@ -1112,6 +1120,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
                   onClose={() => setOpenSym(null)}
                   onRetry={() => loadDetail(row.symbol)}
                   onRetryLeap={() => loadLeap(row.symbol)}
+                  peterOnly
                 />
               ) : null}
             </div>
@@ -1122,7 +1131,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
       <div className="long-term-empty">
         {peterAll.length
           ? `No company matches${query ? ` “${query}”` : ""}.`
-          : peterScope === "Both" ? "No company passes both checklists today. Tap Quality to see every quality company."
+          : peterScope === "Best" ? "No company has every star and a low price today. Tap Quality to see every quality company."
             : peterScope === "Quality" ? "No quality company can be scored right now."
             : peterLists ? `No ${peterScope} company to show.` : `The ${peterScope} list has not loaded yet.`}
       </div>
@@ -1251,7 +1260,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
         <div className="long-term-title">
           <h2>Long Term</h2>
           <p className="long-term-sub">
-            Rule #1 / Buffett screen · {meta.scored ?? DASH} scored of {meta.universe ?? DASH} · filings refreshed {formatEtStamp(meta.refreshedAt)}
+            {peter ? "Peter Lynch screen" : <>Rule #1 / Buffett screen · {meta.scored ?? DASH} scored of {meta.universe ?? DASH}</>} · filings refreshed {formatEtStamp(meta.refreshedAt)}
             {refreshing ? <span className="long-term-live"> · refreshing {refreshing.done ?? 0}/{refreshing.total ?? "?"}…</span> : null}
             {meta.deferredUntil ? <span className="long-term-warn"> · Refresh deferred to {meta.deferredUntil}</span> : null}
             {failed ? <span className="long-term-warn"> · update failed, retrying</span> : null}
@@ -1259,7 +1268,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
           </p>
           {peter ? (
             <p className="long-term-note" data-testid="long-term-lynch-note">
-              Peter Lynch screen · quality companies only (return on capital 20%+) · {peterAll.length} scored · PEG = P/E ÷ yearly earnings growth %. A screen, not advice.
+              Quality companies only (return on capital 20%+) · PEG = P/E ÷ yearly earnings growth %. A screen, not advice.
             </p>
           ) : (
             <p className="long-term-note">Rule #1 buys are rare; WAIT rows show the price to buy at</p>
@@ -1345,8 +1354,8 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
                 type="button"
                 aria-pressed={peterScope === s}
                 data-testid={`long-term-lynch-scope-${s}`}
-                className={s === "Both" ? "is-both" : undefined}
-                title={s === "Both" ? "Warren's rule says BUY today and Peter's tag is CHEAP"
+                className={s === "Best" ? "is-both" : undefined}
+                title={s === "Best" ? "Every star earned and the price is low for the growth"
                   : s === "Quality" ? "Every quality company (return on capital 20%+)"
                   : s === "Mag7" ? "Every Mag7 company, quality or not" : "The quality companies on your Watchlist"}
                 onClick={() => {
@@ -1358,9 +1367,9 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
               </button>
             ))}
           </div>
-          {peterScope === "Both" ? (
-            <p className="long-term-lynch-legend" data-testid="long-term-lynch-both-note">
-              <b>Both agree:</b> Warren&apos;s checklist says the price is low enough to buy today, and Peter&apos;s says the price is low for the growth. Tap a card to read why in simple words. Two checklists agreeing is not a promise the price goes up.
+          {peterScope === "Best" ? (
+            <p className="long-term-lynch-legend" data-testid="long-term-lynch-best-note">
+              <b>Peter&apos;s best:</b> every star earned, and the price is low for the growth. Tap a card to read why in simple words. Full marks are not a promise the price goes up.
             </p>
           ) : null}
           <div className="long-term-tiles" role="group" aria-label="Filter by price for growth">

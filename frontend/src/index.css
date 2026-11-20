@@ -23332,6 +23332,7 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-simple-side li.is-no > span:first-child { color: var(--lt-red); font-weight: 800; }
 .long-term-simple-side li.is-info > span:first-child { color: #8b8b97; }
 .long-term-simple-todo { margin: 2px 0 0; color: #f3d58f; font-size: 13px; font-weight: 600; line-height: 1.45; }
+.long-term-simple-grid.is-one { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 760px) {
   .long-term-simple-grid { grid-template-columns: minmax(0, 1fr); }
 }
