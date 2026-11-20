@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  lynchNoSheet,
+  lynchNoSheet, LYNCH_OWN_CHOICES, LYNCH_TILES_NOTE, LYNCH_VERDICT_LABEL,
   LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_SCOPE_LABEL, LYNCH_TILES, defaultLynchScope, lynchCounts, lynchMissing, lynchRows, lynchSheet,
 } from "./longTermLynch.js";
 
@@ -36,10 +36,10 @@ test("growth above 50% a year loses the growth star and counts as 50 in the PEG"
   assert.match(sheet.checks[0].text, /too fast to last/);
 });
 
-test("the type follows earnings growth: under 10 slow, 10 to 20 stalwart, 20 and up fast", () => {
+test("the type follows earnings growth: under 10 slow, 10 to 20 steady (his \"stalwart\"), 20 and up fast", () => {
   assert.equal(lynchSheet(row({ epsGrowth: 0.08 })).type, "Slow grower");
   assert.equal(passed(lynchSheet(row({ epsGrowth: 0.08 }))).growth, false);
-  assert.equal(lynchSheet(row({ epsGrowth: 0.1 })).type, "Stalwart");
+  assert.equal(lynchSheet(row({ epsGrowth: 0.1 })).type, "Steady grower");
   assert.equal(lynchSheet(row({ epsGrowth: 0.2 })).type, "Fast grower");
 });
 
@@ -66,7 +66,8 @@ test("a cyclical is never called CHEAP: it reads CYCLICAL and the price star is 
   assert.deepEqual([sheet.verdict, sheet.type, sheet.cyclical], ["CYCLICAL", "Cyclical · chips", "chips"]);
   assert.equal(sheet.peg, 0.43, "the PEG is still shown");
   assert.equal(passed(sheet).price, null);
-  assert.match(sheet.checks[4].text, /PEG 0\.43, not judged/);
+  assert.equal(sheet.checks[4].text, "0.43, not used for this kind of business");
+  assert.equal(sheet.kind, "Chip maker");
   assert.deepEqual([sheet.stars, sheet.of], [4, 4]);
   // a pricey cyclical is CYCLICAL too: one tile holds them all
   assert.equal(lynchSheet(row({ cyclical: "oil & gas", pe: 60 })).verdict, "CYCLICAL");
@@ -86,15 +87,15 @@ test("the dividend yield joins the growth in the PEG, so a dividend payer reads 
   const payer = lynchSheet(row({ pe: 20, epsGrowth: 0.12, dividendYield: 0.04 }));
   assert.deepEqual([plain.peg, payer.peg], [1.67, 1.25]);
   assert.equal(payer.dividendPct, 4);
-  assert.match(payer.checks[4].text, /PEG 1\.25 with the 4\.0% dividend/);
-  assert.equal(plain.checks[4].text, "PEG 1.67");
+  assert.equal(payer.checks[4].text, "1.25 with its 4.0% yearly payout (1 or less is low)");
+  assert.equal(plain.checks[4].text, "1.67 (1 or less is low)");
   // P/E 16 on 12% growth + 4% dividend = exactly 1.0: the dividend earns the price star
   assert.equal(passed(lynchSheet(row({ pe: 16, epsGrowth: 0.12, dividendYield: 0.04 }))).price, true);
   assert.equal(passed(lynchSheet(row({ pe: 16, epsGrowth: 0.12 }))).price, false);
   // a tiny or missing yield changes nothing and is not mentioned
   for (const dividendYield of [0, null, undefined, -0.01, "0.04", NaN]) {
     const sheet = lynchSheet(row({ pe: 20, epsGrowth: 0.12, dividendYield }));
-    assert.deepEqual([sheet.peg, sheet.dividendPct, sheet.checks[4].text], [1.67, 0, "PEG 1.67"], String(dividendYield));
+    assert.deepEqual([sheet.peg, sheet.dividendPct, sheet.checks[4].text], [1.67, 0, "1.67 (1 or less is low)"], String(dividendYield));
   }
   // growth is still capped at 50 before the dividend is added
   assert.equal(lynchSheet(row({ pe: 26, epsGrowth: 0.8, dividendYield: 0.02 })).peg, 0.5);
@@ -103,7 +104,7 @@ test("the dividend yield joins the growth in the PEG, so a dividend payer reads 
 // Lynch's warning sign: inventory growing faster than sales.
 test("inventory turning over 10% slower than last year is flagged; the stars do not change", () => {
   const slow = lynchSheet(row({ inventoryTurnChange: -0.25 }));
-  assert.equal(slow.inventoryWarning, "Inventory is turning over 25% slower than a year ago: it is growing faster than sales.");
+  assert.equal(slow.inventoryWarning, "Unsold goods are piling up: it sells through its goods 25% slower than a year ago.");
   assert.deepEqual([slow.stars, slow.of], [5, 5]);
   assert.match(lynchSheet(row({ inventoryTurnChange: -0.1 })).inventoryWarning, /10% slower/);
   for (const inventoryTurnChange of [-0.09, 0, 0.3, null, undefined, "x", NaN]) {
@@ -127,8 +128,12 @@ test("Mag7 lists every Mag7 company, quality or not; Watchlist keeps to quality 
   assert.deepEqual(mag7.map((x) => x.row.symbol), ["TSLA", "NVDA", "AAPL", "AMZN"], "sheets first (stars, PEG), then the ones with no sheet; ETFs left out");
   const tsla = mag7[0].sheet;
   assert.deepEqual([tsla.lowQuality, tsla.verdict, tsla.stars], [true, "CHEAP", 5]);
+  // audit 11-20 (AMZN): a company off the quality list is never a YES and never gets a dollar figure
+  assert.equal(tsla.buy.answer, "OFFLIST");
+  assert.match(tsla.buy.why, /^This page only scores quality companies: ones that earn \$20 or more a year on every \$100 put in\./);
+  assert.deepEqual([tsla.plan.buyPrice, tsla.plan.buyText, tsla.plan.exitText], [null, "None worked out. It is not on the quality list.", null]);
   assert.equal(mag7[2].sheet.lowQuality, false);
-  assert.deepEqual([mag7[3].sheet, mag7[3].reason], [null, "earnings did not grow"]);
+  assert.deepEqual([mag7[3].sheet, mag7[3].reason], [null, "its profit did not grow over the ten years"]);
   assert.deepEqual(lynchCounts(mag7), { CHEAP: 1, FAIR: 0, PRICEY: 1, CYCLICAL: 1 });
   assert.deepEqual(lynchRows(rows, { scope: "Mag7", lists, tile: "CHEAP" }).map((x) => x.row.symbol), ["TSLA"], "a tile drops the cards with no sheet");
   // Watchlist: members only, quality only (TSLA and HD are on it but not quality)
@@ -174,20 +179,20 @@ test("the Peter view opens on Peter's best when it has a company, else on Qualit
 // Peter": one answer per card, from his own checks.
 test("Would Peter buy it? YES with every check and a low price; WAIT names his price; NO says why", () => {
   const yes = lynchSheet(row()).buy;
-  assert.deepEqual(yes, { answer: "YES", why: "Every check passes and the price is low for its growth.", price: null });
+  assert.deepEqual(yes, { answer: "YES", why: "Every check passes and the price is low for its growth.", price: null, failedWhy: null });
   // a good business at too high a price: wait, and the price where P/E equals growth (PEG 1)
   const wait = lynchSheet(row({ pe: 40, price: 400 })).buy;                       // PEG 2.0 -> $200
-  assert.deepEqual(wait, { answer: "WAIT", why: "A good business, but the price is too high for its growth. Peter's price: $200 or less.", price: 200 });
+  assert.deepEqual(wait, { answer: "WAIT", why: "A good business, but the price is too high for its growth. Peter's price: $200 or less.", price: 200, failedWhy: null });
   assert.equal(lynchSheet(row({ pe: 42, price: null })).buy.why, "A good business, but the price is too high for its growth.");
   // a failed business check is a NO, whatever the price; the first failed check is the reason
-  assert.deepEqual(lynchSheet(row({ debtToEquity: 2 })).buy, { answer: "NO", why: "It owes too much.", price: null });
+  assert.deepEqual(lynchSheet(row({ debtToEquity: 2 })).buy, { answer: "NO", why: "It owes too much.", price: null, failedWhy: "It owes too much." });
   assert.equal(lynchSheet(row({ epsGrowth: 0.06 })).buy.why, "Its profit grows too slowly.");
   assert.equal(lynchSheet(row({ epsGrowth: 0.8 })).buy.why, "Its profit growth is too fast to last.");
   assert.equal(lynchSheet(row({ salesGrowth: 0.01 })).buy.why, "Its sales are barely growing.");
   assert.equal(lynchSheet(row({ fcfGrowth: -0.1 })).buy.why, "Its spare cash is shrinking.");
   assert.equal(lynchSheet(row({ fcfGrowth: -0.1, pe: 60 })).buy.answer, "NO", "a failed check outranks the price");
   // stock piling up is his warning sign: not a buy today even with full marks
-  assert.deepEqual(lynchSheet(row({ inventoryTurnChange: -0.2 })).buy, { answer: "NO", why: "Unsold goods are piling up faster than it sells.", price: null });
+  assert.deepEqual(lynchSheet(row({ inventoryTurnChange: -0.2 })).buy, { answer: "NO", why: "Unsold goods are piling up faster than it sells.", price: null, failedWhy: null });
   // a cyclical: he bought those on the cycle, never on a low price
   const careful = lynchSheet(row({ cyclical: "chips" })).buy;
   assert.equal(careful.answer, "CAREFUL");
@@ -204,13 +209,167 @@ test("the Peter would buy group is exactly the YES answers", () => {
   assert.deepEqual(lynchRows(rows).map((x) => `${x.row.symbol} ${x.sheet.buy.answer}`).sort(), ["A YES", "B WAIT", "C NO", "D NO", "E CAREFUL"]);
 });
 
+// 2026-11-20 "I need Peter which prize he will buy and I don't see exit also": every card carries
+// his buy price and his exit. Checked the same day against what he wrote: P/E equal to growth is
+// his FAIR price, half is "very positive", twice is "very negative" (a yardstick, not a sell order).
+test("Peter's buy price is his fair price: where the price-to-profit equals the growth; half of it is very good", () => {
+  // ADBE: $220.60 at 12.3 times profit, growing 21%: 220.6 x 21 / 12.3 = $376.63, shown rounded DOWN
+  const yes = lynchSheet(row({ price: 220.6, pe: 12.3, epsGrowth: 0.21 })).plan;
+  assert.deepEqual([yes.buyPrice, yes.goodPrice, yes.exitFar], [376, 188, 752]);
+  assert.equal(yes.buyText, "Today's $220.60 passes his price test. The most he would pay at this year's profit is $376, his fair price; $188 or less he called a very good price.");
+  assert.equal(yes.exitText, "He had no set selling price. He kept a fast grower while its profit kept growing, and thought about selling when the growth slowed. A price near $752, twice his fair price, he called very negative. That is a warning level at this year's profit, not a target.");
+  // the same business at a higher price: same fair price, today is above it, and he would not own it
+  const wait = lynchSheet(row({ price: 600, pe: 33.45, epsGrowth: 0.21 })).plan;
+  assert.deepEqual([wait.buyPrice, wait.goodPrice, wait.exitFar], [376, 188, 752]);
+  assert.equal(wait.buyText, "$376 or less at this year's profit, his fair price; $188 or less he called a very good price. Today's $600.00 is above it.");
+  assert.equal(wait.exitText, "He would not own it at today's price. A price near $752, twice his fair price, he called very negative.");
+  assert.match(lynchSheet(row({ price: 800, pe: 44.6, epsGrowth: 0.21 })).plan.exitText, /he called very negative; today's \$800\.00 is already past that\.$/);
+  assert.ok(!/\bwill\b/i.test(`${yes.buyText} ${yes.exitText}`), "nothing says where the price will go");
+});
+
+test("a very wide gap is flagged as a possible one-off profit jump, and prints no far-away dollar level", () => {
+  // ZM-shaped: $83.77 at 7.8 times profit growing 36.4%: fair $390, half $195, today is under even half
+  const plan = lynchSheet(row({ price: 83.77, pe: 7.8, epsGrowth: 0.364 })).plan;
+  assert.deepEqual([plan.buyPrice, plan.goodPrice, plan.exitFar], [390, 195, null]);
+  assert.equal(plan.buyText, "Today's $83.77 passes his price test. The most he would pay at this year's profit is $390, his fair price; $195 or less he called a very good price. Today is under even that. A gap this wide can mean this year's profit had a one-off jump, so check that first.");
+  assert.equal(plan.exitText, "He had no set selling price. He kept a fast grower while its profit kept growing, and thought about selling when the growth slowed.");
+});
+
+test("a steady grower's 30% to 50% is counted from the price paid, and the card says where today's price stands", () => {
+  // 15% growth at 12 times profit, $100: fair price 100 x 15 / 12 = $125; he would buy today at $100
+  const yes = lynchSheet(row({ price: 100, pe: 12, epsGrowth: 0.15 }));
+  assert.equal(yes.buy.answer, "YES");
+  assert.deepEqual([yes.plan.buyPrice, yes.plan.goodPrice, yes.plan.exitLow, yes.plan.exitHigh, yes.plan.exitFar], [125, 62.5, 130, 150, null]);
+  assert.equal(yes.plan.exitText, "He had no set selling price, but he often sold a steady grower once it was up 30% to 50% from what he paid. From today's $100.00 that is about $130 to $150.");
+  // when 30% to 50% up is still under his fair price, the card says the price test would still pass
+  assert.equal(lynchSheet(row({ price: 100, pe: 7.5, epsGrowth: 0.15 })).plan.exitText,
+    "He had no set selling price, but he often sold a steady grower once it was up 30% to 50% from what he paid. From today's $100.00 that is about $130 to $150. His price test would still pass there (up to $200), so he might hold longer.");
+  // not at this price: he would not own it; the level is worked from his fair price, and today may be past it
+  const past = lynchSheet(row({ price: 200, pe: 24, epsGrowth: 0.15 }));
+  assert.equal(past.buy.answer, "WAIT");
+  assert.deepEqual([past.plan.buyPrice, past.plan.exitLow, past.plan.exitHigh], [125, 163, 188]);
+  assert.equal(past.plan.exitText, "He would not own it at today's price. Had he bought at his fair price of $125, a 30% to 50% rise is about $163 to $188; today's $200.00 is already past that.");
+  assert.equal(lynchSheet(row({ price: 150, pe: 18, epsGrowth: 0.15 })).plan.exitText,
+    "He would not own it at today's price. Had he bought at his fair price of $125, a 30% to 50% rise is about $163 to $188.");
+  // more than twice his fair price: no exit dollars at all, and the buy line says how far above
+  const far = lynchSheet(row({ price: 300, pe: 36, epsGrowth: 0.15 })).plan;
+  assert.equal(far.buyText, "$125 or less at this year's profit, his fair price; $62.50 or less he called a very good price. Today's $300.00 is above it: 2.4 times his fair price.");
+  assert.deepEqual([far.exitText, far.exitLow, far.exitHigh], ["He would not own it at today's price.", null, null]);
+});
+
+test("the dividend is dollars a share, so the fair price is where the card's own rule flips", () => {
+  // 12% growth at 20 times profit, $80: profit $4 a share. No dividend: 4 x 12 = $48.
+  assert.equal(lynchSheet(row({ price: 80, pe: 20, epsGrowth: 0.12 })).plan.buyPrice, 48);
+  // with a 4% dividend ($3.20 a share): P/E = 12 + 100 x 3.20 / P  ->  P = $67.08 (not 80 x 16 / 20 = $64)
+  const payer = lynchSheet(row({ price: 80, pe: 20, epsGrowth: 0.12, dividendYield: 0.04 })).plan;
+  assert.equal(payer.buyPrice, 67.08);
+  const at = payer.buyPrice;
+  assert.ok(Math.abs(at / 4 - (12 + (100 * 3.2) / at)) < 0.01, "at that price the price-to-profit equals growth % + dividend %");
+  // a payout bigger than the year's profit is a one-off: left out of the score and of the price
+  const special = lynchSheet(row({ price: 80, pe: 20, epsGrowth: 0.12, dividendYield: 0.15 }));
+  assert.deepEqual([special.dividendPct, special.peg, special.plan.buyPrice], [0, 1.67, 48]);
+  // growth too fast is a NO, so no buy price at all
+  assert.equal(lynchSheet(row({ price: 80, pe: 20, epsGrowth: 0.8 })).plan.buyPrice, null);
+});
+
+test("no buy price where he would not buy: a failed check, a cyclical, no live price, or profit not in dollars", () => {
+  const no = lynchSheet(row({ debtToEquity: 2 })).plan;
+  assert.deepEqual([no.buyPrice, no.goodPrice, no.exitText], [null, null, null]);
+  assert.equal(no.buyText, "None. He would not buy it while it fails a check: it owes too much.");
+  const shelves = lynchSheet(row({ inventoryTurnChange: -0.2 })).plan;
+  assert.equal(shelves.buyText, "None. He would not buy it while it fails a check: unsold goods are piling up faster than it sells.");
+  // a cyclical: he gave a timing rule, never a price
+  const chips = lynchSheet(row({ cyclical: "chips", inventoryTurnChange: 0.05 })).plan;
+  assert.deepEqual([chips.buyPrice, chips.goodPrice, chips.exitFar], [null, null, null]);
+  assert.equal(chips.buyText, "No set price. He bought this kind of business when its bad years were ending and its profit was low, not because the price looked low.");
+  assert.equal(chips.exitText, "He had no set selling price. He sold when the good years looked close to ending; unsold goods piling up was one of his signs.");
+  // his own sell sign in the last yearly report is said out loud (yearly figures: "now" would overstate it)
+  assert.equal(lynchSheet(row({ cyclical: "chips", inventoryTurnChange: -0.13 })).plan.exitText, "He had no set selling price. He sold when the good years looked close to ending; unsold goods piling up was one of his signs. That sign shows in its last yearly report.");
+  // a miner or an airline has no inventory figure here: the page says it cannot check
+  assert.equal(lynchSheet(row({ cyclical: "metals & mining" })).plan.exitText, "He had no set selling price. He sold when the good years looked close to ending, for example when the price of what it sells, or its orders, start to fall. This page cannot check that for you.");
+  // a cyclical that also fails a check says so beside the buy price
+  assert.equal(lynchSheet(row({ cyclical: "chips", epsGrowth: 0.82 })).plan.buyText, "No set price. He bought this kind of business when its bad years were ending and its profit was low, not because the price looked low. It also fails a check: its profit growth is too fast to last.");
+  const blind = lynchSheet(row({ price: null })).plan;
+  assert.deepEqual([blind.buyPrice, blind.buyText, blind.exitText], [null, "There is no fresh price right now, so no buy price.", "He had no set selling price. He kept a fast grower while its profit kept growing, and thought about selling when the growth slowed."]);
+  assert.equal(lynchSheet(row({ price: 0, epsGrowth: 0.15 })).plan.exitText, "He had no set selling price, but he often sold a steady grower once it was up 30% to 50% from what he paid.");
+  // growth measured in another currency is not turned into a dollar price
+  const hkd = lynchSheet(row({ currency: "HKD" })).plan;
+  assert.deepEqual([hkd.buyPrice, hkd.buyText], [null, "No dollar price worked out: its profit is reported in HKD, so its growth is not measured in dollars."]);
+  assert.equal(lynchSheet(row({ currency: "USD" })).plan.buyPrice, 366);      // 220 x 20 / 12
+});
+
+test("a limit is rounded down, cents are kept under $100, and the answer never disagrees with the line under it", () => {
+  // $14.20 at 27 times profit growing 20%: 14.2 x 20 / 27 = $10.5185 -> $10.51, never $11
+  assert.match(lynchSheet(row({ price: 14.2, pe: 27, epsGrowth: 0.2 })).plan.buyText, /^\$10\.51 or less at this year's profit/);
+  assert.equal(lynchSheet(row({ price: 8.4, pe: 7, epsGrowth: 0.21 })).plan.buyPrice, 25.2);
+  // a score of 1.003 is NOT "1 or less": the card reads ABOVE FAIR, not at this price, and above his fair price
+  const edge = lynchSheet(row({ price: 220, pe: 20.06, epsGrowth: 0.2 }));
+  assert.deepEqual([edge.peg, edge.verdict, edge.buy.answer], [1.01, "FAIR", "WAIT"]);
+  assert.match(edge.plan.buyText, /^\$219 or less at this year's profit[\s\S]*Today's \$220\.00 is above it\.$/);
+  // and exactly 1 is a YES whose line says it passes
+  const exact = lynchSheet(row({ price: 220, pe: 20, epsGrowth: 0.2 }));
+  assert.deepEqual([exact.peg, exact.verdict, exact.buy.answer], [1, "CHEAP", "YES"]);
+  assert.match(exact.plan.buyText, /^Today's \$220\.00 passes his price test\. The most he would pay at this year's profit is \$220,/);
+  assert.equal(lynchSheet(row({ pe: 40.1, epsGrowth: 0.2 })).verdict, "PRICEY", "2.005 is above 2");
+});
+
+// "Nvda what is cyclical?"
+test("a cyclical card explains the word right under the answer, in two plain sentences", () => {
+  const sheet = lynchSheet(row({ cyclical: "chips" }));
+  assert.equal(sheet.cyclicalNote, "Cyclical means good years and bad years take turns: a chip maker earns a lot in a good year and far less in a bad one. In a good year its profit is so big that the price looks low next to it, so here a low price is not a reason to buy.");
+  assert.equal(sheet.buy.why, sheet.cyclicalNote, "the explanation is the reason shown under ONLY WITH CARE");
+  assert.match(lynchSheet(row({ cyclical: "oil & gas" })).cyclicalNote, /take turns: an oil and gas company earns a lot in a good year/);
+  assert.match(lynchSheet(row({ cyclical: "something new" })).cyclicalNote, /take turns: a company like this earns a lot in a good year/);
+  assert.deepEqual([lynchSheet(row({ cyclical: "autos" })).kind, lynchSheet(row({ cyclical: "oil & gas" })).kind], ["Car maker", "Oil and gas company"]);
+  assert.deepEqual([lynchSheet(row({})).cyclicalNote, lynchSheet(row({})).kind], [null, null]);
+  assert.ok(!/PEG|P\/E|boom|slump|will fall/i.test(sheet.cyclicalNote), "one vocabulary, no trading words, no forecast");
+  // a cyclical that also fails a check says so in the same answer
+  assert.equal(lynchSheet(row({ cyclical: "chips", epsGrowth: 0.82 })).buy.why, `${sheet.cyclicalNote} Also: its profit growth is too fast to last.`);
+});
+
+// 2026-11-20 audit: the card must read without trading words.
+test("the five check lines use plain labels and values, and a shown percent never contradicts its check", () => {
+  const sheet = lynchSheet(row());
+  assert.deepEqual(sheet.checks.map((c) => `${c.label}: ${c.text}`), [
+    "Profit growth: +20% a year",
+    "Sales growth: +16% a year",
+    "Borrowed: $54 per $100 of owners' money",
+    "Cash left over: +16% a year",
+    "Price for growth: 0.60 (1 or less is low)",
+  ]);
+  assert.ok(!/PEG|P\/E|equity|\/yr|Earnings|Cash flow/.test(JSON.stringify(sheet.checks)));
+  // 9.92% fails "10% or more": it must not print "+10%"
+  const slow = lynchSheet(row({ epsGrowth: 0.0992 }));
+  assert.deepEqual([slow.checks[0].passed, slow.checks[0].text], [false, "+9.9% a year"]);
+  assert.equal(lynchSheet(row({ salesGrowth: 0.046 })).checks[1].text, "+4.6% a year");
+  assert.equal(lynchSheet(row({ fcfGrowth: -0.004 })).checks[3].text, "−0.4% a year");
+  assert.equal(lynchSheet(row({ epsGrowth: 0.504 })).checks[0].text, "+50.4% a year, too fast to last");
+  const bank = lynchSheet(row({ financial: true }));
+  assert.deepEqual([bank.checks[2].text, bank.checks[3].text], ["finance company: Peter skips this check", "finance company: Peter skips this check"]);
+  assert.match(bank.plan.buyText, / Debt and cash are not judged for a finance company, so this rests on fewer checks\.$/);
+  assert.equal(lynchSheet(row({ debtToEquity: null })).checks[2].text, "number missing");
+});
+
+test("the tag names on screen: a score between 1 and 2 is ABOVE his fair price, never 'fair'", () => {
+  assert.deepEqual(LYNCH_VERDICT_LABEL, { CHEAP: "CHEAP", FAIR: "ABOVE FAIR", PRICEY: "PRICEY", CYCLICAL: "CYCLICAL" });
+  assert.deepEqual(Object.keys(LYNCH_VERDICT_LABEL), LYNCH_TILES);
+  assert.match(LYNCH_TILES_NOTE, /These four describe the price only\./);
+  assert.match(LYNCH_TILES_NOTE, /A CHEAP company can still fail another check/);
+  assert.match(LYNCH_OWN_CHOICES, /^This page's own choices, not Peter's: the 10% to 50% growth band, counting growth above 50% as 50/);
+  assert.match(LYNCH_OWN_CHOICES, /He wrote rules of thumb, never one formula/);
+});
+
 test("why a Mag7 company has no star sheet", () => {
-  assert.equal(lynchMissing(row({ signal: "NO_PRICE" })), "no live price");
-  assert.equal(lynchMissing(row({ signal: "STALE" })), "filings are stale");
-  assert.equal(lynchMissing(row({ signal: "SHORT_HISTORY" })), "not enough years of filings");
-  assert.equal(lynchMissing(row({ pe: null })), "no profit, so no P/E");
+  // plain sentences: no P/E, filings, stale or ETF on the card (2026-11-20 audit)
+  assert.equal(lynchMissing(row({ signal: "NO_PRICE" })), "there is no fresh price for it right now");
+  assert.equal(lynchMissing(row({ signal: "STALE" })), "its company reports are out of date");
+  assert.equal(lynchMissing(row({ signal: "SHORT_HISTORY" })), "it has too few years of company reports");
+  assert.equal(lynchMissing(row({ signal: "CHECK_DATA" })), "its company reports could not be read");
+  assert.equal(lynchMissing(row({ signal: "ETF" })), "this is a fund (a basket of many companies), not one company");
+  assert.equal(lynchMissing(row({ pe: null })), "it made no profit, so its price cannot be compared with its profit");
   assert.equal(lynchMissing(row({ epsGrowth: null })), "its profit growth cannot be measured: it lost money at the start of the ten years, or a year is missing");
-  assert.equal(lynchMissing(row({ epsGrowth: -0.1 })), "earnings did not grow");
+  assert.equal(lynchMissing(row({ epsGrowth: -0.1 })), "its profit did not grow over the ten years");
+  for (const signal of ["NO_PRICE", "STALE", "SHORT_HISTORY", "CHECK_DATA", "ETF"]) assert.ok(!/P\/E|filing|stale|ETF/i.test(lynchMissing(row({ signal }))), signal);
   assert.equal(lynchMissing(row({})), null);
 });
 
@@ -261,7 +420,7 @@ test("a company with no star sheet still answers the question: CANNOT TELL, why,
     why: "Its profit growth cannot be measured: it lost money at the start of the ten years, or a year is missing.",
     pays: "You pay $403 for every $1 it earns in a year.",
   });
-  assert.equal(lynchNoSheet(row({ epsGrowth: -0.05, pe: 30 })).why, "Earnings did not grow.");
+  assert.equal(lynchNoSheet(row({ epsGrowth: -0.05, pe: 30 })).why, "Its profit did not grow over the ten years.");
   assert.equal(lynchNoSheet(row({ pe: null })).pays, null, "no profit, nothing to say about the price");
   assert.equal(lynchNoSheet(row({ pe: 8.44, epsGrowth: null })).pays, "You pay $8.44 for every $1 it earns in a year.");
   assert.equal(lynchNoSheet(row({})), null, "a company with a sheet has no such card");

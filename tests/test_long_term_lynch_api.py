@@ -80,7 +80,11 @@ def test_rows_carry_the_dividend_yield_and_the_inventory_change(monkeypatch, sto
     assert rows["MCD"]["dividendYield"] > rows["AAPL"]["dividendYield"] > 0
     # GOOGL (internet, SIC 7370), JPM (bank) and MCD (restaurants, 5812 is a shop) : only makers and shops
     assert rows["GOOGL"]["inventoryTurnChange"] is None and rows["JPM"]["inventoryTurnChange"] is None
-    assert isinstance(rows["AAPL"]["inventoryTurnChange"], float) and -1 < rows["AAPL"]["inventoryTurnChange"] < 5
+    # 2026-11-20 audit: Apple holds about two weeks of sales (it turns its inventory over 24+ times
+    # a year), so a swing in that ratio is not goods piling up and no figure is served. Home Depot
+    # keeps months of goods on the shelf, so it gets one.
+    assert rows["AAPL"]["inventoryTurnChange"] is None
+    assert isinstance(rows["HD"]["inventoryTurnChange"], float) and -1 < rows["HD"]["inventoryTurnChange"] < 5
     assert rows["SPY"]["dividendYield"] is None, "an ETF row carries neither"
 
 
@@ -203,12 +207,14 @@ def test_every_served_row_gets_a_plain_words_explanation_that_matches_its_verdic
     aapl, row = simple["AAPL"], next(r for r in body["rows"] if r["symbol"] == "AAPL")
     assert f"it earns ${round(row['roic'] * 100)} a year" in aapl["warren"]["lines"][0]["text"]
     answers = ("Would Peter buy it? Yes.", "Would Peter buy it? Not at this price.", "Would Peter buy it? No.",
-               "Would Peter buy it? Only with care.", "Would Peter buy it? He cannot tell:")
+               "Would Peter buy it? Only with care.", "Would Peter buy it? He cannot tell:",
+               "Would Peter buy it? This page does not score it.")
     for symbol, why in simple.items():
         if why["peter"]:
             assert why["peter"]["headline"].startswith(answers), symbol
             # a sell line only where he would own it, and never a fixed profit target as a rule
-            if why["peter"]["headline"].startswith(("Would Peter buy it? No.", "Would Peter buy it? He cannot tell:")):
+            if why["peter"]["headline"].startswith(("Would Peter buy it? No.", "Would Peter buy it? He cannot tell:",
+                                                    "Would Peter buy it? This page does not score it.")):
                 assert why["peter"]["sell"] is None, symbol
             else:
                 assert why["peter"]["sell"].startswith("When would he sell?"), symbol

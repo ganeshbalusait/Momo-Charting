@@ -43,6 +43,16 @@ def test_inventory_turn_change_compares_the_two_newest_years():
     assert inventory_turn_change({"inventory_turnover_annual": {"2025-12-31": 6.6, "2024-12-31": 6.0}}) == pytest.approx(0.1)
 
 
+def test_a_company_holding_under_a_month_of_sales_gets_no_inventory_figure():
+    """2026-11-20 audit: Apple turns its inventory over 24 to 34 times a year (about two weeks of
+    sales), so a 29% move in that ratio is not goods piling up. No figure is served, so no warning."""
+    apple = {"inventory_turnover_annual": {"2026-09-26": 24.1, "2025-09-27": 33.9}}
+    assert inventory_turn_change(apple) is None
+    # a company that really holds stock still gets its figure, also when only this year dipped under 12
+    assert inventory_turn_change({"inventory_turnover_annual": {"2026-01-25": 3.68, "2025-01-26": 4.25}}) == pytest.approx(-0.134, abs=0.001)
+    assert inventory_turn_change({"inventory_turnover_annual": {"2025-12-31": 11.0, "2024-12-31": 14.0}}) == pytest.approx(-0.214, abs=0.001)
+
+
 @pytest.mark.parametrize("fh", [
     None, {}, {"inventory_turnover_annual": {}}, {"inventory_turnover_annual": {"2025-12-31": 6.0}},   # one year only
     {"inventory_turnover_annual": {"2025-12-31": 6.0, "2024-12-31": 0}},                                # no inventory then

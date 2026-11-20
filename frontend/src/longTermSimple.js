@@ -22,7 +22,8 @@ const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 const whole = (v) => Math.round(Math.abs(v) * 100);
 const dollars = (v) => (v >= 10 ? `$${Math.round(v).toLocaleString("en-US")}` : `$${v.toFixed(2)}`);
 const line = (mark, text) => ({ mark, text });
-const owes = (ratio) => `It owes $${Math.round(ratio * 100)} for every $100 it owns.`;
+// debt / equity: equity is the owners' money, not everything the company owns
+const owes = (ratio) => `It has borrowed $${Math.round(ratio * 100)} for every $100 of its owners' money.`;
 
 function grows(value, what, wants) {
   if (value >= 0) return `${what} ${whole(value)}% ${what.startsWith("It sells") ? "more every year" : "a year"}.${wants ? ` ${wants}` : ""}`;
@@ -71,36 +72,17 @@ function warrenSide(row) {
   return { headline: "Would Warren buy it? We cannot say yet: there is not enough fresh information on this company.", lines, todo: null, sell: null };
 }
 
-// "Would Peter buy it?" comes from sheet.buy (longTermLynch.js). "Did Peter use profit target?"
-// (Ganesh 11-20): he had no fixed target. What he wrote in One Up on Wall Street depends on the
-// kind of company: a fast grower is kept while it grows, a steady or slow grower is often sold
-// after a 30-50% gain, a cyclical before the good years end.
+// "Would Peter buy it?" comes from sheet.buy, and his buy price and exit from sheet.plan
+// (longTermLynch.js), so the card and this box can never disagree. "Did Peter use profit target?"
+// (Ganesh 11-20): he had no fixed one; the exit line says what he did with this kind of company.
 const PETER_HEAD = {
   YES: "Would Peter buy it? Yes.",
   WAIT: "Would Peter buy it? Not at this price.",
   NO: "Would Peter buy it? No.",
   CAREFUL: "Would Peter buy it? Only with care.",
+  OFFLIST: "Would Peter buy it? This page does not score it.",
 };
-const PETER_TODO = {
-  YES: "What his rule says: he would buy at this price. In our test, the cheap ones did not do better than other good companies, so this is his checklist, not a promise.",
-  NO: "What his rule says: leave it alone.",
-  CAREFUL: "What his rule says: be careful, and do not trust the low price.",
-};
-
-function peterSell(sheet, row) {
-  if (sheet.buy.answer === "NO") return null;
-  if (sheet.cyclical) {
-    return "When would he sell? He had no profit target. He sold this kind of business when the good years looked close to ending, for example when unsold goods started piling up.";
-  }
-  if (sheet.grower === "Fast grower") {
-    const far = isNum(row.price) && row.price > 0 ? ` (for this one, about ${dollars((row.price / sheet.peg) * 2)})` : "";
-    return `When would he sell? He had no profit target. He kept a fast grower for as long as it kept growing, and sold when the growth slowed or the price ran far ahead of the growth${far}.`;
-  }
-  if (sheet.grower === "Stalwart") {
-    return "When would he sell? He had no fixed target, but with a steady grower like this he often took a 30% to 50% gain and moved to another one.";
-  }
-  return "When would he sell? After a 30% to 50% gain, or sooner if the business got worse. He had no other target.";
-}
+const PETER_CAVEAT = " In our test, the cheap ones did not do better than other good companies, so this is his checklist, not a promise.";
 
 function peterSide(row) {
   const sheet = lynchSheet(row, { anyQuality: true });
@@ -127,20 +109,23 @@ function peterSide(row) {
   const used = Math.min(growth, 50);
   const pays = sheet.dividendPct > 0 ? ` and pays you ${sheet.dividendPct.toFixed(1)}% a year` : "";
   const sum = sheet.dividendPct > 0 ? `${pe} ÷ (${used} + ${sheet.dividendPct.toFixed(1)})` : `${pe} ÷ ${used}`;
-  const paying = `You pay $${row.pe.toFixed(2)} for every $1 it earns in a year, and it grows ${growth}% a year${pays}. ${sum} = ${sheet.peg.toFixed(2)}.`;
+  const capped = growth > used ? " (the page counts at most 50%)" : "";
+  const paying = `You pay $${row.pe.toFixed(2)} for every $1 it earns in a year, and its profit grows ${growth}% a year${capped}${pays}. Divide the first by the second: ${sum} = ${sheet.peg.toFixed(2)}.`;
   if (sheet.cyclical) {
-    lines.push(line("info", `${paying} For this kind of business a low price can be a trap: it looks cheapest right before a bad year.`));
+    lines.push(line("info", `${paying} For this kind of business a low price can be a trap: it can look cheapest when its best year is ending.`));
   } else {
-    lines.push(line(mark(by.price), `${paying} Under 1 is a low price for the growth.`));
+    lines.push(line(mark(by.price), `${paying} 1 or less is a low price for the growth.`));
   }
   if (sheet.inventoryWarning) lines.push(line("no", "Its shelves are filling up: unsold goods are growing faster than what it sells."));
-  const buy = sheet.buy;
-  const todo = buy.answer === "WAIT"
-    ? `What his rule says: wait.${buy.price != null ? ` Look again at ${dollars(buy.price)} or less.` : ""}`
-    : PETER_TODO[buy.answer];
-  // buy.why is plain already; "Peter's price: $X or less" is repeated in the todo, so cut it here
+  const { buy, plan } = sheet;
+  // buy.why is plain already; "Peter's price: $X or less" is the next line, so cut it here
   const why = buy.why.replace(/ Peter's price: .*$/, "");
-  return { headline: `${PETER_HEAD[buy.answer]} ${why}`, lines, todo, sell: peterSell(sheet, row) };
+  return {
+    headline: `${PETER_HEAD[buy.answer]} ${why}`,
+    lines,
+    todo: `Peter's buy price: ${plan.buyText}${buy.answer === "YES" ? PETER_CAVEAT : ""}`,
+    sell: plan.exitText ? `When would he sell? ${plan.exitText}` : null,
+  };
 }
 
 // { warren: { headline, lines: [{ mark: "yes" | "no" | "info", text }], todo, sell }, peter: {...} } or null.

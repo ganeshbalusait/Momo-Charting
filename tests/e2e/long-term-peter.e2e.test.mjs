@@ -81,11 +81,21 @@ e2eTest("Peter, next to the MOS buttons, shows the star sheet for the quality co
     );
     // 2026-11-19 "add a cyclical warning label": a chip maker at PEG 0.43 is CYCLICAL, never CHEAP
     assert.equal((await p.getByTestId("long-term-lynch-verdict-MU").innerText()).trim(), "CYCLICAL");
-    assert.match(await p.getByTestId("long-term-lynch-cyclical-MU").innerText(), /Cyclical \(chips\).*not a bargain sign/);
-    assert.match(await p.getByTestId("long-term-lynch-sheet-MU").innerText(), /PEG 0\.43, not judged/);
+    // 2026-11-20 "Nvda what is cyclical?": the card explains the word in plain sentences
+    const cyclical = await p.getByTestId("long-term-lynch-cyclical-MU").innerText();
+    assert.match(cyclical, /Cyclical means good years and bad years take turns: a chip maker earns a lot in a good year and far less in a bad one\./);
+    assert.match(cyclical, /so here a low price is not a reason to buy\./);
+    assert.ok(!/PEG|P\/E|boom|slump/.test(cyclical), "no trading words in the explanation");
+    // the explanation sits right under the answer, above the tag it explains
+    const order = await p.evaluate(() => {
+      const top = (id) => document.querySelector(`[data-testid='${id}']`).getBoundingClientRect().top;
+      return [top("long-term-lynch-cyclical-MU"), top("long-term-lynch-verdict-MU")];
+    });
+    assert.ok(order[0] < order[1], `the meaning of cyclical comes before the CYCLICAL tag: ${order}`);
+    assert.match(await p.getByTestId("long-term-lynch-sheet-MU").innerText(), /0\.43, not used for this kind of business/);
     assert.equal(await p.getByTestId("long-term-lynch-cyclical-AAPL").count(), 0);
     // "fix all issue": the dividend joins the PEG, and slow inventory is a warning line
-    assert.match(await p.getByTestId("long-term-lynch-sheet-COST").innerText(), /PEG 3\.25 with the 1\.0% dividend/);
+    assert.match(await p.getByTestId("long-term-lynch-sheet-COST").innerText(), /3\.25 with its 1\.0% yearly payout \(1 or less is low\)/);
     assert.match(await p.getByTestId("long-term-lynch-inventory-COST").innerText(), /18% slower than a year ago/);
     assert.equal(await p.getByTestId("long-term-lynch-inventory-AAPL").count(), 0);
     // the back-test result is one closed line (the top of the page stays short); a tap opens it
@@ -93,7 +103,7 @@ e2eTest("Peter, next to the MOS buttons, shows the star sheet for the quality co
     assert.equal(await more.evaluate((el) => el.open), false);
     assert.match(await more.locator("summary").innerText(), /CHEAP did not beat the quality group/);
     await more.locator("summary").click();
-    assert.match(await more.innerText(), /CHEAP tag did NOT beat the quality group[\s\S]*counts the dividend as growth/);
+    assert.match(await more.innerText(), /CHEAP tag did NOT beat the quality group[\s\S]*counts the yearly payout to owners \(the dividend\) as part of the growth[\s\S]*This page's own choices, not Peter's/);
     await more.locator("summary").click();
     await p.getByTestId("long-term-lynch-tile-CYCLICAL").click();
     assert.deepEqual(await listed(p), ["MU 4/4"]);
@@ -102,7 +112,17 @@ e2eTest("Peter, next to the MOS buttons, shows the star sheet for the quality co
     // the star sheet: five lines, one per star
     const sheet = p.getByTestId("long-term-lynch-sheet-AAPL");
     assert.equal(await sheet.locator("li").count(), 5);
-    assert.match(await sheet.innerText(), /Earnings growth\s+\+15%\/yr[\s\S]*Debt\s+0\.70× equity[\s\S]*PEG 0\.74/);
+    assert.match(await sheet.innerText(), /Profit growth\s+\+15% a year[\s\S]*Borrowed\s+\$70 per \$100 of owners' money[\s\S]*0\.74 \(1 or less is low\)/);
+    // 2026-11-20 audit: a card reads without trading shorthand
+    const cards = await p.getByTestId("long-term-lynch-list").innerText();
+    assert.ok(!/\bPEG\b|P\/E|× equity|\/yr|Stalwart|Earnings growth|Cash flow/.test(cards), "trading shorthand on a Peter card");
+    assert.equal((await p.getByTestId("long-term-lynch-pays-AAPL").innerText()).trim(), "You pay $11.10 for every $1 it earns in a year.");
+    assert.equal((await p.getByTestId("long-term-lynch-verdict-NVDA").innerText()).trim(), "ABOVE FAIR", "a score between 1 and 2 is above his fair price");
+    // what the four tiles mean, and which choices are the page's own, can be opened on a phone too
+    const tilesNote = p.getByTestId("long-term-lynch-tiles-note");
+    await tilesNote.locator("summary").click();
+    assert.match(await tilesNote.innerText(), /These four describe the price only\.[\s\S]*A CHEAP company can still fail another check/);
+    await tilesNote.locator("summary").click();
     assert.equal((await p.getByTestId("long-term-lynch-verdict-AAPL").innerText()).trim(), "CHEAP");
     assert.equal(await p.getByTestId("long-term-lynch-sheet-COST").locator("li.is-fail").count(), 2);
     assert.match(await p.getByTestId("long-term-lynch-legend").innerText(), /star sheet/i);
@@ -135,6 +155,11 @@ e2eTest("on a phone the Peter list fits the screen and the footer stays under it
     await p.getByTestId("long-term-lynch-scope-Quality").click();
     assert.deepEqual(await listed(p), ALL);
     assert.equal(await overflowsSideways(p), false);
+    // the buy price and exit block stays inside the card on a phone
+    const planBox = await p.getByTestId("long-term-lynch-plan-AAPL").boundingBox();
+    const cardBox = await p.getByTestId("long-term-lynch-AAPL").boundingBox();
+    assert.ok(planBox && cardBox && planBox.x >= cardBox.x && planBox.x + planBox.width <= cardBox.x + cardBox.width + 1,
+      `buy price / exit block outside its card: ${JSON.stringify({ planBox, cardBox })}`);
     const warn = await p.getByTestId("long-term-lynch-cyclical-MU").boundingBox();
     assert.ok(warn && warn.x >= 0 && warn.x + warn.width <= PHONE.width + 1, `cyclical warning cut off: ${JSON.stringify(warn)}`);
     const edges = await p.evaluate(() => {
@@ -171,10 +196,31 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     ];
     assert.deepEqual(await answer("AAPL"), ["YES", "Would Peter buy it? YES Every check passes and the price is low for its growth."]);
     // NVDA: a good business at 45 times profit on 30% growth = 1.5; his price is $100 / 1.5 = $67
-    assert.deepEqual(await answer("NVDA"), ["WAIT", "Would Peter buy it? NOT AT THIS PRICE A good business, but the price is too high for its growth. Peter's price: $67 or less."]);
+    assert.deepEqual(await answer("NVDA"), ["WAIT", "Would Peter buy it? NOT AT THIS PRICE A good business, but the price is too high for its growth. Peter's price: $66.66 or less."]);
     assert.deepEqual(await answer("COST"), ["NO", "Would Peter buy it? NO It owes too much."]);
     assert.equal((await answer("MU"))[0], "CAREFUL");
-    assert.match((await answer("MU"))[1], /ONLY WITH CARE This kind of business \(chips\) has good years and bad years/);
+    assert.match((await answer("MU"))[1], /ONLY WITH CARE Cyclical means good years and bad years take turns: a chip maker earns/);
+    // 2026-11-20 "I need Peter which prize he will buy and I don't see exit also": on every card.
+    const plan = async (sym) => [
+      (await p.getByTestId(`long-term-lynch-buyprice-${sym}`).innerText()).replace(/\s+/g, " ").trim(),
+      (await p.getByTestId(`long-term-lynch-exit-${sym}`).innerText()).replace(/\s+/g, " ").trim(),
+    ];
+    // AAPL: $100 at 11.1 times profit growing 15%: 100 x 15 / 11.1 = $135; a steady grower's exit is 30-50% above it
+    assert.deepEqual(await plan("AAPL"), [
+      "Today's $100.00 passes his price test. The most he would pay at this year's profit is $135, his fair price; $67.50 or less he called a very good price.",
+      "He had no set selling price, but he often sold a steady grower once it was up 30% to 50% from what he paid. From today's $100.00 that is about $130 to $150.",
+    ]);
+    // NVDA: 100 x 30 / 45 = $67; a fast grower: twice that
+    assert.deepEqual(await plan("NVDA"), [
+      "$66.66 or less at this year's profit, his fair price; $33.33 or less he called a very good price. Today's $100.00 is above it.",
+      "He would not own it at today's price. A price near $133, twice his fair price, he called very negative.",
+    ]);
+    assert.deepEqual(await plan("COST"), ["None. He would not buy it while it fails a check: it owes too much.", "None. He would not own it."]);
+    assert.deepEqual(await plan("MU"), [
+      "No set price. He bought this kind of business when its bad years were ending and its profit was low, not because the price looked low.",
+      "He had no set selling price. He sold when the good years looked close to ending, for example when the price of what it sells, or its orders, start to fall. This page cannot check that for you.",
+    ]);
+    assert.equal(await p.locator("[data-testid^='long-term-lynch-plan-']").count(), 4, "a buy price and an exit on every card");
     // tap the card: the Why drawer opens under it; tap again: it closes
     const card = p.getByTestId("long-term-lynch-AAPL");
     assert.equal(await card.getAttribute("aria-expanded"), "false");
@@ -189,8 +235,9 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     assert.match(peter, /Would Peter buy it\? Yes\. Every check passes and the price is low for its growth\./);
     // "Did Peter use profit target?": AAPL grows 15% a year, a steady grower
     assert.match(await p.getByTestId("long-term-simple-peter-sell").innerText(),
-      /When would he sell\? He had no fixed target, but with a steady grower like this he often took a 30% to 50% gain/);
-    assert.match(peter, /You pay \$11\.10 for every \$1 it earns in a year, and it grows 15% a year\. 11\.1 ÷ 15 = 0\.74\./);
+      /When would he sell\? He had no set selling price, but he often sold a steady grower once it was up 30% to 50% from what he paid\. From today's \$100\.00 that is about \$130 to \$150\./);
+    assert.match(peter, /Peter's buy price: Today's \$100\.00 passes his price test\. The most he would pay at this year's profit is \$135, his fair price; \$67\.50 or less he called a very good price\./);
+    assert.match(peter, /You pay \$11\.10 for every \$1 it earns in a year, and its profit grows 15% a year\. Divide the first by the second: 11\.1 ÷ 15 = 0\.74\. 1 or less is a low price for the growth\./);
     const simple = await p.getByTestId("long-term-simple").innerText();
     assert.ok(!/\b(ROIC|EPS|PEG|FCF|P\/E)\b/.test(simple), "no trading words in the simple box");
     assert.match(simple, /This is Peter Lynch's checklist[\s\S]*does not tell you what to do with your money\./);
@@ -209,10 +256,17 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     await p.getByTestId("long-term-lynch-scope-Mag7").click();
     assert.deepEqual(await listed(p), ["AAPL 5/5", "TSLA 5/5", "NVDA 4/5"]);
     assert.equal(await p.getByTestId("long-term-lynch-lowq-TSLA").count(), 1);
+    // audit 11-20: a company off the quality list is never a YES and gets no dollar figure
+    assert.equal(await p.getByTestId("long-term-lynch-buy-TSLA").getAttribute("data-answer"), "OFFLIST");
+    assert.match((await p.getByTestId("long-term-lynch-buy-TSLA").innerText()).replace(/\s+/g, " "), /NOT ON THE LIST This page only scores quality companies/);
+    assert.equal((await p.getByTestId("long-term-lynch-buyprice-TSLA").innerText()).trim(), "None worked out. It is not on the quality list.");
+    // a card with no star sheet still has both lines ("every card")
+    assert.equal((await p.getByTestId("long-term-lynch-buyprice-AMZN").innerText()).trim(), "Cannot be worked out: its profit did not grow over the ten years.");
+    assert.equal((await p.getByTestId("long-term-lynch-exit-AMZN").innerText()).trim(), "None.");
     assert.equal(await p.getByTestId("long-term-lynch-lowq-AAPL").count(), 0);
     // 2026-11-20 "Why I don't see data for tsla": the card still answers, says why, and what you pay
     assert.equal((await p.getByTestId("long-term-lynch-nosheet-AMZN").innerText()).replace(/\s+/g, " ").trim(),
-      "Would Peter buy it? CANNOT TELL Earnings did not grow. You pay $30.00 for every $1 it earns in a year.");
+      "Would Peter buy it? CANNOT TELL Its profit did not grow over the ten years. You pay $30.00 for every $1 it earns in a year.");
     assert.equal(await p.getByTestId("long-term-lynch-SPY").count(), 0);
     // Watchlist: its quality companies only (HD and TSLA are on it, but not quality)
     await p.getByTestId("long-term-lynch-scope-Watchlist").click();
@@ -267,7 +321,7 @@ e2eTest("Peter opens on Peter would buy: his YES answers, whatever Warren's rule
       assert.match(await p.getByTestId("long-term-lynch-best-note").innerText(), /Peter would buy:[\s\S]*not a promise the price goes up/);
       // the card carries Peter's numbers only: no Rule #1 verdict on it
       const card = await p.getByTestId("long-term-lynch-ZM").innerText();
-      assert.match(card, /PEG\s*0\.52[\s\S]*P\/E\s*7\.8[\s\S]*Growth\s*15%\/yr/);
+      assert.match(card, /You pay \$7\.80 for every \$1 it earns in a year\./);
       assert.ok(!/Rule #1|AVOID|Warren/.test(await p.getByTestId("long-term-panel").innerText()), "nothing of Warren's on the Peter page");
       const group = await p.locator(".long-term-lynch-scope").boundingBox();
       assert.ok(group && group.x >= 0 && group.x + group.width <= (viewport ? PHONE.width : 4000) + 1, `group buttons at ${JSON.stringify(group)}`);

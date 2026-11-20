@@ -38,6 +38,10 @@ _RANGES: tuple[tuple[int, int, str], ...] = (
 
 MAX_YIELD_PCT = 25.0        # above this the "yield" is a data error (a special payout, a price glitch)
 MAX_YEAR_GAP_DAYS = 400     # the two inventory-turnover years must be consecutive fiscal years
+# A company that turns its inventory over more than 12 times a year holds under a month of sales
+# on the shelf: a swing in that ratio is not goods piling up (2026-11-20: Apple, 24-34 turns a
+# year, was told "unsold goods are piling up" on a 29% move).
+MAX_TURNS_FOR_WARNING = 12.0
 
 
 def _good(v) -> bool:
@@ -68,6 +72,8 @@ def inventory_turn_change(finnhub: dict | None) -> float | None:
     except ValueError:
         return None
     if gap <= 0 or gap > MAX_YEAR_GAP_DAYS:
+        return None
+    if now > MAX_TURNS_FOR_WARNING and prev > MAX_TURNS_FOR_WARNING:
         return None
     return now / prev - 1.0
 

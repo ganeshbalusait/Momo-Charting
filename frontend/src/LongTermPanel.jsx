@@ -47,6 +47,9 @@ import { glossaryEntry, glossaryMatch } from "./longTermGlossary";
 import { SIMPLE_FOOT, SIMPLE_FOOT_ONE, simpleWhy } from "./longTermSimple.js";
 import {
   lynchNoSheet,
+  LYNCH_OWN_CHOICES,
+  LYNCH_TILES_NOTE,
+  LYNCH_VERDICT_LABEL,
   LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_SCOPE_LABEL, LYNCH_TILES, defaultLynchScope, lynchCounts, lynchRows,
 } from "./longTermLynch.js";
 import AnalystCard from "./AnalystCard.jsx";
@@ -611,9 +614,11 @@ function Card({ row, open, onToggle, leap, onRetryLeap, leapQueued }) {
 // Peter view (2026-11-19): one quality company with Peter Lynch's five-star
 // sheet. The sheet is always open: each line is one star, won or lost.
 const LYNCH_TONE = { CHEAP: "buy", FAIR: "wait", PRICEY: "avoid", CYCLICAL: "setup" };
-const LYNCH_BUY_WORD = { YES: "YES", WAIT: "NOT AT THIS PRICE", NO: "NO", CAREFUL: "ONLY WITH CARE" };
+const LYNCH_BUY_WORD = { YES: "YES", WAIT: "NOT AT THIS PRICE", NO: "NO", CAREFUL: "ONLY WITH CARE", OFFLIST: "NOT ON THE LIST" };
+const PLAN_BUY_LABEL = "Peter's buy price (the most he would pay)";
+const PLAN_EXIT_LABEL = "Peter's exit (when he would sell)";
 const LYNCH_TILE_TITLE = {
-  CYCLICAL: "Chips, oil and gas, metals, autos, heavy machinery, airlines, homebuilders: never called CHEAP, because the P/E is lowest at the top of the cycle",
+  CYCLICAL: "Boom-and-slump businesses (chips, oil and gas, metals, autos, heavy machinery, airlines, homebuilders): never called CHEAP, because the price looks lowest next to the profit of a boom year",
   CHEAP: "PEG 1 or less: the P/E is no higher than the yearly earnings growth",
   FAIR: "PEG between 1 and 2",
   PRICEY: "PEG above 2: the price is far ahead of the growth",
@@ -651,11 +656,20 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
           <span className={`long-term-lynch-buy is-${sheet.buy.answer.toLowerCase()}`} data-testid={`long-term-lynch-buy-${row.symbol}`} data-answer={sheet.buy.answer}>
             <span className="long-term-lynch-buy-q">Would Peter buy it?</span>
             <b>{LYNCH_BUY_WORD[sheet.buy.answer]}</b>
-            <span className="long-term-lynch-buy-why">{sheet.buy.why}</span>
+            <span className="long-term-lynch-buy-why" data-testid={sheet.cyclical ? `long-term-lynch-cyclical-${row.symbol}` : undefined}>{sheet.buy.why}</span>
+          </span>
+          {/* His buy price and his exit, on every card (Ganesh 11-20: "I need Peter which prize he will buy and I don't see exit also"). */}
+          <span className="long-term-lynch-plan" data-testid={`long-term-lynch-plan-${row.symbol}`}>
+            <span className="long-term-lynch-plan-k">{PLAN_BUY_LABEL}</span>
+            <span className="long-term-lynch-plan-v" data-testid={`long-term-lynch-buyprice-${row.symbol}`}>{sheet.plan.buyText}</span>
+            <span className="long-term-lynch-plan-k">{PLAN_EXIT_LABEL}</span>
+            <span className="long-term-lynch-plan-v" data-testid={`long-term-lynch-exit-${row.symbol}`}>
+              {sheet.plan.exitText || "None. He would not own it."}
+            </span>
           </span>
           <span className="long-term-card-mid">
-            <Pill tone={tone} testId={`long-term-lynch-verdict-${row.symbol}`}>{sheet.verdict}</Pill>
-            {sheet.cyclical ? <Pill tone="muted">{sheet.cyclical}</Pill> : <Pill tone="muted">{sheet.type}</Pill>}
+            <Pill tone={tone} testId={`long-term-lynch-verdict-${row.symbol}`}>{LYNCH_VERDICT_LABEL[sheet.verdict]}</Pill>
+            <Pill tone="muted">{sheet.cyclical ? sheet.kind : sheet.grower}</Pill>
             {sheet.lowQuality ? <Pill tone="avoid" testId={`long-term-lynch-lowq-${row.symbol}`} title="Return on capital under 20%: not on the quality list">Not quality</Pill> : null}
             <span
               className="long-term-lynch-stars"
@@ -667,10 +681,8 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
               <i>{"★".repeat(sheet.stars)}</i>{"★".repeat(sheet.of - sheet.stars)}
             </span>
           </span>
-          <span className="long-term-card-bottom">
-            <span>PEG <b>{sheet.peg.toFixed(2)}</b></span>
-            <span>P/E <b>{row.pe.toFixed(1)}</b></span>
-            <span>Growth <b>{Math.round(sheet.growthPct)}%/yr</b></span>
+          <span className="long-term-card-bottom" data-testid={`long-term-lynch-pays-${row.symbol}`}>
+            <span>You pay <b>${row.pe.toFixed(2)}</b> for every $1 it earns in a year.</span>
           </span>
           <ul className="long-term-lynch-sheet" data-testid={`long-term-lynch-sheet-${row.symbol}`}>
             {sheet.checks.map((c) => (
@@ -686,19 +698,22 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
               {sheet.inventoryWarning}
             </p>
           ) : null}
-          {sheet.cyclical ? (
-            <p className="long-term-lynch-warn" data-testid={`long-term-lynch-cyclical-${row.symbol}`}>
-              Cyclical ({sheet.cyclical}): the P/E is lowest when earnings are at the top of the cycle, so a low PEG here is not a bargain sign.
-            </p>
-          ) : null}
         </>
       ) : (
+        <>
         <span className="long-term-lynch-buy is-cannot" data-testid={`long-term-lynch-nosheet-${row.symbol}`} data-answer="CANNOT TELL">
           <span className="long-term-lynch-buy-q">Would Peter buy it?</span>
           <b>CANNOT TELL</b>
           <span className="long-term-lynch-buy-why">{lynchNoSheet(row)?.why || `${reason}.`}</span>
           {lynchNoSheet(row)?.pays ? <span className="long-term-lynch-buy-why">{lynchNoSheet(row).pays}</span> : null}
         </span>
+        <span className="long-term-lynch-plan" data-testid={`long-term-lynch-plan-${row.symbol}`}>
+          <span className="long-term-lynch-plan-k">{PLAN_BUY_LABEL}</span>
+          <span className="long-term-lynch-plan-v" data-testid={`long-term-lynch-buyprice-${row.symbol}`}>Cannot be worked out: {reason}.</span>
+          <span className="long-term-lynch-plan-k">{PLAN_EXIT_LABEL}</span>
+          <span className="long-term-lynch-plan-v" data-testid={`long-term-lynch-exit-${row.symbol}`}>None.</span>
+        </span>
+        </>
       )}
       <span className="long-term-lynch-actions">
         <button
@@ -1280,7 +1295,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
           </p>
           {peter ? (
             <p className="long-term-note" data-testid="long-term-lynch-note">
-              Quality companies only (return on capital 20%+) · PEG = P/E ÷ yearly earnings growth %. A screen, not advice.
+              Only quality companies: ones that earn $20 or more a year on every $100 put into the business. A checklist, not advice.
             </p>
           ) : (
             <p className="long-term-note">Rule #1 buys are rare; WAIT rows show the price to buy at</p>
@@ -1351,13 +1366,14 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
       {peter ? (
         <>
           <p className="long-term-lynch-legend" data-testid="long-term-lynch-legend">
-            <b>The star sheet:</b> ★ earnings grew 10–50% a year · ★ sales grew 5%+ a year · ★ debt at most 0.8× equity · ★ free cash flow growing · ★ PEG 1 or less. Most stars first, then the lowest PEG. Cyclicals (chips, oil, metals, autos…) are never called cheap and get no price star.
+            <b>The star sheet:</b> Peter&apos;s five checks, one star each: ★ profit grew 10% to 50% a year · ★ sales grew 5% or more a year · ★ it has borrowed $80 or less for every $100 of its owners&apos; money · ★ the cash left over each year is growing · ★ the price is low for how fast the profit grows (score 1 or less). The score is what you pay for every $1 of yearly profit, divided by how fast the profit grows. Cyclical means good years and bad years take turns (chips, oil, metals, cars…): it is never called cheap and the price check is not used for it.
           </p>
           {/* Closed by default so the top of the page stays as short as before (Ganesh 11-19: "this looks good"). */}
           <details className="long-term-lynch-more" data-testid="long-term-lynch-backtest">
             <summary>Back-test: CHEAP did not beat the quality group · tap for details</summary>
             <p>{LYNCH_BACKTEST_NOTE}</p>
-            <p>The PEG counts the dividend as growth (P/E ÷ (growth % + dividend %)). A card warns when inventory turns over 10% slower than a year ago, which means it is growing faster than sales.</p>
+            <p>The price-for-growth score counts the yearly payout to owners (the dividend) as part of the growth. A card warns when unsold goods are piling up: it sells through its goods 10% or more slower than a year ago.</p>
+            <p data-testid="long-term-lynch-own-choices">{LYNCH_OWN_CHOICES}</p>
           </details>
           <div className="long-term-switch long-term-lynch-scope" role="group" aria-label="Which companies">
             {LYNCH_SCOPES.map((s) => (
@@ -1384,6 +1400,10 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
               <b>Peter would buy:</b> every check passes, and the price is low for the growth. Tap a card to read why, and when he would sell. His checklist is not a promise the price goes up.
             </p>
           ) : null}
+          <details className="long-term-lynch-more" data-testid="long-term-lynch-tiles-note">
+            <summary>What CHEAP, ABOVE FAIR, PRICEY and CYCLICAL mean · tap</summary>
+            <p>{LYNCH_TILES_NOTE}</p>
+          </details>
           <div className="long-term-tiles" role="group" aria-label="Filter by price for growth">
             {LYNCH_TILES.map((t) => {
               const active = peterTile === t;
@@ -1397,7 +1417,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
                   title={LYNCH_TILE_TITLE[t]}
                   onClick={() => setPeterTile(active ? null : t)}
                 >
-                  <span>{t}</span>
+                  <span>{LYNCH_VERDICT_LABEL[t]}</span>
                   <b>{peterCounts[t]}</b>
                 </button>
               );

@@ -23343,7 +23343,13 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-lynch-buy.is-wait b { color: var(--lt-amber); }
 .long-term-lynch-buy.is-no b { color: var(--lt-red); }
 .long-term-lynch-buy.is-careful b { color: #f0a6ff; }
-.long-term-lynch-buy.is-cannot b { color: #a6a6b0; }
+.long-term-lynch-buy.is-cannot b, .long-term-lynch-buy.is-offlist b { color: #a6a6b0; }
+/* Peter's buy price and exit: label column + wrapping value, on every card. */
+.long-term-card > .long-term-lynch-plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.long-term-lynch-plan-k { color: #a6a6b0; font-size: 11.5px; font-weight: 700; }
+.long-term-lynch-plan-k + .long-term-lynch-plan-v + .long-term-lynch-plan-k { margin-top: 5px; }
+.long-term-lynch-more + .long-term-lynch-more { margin-top: -4px; }
+.long-term-lynch-plan-v { min-width: 0; color: #f1f1f4; font-size: 12.5px; font-weight: 600; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
 .long-term-simple-grid.is-one { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 760px) {
   .long-term-simple-grid { grid-template-columns: minmax(0, 1fr); }
