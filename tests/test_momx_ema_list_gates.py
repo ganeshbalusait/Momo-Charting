@@ -73,6 +73,7 @@ def test_a_failed_match_never_turns_into_a_pass():
 
 @pytest.mark.parametrize("name, gated", [
     ("21 EMA Touch Daily", True), ("50 EMA Touch Monthly", True), ("21 EMA Touch Weekly", True),
+    ("Monthly Breakout", True), ("Monthly Breakdown", True),     # 2026-11-20, same ALL gates
     ("Watchlist", False), ("Mag7", False), ("Liquid Movers", False),
 ])
 def test_only_the_ema_lists_get_the_stricter_gates(name, gated):

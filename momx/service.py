@@ -810,8 +810,10 @@ def _apply_fired_at(name: str, payload: dict, direction: str = "bull") -> None:
 
 def _gate_kwargs(name: str) -> dict:
     """The EMA Touch lists run his stricter Price_Change ALL-gates (2026-11-05,
-    "EMA lists only": VOLUME 4h >= 1.0%, CLOSE 1h >= 0.5%)."""
-    if ema_touch.parse_name(name) is not None:
+    "EMA lists only": VOLUME 4h >= 1.0%, CLOSE 1h >= 0.5%). Monthly Breakout /
+    Breakdown do too (2026-11-20, "Use 'all of the following'"): the same kind
+    of monthly-setup list - the pattern picks the ticker, the gates the day."""
+    if ema_touch.parse_name(name) is not None or monthly_breakout.parse_name(name) is not None:
         return {"gate_min_pct": dict(scan.EMA_LIST_GATES)}
     return {}
 

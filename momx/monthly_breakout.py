@@ -30,6 +30,10 @@ THE RULES (identical to the back-test, artifacts in chat 2026-11-20):
   no edge (SYM up: 68% -> 74%; BOTTOM up 76% -> 78%).
 * Status: the current month is "live" (not closed - it can still fail);
   last month is "confirmed". Both are list members.
+* The scan on top (2026-11-20, "Use 'all of the following'"): like the EMA
+  Touch lists, the break is an extra ALL condition, the EMA lists' stricter
+  Price_Change gates apply (VOLUME 4h >= 1.0%, CLOSE 1h >= 0.5%,
+  service._gate_kwargs), and ANY of the following is the Watchlist's.
 
 Back-test, 338 Watchlist tickers, 12 months later, EMA filter on: BOTTOM up
 78% / +21%, SYM up 74% / +20%, MIDDLE up 78% / +17%, TOP up 69% / +15%;

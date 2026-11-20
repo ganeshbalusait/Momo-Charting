@@ -69,6 +69,8 @@ test("no direction or junk rows give no chips", () => {
 
 test("notes say what the back-test found", () => {
   assert.match(breakoutNote("up"), /62% for any month/);
+  assert.match(breakoutNote("up"), /ALL of the following = the breakout \+ VOLUME 4h >= 1\.0% \+ CLOSE 1h >= 0\.5%/);
+  assert.match(breakoutNote("down"), /ALL of the following = the breakdown/);
   assert.match(breakoutNote("down"), /Not a put signal/);
   assert.equal(breakoutNote(""), "");
 });

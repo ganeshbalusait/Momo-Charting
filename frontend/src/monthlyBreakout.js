@@ -68,10 +68,10 @@ export function breakoutChips(meta) {
 
 export function breakoutNote(direction) {
   if (direction === "up") {
-    return "Monthly close through the line, EMAs agree (close > 21 > 50). Back-test: 69-78% higher 12 months later vs 62% for any month.";
+    return "Monthly close through the line, EMAs agree (close > 21 > 50). Back-test: 69-78% higher 12 months later vs 62% for any month. Scan below: ALL of the following = the breakout + VOLUME 4h >= 1.0% + CLOSE 1h >= 0.5%.";
   }
   if (direction === "down") {
-    return "Info only: monthly breakdowns did NOT predict a fall in the back-test (most were higher a year later). Not a put signal.";
+    return "Info only: monthly breakdowns did NOT predict a fall in the back-test (most were higher a year later). Not a put signal. Scan below: ALL of the following = the breakdown + VOLUME 4h >= 1.0% + a 0.5% CLOSE 1h move (a drop on the BEAR board).";
   }
   return "";
 }
