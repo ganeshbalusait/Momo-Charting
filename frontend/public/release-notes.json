@@ -2,6 +2,16 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-20T00:53:00-05:00",
+      "heading": "One card per ticker in simple words: search INTC on LEAP OI Scanner or AGX Flow",
+      "items": [
+        "Search a ticker on the LEAP OI Scanner or AGX Flow and a card \"INTC in simple words\" now appears at the top. It is the same card on both pages, so you no longer need to jump between them.",
+        "It answers in plain words: the price, today's money on Calls (bets the price goes up) vs Puts (bets it goes down) and which side got more, the biggest bets today and whether they looked bought or sold, the long bets (3 to 12 months) most people hold, and what was opened or closed since yesterday.",
+        "Green ticks and red crosses mark what stands out. It ends with \"What this means\" and a reminder that it is not advice. Facts only, never a pick.",
+        "Today's money fills in during market hours; outside them the card says so."
+      ]
+    },
+    {
       "at": "2026-11-20T00:50:48-05:00",
       "heading": "Long Term Peter view: new \"Both agree\" group shows the companies both checklists like",
       "items": [

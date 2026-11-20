@@ -11,3 +11,6 @@
 .simple-why-advice { margin: 0; color: #f3bd37; font-size: 13px; }
 .simple-why-line { margin: 6px 0 4px; font-size: 13px; line-height: 1.4; color: #c9cfdb; white-space: normal; }
 .simple-why-line span { color: #8b95a5; }
+.ticker-story { margin: 10px 0 14px; }
+.ticker-story h5 { margin: 8px 0 4px; font-size: 13px; color: #c3d3ff; }
+.ticker-story-part ul { margin: 0; }

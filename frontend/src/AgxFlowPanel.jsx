@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import "./agxFlow.css";
 import BeginnerGuide from "./BeginnerGuide.jsx";
 import { flowWhy } from "./simpleWhy.js";
+import TickerStory from "./TickerStory.jsx";
 import {
   MAG7_BOARD,
   EXPIRY_FILTERS,
@@ -342,6 +343,7 @@ export default function AgxFlowPanel({ onOpenChart, onOpenOptions }) {
       </header>
       <TickerSearch active={search} onSearch={(ticker) => { setError(""); setSearch(ticker); }} onClear={() => { setError(""); setSearch(""); }} />
       {search ? <p className="agx-flow-updated" data-testid="search-showing">Showing {search} only</p> : null}
+      {search ? <TickerStory ticker={search} /> : null}
 
       {reading ?<p className="agx-flow-status">{readingText(progress)}</p> : null}
       {!reading && updated ? <p className="agx-flow-updated">{updated}{progress.updating ? " · refreshing" : ""}</p> : null}

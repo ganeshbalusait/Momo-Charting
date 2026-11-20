@@ -11,6 +11,7 @@ import { LIVE_PRICE_POLL_MS, awayFrom, changeTone, quotesFrom, stockPrice, stock
 import { flowCell } from "./leapFlow.js";
 import BeginnerGuide from "./BeginnerGuide.jsx";
 import { MARKS, leapWhy } from "./simpleWhy.js";
+import TickerStory from "./TickerStory.jsx";
 
 // Today's trades on this contract, from AGX Flow's latest read: count, dollars, and Bought / Sold / Can't tell, so the
 // trader does not have to open AGX Flow to know (2026-11-20).
@@ -490,6 +491,7 @@ export default function LeapOiScannerPanel({ onOpenChart, onOpenOptions }) {
       </div>
       {progress ? <p className="leapoi-progress" role="status">{progress}</p> : null}
       {error ? <p className="leapoi-error" role="alert">{error}</p> : null}
+      {search ? <TickerStory ticker={search} /> : null}
       {note ? <p className="leapoi-empty" data-testid="search-note">{note}</p> : null}
       {emptyWatchlist ? <p className="leapoi-empty">Your watchlist has no tickers besides Mag7.</p> : null}
       {loading && !payload && !emptyWatchlist ? <p className="leapoi-progress">Loading…</p> : null}

@@ -23775,6 +23775,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                     "windowStart": _afa_window.get("start"), "windowEnd": _afa_window.get("end"),
                 })
                 return
+            if parsed.path == "/api/ticker-story":
+                # One ticker in simple words, joining LEAP OI Scanner + AGX Flow (momx/ticker_story.py, 2026-11-20).
+                from momx import ticker_story
+                from momx.chat_market import _root as _momx_artifacts_root
+                try:
+                    payload = ticker_story.story(str(parse_qs(parsed.query).get("symbol", [""])[0]), _momx_artifacts_root({}))
+                except ValueError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                except Exception as exc:  # noqa: BLE001 - the page shows the reason
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": f"Could not read option chains ({type(exc).__name__})."})
+                    return
+                self._send_json(HTTPStatus.OK, payload)
+                return
             if parsed.path in {"/api/leap-oi-scanner", "/api/agx-flow"}:
                 query = parse_qs(parsed.query)
                 raw_symbols = str(query.get("symbols", [""])[0])
