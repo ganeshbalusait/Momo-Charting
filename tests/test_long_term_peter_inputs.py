@@ -8,7 +8,19 @@ from __future__ import annotations
 
 import pytest
 
-from long_term.cyclical import dividend_yield, inventory_turn_change
+from long_term.cyclical import dividend_yield, holds_inventory, inventory_turn_change
+
+
+@pytest.mark.parametrize("sic", [2000, 2834, 3021, 3571, 3674, 3711, 5211, 5331, 5651, 5990, "3571"])
+def test_makers_and_shops_hold_inventory(sic):
+    """2026-11-20: Adobe (software, 7372) got "its shelves are filling up" from a turnover figure on
+    almost no inventory. The warning is only for companies that make or sell goods."""
+    assert holds_inventory(sic) is True
+
+
+@pytest.mark.parametrize("sic", [7372, 7370, 7389, 6021, 6211, 4813, 4911, 7011, 1311, 8011, None, "", "x", 0, True, 3674.5])
+def test_software_banks_services_and_junk_do_not(sic):
+    assert holds_inventory(sic) is False
 
 
 def test_dividend_yield_is_the_percent_as_a_fraction():

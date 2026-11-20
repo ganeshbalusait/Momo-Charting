@@ -23317,6 +23317,24 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-lynch-sheet li.is-na { color: #7c7c8a; }
 .long-term-lynch-sheet li.is-na b { color: #8b8b97; font-weight: 500; }
 .long-term-lynch-chart { justify-self: start; }
+/* "In simple words" (2026-11-20): Warren's and Peter's checklists in plain
+   sentences at the top of the details. Two columns, one on a phone. Larger
+   type than the rest of the drawer: it is the part a newcomer reads. */
+.long-term-simple { display: grid; gap: 8px; margin: 2px 0 10px; padding: 10px 12px; border: 1px solid rgba(72, 168, 202, .4); border-radius: 8px; background: rgba(72, 168, 202, .06); }
+.long-term-simple h4 { margin: 0; color: #b6dff0; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.long-term-simple-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.long-term-simple-side { display: grid; align-content: start; gap: 6px; min-width: 0; }
+.long-term-simple-side h5 { margin: 0; color: #a6a6b0; font-size: 11px; font-weight: 700; }
+.long-term-simple-head { margin: 0; color: #f6f6f7; font-size: 14px; font-weight: 700; line-height: 1.4; }
+.long-term-simple-side ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.long-term-simple-side li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 6px; color: #dcdce2; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.long-term-simple-side li.is-yes > span:first-child { color: var(--lt-green); font-weight: 800; }
+.long-term-simple-side li.is-no > span:first-child { color: var(--lt-red); font-weight: 800; }
+.long-term-simple-side li.is-info > span:first-child { color: #8b8b97; }
+.long-term-simple-todo { margin: 2px 0 0; color: #f3d58f; font-size: 13px; font-weight: 600; line-height: 1.45; }
+@media (max-width: 760px) {
+  .long-term-simple-grid { grid-template-columns: minmax(0, 1fr); }
+}
 /* Tap a card for its details: the open card and its drawer take the whole row. */
 .long-term-lynch-card { cursor: pointer; }
 .long-term-lynch-list > .long-term-card-slot { align-content: start; }

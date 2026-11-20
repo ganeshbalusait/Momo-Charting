@@ -44,6 +44,7 @@ import {
   DEEP_NONE,
 } from "./longTerm";
 import { glossaryEntry, glossaryMatch } from "./longTermGlossary";
+import { SIMPLE_FOOT, simpleWhy } from "./longTermSimple.js";
 import { LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_TILES, lynchCounts, lynchRows } from "./longTermLynch.js";
 import AnalystCard from "./AnalystCard.jsx";
 import TechnicalCard from "./TechnicalCard.jsx";
@@ -464,6 +465,46 @@ function LongTermView({ symbol, price = null }) {
   );
 }
 
+// "In simple words" (2026-11-20, "justification why Warren or Peter chose that
+// stocks ... a 10 kid can understand"): the first thing in the details, from
+// the row alone, so it shows before the filings finish loading.
+const SIMPLE_MARK = { yes: "✓", no: "✗", info: "•" };
+function SimpleSide({ who, side, testId }) {
+  if (!side) return null;
+  return (
+    <div className="long-term-simple-side" data-testid={testId}>
+      <h5>{who}</h5>
+      <p className="long-term-simple-head">{side.headline}</p>
+      {side.lines.length ? (
+        <ul>
+          {side.lines.map((l, i) => (
+            <li key={i} className={`is-${l.mark}`}>
+              <span aria-hidden="true">{SIMPLE_MARK[l.mark]}</span>
+              <span>{l.text}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {side.todo ? <p className="long-term-simple-todo">{side.todo}</p> : null}
+    </div>
+  );
+}
+
+function SimpleWhy({ row }) {
+  const why = useMemo(() => simpleWhy(row), [row]);
+  if (!why) return null;
+  return (
+    <section className="long-term-simple" data-testid="long-term-simple" aria-label="In simple words">
+      <h4>In simple words</h4>
+      <div className="long-term-simple-grid">
+        <SimpleSide who="Warren Buffett's checklist" side={why.warren} testId="long-term-simple-warren" />
+        <SimpleSide who="Peter Lynch's checklist" side={why.peter} testId="long-term-simple-peter" />
+      </div>
+      <p className="long-term-note">{SIMPLE_FOOT}</p>
+    </section>
+  );
+}
+
 function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, width }) {
   const detail = entry?.detail;
   const sections = useMemo(() => (detail ? drawerSections(detail) : null), [detail]);
@@ -482,6 +523,7 @@ function Drawer({ row, entry, leap, onChart, onClose, onRetry, onRetryLeap, widt
           <X size={14} />
         </button>
       </header>
+      <SimpleWhy row={row} />
       {setup ? <SetupSection setup={setup} signal={row.signal} pass={isSetup(row)} /> : null}
       {wantsLeap(row) ? <LeapSection entry={leap} onRetry={onRetryLeap} /> : null}
       <LongTermView symbol={row.symbol} price={row.price} />

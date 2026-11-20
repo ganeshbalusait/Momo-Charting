@@ -72,8 +72,7 @@ def inventory_turn_change(finnhub: dict | None) -> float | None:
     return now / prev - 1.0
 
 
-def cyclical_group(sic) -> str | None:
-    """The cyclical industry a SIC code belongs to, or None. Junk and missing codes are None."""
+def _sic(sic) -> int | None:
     if isinstance(sic, bool):
         return None
     if isinstance(sic, str):
@@ -85,7 +84,21 @@ def cyclical_group(sic) -> str | None:
         if sic != sic or sic != int(sic):
             return None
         sic = int(sic)
-    if not isinstance(sic, int) or sic <= 0:
+    return sic if isinstance(sic, int) and sic > 0 else None
+
+
+def holds_inventory(sic) -> bool:
+    """True for companies that make or sell goods (SIC 2000-3999 manufacturing, 5000-5999 wholesale
+    and retail). Only for them does a falling inventory turnover mean goods piling up; a software or
+    service company's turnover is a ratio on almost nothing (2026-11-20: Adobe was warned)."""
+    code = _sic(sic)
+    return code is not None and (2000 <= code <= 3999 or 5000 <= code <= 5999)
+
+
+def cyclical_group(sic) -> str | None:
+    """The cyclical industry a SIC code belongs to, or None. Junk and missing codes are None."""
+    sic = _sic(sic)
+    if sic is None:
         return None
     for first, last, group in _RANGES:
         if first <= sic <= last:

@@ -169,6 +169,21 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     await drawer.waitFor({ timeout: 20_000 });
     assert.match(await drawer.innerText(), /ROIC now/);
     assert.equal(await card.getAttribute("aria-expanded"), "true");
+    // 2026-11-20 "justification why Warren or Peter chose that stocks ... a 10 kid can understand":
+    // the details start with both checklists in plain sentences (AAPL: WAIT at $100, safe price $80).
+    const warren = await p.getByTestId("long-term-simple-warren").innerText();
+    assert.match(warren, /Warren would wait\. It is a good business, but the price is too high today\./);
+    assert.match(warren, /For every \$100 put into the business, it earns \$55 a year\. Warren wants \$15 or more\./);
+    assert.match(warren, /Warren only buys at a big discount: \$80 or less\. Today it costs \$100, so it is not on sale yet\./);
+    assert.match(warren, /What his rule says: do nothing now\. Look again if the price drops to \$80 or less\./);
+    const peter = await p.getByTestId("long-term-simple-peter").innerText();
+    assert.match(peter, /Peter would like this\. It is growing fast and the price is low for that growth\./);
+    assert.match(peter, /You pay \$11\.10 for every \$1 it earns in a year, and it grows 15% a year\. 11\.1 ÷ 15 = 0\.74\./);
+    const simple = await p.getByTestId("long-term-simple").innerText();
+    assert.ok(!/\b(ROIC|EPS|PEG|FCF|P\/E)\b/.test(simple), "no trading words in the simple box");
+    assert.match(simple, /They explain; they do not tell you what to do with your money\./);
+    // it is the first thing in the details
+    assert.equal(await drawer.evaluate((el) => el.querySelector("header + *")?.getAttribute("data-testid")), "long-term-simple");
     assert.ok(app.reads.some((r) => r.path === "/api/long-term/AAPL"), "the details were read");
     assert.equal((await p.getByTestId("long-term-lynch-details-AAPL").innerText()).trim(), "Hide details");
     await p.getByTestId("long-term-lynch-details-AAPL").click();
@@ -207,6 +222,13 @@ e2eTest("on a phone the groups fit and a tapped card shows its details without s
     await drawer.waitFor({ timeout: 20_000 });
     const box = await drawer.boundingBox();
     assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `drawer at ${JSON.stringify(box)}`);
+    // the simple-words box: one column on a phone, Peter under Warren, nothing cut off
+    const sides = await p.evaluate(() => ["warren", "peter"].map((who) => {
+      const r = document.querySelector(`[data-testid='long-term-simple-${who}']`).getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+    }));
+    assert.ok(sides[1].top >= sides[0].bottom - 1, `Peter beside Warren on a phone: ${JSON.stringify(sides)}`);
+    assert.ok(sides.every((s) => s.left >= 0 && s.right <= PHONE.width + 1), `simple box cut off: ${JSON.stringify(sides)}`);
     assert.equal(await overflowsSideways(p), false);
     assert.deepEqual(app.pageErrors, []);
   });

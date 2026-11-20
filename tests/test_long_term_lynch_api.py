@@ -78,7 +78,8 @@ def test_rows_carry_the_dividend_yield_and_the_inventory_change(monkeypatch, sto
     rows = {r["symbol"]: r for r in _served(monkeypatch, store_dir, table)["rows"]}
     assert rows["AAPL"]["dividendYield"] == pytest.approx(0.003105)        # Finnhub 0.3105 (%)
     assert rows["MCD"]["dividendYield"] > rows["AAPL"]["dividendYield"] > 0
-    assert rows["GOOGL"]["inventoryTurnChange"] is None or isinstance(rows["GOOGL"]["inventoryTurnChange"], float)
+    # GOOGL (internet, SIC 7370), JPM (bank) and MCD (restaurants, 5812 is a shop) : only makers and shops
+    assert rows["GOOGL"]["inventoryTurnChange"] is None and rows["JPM"]["inventoryTurnChange"] is None
     assert isinstance(rows["AAPL"]["inventoryTurnChange"], float) and -1 < rows["AAPL"]["inventoryTurnChange"] < 5
     assert rows["SPY"]["dividendYield"] is None, "an ETF row carries neither"
 
@@ -156,6 +157,51 @@ def test_the_route_says_who_is_on_mag7_and_the_watchlist_and_the_groups_follow(m
             assert low is None and isinstance(reason, str) and reason
     watch = [symbol for symbol, _, _ in groups["Watchlist"]]
     assert set(watch) <= {"MCD", "JPM", "AAPL"} and all(rows[s]["quality"] == "HIGH" for s in watch)
+
+
+SIMPLE_MODULE = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "longTermSimple.js").as_uri()
+SIMPLE_NODE = """
+const { simpleWhy } = await import(process.argv[1]);
+let body = ""; for await (const chunk of process.stdin) body += chunk;
+const out = {};
+for (const row of JSON.parse(body).rows) out[row.symbol] = simpleWhy(row);
+process.stdout.write(JSON.stringify(out));
+"""
+JARGON = ("ROIC", "ROE", "EPS", "PEG", "FCF", "MOS", "P/E", "margin of safety", "sticker", "TTM")
+
+
+def test_every_served_row_gets_a_plain_words_explanation_that_matches_its_verdict(monkeypatch, store_dir):
+    """2026-11-20 "justification why Warren or Peter chose that stocks ... a 10 kid can understand":
+    the "In simple words" box is built from the rows the real route serves. Warren's first sentence
+    must agree with the row's signal, the numbers must be the row's own, and no line may use a
+    trading word."""
+    table = {s: {"last_price": fixture_price(s), "quote_time_ms": NOW_MS, "description": s}
+             for s in SYMBOLS if fixture_price(s)}
+    body = _served(monkeypatch, store_dir, table)
+    view = subprocess.run(["node", "--input-type=module", "-e", SIMPLE_NODE, SIMPLE_MODULE], input=json.dumps(body),
+                          capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    assert view.returncode == 0, view.stderr
+    simple = json.loads(view.stdout)
+    opening = {"BUY": "Warren would buy this.", "WAIT": "Warren would wait.", "AVOID": "Warren would skip this one.",
+               "ETF": "This is a fund"}
+    seen = set()
+    for r in body["rows"]:
+        why = simple[r["symbol"]]
+        warren = why["warren"]
+        if r["signal"] in opening:
+            assert warren["headline"].startswith(opening[r["signal"]]), r["symbol"]
+            seen.add(r["signal"])
+        said = " ".join([warren["headline"], *(line["text"] for line in warren["lines"]), warren["todo"] or ""])
+        if why["peter"]:
+            said += " " + " ".join([why["peter"]["headline"], *(line["text"] for line in why["peter"]["lines"])])
+        # the AVOID line quotes the rule's own reason, which may name a ratio: every other line is plain
+        plain = " ".join(part for part in said.split("The rule it failed:")[:1])
+        assert not any(word in plain for word in JARGON), (r["symbol"], plain)
+        assert all(line["mark"] in ("yes", "no", "info") for line in warren["lines"])
+    assert {"AVOID", "ETF"} <= seen and seen & {"BUY", "WAIT"}, seen
+    aapl, row = simple["AAPL"], next(r for r in body["rows"] if r["symbol"] == "AAPL")
+    assert f"it earns ${round(row['roic'] * 100)} a year" in aapl["warren"]["lines"][0]["text"]
+    assert aapl["peter"]["headline"].startswith(("Peter would", "Peter has no opinion"))
 
 
 def test_a_broken_lists_file_gives_no_groups_and_the_page_still_answers(monkeypatch, store_dir):

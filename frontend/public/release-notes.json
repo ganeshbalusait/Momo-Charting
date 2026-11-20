@@ -2,6 +2,19 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-20T00:06:58-05:00",
+      "heading": "Long Term: \"In simple words\" - why Warren or Peter would pick a stock",
+      "items": [
+        "Open any company's details on Long Term (tap a row, or a Peter card) and the first thing you now see is an \"In simple words\" box. It explains the verdict in sentences a ten-year-old, or someone who has never traded, can read.",
+        "Warren Buffett's checklist: one line that says buy, wait or skip, then ticks and crosses like \"For every $100 put into the business, it earns $40 a year. Warren wants $15 or more\" and \"A fair price is about $538 a share. Warren only buys at a big discount: $269 or less. Today it costs $221, so it is on sale.\"",
+        "Peter Lynch's checklist: the same for his rule, with the sum written out: \"You pay $12.31 for every $1 it earns in a year, and it grows 21% a year. 12.3 ÷ 21 = 0.59. Under 1 is a low price for the growth.\"",
+        "Each side ends with \"What his rule says\" in one sentence, for example \"do nothing now. Look again if the price drops to $269 or less.\"",
+        "No trading words are used in the box. Every sentence is a number from the company's own reports; nothing in it predicts a price, and it says it is not telling you what to do with your money.",
+        "Fix: the \"inventory growing faster than sales\" warning now only shows for companies that make or sell goods. A software company such as Adobe was getting it by mistake.",
+        "The same plain-words explanation for the LEAP OI Scanner and AGX Flow is being built by the session that owns those two pages."
+      ]
+    },
+    {
       "at": "2026-11-19T23:52:00-05:00",
       "heading": "LEAP OI Scanner shows bought or sold on every card; AGX Flow goes out to 12 months; plain-word help boxes",
       "items": [
