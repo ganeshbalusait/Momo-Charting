@@ -25,6 +25,7 @@ import {
   readingProgress,
   readingText,
   hasData,
+  overnightEmpty,
   updatedText,
   rowKey,
   splitPct,
@@ -68,13 +69,18 @@ function usePhone() {
   return phone;
 }
 
-function TickerStrip({ tickers }) {
+// Each ticker card is a button (2026-11-20, "panel it's not clicking"): a tap opens that ticker - its "in simple
+// words" card and only its bets - like typing it in the search box.
+function TickerStrip({ tickers, onOpen }) {
   return (
     <div className="agx-flow-strip" aria-label="Premium by ticker">
       {tickers.map((t) => {
         const pct = splitPct(t.callPremium, t.putPremium);
+        const empty = !(Number(t.callPremium) || 0) && !(Number(t.putPremium) || 0);
         return (
-          <div key={t.ticker} className={`agx-flow-chip${t.error ? " is-error" : ""}`} title={t.error || `${t.ticker}: calls ${formatPremium(t.callPremium)} · puts ${formatPremium(t.putPremium)}`}>
+          <button type="button" key={t.ticker} data-testid="agx-flow-chip" onClick={() => onOpen?.(t.ticker)}
+            aria-label={`Open ${t.ticker}`}
+            className={`agx-flow-chip${t.error ? " is-error" : ""}${empty ? " is-empty" : ""}`} title={t.error || `${t.ticker}: calls ${formatPremium(t.callPremium)} · puts ${formatPremium(t.putPremium)}. Tap to open ${t.ticker}.`}>
             <div className="agx-flow-chip-head">
               <b>{t.ticker}</b>
               <small>{t.pending && !hasData(t) ? "reading…" : t.error && !hasData(t) ? "no data" : `${t.unusualCount} unusual`}</small>
@@ -88,7 +94,7 @@ function TickerStrip({ tickers }) {
               <span className="is-call">C {formatPremium(t.callPremium)}</span>
               <span className="is-put">P {formatPremium(t.putPremium)}</span>
             </div>
-          </div>
+          </button>
         );
       })}
     </div>
@@ -236,6 +242,7 @@ export default function AgxFlowPanel({ onOpenChart, onOpenOptions }) {
   }, [prefs.board, watchlist]);
   // Search any ticker (2026-11-17 "Add search ticker also"): it replaces the board until "Back to board" (not saved).
   const [search, setSearch] = useState("");
+  const [reveal, setReveal] = useState(0);                // bumped when a ticker card is tapped: scroll its story into view
   const symbols = useMemo(() => {
     if (search) return [search];
     if (prefs.board === "watchlist") return watchlist === null ? [] : watchlistBoard(watchlist);
@@ -343,7 +350,7 @@ export default function AgxFlowPanel({ onOpenChart, onOpenOptions }) {
       </header>
       <TickerSearch active={search} onSearch={(ticker) => { setError(""); setSearch(ticker); }} onClear={() => { setError(""); setSearch(""); }} />
       {search ? <p className="agx-flow-updated" data-testid="search-showing">Showing {search} only</p> : null}
-      {search ? <TickerStory ticker={search} /> : null}
+      {search ? <TickerStory ticker={search} reveal={reveal} /> : null}
 
       {reading ?<p className="agx-flow-status">{readingText(progress)}</p> : null}
       {!reading && updated ? <p className="agx-flow-updated">{updated}{progress.updating ? " · refreshing" : ""}</p> : null}
@@ -359,7 +366,12 @@ export default function AgxFlowPanel({ onOpenChart, onOpenOptions }) {
           format={formatPremium}
         />
       ) : null}
-      {tickers.length ? <TickerStrip tickers={stripTickers(tickers)} /> : null}
+      {overnightEmpty(data, tickers) ? (
+        <p className="agx-flow-status" data-testid="flow-overnight-note">
+          Option trading numbers reset to zero overnight, so every ticker shows $0 right now. Today's bets show here from 9:30 AM ET.
+        </p>
+      ) : null}
+      {tickers.length ? <TickerStrip tickers={stripTickers(tickers)} onOpen={(ticker) => { setError(""); setSearch(ticker); setReveal((n) => n + 1); }} /> : null}
 
       {data && !rows.length && !note ? (
         <p className="agx-flow-empty">

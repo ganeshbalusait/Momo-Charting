@@ -145,3 +145,13 @@ test("2026-11-19 'add up to 12 months': each month band asks the server for its 
     assert.equal(flowQuery(["NVDA"], { expiry: id }), `/api/agx-flow?symbols=NVDA&expiry=${id}`);
   }
 });
+
+test("2026-11-20 'I see data 0': overnight with every ticker at $0 the page says why", async () => {
+  const { overnightEmpty } = await import("./agxFlow.js");
+  const zero = { ticker: "NVDA", callPremium: 0, putPremium: 0, fetchedAt: "2026-11-19T23:49:00-05:00" };
+  assert.equal(overnightEmpty({ marketOpen: false }, [zero, { ...zero, ticker: "AAPL" }]), true);
+  assert.equal(overnightEmpty({ marketOpen: true }, [zero]), false, "in market hours $0 is real");
+  assert.equal(overnightEmpty({ marketOpen: false }, [zero, { ...zero, callPremium: 5 }]), false);
+  assert.equal(overnightEmpty({ marketOpen: false }, []), false);
+  assert.equal(overnightEmpty(null, [zero]), false);
+});

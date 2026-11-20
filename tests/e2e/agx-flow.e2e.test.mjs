@@ -332,3 +332,45 @@ for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]
     });
   });
 }
+
+// 2026-11-20 "I see data 0 it's not working and panel it's not clicking": overnight, every ticker at $0 gets a plain
+// line saying why, the empty bars are grey (not a fake 50/50), and a tap on a ticker card opens that ticker.
+for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]) {
+  const phone = Boolean(viewport);
+  e2eTest(`AGX Flow overnight: $0 explained and a ticker card opens its ticker at ${label}`, async () => {
+    const zero = (ticker) => ({ ticker, spot: 100, callPremium: 0, putPremium: 0, callVolume: 0, putVolume: 0, unusualCount: 0,
+      cached: true, pending: false, error: null, fetchedAt: "2026-11-19T23:49:00-05:00" });
+    const night = { ...BOARD, marketOpen: false, rows: [], tickers: ["AAPL", "NVDA", "TSLA"].map(zero) };
+    const story = { ticker: "NVDA", ready: true, pending: false, verdict: "On long bets, more people hold Puts on NVDA.", sections: [],
+      meaning: "A Call is a bet that the price goes UP.", notAdvice: "This is not advice." };
+    const reads = {
+      "GET /api/agx-flow": { json: night },
+      "GET /api/ticker-story": { json: story },
+      "GET /api/agx-flow/alert": { json: { on: false, signedIn: true, hasPhone: false } },
+    };
+    await withApp({ view: "AGX Flow", ...(viewport ? { viewport } : {}), fakeReads: reads }, async (app) => {
+      const { page } = app;
+      const view = page.locator('[data-testid="agx-flow-view"]');
+      const note = view.getByTestId("flow-overnight-note");
+      await note.waitFor({ timeout: 60_000 });
+      assert.match(await note.innerText(), /reset to zero overnight[\s\S]*from 9:30 AM ET/);
+      const chips = view.getByTestId("agx-flow-chip");
+      assert.equal(await chips.count(), 3);
+      assert.match(await chips.first().getAttribute("class"), /is-empty/);
+      const nvda = view.getByRole("button", { name: "Open NVDA" });
+      await page.evaluate(() => { document.querySelectorAll("*").forEach((el) => { if (el.scrollHeight > el.clientHeight + 10) el.scrollTop = el.scrollHeight; }); window.scrollTo(0, document.body.scrollHeight); });
+      await nvda.scrollIntoViewIfNeeded();
+      await (phone ? nvda.tap() : nvda.click());
+      await view.getByTestId("search-showing").waitFor({ timeout: 10_000 });
+      assert.equal((await view.getByTestId("search-showing").innerText()).trim(), "Showing NVDA only");
+      await view.getByTestId("ticker-story-verdict").waitFor({ timeout: 10_000 });
+      assert.match(await view.getByTestId("ticker-story").innerText(), /NVDA in simple words/i);
+      // "If I click anything like msft it's not showing anything": the card must come into view, not open off screen.
+      const seen = async () => { const b = await view.getByTestId("ticker-story").boundingBox(); return b && b.y >= -1 && b.y < page.viewportSize().height - 40; };
+      for (let i = 0; i < 30 && !(await seen()); i += 1) await page.waitForTimeout(100);
+      assert.ok(await seen(), "the ticker card is off screen after the tap");
+      if (phone) assert.equal(await overflowsSideways(page), false);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}

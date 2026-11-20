@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import "./simpleWhy.css";
 import { MARKS } from "./simpleWhy.js";
@@ -7,9 +7,15 @@ import { storyUrl, STORY_POLL_PENDING_MS, STORY_POLL_READY_MS } from "./tickerSt
 // One ticker in simple words (2026-11-20, "If I see leap oi scanner like INTC I don't know anything like buyers or
 // seller ... then I have to search agx flow ... I feel little confusion"). Shown at the top of LEAP OI Scanner and AGX
 // Flow when a ticker is searched: the same card on both pages, built by the server from both (momx/ticker_story.py).
-export default function TickerStory({ ticker }) {
+export default function TickerStory({ ticker, reveal = 0 }) {
   const [story, setStory] = useState(null);
   const [error, setError] = useState("");
+  const box = useRef(null);
+  // Opened by tapping a ticker card lower down (2026-11-20, "If I click anything like msft it's not showing anything"):
+  // the page scrolls inside its own box on a phone, so bring the card itself into view.
+  useEffect(() => {
+    if (reveal && box.current?.scrollIntoView) box.current.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [reveal, ticker]);
   useEffect(() => {
     if (!ticker) return undefined;
     let alive = true;
@@ -33,7 +39,7 @@ export default function TickerStory({ ticker }) {
   }, [ticker]);
   if (!ticker) return null;
   return (
-    <section className="simple-why ticker-story" data-testid="ticker-story" aria-label={`${ticker} in simple words`}>
+    <section ref={box} className="simple-why ticker-story" data-testid="ticker-story" aria-label={`${ticker} in simple words`}>
       <h4>{ticker} in simple words</h4>
       {error ? <p className="simple-why-advice" role="alert">{error}</p> : null}
       {!story && !error ? <p>Loading…</p> : null}

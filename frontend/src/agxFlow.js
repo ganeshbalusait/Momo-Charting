@@ -103,6 +103,14 @@ export function hasData(t) {
   return Boolean(t?.fetchedAt);
 }
 
+// Market closed and every ticker read with $0 on both sides (2026-11-20 "I see data 0 it's not working"): Schwab
+// reports option volume as 0 overnight, so the page says so instead of looking broken.
+export function overnightEmpty(data, tickers) {
+  const list = Array.isArray(tickers) ? tickers : [];
+  return Boolean(data && data.marketOpen === false && list.length
+    && list.every((t) => !(Number(t?.callPremium) || 0) && !(Number(t?.putPremium) || 0)));
+}
+
 // pending = tickers with no numbers yet (the "Reading Schwab… (n of m)" line); updating = being re-read, numbers shown.
 export function readingProgress(tickers) {
   const list = Array.isArray(tickers) ? tickers : [];

@@ -126,3 +126,4 @@
 .leapoi-flow.is-mid .leapoi-flow-word { background: rgba(139, 149, 165, .18); color: #c3c9d4; }
 .leapoi-flow-unusual { padding: 1px 8px; border-radius: 6px; font-size: 12px; background: rgba(243, 189, 55, .16); color: #f3bd37; }
 .leapoi-card-grid .leapoi-flow-fact { grid-column: 1 / -1; }
+.oi-dom[data-leader="none"] .oi-dom-bar span { background: #3a4252 !important; }
