@@ -3,7 +3,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_TILES, lynchCounts, lynchMissing, lynchRows, lynchSheet } from "./longTermLynch.js";
+import {
+  LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_SCOPE_LABEL, LYNCH_TILES, defaultLynchScope, lynchCounts, lynchMissing, lynchRows, lynchSheet,
+} from "./longTermLynch.js";
 
 const row = (over = {}) => ({
   symbol: "ADBE", name: "Adobe", signal: "BUY", quality: "HIGH", young: false, financial: false, price: 220,
@@ -135,7 +137,33 @@ test("Mag7 lists every Mag7 company, quality or not; Watchlist keeps to quality 
   // a list the server did not send is empty, never everything
   assert.deepEqual(lynchRows(rows, { scope: "Mag7", lists: {} }), []);
   assert.deepEqual(lynchRows(rows, { scope: "Mag7" }), []);
-  assert.deepEqual(LYNCH_SCOPES, ["Quality", "Mag7", "Watchlist"]);
+  assert.deepEqual(LYNCH_SCOPES, ["Both", "Quality", "Mag7", "Watchlist"]);
+});
+
+// 2026-11-20 "Confused here which one buy?": the first card was a Rule #1 AVOID.
+// "Both agree" = Warren's rule says BUY today AND Peter's tag is CHEAP.
+test("Both agree lists only the companies that are a Rule #1 BUY and Peter CHEAP", () => {
+  const rows = [
+    row({ symbol: "ZM", signal: "AVOID", pe: 7.8, epsGrowth: 0.37 }),            // Peter CHEAP, Warren skips
+    row({ symbol: "QCOM", signal: "WAIT" }),                                    // Peter CHEAP, Warren waits
+    row({ symbol: "DECK", signal: "BUY", pe: 10.5, epsGrowth: 0.36 }),          // both
+    row({ symbol: "ADBE", signal: "BUY" }),                                     // both
+    row({ symbol: "COST", signal: "BUY", pe: 52 }),                             // Warren BUY but Peter PRICEY
+    row({ symbol: "MU", signal: "BUY", cyclical: "chips" }),                    // a cyclical is never CHEAP
+    row({ symbol: "TSLA", signal: "BUY", quality: "LOW" }),                     // not a quality company
+  ];
+  assert.deepEqual(lynchRows(rows, { scope: "Both" }).map((x) => x.row.symbol), ["DECK", "ADBE"]);
+  assert.deepEqual(lynchRows(rows, { scope: "Both", query: "adbe" }).map((x) => x.row.symbol), ["ADBE"]);
+  assert.deepEqual(lynchRows([row({ signal: "WAIT" })], { scope: "Both" }), []);
+  assert.equal(LYNCH_SCOPES[0], "Both");
+  assert.equal(LYNCH_SCOPE_LABEL.Both, "Both agree");
+});
+
+test("the Peter view opens on Both agree when it has a company, else on Quality", () => {
+  assert.equal(defaultLynchScope([row({ signal: "BUY" })]), "Both");
+  assert.equal(defaultLynchScope([row({ signal: "WAIT" }), row({ signal: "AVOID" })]), "Quality");
+  assert.equal(defaultLynchScope([]), "Quality");
+  assert.equal(defaultLynchScope(null), "Quality");
 });
 
 test("why a Mag7 company has no star sheet", () => {

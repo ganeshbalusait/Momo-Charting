@@ -45,7 +45,9 @@ import {
 } from "./longTerm";
 import { glossaryEntry, glossaryMatch } from "./longTermGlossary";
 import { SIMPLE_FOOT, simpleWhy } from "./longTermSimple.js";
-import { LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_TILES, lynchCounts, lynchRows } from "./longTermLynch.js";
+import {
+  LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_SCOPE_LABEL, LYNCH_TILES, defaultLynchScope, lynchCounts, lynchRows,
+} from "./longTermLynch.js";
 import AnalystCard from "./AnalystCard.jsx";
 import TechnicalCard from "./TechnicalCard.jsx";
 import { analystCard } from "./analystGauge.js";
@@ -716,7 +718,7 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
 // that are too old; the rows request runs at once on return.
 export const LONG_TERM_SESSION = {
   data: null, acceptedAt: 0, tile: null, query: "", openSym: null, details: {}, leaps: {},
-  peter: false, peterTile: null, peterScope: "Quality",
+  peter: false, peterTile: null, peterScope: null,
 };
 
 // A chat link to one company: search for it, open its row, and clear the tile so
@@ -752,12 +754,14 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   // in place of the Rule #1 table. Kept for this visit only, like a tile.
   const [peter, setPeter] = useState(() => !!S.peter);
   const [peterTile, setPeterTile] = useState(() => S.peterTile || null);
-  // Quality (every quality company) | Mag7 (every Mag7 company) | Watchlist (its quality companies)
-  const [peterScope, setPeterScope] = useState(() => (LYNCH_SCOPES.includes(S.peterScope) ? S.peterScope : "Quality"));
+  // Both agree (Rule #1 BUY and Peter CHEAP) | Quality (every quality company) | Mag7 (every Mag7
+  // company) | Watchlist (its quality companies). Until he picks one (null), the view opens on Both
+  // agree when it has a company, else on Quality ("Confused here which one buy?", 11-20).
+  const [pickedScope, setPeterScope] = useState(() => (LYNCH_SCOPES.includes(S.peterScope) ? S.peterScope : null));
   // keep the session copy current (cheap: references, no copies)
   useEffect(() => {
-    Object.assign(LONG_TERM_SESSION, { data, acceptedAt, tile: prefs.tile, query, openSym, details, leaps, peter, peterTile, peterScope });
-  }, [data, acceptedAt, prefs.tile, query, openSym, details, leaps, peter, peterTile, peterScope]);
+    Object.assign(LONG_TERM_SESSION, { data, acceptedAt, tile: prefs.tile, query, openSym, details, leaps, peter, peterTile, peterScope: pickedScope });
+  }, [data, acceptedAt, prefs.tile, query, openSym, details, leaps, peter, peterTile, pickedScope]);
   const [clock, setClock] = useState(() => Date.now());
   const wrapRef = useRef(null);
   const phone = useIsPhone();
@@ -1002,6 +1006,8 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   );
   const cols = useMemo(() => columns("desktop"), []);
   const peterLists = current?.meta?.lists && typeof current.meta.lists === "object" ? current.meta.lists : null;
+  const autoScope = useMemo(() => (peter ? defaultLynchScope(guarded) : "Quality"), [peter, guarded]);
+  const peterScope = pickedScope || autoScope;
   const peterAll = useMemo(
     () => (peter ? lynchRows(guarded, { scope: peterScope, lists: peterLists }) : []),
     [peter, guarded, peterScope, peterLists],
@@ -1116,7 +1122,8 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
       <div className="long-term-empty">
         {peterAll.length
           ? `No company matches${query ? ` “${query}”` : ""}.`
-          : peterScope === "Quality" ? "No quality company can be scored right now."
+          : peterScope === "Both" ? "No company passes both checklists today. Tap Quality to see every quality company."
+            : peterScope === "Quality" ? "No quality company can be scored right now."
             : peterLists ? `No ${peterScope} company to show.` : `The ${peterScope} list has not loaded yet.`}
       </div>
     );
@@ -1338,17 +1345,24 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
                 type="button"
                 aria-pressed={peterScope === s}
                 data-testid={`long-term-lynch-scope-${s}`}
-                title={s === "Quality" ? "Every quality company (return on capital 20%+)"
+                className={s === "Both" ? "is-both" : undefined}
+                title={s === "Both" ? "Warren's rule says BUY today and Peter's tag is CHEAP"
+                  : s === "Quality" ? "Every quality company (return on capital 20%+)"
                   : s === "Mag7" ? "Every Mag7 company, quality or not" : "The quality companies on your Watchlist"}
                 onClick={() => {
                   setOpenSym(null);
                   setPeterScope(s);
                 }}
               >
-                {s} <b>{peterScopeCounts[s] ?? 0}</b>
+                {LYNCH_SCOPE_LABEL[s]} <b>{peterScopeCounts[s] ?? 0}</b>
               </button>
             ))}
           </div>
+          {peterScope === "Both" ? (
+            <p className="long-term-lynch-legend" data-testid="long-term-lynch-both-note">
+              <b>Both agree:</b> Warren&apos;s checklist says the price is low enough to buy today, and Peter&apos;s says the price is low for the growth. Tap a card to read why in simple words. Two checklists agreeing is not a promise the price goes up.
+            </p>
+          ) : null}
           <div className="long-term-tiles" role="group" aria-label="Filter by price for growth">
             {LYNCH_TILES.map((t) => {
               const active = peterTile === t;

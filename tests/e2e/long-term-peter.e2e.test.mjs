@@ -38,13 +38,13 @@ const rows = () => [
 const LISTS = { Mag7: ["AAPL", "NVDA", "TSLA", "AMZN", "SPY"], Watchlist: ["COST", "HD", "TSLA"] };
 const ALL = ["AAPL 5/5", "MU 4/4", "NVDA 4/5", "COST 3/5"];
 
-const reads = () => ({
+const reads = (list = rows) => ({
   "GET /api/long-term": (read) => ({ json: {
     meta: {
       universe: 7, scored: 6, etfs: ["SPY"], noFilings: [], lists: LISTS, refreshedAt: "2026-11-19T03:00:00-05:00", refreshing: null,
       deferredUntil: null, mos: Number(new URLSearchParams(read.search).get("mos") || 50),
     },
-    rows: rows(),
+    rows: list(),
   } }),
   "GET /api/long-term/analyst": { status: 404, json: { error: "no analyst data" } },
   "GET /api/long-term/AAPL": { json: {
@@ -158,7 +158,7 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     // the three groups, with how many cards each holds
     assert.deepEqual(
       await p.locator(".long-term-lynch-scope button").evaluateAll((els) => els.map((el) => el.innerText.replace(/\s+/g, " ").trim())),
-      ["Quality 4", "Mag7 4", "Watchlist 1"],
+      ["Both agree 0", "Quality 4", "Mag7 4", "Watchlist 1"],
     );
     assert.equal(await pressed(p, "long-term-lynch-scope-Quality"), "true");
     // tap the card: the Why drawer opens under it; tap again: it closes
@@ -211,7 +211,7 @@ e2eTest("on a phone the groups fit and a tapped card shows its details without s
     await p.getByTestId("long-term-card-AAPL").waitFor({ timeout: 90_000 });
     await p.getByTestId("long-term-peter").click();
     await p.getByTestId("long-term-lynch-list").waitFor({ timeout: 20_000 });
-    for (const scope of ["Quality", "Mag7", "Watchlist"]) {
+    for (const scope of ["Both", "Quality", "Mag7", "Watchlist"]) {
       const box = await p.getByTestId(`long-term-lynch-scope-${scope}`).boundingBox();
       assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `${scope} button at ${JSON.stringify(box)}`);
     }
@@ -232,4 +232,30 @@ e2eTest("on a phone the groups fit and a tapped card shows its details without s
     assert.equal(await overflowsSideways(p), false);
     assert.deepEqual(app.pageErrors, []);
   });
+});
+
+// 2026-11-20 "Confused here which one buy?": the first card on the list was a Rule #1 AVOID.
+e2eTest("with a company both checklists like, Peter opens on Both agree and shows only those", async () => {
+  // ADBE: a Rule #1 BUY that Peter tags CHEAP. AAPL (WAIT) and the others are not on Both agree.
+  const list = () => [...rows(), row({ symbol: "ADBE", name: "Adobe", signal: "BUY", price: 70, refPrice: 70, pe: 7.8, reason: "price $70 ≤ Safety Buy $80" })];
+  for (const viewport of [undefined, PHONE]) {
+    await withApp({ view: VIEW, viewport, fakeReads: reads(list) }, async (app) => {
+      const p = app.page;
+      await p.getByTestId(viewport ? "long-term-card-AAPL" : "long-term-row-AAPL").waitFor({ timeout: 90_000 });
+      await p.getByTestId("long-term-peter").click();
+      await p.getByTestId("long-term-lynch-list").waitFor({ timeout: 20_000 });
+      assert.equal(await pressed(p, "long-term-lynch-scope-Both"), "true", "opens on Both agree");
+      assert.equal((await p.getByTestId("long-term-lynch-scope-Both").innerText()).replace(/\s+/g, " ").trim(), "Both agree 1");
+      assert.deepEqual(await listed(p), ["ADBE 5/5"]);
+      assert.match(await p.getByTestId("long-term-lynch-both-note").innerText(), /Both agree:[\s\S]*not a promise the price goes up/);
+      const row4 = await p.locator(".long-term-lynch-scope").boundingBox();
+      assert.ok(row4 && row4.x >= 0 && row4.x + row4.width <= (viewport ? PHONE.width : 4000) + 1, `group buttons at ${JSON.stringify(row4)}`);
+      // his own pick sticks: Quality shows everything again, with ADBE in it
+      await p.getByTestId("long-term-lynch-scope-Quality").click();
+      assert.deepEqual(await listed(p), ["ADBE 5/5", "AAPL 5/5", "MU 4/4", "NVDA 4/5", "COST 3/5"]);
+      assert.equal(await p.getByTestId("long-term-lynch-both-note").count(), 0);
+      if (viewport) assert.equal(await overflowsSideways(p), false);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }
 });

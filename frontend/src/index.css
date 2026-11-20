@@ -23342,6 +23342,10 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-lynch-actions { justify-content: flex-start; }
 .long-term-lynch-scope { align-self: flex-start; flex: none; }
 .long-term-lynch-scope button b { margin-left: 4px; color: inherit; font-weight: 800; opacity: .75; }
+.long-term-lynch-scope { max-width: 100%; }
+.long-term-lynch-scope button { padding: 0 9px; white-space: nowrap; }
+.long-term-lynch-scope button.is-both { color: var(--lt-green); }
+.long-term-lynch-scope button.is-both[aria-pressed="true"] { background: rgba(57, 255, 136, .16); color: #d9ffe8; }
 .long-term-lynch-warn { margin: 0; color: #f0a6ff; font-size: 11px; line-height: 1.4; }
 .long-term-lynch-warn.is-inventory { color: var(--lt-amber); }
 .long-term-lynch-card.is-setup { border-color: rgba(232, 121, 249, .4); }
