@@ -2667,6 +2667,7 @@ body.oi-chart-companion-resizing { cursor: col-resize !important; user-select: n
 .oi-finder-indicators-popover label > i.is-relVolCandles { background: linear-gradient(90deg,#00ffff,#ff00ff); }
 .oi-finder-indicators-popover label > i.is-cloudMaxMtf { background: linear-gradient(90deg,#00ffff,#ff00ff); }
 .oi-finder-indicators-popover label > i.is-autoFibSingleTf { background: linear-gradient(90deg,#00bfff,#00ffff,#ff00ff,#ff006a); }
+.oi-finder-indicators-popover label > i.is-fibSwing { background: linear-gradient(90deg,#26a69a,#9aa4b2,#ef5350); }
 .oi-finder-indicators-popover label > i.is-ichimoku { background: linear-gradient(90deg,#74bde8,#ee82ee,#00ffff,#ff00ff); }
 .oi-finder-indicators-popover label > i.is-squeezeMomentumLower { background: linear-gradient(90deg,#00ffff,#5f0066,#ff00ff,#004266); }
 .oi-finder-indicators-popover label > i.is-mtfCloudLabelLower { background: linear-gradient(90deg,#00b2b2 0 50%,#993c99 50%); }
