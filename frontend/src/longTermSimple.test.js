@@ -122,7 +122,11 @@ test("when Peter would sell: no profit target, and it depends on the kind of com
 test("Peter cannot tell when the company cannot be scored, and says why", () => {
   const { peter } = simpleWhy(row({ epsGrowth: -0.05 }));
   assert.equal(peter.headline, "Would Peter buy it? He cannot tell: earnings did not grow.");
-  assert.deepEqual([peter.lines, peter.todo, peter.sell], [[], null, null]);
+  assert.deepEqual([peter.lines, peter.todo, peter.sell], [[{ mark: "info", text: "You pay $12.30 for every $1 it earns in a year." }], null, null]);
+  // Tesla 11-20: no growth rate because it lost money at the start of the ten years
+  const tsla = simpleWhy(row({ epsGrowth: null, pe: 402.86 })).peter;
+  assert.equal(tsla.headline, "Would Peter buy it? He cannot tell: its profit growth cannot be measured: it lost money at the start of the ten years, or a year is missing.");
+  assert.deepEqual(tsla.lines, [{ mark: "info", text: "You pay $403 for every $1 it earns in a year." }]);
 });
 
 test("the footer says these explain and do not tell you what to do", () => {

@@ -46,6 +46,7 @@ import {
 import { glossaryEntry, glossaryMatch } from "./longTermGlossary";
 import { SIMPLE_FOOT, SIMPLE_FOOT_ONE, simpleWhy } from "./longTermSimple.js";
 import {
+  lynchNoSheet,
   LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_SCOPE_LABEL, LYNCH_TILES, defaultLynchScope, lynchCounts, lynchRows,
 } from "./longTermLynch.js";
 import AnalystCard from "./AnalystCard.jsx";
@@ -692,8 +693,11 @@ function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
           ) : null}
         </>
       ) : (
-        <span className="long-term-card-bottom" data-testid={`long-term-lynch-nosheet-${row.symbol}`}>
-          <span>No star sheet: <b>{reason}</b></span>
+        <span className="long-term-lynch-buy is-cannot" data-testid={`long-term-lynch-nosheet-${row.symbol}`} data-answer="CANNOT TELL">
+          <span className="long-term-lynch-buy-q">Would Peter buy it?</span>
+          <b>CANNOT TELL</b>
+          <span className="long-term-lynch-buy-why">{lynchNoSheet(row)?.why || `${reason}.`}</span>
+          {lynchNoSheet(row)?.pays ? <span className="long-term-lynch-buy-why">{lynchNoSheet(row).pays}</span> : null}
         </span>
       )}
       <span className="long-term-lynch-actions">

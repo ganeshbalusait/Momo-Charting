@@ -210,7 +210,9 @@ e2eTest("a tap on a Peter card opens its details, and Mag7 / Watchlist are their
     assert.deepEqual(await listed(p), ["AAPL 5/5", "TSLA 5/5", "NVDA 4/5"]);
     assert.equal(await p.getByTestId("long-term-lynch-lowq-TSLA").count(), 1);
     assert.equal(await p.getByTestId("long-term-lynch-lowq-AAPL").count(), 0);
-    assert.match(await p.getByTestId("long-term-lynch-nosheet-AMZN").innerText(), /No star sheet: earnings did not grow/);
+    // 2026-11-20 "Why I don't see data for tsla": the card still answers, says why, and what you pay
+    assert.equal((await p.getByTestId("long-term-lynch-nosheet-AMZN").innerText()).replace(/\s+/g, " ").trim(),
+      "Would Peter buy it? CANNOT TELL Earnings did not grow. You pay $30.00 for every $1 it earns in a year.");
     assert.equal(await p.getByTestId("long-term-lynch-SPY").count(), 0);
     // Watchlist: its quality companies only (HD and TSLA are on it, but not quality)
     await p.getByTestId("long-term-lynch-scope-Watchlist").click();

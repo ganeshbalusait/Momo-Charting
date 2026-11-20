@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  lynchNoSheet,
   LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_SCOPE_LABEL, LYNCH_TILES, defaultLynchScope, lynchCounts, lynchMissing, lynchRows, lynchSheet,
 } from "./longTermLynch.js";
 
@@ -208,7 +209,7 @@ test("why a Mag7 company has no star sheet", () => {
   assert.equal(lynchMissing(row({ signal: "STALE" })), "filings are stale");
   assert.equal(lynchMissing(row({ signal: "SHORT_HISTORY" })), "not enough years of filings");
   assert.equal(lynchMissing(row({ pe: null })), "no profit, so no P/E");
-  assert.equal(lynchMissing(row({ epsGrowth: null })), "no earnings growth figure");
+  assert.equal(lynchMissing(row({ epsGrowth: null })), "its profit growth cannot be measured: it lost money at the start of the ten years, or a year is missing");
   assert.equal(lynchMissing(row({ epsGrowth: -0.1 })), "earnings did not grow");
   assert.equal(lynchMissing(row({})), null);
 });
@@ -249,4 +250,19 @@ test("the list is most stars first, then lowest PEG; a tile or the search narrow
   assert.deepEqual(lynchRows(rows, { query: "micro" }).map((x) => x.row.symbol), ["MSFT"]);
   assert.deepEqual(lynchRows(rows, { query: "deck" }).map((x) => x.row.symbol), ["DECK"]);
   assert.deepEqual(lynchRows(null), []);
+});
+
+// 2026-11-20 "Why I don't see data for tsla": the card said only "no earnings growth figure".
+// Tesla lost money in 2016, the start of the ten years, so a growth rate cannot be measured.
+test("a company with no star sheet still answers the question: CANNOT TELL, why, and what you pay", () => {
+  const tsla = lynchNoSheet(row({ symbol: "TSLA", quality: "LOW", pe: 402.86, epsGrowth: null }));
+  assert.deepEqual(tsla, {
+    answer: "CANNOT TELL",
+    why: "Its profit growth cannot be measured: it lost money at the start of the ten years, or a year is missing.",
+    pays: "You pay $403 for every $1 it earns in a year.",
+  });
+  assert.equal(lynchNoSheet(row({ epsGrowth: -0.05, pe: 30 })).why, "Earnings did not grow.");
+  assert.equal(lynchNoSheet(row({ pe: null })).pays, null, "no profit, nothing to say about the price");
+  assert.equal(lynchNoSheet(row({ pe: 8.44, epsGrowth: null })).pays, "You pay $8.44 for every $1 it earns in a year.");
+  assert.equal(lynchNoSheet(row({})), null, "a company with a sheet has no such card");
 });

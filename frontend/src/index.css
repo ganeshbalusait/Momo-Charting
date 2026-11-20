@@ -23343,6 +23343,7 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-lynch-buy.is-wait b { color: var(--lt-amber); }
 .long-term-lynch-buy.is-no b { color: var(--lt-red); }
 .long-term-lynch-buy.is-careful b { color: #f0a6ff; }
+.long-term-lynch-buy.is-cannot b { color: #a6a6b0; }
 .long-term-simple-grid.is-one { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 760px) {
   .long-term-simple-grid { grid-template-columns: minmax(0, 1fr); }

@@ -67,7 +67,7 @@ export function lynchMissing(row) {
   }
   if (!isNum(row.pe) || row.pe <= 0) return "no profit, so no P/E";
   const growth = pct(row.epsGrowth);
-  if (growth == null) return "no earnings growth figure";
+  if (growth == null) return "its profit growth cannot be measured: it lost money at the start of the ten years, or a year is missing";
   if (growth <= 0) return "earnings did not grow";
   return null;
 }
@@ -105,6 +105,21 @@ function wouldBuy({ row, checks, verdict, peg, growth, cyclical, inventoryWarnin
   const at = row.price / peg;
   const price = at >= 10 ? Math.round(at) : Math.round(at * 100) / 100;
   return { answer: "WAIT", why: `${base} Peter's price: $${price.toLocaleString("en-US")} or less.`, price };
+}
+
+// The card of a company with no star sheet (2026-11-20, "Why I don't see data for tsla"): it
+// still answers the question, says why in a full sentence, and says what you pay per $1 of
+// yearly profit when there is a profit. null when the company can have a sheet.
+export function lynchNoSheet(row) {
+  const reason = lynchMissing(row);
+  if (!reason) return null;
+  const pe = row && isNum(row.pe) && row.pe > 0 ? row.pe : null;
+  const per = pe == null ? null : pe >= 100 ? `$${Math.round(pe).toLocaleString("en-US")}` : `$${pe.toFixed(2)}`;
+  return {
+    answer: "CANNOT TELL",
+    why: `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`,
+    pays: per ? `You pay ${per} for every $1 it earns in a year.` : null,
+  };
 }
 
 export function lynchSheet(row, { anyQuality = false } = {}) {

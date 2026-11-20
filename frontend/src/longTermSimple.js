@@ -8,7 +8,7 @@
 // Every sentence is a number already on the row, said plainly; nothing here
 // predicts a price. Pure functions, no React.
 
-import { lynchMissing, lynchSheet } from "./longTermLynch.js";
+import { lynchMissing, lynchNoSheet, lynchSheet } from "./longTermLynch.js";
 
 export const SIMPLE_FOOT = "These are two famous investors' checklists, worked out from the company's own reports. They explain; they do not tell you what to do with your money.";
 
@@ -104,7 +104,13 @@ function peterSell(sheet, row) {
 
 function peterSide(row) {
   const sheet = lynchSheet(row, { anyQuality: true });
-  if (!sheet) return { headline: `Would Peter buy it? He cannot tell: ${lynchMissing(row) || "it cannot be scored"}.`, lines: [], todo: null, sell: null };
+  if (!sheet) {
+    const bare = lynchNoSheet(row);
+    return {
+      headline: `Would Peter buy it? He cannot tell: ${lynchMissing(row) || "it cannot be scored"}.`,
+      lines: bare?.pays ? [line("info", bare.pays)] : [], todo: null, sell: null,
+    };
+  }
   const by = Object.fromEntries(sheet.checks.map((c) => [c.key, c]));
   const mark = (c) => (c.passed === true ? "yes" : c.passed === false ? "no" : "info");
   const growth = Math.round(sheet.growthPct);
