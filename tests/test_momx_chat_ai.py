@@ -1301,3 +1301,31 @@ def test_a_plain_leap_strike_question_has_no_buyers_line():
     ctx = {"scope": "scanner", "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
     plan = chat_ai.sure_calls("nvda leap which strike", ctx, frozenset({"NVDA", "SPY"}))
     assert plan["calls"][0]["tool"] == "long_oi" and not plan.get("lines")
+
+
+# ---------------------------------------------------------------- "if 135 breaks below", 2026-11-20
+@pytest.mark.parametrize("question,ticker,price,side", [
+    ("If 135 broke below then", "NVDA", 135.0, "below"),           # his words, NVDA on screen
+    ("nvda breaks down under 140", "NVDA", 140.0, "below"),
+    ("what if it goes above 150", "NVDA", 150.0, "above"),
+    ("PLTR above 150?", "PLTR", 150.0, "above"),
+])
+def test_a_price_breaking_gets_the_next_chart_levels(question, ticker, price, side):
+    """His "If 135 broke below then" (NVDA on screen) got the help list. It is the chart's next levels beyond 135."""
+    from momx import chat_ai
+    ctx = {"scope": "owner", "account": "x", "pageTicker": "NVDA", "pageName": "Charts & OI", "ticker": None, "day": None,
+           "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY", "PLTR"}))
+    call = plan["calls"][0]
+    assert call["tool"] == "chart_levels" and call["args"]["ticker"] == ticker, (question, plan)
+    assert (call["args"]["break_price"], call["args"]["break_side"]) == (price, side)
+
+
+@pytest.mark.parametrize("question", ["stocks above 50 ema", "nvda below 9:30 high", "NVDA 140 put", "how many nvda calls above 200",
+                                      "is nvda over 20% down", "what is support and resistance for NVDA?"])
+def test_other_above_below_questions_keep_their_answers(question):
+    from momx import chat_ai
+    ctx = {"scope": "owner", "account": "x", "pageTicker": "NVDA", "pageName": "Charts & OI", "ticker": None, "day": None,
+           "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY", "PLTR"}))
+    assert not plan or all("break_price" not in c["args"] for c in plan["calls"]), (question, plan)

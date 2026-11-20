@@ -768,12 +768,38 @@ def _level_lines(levels: dict, focus: str | None) -> list[str]:
 #: listed every level but never said which were support and which resistance).
 _SR_WORDS = re.compile(r"\bsupports?\b|\bresistances?\b|\bs\s*/\s*r\b|\bsr\b")
 SR_PER_SIDE = 3
+#: The chart's weekly and monthly averages ("200eWk", "50eMo"), in words.
+_MA_NAMES = {"200eWk": "Weekly 200 EMA", "50eWk": "Weekly 50 EMA", "21eWk": "Weekly 21 EMA",
+             "200eMo": "Monthly 200 EMA", "50eMo": "Monthly 50 EMA", "21eMo": "Monthly 21 EMA"}
 
 
-def support_resistance(levels: dict) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
-    """(support below the close, nearest first; resistance above it, nearest first), up to SR_PER_SIDE each, from the
-    chart's own levels: averages, premarket / today / this week / previous day high and low, day and week pivots."""
+def break_lines(symbol: str, levels: dict, price: float, side: str) -> list[str]:
+    """"If NVDA breaks below 135" (2026-11-20, "If 135 broke below then" got the help list): the next levels the chart
+    has beyond that price, nearest first, and where the stock is now. Levels to watch, never a forecast."""
+    below, above = support_resistance(levels, around=price)
     close = levels.get("lastClose")
+    level = _money(price)
+    beyond = below if side == "below" else above
+    words = "; ".join(f"{_money(value)} ({name})" for name, value in beyond)
+    first = (f"If {symbol} falls below {level}, the next levels below it on the chart are: {words}." if side == "below"
+             else f"If {symbol} rises above {level}, the next levels above it on the chart are: {words}.")
+    if not beyond:
+        first = f"The chart has no level {'below' if side == 'below' else 'above'} {level}."
+    lines = [first]
+    if isinstance(close, (int, float)) and close > 0:
+        gap = (close - price) / close * 100
+        where = "above" if close > price else "below" if close < price else "at"
+        lines.append(f"{symbol} is at {_money(close)} now, {abs(gap):.1f}% {where} {level}." if where != "at" else f"{symbol} is at {level} now.")
+    lines.append("These are price levels traders watch, not a forecast: a level can break or hold.")
+    return lines
+
+
+def support_resistance(levels: dict, around: float | None = None) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """(levels below `around`, nearest first; levels above it, nearest first), up to SR_PER_SIDE each, from the chart's
+    own levels: SMA 200, premarket / today / this week / previous day, week and month high and low, day / week / month
+    pivots and the weekly and monthly averages. `around` defaults to the close (support and resistance); a price the
+    trader names ("if 135 breaks") asks what lies beyond that price instead."""
+    close = levels.get("lastClose") if around is None else around
     if not isinstance(close, (int, float)) or close <= 0:
         return [], []
     session, previous, pivots = levels.get("session") or {}, levels.get("previous") or {}, levels.get("pivots") or {}
@@ -790,13 +816,17 @@ def support_resistance(levels: dict) -> tuple[list[tuple[str, float]], list[tupl
         row = session.get(key) or {}
         add(f"{name} high".capitalize(), row.get("high"))
         add(f"{name} low".capitalize(), row.get("low"))
-    prior = previous.get("DAY") or {}
-    add("Previous day high", prior.get("high"))
-    add("Previous day low", prior.get("low"))
-    for frame, word in (("DAY", "Day"), ("WEEK", "Week")):
+    for frame, word in (("DAY", "day"), ("WEEK", "week"), ("MONTH", "month")):
+        prior = previous.get(frame) or {}
+        add(f"Previous {word} high", prior.get("high"))
+        add(f"Previous {word} low", prior.get("low"))
+    for frame, word in (("DAY", "Day"), ("WEEK", "Week"), ("MONTH", "Month")):
         row = pivots.get(frame) or {}
-        for key in ("R2", "R1", "PP", "S1", "S2"):
+        for key in ("R3", "R2", "R1", "PP", "S1", "S2", "S3"):
             add(f"{word} pivot {key}", row.get(key))
+    for average in levels.get("mtfMa") or []:
+        if isinstance(average, Mapping):
+            add(_MA_NAMES.get(str(average.get("label") or ""), str(average.get("label") or "Average")), average.get("value"))
     seen: set[float] = set()
     below, above = [], []
     for name, value in sorted(found, key=lambda item: abs(item[1] - close)):
@@ -841,7 +871,13 @@ def chart_levels_tool(args: Mapping, ctx: Mapping) -> dict:
         return reply
     levels, tape = result["levels"], result.get("tape") or {}
     lines = [f"{symbol} chart levels, {timeframe}. Newest candle {_candle_words(levels['lastTime'], timeframe)}, close {_money(levels['lastClose'])}."]
-    if _SR_WORDS.search(str(args.get("question") or "").lower()):
+    try:
+        break_price = float(args.get("break_price")) if args.get("break_price") is not None else None
+    except (TypeError, ValueError):
+        break_price = None
+    if break_price and break_price > 0 and args.get("break_side") in ("below", "above"):
+        lines += break_lines(symbol, levels, break_price, str(args["break_side"]))
+    elif _SR_WORDS.search(str(args.get("question") or "").lower()):
         lines += sr_lines(symbol, levels)
     lines += _level_lines(levels, _focus(args))
     if tape.get("historyLoading"):
@@ -992,7 +1028,9 @@ TOOLS = {
     "chart_levels": {
         "scope": "all",
         "description": "Levels on the chart for a ticker and timeframe: EMA 9/21/50, SMA 200, premarket, day and week high/low, previous day/week/month, day/week/month pivots, Woodies pivots on Daily.",
-        "args": {"type": "object", "properties": {**_ARGS_COMMON, "focus": {"type": "string", "enum": ["vwap", "ema", "sma", "premarket", "previous", "pivots"], "description": "One group of levels, if that is all that was asked."}}},
+        "args": {"type": "object", "properties": {**_ARGS_COMMON, "focus": {"type": "string", "enum": ["vwap", "ema", "sma", "premarket", "previous", "pivots"], "description": "One group of levels, if that is all that was asked."},
+                 "break_price": {"type": "number", "minimum": 0.01, "maximum": 1000000, "description": "A price the trader asks about breaking ('if 135 breaks below')."},
+                 "break_side": {"type": "string", "enum": ["below", "above"], "description": "Which way the price breaks."}}},
         "handler": chart_levels_tool,
     },
     "ema": {
