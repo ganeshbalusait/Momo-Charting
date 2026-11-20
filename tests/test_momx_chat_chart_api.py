@@ -518,6 +518,17 @@ def test_if_a_price_breaks_says_the_next_levels_beyond_it(route_charts):
     assert charts["calls"] == []
 
 
+@pytest.mark.parametrize("factor,side", [(1.04, "rises above"), (0.96, "falls below")])
+def test_if_it_breaks_a_price_with_no_way_named_reads_the_way_from_the_price_now(route_charts, factor, side):
+    """2026-11-20 chatbot check: "if spy breaks 700" names no way. A price over the stock breaks up, one under it down."""
+    levels = _expected("SPY", "5m")["levels"]
+    price = round(levels["lastClose"] * factor, 2)
+    with running_api() as api:
+        status, body = api.post(ROUTE, {"question": f"if spy breaks {price}", "context": {"pageName": "Charts & OI"}}, headers=REGULAR)
+    assert status == 200 and body["intent"] == "chart_levels", body
+    assert body["lines"][1].startswith(f"If SPY {side} {price:.2f}"), body["lines"]
+
+
 def test_break_lines_above_and_with_no_level_left():
     levels = {"lastClose": 136.31, "sma200": 144.12, "session": {"day": {"high": 144.69, "low": 134.82}},
               "previous": {"DAY": {"high": 158.13, "low": 143.0}},

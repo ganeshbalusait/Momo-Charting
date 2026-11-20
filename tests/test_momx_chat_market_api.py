@@ -303,3 +303,28 @@ def test_oi_buyers_or_sellers_is_answered_from_the_high_oi_board_with_no_ai(scra
     assert "Each one has a buyer and a seller" in body["lines"][0] and "High OI board" in said, body["lines"]
     assert "Quick Options" in [link["view"] for link in body["links"]], body["links"]
     assert spy == []                                       # certain words: no AI call
+
+
+# ---------------------------------------------------------------- everyday questions, 2026-11-20 ("check everything in chatbot")
+@pytest.mark.parametrize("headers", [ADMIN, REGULAR], ids=["owner", "regular"])
+@pytest.mark.parametrize("question,first", [
+    ("hi", "Hi. Ask me about any ticker in plain words"),
+    ("thanks", "You're welcome."),
+    ("top gainers", "The app's scanner ranks stocks by its own setup score (H/L), not by % gain or loss."),
+])
+def test_everyday_questions_get_the_apps_own_answer_with_no_ai(scratch, spy, headers, question, first, monkeypatch):
+    """With the free AI not answering, "hi" or "top gainers" got news headlines or scanner rules."""
+    monkeypatch.setattr(chat_ai, "understand", lambda *a, **k: (_ for _ in ()).throw(AssertionError("AI asked")))
+    with running_api() as api:
+        status, body = api.post(ROUTE, {"question": question, "context": {"pageTicker": "NVDA", "pageName": "Charts & OI"}}, headers=headers)
+    assert status == 200 and body["lines"][0].startswith(first), body["lines"]
+    assert not any(line.startswith(("Release note", "News,", "Scanner rule")) for line in body["lines"]), body["lines"]
+    assert spy == []
+
+
+def test_buy_or_sell_in_everyday_words_never_advises_and_shows_the_rules(scratch, spy, monkeypatch):
+    monkeypatch.setattr(chat_ai, "understand", lambda *a, **k: (_ for _ in ()).throw(AssertionError("AI asked")))
+    with running_api() as api:
+        status, body = api.post(ROUTE, {"question": "nvda buy or sell", "context": {"pageTicker": "NVDA"}}, headers=ADMIN)
+    assert status == 200 and body["lines"][0] == chat_ai.NO_ADVICE_LINE, body["lines"]
+    assert body["intent"] == "rules" and spy == []

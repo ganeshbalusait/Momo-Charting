@@ -713,7 +713,14 @@ def test_the_planner_schema_lists_the_args_the_tools_take():
     assert args["type"] == "object" and {"ticker", "expiry", "day", "time", "timeframe", "side", "list", "query"} <= set(args["properties"]), args
 
 
-@pytest.mark.parametrize("question,tool,ticker", [("how is amd trading right now", "quote", "AMD"), ("what is the iv on meta", "expected_move", "META"),
+def test_the_iv_on_a_named_ticker_is_answered_by_rule_for_that_ticker():
+    """2026-11-20: "what is the iv on meta" (NVDA on screen) used to reach the AI, which filled in META. It now gets
+    META's sentiment card (IV, put/call ratio) by rule, never NVDA's; the AI fill above uses a question it still reads."""
+    ctx = {"scope": "owner", "account": "x", "pageTicker": "NVDA", "pageName": "Charts & OI", "ticker": None, "day": None, "side": None, "now": NOW}
+    assert ai.sure_calls("what is the iv on meta", ctx, frozenset({"NVDA", "META"}))["calls"] == [{"tool": "sentiment", "args": {"ticker": "META"}}]
+
+
+@pytest.mark.parametrize("question,tool,ticker", [("how is amd trading right now", "quote", "AMD"), ("how big a move is priced in for meta", "expected_move", "META"),
                                                   ("what is amzn worth", "long_term", "AMZN"), ("any word on apple", "news", "AAPL")])
 @pytest.mark.parametrize("scope", ["scanner", "owner"])
 def test_a_planned_call_with_empty_args_uses_the_ticker_the_question_names(tmp_path, question, tool, ticker, scope):
@@ -1341,3 +1348,75 @@ def test_other_above_below_questions_keep_their_answers(question):
            "side": None, "now": NOW}
     plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY", "PLTR"}))
     assert not plan or all("break_price" not in c["args"] for c in plan["calls"]), (question, plan)
+
+
+# ---------------------------------------------------------------- everyday questions, 2026-11-20 ("check everything in chatbot")
+# With the free AI not answering, each of these got news headlines, scanner rules or "I did not understand"
+# ("how much nvda moved today" got the Bot's trade). Each now has the app's own answer, no AI.
+EVERYDAY = [
+    ("nvda buy or sell", "rules"), ("is it good time to buy nvda", "rules"), ("nvda call or put", "rules"),
+    ("which call to buy", "rules"), ("which strike to buy nvda", "rules"), ("where to buy nvda", "rules"),
+    ("which stock to buy today", "scanner_list"), ("nvda target", "analyst"), ("how much nvda moved today", "why_move"),
+    ("market today", "why_move"), ("where is the bottom", "chart_levels"), ("if nvda breaks 180", "chart_levels"),
+    ("if spy loses 650", "chart_levels"), ("nvda calls", "chain"), ("nvda puts", "chain"), ("nvda 0dte", "chain"),
+    ("big money nvda", "sentiment"), ("who is buying nvda calls", "sentiment"), ("nvda iv", "sentiment"),
+    ("leap or short term", "long_oi"), ("how far leap", "long_oi"), ("leap calls nvda", "long_oi"),
+    ("top stocks today", "scanner_list"), ("best stock today", "scanner_list"), ("momo stocks", "scanner_list"),
+    ("any a+ setups", "scanner_list"), ("top gainers", "scanner_list"), ("losers", "scanner_list"),
+    ("bull setups", "scanner_list"), ("bear setups", "scanner_list"), ("semiconductor today", "sectors"),
+    ("nvda trend", "technicals"), ("nvda squeeze", "technicals"), ("is nvda bullish", "technicals"),
+    ("nvda arrow", "technicals"), ("nvda 5 min", "chart_signals"), ("any buy signal", "chart_signals"),
+    ("what is delta", "chain"), ("what is oi", "walls"), ("explain expected move", "expected_move"),   # NVDA on screen: its number
+    ("paper account", "paper"),
+]
+
+
+@pytest.mark.parametrize("question,tool", EVERYDAY)
+def test_an_everyday_question_has_a_rule(question, tool):
+    from momx import chat_ai
+    ctx = {"scope": "owner", "account": "x", "pageTicker": "NVDA", "pageName": "Chart", "ticker": None, "day": None, "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY", "QQQ"}))
+    assert plan and plan["calls"] and plan["calls"][0]["tool"] == tool, (question, plan)
+
+
+def test_buy_or_sell_words_say_no_advice_and_never_pick():
+    from momx import chat_ai
+    ctx = {"scope": "owner", "account": "x", "pageTicker": "NVDA", "pageName": "Chart", "ticker": None, "day": None, "side": None, "now": NOW}
+    for question in ("nvda buy or sell", "which call to buy", "which stock to buy today"):
+        assert chat_ai.sure_calls(question, ctx, frozenset({"NVDA"}))["lines"][0] == chat_ai.NO_ADVICE_LINE, question
+
+
+@pytest.mark.parametrize("question,price,side", [("if nvda breaks 180", 180.0, "either"), ("if spy loses 650", 650.0, "below"),
+                                                  ("what if spy hits 700", 700.0, "either")])
+def test_a_price_with_no_clock_is_a_price(question, price, side):
+    """"if spy loses 650" read 650 as 6:50 and answered the scanner at 6:50."""
+    from momx import chat_ai
+    ctx = {"scope": "owner", "account": "x", "pageTicker": "NVDA", "pageName": "Chart", "ticker": None, "day": None, "side": None, "now": NOW}
+    call = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY"}))["calls"][0]
+    assert call["tool"] == "chart_levels" and call["args"]["break_price"] == price and call["args"]["break_side"] == side
+
+
+@pytest.mark.parametrize("question,line", [("hi", "GREETING_LINE"), ("hello", "GREETING_LINE"), ("what can you do", "GREETING_LINE")])
+def test_a_greeting_gets_examples_not_the_help_list(question, line):
+    from momx import chat_ai
+    ctx = {"scope": "scanner", "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
+    assert chat_ai.sure_calls(question, ctx, frozenset({"NVDA"})) == {"calls": [], "lines": [getattr(chat_ai, line)]}
+
+
+@pytest.mark.parametrize("question", ["hit me with nvda news", "nvda at 9:30", "spy below 9:30 high", "how did the bot do today",
+                                      "NVDA leap", "what are leaps"])
+def test_older_answers_are_not_taken_by_the_everyday_rules(question):
+    from momx import chat_ai
+    ctx = {"scope": "owner", "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY"}))
+    tools = [c["tool"] for c in (plan or {}).get("calls") or []]
+    assert not ({"rules", "scanner_list", "sentiment", "technicals", "analyst"} & set(tools)) or "nvda at 9:30" == question, (question, plan)
+    assert "chart_levels" not in tools or "9:30" not in question or "below" not in question or plan["calls"][0]["args"].get("break_price") is None
+
+
+@pytest.mark.parametrize("question", ["what is delta", "what is oi", "explain expected move", "what is theta"])
+def test_with_no_ticker_anywhere_a_term_is_its_meaning(question):
+    """The same words with no ticker on screen or in the conversation are the glossary meaning."""
+    from momx import chat_ai
+    ctx = {"scope": "owner", "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
+    assert chat_ai.sure_calls(question, ctx, frozenset({"NVDA"}))["calls"][0]["tool"] == "define", question

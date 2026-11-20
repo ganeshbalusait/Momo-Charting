@@ -2,6 +2,21 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-20T16:35:00-05:00",
+      "heading": "Ask: about 45 everyday questions now get a real answer, even when the AI helper is off",
+      "items": [
+        "We asked Ask about 150 everyday questions with the AI helper switched off (the free AI was not answering today). About 45 got news headlines, scanner rules or \"I did not understand\". Each now gets the app's own answer.",
+        "Buy or sell in everyday words (\"nvda buy or sell\", \"nvda call or put\", \"which strike to buy\", \"where to buy nvda\", \"which stock to buy today\"): Ask says it can't pick, then shows what the app's rules show plus the strikes with the most open interest, or the chart levels, or the scanner board.",
+        "\"If nvda breaks 180\" works without saying up or down: a price above the stock means breaking up, one below means breaking down. \"If spy loses 650\" is read as a price, not the time 6:50.",
+        "\"How much nvda moved today\" shows the stock's move today, not the Bot's trade. \"Market today\" shows SPY and QQQ.",
+        "\"nvda target\" shows analyst ratings and targets. \"nvda trend\", \"nvda squeeze\", \"is nvda bullish\" show the technicals. \"big money nvda\", \"who is buying nvda calls\", \"nvda iv\" show the sentiment card. \"nvda calls\", \"nvda puts\" and \"nvda 0dte\" show the option chain.",
+        "\"top stocks today\", \"top gainers\", \"losers\", \"momo stocks\", \"bull setups\" show the scanner board (and say plainly the scanner ranks by its setup score, not by % gain).",
+        "\"how far leap\" and \"leap or short term\" explain in plain words how far out LEAPs go, then show where the open interest is.",
+        "\"what is delta\", \"what is oi\" and \"explain expected move\" give the meaning. \"hi\", \"hello\" and \"what can you do\" give examples to try; \"thanks\" gets a reply.",
+        "Live after the next app server restart."
+      ]
+    },
+    {
       "at": "2026-11-20T16:13:54-05:00",
       "heading": "Charts: Fibonacci levels on Daily, Weekly and Monthly charts",
       "items": [

@@ -875,8 +875,12 @@ def chart_levels_tool(args: Mapping, ctx: Mapping) -> dict:
         break_price = float(args.get("break_price")) if args.get("break_price") is not None else None
     except (TypeError, ValueError):
         break_price = None
-    if break_price and break_price > 0 and args.get("break_side") in ("below", "above"):
-        lines += break_lines(symbol, levels, break_price, str(args["break_side"]))
+    break_side = args.get("break_side")
+    if break_side == "either" and break_price and levels.get("lastClose"):
+        # "if nvda breaks 180" names no way (2026-11-20): a price under the stock breaks down, one over it breaks up.
+        break_side = "below" if break_price < float(levels["lastClose"]) else "above"
+    if break_price and break_price > 0 and break_side in ("below", "above"):
+        lines += break_lines(symbol, levels, break_price, str(break_side))
         # "I need next support and resistance level also" (2026-11-20): the nearest of each from where it is now.
         lines += sr_lines(symbol, levels)[1:]
     elif _SR_WORDS.search(str(args.get("question") or "").lower()):
@@ -1032,7 +1036,7 @@ TOOLS = {
         "description": "Levels on the chart for a ticker and timeframe: EMA 9/21/50, SMA 200, premarket, day and week high/low, previous day/week/month, day/week/month pivots, Woodies pivots on Daily.",
         "args": {"type": "object", "properties": {**_ARGS_COMMON, "focus": {"type": "string", "enum": ["vwap", "ema", "sma", "premarket", "previous", "pivots"], "description": "One group of levels, if that is all that was asked."},
                  "break_price": {"type": "number", "minimum": 0.01, "maximum": 1000000, "description": "A price the trader asks about breaking ('if 135 breaks below')."},
-                 "break_side": {"type": "string", "enum": ["below", "above"], "description": "Which way the price breaks."}}},
+                 "break_side": {"type": "string", "enum": ["below", "above", "either"], "description": "Which way the price breaks; either = from where the stock is now."}}},
         "handler": chart_levels_tool,
     },
     "ema": {

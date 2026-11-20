@@ -755,7 +755,9 @@ _LEAP_WORD = re.compile(r"\bleaps?\b")
 _STRIKE_WORD = re.compile(r"\bstrikes?\b|\bcontracts?\b")
 #: "Leap which one is good" (2026-11-20, SPCX on screen) has no strike word and went to the AI, which did not answer,
 #: so he got release notes. A LEAP question asking which one / good / best is the same strikes question.
-_LEAP_CHOICE = re.compile(r"\bwhich\b|\bgood\b|\bbest\b|\bbetter\b|\bpick\b|\bchoose\b")
+_LEAP_CHOICE = re.compile(r"\bwhich\b|\bgood\b|\bbest\b|\bbetter\b|\bpick\b|\bchoose\b|\bcalls?\b|\bputs?\b|\bhow\s+(?:far|long)\b|\bor\s+short\b")
+#: "how far leap", "leap or short term" (2026-11-20): how far out, in plain words, then where the open interest is.
+_LEAP_HOW_FAR = re.compile(r"\bhow\s+(?:far|long|many\s+months)\b|\bor\s+short\b|\bshort[\s-]*term\s+or\b|\bwhich\s+expir\w*\b")
 #: Open interest on a ticker with no months word (2026-11-19, "Oi for nvda buyers or sellers?" got only the list of
 #: things the chat can answer, because the AI that reads unsure questions was over its free limit). The words are
 #: certain enough: the High OI board, and one plain line when the question asks who is buying or selling.
@@ -767,6 +769,17 @@ OI_NO_SIDE_LINE = ("Open interest counts the contracts still open. Each one has 
 _BREAK_SIDE = re.compile(r"(?P<below>\bbelow\b|\bunder\b|\bbr(?:eaks?|oke|eaking)\s+down\b|\bbreakdown\b|\blos(?:es?|t|ing)\b|\bfalls?\b|\bdrops?\b)"
                          r"|(?P<above>\babove\b|\bover\b|\bbr(?:eaks?|oke|eaking)\s+out\b|\bbreakout\b|\bclears?\b|\breclaims?\b)")
 _BREAK_PRICE = re.compile(r"(?<![\d:.])\$?(\d{1,6}(?:\.\d{1,2})?)(?![\d:%])(?!\s*(?:%|percent|days?|weeks?|months?|ema|sma|dma|ma\b|delta|dte|k\b|m\b))")
+#: "if nvda breaks 180", "what if spy hits 700" (2026-11-20): no way named; the answer reads it from where the stock is.
+_BREAK_EITHER = re.compile(r"\bbr(?:eaks?|oke|eaking)\b(?!\s+(?:down|out))|\bhits?\b|\breach(?:es|ed)?\b|\btouch(?:es|ed)?\b|\bcross(?:es|ed)?\b")
+_BREAK_IF = re.compile(r"\bif\b|\bthen\b|\bwhat\s+next\b|\bwhen\b")
+#: A number read as a clock time only when it looks like one ("if spy loses 650" is a price, "below 9:30 high" a time).
+_CLOCKISH = re.compile(r":\d\d|\b\d{1,2}\s*(?:am|pm)\b|\bat\s+\d|\b(?:open|opening|close|closing)\b|\bo'?clock\b")
+#: Everyday buy-or-sell words (2026-11-20). The chat never picks; these get what the app's rules show.
+_CHOICE = re.compile(r"\bbuy\s+or\s+sell\b|\bsell\s+or\s+buy\b|\bgood\s+time\s+to\s+(?:buy|sell|enter|get\s+in)\b|\bcall\s+or\s+put\b|"
+                     r"\bput\s+or\s+call\b|\bcalls?\s+or\s+puts?\b|\bwhich\s+(?:calls?|puts?|strikes?|options?|contracts?)\b|"
+                     r"\bwhich\s+(?:stocks?|tickers?|names?)\b.*\bbuy\b|\bwhat\s+(?:stocks?\s+)?(?:to|should\s+i)\s+buy\b|"
+                     r"\bwhere\s+(?:to|should\s+i|can\s+i)\s+(?:buy|enter|sell|get\s+in)\b|\bwhen\s+(?:to|should\s+i)\s+(?:buy|sell|enter)\b|"
+                     r"\b(?:best|good)\s+(?:strike|call|put|entry)\b")
 _BREAK_NOT = re.compile(r"\b(?:ema|sma|vwap|moving\s+average|scanner|stocks|tickers|rsi|percent|delta|oi|open\s+interest|volume|strike|strikes|calls?|puts?|options?)\b")
 _NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
                  "ten": "10", "eleven": "11", "twelve": "12"}
@@ -1073,7 +1086,8 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
 
     if owner and re.fullmatch(r"(?:the\s+)?(?:score\s?card|desk)[?.! ]*", low):
         return {"calls": [_call("bot_desk")]}
-    if owner and re.search(r"\b(?:show|see)\b.*\bpaper\b", low):
+    if owner and (re.search(r"\b(?:show|see)\b.*\bpaper\b", low)
+                  or re.fullmatch(r"(?:my\s+|the\s+)?paper(?:\s+(?:accounts?|trades?|trading|results?))?(?:\s+today)?[?.! ]*", low)):
         return {"calls": [_call("paper")]}
     # The owner's OWN real trades (My Trading): "how did I trade this week", "how much did spreads cost me", "my worst
     # habit", "my win rate on puts". Checked before the Bot's records, whose "how did ..." form took these
@@ -1094,6 +1108,8 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
         plan = {"calls": [_call("long_oi", ticker=_resolved(ticker, low, ctx), months_from=months_from, months_to=months_to,
                                 delta=delta_asked(low), side=side)]}
         # "nvda leap oi buyers or sellers?" (2026-11-19): the plain line first, then the strikes and what is new.
+        if _LEAP_WORD.search(low) and _LEAP_HOW_FAR.search(low):
+            return {**plan, "lines": [LEAP_HOW_FAR_LINE]}
         return {**plan, "lines": [OI_NO_SIDE_LINE]} if _OI_SIDE_WORD.search(low) else plan
     # Open interest on one ticker, no months word: the High OI board ("Oi for nvda buyers or sellers?", "nvda oi").
     # A page, scanner, chain or Bot word keeps its own answer, and so does a definition.
@@ -1107,12 +1123,22 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
     # that price, for the ticker named, on screen or in the conversation. A clock time or a scanner / average word
     # keeps its own answer ("stocks above the 50 ema", "NVDA below 9:30 high").
     broke = _BREAK_SIDE.search(low)
+    either = not broke and _BREAK_EITHER.search(low) and _BREAK_IF.search(low)
     number = _BREAK_PRICE.search(low)
-    if broke and number and minute is None and not _BREAK_NOT.search(low):
+    price_not_time = minute is None or not _CLOCKISH.search(low)          # "if spy loses 650" read 650 as 6:50
+    if (broke or either) and number and price_not_time and not _BREAK_NOT.search(low):
         target = _resolved(ticker, low, ctx)
         if target:
-            side = "below" if broke.group("below") else "above"
+            side = "either" if either else "below" if broke.group("below") else "above"
             return {"calls": [_call("chart_levels", ticker=target, question=text, break_price=float(number.group(1)), break_side=side)]}
+    # "explain expected move" got why NVDA moved (2026-11-20): "explain" with an app term and no ticker named is the meaning.
+    # With a ticker on screen it is that ticker's number (below), never why it moved.
+    explain_term = False
+    if not ticker and _EXPLAIN_ONLY.search(low):
+        from momx import chat_glossary
+        explain_term = bool(chat_glossary.term_of(text, scope))
+        if explain_term and not _resolved(None, low, ctx):
+            return {"calls": [_call("define", query=text)]}
     # A definition whose term is a glossary entry longer than the ticker word ("what is an iron condor", "what is a gap
     # up", "what is the live bolt") is the glossary, even when IRON, GAP or BOLT is a real ticker (2026-11-11 review rv7).
     # Exact match only, and never the ticker word alone: "what is IRON" and "what is GAP" stay ticker questions.
@@ -1158,7 +1184,7 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
     explain_help = bool(_EXPLAIN_ONLY.search(low) or re.search(r"\breasons?\b", low)) and not re.search(r"\bwhy\b", low) \
         and bool(_HELP.search(low))
     if _WHY_WORD.search(low) and (_MOVE_WORD.search(low) or _HAPPENED.search(low)) and not _TRADE_SUBJECT.search(low) \
-            and not explain_help and (minute is None or not owner or clock_move):
+            and not explain_help and not explain_term and (minute is None or not owner or clock_move):
         if ticker:
             return {"calls": [_call("why_move", ticker=ticker, day=past, question=text)]}
         if _MARKET_WORD.search(low):
@@ -1205,10 +1231,26 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
         if past:
             return {"calls": [_past_move(ticker, past, text)], "links": [chat_tools.history_link(ticker, day)]}
         return {"calls": [_call("quote", ticker=ticker)], "links": [chat_tools.history_link(ticker, day)]}
+    # "how much nvda moved today" (2026-11-20) got the Bot's trade: a ticker's move with no Bot word is the stock's move.
+    if ticker and minute is None and _MOVED.search(low) and not owner_subject(text) and not _TRADE_SUBJECT.search(low):
+        return {"calls": [_call("why_move", ticker=ticker, day=past, question=text)]}
     if owner and chatbot.explicit_bot(text) and not nav:
         return None
-    if not ticker and _unknown_beside(text, known):
+    if not ticker and (_unknown_beside(text, known) or "") not in ("", "BUY", "SELL", "ANY", "GOOD", "BEST", "NEW"):
         return None                                   # "news on oil": a word the app does not know, never the screen's ticker
+
+    # A buy-or-sell question in everyday words ("nvda buy or sell", "is it good time to buy nvda", "nvda call or put",
+    # "which strike to buy nvda", "where to buy nvda", "which stock to buy today", 2026-11-20): never advice. What the
+    # app's rules show, with the strikes holding the most open interest or the chart levels; with no ticker, the scanner.
+    choice = _CHOICE.search(low)
+    if choice and minute is None and not re.search(r"\b(?:bots?|trades?|traded|paper|profit\w*|loss\w*|positions?|if\s+i)\b", low):
+        target = _resolved(ticker, low, ctx)
+        if re.search(r"\b(?:stocks?|tickers?|names?)\b", low) and not ticker:
+            return {"calls": [_call("scanner_list", side=side or "bull")], "lines": [NO_ADVICE_LINE]}
+        if target:
+            extra = (_call("chart_levels", ticker=target, question=text) if re.search(r"\bwhere\b|\bwhen\b|\bprice\b", low)
+                     else _call("walls", ticker=target))
+            return {"calls": [_call("rules", ticker=target), extra], "lines": [NO_ADVICE_LINE]}
 
     # Going somewhere.
     if nav and scan and (ticker or clock):
@@ -1332,7 +1374,90 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
         return {"calls": [_call("chart_levels", ticker=subject, timeframe=frame)]}
     if ticker and bare == ticker.lower():
         return {"calls": [_call("quote", ticker=ticker)], "links": chat_tools.ticker_links(ticker, day, scope)}
+    return _everyday(text, low, bare, ticker, subject, side, frame, day, minute, scope, owner)
+
+
+# ---------------------------------------------------------------- everyday questions, 2026-11-20
+# "Check everything in chatbot": about 150 everyday questions were put to the chat with the AI switched off (the free AI
+# was not answering that day). These had no rule, so they got news headlines, scanner rules or "I did not understand".
+# Each now goes to the app's own answer. Reached only when no rule above matched.
+GREETING_LINE = ("Hi. Ask me about any ticker in plain words, for example: \"NVDA price\", \"why is NVDA down today\", "
+                 "\"NVDA support and resistance\", \"if NVDA breaks 180\", \"NVDA leap which one is good\", "
+                 "\"top stocks on the scanner\" or \"what is delta\". I show facts from the app, never a pick.")
+SCANNER_NOT_GAINERS_LINE = ("The app's scanner ranks stocks by its own setup score (H/L), not by % gain or loss. "
+                            "Here is its board now.")
+LEAP_HOW_FAR_LINE = ("A LEAP is an option that expires more than about 9 months out (often 1 to 2 years). The further out, "
+                     "the more it costs, but the slower it loses value each day. Many option guides suggest 12 months or "
+                     "more, and a delta around 0.70 to 0.80 if you want it to move more like the stock. That is general "
+                     "education, not a pick. Here is where the open interest sits now.")
+_GREETING = re.compile(r"(?:hi|hello|hey|hii+|yo|thanks?|thank\s+you|thx|ok|okay|good\s+(?:morning|afternoon|evening)|"
+                       r"what\s+can\s+you\s+do|what\s+can\s+i\s+ask(?:\s+you)?|who\s+are\s+you|how\s+do\s+you\s+work)"
+                       r"(?:\s+(?:there|bot|claude|chatbot|ask))?[?.! ]*")
+_TARGET = re.compile(r"\btargets?\b|\banalysts?\b|\bupgrades?\b|\bdowngrades?\b|\bratings?\b")
+_MOVED = re.compile(r"\bhow\s+much\b.*\b(?:move[sd]?|moving|up|down|gain(?:ed)?|lost|fell|rose|drop(?:ped)?)\b|\bmoved\b")
+_MARKET_BARE = re.compile(r"(?:how\s+is\s+)?(?:the\s+)?(?:stock\s+)?market(?:\s+(?:today|now|right\s+now|update|status))?")
+_BARE_SIDE = re.compile(r"\$?[a-z.]{1,6}\s+(?:calls?|puts?|0\s*dte|odte|weekly|weeklies|weekly\s+options?)")
+_SENTIMENT_WORDS = re.compile(r"\bbig\s+money\b|\bsmart\s+money\b|\bwho(?:\s+is|'?s)\s+buying\b|\bwho(?:\s+is|'?s)\s+selling\b|"
+                              r"\biv\b|\bimplied\s+vol\w*\b|\bput[\s/-]*call\s+ratio\b|\bsentiment\b|\binstitution\w*\b")
+_TECH_WORDS = re.compile(r"\btrend(?:ing)?\b|\bbullish\b|\bbearish\b|\bsqueeze\b|\bsqz\b|\barrows?\b|\bmomentum\b|\bskittles\b|"
+                         r"\brvol\b|\badx\b|\btechnicals?\b|\boverbought\b|\boversold\b|\brsi\b|\bmacd\b")
+_LIST_WORDS = re.compile(r"\b(?:top|best|hot|hottest|strong|strongest|weak|weakest)\s+(?:\d+\s+)?(?:stocks?|tickers?|names?|movers?|setups?)\b|"
+                         r"\bgainers?\b|\blosers?\b|\bmovers?\b|\bmomo\b|\bmomentum\s+stocks?\b|\ba\+|\b(?:bull|bear|call|put)\s+setups?\b|"
+                         r"\b(?:which|what|any)\s+(?:stocks?|tickers?)\b")
+#: What the Bot's levels took ("which tickers did level 2 take today", "top 3 tickers level 1 picked"): the Bot's records.
+_BOT_TOOK = re.compile(r"\blevel\s*[123]\b|\btook\b|\btake\b|\bpicked\b|\bbought\b|\bsold\b|\bbots?\b|\bpaper\b|\bstayed\b")
+_LOSER_WORDS = re.compile(r"\blosers?\b|\bbear\w*\b|\bputs?\b|\bweak(?:est)?\b|\bdown\b")
+_SECTOR_NAMES = re.compile(r"\b(semiconductors?|semis?|chips?|tech(?:nology)?|software|energy|oil|banks?|financials?|health\s*care|"
+                           r"biotech|retail|crypto|bitcoin|utilities|industrials?|materials|real\s+estate|consumer|airlines?|"
+                           r"defen[cs]e|ai|cloud|ev|solar|nuclear|quantum)\b(?:\s+(?:stocks?|sector|today|now))*[?.! ]*$")
+_LEVEL_WORDS = re.compile(r"\bbottom\b|\btop\b|\bfloor\b|\bceiling\b|\bentry\b|\bstop\s*loss\b")
+
+
+def _everyday(text: str, low: str, bare: str, ticker, subject, side, frame, day: str, minute, scope: str, owner: bool) -> dict | None:
+    """An everyday question no rule above took, or None (the AI reads it)."""
+    from momx import chat_glossary, chat_scanner
+    if _GREETING.fullmatch(bare + " ") or _GREETING.fullmatch(bare):
+        if re.match(r"(?:thanks?|thank\s+you|thx|ok|okay)\b", bare):
+            return {"calls": [], "lines": ["You're welcome. Ask me anything else about a ticker, its levels, options or the scanner."]}
+        return {"calls": [], "lines": [GREETING_LINE]}
+    if minute is None and _MARKET_BARE.fullmatch(bare):
+        return {"calls": [_call("why_move", market=True, question=text)]}
+    if subject and _TARGET.search(low):
+        return {"calls": [_call("analyst", ticker=subject)]}
+    if ticker and minute is None and _MOVED.search(low):
+        return {"calls": [_call("why_move", ticker=ticker, question=text)]}
+    if ticker and _BARE_SIDE.fullmatch(bare):
+        zero = re.search(r"\b0\s*dte\b|\bodte\b", low)
+        return {"calls": [_call("chain", ticker=ticker, expiry="today" if zero else None)]}
+    if subject and _SENTIMENT_WORDS.search(low):
+        return {"calls": [_call("sentiment", ticker=subject)]}
+    if subject and _TECH_WORDS.search(low):
+        return {"calls": [_call("technicals", ticker=subject)]}
+    if not ticker and _LIST_WORDS.search(low) and not _BOT_TOOK.search(low) and not chat_scanner.is_top_question(text):
+        list_side = "bear" if _LOSER_WORDS.search(low) else (side or "bull")
+        lines = [SCANNER_NOT_GAINERS_LINE] if re.search(r"\bgainers?\b|\blosers?\b|\bmovers?\b", low) else []
+        if re.search(r"\bbuy\b", low):
+            lines.append(NO_ADVICE_LINE)
+        return {"calls": [_call("scanner_list", side=list_side)], "lines": lines}
+    sector = _SECTOR_NAMES.match(bare)
+    if sector and not ticker:
+        return {"calls": [_call("sectors", sector=sector.group(1))]}
+    if ticker and frame and re.fullmatch(rf"\$?{re.escape(ticker.lower())}\s+\S+(?:\s+\S+)?", bare):
+        return {"calls": [_call("chart_signals", ticker=ticker, timeframe=frame, question=text), _call("open_chart", ticker=ticker, timeframe=frame)]}
+    if subject and _LEVEL_WORDS.search(low):
+        return {"calls": [_call("chart_levels", ticker=subject, question=text)]}
+    entry = chat_glossary.term_of(text, scope) if chat_glossary.asked_term(text) else None
+    tool = _NUMBER_TOOL.get(str((entry or {}).get("term") or "")) if entry and entry.get("number") else None
+    if tool and subject and not ticker:
+        return {"calls": [_call(tool, ticker=subject)]}
     return None
+
+
+#: "what is the market cap" / "what is delta" with a ticker on screen (2026-11-11 design: that ticker's number): the
+#: card that shows it, so it needs no AI (2026-11-20).
+_NUMBER_TOOL = {"Market cap": "fundamentals", "P/E ratio": "fundamentals", "EPS": "fundamentals", "Float": "fundamentals",
+                "Short interest": "fundamentals", "Implied volatility": "sentiment", "Gamma exposure": "sentiment",
+                "Open interest": "walls", "Delta": "chain"}
 
 
 # ---------------------------------------------------------------- putting an answer together
