@@ -877,6 +877,8 @@ def chart_levels_tool(args: Mapping, ctx: Mapping) -> dict:
         break_price = None
     if break_price and break_price > 0 and args.get("break_side") in ("below", "above"):
         lines += break_lines(symbol, levels, break_price, str(args["break_side"]))
+        # "I need next support and resistance level also" (2026-11-20): the nearest of each from where it is now.
+        lines += sr_lines(symbol, levels)[1:]
     elif _SR_WORDS.search(str(args.get("question") or "").lower()):
         lines += sr_lines(symbol, levels)
     lines += _level_lines(levels, _focus(args))

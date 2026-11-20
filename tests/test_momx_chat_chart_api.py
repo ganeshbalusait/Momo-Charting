@@ -511,6 +511,10 @@ def test_if_a_price_breaks_says_the_next_levels_beyond_it(route_charts):
         assert f"{value:.2f} ({name})" in lines[1] and value < price
     assert lines[2].startswith(f"SPY is at {levels['lastClose']:.2f} now, ") and f"above {price:.2f}" in lines[2]
     assert "not a forecast" in lines[3]
+    # "I need next support and resistance level also": the nearest of each from where it is now follows.
+    close = f"{levels['lastClose']:.2f}"
+    assert any(line.startswith(f"Nearest resistance above {close}") or line == f"No resistance level above {close} on this chart." for line in lines[4:6]), lines
+    assert any(line.startswith(f"Nearest support below {close}") or line == f"No support level below {close} on this chart." for line in lines[4:6]), lines
     assert charts["calls"] == []
 
 
