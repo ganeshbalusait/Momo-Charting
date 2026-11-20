@@ -44,7 +44,7 @@ import {
   DEEP_NONE,
 } from "./longTerm";
 import { glossaryEntry, glossaryMatch } from "./longTermGlossary";
-import { LYNCH_TILES, lynchCounts, lynchRows } from "./longTermLynch.js";
+import { LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_TILES, lynchCounts, lynchRows } from "./longTermLynch.js";
 import AnalystCard from "./AnalystCard.jsx";
 import TechnicalCard from "./TechnicalCard.jsx";
 import { analystCard } from "./analystGauge.js";
@@ -564,49 +564,103 @@ const LYNCH_TILE_TITLE = {
   PRICEY: "PEG above 2: the price is far ahead of the growth",
 };
 
-function LynchCard({ row, sheet, onChart }) {
+function LynchCard({ row, sheet, reason, open, onToggle, onChart }) {
+  // The whole card opens the details (Ganesh 11-19: "I don't see detail when I
+  // click"): the same Why drawer as a Rule #1 row. A div, not a button, because
+  // it holds the Details and Chart buttons.
+  const tone = sheet ? LYNCH_TONE[sheet.verdict] : "muted";
   return (
-    <div className={`long-term-card long-term-lynch-card is-${LYNCH_TONE[sheet.verdict]}`} data-testid={`long-term-lynch-${row.symbol}`}>
+    <div
+      className={`long-term-card long-term-lynch-card is-${tone}${open ? " is-open" : ""}`}
+      data-testid={`long-term-lynch-${row.symbol}`}
+      role="button"
+      tabIndex={0}
+      aria-expanded={open}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+    >
       <span className="long-term-card-top">
         <b>{row.symbol}</b>
         <span className="long-term-card-name">{row.name || ""}</span>
         <span className="long-term-card-price">{formatMoney(row.price)}</span>
       </span>
-      <span className="long-term-card-mid">
-        <Pill tone={LYNCH_TONE[sheet.verdict]} testId={`long-term-lynch-verdict-${row.symbol}`}>{sheet.verdict}</Pill>
-        {sheet.cyclical ? <Pill tone="muted">{sheet.cyclical}</Pill> : <Pill tone="muted">{sheet.type}</Pill>}
-        <span
-          className="long-term-lynch-stars"
-          role="img"
-          aria-label={`${sheet.stars} of ${sheet.of} stars`}
-          data-testid={`long-term-lynch-stars-${row.symbol}`}
-          data-stars={`${sheet.stars}/${sheet.of}`}
-        >
-          <i>{"★".repeat(sheet.stars)}</i>{"★".repeat(sheet.of - sheet.stars)}
+      {sheet ? (
+        <>
+          <span className="long-term-card-mid">
+            <Pill tone={tone} testId={`long-term-lynch-verdict-${row.symbol}`}>{sheet.verdict}</Pill>
+            {sheet.cyclical ? <Pill tone="muted">{sheet.cyclical}</Pill> : <Pill tone="muted">{sheet.type}</Pill>}
+            {sheet.lowQuality ? <Pill tone="avoid" testId={`long-term-lynch-lowq-${row.symbol}`} title="Return on capital under 20%: not on the quality list">Not quality</Pill> : null}
+            <span
+              className="long-term-lynch-stars"
+              role="img"
+              aria-label={`${sheet.stars} of ${sheet.of} stars`}
+              data-testid={`long-term-lynch-stars-${row.symbol}`}
+              data-stars={`${sheet.stars}/${sheet.of}`}
+            >
+              <i>{"★".repeat(sheet.stars)}</i>{"★".repeat(sheet.of - sheet.stars)}
+            </span>
+          </span>
+          <span className="long-term-card-bottom">
+            <span>PEG <b>{sheet.peg.toFixed(2)}</b></span>
+            <span>P/E <b>{row.pe.toFixed(1)}</b></span>
+            <span>Rule #1 <b>{SIGNAL_LABEL[row.signal] || row.signal}</b></span>
+          </span>
+          <ul className="long-term-lynch-sheet" data-testid={`long-term-lynch-sheet-${row.symbol}`}>
+            {sheet.checks.map((c) => (
+              <li key={c.key} className={c.passed === true ? "is-pass" : c.passed === false ? "is-fail" : "is-na"}>
+                <span aria-hidden="true">{c.passed === true ? "★" : c.passed === false ? "✕" : "–"}</span>
+                <span>{c.label}</span>
+                <b>{c.text}</b>
+              </li>
+            ))}
+          </ul>
+          {sheet.inventoryWarning ? (
+            <p className="long-term-lynch-warn is-inventory" data-testid={`long-term-lynch-inventory-${row.symbol}`}>
+              {sheet.inventoryWarning}
+            </p>
+          ) : null}
+          {sheet.cyclical ? (
+            <p className="long-term-lynch-warn" data-testid={`long-term-lynch-cyclical-${row.symbol}`}>
+              Cyclical ({sheet.cyclical}): the P/E is lowest when earnings are at the top of the cycle, so a low PEG here is not a bargain sign.
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <span className="long-term-card-bottom" data-testid={`long-term-lynch-nosheet-${row.symbol}`}>
+          <span>No star sheet: <b>{reason}</b></span>
+          <span>Rule #1 <b>{SIGNAL_LABEL[row.signal] || row.signal}</b></span>
         </span>
+      )}
+      <span className="long-term-lynch-actions">
+        <button
+          type="button"
+          className="long-term-btn is-accent"
+          data-testid={`long-term-lynch-details-${row.symbol}`}
+          aria-expanded={open}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+        >
+          {open ? "Hide details" : "Details"}
+        </button>
+        <button
+          type="button"
+          className="long-term-btn long-term-lynch-chart"
+          onClick={(e) => {
+            e.stopPropagation();
+            onChart(row.symbol);
+          }}
+        >
+          <BarChart3 size={13} /> Chart
+        </button>
       </span>
-      <span className="long-term-card-bottom">
-        <span>PEG <b>{sheet.peg.toFixed(2)}</b></span>
-        <span>P/E <b>{row.pe.toFixed(1)}</b></span>
-        <span>Rule #1 <b>{SIGNAL_LABEL[row.signal] || row.signal}</b></span>
-      </span>
-      <ul className="long-term-lynch-sheet" data-testid={`long-term-lynch-sheet-${row.symbol}`}>
-        {sheet.checks.map((c) => (
-          <li key={c.key} className={c.passed === true ? "is-pass" : c.passed === false ? "is-fail" : "is-na"}>
-            <span aria-hidden="true">{c.passed === true ? "★" : c.passed === false ? "✕" : "–"}</span>
-            <span>{c.label}</span>
-            <b>{c.text}</b>
-          </li>
-        ))}
-      </ul>
-      {sheet.cyclical ? (
-        <p className="long-term-lynch-warn" data-testid={`long-term-lynch-cyclical-${row.symbol}`}>
-          Cyclical ({sheet.cyclical}): the P/E is lowest when earnings are at the top of the cycle, so a low PEG here is not a bargain sign.
-        </p>
-      ) : null}
-      <button type="button" className="long-term-btn long-term-lynch-chart" onClick={() => onChart(row.symbol)}>
-        <BarChart3 size={13} /> Chart
-      </button>
     </div>
   );
 }
@@ -620,7 +674,7 @@ function LynchCard({ row, sheet, onChart }) {
 // that are too old; the rows request runs at once on return.
 export const LONG_TERM_SESSION = {
   data: null, acceptedAt: 0, tile: null, query: "", openSym: null, details: {}, leaps: {},
-  peter: false, peterTile: null,
+  peter: false, peterTile: null, peterScope: "Quality",
 };
 
 // A chat link to one company: search for it, open its row, and clear the tile so
@@ -656,10 +710,12 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   // in place of the Rule #1 table. Kept for this visit only, like a tile.
   const [peter, setPeter] = useState(() => !!S.peter);
   const [peterTile, setPeterTile] = useState(() => S.peterTile || null);
+  // Quality (every quality company) | Mag7 (every Mag7 company) | Watchlist (its quality companies)
+  const [peterScope, setPeterScope] = useState(() => (LYNCH_SCOPES.includes(S.peterScope) ? S.peterScope : "Quality"));
   // keep the session copy current (cheap: references, no copies)
   useEffect(() => {
-    Object.assign(LONG_TERM_SESSION, { data, acceptedAt, tile: prefs.tile, query, openSym, details, leaps, peter, peterTile });
-  }, [data, acceptedAt, prefs.tile, query, openSym, details, leaps, peter, peterTile]);
+    Object.assign(LONG_TERM_SESSION, { data, acceptedAt, tile: prefs.tile, query, openSym, details, leaps, peter, peterTile, peterScope });
+  }, [data, acceptedAt, prefs.tile, query, openSym, details, leaps, peter, peterTile, peterScope]);
   const [clock, setClock] = useState(() => Date.now());
   const wrapRef = useRef(null);
   const phone = useIsPhone();
@@ -903,12 +959,21 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
     [guarded, prefs.tile, prefs.sort, query],
   );
   const cols = useMemo(() => columns("desktop"), []);
-  const peterAll = useMemo(() => (peter ? lynchRows(guarded) : []), [peter, guarded]);
+  const peterLists = current?.meta?.lists && typeof current.meta.lists === "object" ? current.meta.lists : null;
+  const peterAll = useMemo(
+    () => (peter ? lynchRows(guarded, { scope: peterScope, lists: peterLists }) : []),
+    [peter, guarded, peterScope, peterLists],
+  );
   const peterCounts = useMemo(() => lynchCounts(peterAll), [peterAll]);
   const peterVisible = useMemo(
-    () => (peter ? lynchRows(guarded, { tile: peterTile, query }) : []),
-    [peter, guarded, peterTile, query],
+    () => (peter ? lynchRows(guarded, { tile: peterTile, query, scope: peterScope, lists: peterLists }) : []),
+    [peter, guarded, peterTile, query, peterScope, peterLists],
   );
+  const peterScopeCounts = useMemo(() => {
+    const out = {};
+    if (peter) for (const s of LYNCH_SCOPES) out[s] = lynchRows(guarded, { scope: s, lists: peterLists }).length;
+    return out;
+  }, [peter, guarded, peterLists]);
 
   const meta = current?.meta || {};
   const refreshing = meta.refreshing && typeof meta.refreshing === "object" ? meta.refreshing : null;
@@ -985,11 +1050,32 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   } else if (peter) {
     body = peterVisible.length ? (
       <div className="long-term-lynch-list" data-testid="long-term-lynch-list">
-        {peterVisible.map(({ row, sheet }) => <LynchCard key={row.symbol} row={row} sheet={sheet} onChart={onChart} />)}
+        {peterVisible.map(({ row, sheet, reason }) => {
+          const open = openSym === row.symbol;
+          return (
+            <div key={row.symbol} className={`long-term-card-slot${open ? " is-open" : ""}`}>
+              <LynchCard row={row} sheet={sheet} reason={reason} open={open} onToggle={() => toggleRow(row.symbol)} onChart={onChart} />
+              {open ? (
+                <Drawer
+                  row={row}
+                  entry={details[`${row.symbol}:${mos}`]}
+                  leap={leapEntry(row.symbol)}
+                  onChart={onChart}
+                  onClose={() => setOpenSym(null)}
+                  onRetry={() => loadDetail(row.symbol)}
+                  onRetryLeap={() => loadLeap(row.symbol)}
+                />
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     ) : (
       <div className="long-term-empty">
-        {peterAll.length ? `No quality company matches${query ? ` “${query}”` : ""}.` : "No quality company can be scored right now."}
+        {peterAll.length
+          ? `No company matches${query ? ` “${query}”` : ""}.`
+          : peterScope === "Quality" ? "No quality company can be scored right now."
+            : peterLists ? `No ${peterScope} company to show.` : `The ${peterScope} list has not loaded yet.`}
       </div>
     );
   } else if (!visible.length) {
@@ -1124,7 +1210,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
           </p>
           {peter ? (
             <p className="long-term-note" data-testid="long-term-lynch-note">
-              Peter Lynch screen · quality companies only (return on capital 20%+) · {peterAll.length} scored · PEG = P/E ÷ yearly earnings growth %. A screen, not advice; not back-tested here.
+              Peter Lynch screen · quality companies only (return on capital 20%+) · {peterAll.length} scored · PEG = P/E ÷ yearly earnings growth %. A screen, not advice.
             </p>
           ) : (
             <p className="long-term-note">Rule #1 buys are rare; WAIT rows show the price to buy at</p>
@@ -1197,6 +1283,30 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
           <p className="long-term-lynch-legend" data-testid="long-term-lynch-legend">
             <b>The star sheet:</b> ★ earnings grew 10–50% a year · ★ sales grew 5%+ a year · ★ debt at most 0.8× equity · ★ free cash flow growing · ★ PEG 1 or less. Most stars first, then the lowest PEG. Cyclicals (chips, oil, metals, autos…) are never called cheap and get no price star.
           </p>
+          {/* Closed by default so the top of the page stays as short as before (Ganesh 11-19: "this looks good"). */}
+          <details className="long-term-lynch-more" data-testid="long-term-lynch-backtest">
+            <summary>Back-test: CHEAP did not beat the quality group · tap for details</summary>
+            <p>{LYNCH_BACKTEST_NOTE}</p>
+            <p>The PEG counts the dividend as growth (P/E ÷ (growth % + dividend %)). A card warns when inventory turns over 10% slower than a year ago, which means it is growing faster than sales.</p>
+          </details>
+          <div className="long-term-switch long-term-lynch-scope" role="group" aria-label="Which companies">
+            {LYNCH_SCOPES.map((s) => (
+              <button
+                key={s}
+                type="button"
+                aria-pressed={peterScope === s}
+                data-testid={`long-term-lynch-scope-${s}`}
+                title={s === "Quality" ? "Every quality company (return on capital 20%+)"
+                  : s === "Mag7" ? "Every Mag7 company, quality or not" : "The quality companies on your Watchlist"}
+                onClick={() => {
+                  setOpenSym(null);
+                  setPeterScope(s);
+                }}
+              >
+                {s} <b>{peterScopeCounts[s] ?? 0}</b>
+              </button>
+            ))}
+          </div>
           <div className="long-term-tiles" role="group" aria-label="Filter by price for growth">
             {LYNCH_TILES.map((t) => {
               const active = peterTile === t;

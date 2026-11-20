@@ -77,6 +77,30 @@ def _read_watchlist(path: Path | None) -> list[str]:
     return out
 
 
+PETER_LISTS = ("Mag7", "Watchlist")
+
+
+def named_lists(*, universe_path: Path | None = None) -> dict[str, list[str]]:
+    """The Mag7 and Watchlist members (canonical symbols, list order, no repeats) for the Long Term
+    page's Peter view (2026-11-19, "add mag7 tickers and watchlist tickers separate also"). A list
+    the MomX file does not hold is []; a broken file gives {} and the page shows no groups."""
+    try:
+        from momx.board import load_universes
+
+        saved = load_universes(path=universe_path)
+    except Exception:  # noqa: BLE001 - a broken MomX file must not break the page
+        return {}
+    out: dict[str, list[str]] = {}
+    for name in PETER_LISTS:
+        seen: list[str] = []
+        for raw in saved.get(name) or []:
+            sym = canonical(raw)
+            if sym and sym not in seen:
+                seen.append(sym)
+        out[name] = seen
+    return out
+
+
 def universe(*, watchlist_path: Path | None = None, universe_path: Path | None = None) -> list[str]:
     """Sorted canonical union of the watchlist file, every MomX list and the seed."""
     raw: list[Any] = list(_read_watchlist(watchlist_path))

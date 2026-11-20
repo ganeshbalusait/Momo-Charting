@@ -23300,8 +23300,11 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-tiles[hidden] { display: none; }
 .long-term-lynch-legend { margin: 0; color: #a6a6b0; font-size: 11.5px; line-height: 1.5; }
 .long-term-lynch-legend b { color: #dcdce2; }
+.long-term-lynch-more { color: #a6a6b0; font-size: 11.5px; line-height: 1.5; }
+.long-term-lynch-more summary { color: var(--lt-amber); cursor: pointer; }
+.long-term-lynch-more p { margin: 4px 0 0; }
 .long-term-lynch-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-content: start; gap: 8px; flex: 1 1 auto; min-width: 0; min-height: 260px; overflow-y: auto; overscroll-behavior: contain; }
-.long-term-lynch-card { cursor: default; align-content: start; }
+.long-term-lynch-card { align-content: start; }
 .long-term-lynch-card.is-buy { box-shadow: inset 3px 0 0 var(--lt-green); }
 .long-term-lynch-stars { margin-left: auto; color: #45454f; font-size: 15px; letter-spacing: 1px; line-height: 1; white-space: nowrap; }
 .long-term-lynch-stars i { color: var(--lt-amber); font-style: normal; }
@@ -23314,7 +23317,15 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-lynch-sheet li.is-na { color: #7c7c8a; }
 .long-term-lynch-sheet li.is-na b { color: #8b8b97; font-weight: 500; }
 .long-term-lynch-chart { justify-self: start; }
+/* Tap a card for its details: the open card and its drawer take the whole row. */
+.long-term-lynch-card { cursor: pointer; }
+.long-term-lynch-list > .long-term-card-slot { align-content: start; }
+.long-term-lynch-list > .long-term-card-slot.is-open { grid-column: 1 / -1; }
+.long-term-lynch-actions { justify-content: flex-start; }
+.long-term-lynch-scope { align-self: flex-start; flex: none; }
+.long-term-lynch-scope button b { margin-left: 4px; color: inherit; font-weight: 800; opacity: .75; }
 .long-term-lynch-warn { margin: 0; color: #f0a6ff; font-size: 11px; line-height: 1.4; }
+.long-term-lynch-warn.is-inventory { color: var(--lt-amber); }
 .long-term-lynch-card.is-setup { border-color: rgba(232, 121, 249, .4); }
 
 @media (max-width: 1100px) {

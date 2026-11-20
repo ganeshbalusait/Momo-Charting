@@ -2,6 +2,21 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-19T23:51:57-05:00",
+      "heading": "Long Term Peter view: tap a card for details, Mag7 and Watchlist groups, dividends, back-test",
+      "items": [
+        "Tap any Peter card (or its Details button) and the full details open under it: the checklist, the ten-year table, the LEAP to buy and the analyst card, the same as on a Rule #1 row. Tap again to close.",
+        "Three group buttons above the tiles: Quality (every quality company, as before), Mag7 (every Mag7 company, quality or not, so none is missing) and Watchlist (the quality companies on your Watchlist). Each button shows how many cards it holds.",
+        "In the Mag7 group a company that is not a quality business is marked \"Not quality\", and one that cannot be scored says why (for example \"earnings did not grow\").",
+        "The PEG now counts the dividend as part of the growth, which is Peter Lynch's own formula: P/E divided by (yearly earnings growth % + dividend %). A dividend payer reads a little cheaper than before, and its card says \"with the 1.2% dividend\".",
+        "A card now warns when inventory is turning over 10% or more slower than a year ago. That means inventory is growing faster than sales, which was Lynch's warning sign. The stars do not change.",
+        "The screen has now been back-tested (2010 to 2026, 98 of today's companies, 452 yearly picks). Result: the CHEAP tag did NOT beat the quality group as a whole. Up after 1 year: CHEAP 72% vs all quality 74% in 2010-18, and 59% vs 66% in 2019-26. Quality itself did the work.",
+        "So read CHEAP as the price you pay, not as a buy signal. The result is on the page behind one small line under the star sheet; tap it to read the numbers.",
+        "The cards look the same as before. The dividend and inventory numbers fill in after the next filings refresh.",
+        "Limits of the back-test: only companies still on the watchlist today (failed ones are missing), yearly data, and no dividend in the historical PEG."
+      ]
+    },
+    {
       "at": "2026-11-19T23:07:43-05:00",
       "heading": "Long Term Peter view: cyclical companies are now labelled",
       "items": [

@@ -12,6 +12,8 @@ equipment (3663) and is not marked; NVDA files under semiconductors (3674) and i
 """
 from __future__ import annotations
 
+from datetime import date
+
 # (first SIC, last SIC, group shown on the page), inclusive
 _RANGES: tuple[tuple[int, int, str], ...] = (
     (1000, 1299, "metals & mining"),
@@ -32,6 +34,42 @@ _RANGES: tuple[tuple[int, int, str], ...] = (
     (4400, 4499, "airlines & cruise lines"),
     (4512, 4512, "airlines & cruise lines"),
 )
+
+
+MAX_YIELD_PCT = 25.0        # above this the "yield" is a data error (a special payout, a price glitch)
+MAX_YEAR_GAP_DAYS = 400     # the two inventory-turnover years must be consecutive fiscal years
+
+
+def _good(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) != float("inf")
+
+
+def dividend_yield(finnhub: dict | None) -> float | None:
+    """Dividend yield as a fraction of the price (0.0031 = 0.31%) from the stored Finnhub extract,
+    whose `dividend_yield_ttm` is a percent. None when missing, negative or absurd."""
+    v = (finnhub or {}).get("dividend_yield_ttm") if isinstance(finnhub, dict) else None
+    if not _good(v) or v < 0 or v > MAX_YIELD_PCT:
+        return None
+    return float(v) / 100.0
+
+
+def inventory_turn_change(finnhub: dict | None) -> float | None:
+    """Change of the yearly inventory turnover against the year before (-0.25 = inventory turns over
+    25% slower: it grew faster than what was sold). None without two good consecutive years."""
+    series = (finnhub or {}).get("inventory_turnover_annual") if isinstance(finnhub, dict) else None
+    if not isinstance(series, dict) or len(series) < 2:
+        return None
+    newest, before = sorted(series, reverse=True)[:2]
+    now, prev = series[newest], series[before]
+    if not _good(now) or not _good(prev) or now <= 0 or prev <= 0:
+        return None
+    try:
+        gap = (date.fromisoformat(str(newest)[:10]) - date.fromisoformat(str(before)[:10])).days
+    except ValueError:
+        return None
+    if gap <= 0 or gap > MAX_YEAR_GAP_DAYS:
+        return None
+    return now / prev - 1.0
 
 
 def cyclical_group(sic) -> str | None:

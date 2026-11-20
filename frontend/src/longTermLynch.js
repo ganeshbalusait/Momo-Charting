@@ -12,7 +12,10 @@
 //   sales   sales grew 5%+ a year, so the earnings growth is not only cost cuts
 //   debt    debt is at most 0.8x equity
 //   cash    free cash flow is growing
-//   price   PEG (P/E / growth %) is 1 or less
+//   price   PEG is 1 or less. PEG = P/E / (growth % + dividend yield %), Lynch's
+//           own formula: the dividend counts as part of the return.
+// Inventory turning over 10%+ slower than a year ago (it grew faster than
+// sales) is a warning line on the card; it does not change the stars.
 // A bank is not judged on debt or cash flow; those two are left out for it.
 
 //
@@ -23,22 +26,60 @@
 
 export const LYNCH_TILES = ["CHEAP", "FAIR", "PRICEY", "CYCLICAL"];
 export const LYNCH_RULES = Object.freeze({
-  growthMin: 10, growthMax: 50, salesMin: 5, debtMax: 0.8, pegCheap: 1, pegFair: 2, stalwartFrom: 10, fastFrom: 20,
+  growthMin: 10, growthMax: 50, salesMin: 5, debtMax: 0.8, pegCheap: 1, pegFair: 2, stalwartFrom: 10, fastFrom: 20, inventorySlow: 0.1,
 });
+
+// Back-test run 2026-11-19 (artifacts/backtest_peter_lynch.py -> peter_lynch_backtest.json):
+// 98 of today's companies, 452 yearly picks from 2010, entered 90 days after each fiscal year
+// end, PEG without the dividend. Shown on the page so the tag is not read as a buy signal.
+export const LYNCH_BACKTEST_NOTE = "Back-test 2010–2026 (98 of today's companies, 452 yearly picks): the CHEAP tag did NOT beat the quality group as a whole. Up after 1 year: CHEAP 72% vs all quality 74% in 2010–18, and 59% vs 66% in 2019–26; after 3 years 82% vs 85%, and 73% vs 82%. Quality itself did the work. Read CHEAP as the price you pay, not a buy signal. Limits: today's survivors only, yearly data. Not advice.";
 
 const SCORED = new Set(["BUY", "WAIT", "AVOID"]);
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 const pct = (v) => (isNum(v) ? Math.round(v * 1000) / 10 : null);
 const whole = (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(Math.round(v))}%`;
 
-export function lynchSheet(row) {
-  if (!row || row.quality !== "HIGH" || row.young || !SCORED.has(row.signal)) return null;
+// Groups (same day, "add mag7 tickers and watchlist tickers separate also"):
+// Quality = every quality company (the list as first built); Mag7 = every Mag7
+// company, quality or not, so none of them is missing (a non-quality one is
+// marked, one that cannot be scored says why); Watchlist = the quality
+// companies on his Watchlist. The server sends who is on each list.
+export const LYNCH_SCOPES = ["Quality", "Mag7", "Watchlist"];
+
+// Why a company has no star sheet (null when it can have one). Quality is not
+// judged here: it is a gate of the Quality and Watchlist groups only.
+export function lynchMissing(row) {
+  if (!row) return "no data";
+  if (!SCORED.has(row.signal)) {
+    if (row.signal === "ETF") return "an ETF, not a company";
+    if (row.signal === "NO_PRICE") return "no live price";
+    if (row.signal === "STALE") return "filings are stale";
+    if (row.signal === "SHORT_HISTORY") return "not enough years of filings";
+    return "no usable filings";
+  }
+  if (!isNum(row.pe) || row.pe <= 0) return "no profit, so no P/E";
   const growth = pct(row.epsGrowth);
-  if (!isNum(row.pe) || row.pe <= 0 || growth == null || growth <= 0) return null;
+  if (growth == null) return "no earnings growth figure";
+  if (growth <= 0) return "earnings did not grow";
+  return null;
+}
+
+export function lynchSheet(row, { anyQuality = false } = {}) {
+  if (!row || lynchMissing(row)) return null;
+  if (!anyQuality && (row.quality !== "HIGH" || row.young)) return null;
+  const growth = pct(row.epsGrowth);
   const R = LYNCH_RULES;
   const bank = !!row.financial;
   const cyclical = typeof row.cyclical === "string" && row.cyclical.trim() ? row.cyclical.trim() : null;
-  const peg = Math.round((row.pe / Math.min(growth, R.growthMax)) * 100) / 100;
+  // Lynch's own formula adds the dividend yield to the growth rate.
+  const dividendPct = isNum(row.dividendYield) && row.dividendYield > 0 ? Math.round(row.dividendYield * 1000) / 10 : 0;
+  const peg = Math.round((row.pe / (Math.min(growth, R.growthMax) + dividendPct)) * 100) / 100;
+  const pegText = `PEG ${peg.toFixed(2)}${dividendPct > 0 ? ` with the ${dividendPct.toFixed(1)}% dividend` : ""}`;
+  // His warning sign: inventory growing faster than sales (the turnover fell 10%+ in a year).
+  const turn = isNum(row.inventoryTurnChange) ? row.inventoryTurnChange : null;
+  const inventoryWarning = turn != null && turn <= -R.inventorySlow
+    ? `Inventory is turning over ${Math.round(-turn * 100)}% slower than a year ago: it is growing faster than sales.`
+    : null;
   const sales = pct(row.salesGrowth);
   const cash = pct(row.fcfGrowth);
   const debt = isNum(row.debtToEquity) ? row.debtToEquity : null;
@@ -57,13 +98,16 @@ export function lynchSheet(row) {
       : { key: "cash", label: "Cash flow", text: cash == null ? "no figure" : `${whole(cash)}/yr`, passed: cash != null && cash > 0 },
     cyclical
       ? { key: "price", label: "Price for growth", text: `PEG ${peg.toFixed(2)}, not judged`, passed: null }
-      : { key: "price", label: "Price for growth", text: `PEG ${peg.toFixed(2)}`, passed: peg <= R.pegCheap },
+      : { key: "price", label: "Price for growth", text: pegText, passed: peg <= R.pegCheap },
   ];
   const grower = growth < R.stalwartFrom ? "Slow grower" : growth < R.fastFrom ? "Stalwart" : "Fast grower";
   return {
     peg,
     growthPct: growth,
     cyclical,
+    dividendPct,
+    inventoryWarning,
+    lowQuality: row.quality !== "HIGH",
     type: cyclical ? `Cyclical · ${cyclical}` : grower,
     verdict: cyclical ? "CYCLICAL" : peg <= R.pegCheap ? "CHEAP" : peg <= R.pegFair ? "FAIR" : "PRICEY",
     stars: checks.filter((c) => c.passed === true).length,
@@ -72,23 +116,34 @@ export function lynchSheet(row) {
   };
 }
 
-// [{ row, sheet }] for the quality rows: most stars first, then the lowest PEG.
-export function lynchRows(rows, { tile = null, query = "" } = {}) {
+// [{ row, sheet }] most stars first, then the lowest PEG. scope "Mag7" also
+// returns { row, sheet: null, reason } at the end for a member with no sheet.
+export function lynchRows(rows, { tile = null, query = "", scope = null, lists = null } = {}) {
   const wanted = String(query || "").trim().toLowerCase();
+  const listed = scope && scope !== "Quality";
+  const members = listed ? new Set(Array.isArray(lists?.[scope]) ? lists[scope].map((s) => String(s).toUpperCase()) : []) : null;
+  const everyMember = scope === "Mag7";
   const list = [];
+  const bare = [];
   for (const row of Array.isArray(rows) ? rows : []) {
-    const sheet = lynchSheet(row);
-    if (!sheet) continue;
-    if (tile && sheet.verdict !== tile) continue;
+    if (members && !members.has(String(row?.symbol || "").toUpperCase())) continue;
     if (wanted && !`${row.symbol || ""} ${row.name || ""}`.toLowerCase().includes(wanted)) continue;
+    const sheet = lynchSheet(row, { anyQuality: everyMember });
+    if (!sheet) {
+      if (everyMember && !tile && row.signal !== "ETF") bare.push({ row, sheet: null, reason: lynchMissing(row) || "not scored" });
+      continue;
+    }
+    if (tile && sheet.verdict !== tile) continue;
     list.push({ row, sheet });
   }
-  return list.sort((a, b) => b.sheet.stars - a.sheet.stars || a.sheet.peg - b.sheet.peg
+  list.sort((a, b) => b.sheet.stars - a.sheet.stars || a.sheet.peg - b.sheet.peg
     || String(a.row.symbol).localeCompare(String(b.row.symbol)));
+  bare.sort((a, b) => String(a.row.symbol).localeCompare(String(b.row.symbol)));
+  return [...list, ...bare];
 }
 
 export function lynchCounts(list) {
   const counts = { CHEAP: 0, FAIR: 0, PRICEY: 0, CYCLICAL: 0 };
-  for (const item of Array.isArray(list) ? list : []) counts[item.sheet.verdict] += 1;
+  for (const item of Array.isArray(list) ? list : []) if (item.sheet) counts[item.sheet.verdict] += 1;
   return counts;
 }

@@ -41,7 +41,7 @@ EXPECTED_ROW_KEYS = {
     # re-pinned 2026-11-08 (LEAP setup): every row now also carries the setup state and its verdict
     "setup", "setupPass",
     # re-pinned 2026-11-19 (Peter view): the cyclical industry from the SIC code, or None
-    "cyclical",
+    "cyclical", "dividendYield", "inventoryTurnChange",
 }
 
 
@@ -307,8 +307,10 @@ def test_every_row_has_every_key_and_meta_contract(svc):
         assert isinstance(row["leaps"], bool) and isinstance(row["financial"], bool) and isinstance(row["young"], bool)
     meta = page["meta"]
     # re-pinned 2026-11-08 (LEAP setup): meta also counts the LEAP setups
+    # re-pinned 2026-11-19 (Peter view groups): meta also says who is on Mag7 and on the Watchlist
     assert set(meta) == {"universe", "scored", "etfs", "noFilings", "refreshedAt", "refreshing", "deferredUntil", "mos",
-                         "setups"}
+                         "setups", "lists"}
+    assert isinstance(meta["lists"], dict)
     assert isinstance(meta["mos"], int) and meta["mos"] == 30
     assert meta["universe"] == 12 and meta["scored"] >= 8
     assert meta["noFilings"] == ["ZZZZ"] and meta["etfs"] == ["SPY"]

@@ -37,6 +37,10 @@ class FinnhubExtract:
     roe_ttm: float | None = None
     market_cap_usd: float | None = None
     debt_to_equity: float | None = None
+    # Peter view (2026-11-19): currentDividendYieldTTM, a PERCENT (0.31 means 0.31%), and the yearly
+    # inventory turnover (cost of sales / inventory). None / empty when Finnhub has none.
+    dividend_yield_ttm: float | None = None
+    inventory_turnover_annual: dict = field(default_factory=dict)
     fetched_at: str = ""
 
 
@@ -104,6 +108,8 @@ def fetch_metrics(symbol: str, api_key: str, *, get=None, fetched_at: str,
         roe_ttm=_num(metric.get("roeTTM")),
         market_cap_usd=cap * 1_000_000 if cap is not None else None,
         debt_to_equity=_num(metric.get("totalDebt/totalEquityAnnual")),
+        dividend_yield_ttm=_num(metric.get("currentDividendYieldTTM")),
+        inventory_turnover_annual=_series(annual, "inventoryTurnover"),
         fetched_at=fetched_at,
     )
 

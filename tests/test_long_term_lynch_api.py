@@ -64,8 +64,23 @@ def _expected(rows):
             continue
         if not r.get("pe") or r["pe"] <= 0 or growth is None or growth <= 0:
             continue
-        out[r["symbol"]] = round(r["pe"] / min(round(growth * 1000) / 10, 50), 2)
+        dividend = r.get("dividendYield")
+        dividend_pct = round(dividend * 1000) / 10 if isinstance(dividend, (int, float)) and dividend > 0 else 0
+        out[r["symbol"]] = round(r["pe"] / (min(round(growth * 1000) / 10, 50) + dividend_pct), 2)
     return out
+
+
+def test_rows_carry_the_dividend_yield_and_the_inventory_change(monkeypatch, store_dir):
+    """2026-11-19 "fix all issue": Lynch's PEG adds the dividend to the growth, and inventory growing
+    faster than sales is his warning sign. Both come from the Finnhub fixture through the real route."""
+    table = {s: {"last_price": fixture_price(s), "quote_time_ms": NOW_MS, "description": s}
+             for s in SYMBOLS if fixture_price(s)}
+    rows = {r["symbol"]: r for r in _served(monkeypatch, store_dir, table)["rows"]}
+    assert rows["AAPL"]["dividendYield"] == pytest.approx(0.003105)        # Finnhub 0.3105 (%)
+    assert rows["MCD"]["dividendYield"] > rows["AAPL"]["dividendYield"] > 0
+    assert rows["GOOGL"]["inventoryTurnChange"] is None or isinstance(rows["GOOGL"]["inventoryTurnChange"], float)
+    assert isinstance(rows["AAPL"]["inventoryTurnChange"], float) and -1 < rows["AAPL"]["inventoryTurnChange"] < 5
+    assert rows["SPY"]["dividendYield"] is None, "an ETF row carries neither"
 
 
 def test_peter_list_is_the_quality_rows_of_the_real_route_with_their_peg(monkeypatch, store_dir):
@@ -102,6 +117,56 @@ def test_rows_carry_the_cyclical_industry_and_a_cyclical_is_never_called_cheap(m
     assert cyclical, "at least one cyclical fixture company is on Peter's list"
     assert all(sheet[s] == "CYCLICAL" for s in cyclical)
     assert all(sheet[s] != "CYCLICAL" for s in sheet if not marks[s])
+
+
+MAG7_NODE = """
+const { lynchRows } = await import(process.argv[1]);
+let body = ""; for await (const chunk of process.stdin) body += chunk;
+const page = JSON.parse(body);
+const pick = (scope) => lynchRows(page.rows, { scope, lists: page.meta.lists }).map(({ row, sheet, reason }) => [row.symbol, sheet ? sheet.lowQuality : null, reason || null]);
+process.stdout.write(JSON.stringify({ Mag7: pick("Mag7"), Watchlist: pick("Watchlist") }));
+"""
+
+
+def test_the_route_says_who_is_on_mag7_and_the_watchlist_and_the_groups_follow(monkeypatch, store_dir):
+    """2026-11-19 "add mag7 tickers and watchlist tickers separate also": meta.lists comes from the
+    MomX lists file (faked here), in list order, canonical, without repeats. The Mag7 group shows
+    every member company, quality or not; the Watchlist group keeps to quality companies."""
+    from long_term import symbols as lt_symbols
+    import momx.board as board
+
+    monkeypatch.setattr(board, "load_universes", lambda path=None: {
+        "Mag7": ["AAPL", "nvda", "GOOGL", "SPY", "AAPL", "HOOD"], "Watchlist": ["MCD", "JPM", "AAPL"], "Movers": ["TSM"]})
+    assert lt_symbols.named_lists() == {"Mag7": ["AAPL", "NVDA", "GOOGL", "SPY", "HOOD"], "Watchlist": ["MCD", "JPM", "AAPL"]}
+    table = {s: {"last_price": fixture_price(s), "quote_time_ms": NOW_MS, "description": s}
+             for s in SYMBOLS if fixture_price(s)}
+    body = _served(monkeypatch, store_dir, table)
+    assert body["meta"]["lists"] == {"Mag7": ["AAPL", "NVDA", "GOOGL", "SPY", "HOOD"], "Watchlist": ["MCD", "JPM", "AAPL"]}
+    view = subprocess.run(["node", "--input-type=module", "-e", MAG7_NODE, MODULE], input=json.dumps(body),
+                          capture_output=True, text=True, timeout=60, check=False)
+    assert view.returncode == 0, view.stderr
+    groups = json.loads(view.stdout)
+    rows = {r["symbol"]: r for r in body["rows"]}
+    mag7 = {symbol: (low, reason) for symbol, low, reason in groups["Mag7"]}
+    assert set(mag7) == {"AAPL", "NVDA", "GOOGL", "HOOD"}, "every Mag7 company, the ETF left out"
+    for symbol, (low, reason) in mag7.items():
+        if reason is None:
+            assert low == (rows[symbol]["quality"] != "HIGH"), symbol
+        else:
+            assert low is None and isinstance(reason, str) and reason
+    watch = [symbol for symbol, _, _ in groups["Watchlist"]]
+    assert set(watch) <= {"MCD", "JPM", "AAPL"} and all(rows[s]["quality"] == "HIGH" for s in watch)
+
+
+def test_a_broken_lists_file_gives_no_groups_and_the_page_still_answers(monkeypatch, store_dir):
+    import momx.board as board
+
+    def boom(path=None):
+        raise ValueError("unreadable lists file")
+
+    monkeypatch.setattr(board, "load_universes", boom)
+    body = _served(monkeypatch, store_dir, {})
+    assert body["rows"] and body["meta"]["lists"] == {}
 
 
 def test_without_prices_nobody_is_on_peters_list(monkeypatch, store_dir):

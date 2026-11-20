@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from long_term.cyclical import cyclical_group
+from long_term.cyclical import cyclical_group, dividend_yield, inventory_turn_change
 from long_term.edgar import (EXTRA_CIKS, NEEDS_ACCESSION_FILTER, EdgarBlocked, EdgarClient, Snapshot, build_snapshot,
                              merge_companyfacts)
 from long_term.finnhub import FinnhubExtract, FinnhubPacer, fetch_metrics
@@ -35,7 +35,7 @@ from long_term.leaps import (LEAP_MAX_DTE, LEAP_MIN_DTE, REASON_CHAIN_UNAVAILABL
                              pick_leap)
 from long_term.metrics import CHECK_KEYS, Check, Metrics, compute_metrics, stored_listing_factor, with_fcf
 from long_term.setups import setup_state
-from long_term.symbols import CIK_OVERRIDES, canonical, to_schwab
+from long_term.symbols import CIK_OVERRIDES, canonical, named_lists, to_schwab
 from long_term.valuation import Valuation, price_guard, signal, valuation
 
 log = logging.getLogger("long_term")
@@ -76,6 +76,9 @@ ROW_KEYS = (
     "financial", "big5", "big5Na", "quality", "pe", "debtToEquity", "salesGrowth", "epsGrowth",
     "fcfGrowth", "equityGrowth", "marketCap", "filedEnd", "years", "currency", "young", "setup", "setupPass",
     "cyclical",     # 2026-11-19: the cyclical industry (from the SIC code) for the Peter view, or None
+    # Peter view, same day: dividend yield as a fraction of the price, and the change of the yearly
+    # inventory turnover against the year before (negative = inventory piling up)
+    "dividendYield", "inventoryTurnChange",
 )
 _METRICS_FIELDS = frozenset(f.name for f in dataclasses.fields(Metrics))
 _VALUATION_FIELDS = frozenset(f.name for f in dataclasses.fields(Valuation))
@@ -848,7 +851,8 @@ class LongTermService:
             sic = rec.get("sic")
             if sic is None and isinstance(rec.get("snapshot"), dict):
                 sic = rec["snapshot"].get("sic")
-            row.update(cyclical=cyclical_group(sic))
+            row.update(cyclical=cyclical_group(sic), dividendYield=dividend_yield(rec.get("finnhub")),
+                       inventoryTurnChange=inventory_turn_change(rec.get("finnhub")))
             c = self._entry(sym, rec)
             if c.get("computing"):
                 row.update(signal="CHECK_DATA", reason="computing")
@@ -941,9 +945,14 @@ class LongTermService:
         except Exception:  # noqa: BLE001
             universe = len(rows)
         refreshed = self.store.summary.get("refreshed_at") if isinstance(self.store.summary, dict) else None
+        try:
+            lists = named_lists()      # Peter view groups: who is on Mag7 and on the Watchlist
+        except Exception:  # noqa: BLE001
+            lists = {}
         return {
             "rows": rows,
             "meta": {
+                "lists": lists,
                 "universe": universe,
                 "scored": sum(1 for r in rows if r["signal"] in SCORED),
                 "setups": sum(1 for r in rows if r.get("setupPass") is True),

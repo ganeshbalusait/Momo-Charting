@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { LYNCH_TILES, lynchCounts, lynchRows, lynchSheet } from "./longTermLynch.js";
+import { LYNCH_BACKTEST_NOTE, LYNCH_SCOPES, LYNCH_TILES, lynchCounts, lynchMissing, lynchRows, lynchSheet } from "./longTermLynch.js";
 
 const row = (over = {}) => ({
   symbol: "ADBE", name: "Adobe", signal: "BUY", quality: "HIGH", young: false, financial: false, price: 220,
@@ -74,6 +74,87 @@ test("a cyclical is never called CHEAP: it reads CYCLICAL and the price star is 
   const list = lynchRows([row({ symbol: "MU", cyclical: "chips" }), row({})]);
   assert.deepEqual(lynchCounts(list), { CHEAP: 1, FAIR: 0, PRICEY: 0, CYCLICAL: 1 });
   assert.deepEqual(lynchRows([row({ symbol: "MU", cyclical: "chips" }), row({})], { tile: "CYCLICAL" }).map((x) => x.row.symbol), ["MU"]);
+});
+
+// 2026-11-19 "fix all issue": Lynch's own formula adds the dividend to the growth.
+test("the dividend yield joins the growth in the PEG, so a dividend payer reads cheaper", () => {
+  // P/E 20, growth 12%: plain PEG 1.67 (FAIR). With a 4% dividend: 20 / 16 = 1.25.
+  const plain = lynchSheet(row({ pe: 20, epsGrowth: 0.12 }));
+  const payer = lynchSheet(row({ pe: 20, epsGrowth: 0.12, dividendYield: 0.04 }));
+  assert.deepEqual([plain.peg, payer.peg], [1.67, 1.25]);
+  assert.equal(payer.dividendPct, 4);
+  assert.match(payer.checks[4].text, /PEG 1\.25 with the 4\.0% dividend/);
+  assert.equal(plain.checks[4].text, "PEG 1.67");
+  // P/E 16 on 12% growth + 4% dividend = exactly 1.0: the dividend earns the price star
+  assert.equal(passed(lynchSheet(row({ pe: 16, epsGrowth: 0.12, dividendYield: 0.04 }))).price, true);
+  assert.equal(passed(lynchSheet(row({ pe: 16, epsGrowth: 0.12 }))).price, false);
+  // a tiny or missing yield changes nothing and is not mentioned
+  for (const dividendYield of [0, null, undefined, -0.01, "0.04", NaN]) {
+    const sheet = lynchSheet(row({ pe: 20, epsGrowth: 0.12, dividendYield }));
+    assert.deepEqual([sheet.peg, sheet.dividendPct, sheet.checks[4].text], [1.67, 0, "PEG 1.67"], String(dividendYield));
+  }
+  // growth is still capped at 50 before the dividend is added
+  assert.equal(lynchSheet(row({ pe: 26, epsGrowth: 0.8, dividendYield: 0.02 })).peg, 0.5);
+});
+
+// Lynch's warning sign: inventory growing faster than sales.
+test("inventory turning over 10% slower than last year is flagged; the stars do not change", () => {
+  const slow = lynchSheet(row({ inventoryTurnChange: -0.25 }));
+  assert.equal(slow.inventoryWarning, "Inventory is turning over 25% slower than a year ago: it is growing faster than sales.");
+  assert.deepEqual([slow.stars, slow.of], [5, 5]);
+  assert.match(lynchSheet(row({ inventoryTurnChange: -0.1 })).inventoryWarning, /10% slower/);
+  for (const inventoryTurnChange of [-0.09, 0, 0.3, null, undefined, "x", NaN]) {
+    assert.equal(lynchSheet(row({ inventoryTurnChange })).inventoryWarning, null, String(inventoryTurnChange));
+  }
+});
+
+// 2026-11-19 "add mag7 tickers and watchlist tickers separate also".
+test("Mag7 lists every Mag7 company, quality or not; Watchlist keeps to quality names", () => {
+  const lists = { Mag7: ["AAPL", "TSLA", "AMZN", "SPY", "NVDA"], Watchlist: ["ADBE", "TSLA", "HD"] };
+  const rows = [
+    row({ symbol: "AAPL", pe: 39, epsGrowth: 0.15 }),
+    row({ symbol: "TSLA", quality: "LOW", pe: 30, epsGrowth: 0.3 }),            // scored, but not a quality company
+    row({ symbol: "AMZN", quality: "LOW", pe: 30, epsGrowth: -0.05 }),          // earnings did not grow: no sheet
+    row({ symbol: "SPY", signal: "ETF", quality: null, pe: null, epsGrowth: null }),
+    row({ symbol: "NVDA", cyclical: "chips", pe: 18, epsGrowth: 0.4 }),
+    row({ symbol: "ADBE" }),
+    row({ symbol: "HD", quality: "LOW" }),
+  ];
+  const mag7 = lynchRows(rows, { scope: "Mag7", lists });
+  assert.deepEqual(mag7.map((x) => x.row.symbol), ["TSLA", "NVDA", "AAPL", "AMZN"], "sheets first (stars, PEG), then the ones with no sheet; ETFs left out");
+  const tsla = mag7[0].sheet;
+  assert.deepEqual([tsla.lowQuality, tsla.verdict, tsla.stars], [true, "CHEAP", 5]);
+  assert.equal(mag7[2].sheet.lowQuality, false);
+  assert.deepEqual([mag7[3].sheet, mag7[3].reason], [null, "earnings did not grow"]);
+  assert.deepEqual(lynchCounts(mag7), { CHEAP: 1, FAIR: 0, PRICEY: 1, CYCLICAL: 1 });
+  assert.deepEqual(lynchRows(rows, { scope: "Mag7", lists, tile: "CHEAP" }).map((x) => x.row.symbol), ["TSLA"], "a tile drops the cards with no sheet");
+  // Watchlist: members only, quality only (TSLA and HD are on it but not quality)
+  assert.deepEqual(lynchRows(rows, { scope: "Watchlist", lists }).map((x) => x.row.symbol), ["ADBE"]);
+  // no scope: the quality list, as before
+  assert.deepEqual(lynchRows(rows).map((x) => x.row.symbol), ["ADBE", "NVDA", "AAPL"]);
+  // a list the server did not send is empty, never everything
+  assert.deepEqual(lynchRows(rows, { scope: "Mag7", lists: {} }), []);
+  assert.deepEqual(lynchRows(rows, { scope: "Mag7" }), []);
+  assert.deepEqual(LYNCH_SCOPES, ["Quality", "Mag7", "Watchlist"]);
+});
+
+test("why a Mag7 company has no star sheet", () => {
+  assert.equal(lynchMissing(row({ signal: "NO_PRICE" })), "no live price");
+  assert.equal(lynchMissing(row({ signal: "STALE" })), "filings are stale");
+  assert.equal(lynchMissing(row({ signal: "SHORT_HISTORY" })), "not enough years of filings");
+  assert.equal(lynchMissing(row({ pe: null })), "no profit, so no P/E");
+  assert.equal(lynchMissing(row({ epsGrowth: null })), "no earnings growth figure");
+  assert.equal(lynchMissing(row({ epsGrowth: -0.1 })), "earnings did not grow");
+  assert.equal(lynchMissing(row({})), null);
+});
+
+test("the page carries the back-test result in plain words, numbers as the run printed them", () => {
+  assert.match(LYNCH_BACKTEST_NOTE, /CHEAP tag did NOT beat the quality group/);
+  for (const figure of ["98 of today's companies", "452 yearly picks", "72% vs all quality 74%", "59% vs 66%", "82% vs 85%", "73% vs 82%"]) {
+    assert.ok(LYNCH_BACKTEST_NOTE.includes(figure), figure);
+  }
+  assert.match(LYNCH_BACKTEST_NOTE, /survivors only/);
+  assert.match(LYNCH_BACKTEST_NOTE, /Not advice\.$/);
 });
 
 test("only quality companies with a price, a profit and a growth record get a sheet", () => {

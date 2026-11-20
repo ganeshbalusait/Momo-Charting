@@ -30,6 +30,21 @@ def test_extract_nvda():
     assert x.fetched_at == FA and x.symbol == "NVDA"
 
 
+def test_dividend_yield_and_inventory_turnover_for_the_peter_view():
+    """2026-11-19 Peter view: the dividend yield (a PERCENT, 0.31 = 0.31%) joins the PEG, and the
+    yearly inventory turnover shows stock piling up faster than sales."""
+    doc = {"metric": {**NVDA["metric"], "currentDividendYieldTTM": 0.3105},
+           "series": {"annual": {**NVDA["series"]["annual"],
+                                 "inventoryTurnover": [{"period": "2026-01-25", "v": 3.1}, {"period": "2025-01-26", "v": 4.0},
+                                                       {"period": "2024-01-28", "v": None}]}}}
+    x = fetch_metrics("NVDA", "k", get=lambda url, t: doc, fetched_at=FA)
+    assert x.dividend_yield_ttm == pytest.approx(0.3105)
+    assert x.inventory_turnover_annual == {"2026-01-25": 3.1, "2025-01-26": 4.0}
+    # a company with neither (the plain NVDA doc) reads None / empty, never 0
+    plain = fetch_metrics("NVDA", "k", get=lambda url, t: NVDA, fetched_at=FA)
+    assert plain.dividend_yield_ttm is None and plain.inventory_turnover_annual == {}
+
+
 def test_bank_without_eps_series():
     assert fetch_metrics("JPM", "k", get=lambda u, t: JPM, fetched_at="x").eps_annual == {}
 
