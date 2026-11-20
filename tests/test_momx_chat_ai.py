@@ -1237,3 +1237,67 @@ def test_a_regular_user_never_gets_my_trades(question):
     plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY"}))
     assert not plan or all(c["tool"] != "my_trades" for c in plan.get("calls") or [])
     assert chatbot.owner_question(question)          # so the scanner-only line answers it
+
+
+# ---------------------------------------------------------------- LEAP strike questions, 2026-11-19
+@pytest.mark.parametrize("question", ["See nvda leaps which strike is good?", "nvda leap which strike", "NVDA leaps best contract"])
+def test_a_leap_strike_question_gets_the_long_dated_oi_board_not_the_long_term_report(question):
+    """His "See nvda leaps which strike is good?" got the Long Term report with no strike in it. The chat never picks a
+    strike; it shows the strikes holding the most open interest 3 to 12 months out."""
+    from momx import chat_ai
+    ctx = {"scope": "scanner", "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY"}))
+    call = plan["calls"][0]
+    assert call["tool"] == "long_oi" and call["args"]["ticker"] == "NVDA", (question, plan)
+    assert (call["args"]["months_from"], call["args"]["months_to"]) == (3, 12)
+
+
+@pytest.mark.parametrize("question", ["NVDA leap", "long term NVDA", "what are leaps"])
+def test_a_leap_question_with_no_strike_word_keeps_its_old_answer(question):
+    from momx import chat_ai
+    ctx = {"scope": "scanner", "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY"}))
+    assert not plan or all(c["tool"] != "long_oi" for c in plan.get("calls") or []), (question, plan)
+
+
+# ---------------------------------------------------------------- plain open-interest questions, 2026-11-19
+@pytest.mark.parametrize("scope", ["owner", "scanner"])
+@pytest.mark.parametrize("question,side,plain", [("Oi for nvda buyers or sellers?", None, True), ("nvda oi", None, False),
+                                                 ("open interest on spy", None, False), ("is nvda oi bullish", None, True),
+                                                 ("nvda put oi", "put", False)])
+def test_a_plain_oi_question_gets_the_high_oi_board_with_no_ai(scope, question, side, plain):
+    """His "Oi for nvda buyers or sellers?" got only the list of things the chat can answer: no rule matched, and the AI
+    that reads unsure questions was over its free limit. The words are certain, so the High OI board answers."""
+    from momx import chat_ai
+    ctx = {"scope": scope, "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY"}))
+    call = plan["calls"][0]
+    assert call["tool"] == "walls" and call["args"]["ticker"] in ("NVDA", "SPY") and call["args"].get("side") == side, (question, plan)
+    assert (plan.get("lines") == [chat_ai.OI_NO_SIDE_LINE]) is plain, (question, plan)
+    assert "buyer and a seller" in chat_ai.OI_NO_SIDE_LINE and "cannot show" in chat_ai.OI_NO_SIDE_LINE
+
+
+@pytest.mark.parametrize("question,tool", [("what is oi", "define"), ("nvda oi chain", "chain"), ("nvda leap oi", "long_oi"),
+                                           ("nvda high oi", "walls")])
+def test_other_oi_questions_keep_their_own_answers(question, tool):
+    from momx import chat_ai
+    ctx = {"scope": "scanner", "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY"}))
+    assert plan["calls"][0]["tool"] == tool and not plan.get("lines"), (question, plan)
+
+
+# ---------------------------------------------------------------- LEAP buyers-or-sellers questions, 2026-11-19
+@pytest.mark.parametrize("question", ["Nvda leap oi buyers or sellers?", "nvda leaps buyers or sellers", "NVDA leap oi bought or sold"])
+def test_a_leap_buyers_or_sellers_question_gets_the_long_dated_board_with_the_plain_line(question):
+    from momx import chat_ai
+    ctx = {"scope": "scanner", "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY"}))
+    assert plan["calls"][0]["tool"] == "long_oi" and plan["calls"][0]["args"]["ticker"] == "NVDA", (question, plan)
+    assert plan.get("lines") == [chat_ai.OI_NO_SIDE_LINE]
+
+
+def test_a_plain_leap_strike_question_has_no_buyers_line():
+    from momx import chat_ai
+    ctx = {"scope": "scanner", "account": "x", "pageTicker": None, "pageName": None, "ticker": None, "day": None, "side": None, "now": NOW}
+    plan = chat_ai.sure_calls("nvda leap which strike", ctx, frozenset({"NVDA", "SPY"}))
+    assert plan["calls"][0]["tool"] == "long_oi" and not plan.get("lines")

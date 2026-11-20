@@ -78,6 +78,17 @@ def test_his_leap_question_gets_the_strikes_with_the_most_oi_and_their_delta(wor
     assert (tmp_path / "long_oi_cache" / "NVDA.json.gz").exists()
 
 
+def test_leaps_which_strike_is_good_gets_the_oi_strikes_and_no_pick(world):
+    """2026-11-19: "See nvda leaps which strike is good?" got the Long Term report with no strike in it."""
+    with running_api() as api:
+        status, body = api.post(ROUTE, {"question": "See nvda leaps which strike is good?",
+                                        "context": {"pageTicker": "NVDA", "pageName": "Options"}}, headers=REGULAR)
+    text = "\n".join(body["lines"])
+    assert status == 200 and body["ticker"] == "NVDA", body
+    assert "expiries 3 to 12 months out" in text and "Most call OI: 185 call" in text, text
+    assert world["ai"] == []
+
+
 def test_a_question_with_no_ticker_anywhere_asks_for_one(world):
     with running_api() as api:
         status, body = api.post(ROUTE, {"question": "which strikes have high oi 1 to 12 months with delta", "context": {}}, headers=REGULAR)
@@ -100,3 +111,65 @@ def test_capture_the_real_reply_for_the_browser_spec(world):
     assert status == 200
     with open(out, "w", encoding="utf-8") as handle:
         json.dump(body, handle)
+
+
+
+def _saved_board(tmp_path, changes, prev_day="2026-11-18T20:04:00-05:00"):
+    """The LEAP OI Scanner's saved copy of NVDA as the page leaves it: today's open interest (from the chat's own
+    copy, so both describe one posting) and yesterday's, `changes` contracts lower."""
+    import gzip
+    from momx import leap_oi_scanner
+    full = long_oi._read_disk(tmp_path, "NVDA")
+    saved = leap_oi_scanner.compact(full)
+    prev = {key: oi - changes.get(key, 0) for key, oi in saved["allOi"].items()}
+    saved.update({"prevOi": prev, "prevAt": prev_day})
+    (tmp_path / "leap_oi_board").mkdir(exist_ok=True)
+    with gzip.open(tmp_path / "leap_oi_board" / "NVDA.json.gz", "wt", encoding="utf-8") as handle:
+        json.dump(saved, handle)
+    return saved
+
+
+def test_new_open_interest_since_yesterday_goes_on_top_with_a_change_column(world, tmp_path):
+    """2026-11-19 "what change column do it will show new added top of that?": the biggest NEW open interest since the
+    previous reading heads the answer and the table, and every row says how much it changed."""
+    from momx import leap_oi_scanner
+    with running_api() as api:
+        api.post(ROUTE, {"question": "Nvda leap oi", "context": {"pageTicker": "NVDA"}}, headers=REGULAR)   # the chat's copy
+        full = long_oi._read_disk(tmp_path, "NVDA")
+        calls = sorted((r for r in full["rows"] if r["side"] == "CALL" and r["days"] >= 88 and abs(r["delta"] or 0) >= 0.1 and r["oi"] > 3000),
+                       key=lambda r: r["oi"])
+        jump, small = calls[0], calls[-1]
+        _saved_board(tmp_path, {leap_oi_scanner.contract_key(jump): 3000, leap_oi_scanner.contract_key(small): -500})
+        status, body = api.post(ROUTE, {"question": "Nvda leap oi buyers or sellers?", "context": {"pageTicker": "NVDA"}}, headers=REGULAR)
+    assert status == 200, body
+    assert "Each one has a buyer and a seller" in body["lines"][0], body["lines"]
+    said = "\n".join(body["lines"])
+    strike = f"{jump['strike']:g}"
+    assert f"Biggest new open interest since the Nov 18 2026 reading: {strike} call" in said and "+3,000" in said, said
+    assert "cannot show whether they were bought or sold" in said
+    columns = [c["label"] for c in body["table"]["columns"]]
+    assert columns == ["Contract", "Expiry", "Days", "OI", "Change", "Delta", "Bid", "Ask"]
+    top = body["table"]["rows"][0]
+    assert top["contract"].startswith(f"{strike} Call · NEW") and top["change"] == "+3,000", top
+    changed = {r["contract"].split(" ·")[0] + r["expiry"]: r["change"] for r in body["table"]["rows"]}
+    assert changed[f"{small['strike']:g} Call{small['expiry']}"] == "-500"
+    assert sum(1 for r in body["table"]["rows"] if "NEW" in r["contract"]) == 1      # under 1,000 is not "new"
+    assert len({(r["contract"].replace(" · NEW", ""), r["expiry"]) for r in body["table"]["rows"]}) == len(body["table"]["rows"])
+    assert "NEW rows first" in body["table"]["note"]
+    assert world["ai"] == []
+
+
+def test_a_saved_copy_from_another_posting_gives_no_change(world, tmp_path):
+    """When the LEAP board's copy holds different open interest than the chat's (another posting), no change is made up."""
+    from momx import leap_oi_scanner
+    with running_api() as api:
+        api.post(ROUTE, {"question": "Nvda leap oi", "context": {"pageTicker": "NVDA"}}, headers=REGULAR)
+        saved = _saved_board(tmp_path, {})
+        import gzip
+        saved["allOi"] = {key: oi + 7 for key, oi in saved["allOi"].items()}            # another day's numbers
+        with gzip.open(tmp_path / "leap_oi_board" / "NVDA.json.gz", "wt", encoding="utf-8") as handle:
+            json.dump(saved, handle)
+        status, body = api.post(ROUTE, {"question": "Nvda leap oi", "context": {"pageTicker": "NVDA"}}, headers=REGULAR)
+    assert status == 200
+    assert "Change" not in [c["label"] for c in body["table"]["columns"]] and "Biggest new" not in "\n".join(body["lines"])
+    assert not any("NEW" in r["contract"] for r in body["table"]["rows"])

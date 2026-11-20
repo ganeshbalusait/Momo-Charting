@@ -5487,6 +5487,15 @@ class DashboardState:
         call_rows = self._oi_finder_side_rows(chain_payload, "CALL")
         put_rows = self._oi_finder_side_rows(chain_payload, "PUT")
         selected_expiry_chain_rows = self._oi_finder_selected_expiry_chain_rows(chain_payload)
+        # Bought-or-sold estimate (momx/oi_sides.py): each read of the Schwab chain sorts the volume added since the
+        # last read by where the last trade printed. Never from the Tradier fallback (its volumes differ), and it
+        # can never break the chain build.
+        if "Tradier" not in str(source):
+            try:
+                from momx import oi_sides
+                oi_sides.annotate(normalized_symbol, selected_expiry_chain_rows, now)
+            except Exception as exc:
+                print(f"[oi_sides] {normalized_symbol}: {exc}", flush=True)
         current_atm = self._oi_finder_current_atm(chain_payload)
         tos_script_levels = self._oi_finder_tos_script_levels(chain_payload)
         # Keep expected move tied to each expiry.  The Finder heatmap uses

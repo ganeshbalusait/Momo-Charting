@@ -7,6 +7,10 @@ import {
   nativeFireGlyphPoints,
   nativeFireMotion,
   nativeGeometry,
+  nativeHighlightFrame,
+  nativeHighlightShows,
+  nativeCloudUnionRuns,
+  mergeCandleHighlights,
   nativeHighlightPulse,
   nativeLevelLabelGutter,
   nativeCloudBandShapes,
@@ -62,6 +66,111 @@ test("builds a compact TOS-style lightning trace beside a fire candle", () => {
   assert.deepEqual(nativeFireGlyphPoints({ x: 10, top: 20, bottom: 20 }), []);
 });
 
+test("one candle with several signals gets one highlight, and fire wins (NVDA 09:30, 2026-11-19)", () => {
+  const merged = mergeCandleHighlights([
+    { time: 300, color: "#18f0ff", intensity: 1.3 },               // CALL5
+    { time: 300, color: "#18f0ff", intensity: 1.3 },               // CALL15
+    { time: 300, color: "#00e5ff", intensity: 1.45, fire: true, flashUntilMs: 50 }, // 🔥5
+    { time: 300, color: "#00e5ff", intensity: 1.45, fire: true, flashUntilMs: 90 }, // 🔥15
+    { time: 600, color: "#ff20b8", intensity: 1.3 },
+  ]);
+  assert.equal(merged.length, 2);
+  assert.deepEqual(
+    { time: merged[0].time, fire: merged[0].fire, color: merged[0].color, intensity: merged[0].intensity, flash: merged[0].flashUntilMs },
+    { time: 300, fire: true, color: "#00e5ff", intensity: 1.45, flash: 90 },
+  );
+  assert.equal(merged[1].fire, undefined);
+  assert.deepEqual(mergeCandleHighlights(null), []);
+});
+
+test("the highlight frame sits outside the candle so its body and wick stay visible", () => {
+  const candle = { x: 40, top: 20, bottom: 80, width: 8 };
+  const frame = nativeHighlightFrame(candle);
+  assert.ok(frame.left < candle.x - candle.width / 2);
+  assert.ok(frame.left + frame.width > candle.x + candle.width / 2);
+  assert.ok(frame.top < candle.top);
+  assert.ok(frame.top + frame.height > candle.bottom);
+  assert.equal(nativeHighlightFrame({ x: Number.NaN, top: 1, bottom: 2 }), null);
+  // The flame trace stands outside that frame, not on the candle.
+  const flame = nativeFireGlyphPoints({ ...candle, bullish: true });
+  assert.ok(flame.every(([x]) => x < frame.left));
+});
+
+test("the native geometry draws one highlight for a candle that carries four signals", () => {
+  const primitive = new TosNativeChartPrimitive();
+  primitive.setData({
+    bars: [{ time: 300, open: 10, high: 12, low: 9, close: 11.5 }],
+    timeframeMinutes: 5,
+    candleHighlights: [
+      { time: 300, color: "#18f0ff", intensity: 1.3 },
+      { time: 300, color: "#18f0ff", intensity: 1.3 },
+      { time: 300, color: "#00e5ff", intensity: 1.45, fire: true },
+      { time: 300, color: "#00e5ff", intensity: 1.45, fire: true },
+    ],
+  });
+  const chart = {
+    paneSize: () => ({ width: 300, height: 200 }),
+    timeScale: () => ({
+      timeToCoordinate: (time) => Number(time) / 2,
+      getVisibleRange: () => ({ from: 0, to: 1_000 }),
+      options: () => ({ barSpacing: 10 }),
+    }),
+  };
+  const series = { priceToCoordinate: (price) => 200 - Number(price) * 10 };
+  const geometry = nativeGeometry(primitive.model, chart, series);
+  assert.equal(geometry.candleHighlights.length, 1);
+  assert.equal(geometry.candleHighlights[0].fire, true);
+});
+
+test("overlapping signal and 🔥 clouds are drawn one layer deep, not stacked brighter (NVDA 09:30, 2026-11-19)", () => {
+  const primitive = new TosNativeChartPrimitive();
+  const families = ["mtf-squeeze-release", "mtf-ema920", "mtf-4x8", "mtf-squeeze-release"];
+  let made = 0;
+  const squeeze = (startTime, endTime, anchor) => ({
+    family: families[made++ % families.length], tone: "bull", startTime, endTime, anchor, color: "#00ffff", opacity: 0.2,
+  });
+  primitive.setData({
+    bars: [
+      { time: 300, open: 10, high: 12, low: 9, close: 11.5 },
+      { time: 600, open: 11.5, high: 12.5, low: 11, close: 12 },
+      { time: 900, open: 12, high: 13, low: 11.5, close: 12.8 },
+    ],
+    timeframeMinutes: 5,
+    oneSidedClouds: [
+      squeeze(300, 600, 9),    // 🔥5: the 09:30 candle only
+      squeeze(300, 1200, 9),   // 🔥15: 09:30-09:45
+      squeeze(300, 1200, 9),   // 🔥30
+      squeeze(300, 1200, 8.5), // 🔥1h, anchored lower
+    ],
+  });
+  const chart = {
+    paneSize: () => ({ width: 300, height: 200 }),
+    timeScale: () => ({
+      timeToCoordinate: (time) => Number(time) / 10,
+      getVisibleRange: () => ({ from: 0, to: 1_000 }),
+      options: () => ({ barSpacing: 30 }),
+    }),
+  };
+  const series = { priceToCoordinate: (price) => 200 - Number(price) * 10 };
+  const fills = nativeGeometry(primitive.model, chart, series).fills;
+  // One cloud over all three candles: the union reaches the lowest anchor.
+  assert.equal(fills.length, 1);
+  assert.equal(fills[0].opacity, 0.2);
+  const ys = fills[0].points.map(([, y]) => y);
+  assert.deepEqual([Math.min(...ys), Math.max(...ys)], [0, 115]);
+});
+
+test("one-sided cloud columns join into one shape per run of candles", () => {
+  const runs = nativeCloudUnionRuns([
+    { index: 2, bull: true, anchorY: 50, color: "#0ff", opacity: 0.2 },
+    { index: 1, bull: true, anchorY: 50, color: "#0ff", opacity: 0.2 },
+    { index: 3, bull: true, anchorY: 70, color: "#0ff", opacity: 0.2 },
+    { index: 1, bull: false, anchorY: 10, color: "#f0f", opacity: 0.2 },
+  ]);
+  assert.deepEqual(runs.map((run) => [run.bull, run.from, run.to]), [[true, 1, 2], [true, 3, 3], [false, 1, 1]]);
+  assert.deepEqual(nativeCloudUnionRuns(null), []);
+});
+
 test("continuously bends and flickers a visible fire trace", () => {
   const first = nativeFireMotion(1_000, 42);
   const second = nativeFireMotion(1_100, 42);
@@ -105,6 +214,20 @@ test("updates the live candle anchor without rebuilding the native study model",
   assert.deepEqual(primitive.model.candleHighlights, [{ time: 200, color: "#00ffff", fire: true }]);
 });
 
+test("an old fire draws no box and no flame, and stops repainting (2026-11-19 'box around the candle')", () => {
+  const now = 1_000_000;
+  assert.equal(nativeHighlightShows({ fire: true, flashUntilMs: now + 2_000 }, now), true);
+  assert.equal(nativeHighlightShows({ fire: true, flashUntilMs: now - 1 }, now), false);
+  assert.equal(nativeHighlightShows({ fire: true }, now), false);
+  const primitive = new TosNativeChartPrimitive();
+  primitive.setData({
+    bars: [{ time: 200, high: 12, low: 10 }],
+    candleHighlights: [{ time: 200, color: "#00ffff", fire: true }],
+  });
+  primitive.signalRenderer.setGeometry({ candleHighlights: [{ time: 200, fire: true, flashUntilMs: 0 }] });
+  assert.equal(primitive.hasActiveAnimation(), false);
+});
+
 test("pauses decorative fire animation while the trader pans or zooms", () => {
   const primitive = new TosNativeChartPrimitive();
   primitive.setData({
@@ -112,7 +235,8 @@ test("pauses decorative fire animation while the trader pans or zooms", () => {
     candleHighlights: [{ time: 200, color: "#00ffff", fire: true }],
   });
   primitive.signalRenderer.setGeometry({
-    candleHighlights: [{ time: 200, fire: true }],
+    // A brand-new fire, still in its flash.
+    candleHighlights: [{ time: 200, fire: true, flashUntilMs: Date.now() + 60_000 }],
   });
 
   assert.equal(primitive.hasActiveAnimation(), true);
@@ -151,7 +275,7 @@ test("sleeps between decorative fire paints instead of polling every display fra
       bars: [{ time: 200, high: 12, low: 10 }],
       candleHighlights: [{ time: 200, color: "#00ffff", fire: true }],
     });
-    primitive.signalRenderer.setGeometry({ candleHighlights: [{ time: 200, fire: true }] });
+    primitive.signalRenderer.setGeometry({ candleHighlights: [{ time: 200, fire: true, flashUntilMs: Date.now() + 60_000 }] });
     primitive.requestUpdate = () => { updateCalls += 1; };
 
     primitive.ensureAnimationLoop();

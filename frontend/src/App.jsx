@@ -6,6 +6,7 @@ import { timingMark, timingStart } from "./chartLoadTiming.js";
 import { nextChartGapPoll } from "./chartGapRecovery.js";
 import { formatHeatmapSmallNumber, liveDteGridColumns, liveDteGridMinWidth } from "./oiHeatmapLayout.js";
 import "./oiHeatmapCompact.css";
+import "./oiSideEstimate.css";
 import { buildChartGamma, chartGammaEmptyMessage, ChartGammaPrimitive, formatGammaDollars } from "./chartGamma.js";
 import {
   Activity,
@@ -261,6 +262,7 @@ import {
 } from "./oiChartLevels";
 import { OI_WALLS_PER_SIDE_OPTIONS, useOiWallsPerSide, writeOiWallsPerSide } from "./oiWallsPerSide";
 import { buildHighOiContractList, expectedMoveFromExpiries, formatCompactVolume, formatDelta, formatMark, resolveExpectedMove } from "./highOiContractList";
+import { OI_SIDE_NOTE, oiSideCell } from "./oiSideEstimate";
 import { buildRoiAutofill, roiAutoTargets, roiEntryPrice, roiStopLevel } from "./roiCalcAutofill";
 import ChartProjectRoiCard, { ChartProjectRoiToolbar } from "./ChartProjectRoiCard";
 import {
@@ -6427,6 +6429,8 @@ function HighOiContractRow({ row, sideLeaderOi, isLeader, tone = "", insideEm = 
   // The biggest wall on its side is the chart's flashing High OI wall; its
   // strike and OI flash here too so the list and the chart agree.
   const isHighOi = sideLeaderOi > 0 && row.openInterest === sideLeaderOi;
+  // Bought or sold: the app's estimate (never exchange data), with how it was worked out in the tooltip.
+  const sideCell = oiSideCell(row.sideEst);
   return <tr className={`high-oi-row is-${side}${isLeader ? " is-leader" : ""}${isHighOi ? " is-high-oi" : ""}${tone ? ` is-tone-${tone}` : ""}${insideEm ? " is-inside-em" : ""}`}>
     <td className="high-oi-side">{row.side === "PUT" ? "Put" : "Call"}</td>
     <td className="high-oi-imp">{row.importance}</td>
@@ -6436,6 +6440,7 @@ function HighOiContractRow({ row, sideLeaderOi, isLeader, tone = "", insideEm = 
     <td className="high-oi-mark">{formatMark(row.last)}</td>
     <td className="high-oi-oi"><i style={{ width: `${oiPercent}%` }} aria-hidden="true" /><span>{formatCompactNumber(row.openInterest)}</span></td>
     <td className="high-oi-exp">{formatExpiryShort(row.expiry)}</td>
+    <td className={`high-oi-bs${sideCell.tone ? ` is-${sideCell.tone}` : ""}`} data-testid="high-oi-bs" title={sideCell.title}>{sideCell.text}</td>
   </tr>;
 }
 
@@ -6544,11 +6549,11 @@ function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, er
     </div>
     <div className="high-oi-scroll">
       <table>
-        <thead><tr><th>C/P</th><th>Imp</th><th>Δ</th><th>Vol</th><th>Price</th><th>Mark</th><th>OI</th><th>Exp</th></tr></thead>
+        <thead><tr><th>C/P</th><th>Imp</th><th>Δ</th><th>Vol</th><th>Price</th><th>Mark</th><th>OI</th><th>Exp</th><th title={OI_SIDE_NOTE}>B/S</th></tr></thead>
         <tbody>
           {hasRows ? boardRows.map((item) => (item.type === "separator"
             ? <tr className={`high-oi-em ${item.className}`} key={item.key}>
-              <td colSpan="8">{item.label} {item.value.toFixed(2)}</td>
+              <td colSpan="9">{item.label} {item.value.toFixed(2)}</td>
             </tr>
             : <HighOiContractRow
               key={`${item.row.side}-${item.row.expiry}-${item.row.strike}`}
@@ -6557,11 +6562,12 @@ function HighOiListPanel({ data, rows, underlyingPrice, frontExpiry, loading, er
               isLeader={item.row.openInterest === model.peakOi}
               tone={rowTone(item.row)}
               insideEm={insideEm(item.row.strike)}
-            />)) : <tr><td className="charts-oi-empty" colSpan="8">
+            />)) : <tr><td className="charts-oi-empty" colSpan="9">
             {error || (loading ? "Loading option chain..." : "No open-interest walls in this window.")}
           </td></tr>}
         </tbody>
       </table>
+      {hasRows ? <p className="high-oi-bs-note" data-testid="high-oi-bs-note">{OI_SIDE_NOTE}</p> : null}
     </div>
   </div>;
 }

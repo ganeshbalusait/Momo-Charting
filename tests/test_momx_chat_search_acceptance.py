@@ -711,6 +711,10 @@ def spy(monkeypatch):
 
     for name in FORBIDDEN_STATE:
         monkeypatch.setattr(api_server.DashboardState, name, trip(name))
+        # An earlier test that swapped this method on STATE itself leaves a copy on the object when it is undone, and
+        # that copy hides the class-level trip (the 2026-11-19 full-suite failures). Take it off for this test.
+        if name in vars(api_server.STATE):
+            monkeypatch.delitem(vars(api_server.STATE), name)
     monkeypatch.setattr(schwab_client.SchwabClient, "__init__", trip("SchwabClient()"))
     monkeypatch.setattr(schwab_client.SchwabClient, "get_quotes", trip("SchwabClient.get_quotes"))
     monkeypatch.setattr(schwab_client.SchwabClient, "get_option_chain", trip("SchwabClient.get_option_chain"))

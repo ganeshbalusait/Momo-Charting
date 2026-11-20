@@ -288,3 +288,11 @@ def test_the_long_term_analyst_route_sends_the_technical_card(world, monkeypatch
     tech = body["technical"]
     assert set(tech["terms"]) == {"short", "mid", "long"} and tech["charts"]["daily"]["bars"] and tech["source"] == chat_report.TECHNICAL_SOURCE
     assert none_status == 200 and none["technical"] is None
+
+
+def test_the_daily_chart_button_says_daily_so_no_answer_shows_the_same_button_twice():
+    """2026-11-19: the NVDA long-term answer showed "Open NVDA chart" twice, one for 5m and one for D."""
+    from momx import chat_report
+    five, daily = chat_report._chart_link("NVDA"), chat_report._chart_link("NVDA", "D")
+    assert five["label"] == "Open NVDA chart" and five["timeframe"] == "5m"
+    assert daily["label"] == "Open NVDA daily chart" and daily["timeframe"] == "D"

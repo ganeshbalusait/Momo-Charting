@@ -65,8 +65,11 @@ class StubJudge:
 def dock(monkeypatch):
     state = api_server.STATE
     tag = time.time_ns()
-    stored = [_row("NVDA", f"Nvidia beats on data-center revenue {tag}", 30)]
-    engine = SlowEngine([_row("NVDA", f"Nvidia fresh scrape headline {tag}", 1)], delay=2.0)
+    # The stored headline is the newest NVDA one in the shared scratch database, so it is the one the per-ticker index
+    # shows. At 30 minutes old it lost that place to NVDA headlines other test files had saved "now", and this test
+    # failed whenever one of them ran first (2026-11-19). The scrape's own headline is dated a moment later still.
+    stored = [_row("NVDA", f"Nvidia beats on data-center revenue {tag}", 0)]
+    engine = SlowEngine([_row("NVDA", f"Nvidia fresh scrape headline {tag}", -0.05)], delay=2.0)
     state.repository.log_catalysts(stored)                   # already in the scratch DB before the switch
     monkeypatch.setattr(state, "catalysts", engine)
     monkeypatch.setattr(state, "momx_jev_judge", StubJudge(), raising=False)
@@ -93,7 +96,8 @@ def test_the_dock_reads_stored_headlines_at_once_while_a_scrape_runs_behind(dock
         elapsed = time.monotonic() - started
     assert status == 200, body
     assert elapsed < 1.0, f"the dock waited {elapsed:.2f}s on the news sites"
-    assert any(row["symbol"] == "NVDA" and row["headline"] == dock.stored for row in body["catalysts"])
+    seen = [(row.get("symbol"), row.get("headline")) for row in body["catalysts"]]
+    assert any(row["symbol"] == "NVDA" and row["headline"] == dock.stored for row in body["catalysts"]), (dock.stored, len(seen), seen[:6], {k: v for k, v in body.items() if k not in ("catalysts", "catalystIndex")})
     assert any(row["symbol"] == "NVDA" and row["headline"] == dock.stored for row in body["catalystIndex"])
     deadline = time.monotonic() + 2.0
     while not dock.engine.calls and time.monotonic() < deadline:

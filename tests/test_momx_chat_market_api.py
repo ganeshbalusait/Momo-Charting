@@ -84,6 +84,10 @@ def scratch(tmp_path, monkeypatch):
     monkeypatch.setenv("AGX_LONG_TERM_DIR", str(tmp_path / "long_term"))
     monkeypatch.setattr(long_term_service, "_INSTANCE", None)
     chat_state.unbind()
+    # A chart answer an earlier test left in memory would become the "price" here (run alone this passed, in a group
+    # the quote read "chart candle" instead of the option chain, 2026-11-19).
+    from momx import chat_chart
+    chat_chart.reset()
     chains = tmp_path / "oi_chain_cache"
     chains.mkdir()
     for symbol in ("NVDA", "SPY"):
@@ -127,6 +131,10 @@ def spy(monkeypatch):
 
     for name in FORBIDDEN_STATE_METHODS:
         monkeypatch.setattr(api_server.DashboardState, name, trip(name))
+        # An earlier test that swapped this method on STATE itself leaves a copy on the object when it is undone, and
+        # that copy hides the class-level trip (the 2026-11-19 full-suite failures). Take it off for this test.
+        if name in vars(api_server.STATE):
+            monkeypatch.delitem(vars(api_server.STATE), name)
     monkeypatch.setattr(schwab_client.SchwabClient, "__init__", trip("SchwabClient()"))
     monkeypatch.setattr(schwab_client.SchwabClient, "get_quotes", trip("SchwabClient.get_quotes"))
     monkeypatch.setattr(schwab_client.SchwabClient, "get_option_chain", trip("SchwabClient.get_option_chain"))
@@ -282,3 +290,16 @@ def test_is_it_a_buy_gets_no_advice(scratch, spy):
     assert status == 200
     said = " ".join(body["lines"]).lower()
     assert "you should buy" not in said and "i recommend" not in said
+
+
+@pytest.mark.parametrize("headers", [ADMIN, REGULAR], ids=["owner", "regular"])
+def test_oi_buyers_or_sellers_is_answered_from_the_high_oi_board_with_no_ai(scratch, spy, headers):
+    """2026-11-19: "Oi for nvda buyers or sellers?" got only "What I can answer" while the AI was over its free limit."""
+    with running_api() as api:
+        status, body = api.post(ROUTE, {"question": "Oi for nvda buyers or sellers?",
+                                        "context": {"pageTicker": "NVDA", "pageName": "LEAP OI Scanner"}}, headers=headers)
+    said = " ".join(body["lines"])
+    assert status == 200, body
+    assert "Each one has a buyer and a seller" in body["lines"][0] and "High OI board" in said, body["lines"]
+    assert "Quick Options" in [link["view"] for link in body["links"]], body["links"]
+    assert spy == []                                       # certain words: no AI call

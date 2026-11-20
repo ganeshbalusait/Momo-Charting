@@ -503,16 +503,41 @@ def _walls_tool(args: Mapping, ctx: Mapping) -> dict:
     if want_puts:
         lines.append(f"Biggest put wall: {_wall_text(puts[0])}." if puts else "No put walls saved.")
     lines += _front_only_note(chain)
+    # The app's bought-or-sold estimate (momx/oi_sides.py), where the saved chain carries one for a wall.
+    from momx import oi_sides
+    estimates = {oi_sides.contract_key(row.get("side"), row.get("expiry"), row.get("strike")): row["sideEst"]
+                 for row in chain.rows if isinstance(row.get("sideEst"), dict)}
+
+    def estimate(label: str, wall: Mapping) -> dict | None:
+        return estimates.get(oi_sides.contract_key(label, wall.get("expiry"), wall.get("strike")))
+
+    def short(est: Mapping | None) -> str:
+        if not est or not est.get("label"):
+            return "-"
+        share = float(est["share"])
+        return f"{round((1 - share if est['label'] == 'mostly sold' else share) * 100)}% {'sold' if est['label'] == 'mostly sold' else 'bought'}"
+
+    said = []
+    for label, wanted, levels in (("call", want_calls, calls), ("put", want_puts, puts)):
+        line = oi_sides.text(f"{_strike(levels[0].get('strike'))} {label}", estimate(label, levels[0])) if wanted and levels else None
+        if line:
+            said.append(line)
+    if said:
+        day = next((est.get("day") for est in estimates.values() if est.get("day")), None)
+        lines.append(f"Estimate{f' for {day}' if day else ''}, not exchange data. {' '.join(said)}")
     rows = []
     for label, wanted, levels in (("Call", want_calls, calls), ("Put", want_puts, puts)):
         for wall in (levels[:shown] if wanted else []):
             rows.append({"side": label, "rank": wall.get("rank"), "strike": _strike(wall.get("strike")),
                          "oi": _whole(wall.get("openInterest")), "expiry": wall.get("expiry"),
-                         "strength": wall.get("strength") or "-"})
+                         "strength": wall.get("strength") or "-", "est": short(estimate(label, wall))})
+    any_estimate = any(row["est"] != "-" for row in rows)
     table = _rows_table(f"{ticker} High OI board",
                         [("side", "Side"), ("rank", "#", "right"), ("strike", "Strike", "right"),
-                         ("oi", "OI", "right"), ("expiry", "Expiry"), ("strength", "Strength")],
-                        rows, note=f"High OI board, saved {_clock(chain.at, chain.now)}.", link=link)
+                         ("oi", "OI", "right"), ("expiry", "Expiry"), ("strength", "Strength"),
+                         *([("est", "Est. traded")] if any_estimate else [])],
+                        rows if any_estimate else [{k: v for k, v in row.items() if k != "est"} for row in rows],
+                        note=f"High OI board, saved {_clock(chain.at, chain.now)}." + (f" {oi_sides.NOTE}" if any_estimate else ""), link=link)
     facts = {"ticker": ticker, "source": "High OI board", "spot": chain.spot, "scannedAt": chain.at.isoformat(),
              "calls": calls[:shown], "puts": puts[:shown]}
     return _reply(lines, facts, [link], table, as_of)
@@ -1066,6 +1091,35 @@ def _oi_row_text(row: Mapping) -> str:
     return f"{_strike(row['strike'])} {side}{entry}, {_month_day(row['expiry'])} ({row['days']} days), OI {_whole(row['oi'])}, {delta}"
 
 
+#: The biggest NEW open interest since the previous posting goes on top of the LEAP answer (Ganesh 2026-11-19: "what
+#: change column do it will show new added top of that?"). At most this many, and only a real build of at least
+#: LONG_OI_NEW_MIN contracts.
+LONG_OI_NEW_ROWS = 3
+LONG_OI_NEW_MIN = 1000
+
+
+def _long_oi_changes(ticker: str, rows: list[dict], root: Path) -> tuple[dict[str, int], str | None]:
+    """(contract key -> open interest change, the day of the earlier reading) from the LEAP OI Scanner's saved copy
+    (momx/leap_oi_scanner.py keeps the previous posting as prevOi). A change is given only for a contract whose open
+    interest in that copy is the SAME as in this answer, so both describe one posting; otherwise nothing is made up."""
+    from momx import leap_oi_scanner
+    saved = leap_oi_scanner._read_compact_disk(root, ticker)
+    prev = saved.get("prevOi") if isinstance(saved, dict) and isinstance(saved.get("prevOi"), dict) else None
+    if not prev:
+        return {}, None
+    current, _ = leap_oi_scanner._oi_map(saved)
+    changes: dict[str, int] = {}
+    for row in rows:
+        key = leap_oi_scanner.contract_key(row)
+        if key in prev and key in current and int(current[key]) == int(row.get("oi") or 0):
+            changes[key] = int(row["oi"]) - int(prev[key] or 0)
+    return changes, leap_oi_scanner._et_day(saved.get("prevAt"))
+
+
+def _signed(value: int) -> str:
+    return f"+{value:,}" if value > 0 else f"{value:,}" if value < 0 else "0"
+
+
 def _long_oi_tool(args: Mapping, ctx: Mapping) -> dict:
     """The strikes 1 to 12 months out with the most open interest, calls and puts, with delta. The one chat answer that
     may ask Schwab, once per ticker per 30 minutes (momx/long_oi.py)."""
@@ -1100,6 +1154,22 @@ def _long_oi_tool(args: Mapping, ctx: Mapping) -> dict:
     lines = [f"{ticker} strikes with the most open interest, expiries {span}"
              + (f" ({_month_day(expiries[0])} to {_month_day(expiries[-1])}, {len(expiries)} expiries)" if expiries else "")
              + filter_text + (f". Price {_money(spot)}" if spot else "") + f" (Schwab, {_clock(fetched, now)})."]
+    from momx import leap_oi_scanner
+    changes, since = _long_oi_changes(ticker, window, _root(ctx))
+    since_text = f"since the {_month_day(since)} reading" if since else "since the previous reading"
+    wanted_sides = {key for key, _ in sides}
+    new_rows = sorted((row for row in window if row["side"] in wanted_sides
+                       and abs(row.get("delta") or 0) >= long_oi.MIN_DELTA - 1e-9
+                       and (delta is None or abs(abs(row["delta"]) - delta) <= LONG_OI_BAND + 1e-9)
+                       and changes.get(leap_oi_scanner.contract_key(row), 0) >= LONG_OI_NEW_MIN),
+                      key=lambda row: (-changes[leap_oi_scanner.contract_key(row)], row["days"]))[:LONG_OI_NEW_ROWS]
+    if new_rows:
+        lines.append(f"Biggest new open interest {since_text}: " + "; ".join(
+            f"{_strike(row['strike'])} {'call' if row['side'] == 'CALL' else 'put'} {_month_day(row['expiry'])}, "
+            f"{_signed(changes[leap_oi_scanner.contract_key(row)])} (now {_whole(row['oi'])})" for row in new_rows)
+            + ". New open interest means positions were opened; it cannot show whether they were bought or sold.")
+    elif changes:
+        lines.append(f"No strike added {LONG_OI_NEW_MIN:,} or more contracts of open interest {since_text}.")
     for key, label in sides:
         best = picked[key]
         word = "call" if key == "CALL" else "put"
@@ -1119,27 +1189,40 @@ def _long_oi_tool(args: Mapping, ctx: Mapping) -> dict:
                  "Delta is how much the option moves for a $1 move in the stock. Facts only, not a pick.")
     # Calls and puts take turns (1st call, 1st put, 2nd call ...): the chat shows the first few rows as cards, and both
     # sides belong in them. Each card is headed by its contract, "185 Call".
-    rows = []
+    def table_row(row: Mapping, new: bool = False) -> dict:
+        change = changes.get(leap_oi_scanner.contract_key(row))
+        return {"contract": f"{_strike(row['strike'])} {'Call' if row['side'] == 'CALL' else 'Put'}"
+                            + (" · NEW" if new else "") + (" · ENTRY" if row.get("entry") else ""),
+                "expiry": row["expiry"], "days": row["days"], "oi": _whole(row["oi"]),
+                "change": _signed(change) if change is not None else "-",
+                "delta": _delta_text(row["delta"]) if row.get("delta") is not None else "-",
+                "bid": _quote_cell(row.get("bid")), "ask": _quote_cell(row.get("ask"))}
+
+    # The biggest new open interest goes on top, then calls and puts take turns by open interest.
+    rows = [table_row(row, new=True) for row in new_rows]
+    shown = {leap_oi_scanner.contract_key(row) for row in new_rows}
     for rank in range(LONG_OI_ROWS):
         for key, _ in sides:
-            if rank < len(picked[key]):
-                row = picked[key][rank]
-                rows.append({"contract": f"{_strike(row['strike'])} {'Call' if key == 'CALL' else 'Put'}" + (" · ENTRY" if row.get("entry") else ""),
-                             "expiry": row["expiry"],
-                             "days": row["days"], "oi": _whole(row["oi"]),
-                             "delta": _delta_text(row["delta"]) if row.get("delta") is not None else "-",
-                             "bid": _quote_cell(row.get("bid")), "ask": _quote_cell(row.get("ask"))})
+            if rank < len(picked[key]) and leap_oi_scanner.contract_key(picked[key][rank]) not in shown:
+                rows.append(table_row(picked[key][rank]))
     if not rows:
         return _reply(lines, {"ticker": ticker, "monthsFrom": months_from, "monthsTo": months_to, "delta": delta, "rows": 0}, [link],
                       as_of=_as_of(fetched, now))
     table = _rows_table(f"{ticker} most open interest, {span}" + (f", delta ~{delta:.2f}" if delta is not None else ""),
                         [("contract", "Contract"), ("expiry", "Expiry"), ("days", "Days", "right"),
-                         ("oi", "OI", "right"), ("delta", "Delta", "right"), ("bid", "Bid", "right"), ("ask", "Ask", "right")],
-                        rows, note=f"Top {LONG_OI_ROWS} per side by open interest. Schwab chain read {_clock(fetched, now)}"
-                                   + (", a copy under 30 minutes old." if doc.get("cached") else "."))
+                         ("oi", "OI", "right"), *([("change", "Change", "right")] if changes else []),
+                         ("delta", "Delta", "right"), ("bid", "Bid", "right"), ("ask", "Ask", "right")],
+                        rows if changes else [{k: v for k, v in row.items() if k != "change"} for row in rows],
+                        note=(f"NEW rows first: the biggest new open interest {since_text}. " if new_rows else "")
+                             + f"Top {LONG_OI_ROWS} per side by open interest. "
+                             + (f"Change is open interest {since_text}; '-' where the app has no earlier reading. " if changes else "")
+                             + f"Schwab chain read {_clock(fetched, now)}"
+                             + (", a copy under 30 minutes old." if doc.get("cached") else "."))
     facts = {"ticker": ticker, "monthsFrom": months_from, "monthsTo": months_to, "delta": delta, "spot": spot,
              "fetchedAt": doc.get("fetchedAt"), "expiries": expiries, "rows": len(rows),
-             "top": {key: [{k: row[k] for k in ("strike", "expiry", "days", "oi", "delta")} for row in picked[key][:3]] for key, _ in sides}}
+             "top": {key: [{k: row[k] for k in ("strike", "expiry", "days", "oi", "delta")} for row in picked[key][:3]] for key, _ in sides},
+             "newSince": since, "new": [{"side": row["side"], "strike": row["strike"], "expiry": row["expiry"], "oi": row["oi"],
+                                         "change": changes[leap_oi_scanner.contract_key(row)]} for row in new_rows]}
     return _reply(lines, facts, [link], table, _as_of(fetched, now))
 
 

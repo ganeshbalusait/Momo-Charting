@@ -517,7 +517,8 @@ def test_real_saved_tapes_give_the_verified_friday_morning_read_only(tmp_path, m
     for symbol, (from_close, from_open) in VERIFIED.items():
         found = views[symbol]
         assert found and found["prevDay"] == "2026-11-12", symbol
-        assert abs(found["pctClose"] - from_close) <= 0.02 and abs(found["pctOpen"] - from_open) <= 0.02, (symbol, found)
+        # Rounded first: -5.88 against -5.90 is 0.02, but floats make it 0.020000000000000462 (2026-11-19).
+        assert round(abs(found["pctClose"] - from_close), 6) <= 0.02 and round(abs(found["pctOpen"] - from_open), 6) <= 0.02, (symbol, found)
     monkeypatch.setattr(chat_why_card, "caps", lambda symbols: {"NVDA": 4190.0, "AVGO": 1650.0, "GOOGL": 3610.0})
     drags = chat_why_card.rank_drags({s: views[s]["pctOpen"] for s in ("NVDA", "AVGO", "GOOGL")}, -1)
     assert drags[0]["symbol"] == "NVDA"

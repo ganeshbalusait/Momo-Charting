@@ -172,6 +172,8 @@ export function buildHighOiContractList({
       last: Number(row?.last) || Number(row?.mark) || 0,
       expiry: String(row?.expiry || "").slice(0, 10),
       dte: Number(row?.days_to_expiration ?? row?.daysToExpiration) || 0,
+      // The app's bought-or-sold estimate for this contract, when the server has one (momx/oi_sides.py).
+      ...(row?.sideEst && typeof row.sideEst === "object" ? { sideEst: row.sideEst } : {}),
     }))
     .filter((row) => row.strike > 0 && row.openInterest > 0);
 

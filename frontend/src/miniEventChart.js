@@ -55,6 +55,8 @@ export const MARKER_LOOK = {
   earnings: { shape: "earnings", color: "#e5e7eb", side: "bottom", title: "Earnings" },
 };
 
+const MARKER_NAMES = 4;   // names listed on a marker that stands for several events
+
 const kindOf = (raw) => {
   const k = String(raw || "").toLowerCase();
   return k.startsWith("bull") ? "bullish" : k.startsWith("bear") ? "bearish" : k.startsWith("earn") ? "earnings" : k.startsWith("neut") ? "neutral" : "";
@@ -65,12 +67,17 @@ const kindOf = (raw) => {
  * high for bearish and neutral, below the low for bullish, and on the bottom edge for earnings. Events on the
  * same bar and side stack outwards (stack 0, 1, 2...). Events before the first bar, or more than one bar-gap
  * after the last, are left out. Returns markers in bar order.
+ *
+ * Events of the SAME kind on one bar share ONE marker that names them all (2026-11-19, NVDA: 24 bearish events
+ * stacked into tall red blocks that covered the chart and the text above it). So a bar holds at most one marker
+ * per kind, and a stack is never deeper than the kinds that share a side (two).
  */
 export function placeMarkers(bars, events) {
   const list = Array.isArray(bars) ? bars : [];
   if (!list.length) return [];
   const gap = list.length > 1 ? daysBetween(list[list.length - 2].time, list[list.length - 1].time) : 1;
   const stacks = new Map();
+  const merged = new Map();
   const out = [];
   for (const e of Array.isArray(events) ? events : []) {
     const kind = kindOf(e?.kind ?? e?.type);
@@ -82,14 +89,32 @@ export function placeMarkers(bars, events) {
     if (index === list.length - 1 && daysBetween(list[index].time, day) >= Math.max(1, gap)) continue;
     const look = MARKER_LOOK[kind];
     const bar = list[index];
+    const name = str(e?.name ?? e?.label, 120) || look.title;
+    const same = merged.get(`${index}|${kind}`);
+    if (same) {
+      same.count += 1;
+      if (!same.names.includes(name)) same.names.push(name);
+      continue;
+    }
     const slot = `${index}|${look.side}`;
     const stack = stacks.get(slot) || 0;
     stacks.set(slot, stack + 1);
-    out.push({
+    const marker = {
       index, barTime: bar.time, kind, shape: look.shape, color: look.color, side: look.side, stack,
       price: look.side === "below" ? bar.low : look.side === "above" ? bar.high : null,
-      name: str(e?.name ?? e?.label, 120) || look.title, when: str(typeof e?.time === "string" ? e.time : "", 40) || day,
-    });
+      name, when: str(typeof e?.time === "string" ? e.time : "", 40) || day, count: 1, names: [name],
+    };
+    merged.set(`${index}|${kind}`, marker);
+    out.push(marker);
+  }
+  for (const m of out) {
+    if (m.count > 1) {
+      const shown = m.names.slice(0, MARKER_NAMES);
+      const rest = m.names.length - shown.length;
+      m.name = `${m.count} ${MARKER_LOOK[m.kind].title.toLowerCase()} events: ${shown.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}`;
+      m.when = m.barTime;
+    }
+    delete m.names;
   }
   return out.sort((a, b) => a.index - b.index || a.stack - b.stack);
 }

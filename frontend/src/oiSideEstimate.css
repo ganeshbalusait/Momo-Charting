@@ -1,0 +1,7 @@
+/* High OI board: the "B/S" column (the app's bought-or-sold estimate) and the one-line note under the table. */
+.high-oi-bs { text-align: right !important; font-size: .66rem; white-space: nowrap; color: #9d9da9 !important; }
+.high-oi-bs.is-bought { color: #4ce0ba !important; font-weight: 700; }
+.high-oi-bs.is-sold { color: #ff7fa6 !important; font-weight: 700; }
+.high-oi-bs.is-mixed { color: #f3bd37 !important; }
+.high-oi-bs.is-oi { color: #c9c9d2 !important; }
+.high-oi-bs-note { margin: 6px 8px 8px; font-size: 10px; line-height: 1.35; color: #9d9da9; white-space: normal; }

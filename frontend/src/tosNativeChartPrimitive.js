@@ -71,6 +71,92 @@ export function nativeFireMotion(nowMs = Date.now(), seed = 0) {
   };
 }
 
+// Candle highlights (signal glow and 🔥 fire) are drawn as a thin frame a few
+// pixels OUTSIDE the candle, never on its body or wick. On 2026-11-19 NVDA's
+// 09:30 candle carried CALL5, CALL15, 🔥5 and 🔥15: four cyan glows painted on
+// top of a cyan candle turned it into one glowing block on the phone ("I cannot
+// see properly candles"). The candle must stay readable under any signal count.
+export const NATIVE_HIGHLIGHT_GAP = 2;
+
+/**
+ * One highlight per candle. Several studies can mark the same bar; drawing a
+ * glow for each stacks their shadows into a solid block. Fire wins (it keeps
+ * the flame), the strongest intensity and the latest flash are kept.
+ */
+export function mergeCandleHighlights(highlights) {
+  const merged = new Map();
+  (Array.isArray(highlights) ? highlights : []).forEach((highlight) => {
+    const time = Number(highlight?.time);
+    if (!Number.isFinite(time)) return;
+    const previous = merged.get(time);
+    if (!previous) {
+      merged.set(time, { ...highlight });
+      return;
+    }
+    const fire = previous.fire === true || highlight.fire === true;
+    merged.set(time, {
+      ...previous,
+      color: previous.fire !== true && highlight.fire === true ? highlight.color : previous.color,
+      fire,
+      intensity: Math.max(Number(previous.intensity) || 0, Number(highlight.intensity) || 0) || previous.intensity,
+      flashUntilMs: Math.max(Number(previous.flashUntilMs) || 0, Number(highlight.flashUntilMs) || 0),
+    });
+  });
+  return [...merged.values()];
+}
+
+/**
+ * One-sided cloud columns (one per candle and side, already unioned) joined into
+ * runs of neighbouring candles with the same anchor, colour and opacity, so a
+ * cloud spanning several candles is one shape with no seams between them.
+ */
+export function nativeCloudUnionRuns(columns) {
+  const sorted = (Array.isArray(columns) ? columns : [])
+    .slice()
+    .sort((left, right) => (left.bull === right.bull ? left.index - right.index : left.bull ? -1 : 1));
+  const runs = [];
+  sorted.forEach((column) => {
+    const last = runs.at(-1);
+    if (
+      last
+      && last.bull === column.bull
+      && last.to === column.index - 1
+      && Math.abs(last.anchorY - column.anchorY) < 0.5
+      && last.color === column.color
+      && last.opacity === column.opacity
+    ) {
+      last.to = column.index;
+      return;
+    }
+    runs.push({
+      from: column.index, to: column.index, bull: column.bull,
+      anchorY: column.anchorY, color: column.color, opacity: column.opacity,
+    });
+  });
+  return runs;
+}
+
+/** A candle highlight is drawn only while its new-signal flash runs. */
+export function nativeHighlightShows(highlight, nowMs = Date.now()) {
+  return Number(highlight?.flashUntilMs) > Number(nowMs);
+}
+
+/** The frame drawn around a highlighted candle: wick to wick, outside the body. */
+export function nativeHighlightFrame(highlight) {
+  const x = Number(highlight?.x);
+  const top = Number(highlight?.top);
+  const bottom = Number(highlight?.bottom);
+  const width = Math.max(4, Number(highlight?.width) || 4);
+  if (![x, top, bottom].every(Number.isFinite)) return null;
+  const height = Math.max(4, bottom - top);
+  return {
+    left: x - width / 2 - NATIVE_HIGHLIGHT_GAP,
+    top: top - NATIVE_HIGHLIGHT_GAP,
+    width: width + NATIVE_HIGHLIGHT_GAP * 2,
+    height: height + NATIVE_HIGHLIGHT_GAP * 2,
+  };
+}
+
 export function nativeFireGlyphPoints(highlight) {
   const top = Number(highlight?.top);
   const bottom = Number(highlight?.bottom);
@@ -81,7 +167,8 @@ export function nativeFireGlyphPoints(highlight) {
   const centerY = (top + bottom) / 2;
   const glyphTop = centerY - height / 2;
   const side = highlight?.bullish === false ? 1 : -1;
-  const anchorX = x + side * (width / 2 + 2.5);
+  // Just outside the highlight frame, so the trace never sits on the candle.
+  const anchorX = x + side * (width / 2 + NATIVE_HIGHLIGHT_GAP + 3);
   return [
     [anchorX, glyphTop],
     [anchorX + side * 2.1, glyphTop + height * 0.18],
@@ -627,29 +714,47 @@ export function nativeGeometry(model, chart, series) {
     }
   });
 
+  // The one-sided signal clouds (4x8, 9/20, MACD trend and 🔥 squeeze, every
+  // timeframe) are each a 20% cyan or magenta layer from the pane edge to the
+  // signal candle. Painted one by one they added up: on NVDA's 09:30 candle
+  // (2026-11-19) about six of them stacked into a near-solid cyan column and
+  // the cyan candle inside it could not be seen ("I see that box, I cannot see
+  // candle"). They are drawn as their UNION instead: per candle and side, one
+  // fill from the pane edge to the farthest anchor, at the strongest opacity -
+  // the same area, one layer deep. The tags still say which signals fired.
+  const cloudColumns = new Map();
   model.oneSidedClouds.forEach((cloud) => {
     const startIndex = lowerBoundBars(model.bars, Number(cloud.startTime) - model.timeframeMinutes * 60 + 1);
     const endIndex = lowerBoundBars(model.bars, Number(cloud.endTime));
-    const firstBar = model.bars[startIndex];
-    const lastBar = model.bars[Math.max(startIndex, endIndex - 1)];
-    if (!firstBar || !lastBar) return;
-    const firstX = xForTime(firstBar.time);
-    const lastX = xForTime(lastBar.time);
     const anchorY = yForPrice(cloud.anchor);
-    if (firstX == null || lastX == null || anchorY == null) return;
+    if (anchorY == null) return;
+    const bull = cloud.tone === "bull";
+    for (let index = startIndex; index <= Math.max(startIndex, endIndex - 1); index += 1) {
+      const bar = model.bars[index];
+      if (!bar) break;
+      const key = `${bull ? "bull" : "bear"}|${index}`;
+      const previous = cloudColumns.get(key);
+      if (!previous) {
+        cloudColumns.set(key, { index, bull, anchorY, color: cloud.color, opacity: Number(cloud.opacity) || 0 });
+        continue;
+      }
+      previous.anchorY = bull ? Math.max(previous.anchorY, anchorY) : Math.min(previous.anchorY, anchorY);
+      previous.opacity = Math.max(previous.opacity, Number(cloud.opacity) || 0);
+    }
+  });
+  nativeCloudUnionRuns([...cloudColumns.values()]).forEach((run) => {
+    const firstX = xForTime(model.bars[run.from].time);
+    const lastX = xForTime(model.bars[run.to].time);
+    if (firstX == null || lastX == null) return;
     const left = firstX - barSpacing / 2;
     const right = lastX + barSpacing / 2;
     if (!visibleX(left, right)) return;
-    const edgeY = cloud.tone === "bull" ? 0 : height;
+    const edgeY = run.bull ? 0 : height;
+    const anchorY = clamp(run.anchorY, 0, height);
     fills.push({
-      color: cloud.color,
-      opacity: cloud.opacity,
-      points: [
-        [left, edgeY],
-        [right, edgeY],
-        [right, clamp(anchorY, 0, height)],
-        [left, clamp(anchorY, 0, height)],
-      ],
+      color: run.color,
+      opacity: run.opacity,
+      points: [[left, edgeY], [right, edgeY], [right, anchorY], [left, anchorY]],
     });
   });
 
@@ -750,7 +855,7 @@ export function nativeGeometry(model, chart, series) {
   });
 
   const barsByTime = new Map(model.bars.map((bar) => [Number(bar.time), bar]));
-  model.candleHighlights.forEach((highlight) => {
+  mergeCandleHighlights(model.candleHighlights).forEach((highlight) => {
     if (!timeIsNearViewport(highlight.time)) return;
     const bar = barsByTime.get(Number(highlight.time));
     const x = xForTime(highlight.time);
@@ -966,31 +1071,30 @@ class TosSignalRenderer {
         context.restore();
       });
       this.geometry.candleHighlights.forEach((highlight) => {
-        const height = Math.max(4, highlight.bottom - highlight.top);
-        const left = highlight.x - highlight.width / 2;
+        const frame = nativeHighlightFrame(highlight);
+        if (!frame) return;
         const pulse = nativeHighlightPulse(highlight.flashUntilMs);
+        // Only while a brand-new signal flashes (about 3 seconds). A lasting
+        // box and flame line around the candle read as part of the candle
+        // ("I see box around the candle and it's confused", 2026-11-19); the
+        // CALL and 🔥 tags already mark it, like TOS.
+        if (!nativeHighlightShows(highlight)) return;
         const fireMotion = highlight.fire ? nativeFireMotion(Date.now(), highlight.x) : null;
         const glowStrength = highlight.intensity * (1 + pulse * 0.72 + (fireMotion?.flicker || 0) * 0.2);
         context.save();
         if (highlight.fire) {
-          const bodyHeight = Math.max(2, highlight.bodyBottom - highlight.bodyTop);
-          const bodyWidth = Math.max(3, highlight.width * 0.78);
-          const bodyLeft = highlight.x - bodyWidth / 2;
           const glyphPoints = nativeFireGlyphPoints(highlight);
 
+          // A thin frame outside the candle; the candle's own body and wick
+          // stay visible inside it.
           context.lineCap = "round";
           context.lineJoin = "round";
-          context.shadowColor = colorWithOpacity(highlight.color, 0.9);
-          context.shadowBlur = 7 * glowStrength;
-          context.strokeStyle = colorWithOpacity(highlight.color, 0.94 + pulse * 0.06);
-          context.lineWidth = 1.2 + pulse * 0.65;
-          context.beginPath();
-          context.moveTo(highlight.x, highlight.top);
-          context.lineTo(highlight.x, highlight.bodyTop);
-          context.moveTo(highlight.x, highlight.bodyBottom);
-          context.lineTo(highlight.x, highlight.bottom);
+          context.shadowColor = colorWithOpacity(highlight.color, 0.8);
+          context.shadowBlur = 4 * glowStrength;
+          context.strokeStyle = colorWithOpacity(highlight.color, 0.9 + pulse * 0.1);
+          context.lineWidth = 1 + pulse * 0.6;
+          roundedRectangle(context, frame.left, frame.top, frame.width, frame.height, 2);
           context.stroke();
-          context.strokeRect(bodyLeft, highlight.bodyTop, bodyWidth, bodyHeight);
 
           if (glyphPoints.length) {
             context.shadowBlur = 6 * glowStrength;
@@ -1029,15 +1133,12 @@ class TosSignalRenderer {
           context.restore();
           return;
         }
-        context.strokeStyle = colorWithOpacity(highlight.color, 0.88 + pulse * 0.12);
-        context.shadowColor = colorWithOpacity(highlight.color, 0.82 + pulse * 0.18);
-        context.shadowBlur = 8 * glowStrength;
-        context.lineWidth = 1.35 + pulse * 0.75;
-        context.strokeRect(left, highlight.top, highlight.width, height);
-        context.shadowBlur = 3 * glowStrength;
-        context.strokeStyle = colorWithOpacity(highlight.color, 0.58 + pulse * 0.28);
-        context.lineWidth = 2.35 + pulse * 1.2;
-        context.strokeRect(left - 1, highlight.top - 1, highlight.width + 2, height + 2);
+        context.strokeStyle = colorWithOpacity(highlight.color, 0.85 + pulse * 0.15);
+        context.shadowColor = colorWithOpacity(highlight.color, 0.75 + pulse * 0.2);
+        context.shadowBlur = 4 * glowStrength;
+        context.lineWidth = 1 + pulse * 0.6;
+        roundedRectangle(context, frame.left, frame.top, frame.width, frame.height, 2);
+        context.stroke();
         context.restore();
       });
       this.geometry.labels.forEach((label, labelIndex) => {
@@ -1263,8 +1364,11 @@ export class TosNativeChartPrimitive {
     return this.model.candleHighlights.some((highlight) => Number(highlight.flashUntilMs) > now);
   }
 
-  hasVisibleFire() {
-    return this.signalRenderer.geometry?.candleHighlights?.some((highlight) => highlight.fire) === true;
+  hasVisibleFire(now = Date.now()) {
+    // A fire draws (and needs repainting) only during its new-signal flash.
+    return this.signalRenderer.geometry?.candleHighlights?.some((highlight) => (
+      highlight.fire && nativeHighlightShows(highlight, now)
+    )) === true;
   }
 
   hasActiveAnimation(now = Date.now()) {

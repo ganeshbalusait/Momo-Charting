@@ -88,6 +88,16 @@ export const chatMoreReply = (reply) => (reply && typeof reply === "object" && r
 
 const VIEW_TITLES = { short: "Short term", long: "Long term" };
 
+/**
+ * A closed section's one-line summary: its first line that says something. A first line that only repeats the title
+ * ("What the app's rules show:" under "What the app's rules show", 2026-11-19) is skipped.
+ */
+export function sectionSummary(title, lines) {
+  const plain = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const head = plain(title);
+  return (Array.isArray(lines) ? lines : []).find((line) => plain(line) && plain(line) !== head) || "";
+}
+
 /** One report section. The server sends them in order: [{key, title, lines, table?, links, asOf, pending?, summary?, view?}]. */
 export function chatSection(raw, isOwner = true, tableOf = () => null) {
   if (!raw || typeof raw !== "object") return null;
@@ -102,7 +112,7 @@ export function chatSection(raw, isOwner = true, tableOf = () => null) {
     links: cleanLinks(raw.links, isOwner),
     asOf: str(raw.asOf, 40),
     pending: raw.pending === true,
-    summary: dropVwap(str(raw.summary, 160)) || lines[0] || "",
+    summary: dropVwap(str(raw.summary, 160)) || sectionSummary(title, lines),
     headlines: chatHeadlines(raw.headlines),
     reasons: chatReasons(raw.reasons),
     analyst: raw.analyst && typeof raw.analyst === "object" ? raw.analyst : null,

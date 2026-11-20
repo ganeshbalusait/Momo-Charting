@@ -748,6 +748,18 @@ _LONG_TERM = re.compile(r"\blong\s*term\b|\bbuffett\b")
 #: to 12 months which strikes have high oi with delta"): both words, an OI word and a months word, or it is not this.
 _OI_WORD = re.compile(r"\b(?:oi|open\s+interest)\b")
 _MONTHS_SPAN = re.compile(r"\bleaps?\b|\blong[\s-]*dated\b|\bmonths?\b|\bmonthly\s+expir\w*\b|\b(?:1|one)\s*(?:yr|years?)\b")
+#: A LEAP question about strikes with no OI word (2026-11-19, "See nvda leaps which strike is good?" got the Long Term
+#: report with no strike in it). The chat never picks a strike; the strikes holding the most open interest are the fact
+#: it has, so the question goes to the same long-dated board.
+_LEAP_WORD = re.compile(r"\bleaps?\b")
+_STRIKE_WORD = re.compile(r"\bstrikes?\b|\bcontracts?\b")
+#: Open interest on a ticker with no months word (2026-11-19, "Oi for nvda buyers or sellers?" got only the list of
+#: things the chat can answer, because the AI that reads unsure questions was over its free limit). The words are
+#: certain enough: the High OI board, and one plain line when the question asks who is buying or selling.
+_OI_SIDE_WORD = re.compile(r"\bbuy(?:ers?|ing)?\b|\bsell(?:ers?|ing)?\b|\bbought\b|\bsold\b|\bbullish\b|\bbearish\b")
+_OI_ELSEWHERE = re.compile(r"\b(?:page|scanner|finder|board|bots?|chains?|max\s*pain|alerts?|go\s+to|take\s+me)\b")
+OI_NO_SIDE_LINE = ("Open interest counts the contracts still open. Each one has a buyer and a seller, so it cannot show "
+                   "who is buying or selling, or a direction. Here is where the open interest sits.")
 _NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
                  "ten": "10", "eleven": "11", "twelve": "12"}
 
@@ -1066,12 +1078,23 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
     clock = f"{minute // 60:02d}:{minute % 60:02d}" if minute is not None else None
     # Open interest months out ("nvda leap which one had more oi", "spy strikes with high oi 1 to 12 months with delta"):
     # the long-dated board, before "leap" reaches the Long Term view and "high oi" the short-dated High OI board.
-    if _OI_WORD.search(low) and _MONTHS_SPAN.search(low) and minute is None and not re.search(r"\b(?:what\s+is|what\s+does|meaning\s+of|define)\b", low):
+    if ((_OI_WORD.search(low) and _MONTHS_SPAN.search(low)) or (_LEAP_WORD.search(low) and (_STRIKE_WORD.search(low) or _OI_SIDE_WORD.search(low)))) \
+            and minute is None and not re.search(r"\b(?:what\s+is|what\s+does|meaning\s+of|define)\b", low):
         months_from, months_to = months_asked(low)
         wants_puts, wants_calls = bool(re.search(r"\bputs?\b", low)), bool(re.search(r"\bcalls?\b", low))
         side = "bear" if wants_puts and not wants_calls else "bull" if wants_calls and not wants_puts else None
-        return {"calls": [_call("long_oi", ticker=_resolved(ticker, low, ctx), months_from=months_from, months_to=months_to,
+        plan = {"calls": [_call("long_oi", ticker=_resolved(ticker, low, ctx), months_from=months_from, months_to=months_to,
                                 delta=delta_asked(low), side=side)]}
+        # "nvda leap oi buyers or sellers?" (2026-11-19): the plain line first, then the strikes and what is new.
+        return {**plan, "lines": [OI_NO_SIDE_LINE]} if _OI_SIDE_WORD.search(low) else plan
+    # Open interest on one ticker, no months word: the High OI board ("Oi for nvda buyers or sellers?", "nvda oi").
+    # A page, scanner, chain or Bot word keeps its own answer, and so does a definition.
+    if _OI_WORD.search(low) and minute is None and not _OI_ELSEWHERE.search(low) and _resolved(ticker, low, ctx) \
+            and not re.search(r"\b(?:what\s+is|what\s+does|meaning\s+of|define)\b", low):
+        wants_puts, wants_calls = bool(re.search(r"\bputs?\b", low)), bool(re.search(r"\bcalls?\b", low))
+        plan = {"calls": [_call("walls", ticker=_resolved(ticker, low, ctx),
+                                side="put" if wants_puts and not wants_calls else "call" if wants_calls and not wants_puts else None)]}
+        return {**plan, "lines": [OI_NO_SIDE_LINE]} if _OI_SIDE_WORD.search(low) else plan
     # A definition whose term is a glossary entry longer than the ticker word ("what is an iron condor", "what is a gap
     # up", "what is the live bolt") is the glossary, even when IRON, GAP or BOLT is a real ticker (2026-11-11 review rv7).
     # Exact match only, and never the ticker word alone: "what is IRON" and "what is GAP" stay ticker questions.

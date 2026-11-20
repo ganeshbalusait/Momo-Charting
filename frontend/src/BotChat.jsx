@@ -14,7 +14,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { createPortal } from "react-dom";
 import { ChevronRight, History, Plus, Send, X } from "lucide-react";
 import { OPEN_LINK_EVENT, openAppLink } from "./appLinks.js";
-import { CHAT_MAX, CHAT_URL, chatAccount, chatAnswer, chatAppend, chatDockNote, chatHistoryAdd, chatHistoryRead, chatHistorySearch, chatHome, chatHomeBody, chatLineParts, chatPageName, chatPageTicker, chatPlaceholder, chatQuestion, chatRefused, chatRequestBody, chatStarters, chatSubject, chatTable, chatTray, markPageChat } from "./botChat.js";
+import { CHAT_DROPPED, CHAT_MAX, CHAT_OFFLINE, CHAT_SIGNED_OUT, CHAT_URL, chatSend, chatAccount, chatAnswer, chatAppend, chatDockNote, chatHistoryAdd, chatHistoryRead, chatHistorySearch, chatHome, chatHomeBody, chatLineParts, chatPageName, chatPageTicker, chatPlaceholder, chatQuestion, chatRefused, chatRequestBody, chatStarters, chatSubject, chatTable, chatTray, markPageChat } from "./botChat.js";
 import { MORE_FAILED, MORE_WAIT, chatMergeMore, chatMoreBody, chatMoreReply, dragText, whyFactLines, whyLayout } from "./chatReport.js";
 import { knownTickers, typeahead } from "./chatTypeahead.js";
 import ChatTable, { ChatTablePreview } from "./ChatTable.jsx";
@@ -30,6 +30,7 @@ function ScannerDayMissing({ onClose }) {
 }
 const ChatScannerDay = lazy(() => import("./ChatScannerDay.jsx").catch(() => ({ default: ScannerDayMissing })));
 
+const CHAT_REASONS = new Set([CHAT_SIGNED_OUT, CHAT_OFFLINE, CHAT_DROPPED]);
 const POST = { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } };
 
 // Links are buttons that move the screen. They are the only thing on this page that goes anywhere.
@@ -319,10 +320,10 @@ export default function BotChat({ pageTicker = "", pageName = "", compact = fals
       if (answer.more) askMore(id, answer.more);
     };
     // What the conversation is about goes along, so a follow-up with no ticker ("profit or loss?") continues it.
-    fetch(CHAT_URL, { ...POST, body: JSON.stringify(chatRequestBody(question, turns, ticker, page)) })
+    chatSend((...args) => fetch(...args), CHAT_URL, { ...POST, body: JSON.stringify(chatRequestBody(question, turns, ticker, page)) })
       .then((r) => r.json().catch(() => ({})).then((d) => ({ ok: r.ok, status: r.status, d })))
       .then(({ ok, status, d }) => settle(ok ? d : { intent: "error", lines: [status === 403 ? chatRefused(isOwner) : (d?.error || "The app could not answer that. Nothing was changed.")] }))
-      .catch(() => settle({ intent: "error", lines: ["Could not reach the app. Check the connection and ask again."] }))
+      .catch((error) => settle({ intent: "error", lines: [CHAT_REASONS.has(error?.message) ? error.message : CHAT_DROPPED] }))
       .finally(() => { busyNow.current = false; setBusy(false); });
     return true;
   };

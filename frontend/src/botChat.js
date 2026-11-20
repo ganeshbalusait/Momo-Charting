@@ -6,6 +6,42 @@ import { chatMore, chatReasons, chatSections, chatTechnical, chatViews, chatWhy,
 
 export const CHAT_URL = "/api/bot-chat";
 export const CHAT_MAX = 300;
+
+// When a question gets no reply at all (2026-11-19, "Why AMD is down today" on the phone: "Could not reach the app",
+// while the app was up). The chat only reads, so asking again is safe: it asks once more by itself, and if that
+// fails too it finds out WHY and says so, instead of one message for every cause.
+export const CHAT_SIGNED_OUT = "Your sign-in to the app ran out. Reload this page (pull down), sign in, then ask again.";
+export const CHAT_OFFLINE = "Your phone or PC is not reaching the app. Check Wi-Fi or mobile data, then ask again.";
+export const CHAT_DROPPED = "The app is up, but the answer did not come back. Ask again.";
+export const CHAT_RETRY_WAIT_MS = 1200;
+
+/** Why nothing came back: a light sign-in read that is not allowed to follow the tunnel's login redirect. */
+export async function chatFailureReason(fetchImpl) {
+  try {
+    const r = await fetchImpl("/api/auth/status", { credentials: "include", cache: "no-store", redirect: "manual" });
+    if (r?.type === "opaqueredirect" || r?.status === 401 || r?.status === 403 || (r?.status >= 300 && r?.status < 400)) return CHAT_SIGNED_OUT;
+    return CHAT_DROPPED;
+  } catch {
+    return CHAT_OFFLINE;
+  }
+}
+
+/**
+ * Send one chat question. A reply of any status is returned as it is. When the request itself fails (no reply), it
+ * waits a moment and asks ONCE more; if that fails too it throws an Error whose message is the plain reason.
+ */
+export async function chatSend(fetchImpl, url, init, { waitMs = CHAT_RETRY_WAIT_MS, sleep = (ms) => new Promise((done) => setTimeout(done, ms)) } = {}) {
+  try {
+    return await fetchImpl(url, init);
+  } catch {
+    await sleep(waitMs);
+    try {
+      return await fetchImpl(url, init);
+    } catch {
+      throw new Error(await chatFailureReason(fetchImpl));
+    }
+  }
+}
 export const CHAT_STARTERS = [
   "SPY if I take how much it went up",
   "why AAPL failed",

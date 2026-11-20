@@ -260,7 +260,9 @@ def _price_section(ticker: str, ctx: Mapping, now: datetime) -> tuple[dict | Non
 
 def _chart_link(ticker: str, timeframe: str = "5m") -> dict:
     from momx import chat_pages
-    return chat_pages.link("Charts & OI", f"Open {ticker} chart", ticker=ticker, timeframe=timeframe)
+    # The daily chart's button says so: one answer showed "Open NVDA chart" twice, for 5m and for D (2026-11-19).
+    label = f"Open {ticker} daily chart" if timeframe == "D" else f"Open {ticker} chart"
+    return chat_pages.link("Charts & OI", label, ticker=ticker, timeframe=timeframe)
 
 
 def _scanner_section(ticker: str, ctx: Mapping, now: datetime) -> tuple[dict | None, list, dict | None]:
