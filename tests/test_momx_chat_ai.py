@@ -1252,6 +1252,18 @@ def test_a_leap_strike_question_gets_the_long_dated_oi_board_not_the_long_term_r
     assert (call["args"]["months_from"], call["args"]["months_to"]) == (3, 12)
 
 
+@pytest.mark.parametrize("question", ["Leap which one is good", "which leap is best", "leaps good one?"])
+def test_a_leap_which_one_is_good_question_uses_the_ticker_on_screen(question):
+    """2026-11-20, SPCX on screen: "Leap which one is good" had no strike word, went to the AI, which did not answer,
+    and he got release notes. It is the same strikes question, for the ticker in view."""
+    from momx import chat_ai
+    ctx = {"scope": "scanner", "account": "x", "pageTicker": "SPCX", "pageName": "Chart", "ticker": None, "day": None, "side": None, "now": NOW}
+    plan = chat_ai.sure_calls(question, ctx, frozenset({"NVDA", "SPY", "SPCX"}))
+    call = plan["calls"][0]
+    assert call["tool"] == "long_oi" and call["args"]["ticker"] == "SPCX", (question, plan)
+    assert (call["args"]["months_from"], call["args"]["months_to"]) == (3, 12)
+
+
 @pytest.mark.parametrize("question", ["NVDA leap", "long term NVDA", "what are leaps"])
 def test_a_leap_question_with_no_strike_word_keeps_its_old_answer(question):
     from momx import chat_ai

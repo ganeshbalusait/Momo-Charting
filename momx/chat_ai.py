@@ -753,6 +753,9 @@ _MONTHS_SPAN = re.compile(r"\bleaps?\b|\blong[\s-]*dated\b|\bmonths?\b|\bmonthly
 #: it has, so the question goes to the same long-dated board.
 _LEAP_WORD = re.compile(r"\bleaps?\b")
 _STRIKE_WORD = re.compile(r"\bstrikes?\b|\bcontracts?\b")
+#: "Leap which one is good" (2026-11-20, SPCX on screen) has no strike word and went to the AI, which did not answer,
+#: so he got release notes. A LEAP question asking which one / good / best is the same strikes question.
+_LEAP_CHOICE = re.compile(r"\bwhich\b|\bgood\b|\bbest\b|\bbetter\b|\bpick\b|\bchoose\b")
 #: Open interest on a ticker with no months word (2026-11-19, "Oi for nvda buyers or sellers?" got only the list of
 #: things the chat can answer, because the AI that reads unsure questions was over its free limit). The words are
 #: certain enough: the High OI board, and one plain line when the question asks who is buying or selling.
@@ -1083,7 +1086,7 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
     clock = f"{minute // 60:02d}:{minute % 60:02d}" if minute is not None else None
     # Open interest months out ("nvda leap which one had more oi", "spy strikes with high oi 1 to 12 months with delta"):
     # the long-dated board, before "leap" reaches the Long Term view and "high oi" the short-dated High OI board.
-    if ((_OI_WORD.search(low) and _MONTHS_SPAN.search(low)) or (_LEAP_WORD.search(low) and (_STRIKE_WORD.search(low) or _OI_SIDE_WORD.search(low)))) \
+    if ((_OI_WORD.search(low) and _MONTHS_SPAN.search(low)) or (_LEAP_WORD.search(low) and (_STRIKE_WORD.search(low) or _OI_SIDE_WORD.search(low) or _LEAP_CHOICE.search(low)))) \
             and minute is None and not re.search(r"\b(?:what\s+is|what\s+does|meaning\s+of|define)\b", low):
         months_from, months_to = months_asked(low)
         wants_puts, wants_calls = bool(re.search(r"\bputs?\b", low)), bool(re.search(r"\bcalls?\b", low))

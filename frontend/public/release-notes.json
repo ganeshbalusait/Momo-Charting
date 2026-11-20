@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-20T15:05:00-05:00",
+      "heading": "Ask: \"Leap which one is good\" shows the LEAP strikes for the ticker on screen",
+      "items": [
+        "Asking \"Leap which one is good\" (or \"which leap is best\") with a ticker on screen showed a list of release notes. It now shows the strikes holding the most open interest 3 to 12 months out for that ticker, with delta and what is new, the same as \"which strike is good\".",
+        "The app still does not pick a strike for you; it shows where the open interest is.",
+        "Live after the next app server restart (after the close)."
+      ]
+    },
+    {
       "at": "2026-11-20T13:40:00-05:00",
       "heading": "Ask: the \"if it breaks below\" answer also shows the nearest support and resistance",
       "items": [
