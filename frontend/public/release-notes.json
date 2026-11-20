@@ -2,6 +2,18 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-19T22:52:48-05:00",
+      "heading": "Long Term: new Peter button (Peter Lynch star sheet)",
+      "items": [
+        "Next to 50% MOS and 30% MOS there is now a Peter button. It swaps the Rule #1 table for Peter Lynch's screen: growth at a reasonable price.",
+        "Only quality companies are listed (return on capital 20% or more, a live price, a profit, 8+ years of filings and growing earnings). Everything else is left off.",
+        "Each company gets a star sheet with five lines: earnings grew 10-50% a year, sales grew 5%+ a year, debt at most 0.8x equity, free cash flow growing, and PEG 1 or less. PEG is the P/E divided by the yearly earnings growth %.",
+        "Each card is tagged CHEAP (PEG 1 or less), FAIR (1 to 2) or PRICEY (above 2), and Slow grower / Stalwart / Fast grower. The list is most stars first, then the lowest PEG. The CHEAP / FAIR / PRICEY tiles and the search box narrow it.",
+        "Each card also shows the Rule #1 verdict, so a company that is good on both screens stands out. Tap a MOS button to go back to the Rule #1 table.",
+        "Not included yet: dividends and inventory (not collected), and cyclical companies are not labelled, so an oil, chip or metals name can look cheapest at the top of its cycle. It is a screen, not advice, and it has not been back-tested here."
+      ]
+    },
+    {
       "at": "2026-11-18T10:40:00-05:00",
       "heading": "BOT Ticker trader: a dashboard, latest trade first, with contract, expiry, time, live P&L and %",
       "items": [

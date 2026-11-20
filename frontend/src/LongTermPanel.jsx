@@ -44,6 +44,7 @@ import {
   DEEP_NONE,
 } from "./longTerm";
 import { glossaryEntry, glossaryMatch } from "./longTermGlossary";
+import { LYNCH_TILES, lynchCounts, lynchRows } from "./longTermLynch.js";
 import AnalystCard from "./AnalystCard.jsx";
 import TechnicalCard from "./TechnicalCard.jsx";
 import { analystCard } from "./analystGauge.js";
@@ -553,6 +554,57 @@ function Card({ row, open, onToggle, leap, onRetryLeap, leapQueued }) {
   );
 }
 
+// Peter view (2026-11-19): one quality company with Peter Lynch's five-star
+// sheet. The sheet is always open: each line is one star, won or lost.
+const LYNCH_TONE = { CHEAP: "buy", FAIR: "wait", PRICEY: "avoid" };
+const LYNCH_TILE_TITLE = {
+  CHEAP: "PEG 1 or less: the P/E is no higher than the yearly earnings growth",
+  FAIR: "PEG between 1 and 2",
+  PRICEY: "PEG above 2: the price is far ahead of the growth",
+};
+
+function LynchCard({ row, sheet, onChart }) {
+  return (
+    <div className={`long-term-card long-term-lynch-card is-${LYNCH_TONE[sheet.verdict]}`} data-testid={`long-term-lynch-${row.symbol}`}>
+      <span className="long-term-card-top">
+        <b>{row.symbol}</b>
+        <span className="long-term-card-name">{row.name || ""}</span>
+        <span className="long-term-card-price">{formatMoney(row.price)}</span>
+      </span>
+      <span className="long-term-card-mid">
+        <Pill tone={LYNCH_TONE[sheet.verdict]} testId={`long-term-lynch-verdict-${row.symbol}`}>{sheet.verdict}</Pill>
+        <Pill tone="muted">{sheet.type}</Pill>
+        <span
+          className="long-term-lynch-stars"
+          role="img"
+          aria-label={`${sheet.stars} of ${sheet.of} stars`}
+          data-testid={`long-term-lynch-stars-${row.symbol}`}
+          data-stars={`${sheet.stars}/${sheet.of}`}
+        >
+          <i>{"★".repeat(sheet.stars)}</i>{"★".repeat(sheet.of - sheet.stars)}
+        </span>
+      </span>
+      <span className="long-term-card-bottom">
+        <span>PEG <b>{sheet.peg.toFixed(2)}</b></span>
+        <span>P/E <b>{row.pe.toFixed(1)}</b></span>
+        <span>Rule #1 <b>{SIGNAL_LABEL[row.signal] || row.signal}</b></span>
+      </span>
+      <ul className="long-term-lynch-sheet" data-testid={`long-term-lynch-sheet-${row.symbol}`}>
+        {sheet.checks.map((c) => (
+          <li key={c.key} className={c.passed === true ? "is-pass" : c.passed === false ? "is-fail" : "is-na"}>
+            <span aria-hidden="true">{c.passed === true ? "★" : c.passed === false ? "✕" : "–"}</span>
+            <span>{c.label}</span>
+            <b>{c.text}</b>
+          </li>
+        ))}
+      </ul>
+      <button type="button" className="long-term-btn long-term-lynch-chart" onClick={() => onChart(row.symbol)}>
+        <BarChart3 size={13} /> Chart
+      </button>
+    </div>
+  );
+}
+
 // What the page had on screen, kept while the app stays open (Ganesh 11-08: "results are
 // disappearing if I go to a different tab and come back"). The app unmounts this page on
 // every tab switch, so without this a return started from nothing and sat on "Loading
@@ -562,6 +614,7 @@ function Card({ row, open, onToggle, leap, onRetryLeap, leapQueued }) {
 // that are too old; the rows request runs at once on return.
 export const LONG_TERM_SESSION = {
   data: null, acceptedAt: 0, tile: null, query: "", openSym: null, details: {}, leaps: {},
+  peter: false, peterTile: null,
 };
 
 // A chat link to one company: search for it, open its row, and clear the tile so
@@ -571,7 +624,7 @@ const longTermLinkListeners = new Set();
 export function openLongTermTicker(symbol) {
   const wanted = String(symbol || "").trim().toUpperCase();
   if (!wanted) return;
-  Object.assign(LONG_TERM_SESSION, { query: wanted, openSym: wanted, tile: null });
+  Object.assign(LONG_TERM_SESSION, { query: wanted, openSym: wanted, tile: null, peter: false });
   longTermLinkListeners.forEach((listener) => listener(wanted));
 }
 
@@ -593,10 +646,14 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [wrapWidth, setWrapWidth] = useState(0);
   const [acceptedAt, setAcceptedAt] = useState(() => S.acceptedAt); // Date.now() of the last accepted rows payload
+  // Peter view (2026-11-19): Peter Lynch's star sheet for the quality companies,
+  // in place of the Rule #1 table. Kept for this visit only, like a tile.
+  const [peter, setPeter] = useState(() => !!S.peter);
+  const [peterTile, setPeterTile] = useState(() => S.peterTile || null);
   // keep the session copy current (cheap: references, no copies)
   useEffect(() => {
-    Object.assign(LONG_TERM_SESSION, { data, acceptedAt, tile: prefs.tile, query, openSym, details, leaps });
-  }, [data, acceptedAt, prefs.tile, query, openSym, details, leaps]);
+    Object.assign(LONG_TERM_SESSION, { data, acceptedAt, tile: prefs.tile, query, openSym, details, leaps, peter, peterTile });
+  }, [data, acceptedAt, prefs.tile, query, openSym, details, leaps, peter, peterTile]);
   const [clock, setClock] = useState(() => Date.now());
   const wrapRef = useRef(null);
   const phone = useIsPhone();
@@ -610,6 +667,7 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
     const onLink = (wanted) => {
       setQuery(wanted);
       setOpenSym(wanted);
+      setPeter(false);
       updatePrefs({ tile: null });
     };
     longTermLinkListeners.add(onLink);
@@ -839,6 +897,12 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
     [guarded, prefs.tile, prefs.sort, query],
   );
   const cols = useMemo(() => columns("desktop"), []);
+  const peterAll = useMemo(() => (peter ? lynchRows(guarded) : []), [peter, guarded]);
+  const peterCounts = useMemo(() => lynchCounts(peterAll), [peterAll]);
+  const peterVisible = useMemo(
+    () => (peter ? lynchRows(guarded, { tile: peterTile, query }) : []),
+    [peter, guarded, peterTile, query],
+  );
 
   const meta = current?.meta || {};
   const refreshing = meta.refreshing && typeof meta.refreshing === "object" ? meta.refreshing : null;
@@ -910,6 +974,16 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
         <button type="button" className="long-term-btn" onClick={() => setReloadTick((t) => t + 1)}>
           <RefreshCw size={13} /> Retry
         </button>
+      </div>
+    );
+  } else if (peter) {
+    body = peterVisible.length ? (
+      <div className="long-term-lynch-list" data-testid="long-term-lynch-list">
+        {peterVisible.map(({ row, sheet }) => <LynchCard key={row.symbol} row={row} sheet={sheet} onChart={onChart} />)}
+      </div>
+    ) : (
+      <div className="long-term-empty">
+        {peterAll.length ? `No quality company matches${query ? ` “${query}”` : ""}.` : "No quality company can be scored right now."}
       </div>
     );
   } else if (!visible.length) {
@@ -1042,7 +1116,13 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
             {failed ? <span className="long-term-warn"> · update failed, retrying</span> : null}
             {feedStale ? <span className="long-term-warn" data-testid="long-term-stale"> · prices stale, reconnecting…</span> : null}
           </p>
-          <p className="long-term-note">Rule #1 buys are rare; WAIT rows show the price to buy at</p>
+          {peter ? (
+            <p className="long-term-note" data-testid="long-term-lynch-note">
+              Peter Lynch screen · quality companies only (return on capital 20%+) · {peterAll.length} scored · PEG = P/E ÷ yearly earnings growth %. A screen, not advice; not back-tested here.
+            </p>
+          ) : (
+            <p className="long-term-note">Rule #1 buys are rare; WAIT rows show the price to buy at</p>
+          )}
         </div>
         <div className="long-term-controls">
           <WithInfo k="mos" className="is-mos">
@@ -1051,10 +1131,11 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
               <button
                 key={m}
                 type="button"
-                aria-pressed={mos === m}
+                aria-pressed={!peter && mos === m}
                 data-testid={`long-term-mos-${m}`}
                 title={`${m}% margin of safety`}
                 onClick={() => {
+                  setPeter(false);
                   if (mos !== m) {
                     setOpenSym(null);
                     updatePrefs({ mos: m });
@@ -1064,6 +1145,18 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
                 {m}% MOS
               </button>
             ))}
+            <button
+              type="button"
+              aria-pressed={peter}
+              data-testid="long-term-peter"
+              title="Peter Lynch's star sheet for the quality companies"
+              onClick={() => {
+                setOpenSym(null);
+                setPeter(true);
+              }}
+            >
+              Peter
+            </button>
           </div>
           </WithInfo>
           <input
@@ -1093,8 +1186,34 @@ export default function LongTermPanel({ isAdmin = false, onChart = () => {} }) {
         </div>
       </header>
 
-      <TilesInfo />
-      <div className="long-term-tiles" role="group" aria-label="Filter by signal">
+      {peter ? (
+        <>
+          <p className="long-term-lynch-legend" data-testid="long-term-lynch-legend">
+            <b>The star sheet:</b> ★ earnings grew 10–50% a year · ★ sales grew 5%+ a year · ★ debt at most 0.8× equity · ★ free cash flow growing · ★ PEG 1 or less. Most stars first, then the lowest PEG.
+          </p>
+          <div className="long-term-tiles" role="group" aria-label="Filter by price for growth">
+            {LYNCH_TILES.map((t) => {
+              const active = peterTile === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  className={`long-term-tile is-${LYNCH_TONE[t]}${active ? " is-active" : ""}`}
+                  data-testid={`long-term-lynch-tile-${t}`}
+                  aria-pressed={active}
+                  title={LYNCH_TILE_TITLE[t]}
+                  onClick={() => setPeterTile(active ? null : t)}
+                >
+                  <span>{t}</span>
+                  <b>{peterCounts[t]}</b>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
+      {peter ? null : <TilesInfo />}
+      <div className="long-term-tiles" role="group" aria-label="Filter by signal" hidden={peter}>
         {TILES.map((t) => {
           const count = counts[t] || 0;
           const active = prefs.tile === t;

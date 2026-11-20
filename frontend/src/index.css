@@ -23294,6 +23294,27 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
 .long-term-card.is-wait > .long-term-card-reason { color: #f3d58f; }
 .long-term-card-slot .long-term-drawer { position: static; border: 1px solid rgba(72, 168, 202, .7); border-top: 0; border-radius: 0 0 8px 8px; }
 
+/* Peter view (2026-11-19): Peter Lynch's star sheet, one card per quality
+   company. A grid of cards on a wide screen, one column on a phone. The list
+   is its own scroller on desktop, like the table it replaces. */
+.long-term-tiles[hidden] { display: none; }
+.long-term-lynch-legend { margin: 0; color: #a6a6b0; font-size: 11.5px; line-height: 1.5; }
+.long-term-lynch-legend b { color: #dcdce2; }
+.long-term-lynch-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-content: start; gap: 8px; flex: 1 1 auto; min-width: 0; min-height: 260px; overflow-y: auto; overscroll-behavior: contain; }
+.long-term-lynch-card { cursor: default; align-content: start; }
+.long-term-lynch-card.is-buy { box-shadow: inset 3px 0 0 var(--lt-green); }
+.long-term-lynch-stars { margin-left: auto; color: #45454f; font-size: 15px; letter-spacing: 1px; line-height: 1; white-space: nowrap; }
+.long-term-lynch-stars i { color: var(--lt-amber); font-style: normal; }
+.long-term-lynch-sheet { display: grid; gap: 3px; margin: 2px 0 0; padding: 6px 0 0; border-top: 1px solid var(--lt-line); list-style: none; }
+.long-term-lynch-sheet li { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: baseline; gap: 6px; color: #a6a6b0; font-size: 11.5px; }
+.long-term-lynch-sheet li b { color: #dcdce2; font-weight: 700; text-align: right; }
+.long-term-lynch-sheet li.is-pass > span:first-child { color: var(--lt-amber); }
+.long-term-lynch-sheet li.is-fail > span:first-child { color: var(--lt-red); }
+.long-term-lynch-sheet li.is-fail b { color: #e9a3ad; }
+.long-term-lynch-sheet li.is-na { color: #7c7c8a; }
+.long-term-lynch-sheet li.is-na b { color: #8b8b97; font-weight: 500; }
+.long-term-lynch-chart { justify-self: start; }
+
 @media (max-width: 1100px) {
   .long-term-drawer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -23308,6 +23329,8 @@ body:has(.oi-chart-scrollbar) .auto-alert-toast { bottom: 40px; }
   .long-term-tile b { font-size: 14px; }
   .long-term-drawer-grid { grid-template-columns: minmax(0, 1fr); }
   .long-term-empty { padding: 28px 12px; }
+  /* flex:none - a shrinkable list let the footer print over the cards */
+  .long-term-lynch-list { grid-template-columns: minmax(0, 1fr); flex: none; min-height: auto; overflow: visible; }
 }
 
 /* BOT Scorecard (2026-11-09): the paper accounts judged like a prop-firm
