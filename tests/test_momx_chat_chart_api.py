@@ -491,3 +491,42 @@ def test_support_resistance_sorts_by_distance_and_skips_the_short_emas():
         "Nearest resistance above 143.74: 147.59 (Day pivot S1); 148.19 (SMA 200); 149.88 (Previous day low).",
         "Nearest support below 143.74: 143.00 (Today's low)."]
     assert chat_chart.support_resistance({"lastClose": None}) == ([], [])
+
+
+# ---------------------------------------------------------------- "if 135 breaks below", 2026-11-20
+def test_if_a_price_breaks_says_the_next_levels_beyond_it(route_charts):
+    """His "If 135 broke below then" (NVDA on screen) got the help list. Now: the chart's next levels beyond that price,
+    where the stock is now, and that it is not a forecast."""
+    charts = route_charts
+    levels = _expected("SPY", "5m")["levels"]
+    price = round(levels["lastClose"] * 0.97, 2)
+    below, _ = chat_chart.support_resistance(levels, around=price)
+    with running_api() as api:
+        status, body = api.post(ROUTE, {"question": f"If {price} broke below then",
+                                        "context": {"pageTicker": "SPY", "pageName": "Charts & OI"}}, headers=REGULAR)
+    assert status == 200 and body["intent"] == "chart_levels", body
+    lines = body["lines"]
+    assert lines[1].startswith(f"If SPY falls below {price:.2f}, the next levels below it on the chart are: "), lines
+    for name, value in below:
+        assert f"{value:.2f} ({name})" in lines[1] and value < price
+    assert lines[2].startswith(f"SPY is at {levels['lastClose']:.2f} now, ") and f"above {price:.2f}" in lines[2]
+    assert "not a forecast" in lines[3]
+    # "I need next support and resistance level also": the nearest of each from where it is now follows.
+    close = f"{levels['lastClose']:.2f}"
+    assert any(line.startswith(f"Nearest resistance above {close}") or line == f"No resistance level above {close} on this chart." for line in lines[4:6]), lines
+    assert any(line.startswith(f"Nearest support below {close}") or line == f"No support level below {close} on this chart." for line in lines[4:6]), lines
+    assert charts["calls"] == []
+
+
+def test_break_lines_above_and_with_no_level_left():
+    levels = {"lastClose": 136.31, "sma200": 144.12, "session": {"day": {"high": 144.69, "low": 134.82}},
+              "previous": {"DAY": {"high": 158.13, "low": 143.0}},
+              "pivots": {"DAY": {"R1": 153.52, "S2": 133.13}, "WEEK": {"S1": 152.49}},
+              "mtfMa": [{"key": "MONTH-ema3", "value": 131.49, "label": "50eMo"}]}
+    assert chat_chart.break_lines("NVDA", levels, 135, "below") == [
+        "If NVDA falls below 135.00, the next levels below it on the chart are: 134.82 (Today's low); 133.13 (Day pivot S2); 131.49 (Monthly 50 EMA).",
+        "NVDA is at 136.31 now, 1.0% above 135.00.",
+        "These are price levels traders watch, not a forecast: a level can break or hold."]
+    assert chat_chart.break_lines("NVDA", levels, 150, "above")[0] == (
+        "If NVDA rises above 150.00, the next levels above it on the chart are: 152.49 (Week pivot S1); 153.52 (Day pivot R1); 158.13 (Previous day high).")
+    assert chat_chart.break_lines("NVDA", levels, 500, "above")[0] == "The chart has no level above 500.00."

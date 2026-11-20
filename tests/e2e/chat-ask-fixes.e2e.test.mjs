@@ -203,6 +203,32 @@ for (const [label, viewport] of WIDTHS) {
     });
   }, { timeout: 240_000 });
 
+  // 6. "If 135 broke below then" (2026-11-20, NVDA on screen) got the help list. Now the chart's next levels beyond that
+  //    price, where the stock is now, and "not a forecast" (server: tests/test_momx_chat_chart_api.py).
+  e2eTest(`Ask: "if 135 broke below" lists the next levels below 135 (${label})`, async () => {
+    const reply = { intent: "chart_levels", ticker: "NVDA", lines: [
+      "NVDA chart levels, 5m. Newest candle Fri Nov 20 13:20 ET, close 136.31.",
+      "If NVDA falls below 135.00, the next levels below it on the chart are: 134.82 (Today's low); 133.13 (Day pivot S2); 131.49 (Monthly 50 EMA).",
+      "NVDA is at 136.31 now, 1.0% above 135.00.",
+      "These are price levels traders watch, not a forecast: a level can break or hold.",
+      "Nearest resistance above 136.31: 137.31 (Weekly 200 EMA); 138.39 (Day pivot S1); 140.25 (Premarket low).",
+      "Nearest support below 136.31: 134.82 (Today's low); 133.13 (Day pivot S2); 131.49 (Monthly 50 EMA)."],
+      links: [{ label: "Open NVDA chart, 5m", view: "Charts & OI", ticker: "NVDA", timeframe: "5m" }] };
+    await withApp({ view: "Release Notes", viewport, fakeWrites: chatWrites(reply) }, async (app) => {
+      const { page } = app;
+      const answer = await ask(page, "If 135 broke below then", tap);
+      const text = await answer.innerText();
+      assert.match(text, /If NVDA falls below 135\.00, the next levels below it on the chart are: 134\.82 \(Today's low\)/);
+      assert.match(text, /NVDA is at 136\.31 now, 1\.0% above 135\.00\./);
+      assert.match(text, /not a forecast/);
+      assert.match(text, /Nearest resistance above 136\.31: 137\.31/);
+      assert.match(text, /Nearest support below 136\.31: 134\.82/);
+      assert.doesNotMatch(text, /What I can answer/);
+      assert.equal(await overflowsSideways(page), false);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }, { timeout: 240_000 });
+
   e2eTest(`Ask: dropped twice with the app up says so plainly (${label})`, async () => {
     await withApp({ view: "Release Notes", viewport, fakeWrites: chatWrites({ intent: "help", lines: ["never shown"] }) }, async (app) => {
       const { page } = app;

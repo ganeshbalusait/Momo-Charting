@@ -21,6 +21,45 @@
       ]
     },
     {
+      "at": "2026-11-20T16:13:54-05:00",
+      "heading": "Charts: Fibonacci levels on Daily, Weekly and Monthly charts",
+      "items": [
+        "New \"Big swing Fib (D/W/M)\" study, on by default: like a TradingView Fib drawn by hand, from the lowest low to the highest high of the last year (Daily), two years (Weekly) or five years (Monthly). Each level has a tag with its price, for example \"Fib 50% (127.40)\", and the 50% to 61.8% zone is shaded green after a rise, red after a fall.",
+        "NVDA Monthly: from the October 2022 low ($10.81) to the high ($243.37), so 50% is $127.09 and 61.8% is $99.65, close to the 127.53 / 100.79 on a TradingView Fib drawn by hand. NVDA Weekly: the two-year swing, 50% at $165.00 and 61.8% at $146.50.",
+        "AutoFib (your TOS study) now also has Weekly and Monthly: the same 20-candle high and low, on 20 weeks or 20 months. They show on Daily, Weekly and Monthly charts; tick \"Weekly / Monthly only on Daily and higher charts\" off in its settings to see them on intraday charts too.",
+        "Indicators > Big swing Fib settings: how many candles to look back for each timeframe, show only 0 / 50 / 61.8 / 100%, and the colours.",
+        "While a chart is still collecting its long history, the Big swing Fib waits for it, so the levels do not jump a few seconds after the chart opens.",
+        "A Fib tag sitting right on the live price tag hides until price moves away; its line still shows."
+      ]
+    },
+    {
+      "at": "2026-11-20T15:05:00-05:00",
+      "heading": "Ask: \"Leap which one is good\" shows the LEAP strikes for the ticker on screen",
+      "items": [
+        "Asking \"Leap which one is good\" (or \"which leap is best\") with a ticker on screen showed a list of release notes. It now shows the strikes holding the most open interest 3 to 12 months out for that ticker, with delta and what is new, the same as \"which strike is good\".",
+        "The app still does not pick a strike for you; it shows where the open interest is.",
+        "Live after the next app server restart (after the close)."
+      ]
+    },
+    {
+      "at": "2026-11-20T13:40:00-05:00",
+      "heading": "Ask: the \"if it breaks below\" answer also shows the nearest support and resistance",
+      "items": [
+        "Asking \"If 135 broke below then\" now also gives the nearest resistance above today's price and the nearest support below it, for example \"Nearest resistance above 135.93: 137.31 (Weekly 200 EMA); 138.39 (Day pivot S1); 140.25 (Premarket low)\" and \"Nearest support below 135.93: 134.82 (Today's low); 133.13 (Day pivot S2); 131.47 (Monthly 50 EMA)\".",
+        "Live now: the app server was restarted during market hours at your request, so charts and Ask paused for about a minute."
+      ]
+    },
+    {
+      "at": "2026-11-20T13:35:00-05:00",
+      "heading": "Ask: \"if it breaks below 135\" now lists the next levels below that price",
+      "items": [
+        "Ask \"If 135 broke below then\" while looking at NVDA (or \"nvda breaks down under 140\", \"what if it goes above 150\") and Ask now answers with the chart's next levels beyond that price, nearest first, each named. For example: \"If NVDA falls below 135.00, the next levels below it on the chart are: 134.82 (Today's low); 133.13 (Day pivot S2); 131.49 (Monthly 50 EMA).\" It also says where the stock is now (\"NVDA is at 136.31 now, 1.0% above 135.00\"). These are levels to watch, not a forecast.",
+        "Before, that question got the \"What I can answer\" help list.",
+        "Support and resistance answers now also count the weekly and monthly averages and the week and month pivots, so the nearest levels are more complete.",
+        "This starts after the next app server restart, after today's close."
+      ]
+    },
+    {
       "at": "2026-11-20T09:06:29-05:00",
       "heading": "Long Term Peter view: fixes from an independent review",
       "items": [

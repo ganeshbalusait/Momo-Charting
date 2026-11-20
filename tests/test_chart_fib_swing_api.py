@@ -1,0 +1,116 @@
+"""Integration (2026-11-20): Fib on Daily / Weekly / Monthly charts.
+
+The chart's daily tape goes through the real GET /api/oi-finder-chart route
+over HTTP (same seeded serve path as test_cov_charts-studies_chart_payload_api),
+and the body the browser would receive is fed to the real frontend modules
+(chartAggregation.js + chartFibSwing.js) under node. Checks that the route
+ships enough daily history for a 60-month swing and a 20-month AutoFib, and
+that the levels come out where the swing says.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from api_harness import running_api
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER = Path(__file__).with_name("fib_swing_runner.mjs")
+ET = ZoneInfo("America/New_York")
+SYMBOL = "EA"
+
+_spec = importlib.util.spec_from_file_location(
+    "chart_payload_api", Path(__file__).with_name("test_cov_charts-studies_chart_payload_api.py"),
+)
+_payload_api = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_payload_api)
+ServeState = _payload_api.ServeState
+_session_bars = _payload_api._session_bars
+
+LOW_DAY = 300     # 2021-01 + 300 days: the swing low, 14.00
+HIGH_DAY = 1700   # the swing high, 240.80, after the low -> an up swing
+
+
+def _daily_tape() -> list[dict]:
+    """~5.5 years of daily candles at Eastern midnight with one known swing."""
+    start = int(datetime(2021, 6, 1, tzinfo=ET).timestamp())
+    rows = []
+    for day in range(2000):
+        price = 60 + 120 * day / 2000
+        low, high = price - 2, price + 2
+        if day == LOW_DAY:
+            low = 14.0
+        if day == HIGH_DAY:
+            high = 240.8
+        rows.append({
+            "time": start + day * 86_400,
+            "open": price, "high": high, "low": low, "close": price, "volume": 1000,
+        })
+    return rows
+
+
+def _payload() -> dict:
+    return {
+        "symbol": SYMBOL,
+        "source": "fixture",
+        "bars": _session_bars(datetime(2026, 11, 16, tzinfo=ET), 2, 1),
+        "fineStudyBars": [],
+        "studyBars": [],
+        "dailyBars": _daily_tape(),
+        "historyLoading": False,
+        "error": "",
+    }
+
+
+def _run_frontend(body: dict) -> dict:
+    with tempfile.TemporaryDirectory(prefix="agx-fib-") as folder:
+        path = Path(folder) / "payload.json"
+        path.write_text(json.dumps(body), encoding="utf-8")
+        done = subprocess.run(
+            ["node", str(RUNNER), str(path)],
+            cwd=ROOT, capture_output=True, text=True, timeout=120, check=False,
+        )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_route_daily_tape_gives_monthly_weekly_daily_fib_levels():
+    payload = _payload()
+    state = ServeState({SYMBOL: payload}, market_newest_epoch=payload["bars"][-1]["time"])
+    with running_api(state) as api:
+        status, body = api.get(f"/api/oi-finder-chart?symbol={SYMBOL}")
+    assert status == 200, body
+    assert len(body["dailyBars"]) == 2000, "the full chart reply must carry the whole daily tape"
+
+    result = _run_frontend(body)
+    monthly, weekly, daily = result["M"], result["W"], result["D"]
+
+    # Monthly: 60 months back reaches both ends of the known swing.
+    assert monthly["candles"] >= 60
+    assert monthly["swing"]["direction"] == "up"
+    assert monthly["swing"]["low"] == 14.0 and monthly["swing"]["high"] == 240.8
+    assert monthly["levels"]["0.5"] == 127.4
+    assert monthly["levels"]["0.618"] == 100.6376
+    assert monthly["levels"]["0"] == 240.8 and monthly["levels"]["1"] == 14.0
+    # The shaded zone runs from the swing's first candle to the last candle.
+    assert monthly["zoneStart"] == monthly["swing"]["startTime"]
+    assert monthly["zoneEnd"] == monthly["lastCandle"]
+
+    # Weekly: 104 weeks back holds the high but not the low (day 300 is ~4 years ago).
+    assert weekly["swing"]["high"] == 240.8
+    assert weekly["swing"]["low"] > 14.0
+
+    # Daily: the last 252 days miss both spikes, so the swing is the ordinary range.
+    assert daily["swing"]["high"] < 240.8 and daily["swing"]["low"] > 14.0
+
+    # Weekly / Monthly AutoFib: buckets line up one-to-one with the chart's candles,
+    # and there are 20+ of them to take the TOS 20-bar high / low from.
+    for timeframe in (monthly, weekly):
+        assert timeframe["autoFibKeysMatchCandles"] is True
+        assert timeframe["autoFibBars"] >= 20
+        assert timeframe["autoFib20High"] > timeframe["autoFib20Low"]

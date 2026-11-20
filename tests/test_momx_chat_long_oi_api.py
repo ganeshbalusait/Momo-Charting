@@ -89,6 +89,17 @@ def test_leaps_which_strike_is_good_gets_the_oi_strikes_and_no_pick(world):
     assert world["ai"] == []
 
 
+def test_leap_which_one_is_good_uses_the_ticker_on_screen_with_no_ai(world):
+    """2026-11-20: "Leap which one is good" (ticker on screen, no strike word) got release notes."""
+    with running_api() as api:
+        status, body = api.post(ROUTE, {"question": "Leap which one is good",
+                                        "context": {"pageTicker": "NVDA", "pageName": "Chart"}}, headers=REGULAR)
+    text = "\n".join(body["lines"])
+    assert status == 200 and body["ticker"] == "NVDA", body
+    assert "expiries 3 to 12 months out" in text and "Most call OI: 185 call" in text, text
+    assert "Release note" not in text and world["ai"] == []
+
+
 def test_a_question_with_no_ticker_anywhere_asks_for_one(world):
     with running_api() as api:
         status, body = api.post(ROUTE, {"question": "which strikes have high oi 1 to 12 months with delta", "context": {}}, headers=REGULAR)

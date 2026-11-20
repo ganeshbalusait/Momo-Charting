@@ -753,6 +753,9 @@ _MONTHS_SPAN = re.compile(r"\bleaps?\b|\blong[\s-]*dated\b|\bmonths?\b|\bmonthly
 #: it has, so the question goes to the same long-dated board.
 _LEAP_WORD = re.compile(r"\bleaps?\b")
 _STRIKE_WORD = re.compile(r"\bstrikes?\b|\bcontracts?\b")
+#: "Leap which one is good" (2026-11-20, SPCX on screen) has no strike word and went to the AI, which did not answer,
+#: so he got release notes. A LEAP question asking which one / good / best is the same strikes question.
+_LEAP_CHOICE = re.compile(r"\bwhich\b|\bgood\b|\bbest\b|\bbetter\b|\bpick\b|\bchoose\b")
 #: Open interest on a ticker with no months word (2026-11-19, "Oi for nvda buyers or sellers?" got only the list of
 #: things the chat can answer, because the AI that reads unsure questions was over its free limit). The words are
 #: certain enough: the High OI board, and one plain line when the question asks who is buying or selling.
@@ -760,6 +763,11 @@ _OI_SIDE_WORD = re.compile(r"\bbuy(?:ers?|ing)?\b|\bsell(?:ers?|ing)?\b|\bbought
 _OI_ELSEWHERE = re.compile(r"\b(?:page|scanner|finder|board|bots?|chains?|max\s*pain|alerts?|go\s+to|take\s+me)\b")
 OI_NO_SIDE_LINE = ("Open interest counts the contracts still open. Each one has a buyer and a seller, so it cannot show "
                    "who is buying or selling, or a direction. Here is where the open interest sits.")
+#: "If 135 broke below", "nvda breaks down under 140", "what if it goes above 150", "if spy loses 700" (2026-11-20).
+_BREAK_SIDE = re.compile(r"(?P<below>\bbelow\b|\bunder\b|\bbr(?:eaks?|oke|eaking)\s+down\b|\bbreakdown\b|\blos(?:es?|t|ing)\b|\bfalls?\b|\bdrops?\b)"
+                         r"|(?P<above>\babove\b|\bover\b|\bbr(?:eaks?|oke|eaking)\s+out\b|\bbreakout\b|\bclears?\b|\breclaims?\b)")
+_BREAK_PRICE = re.compile(r"(?<![\d:.])\$?(\d{1,6}(?:\.\d{1,2})?)(?![\d:%])(?!\s*(?:%|percent|days?|weeks?|months?|ema|sma|dma|ma\b|delta|dte|k\b|m\b))")
+_BREAK_NOT = re.compile(r"\b(?:ema|sma|vwap|moving\s+average|scanner|stocks|tickers|rsi|percent|delta|oi|open\s+interest|volume|strike|strikes|calls?|puts?|options?)\b")
 _NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
                  "ten": "10", "eleven": "11", "twelve": "12"}
 
@@ -1078,7 +1086,7 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
     clock = f"{minute // 60:02d}:{minute % 60:02d}" if minute is not None else None
     # Open interest months out ("nvda leap which one had more oi", "spy strikes with high oi 1 to 12 months with delta"):
     # the long-dated board, before "leap" reaches the Long Term view and "high oi" the short-dated High OI board.
-    if ((_OI_WORD.search(low) and _MONTHS_SPAN.search(low)) or (_LEAP_WORD.search(low) and (_STRIKE_WORD.search(low) or _OI_SIDE_WORD.search(low)))) \
+    if ((_OI_WORD.search(low) and _MONTHS_SPAN.search(low)) or (_LEAP_WORD.search(low) and (_STRIKE_WORD.search(low) or _OI_SIDE_WORD.search(low) or _LEAP_CHOICE.search(low)))) \
             and minute is None and not re.search(r"\b(?:what\s+is|what\s+does|meaning\s+of|define)\b", low):
         months_from, months_to = months_asked(low)
         wants_puts, wants_calls = bool(re.search(r"\bputs?\b", low)), bool(re.search(r"\bcalls?\b", low))
@@ -1095,6 +1103,16 @@ def sure_calls(text: str, ctx: Mapping, known: frozenset) -> dict | None:
         plan = {"calls": [_call("walls", ticker=_resolved(ticker, low, ctx),
                                 side="put" if wants_puts and not wants_calls else "call" if wants_calls and not wants_puts else None)]}
         return {**plan, "lines": [OI_NO_SIDE_LINE]} if _OI_SIDE_WORD.search(low) else plan
+    # A price level breaking ("If 135 broke below then", 2026-11-20, got the help list): the chart's next levels beyond
+    # that price, for the ticker named, on screen or in the conversation. A clock time or a scanner / average word
+    # keeps its own answer ("stocks above the 50 ema", "NVDA below 9:30 high").
+    broke = _BREAK_SIDE.search(low)
+    number = _BREAK_PRICE.search(low)
+    if broke and number and minute is None and not _BREAK_NOT.search(low):
+        target = _resolved(ticker, low, ctx)
+        if target:
+            side = "below" if broke.group("below") else "above"
+            return {"calls": [_call("chart_levels", ticker=target, question=text, break_price=float(number.group(1)), break_side=side)]}
     # A definition whose term is a glossary entry longer than the ticker word ("what is an iron condor", "what is a gap
     # up", "what is the live bolt") is the glossary, even when IRON, GAP or BOLT is a real ticker (2026-11-11 review rv7).
     # Exact match only, and never the ticker word alone: "what is IRON" and "what is GAP" stay ticker questions.
