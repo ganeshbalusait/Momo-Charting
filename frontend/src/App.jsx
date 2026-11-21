@@ -110,6 +110,7 @@ import { withoutDailySeedBadPrints } from "./chartBadPrints.js";
 import { setItemMakingRoom } from "./storageRoom.js";
 import { pruneOversizedBoardCaches } from "./momxCells.js";
 import { WOODIES_DEFAULTS, WOODIES_LEVELS, WOODIES_TIMEFRAMES, buildWoodiesPivots } from "./woodiesPivots.js";
+import { CHART_PATTERN_ENDPOINT, buildChartPatternOverlay, chartPatternSignature, chartPatternTimeframe } from "./chartPattern.js";
 import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, autoFibCalendarBars, autoFibCalendarKey, autoFibAxisLabels, autoFibTimeframeAllowed, buildFibSwingStudies, fibSwingAxisLabels } from "./chartFibSwing.js";
 import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartDeepHistoryPending, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
 import { CHART_TOUCH_ALERT_HOLD_MS, touchAlertGestureShouldCancel } from "./chartTouchAlert";
@@ -11532,6 +11533,8 @@ const DEFAULT_OI_CHART_INDICATORS = Object.freeze({
   autoFibSingleTf: true,
   // 2026-11-20: TradingView-style retracement of the big swing, D/W/M charts.
   fibSwing: true,
+  // 2026-11-20: the Breakout / Breakdown pattern (lines + tag) on D/W/M charts.
+  chartPattern: true,
   ichimoku: true,
   squeezeMomentumLower: false,
   mtfCloudLabelLower: true,
@@ -17012,6 +17015,29 @@ function OiFinderCandleChart({
       stageAutoFibReady,
     ],
   );
+  // Chart pattern (chartPattern.js): on a D / W / M chart, the Breakout /
+  // Breakdown pattern the scanner's rules find for this ticker, any ticker.
+  // One small read per ticker (the server keeps it 10 minutes); a failed
+  // read just draws nothing.
+  const chartPatternWanted = indicatorSettings.chartPattern !== false
+    && Boolean(chartPatternTimeframe(selectedTimeframe.minutes))
+    && Boolean(normalizedChartSymbol);
+  const [chartPatternPayload, setChartPatternPayload] = useState(null);
+  useEffect(() => {
+    if (!chartPatternWanted) return undefined;
+    let cancelled = false;
+    fetch(`${CHART_PATTERN_ENDPOINT}?symbol=${encodeURIComponent(normalizedChartSymbol)}`, { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => { if (!cancelled) setChartPatternPayload(payload && typeof payload === "object" ? payload : null); })
+      .catch(() => { if (!cancelled) setChartPatternPayload(null); });
+    return () => { cancelled = true; };
+  }, [chartPatternWanted, normalizedChartSymbol]);
+  const chartPatternOverlay = useMemo(
+    () => (chartPatternWanted
+      ? buildChartPatternOverlay(chartPatternPayload, selectedTimeframe.minutes, chartBars, { symbol: normalizedChartSymbol })
+      : buildChartPatternOverlay(null, 0, [])),
+    [chartBars, chartPatternPayload, chartPatternWanted, normalizedChartSymbol, selectedTimeframe.minutes],
+  );
   // Big swing Fib (chartFibSwing.js): every chart; intraday = last N trading days.
   const fibSwingStudies = useMemo(
     () => (indicatorSettings.fibSwing === true
@@ -21604,6 +21630,8 @@ function OiFinderCandleChart({
       // Big swing Fib: a settings change (M/W/D on or off) landing on a tick
       // render must redraw its lines and tags, not just move the last candle.
       fibSwingStudies.map((study) => `${study.source}:${study.levels.map((level) => level.price).join("/")}`).join(","),
+      // Chart pattern lines and tags (D / W / M).
+      chartPatternSignature(chartPatternOverlay),
       // Same for the D / W / M AutoFib tags.
       indicatorSettings.autoFibSingleTf
         ? autoFibStudies.filter((study) => ["day", "week", "month"].includes(study.key))
@@ -22692,6 +22720,7 @@ function OiFinderCandleChart({
       mtfCloudBandStudy,
       autoFibStudies,
       fibSwingStudies,
+      chartPatternOverlay,
       ichimokuStudies,
       cloudMaxMtfStudy,
       relativeVolumeCandleStudy,
@@ -22851,6 +22880,9 @@ function OiFinderCandleChart({
         signals: [...boldSignals, ...nativeSupplementalSignals],
         candleHighlights: nativeCandleHighlights,
         wedges: stochasXStudy.wedges,
+        // Chart pattern (chartPattern.js): the pattern's lines, sloped or flat,
+        // and the dashed measured target running to its axis tag.
+        trendSegments: chartPatternOverlay.segments,
         // MomoX draws the MTF MA levels as short segments over the most recent
         // bars that run into the price axis. They keep their ThinkScript colour
         // per average rather than the side-of-price pair, so each one stays
@@ -23166,6 +23198,11 @@ function OiFinderCandleChart({
     fibSwingAxisLabels(fibSwingStudies).forEach((label) => {
       addIndicatorName(label.price, label.title, label.color, true, label.key, { mergeWhenBlocked: true });
     });
+    // Chart pattern tags ("M ▲ Triangle 134.79 (Nov 26 open)", "M Triangle
+    // target 210.10"), one per line that broke and one per target.
+    chartPatternOverlay.labels.forEach((label) => {
+      addIndicatorName(label.price, label.title, label.color, true, label.key, { mergeWhenBlocked: true });
+    });
     // AutoFib Daily / Weekly / Monthly tags ("D AutoFib 50% (171.89)") so
     // they read apart from the Big swing's "M Fib" (2026-11-20, his 5m chart).
     if (indicatorSettings.autoFibSingleTf) {
@@ -23371,7 +23408,7 @@ function OiFinderCandleChart({
       hostElement.dataset.applyRuns = String(applyDiag.applyRuns);
       hostElement.dataset.applyTotalMs = String(applyDiag.applyTotalMs);
     }
-  }, [chartBars, disableKineticScroll, tosMtfSignals, tosMtfSignalsByTimeframe, projectedGaneshHigherTimeframeSignals, expectedMoveRange, wallLevels, easternDateFormatter, sessionWindows, sessionTimeMarkers, symbol, normalizedChartSymbol, symbolAlerts, indicatorSettings, indicatorOptions, previousOhlcStudy, selectedTimeframe.minutes, mtfOneSidedCloudStudy, mtfMacdTrendCloudStudy, mtfEma920CloudStudy, mtfSqueezeCloudStudy, mtfCloudBandStudy, relativeVolumeCandleStudy, stochasXStudy, cloudMaxMtfStudy, autoFibStudies, fibSwingStudies, ichimokuStudies, mtfAdxStudies, squeezeMomentumLowerStudy, mtfSqueeze410Study, pivotPointsStudy, woodiesPivotsStudy, personsPivotsStudy, mtfMaLevelsStudy, sessionLevelsStudy, gradeTapeEntries, bearGradeTapeEntries, gradeEntriesFor]);
+  }, [chartBars, disableKineticScroll, tosMtfSignals, tosMtfSignalsByTimeframe, projectedGaneshHigherTimeframeSignals, expectedMoveRange, wallLevels, easternDateFormatter, sessionWindows, sessionTimeMarkers, symbol, normalizedChartSymbol, symbolAlerts, indicatorSettings, indicatorOptions, previousOhlcStudy, selectedTimeframe.minutes, mtfOneSidedCloudStudy, mtfMacdTrendCloudStudy, mtfEma920CloudStudy, mtfSqueezeCloudStudy, mtfCloudBandStudy, relativeVolumeCandleStudy, stochasXStudy, cloudMaxMtfStudy, autoFibStudies, fibSwingStudies, chartPatternOverlay, ichimokuStudies, mtfAdxStudies, squeezeMomentumLowerStudy, mtfSqueeze410Study, pivotPointsStudy, woodiesPivotsStudy, personsPivotsStudy, mtfMaLevelsStudy, sessionLevelsStudy, gradeTapeEntries, bearGradeTapeEntries, gradeEntriesFor]);
 
   // Only a ticker change or older REST backfill is an opening-layout event.
   // Appending a live candle must preserve the current zoom and pan.
@@ -23578,6 +23615,9 @@ function OiFinderCandleChart({
       data-history-on-demand={deferDeepHistory ? "true" : "false"}
       // Read by smoke checks: how many OI walls are drawn and which strikes flash.
       data-oi-wall-count={wallLevels.length}
+      // Chart pattern (chartPattern.js): its tags and how many lines are drawn.
+      data-chart-pattern={chartPatternOverlay.labels.map((label) => label.title).join(" | ")}
+      data-chart-pattern-lines={chartPatternOverlay.segments.length}
       data-gamma-levels={gammaModel.levels.length}
       data-gamma-empty-reason={gammaModel.emptyReason}
       data-gamma-symbol={gammaModel.symbol}
@@ -24027,6 +24067,7 @@ function OiFinderCandleChart({
               ["cloudMaxMtf", "CloudMAX MTF EMA 1/5/15", "shared_CloudMAX_MTF_EMA_1_5_15_v22 • EMA clouds, arrows, and bubbles"],
               ["autoFibSingleTf", "AutoFib — Single TF", "shared_AutoFib_SingleTF_v20263 • 38.2%, 50%, and 61.8% retracement cloud • 5m through Monthly"],
               ["fibSwing", "Big swing Fib", "TradingView-style retracement • the Monthly, Weekly and Daily swings together on every timeframe, tagged M / W / D Fib • 50%–61.8% zones shaded"],
+              ["chartPattern", "Chart pattern (breakout)", "Daily / Weekly / Monthly charts • the scanner's Breakout / Breakdown patterns (HL + resistance, triangle, range, LH + support) with their lines, the line that broke and the measured target • cyan up, pink down • back-test edge on Monthly only"],
               ["ichimoku", "Ichimoku", "TOS study • Tenkan/Kijun, Span A/B, crosses, clouds, and Chikou"],
               ["mtfAdxCloudsLower", "MTF ADX Clouds (Lower)", "shared_MTF_ADXClouds_v225 • DI/ADX clouds • Current + five aggregations"],
               ["squeezeMomentumLower", "Squeeze Momentum (Lower)", "shared_SqueezeChain24 • TTM Squeeze LINE_VS_POINTS in a lower pane"],

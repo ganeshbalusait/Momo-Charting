@@ -10,6 +10,7 @@ const EMPTY_NATIVE_MODEL = Object.freeze({
   signals: [],
   candleHighlights: [],
   levelSegments: [],
+  trendSegments: [],
   wedges: [],
 });
 
@@ -542,6 +543,18 @@ function normalizeModel(model = {}) {
         const price = finiteNumber(segment?.price);
         return price == null ? [] : [{ ...segment, price }];
       }),
+    // Chart patterns (chartPattern.js): lines between two (time, price)
+    // points, so a trendline can slope; endTime null runs to the axis.
+    trendSegments: (Array.isArray(model.trendSegments) ? model.trendSegments : [])
+      .flatMap((segment) => {
+        const startTime = finiteNumber(segment?.startTime);
+        const startPrice = finiteNumber(segment?.startPrice);
+        const endPrice = finiteNumber(segment?.endPrice);
+        const endTime = segment?.endTime == null ? null : finiteNumber(segment.endTime);
+        if (startTime == null || startPrice == null || endPrice == null) return [];
+        if (segment?.endTime != null && endTime == null) return [];
+        return [{ ...segment, startTime, startPrice, endTime, endPrice }];
+      }),
     // TOS BOOLEAN_WEDGE_UP / _DOWN plots (shared_StochasX_v20263).
     wedges: (Array.isArray(model.wedges) ? model.wedges : [])
       .flatMap((wedge) => {
@@ -850,6 +863,27 @@ export function nativeGeometry(model, chart, series) {
       color: segment.color,
       opacity: 0.95,
       lineWidth: segment.lineWidth || 1,
+      dash: Array.isArray(segment.dash) ? segment.dash : [],
+    });
+  });
+
+  (model.trendSegments || []).forEach((segment) => {
+    const x1 = xForTime(segment.startTime);
+    const y1 = yForPrice(segment.startPrice);
+    const y2 = yForPrice(segment.endPrice);
+    const x2 = segment.endTime == null
+      ? width - nativeLevelLabelGutter(segment.labelText, LEVEL_LABEL_GUTTER)
+      : xForTime(segment.endTime);
+    if (x1 == null || x2 == null || y1 == null || y2 == null || x2 <= x1) return;
+    if (x2 < 0 || x1 > width) return;
+    lines.push({
+      x1,
+      x2,
+      y1,
+      y2,
+      color: segment.color,
+      opacity: 0.95,
+      lineWidth: segment.lineWidth || 2,
       dash: Array.isArray(segment.dash) ? segment.dash : [],
     });
   });

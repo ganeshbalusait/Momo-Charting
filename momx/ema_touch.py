@@ -126,9 +126,10 @@ def saved_setting(name: str) -> str:
     """
     path = settings_path()
     try:
-        key = (str(path), path.stat().st_mtime)
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
     except OSError:
-        key = (str(path), None)
+        key = (str(path), None, None)
     if key != _SETTINGS["key"]:
         try:
             saved = json.loads(path.read_text(encoding="utf-8"))
@@ -150,6 +151,8 @@ def save_setting(key: str, value: str) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(saved), encoding="utf-8")
     os.replace(temporary, path)
+    # Two saves inside one timestamp tick would otherwise read back stale.
+    _SETTINGS["key"] = None
 
 
 def timeframe(length: int) -> str:
@@ -321,6 +324,18 @@ def cached_states(symbols: Iterable[str], key: str) -> dict[str, Any]:
         return {s: (table.get(s) or {}).get(key) for s in universe if s in table}
 
 
+def peek_symbol(symbol: str) -> dict | None:
+    """One symbol's cached row, or None - never queues it for fetching."""
+    if not enabled():
+        return None
+    _reload_from_disk()
+    with _LOCK:
+        if not _fresh(_CACHE.get("fetchedAt")):
+            return None
+        row = (_CACHE.get("symbols") or {}).get(str(symbol))
+        return dict(row) if isinstance(row, Mapping) else None
+
+
 def detail(symbol: str) -> dict:
     """``{"21:Monthly": {...}, ...}`` for one symbol, for display/debug."""
     _reload_from_disk()
@@ -474,6 +489,7 @@ __all__ = [
     "TIMEFRAMES",
     "cache_path",
     "cached_states",
+    "peek_symbol",
     "save_setting",
     "saved_setting",
     "current_lists",

@@ -387,6 +387,11 @@ class Handler(BaseHTTPRequestHandler):
                 service.note_viewed(wanted)
                 self._json(HTTPStatus.OK, service.snapshot(wanted, direction))
                 return
+            if path == "/api/momx-scanner/chart-pattern":
+                # Breakout / Breakdown pattern lines for a chart (any ticker, D/W/M).
+                from momx import monthly_breakout
+                self._json(HTTPStatus.OK, monthly_breakout.chart_patterns(query.get("symbol", [""])[0]))
+                return
             if path == "/api/momx-scanner/ai-report":
                 # The shadow AI model's nightly score (2026-10-17) - admin only.
                 if not viewer_is_admin(self.headers.get("X-AGX-User")):

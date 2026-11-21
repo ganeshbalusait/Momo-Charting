@@ -172,3 +172,37 @@ def test_weekly_dropdown_switches_the_list_over_http(tmp_path, monkeypatch, brea
     assert bad_status == 200 and bad["ok"] is False and "Timeframe" in bad["error"]
     # The EMA lists' dropdown still works through the same route.
     assert ema_status == 200 and ema["list"] == "21 EMA Touch Weekly"
+
+
+def test_chart_pattern_route_answers_any_ticker_over_http(tmp_path, monkeypatch, breakout_scratch):
+    # 2026-11-20: open any ticker's D/W/M chart and see which pattern broke.
+    from momx import monthly_breakout
+
+    monthly_breakout._ON_DEMAND.clear()
+    asked = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        asked.append((params["symbols"], params["timeframe"]))
+        if params["timeframe"] == "1Month":
+            return _Reply({"bars": {"OFFL": _alpaca_month_bars(CLOSES["UPB"])}})
+        if params["timeframe"] == "1Week":
+            return _Reply({"bars": {"OFFL": _alpaca_week_bars(CLOSES["DNB"])}})
+        return _Reply({"bars": {}})
+
+    monkeypatch.setattr("requests.get", fake_get)
+    with running_worker(tmp_path, monkeypatch) as worker:
+        _seed_watchlist(tmp_path)
+        status, body = worker.get("/api/momx-scanner/chart-pattern?symbol=offl")
+        again_status, again = worker.get("/api/momx-scanner/chart-pattern?symbol=OFFL")
+        bad_status, bad = worker.get("/api/momx-scanner/chart-pattern?symbol=")
+    assert status == 200 and body["ok"] is True and body["symbol"] == "OFFL", body
+    monthly, weekly = body["patterns"]["Monthly"], body["patterns"]["Weekly"]
+    assert monthly["up"]["pattern"] == "BOTTOM" and monthly["up"]["status"] == "live"
+    assert [line["role"] for line in monthly["up"]["lines"]] == ["resistance", "rising lows"]
+    assert monthly["up"]["lines"][0]["toPrice"] == pytest.approx(102.0)
+    assert weekly["down"]["pattern"] == "MIDDLE" and weekly["down"]["lines"][0]["to"] == weekly["down"]["period"]
+    assert body["patterns"]["Daily"] is None
+    # Fetched once (3 timeframes), then kept.
+    assert again_status == 200 and again == body and len(asked) == 3
+    assert bad_status == 200 and bad["ok"] is False
+    monthly_breakout._ON_DEMAND.clear()

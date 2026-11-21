@@ -139,7 +139,7 @@ def test_flat_placeholder_months_before_a_listing_are_ignored():
 
 def test_a_breakdown_target_at_or_below_zero_is_left_out(monkeypatch):
     # A base taller than the price: line 10, height 50 -> projected -40.
-    monkeypatch.setattr(mb, "breaks_at", lambda *a, **k: {("MIDDLE", "down"): (10.0, 50.0)})
+    monkeypatch.setattr(mb, "_breaks", lambda *a, **k: {("MIDDLE", "down"): (10.0, 50.0, [])})
     out = state(BASES["MIDDLE_down"])["down"]
     assert out["level"] == 10.0 and out["target"] is None
 
@@ -352,3 +352,78 @@ def test_service_sends_the_dropdown_and_switches_the_list(lists_on, monkeypatch)
     assert out == {"ok": True, "list": "Daily Breakout", "previous": "Monthly Breakout", "active": "Daily Breakout"}
     assert service.set_breakout_timeframe("up", "Hourly")["ok"] is False
     assert service.set_breakout_timeframe("left", "Daily")["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# the chart: any ticker, D/W/M, with the pattern's lines (2026-11-20, "in
+# scanner any tickers can we do in chart patterns in D/W/M when we open the
+# chart ... so I know which pattern")
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape,roles", [
+    ("BOTTOM_up", ["resistance", "rising lows"]),
+    ("MIDDLE_up", ["resistance", "support"]),
+    ("SYM_up", ["falling highs", "rising lows"]),
+    ("MIDDLE_down", ["resistance", "support"]),
+])
+def test_each_signal_carries_its_lines_ending_on_the_breakout_bar(shape, roles):
+    bars = tape(BASES[shape])
+    signal = state(BASES[shape])["up" if shape.endswith("up") else "down"]
+    lines = signal["lines"]
+    assert [line["role"] for line in lines] == roles
+    assert all(line["to"] == bars[-1]["period"] for line in lines)
+    assert all(line["from"] < line["to"] and line["bars"] >= 2 for line in lines)
+    flat = [line for line in lines if line["role"] in ("resistance", "support")]
+    assert all(line["fromPrice"] == line["toPrice"] for line in flat)
+    # The line that broke is the signal's level.
+    assert any(abs(line["toPrice"] - signal["level"]) < 1e-3 for line in lines)
+
+
+def test_sloped_lines_slope_the_right_way():
+    lines = {line["role"]: line for line in state(BASES["SYM_up"])["up"]["lines"]}
+    assert lines["falling highs"]["toPrice"] < lines["falling highs"]["fromPrice"]
+    assert lines["rising lows"]["toPrice"] > lines["rising lows"]["fromPrice"]
+
+
+def test_chart_patterns_answer_a_watchlist_ticker_from_the_scanner_cache(lists_on):
+    doc = json.loads(ema_touch.cache_path().read_text())
+    for tf in mb.TIMEFRAMES:
+        doc["symbols"]["AAA"][mb.cache_key(tf)] = state(BASES["BOTTOM_up"]) if tf == "Weekly" else None
+    ema_touch.cache_path().write_text(json.dumps(doc))
+    ema_touch._CACHE_MTIME = None
+    out = mb.chart_patterns("aaa", fetch=lambda *a: pytest.fail("a cached ticker must not fetch"))
+    assert out["ok"] and out["source"] == "scanner" and out["symbol"] == "AAA"
+    assert out["patterns"]["Weekly"]["up"]["pattern"] == "BOTTOM" and out["patterns"]["Monthly"] is None
+
+
+def test_chart_patterns_fetch_any_other_ticker_once_and_never_queue_it(lists_on):
+    mb._ON_DEMAND.clear()
+    calls = []
+    monthly = tape(BASES["MIDDLE_up"])
+    daily = day_tape(BASES["SYM_up"])
+
+    def fetch(symbols, tf, now):
+        calls.append((tuple(symbols), tf))
+        return {"ZZZ": monthly if tf == "Monthly" else daily}
+
+    out = mb.chart_patterns("ZZZ", fetch=fetch)
+    assert out["ok"] and out["source"] == "fetched"
+    assert out["patterns"]["Monthly"]["up"]["pattern"] == "MIDDLE"
+    assert out["patterns"]["Daily"]["up"]["pattern"] == "SYM" and out["patterns"]["Daily"]["up"]["lines"]
+    assert sorted(tf for _, tf in calls) == ["Daily", "Monthly", "Weekly"]
+    again = mb.chart_patterns("zzz", fetch=lambda *a: pytest.fail("kept for 10 minutes"))
+    assert again == out
+    assert "ZZZ" not in ema_touch._WANTED, "a chart must not grow the scanner's refresh list"
+    mb._ON_DEMAND.clear()
+
+
+def test_chart_patterns_refuse_junk_and_survive_a_failed_fetch(lists_on):
+    mb._ON_DEMAND.clear()
+    assert mb.chart_patterns("")["ok"] is False
+    assert mb.chart_patterns("AAPL;DROP")["ok"] is False
+    def boom(*a):
+        raise ConnectionError("down")
+    out = mb.chart_patterns("QQQQ", fetch=boom)
+    assert out["ok"] is False and "QQQQ" in out["error"]
+    assert "QQQQ" not in mb._ON_DEMAND

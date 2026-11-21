@@ -187,7 +187,27 @@ def breaks_at(highs: Sequence[float], lows: Sequence[float], closes: Sequence[fl
     Value = (line level at month i, base height). Uses only months before
     ``i`` to draw the lines, and only swings confirmed before ``i``.
     """
-    found: dict[tuple[str, str], tuple[float, float]] = {}
+    return {key: (level, height) for key, (level, height, _lines) in _breaks(highs, lows, closes, i, swings).items()}
+
+
+def _flat(j: int, i: int, price: float, role: str) -> tuple:
+    return (j, price, i, price, role)
+
+
+def _sloped(j: int, i: int, m: float, b: float, role: str) -> tuple:
+    return (j, m * j + b, i, m * i + b, role)
+
+
+def _breaks(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], i: int,
+            swings: tuple[list[int], list[int]] | None = None) -> dict[tuple[str, str], tuple[float, float, list]]:
+    """:func:`breaks_at` plus the pattern's lines, for drawing on the chart.
+
+    Each line is ``(from_bar, from_price, to_bar, to_price, role)``: the flat
+    line from its first touch, the sloped line from its first swing point,
+    both running to bar ``i`` (2026-11-20, "chart patterns in D/W/M when we
+    open the chart ... so I know which pattern").
+    """
+    found: dict[tuple[str, str], tuple[float, float, list]] = {}
     if i < MIN_BASE + 2 or i >= len(closes):
         return found
     swing_highs, swing_lows = swings or _swings(highs, lows)
@@ -215,39 +235,44 @@ def breaks_at(highs: Sequence[float], lows: Sequence[float], closes: Sequence[fl
             if len(rising) >= 2:
                 m, b = _fit([(j, lows[j]) for j in rising])
                 if m > 0 and _stepping([lows[j] for j in rising], True):
+                    lines = [_flat(top_touches[0], i, top, "resistance"), _sloped(rising[0], i, m, b, "rising lows")]
                     if c > top and pc <= top:
-                        found[("BOTTOM", "up")] = (top, height)
+                        found[("BOTTOM", "up")] = (top, height, lines)
                     if c < m * i + b and pc >= m * (i - 1) + b and c < top:
-                        found[("BOTTOM", "down")] = (m * i + b, height)
+                        found[("BOTTOM", "down")] = (m * i + b, height, lines)
         if len(bottom_touches) >= 2:
             falling = [j for j in hs if j > bottom_touches[0]]
             if len(falling) >= 2:
                 m, b = _fit([(j, highs[j]) for j in falling])
                 if m < 0 and _stepping([highs[j] for j in falling], False):
+                    lines = [_flat(bottom_touches[0], i, bottom, "support"), _sloped(falling[0], i, m, b, "falling highs")]
                     if c < bottom and pc >= bottom:
-                        found[("TOP", "down")] = (bottom, height)
+                        found[("TOP", "down")] = (bottom, height, lines)
                     if c > m * i + b and pc <= m * (i - 1) + b and c > bottom:
-                        found[("TOP", "up")] = (m * i + b, height)
+                        found[("TOP", "up")] = (m * i + b, height, lines)
         if len(top_touches) >= 2 and len(bottom_touches) >= 2 and top / bottom < MAX_RANGE_RATIO:
+            first = min(top_touches[0], bottom_touches[0])
+            lines = [_flat(first, i, top, "resistance"), _flat(first, i, bottom, "support")]
             if c > top and pc <= top:
-                found[("MIDDLE", "up")] = (top, height)
+                found[("MIDDLE", "up")] = (top, height, lines)
             if c < bottom and pc >= bottom:
-                found[("MIDDLE", "down")] = (bottom, height)
+                found[("MIDDLE", "down")] = (bottom, height, lines)
         mh, bh = _fit([(j, highs[j]) for j in hs])
         ml, bl = _fit([(j, lows[j]) for j in ls])
         if (mh < 0 and ml > 0 and _stepping([highs[j] for j in hs], False)
                 and _stepping([lows[j] for j in ls], True)):
             upper, lower = mh * i + bh, ml * i + bl
             if upper > lower:
+                lines = [_sloped(hs[0], i, mh, bh, "falling highs"), _sloped(ls[0], i, ml, bl, "rising lows")]
                 if c > upper and pc <= mh * (i - 1) + bh:
-                    found[("SYM", "up")] = (upper, height)
+                    found[("SYM", "up")] = (upper, height, lines)
                 if c < lower and pc >= ml * (i - 1) + bl:
-                    found[("SYM", "down")] = (lower, height)
+                    found[("SYM", "down")] = (lower, height, lines)
     return found
 
 
-def _signal(highs, lows, closes, e21, e50, i, direction, swings, status, period) -> dict | None:
-    hits = breaks_at(highs, lows, closes, i, swings)
+def _signal(highs, lows, closes, e21, e50, i, direction, swings, status, period, periods=None) -> dict | None:
+    hits = _breaks(highs, lows, closes, i, swings)
     c = closes[i]
     trend = (c > e21[i] > e50[i]) if direction == "up" else (c < e21[i] < e50[i])
     if not trend:
@@ -255,7 +280,7 @@ def _signal(highs, lows, closes, e21, e50, i, direction, swings, status, period)
     for pattern in PATTERN_ORDER:
         hit = hits.get((pattern, direction))
         if hit:
-            level, height = hit
+            level, height, lines = hit
             target = level + height if direction == "up" else level - height
             # A base taller than the price projects a target at/below $0 - no target.
             return {
@@ -269,6 +294,12 @@ def _signal(highs, lows, closes, e21, e50, i, direction, swings, status, period)
                 "close": round(c, 4),
                 "ema21": round(e21[i], 4),
                 "ema50": round(e50[i], 4),
+                # The pattern's lines for the chart (periods match the bars').
+                "lines": [
+                    {"from": str(periods[j0]), "fromPrice": round(p0, 4), "to": str(periods[j1]),
+                     "toPrice": round(p1, 4), "bars": j1 - j0, "role": role}
+                    for j0, p0, j1, p1, role in lines
+                ] if periods is not None else [],
             }
     return None
 
@@ -317,7 +348,8 @@ def breakout_state(bars: Sequence[Mapping[str, Any]], period: str, previous: str
             # An older last bar (halted / delisted) is not a current signal.
             candidates.append((n - 1, "confirmed"))
         for i, status in candidates:
-            hit = _signal(highs, lows, closes, e21, e50, i, direction, swings, status, str(rows[i]["period"]))
+            hit = _signal(highs, lows, closes, e21, e50, i, direction, swings, status, str(rows[i]["period"]),
+                          [r["period"] for r in rows])
             if hit:
                 out[direction] = hit
                 break
@@ -352,7 +384,77 @@ def members(symbols: Iterable[str], name: str) -> list[str]:
     return list(details(symbols, name))
 
 
+# ---------------------------------------------------------------------------
+# any ticker, for the chart (2026-11-20)
+# ---------------------------------------------------------------------------
+
+#: on-demand results for tickers outside the refresher's cache, per symbol.
+_ON_DEMAND: dict[str, tuple[float, dict]] = {}
+ON_DEMAND_SECONDS = 600.0
+
+
+def _verdicts_from_bars(bars_by_tf: Mapping[str, Sequence[Mapping[str, Any]]], periods: Mapping[str, str]) -> dict:
+    out: dict[str, Any] = {}
+    for tf in TIMEFRAMES:
+        rows = list(bars_by_tf.get(tf) or [])
+        latest = str(periods.get(tf) or (rows[-1]["period"] if rows else ""))
+        if not rows or not latest:
+            out[tf] = None
+            continue
+        previous = None
+        if tf != "Monthly":
+            previous = max((str(r["period"]) for r in rows if str(r["period"]) < latest), default="")
+        try:
+            out[tf] = breakout_state(rows, latest, previous)
+        except Exception:  # noqa: BLE001 - one bad tape answers "no pattern", never an error
+            out[tf] = None
+    return out
+
+
+def chart_patterns(symbol: Any, now: Any = None, fetch: Any = None) -> dict:
+    """``{"symbol", "patterns": {"Monthly"|"Weekly"|"Daily": {"up", "down"} | None}}``.
+
+    What the chart draws when a ticker is opened on a D / W / M chart. The
+    Watchlist's tickers answer from the refresher's cache (the same verdicts
+    the scanner lists use); any other ticker is fetched once and kept for
+    ``ON_DEMAND_SECONDS``. Never raises: a fetch failure answers ``ok: False``.
+    """
+    import time as _time
+    from datetime import datetime, timezone
+
+    from momx import ema_touch
+
+    sym = str(symbol or "").strip().upper()
+    if not sym or not sym.replace(".", "").replace("/", "").replace("-", "").isalnum() or len(sym) > 12:
+        return {"ok": False, "symbol": sym, "error": "Unknown ticker."}
+    if not enabled():
+        return {"ok": False, "symbol": sym, "error": "Chart patterns are switched off."}
+    # Peek only: ema_touch.cached_states would queue an unknown ticker into
+    # the refresher, so every chart opened would grow its 10-minute fetch.
+    row = ema_touch.peek_symbol(sym)
+    if row is not None and all(cache_key(tf) in row for tf in TIMEFRAMES):
+        return {"ok": True, "symbol": sym, "source": "scanner",
+                "patterns": {tf: row.get(cache_key(tf)) for tf in TIMEFRAMES}}
+    hit = _ON_DEMAND.get(sym)
+    if hit and _time.monotonic() - hit[0] < ON_DEMAND_SECONDS:
+        return hit[1]
+    now = now or datetime.now(timezone.utc)
+    fetch = fetch or ema_touch._fetch
+    periods = dict((ema_touch._CACHE.get("periods") or {}))
+    try:
+        bars_by_tf = {tf: (fetch([sym], tf, now) or {}).get(sym) or [] for tf in TIMEFRAMES}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "symbol": sym, "error": f"Could not read {sym}'s candles ({type(exc).__name__})."}
+    result = {"ok": True, "symbol": sym, "source": "fetched", "patterns": _verdicts_from_bars(bars_by_tf, periods)}
+    _ON_DEMAND[sym] = (_time.monotonic(), result)
+    if len(_ON_DEMAND) > 500:
+        for key in sorted(_ON_DEMAND, key=lambda k: _ON_DEMAND[k][0])[:100]:
+            _ON_DEMAND.pop(key, None)
+    return result
+
+
 __all__ = [
+    "chart_patterns",
     "BEAR_LIST",
     "BULL_LIST",
     "CACHE_KEY",

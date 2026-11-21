@@ -597,3 +597,34 @@ test("a level segment's explicit gutter lets it run to the price axis (AutoFib e
   assert.equal(byY.get(90).x2, 400 - 92);         // no label: default reserve
   assert.equal(byY.get(110).x2, 400 - 92);        // null is not "0" (Number(null) === 0)
 });
+
+test("a chart-pattern trend segment slopes between its two points, and a target with no end runs to its tag", () => {
+  const primitive = new TosNativeChartPrimitive();
+  primitive.setData({
+    bars: [{ time: 100, high: 11, low: 9 }, { time: 200, high: 12, low: 10 }, { time: 300, high: 13, low: 11 }],
+    trendSegments: [
+      { startTime: 100, startPrice: 12, endTime: 300, endPrice: 10, color: "#00e5ff", lineWidth: 2 },
+      { startTime: 300, startPrice: 15, endTime: null, endPrice: 15, color: "#00e5ff", dash: [6, 4] },
+      { startTime: 300, startPrice: 9, endTime: 100, endPrice: 9 }, // backwards: dropped
+      { startTime: "x", startPrice: 9, endTime: 300, endPrice: 9 }, // junk: dropped
+    ],
+  });
+  const chart = {
+    paneSize: () => ({ width: 400, height: 200 }),
+    timeScale: () => ({
+      timeToCoordinate: (time) => Number(time),
+      options: () => ({ barSpacing: 6 }),
+      getVisibleRange: () => null,
+    }),
+  };
+  const series = { priceToCoordinate: (price) => 200 - Number(price) * 10 };
+  const lines = nativeGeometry(primitive.model, chart, series).lines;
+  const sloped = lines.find((line) => line.y1 !== line.y2);
+  assert.deepEqual([sloped.x1, sloped.y1, sloped.x2, sloped.y2], [100, 80, 300, 100]);
+  assert.equal(sloped.lineWidth, 2);
+  const target = lines.find((line) => line.y1 === 50);
+  assert.equal(target.x1, 300);
+  assert.equal(target.x2, 400 - 92);
+  assert.deepEqual(target.dash, [6, 4]);
+  assert.equal(lines.length, 2);
+});

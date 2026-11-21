@@ -169,3 +169,20 @@ test("a Fib tag never joins another Fib tag; it still joins a wall", () => {
   assert.equal(walls.length, 1);
   assert.ok(JSON.stringify(walls[0]).includes("M Fib 50%"), "the Fib name joins the wall chip");
 });
+
+// 2026-11-20: the chart-pattern tag ("M ▲ Triangle 134.79") names the line
+// that broke, so on a busy D/W/M chart it must beat the Fib tags beside it.
+test("a chart-pattern tag wins its row over a Fib tag, and loses to an OI wall", () => {
+  const laid = layoutChartAxisLabels([
+    { key: "fib-swing-134.5", title: "M Fib 50% (134.50)", top: 100, mergeWhenBlocked: true },
+    { key: "chart-pattern-up-level", title: "M ▲ Triangle 134.79", top: 104, mergeWhenBlocked: true },
+  ], { paneHeight: 400 });
+  const chip = laid.find((label) => String(label.key).startsWith("chart-pattern-"));
+  assert.ok(chip, JSON.stringify(laid));
+  assert.equal(chip.top, 104, "the pattern tag keeps its own row");
+  const walls = layoutChartAxisLabels([
+    { key: "oi-wall-call-135", title: "4K 11/20", top: 100, preservePricePosition: true },
+    { key: "chart-pattern-up-level", title: "M ▲ Triangle 134.79", top: 104 },
+  ], { paneHeight: 400 });
+  assert.ok(walls.some((label) => label.key === "oi-wall-call-135"));
+});

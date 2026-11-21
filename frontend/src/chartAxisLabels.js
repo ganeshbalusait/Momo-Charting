@@ -22,6 +22,10 @@ function axisLabelPriority(label) {
   // Big swing Fib (2026-11-20): above the pivots, or a busy chart showed no
   // Fib tag at all; below the walls and session levels.
   if (keys.some((key) => key.startsWith("fib-swing-"))) return 650;
+  // Chart pattern (chartPattern.js, 2026-11-20): the line that broke and its
+  // target - one or two tags, just above the Fib tags so a busy D/W/M chart
+  // still names the pattern.
+  if (keys.some((key) => key.startsWith("chart-pattern-"))) return 660;
   if (keys.some((key) => key.startsWith("pivot-"))) return 600;
   if (keys.some((key) => key.startsWith("persons-pivot-"))) return 550;
   return 400 + Math.max(0, Number(label?.priority) || 0);
