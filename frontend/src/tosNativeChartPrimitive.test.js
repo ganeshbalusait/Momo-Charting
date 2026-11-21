@@ -628,3 +628,23 @@ test("a chart-pattern trend segment slopes between its two points, and a target 
   assert.deepEqual(target.dash, [6, 4]);
   assert.equal(lines.length, 2);
 });
+
+test("a chart-pattern caption is written just above the start of its line", () => {
+  const primitive = new TosNativeChartPrimitive();
+  primitive.setData({
+    bars: [{ time: 100, high: 11, low: 9 }, { time: 300, high: 13, low: 11 }],
+    trendSegments: [
+      { startTime: 100, startPrice: 12, endTime: 300, endPrice: 12, color: "#00e5ff", caption: "M ▲ Range > 12.00" },
+      { startTime: 100, startPrice: 9, endTime: 300, endPrice: 9, color: "#00e5ff" },
+    ],
+  });
+  const chart = {
+    paneSize: () => ({ width: 400, height: 200 }),
+    timeScale: () => ({ timeToCoordinate: (time) => Number(time), options: () => ({ barSpacing: 6 }), getVisibleRange: () => null }),
+  };
+  const series = { priceToCoordinate: (price) => 200 - Number(price) * 10 };
+  const captions = nativeGeometry(primitive.model, chart, series).backgroundLabels.filter((label) => /Range/.test(label.text));
+  assert.equal(captions.length, 1);
+  assert.deepEqual([captions[0].x, captions[0].y, captions[0].color], [104, 72, "#00e5ff"]);
+  assert.match(captions[0].font, /11px/);
+});

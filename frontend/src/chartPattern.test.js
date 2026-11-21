@@ -104,6 +104,14 @@ test("the overlay draws both lines and the dashed target, and tags the line that
   assert.ok(overlay.labels.every((label) => label.key.startsWith("chart-pattern-")));
 });
 
+test("only the line that broke carries the pattern's name for the chart", () => {
+  const overlay = buildChartPatternOverlay(payload(), MONTH, monthBars(), { symbol: "DLTR" });
+  const named = overlay.segments.filter((segment) => segment.caption);
+  assert.equal(named.length, 1);
+  assert.equal(named[0].role, "falling highs", "the triangle's upper side is the one that broke");
+  assert.equal(named[0].caption, "M ▲ Symmetrical triangle > 134.79 (Nov 26 open)");
+});
+
 test("a confirmed break does not say open; a breakdown is pink", () => {
   const data = payload();
   data.patterns.Monthly.down = { ...data.patterns.Monthly.up, direction: "down", pattern: "TOP", status: "confirmed", target: null };

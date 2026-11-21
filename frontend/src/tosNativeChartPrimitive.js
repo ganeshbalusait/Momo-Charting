@@ -886,6 +886,20 @@ export function nativeGeometry(model, chart, series) {
       lineWidth: segment.lineWidth || 2,
       dash: Array.isArray(segment.dash) ? segment.dash : [],
     });
+    // The pattern's name above the start of the line that broke ("M ▲ Range
+    // > 1096.50 · Nov 26 open"): its axis tag usually sits beside the LIVE
+    // tag, which nothing may join, so the chart itself names the pattern.
+    if (segment.caption) {
+      backgroundLabels.push({
+        x: Math.max(4, Math.min(x1 + 4, width - 200)),
+        y: (segment.endPrice >= segment.startPrice ? Math.min(y1, y2) : y1) - 8,
+        text: String(segment.caption),
+        color: segment.color,
+        font: "800 11px system-ui, sans-serif",
+        // A dark plate so other studies' lines do not strike through it.
+        background: "rgba(6, 10, 18, 0.82)",
+      });
+    }
   });
 
   const barsByTime = new Map(model.bars.map((bar) => [Number(bar.time), bar]));
@@ -1040,8 +1054,15 @@ class TosBackgroundRenderer {
       context.setLineDash([]);
       geometry.backgroundLabels.forEach((label) => {
         context.fillStyle = label.color;
-        context.font = "800 8px system-ui, sans-serif";
+        context.font = label.font || "800 8px system-ui, sans-serif";
         context.textBaseline = "middle";
+        if (label.background) {
+          const textWidth = context.measureText(label.text).width;
+          context.fillStyle = label.background;
+          roundedRectangle(context, label.x - 4, label.y - 9, textWidth + 8, 18, 4);
+          context.fill();
+          context.fillStyle = label.color;
+        }
         context.fillText(label.text, label.x, label.y);
       });
       context.restore();

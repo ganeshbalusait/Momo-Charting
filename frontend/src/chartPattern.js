@@ -121,12 +121,20 @@ export function buildChartPatternOverlay(payload, chartMinutes, chartBars, { sym
       .map((line) => patternSegment(line, chartBars, chartMinutes))
       .filter(Boolean);
     if (!drawn.length) continue;
-    drawn.forEach((segment) => segments.push({ ...segment, color, lineWidth: 2, dash: [], direction }));
     const short = SHORT[signal.pattern] || String(signal.label || signal.pattern || "");
     // "live" = the candle has not closed, so the break can still fail.
     const open = signal.status === "live" ? ` (${when(signal.period, timeframe)} open)` : "";
     const level = money(signal.level);
     const target = money(signal.target);
+    // The line that broke carries the pattern's full name on the chart: its
+    // axis tag usually sits beside the LIVE tag and is hidden by it.
+    const broke = drawn.reduce((best, segment) => (
+      Math.abs(segment.endPrice - Number(signal.level)) < Math.abs(best.endPrice - Number(signal.level)) ? segment : best
+    ), drawn[0]);
+    const caption = `${LETTERS[timeframe]} ${up ? "▲" : "▼"} ${signal.label || short} ${up ? ">" : "<"} ${level}${open}`;
+    drawn.forEach((segment) => segments.push({
+      ...segment, color, lineWidth: 2, dash: [], direction, ...(segment === broke ? { caption } : {}),
+    }));
     // The measured target, dashed, from the breakout candle to the axis.
     if (target) {
       segments.push({
