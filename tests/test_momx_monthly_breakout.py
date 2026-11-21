@@ -144,8 +144,10 @@ def test_a_breakdown_target_at_or_below_zero_is_left_out(monkeypatch):
     assert out["level"] == 10.0 and out["target"] is None
 
 
-def test_names(monkeypatch):
+def test_names(monkeypatch, tmp_path):
     monkeypatch.setenv("AGX_MOMX_EMA_LISTS", "1")
+    # Never his live setting file (he had switched the bull list to Daily).
+    monkeypatch.setenv("AGX_MOMX_EMA_TF_PATH", str(tmp_path / "momx_ema_touch_tf.json"))
     assert mb.list_names() == ["Monthly Breakout", "Monthly Breakdown"]
     assert mb.parse_name("monthly breakdown") == ("down", "Monthly")
     assert mb.parse_name("Weekly Breakout") == ("up", "Weekly")
