@@ -117,15 +117,44 @@ e2eTest("a 5-minute chart: Monthly Big swing only, Daily/Weekly from AutoFib; ow
       .some((node) => node.children.length === 0 && /[MWD] Fib \d/.test(node.textContent)), null, { timeout: 15_000 });
     await box("This chart's own candles").click();
     await page.waitForFunction(() => [...document.querySelectorAll("section.oi-finder-chart-card *")]
-      // A tag can also be merged into a neighbour's chip ("4K 8/14 · Fib 50% (..)").
-      .filter((node) => node.children.length === 0 && /(?:^|· )Fib \d+(\.\d)?% \(\d/.test(node.textContent.trim())).length >= 1, null, { timeout: 90_000 });
+      // A tag can also be merged into a neighbour's chip ("4K 8/14 · 5-day Fib 50% (..)").
+      // Tagged "5-day Fib", never a bare "Fib" (his 2026-11-20 phone screenshot:
+      // "I see 2 fib but I don't which fib is that").
+      .filter((node) => node.children.length === 0 && /(?:^|· )5-day Fib \d+(\.\d)?% \(\d/.test(node.textContent.trim())).length >= 1, null, { timeout: 90_000 });
+    assert.ok((await allTags()).every((tag) => !/(?:^|· )Fib \d/.test(tag)), "no unlabelled Fib tag: " + (await allTags()).join(" | "));
     assert.equal(await settings.locator("label", { hasText: "Trading days" }).locator("input").inputValue(), "5");
     await settings.locator("label", { hasText: "Show on minute and hour charts" }).locator("input").click();
     await page.waitForFunction(() => ![...document.querySelectorAll("section.oi-finder-chart-card *")]
-      .some((node) => node.children.length === 0 && /^(?:[DWM](?:\/[DWM])* )?Fib \d/.test(node.textContent.trim())), null, { timeout: 15_000 });
+      .some((node) => node.children.length === 0 && /^(?:[DWM](?:\/[DWM])* |5-day )?Fib \d/.test(node.textContent.trim())), null, { timeout: 15_000 });
     assert.deepEqual(app.pageErrors, []);
   });
 }, { timeout: 240_000 });
+
+// 2026-11-20 his NVDA 5m phone screenshot, then "Fix it": his saved settings
+// still had the chart's own 5-day swing ticked, so an unlabelled "Fib 50%
+// (134.39)" sat beside "M Fib 50% (127.09)". Saved settings like his are
+// unticked once on the next load, at desktop and phone width.
+for (const [label, extra] of [["desktop", {}], ["phone", { viewport: PHONE }]]) {
+  e2eTest(`${label}: old saved settings with the 5-day swing ticked open the 5m chart without it`, async () => {
+    const saved = JSON.stringify({ fibSwingShowOwn: true, fibSwingIntraday: true, fibSwingShowM: true });
+    await withCharts({ ...extra, storage: { oiFinderChartIndicatorOptions: saved }, workspace: { symbols: ["NVDA"], timeframes: ["5m"] } }, async (app) => {
+      const { page } = app;
+      await waitForTape(page, { symbol: "NVDA", timeframe: "5m" });
+      const tags = () => page.evaluate(() => [...document.querySelectorAll("section.oi-finder-chart-card *")]
+        .filter((node) => node.children.length === 0 && /Fib \d/.test(node.textContent)).map((node) => node.textContent.trim()));
+      await page.waitForFunction(() => [...document.querySelectorAll("section.oi-finder-chart-card *")]
+        .some((node) => node.children.length === 0 && /M Fib \d+(\.\d)?% \(\d/.test(node.textContent)), null, { timeout: 150_000 });
+      const shown = await tags();
+      assert.ok(shown.every((tag) => !/(?:^|· )(?:5-day )?Fib \d/.test(tag)), "no 5-day / unlabelled Fib: " + shown.join(" | "));
+      const popover = await openIndicators(page);
+      await popover.getByRole("button", { name: `${BIG_SWING} settings`, exact: true }).click();
+      const own = studyRow(popover, BIG_SWING).locator(".oi-finder-indicator-settings")
+        .locator("label", { hasText: "This chart's own candles" }).locator("input[type='checkbox']");
+      assert.equal(await own.isChecked(), false, "unticked by the one-time fix");
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }, { timeout: 240_000 });
+}
 
 e2eTest("phone: NVDA weekly chart shows Fib tags inside the chart, nothing cut off sideways", async () => {
   await withCharts({ viewport: PHONE, workspace: { symbols: ["NVDA"], timeframes: ["W"] } }, async (app) => {

@@ -216,6 +216,26 @@ export function fibSwingSourcesOn(options = {}, chartMinutes = 1440) {
   return list;
 }
 
+// The chart's own swing, named so it cannot be mistaken for the M / W / D
+// swings: "5-day Fib" on minute and hour charts (its last N trading days),
+// plain "Fib" on D / W / M charts.
+export function fibSwingOwnName(chartMinutes, options = {}) {
+  if (Number(chartMinutes) >= 1440) return "Fib";
+  const days = Math.max(1, Math.min(60, Math.round(Number(options.fibSwingIntradayDays ?? 5)) || 5));
+  return `${days}-day Fib`;
+}
+
+// 2026-11-20 his NVDA 5m phone screenshot ("I see 2 fib but I don't which fib
+// is that"), then "Fix it": the chart's own 5-day swing was still ticked in his
+// saved settings although his 5m setup is Monthly Big swing + Daily / Weekly
+// AutoFib. Untick it once; after that his own checkbox wins.
+export const FIB_SWING_OWN_OFF_VERSION = "fib-swing-own-off-v1";
+
+export function migrateFibSwingOwnOff(saved = {}) {
+  if (!saved || typeof saved !== "object" || saved.fibSwingOwnOffVersion === FIB_SWING_OWN_OFF_VERSION) return {};
+  return { fibSwingOwnOffVersion: FIB_SWING_OWN_OFF_VERSION, fibSwingShowOwn: false };
+}
+
 // One study per ticked swing, drawn together on the chart.
 export function buildFibSwingStudies(chartBars, chartMinutes, options = {}, context = {}) {
   return fibSwingSourcesOn(options, chartMinutes)
@@ -235,21 +255,26 @@ export function fibSwingAxisLabels(studies) {
       if (!Number.isFinite(price)) return;
       const key = price.toFixed(Math.abs(price) < 1 ? 4 : 2);
       if (!byPrice.has(key)) byPrice.set(key, { price, color: level.color, parts: [] });
-      byPrice.get(key).parts.push({ source: study.source, ratio: level.ratio });
+      byPrice.get(key).parts.push({ source: study.source, name: study.name, ratio: level.ratio });
     });
   });
   return [...byPrice.entries()].map(([priceText, entry]) => {
     const byRatio = new Map();
-    entry.parts.forEach(({ source, ratio }) => {
-      if (!byRatio.has(ratio)) byRatio.set(ratio, []);
-      const sources = byRatio.get(ratio);
-      if (!sources.includes(source)) sources.push(source);
+    entry.parts.forEach(({ source, name, ratio }) => {
+      if (!byRatio.has(ratio)) byRatio.set(ratio, { sources: [], own: [] });
+      const group = byRatio.get(ratio);
+      if (source === "own") {
+        const ownName = name || "Fib";
+        if (!group.own.includes(ownName)) group.own.push(ownName);
+      } else if (!group.sources.includes(source)) group.sources.push(source);
     });
-    const text = [...byRatio.entries()].map(([ratio, sources]) => {
-      const named = sources.filter((source) => source !== "own");
-      const prefix = named.length ? named.join("/") + " Fib" : "Fib";
-      return `${prefix} ${formatFibRatio(ratio)}`;
-    }).join(" · ");
+    // The chart's own swing keeps its own name ("5-day Fib 50%"): an
+    // unlabelled "Fib 50%" beside "M Fib 50%" left him asking which one it was
+    // (his NVDA 5m phone screenshot, 2026-11-20).
+    const text = [...byRatio.entries()].flatMap(([ratio, group]) => [
+      ...(group.sources.length ? [`${group.sources.join("/")} Fib ${formatFibRatio(ratio)}`] : []),
+      ...group.own.map((ownName) => `${ownName} ${formatFibRatio(ratio)}`),
+    ]).join(" · ");
     return { key: "fib-swing-" + priceText, price: entry.price, color: entry.color, title: `${text} (${priceText})` };
   });
 }
@@ -292,7 +317,8 @@ export function buildFibSwingStudy(chartBars, chartMinutes, options = {}, { hist
     : options.fibSwingDownColor || FIB_SWING_DEFAULTS.fibSwingDownColor;
   const lineColor = options.fibSwingLineColor || FIB_SWING_DEFAULTS.fibSwingLineColor;
   const ratios = options.fibSwingShowAllLevels === false ? FIB_SWING_KEY_RATIOS : FIB_SWING_RATIOS;
-  const prefix = sourceMinutes ? source + " Fib" : "Fib";
+  const name = sourceMinutes ? source + " Fib" : fibSwingOwnName(chartMinutes, options);
+  const prefix = name;
   const levels = ratios.map((ratio) => {
     const inZone = FIB_SWING_ZONE.includes(ratio);
     const price = round4(fibSwingPrice(swing, ratio));
@@ -310,6 +336,7 @@ export function buildFibSwingStudy(chartBars, chartMinutes, options = {}, { hist
   const zoneBars = chart.filter((bar) => Number(bar?.time) >= swing.startTime);
   return {
     source: sourceMinutes ? source : "own",
+    name,
     swing,
     lookback,
     levels,

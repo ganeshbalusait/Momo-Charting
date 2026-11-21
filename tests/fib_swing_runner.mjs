@@ -8,7 +8,10 @@ import {
   FIB_SWING_DEFAULTS,
   autoFibCalendarBars,
   autoFibCalendarKey,
+  buildFibSwingStudies,
   buildFibSwingStudy,
+  fibSwingAxisLabels,
+  migrateFibSwingOwnOff,
 } from "../frontend/src/chartFibSwing.js";
 
 const payload = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -40,5 +43,21 @@ for (const [name, minutes] of [["D", 1440], ["W", 10080], ["M", 43200]]) {
     out[name].autoFib20High = Math.max(...window.map((bar) => bar.high));
     out[name].autoFib20Low = Math.min(...window.map((bar) => bar.low));
   }
+}
+// The 5-minute chart with old saved settings that still tick the chart's own
+// swing (his phone, 2026-11-20): after the one-time fix only the Monthly is
+// drawn; ticked again, the own swing is tagged "5-day Fib".
+{
+  const five = buildChartDisplayBars({ liveBars: payload.bars, dailyBars: payload.dailyBars, aggregationMinutes: 5 });
+  const saved = { ...FIB_SWING_DEFAULTS, fibSwingShowOwn: true };
+  const migrated = { ...saved, ...migrateFibSwingOwnOff(saved) };
+  const tags = (options) => fibSwingAxisLabels(buildFibSwingStudies(five, 5, options, { dailyBars: payload.dailyBars }))
+    .map((label) => label.title);
+  out.fiveMinute = {
+    candles: five.length,
+    sourcesAfterFix: buildFibSwingStudies(five, 5, migrated, { dailyBars: payload.dailyBars }).map((study) => study.source),
+    tagsAfterFix: tags(migrated),
+    tagsOwnTicked: tags({ ...migrated, fibSwingShowOwn: true }),
+  };
 }
 process.stdout.write(JSON.stringify(out));

@@ -111,7 +111,7 @@ import { setItemMakingRoom } from "./storageRoom.js";
 import { pruneOversizedBoardCaches } from "./momxCells.js";
 import { WOODIES_DEFAULTS, WOODIES_LEVELS, WOODIES_TIMEFRAMES, buildWoodiesPivots } from "./woodiesPivots.js";
 import { CHART_PATTERN_ENDPOINT, buildChartPatternOverlay, chartPatternSignature, chartPatternTimeframe } from "./chartPattern.js";
-import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, autoFibCalendarBars, autoFibCalendarKey, autoFibAxisLabels, autoFibTimeframeAllowed, buildFibSwingStudies, fibSwingAxisLabels } from "./chartFibSwing.js";
+import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, migrateFibSwingOwnOff, autoFibCalendarBars, autoFibCalendarKey, autoFibAxisLabels, autoFibTimeframeAllowed, buildFibSwingStudies, fibSwingAxisLabels } from "./chartFibSwing.js";
 import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartDeepHistoryPending, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
 import { CHART_TOUCH_ALERT_HOLD_MS, touchAlertGestureShouldCancel } from "./chartTouchAlert";
 import { CLOUD_BAND_STUDIES, calculateTosCloudBandPoints } from "./cloudBandStudy";
@@ -15616,6 +15616,7 @@ function OiFinderCandleChart({
         ...migratedPersonsPivotOptions,
         ...migratedIchimokuOptions,
         ...migratedAutoFibOptions,
+        ...migrateFibSwingOwnOff(saved),
         ...migratedSignalLabelOptions,
         ...migrateTosOiLevelOptions(saved),
         ...migrateTosPivotPointOptions(saved),
@@ -15763,6 +15764,7 @@ function OiFinderCandleChart({
           ...profile.indicatorOptions,
           ...migrateIchimokuChartOptions(profile.indicatorOptions),
           ...migrateAutoFibChartOptions(profile.indicatorOptions),
+          ...migrateFibSwingOwnOff(profile.indicatorOptions),
           ...migrateTosMtfSignalLabelOptions(profile.indicatorOptions),
           ...migrateTosOiLevelOptions(profile.indicatorOptions),
           ...migrateTosPivotPointOptions(profile.indicatorOptions),
@@ -24440,7 +24442,7 @@ function OiFinderCandleChart({
                       {[["fibSwingShowM", "Monthly (M Fib)"], ["fibSwingShowW", "Weekly (W Fib, D/W/M charts)"], ["fibSwingShowD", "Daily (D Fib, D/W/M charts)"]].map(([optionKey, optionLabel]) => (
                         <label key={optionKey}><input type="checkbox" checked={indicatorOptions[optionKey] !== false} onChange={() => setIndicatorOption(optionKey, indicatorOptions[optionKey] === false)} /><span>{optionLabel}</span></label>
                       ))}
-                      <label><input type="checkbox" checked={indicatorOptions.fibSwingShowOwn === true} onChange={() => setIndicatorOption("fibSwingShowOwn", indicatorOptions.fibSwingShowOwn !== true)} /><span>This chart's own candles (Fib)</span></label>
+                      <label><input type="checkbox" checked={indicatorOptions.fibSwingShowOwn === true} onChange={() => setIndicatorOption("fibSwingShowOwn", indicatorOptions.fibSwingShowOwn !== true)} /><span>This chart's own candles (Fib; "5-day Fib" on minute charts)</span></label>
                       <label><input type="checkbox" checked={indicatorOptions.fibSwingIntraday !== false} onChange={() => setIndicatorOption("fibSwingIntraday", indicatorOptions.fibSwingIntraday === false)} /><span>Show on minute and hour charts</span></label>
                       <label><span>Trading days (own candles, minute / hour charts)</span><input type="number" min="1" max="60" value={indicatorOptions.fibSwingIntradayDays} onChange={(event) => setIndicatorOption("fibSwingIntradayDays", Math.max(1, Math.min(60, Number(event.target.value) || 5)))} /></label>
                       <label><span>Daily candles</span><input type="number" min="10" max="1000" value={indicatorOptions.fibSwingDayBars} onChange={(event) => setIndicatorOption("fibSwingDayBars", Math.max(10, Math.min(1000, Number(event.target.value) || 252)))} /></label>

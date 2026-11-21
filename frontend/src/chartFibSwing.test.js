@@ -9,6 +9,9 @@ import {
   autoFibTimeframeAllowed,
   buildFibSwingStudies,
   buildFibSwingStudy,
+  FIB_SWING_OWN_OFF_VERSION,
+  fibSwingOwnName,
+  migrateFibSwingOwnOff,
   fibSwingAxisLabels,
   fibSwingSourcesOn,
   findFibSwing,
@@ -328,4 +331,38 @@ test("levels at the same price share one short tag", () => {
 test("no daily candles yet: the Monthly swing waits instead of guessing", () => {
   const intraday = [bar(etTime(20, "10:00"), 128, 131)];
   assert.equal(buildFibSwingStudy(intraday, 5, FIB_SWING_DEFAULTS, { dailyBars: [] }), null);
+});
+
+// 2026-11-20 his NVDA 5m phone screenshot: "I see 2 fib but I don't which fib
+// is that I see only M fib", then "Fix it". The unlabelled "Fib 50% (134.39)"
+// was the chart's own 5-day swing, still ticked in his saved settings.
+test("the chart's own swing on a minute chart is tagged '5-day Fib', never a bare 'Fib'", () => {
+  const bars = [
+    bar(etTime(16, "10:00"), 124.5, 144.28),
+    bar(etTime(17, "10:00"), 130, 140),
+    bar(etTime(20, "15:55"), 124.5, 131),
+  ];
+  const study = buildFibSwingStudy(bars, 5, { ...FIB_SWING_DEFAULTS, fibSwingSource: "own" });
+  assert.equal(study.name, "5-day Fib");
+  assert.ok(study.levels.every((level) => level.label.startsWith("5-day Fib ")), study.levels.map((l) => l.label).join(" | "));
+  const tags = fibSwingAxisLabels([study]).map((label) => label.title);
+  assert.ok(tags.every((tag) => /^5-day Fib \d/.test(tag)), tags.join(" | "));
+  assert.equal(fibSwingOwnName(5, { fibSwingIntradayDays: 3 }), "3-day Fib");
+  assert.equal(fibSwingOwnName(1440, FIB_SWING_DEFAULTS), "Fib", "D/W/M charts keep plain 'Fib'");
+  // Sharing a price with the Monthly swing: both names stay readable.
+  const shared = fibSwingAxisLabels([
+    { source: "M", name: "M Fib", levels: [{ ratio: 0.5, price: 127.09, color: "#4caf50" }] },
+    { source: "own", name: "5-day Fib", levels: [{ ratio: 0.618, price: 127.09, color: "#089981" }] },
+  ]);
+  assert.equal(shared[0].title, "M Fib 50% · 5-day Fib 61.8% (127.09)");
+});
+
+test("saved settings with the chart's own swing ticked are unticked once; his later choice wins", () => {
+  const saved = { ...FIB_SWING_DEFAULTS, fibSwingShowOwn: true };
+  const migrated = { ...saved, ...migrateFibSwingOwnOff(saved) };
+  assert.equal(migrated.fibSwingShowOwn, false);
+  assert.equal(migrated.fibSwingOwnOffVersion, FIB_SWING_OWN_OFF_VERSION);
+  const reticked = { ...migrated, fibSwingShowOwn: true };
+  assert.deepEqual(migrateFibSwingOwnOff(reticked), {}, "runs only once");
+  assert.deepEqual(fibSwingSourcesOn(migrated, 5), ["M"], "5m: Monthly Big swing only");
 });

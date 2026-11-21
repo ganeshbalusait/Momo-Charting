@@ -149,3 +149,24 @@ def test_route_daily_tape_gives_monthly_weekly_daily_fib_levels():
         assert timeframe["autoFibKeysMatchCandles"] is True
         assert timeframe["autoFibBars"] >= 20
         assert timeframe["autoFib20High"] > timeframe["autoFib20Low"]
+
+
+def test_five_minute_chart_with_old_saved_settings_shows_only_the_monthly_fib():
+    """His phone, 2026-11-20: an unlabelled "Fib 50%" (the chart's own 5-day
+    swing, still ticked in his saved settings) sat beside "M Fib 50%". Through
+    the real first-paint route: the one-time fix leaves only "M Fib" tags; if he
+    ticks the own swing again it is tagged "5-day Fib", never a bare "Fib"."""
+    payload = {**_payload(), "dailyBars": _weekday_tape()}
+    state = ServeState({SYMBOL: payload}, market_newest_epoch=payload["bars"][-1]["time"])
+    with running_api(state) as api:
+        status, body = api.get(f"/api/oi-finder-chart?symbol={SYMBOL}&initial=true")
+    assert status == 200, body
+    five = _run_frontend(body)["fiveMinute"]
+    assert five["candles"] > 0
+    assert five["sourcesAfterFix"] == ["M"], five
+    assert five["tagsAfterFix"] and all(tag.startswith("M Fib ") for tag in five["tagsAfterFix"]), five["tagsAfterFix"]
+    assert "M Fib 50% (127.40)" in five["tagsAfterFix"]
+    own = [tag for tag in five["tagsOwnTicked"] if not tag.startswith("M Fib ")]
+    assert own, five["tagsOwnTicked"]
+    assert all("5-day Fib " in tag for tag in own), own
+    assert not any(tag.startswith("Fib ") or " · Fib " in tag for tag in five["tagsOwnTicked"]), five["tagsOwnTicked"]
