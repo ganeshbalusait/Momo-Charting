@@ -80,3 +80,24 @@ test("with a wide/featured panel, the on-screen first chart of the colour become
   assert.equal(next.activePanel, 2);
   assert.deepEqual(next.panels.map((p) => p.symbol), ["AAL", "B", "AAL", "D"]);
 });
+
+// 2026-11-21 "When I click the ticker from scanner timeframe didn't change":
+// a Breakout list sends its chart (M/W/D); only the focused chart switches.
+test("a timeframe on the link switches only the chart that takes focus", () => {
+  const { state: next, changed } = applyWorkspaceLinkedNavigationIntent(state, { symbol: "COST", linkGroup: 1, timeframe: "M" },
+    { visibleCount: 4, validTimeframes: ["5m", "15m", "1h", "4h", "D", "W", "M"] });
+  assert.deepEqual(next.panels.map((p) => `${p.symbol}:${p.timeframe}`),
+    ["COST:M", "MSFT:15m", "COST:1h", "TSLA:4h", "COST:D"]);
+  assert.equal(next.activePanel, 0);
+  assert.ok(changed.includes(0));
+});
+
+test("the same ticker already showing still switches timeframe; an unknown timeframe is ignored", () => {
+  const same = { activePanel: 0, syncSymbols: false, panels: [{ symbol: "COST", timeframe: "5m", linkGroup: 1 }] };
+  const options = { visibleCount: 1, validTimeframes: ["5m", "D", "W", "M"] };
+  const { state: next, changed } = applyWorkspaceLinkedNavigationIntent(same, { symbol: "COST", linkGroup: 1, timeframe: "W" }, options);
+  assert.equal(next.panels[0].timeframe, "W");
+  assert.deepEqual(changed, [0]);
+  const { state: kept } = applyWorkspaceLinkedNavigationIntent(same, { symbol: "COST", linkGroup: 1, timeframe: "Y" }, options);
+  assert.equal(kept.panels[0].timeframe, "5m");
+});

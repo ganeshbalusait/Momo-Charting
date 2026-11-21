@@ -222,7 +222,7 @@ import {
   spreadMapFrom,
   spreadSortValue,
 } from "./momxSpread.js";
-import { breakoutChips, breakoutEmpty, breakoutNote, pickerFull, timeframeRequest } from "./monthlyBreakout.js";
+import { breakoutChips, breakoutEmpty, breakoutNote, chartTimeframeKey, pickerFull, timeframeRequest } from "./monthlyBreakout.js";
 
 // MomX Scanner board - the trader's MomoX/MomoScan window, replayed.
 //
@@ -4785,8 +4785,10 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
   useEffect(() => { writeStoredLinkGroup(linkKey, linkGroupValue); }, [linkKey, linkGroupValue]);
   const linkGroupRef = useRef(linkGroupValue);
   linkGroupRef.current = linkGroupValue;
+  // On a Breakout / Breakdown list the chart opens on that list's chart (M/W/D).
+  const chartTimeframeRef = useRef(null);
   const openChartLinked = useCallback((symbol) => {
-    sendTickerToCharts(symbol, linkGroupRef.current);
+    sendTickerToCharts(symbol, linkGroupRef.current, "momx-scanner", chartTimeframeRef.current);
   }, []);
   const chartLink = useMemo(
     () => ({ openChart: openChartLinked, group: tosLinkGroup(linkGroupValue, 1) }),
@@ -6132,6 +6134,7 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
     () => lists.find((item) => item.name === activeList) || {},
     [lists, activeList],
   );
+  chartTimeframeRef.current = chartTimeframeKey(activeMeta);
 
   // ---- fastlane: live quotes for the rows on screen -----------------------
   // {symbol: last}. Object identities are reused per symbol when the price is
@@ -7171,15 +7174,17 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
         >
           <div className="momx-breakout-chips" role="list" aria-label={`${activeMeta.name} patterns`}>
             {breakoutChips(activeMeta).map((chip) => (
-              <span
+              <button
+                type="button"
                 key={chip.symbol}
                 role="listitem"
                 className={`momx-breakout-chip${chip.live ? " is-live" : ""}`}
-                title={chip.title}
+                title={`${chip.title}\nClick: open the ${activeMeta.timeframe || "Monthly"} chart.`}
                 data-testid="momx-breakout-chip"
+                onClick={() => chartLink.openChart(chip.symbol)}
               >
                 <b>{chip.symbol}</b> {chip.arrow} {chip.text} <em>{chip.when}</em>
-              </span>
+              </button>
             ))}
             {breakoutChips(activeMeta).length === 0 ? (
               <span className="momx-breakout-empty">{breakoutEmpty(activeMeta)}</span>

@@ -186,3 +186,17 @@ e2eTest("on a phone the Chart dropdown sits on its own row with nothing cut off"
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// 2026-11-21 "When I click the ticker from scanner timeframe didn't change":
+// a chip (or ticker) on a Breakout list opens the chart on the list's chart.
+e2eTest("clicking a Monthly Breakout chip opens that ticker on the Monthly chart", async () => {
+  await withApp({ view: VIEW, storage: storage("Monthly Breakout"), fakeReads: reads("Monthly Breakout") }, async (app) => {
+    await boardReady(app.page);
+    const chip = app.page.locator(`${ROW} [data-testid='momx-breakout-chip']`, { hasText: "Range > 601.77" });
+    await chip.waitFor({ timeout: 10_000 });
+    await chip.click();
+    await app.page.waitForFunction(() => [...document.querySelectorAll("section.oi-finder-chart-card")]
+      .some((node) => node.dataset.chartSymbol === "MA" && node.dataset.chartTimeframe === "M"), null, { timeout: 60_000, polling: 500 });
+    assert.deepEqual(app.pageErrors, []);
+  });
+}, { timeout: 180_000 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { breakoutChips, breakoutNote, monthName, pickerFull } from "./monthlyBreakout.js";
+import { breakoutChips, breakoutNote, chartTimeframeKey, monthName, pickerFull } from "./monthlyBreakout.js";
 
 test("the list limit counts only the trader's own lists, not the computed ones", () => {
   // His screen on 2026-11-20: Mag7, Watchlist, 2 EMA lists, 2 of his own -
@@ -109,4 +109,13 @@ test("timeframeRequest sends the direction for breakout lists and the length for
   assert.deepEqual(timeframeRequest({ emaLength: 21 }, "Weekly"), { length: 21, timeframe: "Weekly" });
   assert.equal(timeframeRequest({ name: "Watchlist" }, "Weekly"), null);
   assert.equal(timeframeRequest({ breakout: "up" }, ""), null);
+});
+
+test("a Breakout list opens its chart on the list's timeframe; other lists keep the chart's own", () => {
+  assert.equal(chartTimeframeKey({ breakout: "up", timeframe: "Monthly" }), "M");
+  assert.equal(chartTimeframeKey({ breakout: "down", timeframe: "Weekly" }), "W");
+  assert.equal(chartTimeframeKey({ breakout: "up", timeframe: "Daily" }), "D");
+  assert.equal(chartTimeframeKey({ breakout: "up" }), "M");
+  assert.equal(chartTimeframeKey({ emaLength: 21, timeframe: "Weekly" }), null);
+  assert.equal(chartTimeframeKey({ name: "Watchlist" }), null);
 });

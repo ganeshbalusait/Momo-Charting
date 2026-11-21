@@ -23917,7 +23917,13 @@ body:has(.chat-dock-panel:not([hidden])) .global-price-alert-toast { z-index: 18
   font-size: 12px;
   white-space: normal;
   overflow-wrap: anywhere;
+  /* A button since 2026-11-21 (click = open the chart on the list's M/W/D). */
+  font-weight: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
 }
+.momx-scanner-panel .momx-breakout-chip:hover { filter: brightness(1.25); }
 .momx-scanner-panel .momx-breakout-row.is-down .momx-breakout-chip {
   border-color: rgba(239, 83, 80, 0.55);
   background: rgba(239, 83, 80, 0.12);

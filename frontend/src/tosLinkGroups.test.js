@@ -47,3 +47,10 @@ test("scanner warm and click messages keep symbol/group ownership and distinct i
     assert.equal(warmTickerForCharts("",2),null);
   } finally {if(previous===undefined)delete globalThis.window;else globalThis.window=previous;}
 });
+
+test("a link may carry a timeframe (Breakout lists); junk timeframes are dropped", () => {
+  assert.equal(chartLinkMessage("COST", 1, "momx-scanner", "M").timeframe, "M");
+  assert.equal(chartLinkMessage("COST", 1, "momx-scanner", "15m").timeframe, "15m");
+  assert.equal("timeframe" in chartLinkMessage("COST", 1), false);
+  assert.equal("timeframe" in chartLinkMessage("COST", 1, "momx-scanner", "<script>"), false);
+});

@@ -552,15 +552,24 @@ export function applyWorkspaceLinkedNavigationIntent(state, intent, options = {}
   }
 
   const targetSet = new Set(targets);
-  const changed = targets.filter((index) => state.panels[index]?.symbol !== symbol);
+  // A timeframe on the intent (a Breakout list's M/W/D, 2026-11-21) switches
+  // only the chart that takes focus; the other linked charts keep their own.
+  const timeframe = intent.timeframe
+    ? canonicalTimeframe(intent.timeframe, normalizeStringList(options.validTimeframes, DEFAULT_TIMEFRAMES))
+    : "";
+  const retime = Boolean(timeframe) && state.panels[nextActive]?.timeframe !== timeframe;
+  const changed = targets.filter((index) => state.panels[index]?.symbol !== symbol || (retime && index === nextActive));
+  if (retime && !changed.includes(nextActive)) changed.push(nextActive);
   if (!changed.length && nextActive === activePanel) return { state, changed: [], matched };
   return {
     state: {
       ...state,
       activePanel: nextActive,
-      panels: state.panels.map((panel, index) => (
-        targetSet.has(index) && panel.symbol !== symbol ? { ...panel, symbol } : panel
-      )),
+      panels: state.panels.map((panel, index) => {
+        let next = targetSet.has(index) && panel.symbol !== symbol ? { ...panel, symbol } : panel;
+        if (retime && index === nextActive) next = { ...next, timeframe };
+        return next;
+      }),
     },
     changed,
     matched,

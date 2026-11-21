@@ -30,12 +30,22 @@ export const CHART_LINK_CHANNEL = "agx-chart-link";
 
 let sequence = 0;
 
-export function chartLinkMessage(symbol, linkGroup, source = "momx-scanner") {
+// `timeframe` (optional, "D" / "W" / "M"): the chart that receives the ticker
+// switches to it - a Monthly Breakout ticker opens on the Monthly chart
+// (2026-11-21, "When I click the ticker from scanner timeframe didn't change").
+export function chartLinkMessage(symbol, linkGroup, source = "momx-scanner", timeframe = null) {
   const clean = String(symbol || "").trim().toUpperCase().replace(/[^A-Z0-9./-]/g, "");
   const group = Number(linkGroup);
   if (!clean || !Number.isInteger(group) || group < 1 || group > 9) return null;
   sequence += 1;
-  return { symbol: clean, linkGroup: group, source, id: `${source}-${Date.now()}-${sequence}` };
+  const frame = typeof timeframe === "string" && /^[0-9]{0,2}[A-Za-z]{1,2}$/.test(timeframe.trim()) ? timeframe.trim() : null;
+  return {
+    symbol: clean,
+    linkGroup: group,
+    source,
+    id: `${source}-${Date.now()}-${sequence}`,
+    ...(frame ? { timeframe: frame } : {}),
+  };
 }
 
 function inPopoutWindow() {
@@ -46,8 +56,8 @@ function inPopoutWindow() {
   }
 }
 
-export function sendTickerToCharts(symbol, linkGroup, source = "momx-scanner") {
-  const message = chartLinkMessage(symbol, linkGroup, source);
+export function sendTickerToCharts(symbol, linkGroup, source = "momx-scanner", timeframe = null) {
+  const message = chartLinkMessage(symbol, linkGroup, source, timeframe);
   return sendChartMessage(message);
 }
 

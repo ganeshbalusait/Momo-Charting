@@ -47,6 +47,13 @@ function tfOf(meta) {
   return tf === "Weekly" || tf === "Daily" ? tf : "Monthly";
 }
 
+// The chart a ticker clicked on a Breakout / Breakdown list opens on
+// ("D" / "W" / "M"), or null for every other list (they keep the chart's own).
+export function chartTimeframeKey(meta) {
+  if (!meta || (meta.breakout !== "up" && meta.breakout !== "down")) return null;
+  return { Monthly: "M", Weekly: "W", Daily: "D" }[meta.timeframe || "Monthly"] || null;
+}
+
 // The body for POST /api/momx-scanner/ema-timeframe, or null.
 export function timeframeRequest(meta, timeframe) {
   if (!meta || !timeframe) return null;

@@ -28809,7 +28809,8 @@ function TradingWorkspace({ authUser, onLogout }) {
       lastChartLinkIdRef.current = id;
       const group = Number(message.linkGroup);
       if (!message.symbol || !Number.isInteger(group) || group < 1 || group > 9) return;
-      openChartSignalChart(message.symbol, null, String(message.source || "momx-scanner"), { linkGroup: group });
+      // A Breakout / Breakdown list sends its chart (D/W/M); other clicks none.
+      openChartSignalChart(message.symbol, typeof message.timeframe === "string" ? message.timeframe : null, String(message.source || "momx-scanner"), { linkGroup: group });
     };
     const onEvent = (event) => handle(event?.detail);
     window.addEventListener(CHART_LINK_EVENT, onEvent);
