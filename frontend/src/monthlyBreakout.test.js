@@ -74,3 +74,39 @@ test("notes say what the back-test found", () => {
   assert.match(breakoutNote("down"), /Not a put signal/);
   assert.equal(breakoutNote(""), "");
 });
+
+// 2026-11-20 "I see only monthly where is D/W": Weekly / Daily charts.
+test("periodName reads months, days and weeks", async () => {
+  const { periodName } = await import("./monthlyBreakout.js");
+  assert.equal(periodName("2026-11", "Monthly"), "Nov 26");
+  assert.equal(periodName("2026-11-20", "Daily"), "Nov 20");
+  assert.equal(periodName("2026-11-16", "Weekly"), "wk Nov 16");
+  assert.equal(periodName("junk", "Daily"), "");
+});
+
+test("weekly chips say week, the note warns there is no back-test edge", async () => {
+  const { breakoutChips, breakoutNote, breakoutEmpty } = await import("./monthlyBreakout.js");
+  const meta = {
+    breakout: "up",
+    timeframe: "Weekly",
+    breakouts: { WKB: { pattern: "BOTTOM", status: "live", period: "2026-11-16", level: 102, target: 120 } },
+  };
+  const [chip] = breakoutChips(meta);
+  assert.equal(chip.when, "wk Nov 16 not closed");
+  assert.match(chip.title, /weekly close above 102\.00/);
+  assert.match(chip.title, /a week closing below the 50 EMA/);
+  assert.doesNotMatch(chip.title, /12 months/);
+  assert.match(breakoutNote("up", "Weekly"), /NO edge on weekly breakouts/);
+  assert.match(breakoutNote("down", "Daily"), /close < 21 < 50/);
+  assert.match(breakoutNote("up", "Monthly"), /69-78% higher/);
+  assert.equal(breakoutEmpty({ breakout: "down", timeframe: "Daily" }), "No daily breakdowns on the Watchlist right now.");
+  assert.equal(breakoutEmpty({ breakout: "up" }), "No monthly breakouts on the Watchlist right now.");
+});
+
+test("timeframeRequest sends the direction for breakout lists and the length for EMA lists", async () => {
+  const { timeframeRequest } = await import("./monthlyBreakout.js");
+  assert.deepEqual(timeframeRequest({ breakout: "down" }, "Daily"), { breakout: "down", timeframe: "Daily" });
+  assert.deepEqual(timeframeRequest({ emaLength: 21 }, "Weekly"), { length: 21, timeframe: "Weekly" });
+  assert.equal(timeframeRequest({ name: "Watchlist" }, "Weekly"), null);
+  assert.equal(timeframeRequest({ breakout: "up" }, ""), null);
+});

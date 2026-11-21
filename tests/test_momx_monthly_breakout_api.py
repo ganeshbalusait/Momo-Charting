@@ -128,3 +128,47 @@ def test_a_new_list_can_be_added_with_six_lists_showing(tmp_path, monkeypatch, b
     own = [item for item in body["lists"] if not item["derived"]]
     assert [item["name"] for item in own] == ["Mag7", "Watchlist", "Liquid Movers", "Movers", "Breakouts To Watch"]
     assert body["maxLists"] == 6
+
+
+def _alpaca_week_bars(closes):
+    from datetime import date, timedelta
+
+    start = date(2023, 1, 2)
+    return [{"t": f"{start + timedelta(weeks=i)}T05:00:00Z", "l": c * 0.98, "h": c * 1.02, "c": c}
+            for i, c in enumerate(closes)]
+
+
+def test_weekly_dropdown_switches_the_list_over_http(tmp_path, monkeypatch, breakout_scratch):
+    # 2026-11-20 "I see only monthly where is D/W": the same dropdown as the
+    # EMA lists. Weekly bars carry the break; monthly ones are flat.
+    weekly = {"WKB": _alpaca_week_bars(CLOSES["UPB"]), "UPB": _alpaca_week_bars(CLOSES["FLAT"])}
+    monthly = {"UPB": _alpaca_month_bars(CLOSES["UPB"]), "WKB": _alpaca_month_bars(CLOSES["FLAT"])}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        wanted = set((params or {}).get("symbols", "").split(","))
+        source = {"1Month": monthly, "1Week": weekly}.get(params["timeframe"], {})
+        return _Reply({"bars": {s: b for s, b in source.items() if s in wanted}})
+
+    monkeypatch.setattr("requests.get", fake_get)
+    with running_worker(tmp_path, monkeypatch) as worker:
+        (tmp_path / "worker" / "universe.json").write_text(json.dumps({"lists": {"Watchlist": ["UPB", "WKB"]}}))
+        ema_touch.refresh(["UPB", "WKB"])
+        _, before = worker.get(LISTS)
+        worker.post("/api/momx-scanner/lists/active", {"list": "Monthly Breakout"})
+        status, switched = worker.post("/api/momx-scanner/ema-timeframe", {"breakout": "up", "timeframe": "Weekly"})
+        _, after = worker.get(LISTS)
+        bad_status, bad = worker.post("/api/momx-scanner/ema-timeframe", {"breakout": "up", "timeframe": "Hourly"})
+        ema_status, ema = worker.post("/api/momx-scanner/ema-timeframe", {"length": 21, "timeframe": "Weekly"})
+    first = {item["name"]: item for item in before["lists"]}
+    assert list(first["Monthly Breakout"]["breakouts"]) == ["UPB"]
+    assert first["Monthly Breakout"]["timeframes"] == ["Monthly", "Weekly", "Daily"]
+    assert status == 200 and switched["ok"] is True, switched
+    assert (switched["list"], switched["previous"], switched["active"]) == ("Weekly Breakout", "Monthly Breakout", "Weekly Breakout")
+    by_name = {item["name"]: item for item in after["lists"]}
+    assert "Monthly Breakout" not in by_name and "Monthly Breakdown" in by_name
+    weekly_list = by_name["Weekly Breakout"]
+    assert weekly_list["timeframe"] == "Weekly" and list(weekly_list["breakouts"]) == ["WKB"]
+    assert weekly_list["breakouts"]["WKB"]["pattern"] == "BOTTOM"
+    assert bad_status == 200 and bad["ok"] is False and "Timeframe" in bad["error"]
+    # The EMA lists' dropdown still works through the same route.
+    assert ema_status == 200 and ema["list"] == "21 EMA Touch Weekly"

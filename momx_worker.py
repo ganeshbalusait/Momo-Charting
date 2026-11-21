@@ -716,11 +716,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, service.delete_list(body.get("list")))
                 return
             if path == "/api/momx-scanner/ema-timeframe":
-                # Monthly / Weekly / Daily on the 21 / 50 EMA touch lists.
-                self._json(
-                    HTTPStatus.OK,
-                    service.set_ema_timeframe(body.get("length"), body.get("timeframe")),
-                )
+                # Monthly / Weekly / Daily on the 21 / 50 EMA touch lists, and
+                # on the Breakout / Breakdown lists ({"breakout": "up"|"down"}).
+                if body.get("breakout") is not None:
+                    result = service.set_breakout_timeframe(body.get("breakout"), body.get("timeframe"))
+                else:
+                    result = service.set_ema_timeframe(body.get("length"), body.get("timeframe"))
+                self._json(HTTPStatus.OK, result)
                 return
             if path == "/api/momx-scanner/lists/active":
                 self._json(HTTPStatus.OK, service.set_active(body.get("list")))

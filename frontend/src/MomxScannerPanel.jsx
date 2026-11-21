@@ -222,7 +222,7 @@ import {
   spreadMapFrom,
   spreadSortValue,
 } from "./momxSpread.js";
-import { breakoutChips, breakoutNote, pickerFull } from "./monthlyBreakout.js";
+import { breakoutChips, breakoutEmpty, breakoutNote, pickerFull, timeframeRequest } from "./monthlyBreakout.js";
 
 // MomX Scanner board - the trader's MomoX/MomoScan window, replayed.
 //
@@ -6716,8 +6716,10 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
   // the same path as picking a list (clears the old rows and chips) runs.
   const onEmaTimeframe = useCallback(
     async (timeframe) => {
-      const length = activeMeta.emaLength;
-      if (!length || !timeframe || timeframe === activeMeta.timeframe || listBusy) return;
+      // The EMA touch lists send their length, the Breakout / Breakdown
+      // lists their direction - same route, same rename-and-switch.
+      const request = timeframeRequest(activeMeta, timeframe);
+      if (!request || timeframe === activeMeta.timeframe || listBusy) return;
       setListBusy(true);
       setListError("");
       try {
@@ -6725,7 +6727,7 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
           method: "POST",
           headers: { "Content-Type": "application/json" },
           cache: "no-store",
-          body: JSON.stringify({ length, timeframe }),
+          body: JSON.stringify(request),
         });
         const payload = await response.json().catch(() => null);
         if (!response.ok || !payload || payload.ok === false || typeof payload.list !== "string") {
@@ -7139,16 +7141,16 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
           row: beside the list button it squeezed the name to "21 ..." on a
           375px phone (iOS keeps selects at 16px), hiding 21 vs 50. Outside the
           Live/History branch so it works on both. */}
-      {lists.length > 0 && activeMeta.emaLength && Array.isArray(activeMeta.timeframes) ? (
+      {lists.length > 0 && (activeMeta.emaLength || activeMeta.breakout) && Array.isArray(activeMeta.timeframes) ? (
         <div className="momx-ema-tf-row">
-          <label className="momx-universe-label" htmlFor="momx-ema-tf">EMA chart:</label>
+          <label className="momx-universe-label" htmlFor="momx-ema-tf">{activeMeta.breakout ? "Chart:" : "EMA chart:"}</label>
           <select
             id="momx-ema-tf"
             className="momx-ema-tf"
             value={activeMeta.timeframe || "Monthly"}
             disabled={listBusy}
             onChange={(event) => onEmaTimeframe(event.target.value)}
-            title="Which chart's EMA the touch is measured on"
+            title={activeMeta.breakout ? "Which chart the pattern break is found on" : "Which chart's EMA the touch is measured on"}
             data-testid="momx-ema-tf"
           >
             {activeMeta.timeframes.map((tf) => (
@@ -7180,10 +7182,10 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
               </span>
             ))}
             {breakoutChips(activeMeta).length === 0 ? (
-              <span className="momx-breakout-empty">No monthly {activeMeta.breakout === "up" ? "breakouts" : "breakdowns"} on the Watchlist right now.</span>
+              <span className="momx-breakout-empty">{breakoutEmpty(activeMeta)}</span>
             ) : null}
           </div>
-          <p className="momx-breakout-note">{breakoutNote(activeMeta.breakout)}</p>
+          <p className="momx-breakout-note">{breakoutNote(activeMeta.breakout, activeMeta.timeframe)}</p>
         </div>
       ) : null}
 

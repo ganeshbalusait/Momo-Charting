@@ -39,6 +39,16 @@ Back-test, 338 Watchlist tickers, 12 months later, EMA filter on: BOTTOM up
 78% / +21%, SYM up 74% / +20%, MIDDLE up 78% / +17%, TOP up 69% / +15%;
 any month 62% / +13%. Breakdowns did NOT predict a fall (price was higher a
 year later 55-64% of the time) - the bear list is shown for information.
+
+DAILY / WEEKLY (2026-11-20, Ganesh: "I see only monthly where is D/W" - the
+same Monthly / Weekly / Daily dropdown the EMA Touch lists have). One chart
+setting per list (bull and bear separately), saved beside the EMA lists'
+setting, and part of the list's NAME ("Weekly Breakout") for the same reason
+the EMA lists carry theirs: History and stamps never mix timeframes. The
+rules are the same counted in BARS of that chart (a base is 10..72 bars,
+swings are 2 bars either side), run on the bars the EMA refresher already
+fetches for that timeframe (Weekly ~3 years, Daily ~14 months). The earlier
+back-test found NO edge on weekly or daily breakouts; the panel says so.
 """
 
 from __future__ import annotations
@@ -50,6 +60,11 @@ from typing import Any, Iterable, Mapping, Sequence
 BULL_LIST = "Monthly Breakout"
 BEAR_LIST = "Monthly Breakdown"
 DIRECTIONS = {BULL_LIST: "up", BEAR_LIST: "down"}
+#: list word per direction; the name is "<Timeframe> <word>".
+WORDS = {"up": "Breakout", "down": "Breakdown"}
+#: picker order, same as the EMA lists' (momx/ema_touch.TIMEFRAMES).
+TIMEFRAMES = ("Monthly", "Weekly", "Daily")
+DEFAULT_TIMEFRAME = "Monthly"
 
 PIVOT_SPAN = 2          # months either side of a swing point
 LEVEL_TOLERANCE = 0.06  # touches within 6% are the same line
@@ -75,18 +90,53 @@ def enabled() -> bool:
     return os.environ.get("AGX_MOMX_EMA_LISTS", "1").strip() != "0"
 
 
+def list_name(direction: str, tf: str | None = None) -> str:
+    return f"{tf or timeframe(direction)} {WORDS[direction]}"
+
+
+def _setting_key(direction: str) -> str:
+    return f"breakout:{direction}"
+
+
+def timeframe(direction: str) -> str:
+    """The chart the list reads (saved per direction; default Monthly)."""
+    from momx import ema_touch
+
+    tf = ema_touch.saved_setting(_setting_key(direction))
+    return tf if tf in TIMEFRAMES else DEFAULT_TIMEFRAME
+
+
+def set_timeframe(direction: Any, tf: Any) -> str:
+    """Save the chart for one list (``"up"`` / ``"down"``); returns its new name."""
+    from momx import ema_touch
+
+    side = str(direction or "").strip().lower()
+    if side not in WORDS:
+        raise ValueError(f"Unknown breakout list {direction!r}.")
+    choice = next((t for t in TIMEFRAMES if t.lower() == str(tf or "").strip().lower()), None)
+    if choice is None:
+        raise ValueError(f"Timeframe must be one of {', '.join(TIMEFRAMES)}.")
+    ema_touch.save_setting(_setting_key(side), choice)
+    return list_name(side, choice)
+
+
 def current_lists() -> dict[str, str]:
     """Visible list name -> direction, in picker order."""
-    return dict(DIRECTIONS) if enabled() else {}
+    return {list_name(d): d for d in WORDS} if enabled() else {}
 
 
 def list_names() -> list[str]:
     return list(current_lists())
 
 
-def parse_name(name: Any) -> str | None:
+def parse_name(name: Any) -> tuple[str, str] | None:
+    """"weekly breakdown" -> ("down", "Weekly"); anything else -> None."""
     wanted = str(name or "").strip().lower()
-    return next((n for n in DIRECTIONS if n.lower() == wanted), None)
+    for direction in WORDS:
+        for tf in TIMEFRAMES:
+            if wanted == list_name(direction, tf).lower():
+                return direction, tf
+    return None
 
 
 def is_derived(name: Any) -> bool:
@@ -232,8 +282,10 @@ def _previous_month(period: str) -> str:
     return f"{year:04d}-{month:02d}"
 
 
-def breakout_state(bars: Sequence[Mapping[str, Any]], period: str) -> dict | None:
-    """One symbol's monthly verdict for the current ``period`` ("YYYY-MM").
+def breakout_state(bars: Sequence[Mapping[str, Any]], period: str, previous: str | None = None) -> dict | None:
+    """One symbol's verdict for the current ``period`` ("YYYY-MM" monthly,
+    "YYYY-MM-DD" weekly/daily). ``previous`` is the period before it (the
+    second-newest any symbol has); monthly works it out when not given.
 
     ``bars`` ascending with ``period``, ``high``, ``low``, ``close``. Returns
     ``None`` when there are fewer than MIN_MONTHS real months, else
@@ -260,7 +312,7 @@ def breakout_state(bars: Sequence[Mapping[str, Any]], period: str) -> dict | Non
         if has_current:
             candidates.append((n - 1, "live"))
             candidates.append((n - 2, "confirmed"))
-        elif str(rows[-1].get("period"))[:7] == _previous_month(period):
+        elif str(rows[-1].get("period")) == (previous if previous is not None else _previous_month(period)):
             # No bar yet this month: last month's close is the confirmed one.
             # An older last bar (halted / delisted) is not a current signal.
             candidates.append((n - 1, "confirmed"))
@@ -276,29 +328,28 @@ def breakout_state(bars: Sequence[Mapping[str, Any]], period: str) -> dict | Non
 # reading (never blocks, never raises)
 # ---------------------------------------------------------------------------
 
-CACHE_KEY = "breakout:Monthly"
+def cache_key(tf: str) -> str:
+    return f"breakout:{tf}"
 
 
-def members(symbols: Iterable[str], name: str) -> list[str]:
-    """The given symbols (in their order) with a break in the list's direction."""
-    from momx import ema_touch
-
-    direction = DIRECTIONS.get(parse_name(name) or "")
-    if not enabled() or direction is None:
-        return []
-    states = ema_touch.cached_states(symbols, CACHE_KEY)
-    return [s for s, state in states.items() if (state or {}).get(direction)]
+CACHE_KEY = cache_key("Monthly")
 
 
 def details(symbols: Iterable[str], name: str) -> dict[str, dict]:
     """``{symbol: signal}`` for a list's members - what the panel shows."""
     from momx import ema_touch
 
-    direction = DIRECTIONS.get(parse_name(name) or "")
-    if not enabled() or direction is None:
+    parsed = parse_name(name)
+    if not enabled() or parsed is None:
         return {}
-    states = ema_touch.cached_states(symbols, CACHE_KEY)
+    direction, tf = parsed
+    states = ema_touch.cached_states(symbols, cache_key(tf))
     return {s: state[direction] for s, state in states.items() if (state or {}).get(direction)}
+
+
+def members(symbols: Iterable[str], name: str) -> list[str]:
+    """The given symbols (in their order) with a break in the list's direction."""
+    return list(details(symbols, name))
 
 
 __all__ = [
@@ -308,11 +359,15 @@ __all__ = [
     "PATTERN_LABELS",
     "breakout_state",
     "breaks_at",
+    "cache_key",
     "current_lists",
     "details",
     "enabled",
     "is_derived",
     "list_names",
     "members",
+    "list_name",
     "parse_name",
+    "set_timeframe",
+    "timeframe",
 ]

@@ -1590,9 +1590,13 @@ def lists() -> dict:
             # The panel shows the Monthly / Weekly / Daily dropdown off these.
             extra = {"emaLength": ema[0], "timeframe": ema[1], "timeframes": list(ema_touch.TIMEFRAMES)}
         elif monthly_breakout.parse_name(name) is not None:
-            # The panel lists each member's pattern, line and status off these.
+            # The panel lists each member's pattern, line and status off these,
+            # and shows the same Monthly / Weekly / Daily dropdown.
+            side, tf = monthly_breakout.parse_name(name)
             extra = {
-                "breakout": monthly_breakout.DIRECTIONS[monthly_breakout.parse_name(name)],
+                "breakout": side,
+                "timeframe": tf,
+                "timeframes": list(monthly_breakout.TIMEFRAMES),
                 "breakouts": monthly_breakout.details(symbols, name),
             }
         else:
@@ -1977,6 +1981,34 @@ def rename_list(list_name: Any, new_name: Any) -> dict:
         "renamedFrom": old,
         "universeCount": len(result["universe"]),
     }
+
+
+def set_breakout_timeframe(direction: Any, timeframe: Any) -> dict:
+    """The Monthly / Weekly / Daily dropdown on the Breakout / Breakdown lists.
+
+    Same contract as :func:`set_ema_timeframe`: the timeframe is in the name,
+    so the trader lands on the renamed list if he was on the old one.
+    """
+    try:
+        was_active = board.active_list()
+    except Exception:  # noqa: BLE001
+        was_active = ""
+    try:
+        side = str(direction or "").strip().lower()
+        if side not in monthly_breakout.WORDS:
+            raise ValueError(f"Unknown breakout list {direction!r}.")
+        previous = monthly_breakout.list_name(side)
+        name = monthly_breakout.set_timeframe(side, timeframe)
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "error": str(exc)}
+    try:
+        if was_active.lower() == previous.lower():
+            board.set_active_list(name)
+    except Exception:  # noqa: BLE001 - the switch itself already landed
+        pass
+    start_warmer()
+    refresh_now(name)
+    return {"ok": True, "list": name, "previous": previous, "active": board.active_list()}
 
 
 def set_ema_timeframe(length: Any, timeframe: Any) -> dict:

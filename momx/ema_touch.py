@@ -117,9 +117,13 @@ def parse_name(name: Any) -> tuple[int, str] | None:
 _SETTINGS: dict[str, Any] = {"key": None, "saved": {}}
 
 
-def timeframe(length: int) -> str:
-    # Read on every list-document read (many per build), so re-parsed only
-    # when the file changes.
+def saved_setting(name: str) -> str:
+    """One saved value from the timeframe file ("" when unset).
+
+    Read on every list-document read (many per build), so re-parsed only
+    when the file changes. Also holds the breakout lists' chart
+    (momx/monthly_breakout.py, keys "breakout:up" / "breakout:down").
+    """
     path = settings_path()
     try:
         key = (str(path), path.stat().st_mtime)
@@ -131,7 +135,25 @@ def timeframe(length: int) -> str:
         except (OSError, ValueError):
             saved = {}
         _SETTINGS.update(key=key, saved=saved if isinstance(saved, Mapping) else {})
-    tf = str(_SETTINGS["saved"].get(str(int(length))) or "")
+    return str(_SETTINGS["saved"].get(str(name)) or "")
+
+
+def save_setting(key: str, value: str) -> None:
+    path = settings_path()
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        saved = dict(saved) if isinstance(saved, Mapping) else {}
+    except (OSError, ValueError):
+        saved = {}
+    saved[str(key)] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(saved), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def timeframe(length: int) -> str:
+    tf = saved_setting(str(int(length)))
     return tf if tf in TIMEFRAMES else DEFAULT_TIMEFRAME
 
 
@@ -146,17 +168,7 @@ def set_timeframe(length: Any, tf: Any) -> str:
     choice = next((t for t in TIMEFRAMES if t.lower() == str(tf or "").strip().lower()), None)
     if choice is None:
         raise ValueError(f"Timeframe must be one of {', '.join(TIMEFRAMES)}.")
-    path = settings_path()
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8"))
-        saved = dict(saved) if isinstance(saved, Mapping) else {}
-    except (OSError, ValueError):
-        saved = {}
-    saved[str(n)] = choice
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(saved), encoding="utf-8")
-    os.replace(temporary, path)
+    save_setting(str(n), choice)
     return list_name(n, choice)
 
 
@@ -376,24 +388,26 @@ def refresh(symbols: Iterable[str] | None = None, now: datetime | None = None) -
     for tf in TIMEFRAMES:
         bars = _fetch(wanted, tf, now)
         latest = max((rows[-1]["period"] for rows in bars.values() if rows), default="")
+        # The period before it, for the breakout lists' "confirmed" bar.
+        previous = max((r["period"] for rows in bars.values() for r in rows[-2:] if r["period"] < latest), default="")
         periods[tf] = latest
+        key = monthly_breakout.cache_key(tf)
         for sym in wanted:
             rows = bars.get(sym) or []
             for n in LENGTHS:
                 table[sym][f"{n}:{tf}"] = touch_state(rows, n, latest) if latest else None
-            if tf == "Monthly":
-                # The Monthly Breakout / Breakdown lists read the same bars.
-                try:
-                    table[sym][monthly_breakout.CACHE_KEY] = (
-                        monthly_breakout.breakout_state(rows, latest) if latest else None
-                    )
-                except Exception:  # noqa: BLE001 - one bad tape must not sink the refresh
-                    table[sym][monthly_breakout.CACHE_KEY] = None
-        if tf == "Monthly":
-            for direction in ("up", "down"):
-                summary[f"breakout:{direction}"] = sum(
-                    1 for v in table.values() if (v.get(monthly_breakout.CACHE_KEY) or {}).get(direction)
+            # The Breakout / Breakdown lists read the same bars, every timeframe.
+            try:
+                table[sym][key] = (
+                    monthly_breakout.breakout_state(rows, latest, None if tf == "Monthly" else previous)
+                    if latest else None
                 )
+            except Exception:  # noqa: BLE001 - one bad tape must not sink the refresh
+                table[sym][key] = None
+        for direction in ("up", "down"):
+            summary[f"breakout:{direction}:{tf}" if tf != "Monthly" else f"breakout:{direction}"] = sum(
+                1 for v in table.values() if (v.get(key) or {}).get(direction)
+            )
         for n in LENGTHS:
             summary[f"{n}:{tf}"] = sum(1 for v in table.values() if (v.get(f"{n}:{tf}") or {}).get("pass"))
     document = {"fetchedAt": now.isoformat(), "periods": periods, "symbols": table}
@@ -460,6 +474,8 @@ __all__ = [
     "TIMEFRAMES",
     "cache_path",
     "cached_states",
+    "save_setting",
+    "saved_setting",
     "current_lists",
     "detail",
     "ema",

@@ -19,7 +19,10 @@ const entry = (name, count, { builtIn = true, derived = false, ...extra } = {}) 
   name, count, builtAt: STAMP, warming: false, builtIn, derived, ...extra,
 });
 
-function hisLists(active) {
+const TFS = ["Monthly", "Weekly", "Daily"];
+
+function hisLists(active, bullTf = "Monthly") {
+  const weekly = bullTf === "Weekly";
   return {
     active,
     maxLists: 6,
@@ -30,10 +33,14 @@ function hisLists(active) {
       entry("50 EMA Touch Monthly", 49, { derived: true, emaLength: 50, timeframe: "Monthly", timeframes: ["Monthly", "Weekly", "Daily"] }),
       entry("Liquid Movers", 230, { builtIn: false }),
       entry("Movers", 1, { builtIn: false }),
-      entry("Monthly Breakout", 2, {
+      entry(`${bullTf} Breakout`, weekly ? 1 : 2, {
         derived: true,
         breakout: "up",
-        breakouts: {
+        timeframe: bullTf,
+        timeframes: TFS,
+        breakouts: weekly ? {
+          COST: { pattern: "SYM", label: "Symmetrical triangle", direction: "up", status: "live", period: "2026-11-16", level: 1012.4, target: 1100 },
+        } : {
           MA: { pattern: "MIDDLE", label: "Range", direction: "up", status: "confirmed", period: "2026-10", level: 601.77, target: 863.33 },
           NVDA: { pattern: "BOTTOM", label: "Higher lows + resistance", direction: "up", status: "live", period: "2026-11", level: 160.5, target: 210.1 },
         },
@@ -41,6 +48,8 @@ function hisLists(active) {
       entry("Monthly Breakdown", 1, {
         derived: true,
         breakout: "down",
+        timeframe: "Monthly",
+        timeframes: TFS,
         breakouts: {
           BABA: { pattern: "TOP", label: "Lower highs + support", direction: "down", status: "live", period: "2026-11", level: 91.99, target: null },
         },
@@ -101,7 +110,11 @@ e2eTest("picking Monthly Breakout loads its board and shows each pattern, line a
     assert.match(chips[1], /^MA ▲ Range > 601\.77 Oct 26 close$/);
     assert.match(await app.page.locator(`${ROW} .momx-breakout-note`).innerText(), /62% for any month/);
     assert.match(await app.page.locator(`${ROW} .momx-breakout-chip`).first().getAttribute("title"), /can still fail/);
-    assert.equal(await app.page.locator("[data-testid='momx-ema-tf']").count(), 0, "no EMA dropdown here");
+    // The same chart dropdown as the EMA lists, labelled "Chart:" here.
+    const dropdown = app.page.locator("[data-testid='momx-ema-tf']");
+    assert.equal(await dropdown.inputValue(), "Monthly");
+    assert.deepEqual(await dropdown.locator("option").allInnerTexts(), TFS);
+    assert.equal((await app.page.locator("label[for='momx-ema-tf']").innerText()).trim(), "Chart:");
     assert.ok(app.reads.some((read) => read.path === "/api/momx-scanner" && /list=Monthly(\+|%20)Breakout/.test(read.search)));
     assert.deepEqual(app.pageErrors, []);
   });
@@ -129,6 +142,46 @@ e2eTest("on a phone the pattern chips wrap on screen with nothing cut off", asyn
     }
     const note = await row.locator(".momx-breakout-note").boundingBox();
     assert.ok(note && note.x + note.width <= PHONE.width + 1, "the note is cut off");
+    assert.equal(await overflowsSideways(app.page), false);
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+// 2026-11-20 "I see only monthly where is D/W" ... "I want same": the
+// Monthly / Weekly / Daily dropdown the EMA Touch lists have.
+e2eTest("the Chart dropdown switches Monthly Breakout to Weekly Breakout with week chips and the no-edge warning", async () => {
+  let tf = "Monthly";
+  const fakeReads = boardReads({ lists: () => hisLists("Monthly Breakout", tf) });
+  const fakeWrites = { "POST /api/momx-scanner/ema-timeframe": () => {
+    tf = "Weekly";
+    return { json: { ok: true, list: "Weekly Breakout", previous: "Monthly Breakout", active: "Weekly Breakout" } };
+  } };
+  await withApp({ view: VIEW, storage: storage("Monthly Breakout"), fakeReads, fakeWrites }, async (app) => {
+    await boardReady(app.page);
+    const dropdown = app.page.locator("[data-testid='momx-ema-tf']");
+    await dropdown.waitFor({ timeout: 10_000 });
+    await dropdown.selectOption("Weekly");
+    await app.page.waitForFunction(() => document.querySelector(".momx-listbtn-name")?.textContent.trim() === "Weekly Breakout", null, { timeout: 15_000 });
+    const sent = app.writes.filter((write) => write.path === "/api/momx-scanner/ema-timeframe");
+    assert.equal(sent.length, 1);
+    assert.deepEqual(JSON.parse(sent[0].body), { breakout: "up", timeframe: "Weekly" });
+    await app.page.waitForFunction(() => /COST/.test(document.querySelector("[data-testid='momx-breakout-row']")?.textContent || ""), null, { timeout: 10_000 });
+    assert.deepEqual(await chipTexts(app.page.locator(`${ROW} [data-testid='momx-breakout-chip']`)), ["COST ▲ Triangle > 1012.40 wk Nov 16 not closed"]);
+    assert.match(await app.page.locator(`${ROW} .momx-breakout-note`).innerText(), /NO edge on weekly breakouts/);
+    assert.equal(await dropdown.inputValue(), "Weekly");
+    assert.equal(await app.page.locator(".momx-ema-tf-error").count(), 0);
+    assert.ok(app.reads.some((read) => read.path === "/api/momx-scanner" && /list=Weekly(\+|%20)Breakout/.test(read.search)));
+    assert.deepEqual(app.pageErrors, []);
+  });
+});
+
+e2eTest("on a phone the Chart dropdown sits on its own row with nothing cut off", async () => {
+  await withApp({ view: VIEW, viewport: PHONE, storage: storage("Monthly Breakdown"), fakeReads: reads("Monthly Breakdown") }, async (app) => {
+    await boardReady(app.page);
+    const dropdown = app.page.locator("[data-testid='momx-ema-tf']");
+    await dropdown.waitFor({ timeout: 10_000 });
+    const box = await dropdown.boundingBox();
+    assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `dropdown at ${JSON.stringify(box)} is cut off`);
     assert.equal(await overflowsSideways(app.page), false);
     assert.deepEqual(app.pageErrors, []);
   });

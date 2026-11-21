@@ -147,8 +147,10 @@ def test_a_breakdown_target_at_or_below_zero_is_left_out(monkeypatch):
 def test_names(monkeypatch):
     monkeypatch.setenv("AGX_MOMX_EMA_LISTS", "1")
     assert mb.list_names() == ["Monthly Breakout", "Monthly Breakdown"]
-    assert mb.parse_name("monthly breakdown") == "Monthly Breakdown"
-    assert mb.parse_name("Monthly") is None
+    assert mb.parse_name("monthly breakdown") == ("down", "Monthly")
+    assert mb.parse_name("Weekly Breakout") == ("up", "Weekly")
+    assert mb.parse_name("daily breakdown") == ("down", "Daily")
+    assert mb.parse_name("Monthly") is None and mb.parse_name("Hourly Breakout") is None
 
 
 # ---------------------------------------------------------------------------
@@ -268,3 +270,85 @@ def test_one_bad_tape_does_not_sink_the_refresh(lists_on, monkeypatch):
     monkeypatch.setattr(ema_touch, "touch_state", lambda *a, **k: None)
     ema_touch.refresh(["AAA"], now=datetime.now(timezone.utc))
     assert json.loads(ema_touch.cache_path().read_text())["symbols"]["AAA"][mb.CACHE_KEY] is None
+
+
+# ---------------------------------------------------------------------------
+# Daily / Weekly (2026-11-20: "I see only monthly where is D/W")
+# ---------------------------------------------------------------------------
+
+
+def day_tape(closes, spread=0.02):
+    start = datetime(2025, 1, 1)
+    return [{"period": (start + timedelta(days=i)).strftime("%Y-%m-%d"), "close": float(c),
+             "high": c * (1 + spread), "low": c * (1 - spread)} for i, c in enumerate(closes)]
+
+
+def test_the_same_patterns_are_found_on_daily_bars():
+    bars = day_tape(BASES["BOTTOM_up"])
+    out = mb.breakout_state(bars, bars[-1]["period"], bars[-2]["period"])
+    assert out["up"]["pattern"] == "BOTTOM" and out["up"]["status"] == "live"
+    assert out["up"]["period"] == bars[-1]["period"]
+
+
+def test_daily_confirmed_uses_the_previous_bar_it_is_given():
+    bars = day_tape(BASES["BOTTOM_up"])
+    # The newest session has no bar for this symbol: yesterday's close is the confirmed one.
+    later = (datetime.strptime(bars[-1]["period"], "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    out = mb.breakout_state(bars, later, bars[-1]["period"])
+    assert out["up"]["status"] == "confirmed"
+    # An older last bar (halted) is not a current signal.
+    assert mb.breakout_state(bars, later, later) == {"up": None, "down": None}
+
+
+def test_the_chart_setting_is_per_list_and_renames_it(lists_on):
+    assert mb.list_names() == ["Monthly Breakout", "Monthly Breakdown"]
+    assert mb.set_timeframe("up", "weekly") == "Weekly Breakout"
+    assert mb.list_names() == ["Weekly Breakout", "Monthly Breakdown"]
+    assert mb.set_timeframe("down", "Daily") == "Daily Breakdown"
+    assert mb.timeframe("up") == "Weekly" and mb.timeframe("down") == "Daily"
+    # The EMA lists' own setting in the same file is untouched.
+    assert ema_touch.timeframe(21) == "Monthly"
+    with pytest.raises(ValueError):
+        mb.set_timeframe("up", "Hourly")
+    with pytest.raises(ValueError):
+        mb.set_timeframe("sideways", "Daily")
+
+
+def test_a_weekly_list_reads_the_weekly_verdicts(lists_on):
+    doc = json.loads(ema_touch.cache_path().read_text())
+    doc["symbols"]["BBB"][mb.cache_key("Weekly")] = state(BASES["BOTTOM_up"])
+    ema_touch.cache_path().write_text(json.dumps(doc))
+    ema_touch._CACHE_MTIME = None
+    mb.set_timeframe("up", "Weekly")
+    assert "Weekly Breakout" in board.list_names(lists_on)
+    assert board.load_universe("Weekly Breakout", path=lists_on) == ["BBB"]
+    assert board.is_derived("Monthly Breakout") and board.is_derived("Daily Breakdown")
+
+
+def test_refresh_stores_a_verdict_for_every_timeframe(lists_on, monkeypatch):
+    month_rows = tape(BASES["BOTTOM_up"])
+    day_rows = day_tape(BASES["MIDDLE_down"])
+    monkeypatch.setattr(ema_touch, "_fetch",
+                        lambda s, tf, now: {"AAA": month_rows if tf == "Monthly" else day_rows})
+    summary = ema_touch.refresh(["AAA"], now=datetime.now(timezone.utc))
+    saved = json.loads(ema_touch.cache_path().read_text())["symbols"]["AAA"]
+    assert saved[mb.cache_key("Monthly")]["up"]["pattern"] == "BOTTOM"
+    assert saved[mb.cache_key("Daily")]["down"]["pattern"] == "MIDDLE"
+    assert saved[mb.cache_key("Weekly")]["down"]["status"] == "live"
+    assert summary["breakout:down:Daily"] == 1 and summary["breakout:up"] == 1
+
+
+def test_service_sends_the_dropdown_and_switches_the_list(lists_on, monkeypatch):
+    from momx import service
+
+    monkeypatch.setattr(board, "universe_path", lambda: lists_on)
+    monkeypatch.setattr(service, "start_warmer", lambda: None)
+    monkeypatch.setattr(service, "refresh_now", lambda name=None: None)
+    entries = {e["name"]: e for e in service.lists()["lists"]}
+    assert entries["Monthly Breakout"]["timeframe"] == "Monthly"
+    assert entries["Monthly Breakout"]["timeframes"] == ["Monthly", "Weekly", "Daily"]
+    board.set_active_list("Monthly Breakout", path=lists_on)
+    out = service.set_breakout_timeframe("up", "Daily")
+    assert out == {"ok": True, "list": "Daily Breakout", "previous": "Monthly Breakout", "active": "Daily Breakout"}
+    assert service.set_breakout_timeframe("up", "Hourly")["ok"] is False
+    assert service.set_breakout_timeframe("left", "Daily")["ok"] is False

@@ -1763,8 +1763,8 @@ def _document_from_raw(raw: Any) -> dict:
     # read and never saved.
     for name, length in ema_touch.current_lists().items():
         ordered[name] = ema_touch.touchers(ordered.get(WATCHLIST_LIST_NAME) or [], length)
-    # Monthly Breakout / Breakdown (momx/monthly_breakout.py): the Watchlist's
-    # tickers with a monthly chart-pattern break, from the same monthly cache.
+    # Breakout / Breakdown (momx/monthly_breakout.py): the Watchlist's tickers
+    # with a chart-pattern break on the list's chosen timeframe, same cache.
     for name in monthly_breakout.current_lists():
         ordered[name] = monthly_breakout.members(ordered.get(WATCHLIST_LIST_NAME) or [], name)
     for name, symbols in lists.items():
@@ -1941,7 +1941,7 @@ def is_builtin(name: Any) -> bool:
 def _refuse_derived(target: str) -> None:
     if is_derived(target):
         why = (
-            "tickers with a monthly chart-pattern break" if monthly_breakout.is_derived(target)
+            "tickers with a chart-pattern break" if monthly_breakout.is_derived(target)
             else "tickers touching the monthly EMA"
         )
         raise UnknownListError(
