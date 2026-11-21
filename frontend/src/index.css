@@ -23892,3 +23892,37 @@ body:has(.chat-dock-panel:not([hidden])) .global-price-alert-toast { z-index: 18
   .app-shell .oi-finder-chart-card .oi-finder-chart-actions { column-gap: 2px !important; }
   .app-shell .oi-finder-chart-card .oi-finder-chart-roi-group { gap: 1px; }
 }
+
+/* Monthly Breakout / Breakdown lists (2026-11-20): one chip per member under
+   the list bar - pattern, line, and whether the month has closed. Wraps on a
+   phone instead of scrolling sideways. */
+.momx-scanner-panel .momx-breakout-row {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--momx-line-strong);
+  min-width: 0;
+}
+.momx-scanner-panel .momx-breakout-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.momx-scanner-panel .momx-breakout-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(38, 166, 154, 0.55);
+  background: rgba(38, 166, 154, 0.12);
+  color: #b9f3ec;
+  font-family: var(--momx-ui-font);
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.momx-scanner-panel .momx-breakout-row.is-down .momx-breakout-chip {
+  border-color: rgba(239, 83, 80, 0.55);
+  background: rgba(239, 83, 80, 0.12);
+  color: #ffc9c7;
+}
+.momx-scanner-panel .momx-breakout-chip.is-live { border-style: dashed; }
+.momx-scanner-panel .momx-breakout-chip em { font-style: normal; color: #8a8f9c; font-size: 11px; }
+.momx-scanner-panel .momx-breakout-empty { font-size: 12px; color: #8a8f9c; }
+.momx-scanner-panel .momx-breakout-note { margin: 4px 0 0; font-size: 11px; color: #8a8f9c; line-height: 1.35; }

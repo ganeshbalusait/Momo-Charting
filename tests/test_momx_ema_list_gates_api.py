@@ -58,7 +58,11 @@ def build(monkeypatch, tmp_path):
     (tmp_path / "ema_tf.json").write_text(json.dumps({"21": "Daily"}))
     (tmp_path / "ema_touch.json").write_text(json.dumps({
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
-        "symbols": {s: {"21:Daily": {"pass": True}} for s in READINGS},
+        # ...and both have a confirmed monthly breakout (Monthly Breakout list).
+        "symbols": {s: {"21:Daily": {"pass": True},
+                        "breakout:Monthly": {"up": {"pattern": "MIDDLE", "status": "confirmed",
+                                                    "period": "2026-10", "level": 100.0}, "down": None}}
+                    for s in READINGS},
     }))
     ema_touch._CACHE.clear()
     ema_touch._CACHE_MTIME = None
@@ -101,3 +105,17 @@ def test_ema_list_uses_1_0_and_0_5_while_the_watchlist_keeps_0_5_and_0_3(tmp_pat
     assert el["SPY"]["scanPass"] is False
     assert el["SPY"]["scanReasons"][:2] == ["blocked:pricechange:volume:4h", "blocked:pricechange:close:1h"]
     assert not any(r.startswith("blocked:") for r in wl["SPY"]["scanReasons"])
+
+
+def test_monthly_breakout_list_uses_the_same_1_0_and_0_5_gates(tmp_path, monkeypatch, build):
+    # 2026-11-20, "Use 'all of the following'": the breakout is the list's ALL
+    # condition and the EMA lists' stricter Price_Change gates apply too.
+    with running_worker(tmp_path, monkeypatch) as worker:
+        service._build_once("Monthly Breakout")
+        status, body = worker.get("/api/momx-scanner?list=Monthly%20Breakout&matches=0")
+    assert status == 200, body
+    rows = _rows(body)
+    assert sorted(rows) == ["QQQ", "SPY"]
+    assert rows["QQQ"]["scanPass"] is True
+    assert rows["SPY"]["scanPass"] is False
+    assert rows["SPY"]["scanReasons"][:2] == ["blocked:pricechange:volume:4h", "blocked:pricechange:close:1h"]

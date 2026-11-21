@@ -45,7 +45,7 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from config import ARTIFACTS_DIR, EASTERN_TZ
-from momx import board, chart_signals, ema_touch, etf_list, feed, freshness, grade_log, history, market_turn, momo_alert, momox_aplus, news_catalyst, option_track, optionable, scan, sectors, solo, strategy
+from momx import board, chart_signals, ema_touch, etf_list, feed, freshness, grade_log, history, market_turn, momo_alert, momox_aplus, monthly_breakout, news_catalyst, option_track, optionable, scan, sectors, solo, strategy
 
 #: How often the warmer rebuilds a list. 15s makes the board feel like the
 #: TOS scanner -- continuously re-running, no dead minute between builds --
@@ -810,8 +810,10 @@ def _apply_fired_at(name: str, payload: dict, direction: str = "bull") -> None:
 
 def _gate_kwargs(name: str) -> dict:
     """The EMA Touch lists run his stricter Price_Change ALL-gates (2026-11-05,
-    "EMA lists only": VOLUME 4h >= 1.0%, CLOSE 1h >= 0.5%)."""
-    if ema_touch.parse_name(name) is not None:
+    "EMA lists only": VOLUME 4h >= 1.0%, CLOSE 1h >= 0.5%). Monthly Breakout /
+    Breakdown do too (2026-11-20, "Use 'all of the following'"): the same kind
+    of monthly-setup list - the pattern picks the ticker, the gates the day."""
+    if ema_touch.parse_name(name) is not None or monthly_breakout.parse_name(name) is not None:
         return {"gate_min_pct": dict(scan.EMA_LIST_GATES)}
     return {}
 
@@ -1587,6 +1589,12 @@ def lists() -> dict:
         if ema is not None:
             # The panel shows the Monthly / Weekly / Daily dropdown off these.
             extra = {"emaLength": ema[0], "timeframe": ema[1], "timeframes": list(ema_touch.TIMEFRAMES)}
+        elif monthly_breakout.parse_name(name) is not None:
+            # The panel lists each member's pattern, line and status off these.
+            extra = {
+                "breakout": monthly_breakout.DIRECTIONS[monthly_breakout.parse_name(name)],
+                "breakouts": monthly_breakout.details(symbols, name),
+            }
         else:
             extra = {}
         entries.append(
@@ -1602,6 +1610,9 @@ def lists() -> dict:
                 # which. Sent per list so the UI never has to guess from the
                 # name.
                 "builtIn": board.is_builtin(name),
+                # Computed lists do not use up one of the trader's MAX_LISTS
+                # slots (create_list skips them); the panel counts the same way.
+                "derived": board.is_derived(name),
             }
         )
     return {"lists": entries, "active": active, "maxLists": MAX_LISTS}
@@ -1891,9 +1902,10 @@ def create_list(list_name: Any, text: Any = None) -> dict:
     existing = board.list_names()
     if any(name.lower() == known.lower() for known in existing):
         return {"ok": False, "error": f"You already have a list called {name}."}
-    # The EMA touch lists hold a handful of tickers each, so they do not use
-    # up a slot the trader's own lists need.
-    existing = [known for known in existing if not ema_touch.is_derived(known)]
+    # The computed lists (EMA Touch, Monthly Breakout / Breakdown) hold a
+    # handful of tickers each, so they do not use up a slot the trader's own
+    # lists need.
+    existing = [known for known in existing if not board.is_derived(known)]
     if len(existing) >= MAX_LISTS:
         # Not arbitrary: every list gets its own warm thread, and any list of
         # 50+ symbols queues behind ONE heavy semaphore, so lists do not scan
