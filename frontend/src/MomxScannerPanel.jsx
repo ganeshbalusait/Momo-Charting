@@ -6,7 +6,7 @@ import { createScannerRequestScope, isAbortError } from "./scannerRequestScope.j
 import { readScannerBoard } from "./scannerBoardRead.js";
 import { directionCounts, otherDirectionUrl, otherSideRows, showsDirectionCounts } from "./momxDirectionCounts.js";
 import { createLiveRowProjector, liveQuote } from "./scannerLiveRows.js";
-import { PHONE_SKITTLES_TFS, phoneRowSummary, phoneSkittlesStyle } from "./momxPhoneCard.js";
+import { PHONE_SKITTLES_TFS, phoneRowSummary } from "./momxPhoneCard.js";
 import { subscribePendingScannerLink, takePendingScannerLink } from "./appLinks.js";
 
 function useScannerReadFetch() {
@@ -955,21 +955,6 @@ function cellBody(cell, format) {
   if (!painted) return text;
   return (
     <span className="momx-pill" style={style}>
-      {text}
-    </span>
-  );
-}
-
-// Skittles 2h..Mo in his sample's value colours, on the Table as on the Cards
-// ("Column try to update ... see the sample image ... don't remove or change
-// columns", 2026-11-20, phone and desktop). The number, the column and its
-// sort are unchanged; only how the number is drawn (momxPhoneCard.js).
-function skittlesBox(cell, format) {
-  const text = cellText(cell, format);
-  if (text === "" || text === null || text === undefined) return text;
-  const style = phoneSkittlesStyle(cell.value, hasPaintedBackground(cell));
-  return (
-    <span className={"momx-skit-box is-" + style.kind} style={{ "--skit": style.color }}>
       {text}
     </span>
   );
@@ -3045,11 +3030,11 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
                   : rvolSaturationNote(cell) || undefined)
               : undefined}
             // Foreground only: the BACKGROUND rides on the pill inside, which
-            // is what lets it have rounded corners at all. Skittles draw their
-            // own value-coloured box (his sample, 2026-11-20).
-            style={column.section === "skittles" ? undefined : { color: cellStyle(cell).color }}
+            // is what lets it have rounded corners at all. Skittles are back
+            // on the TOS colours (2026-11-21, "Revert ... back to original").
+            style={{ color: cellStyle(cell).color }}
           >
-            {column.section === "skittles" ? skittlesBox(cell, column.format) : cellBody(cell, column.format)}
+            {cellBody(cell, column.format)}
             {/* WHEN the volume behind this reading arrived. Only on RVOL
                 cells that are already visible - his ladder blacks out weak
                 readings on purpose, and annotating those would un-blank all
@@ -3226,7 +3211,7 @@ const MomxPhoneCard = memo(function MomxPhoneCard({ row, nowMs, bolt, isNew, sho
           <span
             key={cell.tf}
             className={"momx-phone-skit is-" + cell.kind + (cell.painted ? " is-painted" : "") + (cell.fresh ? " is-fresh" : "")}
-            style={cell.text ? { "--skit": cell.color } : undefined}
+            style={cell.text ? { "--skit": cell.color, "--skit-ink": cell.ink } : undefined}
             title={"Skittles " + cell.label + (cell.fresh ? " - crossed in the last 15 minutes" : "")}
             data-tf={cell.tf}
           >

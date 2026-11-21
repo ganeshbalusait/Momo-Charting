@@ -95,10 +95,11 @@ e2eTest("phone: the ticker on a card is the same chart link as on the desktop ta
 });
 
 // "Column try to update ... see the sample ... don't remove or change columns"
-// (2026-11-20, phone and desktop): the Table keeps every column; only the
-// Skittles numbers become value-coloured boxes.
+// (2026-11-20, phone and desktop): the Table keeps every column. 2026-11-21
+// "Revert the changes back to original": Skittles are back on the TOS colours
+// (TOS pill where painted), no value-coloured boxes or yellow rings.
 for (const viewport of [null, PHONE]) {
-  e2eTest(`${viewport ? "phone" : "desktop"} table: every column kept, Skittles numbers are value-coloured boxes`, async () => {
+  e2eTest(`${viewport ? "phone" : "desktop"} table: every column kept, Skittles numbers in the TOS colours`, async () => {
     await withApp({ view: VIEW, ...(viewport ? { viewport } : {}), storage: BOARD_STORAGE, fakeReads: boardReads() }, async (app) => {
       const { page } = app;
       await boardReady(page);
@@ -107,11 +108,11 @@ for (const viewport of [null, PHONE]) {
       for (const col of ["industry", "symbol", "setup", "fresh", "pctChange", "price", "spread", "news", "event", "rvol.2h", "highLow", "sqz.2h", "skittles.2h", "quoteTrend", "skittles.D", "skittles.M"]) {
         assert.ok(heads.includes(col), `column ${col} kept: ${heads.join(",")}`);
       }
-      const boxes = page.locator("table.momx-table:not(.momx-other-side-table) td[data-col^='skittles.'] .momx-skit-box");
-      assert.ok(await boxes.count() > 0, "Skittles numbers are boxes");
-      const kinds = await boxes.evaluateAll((spans) => spans.map((span) => span.className));
-      assert.ok(kinds.every((name) => /\bis-(fill|outline|text)\b/.test(name)), kinds.join(" | "));
-      assert.equal(await page.locator("td[data-col^='rvol.'] .momx-skit-box").count(), 0, "RVOL keeps the TOS pills");
+      const skit = "table.momx-table:not(.momx-other-side-table) td[data-col^='skittles.']";
+      assert.equal(await page.locator(".momx-skit-box").count(), 0, "no value-coloured boxes or yellow rings");
+      assert.ok(await page.locator(skit + " .momx-pill").count() > 0, "a cell TOS painted is a TOS pill again");
+      const filled = await page.locator(skit).evaluateAll((cells) => cells.filter((cell) => cell.textContent.trim() !== "").length);
+      assert.ok(filled > 0, "Skittles numbers still print");
       assert.deepEqual(app.pageErrors, []);
     });
   });

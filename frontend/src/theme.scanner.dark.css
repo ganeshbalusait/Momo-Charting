@@ -1759,20 +1759,8 @@
   color: #ff2bd6;
 }
 
-:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-skit-box.is-fill {
-  color: #05070b;
-}
-
-:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-skit-box.is-outline {
-  color: var(--skit);
-}
-
-:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-skit-box.is-text {
-  color: var(--skit);
-}
-
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-skit.is-fill {
-  color: #05070b;
+  color: var(--skit-ink, #05070b);
 }
 
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-skit.is-outline {

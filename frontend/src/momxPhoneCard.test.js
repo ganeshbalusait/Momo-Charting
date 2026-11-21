@@ -17,26 +17,21 @@ test("the phone card shows the eight Skittles timeframes of his sample, in order
   assert.deepEqual(PHONE_SKITTLES_TFS.map(([tf]) => tf), ["2h", "4h", "D", "2D", "3D", "4D", "Wk", "M"]);
 });
 
-// 2026-11-20 "Sample colours by value": the card colours each number like
-// his sample (the table keeps the exact TOS colours).
-test("card colours follow the sample's value scale", () => {
-  const cases = [
-    [91, "fill", "#22d3ee"], [85, "fill", "#22d3ee"],
-    [80, "fill", "#a6ff3a"], [75, "fill", "#a6ff3a"],
-    [70, "outline", "#ffd23f"], [65, "outline", "#ffd23f"],
-    [55, "text", "#22d3ee"], [50, "text", "#22d3ee"],
-    [44, "text", "#ff2bd6"], [35, "text", "#ff2bd6"],
-    [30, "fill", "#ff7a1a"], [25, "fill", "#ff7a1a"],
-    [24, "fill", "#ff2bd6"], [8, "fill", "#ff2bd6"],
-  ];
-  for (const [value, kind, color] of cases) {
-    assert.deepEqual(phoneSkittlesStyle(value, false), { kind, color }, String(value));
+// 2026-11-21 "Revert the changes back to original": the card uses the TOS
+// colours again, like the Table - no value scale, no yellow ring.
+test("card colours are the TOS colours: painted = solid pill, unpainted = coloured number", () => {
+  assert.deepEqual(phoneSkittlesStyle({ value: 70, bg: "cyan", fg: "black" }),
+    { kind: "fill", color: "#00ffff", ink: "#000000" });
+  assert.deepEqual(phoneSkittlesStyle({ value: 70, fg: "magenta" }),
+    { kind: "text", color: "#ff00ff", ink: "#ff00ff" });
+  assert.equal(phoneSkittlesStyle({ value: 70, bg: "black", fg: "cyan" }).kind, "text",
+    "black background is the script's 'nothing here', not a fill");
+  for (const value of [65, 68, 72, 74]) {
+    assert.notEqual(phoneSkittlesStyle({ value, fg: "cyan" }).kind, "outline", "no yellow ring for " + value);
   }
-  assert.deepEqual(phoneSkittlesStyle(55, true), { kind: "fill", color: "#22d3ee" }, "a number TOS painted is always a solid box");
-  assert.deepEqual(phoneSkittlesStyle(44, true), { kind: "fill", color: "#ff2bd6" });
 });
 
-test("a Skittles cell carries its value style and whether TOS painted it", () => {
+test("a Skittles cell carries its TOS colour and whether TOS painted it", () => {
   const row = { skittles: {
     "2h": { value: 91.4, bg: "cyan", fg: "black" },
     "4h": { value: 23.6, fg: "magenta" },
@@ -47,11 +42,11 @@ test("a Skittles cell carries its value style and whether TOS painted it", () =>
   assert.equal(cells[0].text, "91");
   assert.equal(cells[0].painted, true);
   assert.equal(cells[0].kind, "fill");
-  assert.equal(cells[0].color, "#22d3ee");
+  assert.equal(cells[0].color, "#00ffff");
   assert.equal(cells[1].text, "24");
   assert.equal(cells[1].painted, false);
-  assert.equal(cells[1].kind, "fill");
-  assert.equal(cells[1].color, "#ff2bd6");
+  assert.equal(cells[1].kind, "text");
+  assert.equal(cells[1].color, "#ff00ff");
   assert.equal(cells[2].text, "0", "black background is the script's 'nothing here', not a fill");
   assert.equal(cells[2].painted, false);
   assert.equal(cells[3].text, "", "a missing timeframe is blank, not zero");

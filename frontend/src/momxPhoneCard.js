@@ -35,21 +35,14 @@ function sectionCell(row, section, tf) {
   return cell && typeof cell === "object" ? cell : null;
 }
 
-// The sample's value scale (2026-11-20, he chose "Sample colours by value"
-// for the Cards; the table keeps the exact TOS colours). kind: "fill" = a
-// solid box, "outline" = an outlined box, "text" = a coloured number. A
-// number his TOS study painted is always a solid box.
-export function phoneSkittlesStyle(value, painted = false) {
-  const number = Number(value);
-  let style;
-  if (number >= 85) style = { kind: "fill", color: "#22d3ee" };
-  else if (number >= 75) style = { kind: "fill", color: "#a6ff3a" };
-  else if (number >= 65) style = { kind: "outline", color: "#ffd23f" };
-  else if (number >= 50) style = { kind: "text", color: "#22d3ee" };
-  else if (number >= 35) style = { kind: "text", color: "#ff2bd6" };
-  else if (number >= 25) style = { kind: "fill", color: "#ff7a1a" };
-  else style = { kind: "fill", color: "#ff2bd6" };
-  return painted && style.kind === "text" ? { ...style, kind: "fill" } : style;
+// The TOS colours, like the Table (2026-11-21: "Revert the changes back to
+// original" - the sample's value scale with its yellow rings is gone).
+// kind "fill" = TOS painted a background (solid pill, colour = that
+// background, ink = TOS text colour); "text" = a number in TOS's text colour.
+export function phoneSkittlesStyle(cell) {
+  const style = cellStyle(cell);
+  if (hasPaintedBackground(cell)) return { kind: "fill", color: style.backgroundColor, ink: style.color };
+  return { kind: "text", color: style.color, ink: style.color };
 }
 
 export function phoneSkittlesCells(row, nowMs = Date.now()) {
@@ -57,7 +50,7 @@ export function phoneSkittlesCells(row, nowMs = Date.now()) {
     const cell = sectionCell(row, "skittles", tf);
     const text = !cell || isMutedCell(cell) ? "" : formatSkittles(cell.value);
     const painted = hasPaintedBackground(cell);
-    const style = text === "" ? { kind: "empty", color: "" } : phoneSkittlesStyle(cell.value, painted);
+    const style = text === "" ? { kind: "empty", color: "", ink: "" } : phoneSkittlesStyle(cell);
     return {
       tf,
       label,
@@ -65,6 +58,7 @@ export function phoneSkittlesCells(row, nowMs = Date.now()) {
       painted,
       kind: style.kind,
       color: style.color,
+      ink: style.ink,
       fresh: Boolean(cell) && cellIsLiveSpike(cell, nowMs),
     };
   });

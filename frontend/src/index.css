@@ -24037,25 +24037,9 @@ body:has(.chat-dock-panel:not([hidden])) .global-price-alert-toast { z-index: 18
   font: 800 14px/1 "JetBrains Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
-/* His sample's value scale ("Sample colours by value", momxPhoneSkittlesStyle):
-   solid box, outlined box or coloured number, colour in --skit. */
-/* The same boxes in the Table's Skittles columns (phone and desktop). */
-.momx-skit-box {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 26px;
-  height: 19px;
-  padding: 0 4px;
-  box-sizing: border-box;
-  border-radius: 6px;
-  font: 800 12px/1 "JetBrains Mono", ui-monospace, monospace;
-  font-variant-numeric: tabular-nums;
-}
-.momx-skit-box.is-fill { background: var(--skit); color: #05070b; }
-.momx-skit-box.is-outline { border: 2px solid var(--skit); color: var(--skit); background: color-mix(in srgb, var(--skit) 12%, transparent); }
-.momx-skit-box.is-text { color: var(--skit); }
-.momx-phone-skit.is-fill { background: var(--skit); color: #05070b; }
+/* Cards Skittles: TOS colours (2026-11-21 revert). --skit = TOS background or
+   text colour, --skit-ink = TOS text colour on a painted pill. */
+.momx-phone-skit.is-fill { background: var(--skit); color: var(--skit-ink, #05070b); }
 .momx-phone-skit.is-outline { border: 2px solid var(--skit); color: var(--skit); background: color-mix(in srgb, var(--skit) 12%, transparent); }
 .momx-phone-skit.is-text { color: var(--skit); }
 .momx-phone-main { column-gap: 3px; }
