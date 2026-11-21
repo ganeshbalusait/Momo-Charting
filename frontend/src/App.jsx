@@ -110,6 +110,7 @@ import { withoutDailySeedBadPrints } from "./chartBadPrints.js";
 import { setItemMakingRoom } from "./storageRoom.js";
 import { pruneOversizedBoardCaches } from "./momxCells.js";
 import { WOODIES_DEFAULTS, WOODIES_LEVELS, WOODIES_TIMEFRAMES, buildWoodiesPivots } from "./woodiesPivots.js";
+import { cleanDwmSettings, isDwmTimeframe, migrateCleanDwm } from "./chartCleanDwm.js";
 import { CHART_PATTERN_ENDPOINT, buildChartPatternOverlay, chartPatternSignature, chartPatternTimeframe } from "./chartPattern.js";
 import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, migrateFibSwingOwnOff, migrateFibDwmKeyLevelOptions, migrateFibDwmKeyLevelSettings, autoFibCalendarBars, autoFibCalendarKey, autoFibAxisLabels, autoFibTimeframeAllowed, buildFibSwingStudies, fibSwingAxisLabels } from "./chartFibSwing.js";
 import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartDeepHistoryPending, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
@@ -15735,18 +15736,41 @@ function OiFinderCandleChart({
       cancelled = true;
     };
   }, [chartTimeframe]);
+  // Clean D / W / M charts (chartCleanDwm.js, 2026-11-21): what the minute
+  // chart showed before a D/W/M chart cleaned it, so a minute chart with no
+  // saved profile gets its own studies back instead of the clean set.
+  const intradayIndicatorSnapshotRef = useRef(null);
+  const lastProfileTimeframeRef = useRef("");
   useEffect(() => {
+    const profileKey = chartIndicatorProfileStorageKey(chartTimeframe);
+    const cameFromDwm = isDwmTimeframe(lastProfileTimeframeRef.current);
+    lastProfileTimeframeRef.current = profileKey;
+    const snapshotIntraday = (current) => {
+      if (!cameFromDwm) intradayIndicatorSnapshotRef.current = current;
+    };
     try {
       const profiles = JSON.parse(
         localStorage.getItem(OI_CHART_INDICATOR_PROFILES_STORAGE_KEY) || "{}",
       );
-      const profile = profiles?.[chartIndicatorProfileStorageKey(chartTimeframe)];
+      const profile = profiles?.[profileKey];
       if (!profile || typeof profile !== "object") {
+        if (isDwmTimeframe(profileKey)) {
+          // No saved D/W/M profile: start clean.
+          setIndicatorSettings((current) => {
+            snapshotIntraday(current);
+            return { ...current, ...cleanDwmSettings(DEFAULT_OI_CHART_INDICATORS) };
+          });
+        } else if (cameFromDwm && intradayIndicatorSnapshotRef.current) {
+          const restored = intradayIndicatorSnapshotRef.current;
+          setIndicatorSettings((current) => ({ ...current, ...restored }));
+        }
         setIndicatorSaveStatus("");
         return;
       }
       if (profile.indicatorSettings && typeof profile.indicatorSettings === "object") {
-        setIndicatorSettings((current) => ({
+        setIndicatorSettings((current) => {
+          if (isDwmTimeframe(profileKey)) snapshotIntraday(current);
+          return {
           ...current,
           ...profile.indicatorSettings,
           ...migrateEmaCloudIndicatorSettings(profile.indicatorSettings),
@@ -15761,7 +15785,10 @@ function OiFinderCandleChart({
           ...migrateRelVolVisibility(profile.indicatorSettings),
           ...migrateAutoFibVisibility(profile.indicatorSettings),
           ...migrateFibDwmKeyLevelSettings(profile.indicatorSettings),
-        }));
+          // Last: a D/W/M profile saved before the clean set starts clean once.
+          ...migrateCleanDwm(profile.indicatorSettings, profileKey, DEFAULT_OI_CHART_INDICATORS),
+          };
+        });
       }
       if (profile.indicatorOptions && typeof profile.indicatorOptions === "object") {
         setIndicatorOptions((current) => ({
