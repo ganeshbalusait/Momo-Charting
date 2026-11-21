@@ -8,6 +8,7 @@ import {
   autoFibTimeframeAllowed,
   buildFibSwingStudies,
   buildFibSwingStudy,
+  fibSwingAxisLabels,
   fibSwingSourcesOn,
   findFibSwing,
   fibSwingLookback,
@@ -271,6 +272,25 @@ test("M, W and D Fibs are all drawn on one chart by default, each tagged with it
   assert.deepEqual(onlyM.map((study) => study.source), ["M"]);
   const own = buildFibSwingStudies(daily, 1440, { ...FIB_SWING_DEFAULTS, fibSwingShowM: false, fibSwingShowW: false, fibSwingShowD: false, fibSwingShowOwn: true }, { dailyBars: daily });
   assert.deepEqual(own.map((study) => study.source), ["own"]);
+});
+
+// 2026-11-20 (his NVDA W/D charts): "M Fib 0% (243.37)", "W Fib 0% (243.37)"
+// and "D Fib 100% (243.37)" were three tags glued into one long line.
+test("levels at the same price share one short tag", () => {
+  const studies = [
+    { source: "M", levels: [{ ratio: 0, price: 243.37, color: "#9598a1" }, { ratio: 0.5, price: 127.09, color: "#4caf50" }] },
+    { source: "W", levels: [{ ratio: 0, price: 243.37, color: "#9598a1" }, { ratio: 0.382, price: 183.49, color: "#ff9800" }] },
+    { source: "D", levels: [{ ratio: 1, price: 243.37, color: "#9598a1" }, { ratio: 0.5, price: 183.94, color: "#4caf50" }] },
+  ];
+  const labels = fibSwingAxisLabels(studies);
+  const top = labels.find((label) => label.price === 243.37);
+  assert.equal(top.title, "M/W Fib 0% · D Fib 100% (243.37)");
+  assert.equal(labels.filter((label) => label.price === 243.37).length, 1, "one tag for the shared price");
+  assert.equal(labels.find((label) => label.price === 127.09).title, "M Fib 50% (127.09)");
+  // Close but not equal stay separate tags (the chart hides the one that does not fit).
+  assert.ok(labels.find((label) => label.price === 183.49));
+  assert.ok(labels.find((label) => label.price === 183.94));
+  assert.equal(new Set(labels.map((label) => label.key)).size, labels.length, "keys are unique");
 });
 
 test("no daily candles yet: the Monthly swing waits instead of guessing", () => {

@@ -185,7 +185,7 @@ def test_first_paint_carries_the_2400_bar_five_minute_tape_the_squeeze_fires_nee
     # The rest of the first paint stays slim.
     assert len(body["bars"]) == DashboardState.OI_CHART_INITIAL_BAR_COUNT
     assert body["bars"][-1] == payload["bars"][-1]
-    assert len(body["dailyBars"]) == DashboardState.OI_CHART_INITIAL_DAILY_BAR_COUNT
+    assert len(body["dailyBars"]) == min(len(payload["dailyBars"]), DashboardState.OI_CHART_INITIAL_DAILY_BAR_COUNT)
     assert "studyBars" not in body, "the 30m deep tape must not ride the first paint"
 
 

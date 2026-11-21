@@ -79,6 +79,37 @@ def _run_frontend(body: dict) -> dict:
     return json.loads(done.stdout)
 
 
+def _weekday_tape() -> list[dict]:
+    """~8 years of TRADING-day candles (no weekends), low 14.00 about 4.4
+    years back and high 240.80 about 1.2 years back: both inside 60 months."""
+    rows = []
+    day = datetime(2018, 11, 1, tzinfo=ET)
+    while len(rows) < 2080:
+        if day.weekday() < 5:
+            index = len(rows)
+            price = 60 + 120 * index / 2080
+            low = 14.0 if index == 2080 - 1100 else price - 2
+            high = 240.8 if index == 2080 - 300 else price + 2
+            rows.append({"time": int(day.timestamp()), "open": price, "high": high, "low": low, "close": price, "volume": 1000})
+        day = datetime.fromtimestamp(day.timestamp() + 86_400, tz=ET)
+    return rows
+
+
+def test_first_paint_carries_five_years_of_daily_candles_for_the_monthly_fib():
+    """A phone's 5m chart keeps the first-paint tape; its M Fib needs 60 months."""
+    payload = {**_payload(), "dailyBars": _weekday_tape()}
+    state = ServeState({SYMBOL: payload}, market_newest_epoch=payload["bars"][-1]["time"])
+    with running_api(state) as api:
+        status, body = api.get(f"/api/oi-finder-chart?symbol={SYMBOL}&initial=true")
+    assert status == 200, body
+    assert body["initialSlim"] is True
+    daily = body["dailyBars"]
+    assert len(daily) >= 1260, len(daily)
+    result = _run_frontend({**body, "bars": body["bars"]})
+    # The default Monthly swing reads the same from the first paint as from the full tape.
+    assert result["D"]["mFib50"] == "M Fib 50% (127.40)", result["D"]["mFib50"]
+
+
 def test_route_daily_tape_gives_monthly_weekly_daily_fib_levels():
     payload = _payload()
     state = ServeState({SYMBOL: payload}, market_newest_epoch=payload["bars"][-1]["time"])

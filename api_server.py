@@ -15244,7 +15244,12 @@ $words = @($result.Lines | ForEach-Object { $_.Words } | ForEach-Object {
     # - since=<epoch> is the 30s reconcile: tail + scalars, a few KB.
     # Without these, every poll shipped the full ~27k-bar deep tape.
     OI_CHART_INITIAL_BAR_COUNT = 900
-    OI_CHART_INITIAL_DAILY_BAR_COUNT = 320
+    # 1,300 daily candles = just over five years: the Big swing Fib's Monthly
+    # swing (60 months) and Weekly swing (104 weeks) are drawn on every chart,
+    # including a phone's 5-minute chart, which keeps this first-paint tape
+    # until the trader pans back (2026-11-20, "5 mins chart I want fib
+    # Daily/weekly/monthly"). Daily rows are small next to the minute tape.
+    OI_CHART_INITIAL_DAILY_BAR_COUNT = 1300
     # A 4H opening viewport needs roughly 120 candles.  The deep study tape is
     # 30-minute data with a daily archive prepended, so 1,600 fine bars provide
     # ample 4H context while remaining a small first-paint response.

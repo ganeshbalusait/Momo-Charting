@@ -110,7 +110,7 @@ import { withoutDailySeedBadPrints } from "./chartBadPrints.js";
 import { setItemMakingRoom } from "./storageRoom.js";
 import { pruneOversizedBoardCaches } from "./momxCells.js";
 import { WOODIES_DEFAULTS, WOODIES_LEVELS, WOODIES_TIMEFRAMES, buildWoodiesPivots } from "./woodiesPivots.js";
-import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, autoFibCalendarBars, autoFibCalendarKey, autoFibTimeframeAllowed, buildFibSwingStudies } from "./chartFibSwing.js";
+import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, autoFibCalendarBars, autoFibCalendarKey, autoFibTimeframeAllowed, buildFibSwingStudies, fibSwingAxisLabels } from "./chartFibSwing.js";
 import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartDeepHistoryPending, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
 import { CHART_TOUCH_ALERT_HOLD_MS, touchAlertGestureShouldCancel } from "./chartTouchAlert";
 import { CLOUD_BAND_STUDIES, calculateTosCloudBandPoints } from "./cloudBandStudy";
@@ -23150,9 +23150,14 @@ function OiFinderCandleChart({
       // two extra names, so a crowded pane cannot grow a pane-wide label.
       addIndicatorName(label.price, label.title, label.color, label.visible, label.key, { mergeWhenBlocked: true });
     });
-    fibSwingStudies.forEach((study) => study.levels.forEach((level) => {
-      addIndicatorName(level.price, level.label, level.color, true, `fib-swing-${study.source}-${level.ratio}`, { mergeWhenBlocked: true });
-    }));
+    // One tag per price ("M/W Fib 0% · D Fib 100% (243.37)") - his NVDA W/D
+    // charts had three Fib tags glued into one line. Fib tags rank above the
+    // pivots (chartAxisLabels.js), so only a wall, session level, alert or the
+    // LIVE tag can block one; it then joins that chip ("4.3K 12/18 · M Fib 50%
+    // (127.09)") instead of vanishing and leaving an unnamed line (5m NVDA).
+    fibSwingAxisLabels(fibSwingStudies).forEach((label) => {
+      addIndicatorName(label.price, label.title, label.color, true, label.key, { mergeWhenBlocked: true });
+    });
     if (indicatorSettings.previousOhlcLevels && sessionLevelsStudy) {
       const sideColor = (price) => (
         Number(price) >= Number(latestBar?.close || 0) ? "#ff00ff" : "#00ffff"

@@ -19,6 +19,9 @@ function axisLabelPriority(label) {
     return 800 + Math.max(0, Number(label?.priority) || 0);
   }
   if (keys.some((key) => key.startsWith("session-level-"))) return 700;
+  // Big swing Fib (2026-11-20): above the pivots, or a busy chart showed no
+  // Fib tag at all; below the walls and session levels.
+  if (keys.some((key) => key.startsWith("fib-swing-"))) return 650;
   if (keys.some((key) => key.startsWith("pivot-"))) return 600;
   if (keys.some((key) => key.startsWith("persons-pivot-"))) return 550;
   return 400 + Math.max(0, Number(label?.priority) || 0);

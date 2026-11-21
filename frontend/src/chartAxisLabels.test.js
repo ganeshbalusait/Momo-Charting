@@ -130,3 +130,25 @@ test("MTF MA names never swallow the LIVE chip and merged chips stay short", () 
   assert.equal(wall.title, "15 10/16 · 50eWk · 200eWk · +4");
   assert.match(wall.title, /\+\d+$/, "hidden names are counted, not silently dropped");
 });
+
+// 2026-11-20: Fib tags were in the lowest band, so on a busy 5-minute chart
+// every pivot / MA tag beat them and no Fib tag showed at all. They now sit
+// just above the pivots (below OI walls and session levels).
+test("a Fib tag wins its row over a pivot tag, and the pivot joins it", () => {
+  const laid = layoutChartAxisLabels([
+    { key: "pivot-day-R1", title: "D R1", top: 100, mergeWhenBlocked: true },
+    { key: "fib-swing-127.09", title: "M Fib 50% (127.09)", top: 104 },
+  ], { paneHeight: 400 });
+  const chip = laid.find((label) => String(label.key).startsWith("fib-swing-") || (label.parts || []).some((part) => String(part.key).startsWith("fib-swing-")));
+  assert.ok(chip, JSON.stringify(laid));
+  assert.equal(chip.top, 104, "the Fib tag keeps its own row");
+});
+
+test("an OI wall still beats a Fib tag", () => {
+  const laid = layoutChartAxisLabels([
+    { key: "fib-swing-127.09", title: "M Fib 50% (127.09)", top: 104 },
+    { key: "oi-wall-call-127", title: "4K 11/20", top: 100, preservePricePosition: true },
+  ], { paneHeight: 400 });
+  assert.ok(laid.some((label) => label.key === "oi-wall-call-127"));
+  assert.ok(!laid.some((label) => label.key === "fib-swing-127.09"), "the Fib tag hides behind the wall");
+});

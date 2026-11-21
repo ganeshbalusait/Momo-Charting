@@ -158,7 +158,8 @@ def test_first_paint_is_slim_and_says_history_is_still_loading(charts):
     assert body["initialSlim"] is True and body["historyLoading"] is True
     assert len(body["bars"]) == DashboardState.OI_CHART_INITIAL_BAR_COUNT
     assert times(body["bars"]) == times(full["bars"][-DashboardState.OI_CHART_INITIAL_BAR_COUNT:])
-    assert len(body["dailyBars"]) == DashboardState.OI_CHART_INITIAL_DAILY_BAR_COUNT
+    assert len(body["dailyBars"]) == min(len(full["dailyBars"]), DashboardState.OI_CHART_INITIAL_DAILY_BAR_COUNT)
+    assert body["dailyBars"] == full["dailyBars"][-DashboardState.OI_CHART_INITIAL_DAILY_BAR_COUNT:]
     assert len(body["fineStudyBars"]) == DashboardState.OI_CHART_INITIAL_FINE_BAR_COUNT
     # The deep tapes and the 20-year signal replay never ride the first paint.
     assert "studyBars" not in body and "ganeshHigherTimeframeSignals" not in body

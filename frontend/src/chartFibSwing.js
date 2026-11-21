@@ -188,6 +188,37 @@ export function buildFibSwingStudies(chartBars, chartMinutes, options = {}, cont
     .filter(Boolean);
 }
 
+// One price tag per price (2026-11-20, his NVDA W/D charts: three tags at
+// 243.37 were glued into one line that ran into the MACD tags). Levels at the
+// same price, rounded to the cent, share one tag; the same ratio from several
+// swings reads "M/W Fib 0%", different ratios are joined by " · ".
+export function fibSwingAxisLabels(studies) {
+  const byPrice = new Map();
+  (Array.isArray(studies) ? studies : []).forEach((study) => {
+    (study?.levels || []).forEach((level) => {
+      const price = Number(level.price);
+      if (!Number.isFinite(price)) return;
+      const key = price.toFixed(Math.abs(price) < 1 ? 4 : 2);
+      if (!byPrice.has(key)) byPrice.set(key, { price, color: level.color, parts: [] });
+      byPrice.get(key).parts.push({ source: study.source, ratio: level.ratio });
+    });
+  });
+  return [...byPrice.entries()].map(([priceText, entry]) => {
+    const byRatio = new Map();
+    entry.parts.forEach(({ source, ratio }) => {
+      if (!byRatio.has(ratio)) byRatio.set(ratio, []);
+      const sources = byRatio.get(ratio);
+      if (!sources.includes(source)) sources.push(source);
+    });
+    const text = [...byRatio.entries()].map(([ratio, sources]) => {
+      const named = sources.filter((source) => source !== "own");
+      const prefix = named.length ? named.join("/") + " Fib" : "Fib";
+      return `${prefix} ${formatFibRatio(ratio)}`;
+    }).join(" · ");
+    return { key: "fib-swing-" + priceText, price: entry.price, color: entry.color, title: `${text} (${priceText})` };
+  });
+}
+
 export function buildFibSwingStudy(chartBars, chartMinutes, options = {}, { historyLoading = false, dailyBars = null } = {}) {
   const chart = Array.isArray(chartBars) ? chartBars : [];
   const intraday = Number(chartMinutes) < 1440;
