@@ -108,6 +108,10 @@ def test_route_daily_tape_gives_monthly_weekly_daily_fib_levels():
     # Daily: the last 252 days miss both spikes, so the swing is the ordinary range.
     assert daily["swing"]["high"] < 240.8 and daily["swing"]["low"] > 14.0
 
+    # The default Monthly swing ("M Fib") reads the same on every chart.
+    for timeframe in (monthly, weekly, daily):
+        assert timeframe["mFib50"] == "M Fib 50% (127.40)", timeframe["mFib50"]
+
     # Weekly / Monthly AutoFib: buckets line up one-to-one with the chart's candles,
     # and there are 20+ of them to take the TOS 20-bar high / low from.
     for timeframe in (monthly, weekly):

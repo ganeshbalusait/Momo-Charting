@@ -6,6 +6,7 @@ import { createScannerRequestScope, isAbortError } from "./scannerRequestScope.j
 import { readScannerBoard } from "./scannerBoardRead.js";
 import { directionCounts, otherDirectionUrl, otherSideRows, showsDirectionCounts } from "./momxDirectionCounts.js";
 import { createLiveRowProjector, liveQuote } from "./scannerLiveRows.js";
+import { PHONE_SKITTLES_TFS, phoneRowSummary, phoneSkittlesStyle } from "./momxPhoneCard.js";
 import { subscribePendingScannerLink, takePendingScannerLink } from "./appLinks.js";
 
 function useScannerReadFetch() {
@@ -954,6 +955,21 @@ function cellBody(cell, format) {
   if (!painted) return text;
   return (
     <span className="momx-pill" style={style}>
+      {text}
+    </span>
+  );
+}
+
+// Skittles 2h..Mo in his sample's value colours, on the Table as on the Cards
+// ("Column try to update ... see the sample image ... don't remove or change
+// columns", 2026-11-20, phone and desktop). The number, the column and its
+// sort are unchanged; only how the number is drawn (momxPhoneCard.js).
+function skittlesBox(cell, format) {
+  const text = cellText(cell, format);
+  if (text === "" || text === null || text === undefined) return text;
+  const style = phoneSkittlesStyle(cell.value, hasPaintedBackground(cell));
+  return (
+    <span className={"momx-skit-box is-" + style.kind} style={{ "--skit": style.color }}>
       {text}
     </span>
   );
@@ -3029,10 +3045,11 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
                   : rvolSaturationNote(cell) || undefined)
               : undefined}
             // Foreground only: the BACKGROUND rides on the pill inside, which
-            // is what lets it have rounded corners at all.
-            style={{ color: cellStyle(cell).color }}
+            // is what lets it have rounded corners at all. Skittles draw their
+            // own value-coloured box (his sample, 2026-11-20).
+            style={column.section === "skittles" ? undefined : { color: cellStyle(cell).color }}
           >
-            {cellBody(cell, column.format)}
+            {column.section === "skittles" ? skittlesBox(cell, column.format) : cellBody(cell, column.format)}
             {/* WHEN the volume behind this reading arrived. Only on RVOL
                 cells that are already visible - his ladder blacks out weak
                 readings on purpose, and annotating those would un-blank all
@@ -3086,6 +3103,165 @@ const MomxRow = memo(function MomxRow({ row, isNew, showNewTag, sinceLabel, live
     </tr>
   );
 });
+
+// ---------------------------------------------------------------------------
+// Phone cards (2026-11-20, his sample scanner: "Build it image looks good").
+// On a phone the board is two-line cards instead of the wide table, so every
+// ticker's % change, signals and Skittles fit on one screen without a
+// sideways swipe. Colours are the TOS study's own (momxPhoneCard.js).
+// ---------------------------------------------------------------------------
+const MOMX_PHONE_QUERY = "(max-width: 760px)";
+// "Don't remove column" (2026-11-20): on a phone the full table stays the
+// default; the cards are an optional view he switches to.
+const MOMX_PHONE_VIEW_KEY = "momx.scanner.phoneView";
+
+function readPhoneView() {
+  try {
+    return window.localStorage.getItem(MOMX_PHONE_VIEW_KEY) === "cards" ? "cards" : "table";
+  } catch {
+    return "table";
+  }
+}
+
+function writePhoneView(view) {
+  try {
+    window.localStorage.setItem(MOMX_PHONE_VIEW_KEY, view);
+  } catch {
+    // Private mode: the choice lasts for this visit only.
+  }
+}
+
+function useMomxPhone() {
+  const [phone, setPhone] = useState(() => {
+    try {
+      return window.matchMedia(MOMX_PHONE_QUERY).matches;
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    let mq;
+    try {
+      mq = window.matchMedia(MOMX_PHONE_QUERY);
+    } catch {
+      return undefined;
+    }
+    const onChange = () => setPhone(mq.matches);
+    onChange();
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
+  return phone;
+}
+
+function MomxPhoneHead() {
+  return (
+    <div className="momx-phone-head" aria-hidden="true">
+      <span>Industry</span>
+      <span>Symbol</span>
+      <span>H/L</span>
+      {PHONE_SKITTLES_TFS.map(([tf, label]) => <span key={tf}>{label}</span>)}
+    </div>
+  );
+}
+
+const MomxPhoneCard = memo(function MomxPhoneCard({ row, nowMs, bolt, isNew, showNewTag, onOpenCard, onNewsToggle }) {
+  const summary = phoneRowSummary(row, nowMs);
+  if (!summary) return null;
+  const fires = firesOf(row);
+  const tags = strategyTags(row, nowMs).filter((tag) => !(tag.key === "sqzmom" && !tag.strong));
+  const confirmation = scannerConfirmationShown(row, nowMs, tags);
+  const tagTexts = [
+    confirmation.level > 0 ? "Confirm L" + confirmation.level : null,
+    ...tags.filter((tag) => tag.key !== "bolt").map((tag) => tag.text),
+  ].filter(Boolean).slice(0, 2);
+  const classes = ["momx-phone-card", "is-" + (summary.tone || "flat")];
+  classes.push(row.scanPass ? "is-pass" : "is-muted");
+  if (isNew) classes.push("is-new-match");
+  return (
+    <div className={classes.join(" ")} data-testid="momx-phone-card" data-symbol={summary.symbol}>
+      <div className="momx-phone-meta">
+        <span className={"momx-phone-pct is-" + (summary.tone || "flat")}>{summary.pctText}</span>
+        {fires.length > 0 || (bolt && bolt.on) ? (
+          <button
+            type="button"
+            className={"momx-phone-bolt" + (bolt && bolt.on ? " is-live" : "")}
+            aria-label={"Open the " + summary.symbol + " card"}
+            onClick={() => summary.symbol && onOpenCard(summary.symbol)}
+          >
+            <Zap size={12} aria-hidden="true" />
+          </button>
+        ) : null}
+        {summary.news ? (
+          <button
+            type="button"
+            className={"momx-phone-news" + (summary.news.scope === "market-wide" ? " is-market" : "")}
+            aria-label={"News: " + summary.news.headline}
+            title={newsBadgeTitle(summary.news)}
+            onClick={() => onNewsToggle && onNewsToggle(summary.symbol)}
+          >
+            <Newspaper size={11} aria-hidden="true" />
+            {summary.newsAge}
+          </button>
+        ) : null}
+        {tagTexts.map((text) => <span key={text} className="momx-phone-tag">{text}</span>)}
+        {showNewTag ? <span className="momx-new-tag">NEW</span> : null}
+        <span className="momx-phone-dots" title="RVOL 5m-1h · RVOL 2h-D · SQZ 2h-W">
+          {summary.dots.map((group, index) => (
+            <span key={index} className="momx-phone-dot-group">
+              {group.map((dot) => (
+                <i key={dot.section + dot.tf} className={dot.color ? "is-lit" : ""} style={dot.color ? { background: dot.color } : undefined} />
+              ))}
+            </span>
+          ))}
+        </span>
+      </div>
+      <div className="momx-phone-main">
+        <span className="momx-phone-industry" style={{ "--momx-pill": summary.industryColor || undefined }} title={summary.industry}>
+          {summary.industry}
+        </span>
+        <MomxSymbolLink className={"momx-symbol momx-phone-symbol is-" + (summary.tone || "flat")} symbol={summary.symbol} />
+        <span className="momx-phone-hl">{hlBlock(row && row.highLow)}</span>
+        {summary.skittles.map((cell) => (
+          <span
+            key={cell.tf}
+            className={"momx-phone-skit is-" + cell.kind + (cell.painted ? " is-painted" : "") + (cell.fresh ? " is-fresh" : "")}
+            style={cell.text ? { "--skit": cell.color } : undefined}
+            title={"Skittles " + cell.label + (cell.fresh ? " - crossed in the last 15 minutes" : "")}
+            data-tf={cell.tf}
+          >
+            {cell.text}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+});
+
+function MomxPhoneBoard({ rows, nowMs, emptyMessage, bolts, freshSet, newTags, onOpenCard, onNewsToggle, testId = "momx-phone-board" }) {
+  // The clock to the minute: every card is memoised, and a clock that changes
+  // on every 15 s poll re-drew all 370 Watchlist cards each time.
+  const minuteMs = Math.floor(Number(nowMs) / 60_000) * 60_000;
+  return (
+    <div className="momx-phone-board" data-testid={testId}>
+      <MomxPhoneHead />
+      {!rows || rows.length === 0 ? (
+        <p className="momx-phone-empty">{emptyMessage}</p>
+      ) : rows.map((row, index) => (
+        <MomxPhoneCard
+          key={(row && row.symbol) || "row-" + index}
+          row={row}
+          nowMs={minuteMs}
+          bolt={bolts ? bolts[row && row.symbol] || null : null}
+          isNew={Boolean(freshSet && freshSet.has(row && row.symbol))}
+          showNewTag={Boolean(newTags && newTags.has(row && row.symbol))}
+          onOpenCard={onOpenCard}
+          onNewsToggle={onNewsToggle}
+        />
+      ))}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // History - the 30-day archive of what the scan matched.
@@ -4354,6 +4530,13 @@ export { MomxHistoryRow, MOMX_HISTORY_COLUMNS };
 export default memo(MomxScannerPanel);
 function MomxScannerPanel({ initialList = null, embedded = false, background = false }) {
   const fetch = useScannerReadFetch();
+  const isPhone = useMomxPhone();
+  const [phoneView, setPhoneView] = useState(readPhoneView);
+  const changePhoneView = useCallback((view) => {
+    setPhoneView(view);
+    writePhoneView(view);
+  }, []);
+  const phoneCards = isPhone && phoneView === "cards";
   // `embedded` = this board is inside a pop-out window. It owns no windows of
   // its own (that would recurse), shows no pop-out button, and - the one that
   // silently breaks the main page if forgotten - never writes the shared
@@ -7412,6 +7595,14 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
               <span>H/L⚡ sort</span>
             </label>
           )}
+          {/* Phone only: the Cards view as one more tick box in this row, so the
+              board does not lose two rows of height to a separate switch. */}
+          {isPhone && !newsOnly ? (
+            <label className="momx-toggle" data-testid="momx-phone-view-switch" title="Show the board as two-line cards. Untick for the full table with every column.">
+              <input type="checkbox" checked={phoneView === "cards"} onChange={(event) => changePhoneView(event.target.checked ? "cards" : "table")} />
+              <span>Cards</span>
+            </label>
+          ) : null}
           {embedded ? null : (
             <label className="momx-toggle" title="MomoX-style: when a GO / OPT / SOLO / TURN / 🔥 leader fires, its card pops up by itself (once per ticker per day, up to 3 at a time, wide screens only)">
               <input
@@ -7727,6 +7918,22 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
         />
       ) : null}
 
+      {phoneCards ? (
+        <MomxPhoneBoard
+          rows={visibleRows}
+          nowMs={rowClockMs}
+          emptyMessage={emptyMessage}
+          bolts={bear ? null : liveBolts}
+          freshSet={freshMatchSet}
+          newTags={new Set(visibleRows.filter((row) => {
+            if (!row || scannerRowFreshness(row, rowClockMs)) return false;
+            const matched = matchedSinceLabel(row.matchedSince, rowClockMs);
+            return matched ? matched.isNew : freshMatchSet.size > 0 && freshMatchSet.has(row.symbol);
+          }).map((row) => row.symbol))}
+          onOpenCard={onOpenCard}
+          onNewsToggle={onNewsToggle}
+        />
+      ) : (
       <div className="momx-table-scroll">
         <table ref={livePin.tableRef} className="momx-table" {...livePin.tableAttrs}>
           <thead>
@@ -7858,6 +8065,7 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Mag7: the other side's scan matches right under the board, so BULL
           and BEAR are both on screen without the switch (2026-11-16). */}
@@ -7870,6 +8078,19 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
               {activeList} {otherSide === "bear" ? "bear scan · biggest losers first" : "bull scan · biggest gainers first"}
             </small>
           </p>
+          {phoneCards ? (
+            <MomxPhoneBoard
+              rows={otherRows || []}
+              nowMs={rowClockMs}
+              emptyMessage={otherRows == null
+                ? "Reading the " + otherSide + " scan..."
+                : "No " + activeList + " ticker passes the " + otherSide + " scan right now."}
+              bolts={null}
+              onOpenCard={onOpenCard}
+              onNewsToggle={onNewsToggle}
+              testId="momx-phone-board-other"
+            />
+          ) : (
           <div className="momx-table-scroll">
             <table className="momx-table momx-other-side-table">
               <thead>
@@ -7923,6 +8144,7 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
               </tbody>
             </table>
           </div>
+          )}
         </div>
       ) : null}
 

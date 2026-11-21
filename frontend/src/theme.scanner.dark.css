@@ -1705,3 +1705,80 @@
 :root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-breakout-note {
   color: #a1a1a6;
 }
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-head {
+  color: #a1a1a6;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-head > span:nth-child(2) {
+  color: #e8ecf4;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-empty {
+  color: #a1a1a6;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-pct.is-up {
+  color: #3dff6e;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-pct.is-down {
+  color: #ff2bd6;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-bolt,
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-news {
+  color: #a1a1a6;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-bolt {
+  color: #8a7a3a;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-bolt.is-live {
+  color: #ffd23f;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-tag {
+  color: #22d3ee;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-card.is-down .momx-phone-tag {
+  color: #ff2bd6;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-industry {
+  color: var(--momx-pill, #9aa4b2);
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-board .momx-phone-symbol.is-up {
+  color: #22d3ee;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-board .momx-phone-symbol.is-down {
+  color: #ff2bd6;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-skit-box.is-fill {
+  color: #05070b;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-skit-box.is-outline {
+  color: var(--skit);
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-skit-box.is-text {
+  color: var(--skit);
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-skit.is-fill {
+  color: #05070b;
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-skit.is-outline {
+  color: var(--skit);
+}
+
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-phone-skit.is-text {
+  color: var(--skit);
+}

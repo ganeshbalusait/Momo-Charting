@@ -110,7 +110,7 @@ import { withoutDailySeedBadPrints } from "./chartBadPrints.js";
 import { setItemMakingRoom } from "./storageRoom.js";
 import { pruneOversizedBoardCaches } from "./momxCells.js";
 import { WOODIES_DEFAULTS, WOODIES_LEVELS, WOODIES_TIMEFRAMES, buildWoodiesPivots } from "./woodiesPivots.js";
-import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, autoFibCalendarBars, autoFibCalendarKey, autoFibTimeframeAllowed, buildFibSwingStudy } from "./chartFibSwing.js";
+import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, autoFibCalendarBars, autoFibCalendarKey, autoFibTimeframeAllowed, buildFibSwingStudies } from "./chartFibSwing.js";
 import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartDeepHistoryPending, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
 import { CHART_TOUCH_ALERT_HOLD_MS, touchAlertGestureShouldCancel } from "./chartTouchAlert";
 import { CLOUD_BAND_STUDIES, calculateTosCloudBandPoints } from "./cloudBandStudy";
@@ -17009,12 +17009,12 @@ function OiFinderCandleChart({
       stageAutoFibReady,
     ],
   );
-  // Big swing Fib (chartFibSwing.js): Daily / Weekly / Monthly charts only.
-  const fibSwingStudy = useMemo(
+  // Big swing Fib (chartFibSwing.js): every chart; intraday = last N trading days.
+  const fibSwingStudies = useMemo(
     () => (indicatorSettings.fibSwing === true
-      ? buildFibSwingStudy(chartBars, selectedTimeframe.minutes, indicatorOptions, { historyLoading: chartHistoryLoading })
-      : null),
-    [chartBars, chartHistoryLoading, indicatorOptions, indicatorSettings.fibSwing, selectedTimeframe.minutes],
+      ? buildFibSwingStudies(chartBars, selectedTimeframe.minutes, indicatorOptions, { historyLoading: chartHistoryLoading, dailyBars })
+      : []),
+    [chartBars, chartHistoryLoading, dailyBars, indicatorOptions, indicatorSettings.fibSwing, selectedTimeframe.minutes],
   );
   const mtfSqueeze410Study = useMemo(
     () => stageMtfSqueeze410Ready
@@ -20249,7 +20249,10 @@ function OiFinderCandleChart({
           // full re-render every second). Its appearing or leaving still shifts the
           // signature because its key enters or leaves this list.
           ? `${label.key}:live`
-          : `${label.key || label.title}:${Number(label.price).toFixed(6)}`))
+          // The TITLE too: a chip that merged a neighbour ("dL · D Fib 0%")
+          // keeps its key and price when that neighbour is switched off, so
+          // without the title the stale merged text stayed on screen.
+          : `${label.key || ""}|${label.title || ""}:${Number(label.price).toFixed(6)}`))
         .join("|");
       if (nextSignature === lastIndicatorAxisLabelsSignature) return;
       lastIndicatorAxisLabelsSignature = nextSignature;
@@ -21595,6 +21598,9 @@ function OiFinderCandleChart({
       ganeshSignalVisualSignature(projectedGaneshHigherTimeframeSignals),
       `${gradeTapeEntries.length}:${gradeTapeEntries.at(-1)?.t ?? ""}`,
       `bear:${bearGradeTapeEntries.length}:${bearGradeTapeEntries.at(-1)?.t ?? ""}`,
+      // Big swing Fib: a settings change (M/W/D on or off) landing on a tick
+      // render must redraw its lines and tags, not just move the last candle.
+      fibSwingStudies.map((study) => `${study.source}:${study.levels.map((level) => level.price).join("/")}`).join(","),
     ].join("|");
     const nativeLiveOverlayChanged = nativeLiveOverlaySignatureRef.current !== nativeLiveOverlaySignature;
     nativeLiveOverlaySignatureRef.current = nativeLiveOverlaySignature;
@@ -22677,7 +22683,7 @@ function OiFinderCandleChart({
       mtfSqueezeCloudStudy,
       mtfCloudBandStudy,
       autoFibStudies,
-      fibSwingStudy,
+      fibSwingStudies,
       ichimokuStudies,
       cloudMaxMtfStudy,
       relativeVolumeCandleStudy,
@@ -22770,16 +22776,14 @@ function OiFinderCandleChart({
           }))
           : []),
         // Big swing Fib: the 50% - 61.8% zone, shaded like his TradingView chart.
-        ...(fibSwingStudy?.zone?.fast?.length
-          ? [{
-            key: "fib-swing-zone",
-            fast: fibSwingStudy.zone.fast,
-            slow: fibSwingStudy.zone.slow,
-            bullColor: fibSwingStudy.zone.color,
-            bearColor: fibSwingStudy.zone.color,
-            opacity: fibSwingStudy.zone.opacity,
-          }]
-          : []),
+        ...fibSwingStudies.filter((study) => study.zone?.fast?.length).map((study) => ({
+          key: "fib-swing-zone-" + study.source,
+          fast: study.zone.fast,
+          slow: study.zone.slow,
+          bullColor: study.zone.color,
+          bearColor: study.zone.color,
+          opacity: study.zone.opacity,
+        })),
       ];
       const nativeOneSidedClouds = [
         ...mtfOneSidedCloudStudy,
@@ -22869,14 +22873,16 @@ function OiFinderCandleChart({
             })
             : []),
           // Big swing Fib levels: from the swing's first candle to the axis chip.
-          ...(fibSwingStudy?.levels || []).map((level) => ({
+          ...fibSwingStudies.flatMap((fibSwingStudy) => fibSwingStudy.levels.map((level) => ({
             price: level.price,
             color: level.color,
-            lineWidth: level.inZone ? 2 : 1,
+            // Solid and bright (his phone, 2026-11-20: thin grey dashes were
+            // invisible over the EMA clouds).
+            lineWidth: level.inZone ? 3 : 2,
             startTime: fibSwingStudy.swing.startTime,
             labelText: level.label,
-            dash: level.inZone || level.ratio === 0 || level.ratio === 1 ? [] : [4, 3],
-          })),
+            dash: [],
+          }))),
           // WoodiesPivots (his 2026-10-09 ask: "very little line... cannot see
           // properly"): on the Daily chart the current 4-day block is only one
           // or two candles, so each level runs across the whole chart, 2px,
@@ -23144,9 +23150,9 @@ function OiFinderCandleChart({
       // two extra names, so a crowded pane cannot grow a pane-wide label.
       addIndicatorName(label.price, label.title, label.color, label.visible, label.key, { mergeWhenBlocked: true });
     });
-    (fibSwingStudy?.levels || []).forEach((level) => {
-      addIndicatorName(level.price, level.label, level.color, true, `fib-swing-${level.ratio}`, { mergeWhenBlocked: true });
-    });
+    fibSwingStudies.forEach((study) => study.levels.forEach((level) => {
+      addIndicatorName(level.price, level.label, level.color, true, `fib-swing-${study.source}-${level.ratio}`, { mergeWhenBlocked: true });
+    }));
     if (indicatorSettings.previousOhlcLevels && sessionLevelsStudy) {
       const sideColor = (price) => (
         Number(price) >= Number(latestBar?.close || 0) ? "#ff00ff" : "#00ffff"
@@ -23341,7 +23347,7 @@ function OiFinderCandleChart({
       hostElement.dataset.applyRuns = String(applyDiag.applyRuns);
       hostElement.dataset.applyTotalMs = String(applyDiag.applyTotalMs);
     }
-  }, [chartBars, disableKineticScroll, tosMtfSignals, tosMtfSignalsByTimeframe, projectedGaneshHigherTimeframeSignals, expectedMoveRange, wallLevels, easternDateFormatter, sessionWindows, sessionTimeMarkers, symbol, normalizedChartSymbol, symbolAlerts, indicatorSettings, indicatorOptions, previousOhlcStudy, selectedTimeframe.minutes, mtfOneSidedCloudStudy, mtfMacdTrendCloudStudy, mtfEma920CloudStudy, mtfSqueezeCloudStudy, mtfCloudBandStudy, relativeVolumeCandleStudy, stochasXStudy, cloudMaxMtfStudy, autoFibStudies, fibSwingStudy, ichimokuStudies, mtfAdxStudies, squeezeMomentumLowerStudy, mtfSqueeze410Study, pivotPointsStudy, woodiesPivotsStudy, personsPivotsStudy, mtfMaLevelsStudy, sessionLevelsStudy, gradeTapeEntries, bearGradeTapeEntries, gradeEntriesFor]);
+  }, [chartBars, disableKineticScroll, tosMtfSignals, tosMtfSignalsByTimeframe, projectedGaneshHigherTimeframeSignals, expectedMoveRange, wallLevels, easternDateFormatter, sessionWindows, sessionTimeMarkers, symbol, normalizedChartSymbol, symbolAlerts, indicatorSettings, indicatorOptions, previousOhlcStudy, selectedTimeframe.minutes, mtfOneSidedCloudStudy, mtfMacdTrendCloudStudy, mtfEma920CloudStudy, mtfSqueezeCloudStudy, mtfCloudBandStudy, relativeVolumeCandleStudy, stochasXStudy, cloudMaxMtfStudy, autoFibStudies, fibSwingStudies, ichimokuStudies, mtfAdxStudies, squeezeMomentumLowerStudy, mtfSqueeze410Study, pivotPointsStudy, woodiesPivotsStudy, personsPivotsStudy, mtfMaLevelsStudy, sessionLevelsStudy, gradeTapeEntries, bearGradeTapeEntries, gradeEntriesFor]);
 
   // Only a ticker change or older REST backfill is an opening-layout event.
   // Appending a live candle must preserve the current zoom and pan.
@@ -23996,7 +24002,7 @@ function OiFinderCandleChart({
               ["stochasX", "StochasX", "shared_StochasX_v20263 • FullD 8/8 weighted • red ^ crossing below 90, lime v crossing above 10 • last 2 days"],
               ["cloudMaxMtf", "CloudMAX MTF EMA 1/5/15", "shared_CloudMAX_MTF_EMA_1_5_15_v22 • EMA clouds, arrows, and bubbles"],
               ["autoFibSingleTf", "AutoFib — Single TF", "shared_AutoFib_SingleTF_v20263 • 38.2%, 50%, and 61.8% retracement cloud • 5m through Monthly"],
-              ["fibSwing", "Big swing Fib (D/W/M)", "TradingView-style retracement • lowest low to highest high of the last 252 days / 104 weeks / 60 months • 50%–61.8% zone shaded"],
+              ["fibSwing", "Big swing Fib", "TradingView-style retracement • the Monthly, Weekly and Daily swings together on every timeframe, tagged M / W / D Fib • 50%–61.8% zones shaded"],
               ["ichimoku", "Ichimoku", "TOS study • Tenkan/Kijun, Span A/B, crosses, clouds, and Chikou"],
               ["mtfAdxCloudsLower", "MTF ADX Clouds (Lower)", "shared_MTF_ADXClouds_v225 • DI/ADX clouds • Current + five aggregations"],
               ["squeezeMomentumLower", "Squeeze Momentum (Lower)", "shared_SqueezeChain24 • TTM Squeeze LINE_VS_POINTS in a lower pane"],
@@ -24365,14 +24371,20 @@ function OiFinderCandleChart({
                     </> : null}
                     {key === "fibSwing" ? <>
                       <p>Lowest low to highest high of the last N candles. The newer of the two is 0%.</p>
+                      <p>Swings drawn on every chart, together:</p>
+                      {[["fibSwingShowM", "Monthly (M Fib)"], ["fibSwingShowW", "Weekly (W Fib)"], ["fibSwingShowD", "Daily (D Fib)"]].map(([optionKey, optionLabel]) => (
+                        <label key={optionKey}><input type="checkbox" checked={indicatorOptions[optionKey] !== false} onChange={() => setIndicatorOption(optionKey, indicatorOptions[optionKey] === false)} /><span>{optionLabel}</span></label>
+                      ))}
+                      <label><input type="checkbox" checked={indicatorOptions.fibSwingShowOwn === true} onChange={() => setIndicatorOption("fibSwingShowOwn", indicatorOptions.fibSwingShowOwn !== true)} /><span>This chart's own candles (Fib)</span></label>
+                      <label><input type="checkbox" checked={indicatorOptions.fibSwingIntraday !== false} onChange={() => setIndicatorOption("fibSwingIntraday", indicatorOptions.fibSwingIntraday === false)} /><span>Show on minute and hour charts</span></label>
+                      <label><span>Trading days (own candles, minute / hour charts)</span><input type="number" min="1" max="60" value={indicatorOptions.fibSwingIntradayDays} onChange={(event) => setIndicatorOption("fibSwingIntradayDays", Math.max(1, Math.min(60, Number(event.target.value) || 5)))} /></label>
                       <label><span>Daily candles</span><input type="number" min="10" max="1000" value={indicatorOptions.fibSwingDayBars} onChange={(event) => setIndicatorOption("fibSwingDayBars", Math.max(10, Math.min(1000, Number(event.target.value) || 252)))} /></label>
                       <label><span>Weekly candles</span><input type="number" min="10" max="1000" value={indicatorOptions.fibSwingWeekBars} onChange={(event) => setIndicatorOption("fibSwingWeekBars", Math.max(10, Math.min(1000, Number(event.target.value) || 104)))} /></label>
                       <label><span>Monthly candles</span><input type="number" min="10" max="1000" value={indicatorOptions.fibSwingMonthBars} onChange={(event) => setIndicatorOption("fibSwingMonthBars", Math.max(10, Math.min(1000, Number(event.target.value) || 60)))} /></label>
                       <label><input type="checkbox" checked={indicatorOptions.fibSwingShowAllLevels !== false} onChange={() => setIndicatorOption("fibSwingShowAllLevels", indicatorOptions.fibSwingShowAllLevels === false)} /><span>Show 23.6% / 38.2% / 78.6% too</span></label>
                       <label><span>Zone after a rise</span><input type="color" value={indicatorOptions.fibSwingUpColor} onChange={(event) => setIndicatorOption("fibSwingUpColor", event.target.value)} /></label>
                       <label><span>Zone after a fall</span><input type="color" value={indicatorOptions.fibSwingDownColor} onChange={(event) => setIndicatorOption("fibSwingDownColor", event.target.value)} /></label>
-                      <label><span>Other levels</span><input type="color" value={indicatorOptions.fibSwingLineColor} onChange={(event) => setIndicatorOption("fibSwingLineColor", event.target.value)} /></label>
-                      <label><span>Zone opacity</span><input type="range" min="5" max="55" value={indicatorOptions.fibSwingZoneOpacity} onChange={(event) => setIndicatorOption("fibSwingZoneOpacity", Number(event.target.value))} /></label>
+                      <label><span>Zone opacity</span><input type="range" min="28" max="60" value={indicatorOptions.fibSwingZoneOpacity} onChange={(event) => setIndicatorOption("fibSwingZoneOpacity", Number(event.target.value))} /></label>
                     </> : null}
                     {key === "pivotPoints" ? <>
                       <label><input type="checkbox" checked={indicatorOptions.pivotPointsDay !== false} onChange={() => setIndicatorOption("pivotPointsDay", indicatorOptions.pivotPointsDay === false)} /><span>Day pivots</span></label>

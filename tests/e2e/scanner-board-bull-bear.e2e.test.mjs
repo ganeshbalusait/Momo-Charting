@@ -29,7 +29,8 @@ e2eTest("BULL -> BEAR: the next board read asks for the bear board and the bear 
     assert.equal((await toggle.innerText()).split(/\s+/)[0].trim(), "BEAR", "the label; Mag7 counts follow it");
     assert.match(await toggle.getAttribute("class"), /\bis-bear\b/);
     await app.page.waitForFunction(() => {
-      const symbols = [...document.querySelectorAll("tr.momx-row [data-testid='momx-symbol-link']")].map((b) => b.textContent.trim());
+      // The main board only; Mag7's other-side table (2026-11-16) sits under it.
+      const symbols = [...document.querySelectorAll("table.momx-table:not(.momx-other-side-table) tr.momx-row [data-testid='momx-symbol-link']")].map((b) => b.textContent.trim());
       return symbols.length === 1 && symbols[0] === "SPY";
     }, null, { timeout: 15_000 });
     // (On Mag7 the page also reads the OTHER side every poll for the BULL n /
@@ -57,7 +58,7 @@ e2eTest("BEAR is remembered after a reload, and flipping back reads the bull boa
     const before = app.reads.length;
     await toggle.click();
     await app.page.waitForFunction((sel) => document.querySelector(sel)?.textContent.trim().startsWith("BULL"), TOGGLE);
-    await app.page.waitForFunction(() => document.querySelectorAll("tr.momx-row").length === 2, null, { timeout: 15_000 });
+    await app.page.waitForFunction(() => document.querySelectorAll("table.momx-table:not(.momx-other-side-table) tr.momx-row").length === 2, null, { timeout: 15_000 });
     const after = app.reads.slice(before).filter((read) => read.path === "/api/momx-scanner");
     assert.ok(after.some((read) => !/dir=bear/.test(read.search)), JSON.stringify(after));
     assert.deepEqual(app.pageErrors, []);

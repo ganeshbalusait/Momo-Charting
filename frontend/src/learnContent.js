@@ -273,7 +273,7 @@ export const LEARN_SECTIONS = Object.freeze([
           { term: "Session Time Lines", meaning: "Vertical Eastern-time markers for the session boundaries." },
           { term: "Extended Sessions", meaning: "Shading behind the pre-market and after-hours candles so you can tell them apart at a glance." },
           { term: "AutoFib", meaning: "Draws the 38.2%, 50% and 61.8% retracement zone of the current swing for you, without you dragging anything." },
-          { term: "Big swing Fib", meaning: "On Daily, Weekly and Monthly charts: Fib levels from the lowest low to the highest high of the last year, two years or five years, with the 50% to 61.8% zone shaded, like a TradingView Fib drawn by hand." },
+          { term: "Big swing Fib", meaning: "The Monthly, Weekly and Daily Fibs (lowest low to highest high of the last five years, two years and one year) drawn together on every chart from 5 minutes to Monthly, tagged \"M Fib\", \"W Fib\" and \"D Fib\", with each 50% to 61.8% zone shaded, like a TradingView Fib drawn by hand. Each can be ticked off in its settings." },
           { term: "Relative Volume Candles", meaning: "Prints a small relative-volume number under each candle, so an unusually heavy bar stands out." },
           { term: "TOS candle colours", meaning: "The reference candle colouring, so a candle's body already tells you the short-term momentum state." },
         ],

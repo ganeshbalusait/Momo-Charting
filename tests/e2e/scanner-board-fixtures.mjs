@@ -175,11 +175,14 @@ export const BOARD_STORAGE = {
 
 export async function boardReady(page) {
   await page.locator("[data-testid='momx-scanner-panel']").first().waitFor({ timeout: 60_000 });
-  await page.locator("tr.momx-row, td.momx-empty").first().waitFor({ timeout: 60_000 });
+  // A phone shows two-line cards instead of the table (2026-11-20).
+  await page.locator("tr.momx-row, td.momx-empty, [data-testid='momx-phone-card'], .momx-phone-empty").first().waitFor({ timeout: 60_000 });
 }
 
 export async function rowSymbols(page) {
-  return page.locator("table.momx-table:not(.momx-history-table) tbody tr.momx-row td.momx-col-symbol [data-testid='momx-symbol-link']").allInnerTexts();
+  // The main board only: on Mag7 the other side's matches sit in their own
+  // table under it (2026-11-16), and those rows are not this board's.
+  return page.locator("table.momx-table:not(.momx-history-table):not(.momx-other-side-table) tbody tr.momx-row td.momx-col-symbol [data-testid='momx-symbol-link']").allInnerTexts();
 }
 
 export async function liveHeaderKeys(page, tableSelector = "table.momx-table:not(.momx-history-table):not(.momx-find-table)") {

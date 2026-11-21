@@ -2,6 +2,27 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-20T22:02:18-05:00",
+      "heading": "Charts: Monthly, Weekly and Daily Fibs (M / W / D Fib) together on every chart",
+      "items": [
+        "The Monthly, Weekly and Daily Fibs now show together on every chart, 5 minutes up to Monthly, like your TradingView chart. Each tag says which one it is: \"M Fib 50% (127.09)\", \"W Fib 50% (165.00)\", \"D Fib ...\". NVDA Monthly: 50% at $127.09 and 61.8% at $99.65, with the zone between them shaded.",
+        "The lines are solid and coloured like TradingView: 23.6% red, 38.2% orange, 50% green, 61.8% teal, 78.6% blue, 0% and 100% grey. The thin grey dashes were hard to see over the EMA clouds, and the shaded zone is stronger.",
+        "Fixed: a level tag that shared its price with another tag (for example a Fib level on the day's low) could stay on the chart after you switched that level off. It now goes away straight away.",
+        "Indicators > Big swing Fib settings: tick Monthly, Weekly and Daily on or off one by one, add the chart's own candles (tagged plain Fib), turn it off on minute and hour charts, and choose how many trading days the chart's own swing uses on minute charts."
+      ]
+    },
+    {
+      "at": "2026-11-20T22:02:18-05:00",
+      "heading": "MomX scanner on a phone: new Cards view (the full table stays)",
+      "items": [
+        "On a phone the scanner still opens on the full table with every column. A new \"Cards\" tick box, in the same row as \"Scan matches only\", shows the board as two-line cards like the sample you sent, with no sideways swiping. The phone remembers your choice. On Mag7 the bear cards sit under the bull cards.",
+        "Top line of each card: % change, the lightning bolt (tap it for the ticker card), the news age (tap it for the headline), up to two Setup tags such as Confirm L2, and small dots for RVOL 5m-1h, RVOL 2h-D and SQZ 2h-W (lit where your study coloured them).",
+        "Bottom line: the industry chip, the ticker (tap it to open the chart), the H/L bar, and the Skittles numbers for 2h, 4h, D, 2D, 3D, 4D, W and Mo.",
+        "Skittles numbers (2h to Mo) are now coloured by value like your sample, in the Cards AND in the Table, on the phone and the desktop: 85+ solid cyan, 75+ solid green, 65+ yellow outline, 50s cyan, 35-49 magenta, 25-34 solid orange, under 25 solid magenta. A number your TOS study painted is always a solid box; a white outline on a card = crossed in the last 15 minutes. Every column is still there, and RVOL and SQZ keep your TOS colours.",
+        "No column was removed: the desktop and the phone's Table view keep every column, sorting and the Columns picker. The Cards view is a short summary: for RVOL numbers, Price, Spread or Event, switch back to Table."
+      ]
+    },
+    {
       "at": "2026-11-20T21:23:13-05:00",
       "heading": "MomX Scanner: Monthly Breakout and Monthly Breakdown lists",
       "items": [

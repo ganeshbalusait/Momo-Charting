@@ -6,7 +6,9 @@ import {
   autoFibCalendarBars,
   autoFibCalendarKey,
   autoFibTimeframeAllowed,
+  buildFibSwingStudies,
   buildFibSwingStudy,
+  fibSwingSourcesOn,
   findFibSwing,
   fibSwingLookback,
   fibSwingPrice,
@@ -112,8 +114,8 @@ test("Big swing study: seven levels, shaded 50%-61.8% zone from the swing start 
   const study = buildFibSwingStudy(bars, 43200, FIB_SWING_DEFAULTS);
   assert.equal(study.levels.length, 7);
   const fifty = study.levels.find((level) => level.ratio === 0.5);
-  assert.equal(fifty.label, "Fib 50% (127.40)");
-  assert.equal(study.levels.find((level) => level.ratio === 0.618).label, "Fib 61.8% (100.64)");
+  assert.equal(fifty.label, "M Fib 50% (127.40)");
+  assert.equal(study.levels.find((level) => level.ratio === 0.618).label, "M Fib 61.8% (100.64)");
   assert.equal(fifty.price, 127.4);
   assert.equal(fifty.inZone, true);
   assert.equal(study.zone.color, FIB_SWING_DEFAULTS.fibSwingUpColor);
@@ -124,14 +126,24 @@ test("Big swing study: seven levels, shaded 50%-61.8% zone from the swing start 
 
 test("Big swing study: down swing is shaded in the down colour; key levels only when asked", () => {
   const bars = [bar(1, 90, 200), bar(2, 80, 150), bar(3, 100, 120)];
-  const study = buildFibSwingStudy(bars, 1440, { ...FIB_SWING_DEFAULTS, fibSwingShowAllLevels: false });
+  const study = buildFibSwingStudy(bars, 1440, { ...FIB_SWING_DEFAULTS, fibSwingSource: "own", fibSwingShowAllLevels: false });
   assert.equal(study.zone.color, FIB_SWING_DEFAULTS.fibSwingDownColor);
   assert.deepEqual(study.levels.map((level) => level.ratio), [0, 0.5, 0.618, 1]);
 });
 
+test("each level has its own bright TradingView colour so it stands out on a busy chart", () => {
+  const bars = [bar(1, 50, 60), bar(2, 14, 30), bar(3, 40, 120), bar(4, 150, 240.8), bar(5, 120, 200)];
+  const study = buildFibSwingStudy(bars, 43200, FIB_SWING_DEFAULTS);
+  const colors = study.levels.map((level) => level.color);
+  assert.equal(new Set(colors.slice(1, 6)).size, 5, "23.6 .. 78.6 each differ: " + colors.join(","));
+  assert.equal(study.levels.find((level) => level.ratio === 0.5).color, "#4caf50");
+  assert.equal(study.levels.find((level) => level.ratio === 0.618).color, "#089981");
+  assert.ok(study.zone.opacity >= 0.25, "zone shading is visible over the EMA clouds");
+});
+
 test("A penny stock's Fib tags keep four decimals", () => {
   const bars = [bar(1, 0.1, 0.2), bar(2, 0.3, 0.9)];
-  const study = buildFibSwingStudy(bars, 1440, FIB_SWING_DEFAULTS);
+  const study = buildFibSwingStudy(bars, 1440, { ...FIB_SWING_DEFAULTS, fibSwingSource: "own" });
   assert.equal(study.levels.find((level) => level.ratio === 0.5).label, "Fib 50% (0.5000)");
 });
 
@@ -145,7 +157,123 @@ test("While the long history is still loading and the chart is short, no swing i
   assert.ok(buildFibSwingStudy(full, 43200, FIB_SWING_DEFAULTS, { historyLoading: true }), "enough candles already");
 });
 
-test("Big swing study is off on intraday charts", () => {
-  const bars = [bar(1, 90, 200), bar(2, 80, 150)];
-  assert.equal(buildFibSwingStudy(bars, 5, FIB_SWING_DEFAULTS), null);
+// 2026-11-20 "Fib I want to see in 5 mins chart also": intraday charts take
+// the swing of their own candles over the last N trading days (default 5).
+const etTime = (day, hhmm) => Date.parse(`2026-11-${String(day).padStart(2, "0")}T${hhmm}:00-05:00`) / 1000;
+
+test("on a 5-minute chart the swing covers the last 5 trading days of its own candles", () => {
+  const bars = [
+    bar(etTime(10, "10:00"), 1, 500),          // 8 trading days back: outside
+    bar(etTime(13, "10:00"), 100, 110),        // day 1 of the 5 (Fri 13th)
+    bar(etTime(16, "10:00"), 90, 105),         // Mon
+    bar(etTime(17, "10:00"), 95, 140),         // Tue: high
+    bar(etTime(18, "09:35"), 80, 100),         // Wed: low (after the high -> a fall)
+    bar(etTime(19, "10:00"), 95, 120),
+    bar(etTime(20, "15:55"), 110, 125),        // Fri 20th
+  ];
+  // 13, 16, 17, 18, 19, 20 = six dates; five days back starts on the 16th.
+  const days = { ...FIB_SWING_DEFAULTS, fibSwingSource: "own" };
+  const study = buildFibSwingStudy(bars, 5, days);
+  assert.ok(study, "intraday charts now draw it");
+  assert.equal(study.swing.high, 140);
+  assert.equal(study.swing.low, 80);
+  assert.equal(study.swing.direction, "down");
+  assert.equal(study.levels.find((level) => level.ratio === 0.5).price, 110);
+  const two = buildFibSwingStudy(bars, 5, { ...days, fibSwingIntradayDays: 2 });
+  assert.equal(two.swing.high, 125);
+  assert.equal(two.swing.low, 95);
+});
+
+test("intraday Big swing can be switched off on its own; D/W/M keep it", () => {
+  const bars = [bar(etTime(19, "10:00"), 95, 120), bar(etTime(20, "10:00"), 100, 130)];
+  assert.equal(buildFibSwingStudy(bars, 5, { ...FIB_SWING_DEFAULTS, fibSwingIntraday: false }), null);
+  assert.equal(fibSwingLookback(15, FIB_SWING_DEFAULTS), 0, "count lookback is for D/W/M only");
+});
+
+test("while an intraday tape is still loading, the chart's own swing uses the days already there", () => {
+  const bars = [bar(etTime(19, "10:00"), 95, 120), bar(etTime(20, "10:00"), 100, 130)];
+  const days = { ...FIB_SWING_DEFAULTS, fibSwingSource: "own" };
+  const loading = buildFibSwingStudy(bars, 5, days, { historyLoading: true });
+  assert.ok(loading, "a slow history load must not leave the minute chart with no Fib");
+  assert.equal(loading.swing.high, 130);
+  assert.equal(loading.swing.low, 95);
+});
+
+// 2026-11-20 "I want same fib this M" (his TradingView 5m chart with the
+// monthly 50% / 61.8% zone): by default a minute/hour chart draws the MONTHLY
+// swing, built from the daily candles.
+function dailyTape() {
+  // Jan 2021 .. Nov 2026 at Eastern midnight, one candle per day; low 14 in
+  // Jan 2023, high 240.8 in Jun 2026 -> an up swing.
+  const out = [];
+  const start = Date.UTC(2021, 0, 4, 5) / 1000;
+  for (let day = 0; day < 2150; day += 1) {
+    const time = start + day * 86_400;
+    const date = new Date(time * 1000);
+    let low = 60;
+    let high = 70;
+    if (date.getUTCFullYear() === 2023 && date.getUTCMonth() === 0 && date.getUTCDate() === 10) low = 14;
+    if (date.getUTCFullYear() === 2026 && date.getUTCMonth() === 5 && date.getUTCDate() === 10) high = 240.8;
+    out.push({ time, open: 65, high, low, close: 65, volume: 1 });
+  }
+  return out;
+}
+
+test("a 5-minute chart draws the Monthly swing by default, the same levels as the Monthly chart", () => {
+  const intraday = [bar(etTime(20, "10:00"), 128, 131), bar(etTime(20, "10:05"), 129, 130)];
+  const study = buildFibSwingStudy(intraday, 5, FIB_SWING_DEFAULTS, { dailyBars: dailyTape() });
+  assert.ok(study);
+  assert.equal(study.source, "M");
+  assert.equal(study.swing.low, 14);
+  assert.equal(study.swing.high, 240.8);
+  assert.equal(study.levels.find((level) => level.ratio === 0.5).price, 127.4);
+  assert.equal(study.levels.find((level) => level.ratio === 0.618).price, 100.6376);
+  // The shaded zone covers every 5-minute candle on the chart.
+  assert.deepEqual(study.zone.fast.map((point) => point.time), intraday.map((b) => b.time));
+});
+
+test("the minute-chart swing can be Weekly or Daily instead", () => {
+  const intraday = [bar(etTime(20, "10:00"), 128, 131)];
+  const weekly = buildFibSwingStudy(intraday, 5, { ...FIB_SWING_DEFAULTS, fibSwingSource: "W" }, { dailyBars: dailyTape() });
+  assert.equal(weekly.source, "W");
+  assert.equal(weekly.swing.high, 240.8, "June 2026 is inside 104 weeks");
+  assert.equal(weekly.swing.low, 60, "January 2023 is not");
+  const daily = buildFibSwingStudy(intraday, 5, { ...FIB_SWING_DEFAULTS, fibSwingSource: "D" }, { dailyBars: dailyTape() });
+  assert.equal(daily.source, "D");
+  assert.equal(daily.swing.high, 240.8);
+});
+
+test("every timeframe draws the same Monthly levels, tagged 'M Fib'; 'own' tags plain 'Fib'", () => {
+  const daily = dailyTape();
+  const prices = [5, 60, 1440, 10080, 43200].map((minutes) => {
+    const chart = minutes >= 1440 ? daily.slice(-30) : [bar(etTime(20, "10:00"), 128, 131)];
+    const study = buildFibSwingStudy(chart, minutes, FIB_SWING_DEFAULTS, { dailyBars: daily });
+    const fifty = study.levels.find((level) => level.ratio === 0.5);
+    assert.equal(fifty.label, "M Fib 50% (127.40)", "chart " + minutes);
+    return fifty.price;
+  });
+  assert.deepEqual(new Set(prices).size, 1);
+  const own = buildFibSwingStudy(daily, 1440, { ...FIB_SWING_DEFAULTS, fibSwingSource: "own" }, { dailyBars: daily });
+  assert.match(own.levels[0].label, /^Fib 0% \(/);
+});
+
+// 2026-11-20 "I want to see in chart fib M/W/D": all three at once.
+test("M, W and D Fibs are all drawn on one chart by default, each tagged with its letter", () => {
+  const daily = dailyTape();
+  const intraday = [bar(etTime(20, "10:00"), 128, 131)];
+  const studies = buildFibSwingStudies(intraday, 5, FIB_SWING_DEFAULTS, { dailyBars: daily });
+  assert.deepEqual(studies.map((study) => study.source), ["M", "W", "D"]);
+  assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS), ["M", "W", "D"]);
+  for (const study of studies) {
+    assert.ok(study.levels.every((level) => level.label.startsWith(study.source + " Fib ")), study.source);
+  }
+  const onlyM = buildFibSwingStudies(intraday, 5, { ...FIB_SWING_DEFAULTS, fibSwingShowW: false, fibSwingShowD: false }, { dailyBars: daily });
+  assert.deepEqual(onlyM.map((study) => study.source), ["M"]);
+  const own = buildFibSwingStudies(daily, 1440, { ...FIB_SWING_DEFAULTS, fibSwingShowM: false, fibSwingShowW: false, fibSwingShowD: false, fibSwingShowOwn: true }, { dailyBars: daily });
+  assert.deepEqual(own.map((study) => study.source), ["own"]);
+});
+
+test("no daily candles yet: the Monthly swing waits instead of guessing", () => {
+  const intraday = [bar(etTime(20, "10:00"), 128, 131)];
+  assert.equal(buildFibSwingStudy(intraday, 5, FIB_SWING_DEFAULTS, { dailyBars: [] }), null);
 });

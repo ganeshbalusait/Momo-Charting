@@ -30,12 +30,12 @@ e2eTest("the FILTERS badge says how many will show, and pressing it shows exactl
     await app.page.locator("[data-testid='momx-filters-toggle']").click();
     await app.page.waitForFunction(() => document.querySelector("[data-testid='momx-filters-toggle'] .momx-filters-state")?.textContent.trim() === "ON");
     assert.equal(await app.page.locator("[data-testid='momx-filters-toggle']").getAttribute("aria-pressed"), "true");
-    await app.page.waitForFunction(() => document.querySelectorAll("tr.momx-row").length === 1);
+    await app.page.waitForFunction(() => document.querySelectorAll("table.momx-table:not(.momx-other-side-table) tr.momx-row").length === 1);
     assert.deepEqual(await rowSymbols(app.page), ["NVDA"]);
-    assert.equal(Number((await badge(app.page).innerText()).trim()), await app.page.locator("tr.momx-row").count());
+    assert.equal(Number((await badge(app.page).innerText()).trim()), await app.page.locator("table.momx-table:not(.momx-other-side-table) tr.momx-row").count());
     // Press again: the whole board is back.
     await app.page.locator("[data-testid='momx-filters-toggle']").click();
-    await app.page.waitForFunction(() => document.querySelectorAll("tr.momx-row").length === 2);
+    await app.page.waitForFunction(() => document.querySelectorAll("table.momx-table:not(.momx-other-side-table) tr.momx-row").length === 2);
     assert.deepEqual(app.pageErrors, []);
   });
 });
@@ -54,7 +54,7 @@ e2eTest("ALL with a group nobody passes says which group, and the board says why
     await dialog.waitFor({ state: "detached", timeout: 5_000 });
     assert.equal((await badge(app.page).innerText()).trim(), "0");
     await app.page.locator("[data-testid='momx-filters-toggle']").click();
-    const empty = app.page.locator("td.momx-empty .momx-empty-inner");
+    const empty = app.page.locator("table.momx-table:not(.momx-other-side-table) td.momx-empty .momx-empty-inner");
     await empty.waitFor({ timeout: 5_000 });
     assert.match(await empty.innerText(), /^No ticker passes your filters right now\. Press FILTERS again for the whole board/);
     assert.deepEqual(app.pageErrors, []);
@@ -106,12 +106,12 @@ e2eTest("ticking A+ in Setup ▾ turns FILTERS on; pressing FILTERS clears the c
     await app.page.waitForFunction(() => document.querySelector("[data-testid='momx-filters-toggle'] .momx-filters-state")?.textContent.trim() === "ON");
     assert.equal((await header.innerText()).trim(), "Setup ▾ 1");
     await picker.getByRole("button", { name: "Done" }).click();
-    await app.page.waitForFunction(() => document.querySelectorAll("tr.momx-row").length === 1);
+    await app.page.waitForFunction(() => document.querySelectorAll("table.momx-table:not(.momx-other-side-table) tr.momx-row").length === 1);
     assert.deepEqual(await rowSymbols(app.page), ["NVDA"]);
     await app.page.locator("[data-testid='momx-filters-toggle']").click();
     await app.page.waitForFunction(() => document.querySelector("[data-testid='momx-filters-toggle'] .momx-filters-state")?.textContent.trim() === "OFF");
     assert.equal((await header.innerText()).trim(), "Setup ▾");
-    await app.page.waitForFunction(() => document.querySelectorAll("tr.momx-row").length === 2);
+    await app.page.waitForFunction(() => document.querySelectorAll("table.momx-table:not(.momx-other-side-table) tr.momx-row").length === 2);
     assert.deepEqual(app.pageErrors, []);
   });
 });

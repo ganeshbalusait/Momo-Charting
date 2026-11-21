@@ -19,7 +19,10 @@ for (const [name, minutes] of [["D", 1440], ["W", 10080], ["M", 43200]]) {
     dailyBars: payload.dailyBars,
     aggregationMinutes: minutes,
   });
-  const study = buildFibSwingStudy(bars, minutes, FIB_SWING_DEFAULTS);
+  // Each timeframe's own swing, and the default Monthly swing ("M Fib")
+  // drawn on that chart from the same daily candles.
+  const study = buildFibSwingStudy(bars, minutes, { ...FIB_SWING_DEFAULTS, fibSwingSource: "own" });
+  const monthly = buildFibSwingStudy(bars, minutes, FIB_SWING_DEFAULTS, { dailyBars: payload.dailyBars });
   out[name] = {
     candles: bars.length,
     swing: study?.swing || null,
@@ -27,6 +30,7 @@ for (const [name, minutes] of [["D", 1440], ["W", 10080], ["M", 43200]]) {
     zoneStart: study?.zone?.fast?.[0]?.time ?? null,
     zoneEnd: study?.zone?.fast?.at(-1)?.time ?? null,
     lastCandle: bars.at(-1)?.time ?? null,
+    mFib50: monthly?.levels?.find((level) => level.ratio === 0.5)?.label ?? null,
   };
   if (minutes > 1440) {
     const calendar = autoFibCalendarBars(payload.dailyBars, minutes);

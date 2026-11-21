@@ -92,7 +92,7 @@ e2eTest("clicking % Chg sorts high-to-low, again low-to-high, and the arrow foll
     await boardReady(app.page);
     await app.page.locator("label.momx-toggle", { hasText: "Scan matches only" }).locator("input").uncheck();
     await app.page.locator("tr.momx-row.is-muted").first().waitFor({ timeout: 5_000 });
-    const header = app.page.locator("table.momx-table:not(.momx-history-table) th.momx-th[data-col='pctChange']");
+    const header = app.page.locator("table.momx-table:not(.momx-history-table):not(.momx-other-side-table) th.momx-th[data-col='pctChange']");
     assert.equal(await header.getAttribute("aria-sort"), "none");
     await header.click();
     await app.page.waitForFunction(() => document.querySelector("th.momx-th[data-col='pctChange']")?.getAttribute("aria-sort") === "descending");
@@ -112,12 +112,12 @@ e2eTest("a worker that is still warming shows the building message, not an error
     "GET /api/momx-scanner": { json: { generatedAt: null, list: "Mag7", direction: "bull", universe: ["SPY"], universeCount: 1, rows: [], errors: {}, warming: true, message: "MomX worker unavailable: fixture" } },
   };
   await withApp({ view: VIEW, storage: BOARD_STORAGE, fakeReads: reads }, async (app) => {
-    const empty = app.page.locator("td.momx-empty .momx-empty-inner");
+    const empty = app.page.locator("table.momx-table:not(.momx-other-side-table) td.momx-empty .momx-empty-inner");
     await empty.waitFor({ timeout: 60_000 });
     // Until the first board read lands the same cell says "Loading the MomX
     // board..." (MomxScannerPanel.jsx emptyMessage); judge the settled message.
     await app.page.waitForFunction(() => {
-      const node = document.querySelector("td.momx-empty .momx-empty-inner");
+      const node = document.querySelector("table.momx-table:not(.momx-other-side-table) td.momx-empty .momx-empty-inner");
       return node && !/^Loading the MomX board/.test(node.textContent.trim());
     }, null, { timeout: 30_000 });
     assert.match(await empty.innerText(), /^Building this watchlist from live bars/);
@@ -171,7 +171,7 @@ e2eTest("on a phone, TOP appears after scrolling a long board and brings it back
   await withApp({ view: VIEW, viewport: PHONE, storage: { ...BOARD_STORAGE, "momx.scanner.activeList": "Watchlist" } }, async (app) => {
     await boardReady(app.page);
     await app.page.locator("label.momx-toggle", { hasText: "Scan matches only" }).locator("input").uncheck();
-    await app.page.waitForFunction(() => document.querySelectorAll("tr.momx-row").length > 40, null, { timeout: 60_000 });
+    await app.page.waitForFunction(() => document.querySelectorAll("table.momx-table:not(.momx-other-side-table) tr.momx-row").length > 40, null, { timeout: 60_000 });
     const view = app.page.locator("[data-testid='momx-scanner-view']");
     assert.equal(await app.page.locator("[data-testid='momx-to-top']").count(), 0, "no TOP while at the top");
     await view.evaluate((node) => { node.scrollTop = 900; node.dispatchEvent(new Event("scroll")); });

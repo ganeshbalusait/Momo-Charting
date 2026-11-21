@@ -24,7 +24,7 @@ const MONITOR = { width: 1920, height: 1080 };
 // Phone: the sector cards stack (every sector visible, Ganesh 2026-11-13),
 // one card costs about one row; Sectors can be folded away.
 const ROWS_BEFORE = { monitor: 24, phone: 5 };
-const LIVE_TABLE = "table.momx-table:not(.momx-history-table):not(.momx-find-table)";
+const LIVE_TABLE = "table.momx-table:not(.momx-history-table):not(.momx-other-side-table):not(.momx-find-table)";
 
 const cardReads = (news) => ({
   ...boardReads({ news }),

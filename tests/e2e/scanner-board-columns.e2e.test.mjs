@@ -11,7 +11,7 @@ import { BOARD_STORAGE, boardReads, boardReady, liveHeaderKeys } from "./scanner
 
 const VIEW = "MomX Scanner";
 const DIALOG = "[role='dialog'][aria-label='Scanner columns']";
-const LIVE = "table.momx-table:not(.momx-history-table):not(.momx-find-table)";
+const LIVE = "table.momx-table:not(.momx-history-table):not(.momx-other-side-table):not(.momx-find-table)";
 
 async function openColumns(page) {
   await page.locator("[data-testid='momx-columns-open']").click();
