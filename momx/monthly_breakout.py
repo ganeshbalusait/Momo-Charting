@@ -190,27 +190,31 @@ def breaks_at(highs: Sequence[float], lows: Sequence[float], closes: Sequence[fl
     return {key: (level, height) for key, (level, height, _lines) in _breaks(highs, lows, closes, i, swings).items()}
 
 
-def _flat(j: int, i: int, price: float, role: str) -> tuple:
-    return (j, price, i, price, role)
+def _flat(j: int, i: int, price: float, role: str, touches: Sequence[tuple[int, float]] = ()) -> tuple:
+    return (j, price, i, price, role, tuple(touches))
 
 
-def _sloped(j: int, i: int, m: float, b: float, role: str) -> tuple:
-    return (j, m * j + b, i, m * i + b, role)
+def _sloped(j: int, i: int, m: float, b: float, role: str, touches: Sequence[tuple[int, float]] = ()) -> tuple:
+    return (j, m * j + b, i, m * i + b, role, tuple(touches))
 
 
 def _breaks(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], i: int,
             swings: tuple[list[int], list[int]] | None = None) -> dict[tuple[str, str], tuple[float, float, list]]:
     """:func:`breaks_at` plus the pattern's lines, for drawing on the chart.
 
-    Each line is ``(from_bar, from_price, to_bar, to_price, role)``: the flat
-    line from its first touch, the sloped line from its first swing point,
-    both running to bar ``i`` (2026-11-20, "chart patterns in D/W/M when we
-    open the chart ... so I know which pattern").
+    Each line is ``(from_bar, from_price, to_bar, to_price, role, touches)``:
+    the flat line from its first touch, the sloped line from its first swing
+    point, both running to bar ``i`` (2026-11-20, "chart patterns in D/W/M
+    when we open the chart ... so I know which pattern"). ``touches`` are the
+    swing points ``(bar, price)`` that made the line, circled on the chart
+    like his sample pictures (2026-11-21).
     """
     found: dict[tuple[str, str], tuple[float, float, list]] = {}
     if i < MIN_BASE + 2 or i >= len(closes):
         return found
     swing_highs, swing_lows = swings or _swings(highs, lows)
+    hi = lambda js: [(j, highs[j]) for j in js]  # noqa: E731
+    lo = lambda js: [(j, lows[j]) for j in js]  # noqa: E731
     c, pc = closes[i], closes[i - 1]
     start = max(0, i - MAX_BASE)
     last_ok = i - 1 - PIVOT_SPAN
@@ -235,7 +239,8 @@ def _breaks(highs: Sequence[float], lows: Sequence[float], closes: Sequence[floa
             if len(rising) >= 2:
                 m, b = _fit([(j, lows[j]) for j in rising])
                 if m > 0 and _stepping([lows[j] for j in rising], True):
-                    lines = [_flat(top_touches[0], i, top, "resistance"), _sloped(rising[0], i, m, b, "rising lows")]
+                    lines = [_flat(top_touches[0], i, top, "resistance", hi(top_touches)),
+                             _sloped(rising[0], i, m, b, "rising lows", lo(rising))]
                     if c > top and pc <= top:
                         found[("BOTTOM", "up")] = (top, height, lines)
                     if c < m * i + b and pc >= m * (i - 1) + b and c < top:
@@ -245,14 +250,16 @@ def _breaks(highs: Sequence[float], lows: Sequence[float], closes: Sequence[floa
             if len(falling) >= 2:
                 m, b = _fit([(j, highs[j]) for j in falling])
                 if m < 0 and _stepping([highs[j] for j in falling], False):
-                    lines = [_flat(bottom_touches[0], i, bottom, "support"), _sloped(falling[0], i, m, b, "falling highs")]
+                    lines = [_flat(bottom_touches[0], i, bottom, "support", lo(bottom_touches)),
+                             _sloped(falling[0], i, m, b, "falling highs", hi(falling))]
                     if c < bottom and pc >= bottom:
                         found[("TOP", "down")] = (bottom, height, lines)
                     if c > m * i + b and pc <= m * (i - 1) + b and c > bottom:
                         found[("TOP", "up")] = (m * i + b, height, lines)
         if len(top_touches) >= 2 and len(bottom_touches) >= 2 and top / bottom < MAX_RANGE_RATIO:
             first = min(top_touches[0], bottom_touches[0])
-            lines = [_flat(first, i, top, "resistance"), _flat(first, i, bottom, "support")]
+            lines = [_flat(first, i, top, "resistance", hi(top_touches)),
+                     _flat(first, i, bottom, "support", lo(bottom_touches))]
             if c > top and pc <= top:
                 found[("MIDDLE", "up")] = (top, height, lines)
             if c < bottom and pc >= bottom:
@@ -263,7 +270,8 @@ def _breaks(highs: Sequence[float], lows: Sequence[float], closes: Sequence[floa
                 and _stepping([lows[j] for j in ls], True)):
             upper, lower = mh * i + bh, ml * i + bl
             if upper > lower:
-                lines = [_sloped(hs[0], i, mh, bh, "falling highs"), _sloped(ls[0], i, ml, bl, "rising lows")]
+                lines = [_sloped(hs[0], i, mh, bh, "falling highs", hi(hs)),
+                         _sloped(ls[0], i, ml, bl, "rising lows", lo(ls))]
                 if c > upper and pc <= mh * (i - 1) + bh:
                     found[("SYM", "up")] = (upper, height, lines)
                 if c < lower and pc >= ml * (i - 1) + bl:
@@ -297,8 +305,9 @@ def _signal(highs, lows, closes, e21, e50, i, direction, swings, status, period,
                 # The pattern's lines for the chart (periods match the bars').
                 "lines": [
                     {"from": str(periods[j0]), "fromPrice": round(p0, 4), "to": str(periods[j1]),
-                     "toPrice": round(p1, 4), "bars": j1 - j0, "role": role}
-                    for j0, p0, j1, p1, role in lines
+                     "toPrice": round(p1, 4), "bars": j1 - j0, "role": role,
+                     "touches": [{"period": str(periods[j]), "price": round(price, 4)} for j, price in touches]}
+                    for j0, p0, j1, p1, role, touches in lines
                 ] if periods is not None else [],
             }
     return None

@@ -10,7 +10,7 @@ import { PHONE, e2eTest } from "./harness.mjs";
 import { card, openIndicators, profilePosts, studyCheckbox, waitForTape, withCharts } from "./charts-core.helpers.mjs";
 
 const KEPT = ["EMA 9", "EMA 21", "Big swing Fib", "Chart pattern (breakout)"];
-const OFF = ["Ichimoku", "VWAP", "OI Levels / High OI"];
+const OFF = ["Ichimoku", "VWAP", "OI Levels / High OI", "Expected move (±EM)"];
 
 // The studies list is a <details>: a click on its summary opens AND closes it.
 async function closeIndicators(page) {
@@ -50,6 +50,7 @@ e2eTest("a 5-minute chart keeps its studies, and gets them back after visiting t
     let popover = await openIndicators(page);
     const before = await checked(popover, ["Ichimoku", "VWAP"]);
     assert.deepEqual(before, { Ichimoku: true, VWAP: true }, "defaults on a minute chart");
+    assert.equal(await studyCheckbox(popover, "Expected move (±EM)").isChecked(), true, "±EM stays on a minute chart");
     await closeIndicators(page);
     await card(page).locator('.oi-finder-timeframes[aria-label="Chart timeframe"] button', { hasText: /^D$/ }).click();
     await waitForTape(page, { symbol: "NVDA", timeframe: "D" });

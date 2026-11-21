@@ -101,49 +101,132 @@ export function patternSegment(line, chartBars, chartMinutes) {
   };
 }
 
+// His sample pictures (2026-11-21, "I cannot see the range properly ... see
+// the sample image"): Resistance red, Support green, the sloped Trendline
+// orange, each named at its start; the swing points that made a line circled;
+// the breakout candle circled in the break's colour; the pattern shaded; and
+// an arrow from the line that broke to the measured target.
+export const CHART_PATTERN_ROLE_COLORS = Object.freeze({
+  resistance: "#ff4d5e",
+  support: "#2fe07f",
+  "rising lows": "#ffa53a",
+  "falling highs": "#ffa53a",
+});
+const ROLE_NAMES = Object.freeze({
+  resistance: "Resistance",
+  support: "Support",
+  "rising lows": "Trendline (higher lows)",
+  "falling highs": "Trendline (lower highs)",
+});
+const UPPER_ROLES = new Set(["resistance", "falling highs"]);
+
+function touchMarkers(line, segment, times, chartMinutes, color) {
+  const onChart = new Set(times);
+  return (Array.isArray(line?.touches) ? line.touches : []).flatMap((touch) => {
+    const time = periodBucketTime(touch?.period, chartMinutes);
+    const price = Number(touch?.price);
+    if (time == null || !onChart.has(time) || time < segment.startTime || !Number.isFinite(price)) return [];
+    return [{ time, price, color, kind: "touch", radius: 5 }];
+  });
+}
+
 // Everything the chart draws for one payload on one D / W / M chart.
-// Returns {timeframe, segments, labels}; empty when nothing broke.
+// Returns {timeframe, segments, labels, fills, markers}; empty when nothing
+// broke.
 export function buildChartPatternOverlay(payload, chartMinutes, chartBars, { symbol = "" } = {}) {
-  const empty = { timeframe: null, segments: [], labels: [] };
+  const empty = { timeframe: null, segments: [], labels: [], fills: [], markers: [] };
   const timeframe = chartPatternTimeframe(chartMinutes);
   if (!timeframe || !payload || payload.ok !== true) return empty;
   if (symbol && String(payload.symbol || "").toUpperCase() !== String(symbol).toUpperCase()) return empty;
   const verdict = payload.patterns && payload.patterns[timeframe];
   if (!verdict || typeof verdict !== "object") return { ...empty, timeframe };
+  const times = (Array.isArray(chartBars) ? chartBars : []).map((bar) => Number(bar.time));
   const segments = [];
   const labels = [];
+  const fills = [];
+  const markers = [];
   for (const direction of ["up", "down"]) {
     const signal = verdict[direction];
     if (!signal || typeof signal !== "object") continue;
     const color = CHART_PATTERN_COLORS[direction];
     const up = direction === "up";
-    const drawn = (Array.isArray(signal.lines) ? signal.lines : [])
-      .map((line) => patternSegment(line, chartBars, chartMinutes))
-      .filter(Boolean);
+    const lines = Array.isArray(signal.lines) ? signal.lines : [];
+    const drawn = lines
+      .map((line) => ({ line, segment: patternSegment(line, chartBars, chartMinutes) }))
+      .filter((entry) => entry.segment);
     if (!drawn.length) continue;
     const short = SHORT[signal.pattern] || String(signal.label || signal.pattern || "");
     // "live" = the candle has not closed, so the break can still fail.
     const open = signal.status === "live" ? ` (${when(signal.period, timeframe)} open)` : "";
+    const levelPrice = Number(signal.level);
     const level = money(signal.level);
     const target = money(signal.target);
-    // The line that broke carries the pattern's full name on the chart: its
-    // axis tag usually sits beside the LIVE tag and is hidden by it.
-    const broke = drawn.reduce((best, segment) => (
-      Math.abs(segment.endPrice - Number(signal.level)) < Math.abs(best.endPrice - Number(signal.level)) ? segment : best
+    // The line that broke carries the pattern's full name, outside the
+    // pattern on the side it broke (its axis tag sits beside the LIVE tag).
+    const broke = drawn.reduce((best, entry) => (
+      Math.abs(entry.segment.endPrice - levelPrice) < Math.abs(best.segment.endPrice - levelPrice) ? entry : best
     ), drawn[0]);
     const caption = `${LETTERS[timeframe]} ${up ? "▲" : "▼"} ${signal.label || short} ${up ? ">" : "<"} ${level}${open}`;
-    drawn.forEach((segment) => segments.push({
-      ...segment, color, lineWidth: 2, dash: [], direction, ...(segment === broke ? { caption } : {}),
-    }));
-    // The measured target, dashed, from the breakout candle to the axis.
+    drawn.forEach((entry) => {
+      const { segment, line } = entry;
+      const roleColor = CHART_PATTERN_ROLE_COLORS[segment.role] || color;
+      const upper = UPPER_ROLES.has(segment.role);
+      const isBroke = entry === broke;
+      // The role's name sits outside its line, except on the line that broke,
+      // where the caption takes the outside and the name moves inside.
+      const outside = upper ? "above" : "below";
+      const inside = upper ? "below" : "above";
+      segments.push({
+        ...segment,
+        color: roleColor,
+        lineWidth: 2.5,
+        dash: [],
+        direction,
+        startLabel: ROLE_NAMES[segment.role] || "",
+        startLabelSide: isBroke ? inside : outside,
+        ...(isBroke ? { caption, captionColor: color, captionSide: outside } : {}),
+      });
+      markers.push(...touchMarkers(line, segment, times, chartMinutes, roleColor));
+    });
+    // The pattern shaded between its two lines.
+    if (drawn.length >= 2) {
+      const [a, b] = drawn.map((entry) => entry.segment);
+      fills.push({
+        points: [
+          { time: a.startTime, price: a.startPrice },
+          { time: a.endTime, price: a.endPrice },
+          { time: b.endTime, price: b.endPrice },
+          { time: b.startTime, price: b.startPrice },
+        ],
+        color,
+        opacity: 0.1,
+        direction,
+      });
+    }
+    const breakTime = broke.segment.endTime;
+    markers.push({ time: breakTime, price: levelPrice, color, kind: "breakout", radius: 10 });
+    // The measured target: an arrow up (down) from the break, then dashed to
+    // the axis.
     if (target) {
       segments.push({
-        startTime: drawn[0].endTime,
+        startTime: breakTime,
+        startPrice: levelPrice,
+        endTime: breakTime,
+        endPrice: Number(signal.target),
+        color,
+        lineWidth: 1.5,
+        dash: [4, 4],
+        direction,
+        role: "measure",
+      });
+      markers.push({ time: breakTime, price: Number(signal.target), color, kind: up ? "arrowUp" : "arrowDown", radius: 7 });
+      segments.push({
+        startTime: breakTime,
         startPrice: Number(signal.target),
         endTime: null,
         endPrice: Number(signal.target),
         color,
-        lineWidth: 1,
+        lineWidth: 1.5,
         dash: [6, 4],
         direction,
         role: "target",
@@ -152,7 +235,7 @@ export function buildChartPatternOverlay(payload, chartMinutes, chartBars, { sym
     const letter = LETTERS[timeframe];
     labels.push({
       key: `chart-pattern-${direction}-level`,
-      price: Number(signal.level),
+      price: levelPrice,
       color,
       title: `${letter} ${up ? "▲" : "▼"} ${short} ${level}${open}`,
     });
@@ -165,7 +248,7 @@ export function buildChartPatternOverlay(payload, chartMinutes, chartBars, { sym
       });
     }
   }
-  return { timeframe, segments, labels };
+  return { timeframe, segments, labels, fills, markers };
 }
 
 // A short signature so a live-tick redraw notices a new or removed pattern.
@@ -173,5 +256,5 @@ export function chartPatternSignature(overlay) {
   if (!overlay || !overlay.segments?.length) return "";
   return overlay.segments
     .map((segment) => `${segment.direction}:${segment.role}:${segment.startTime}:${Number(segment.endPrice).toFixed(4)}`)
-    .join(",");
+    .join(",") + `|${(overlay.markers || []).length}`;
 }

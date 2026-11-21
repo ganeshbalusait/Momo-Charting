@@ -380,6 +380,24 @@ def test_each_signal_carries_its_lines_ending_on_the_breakout_bar(shape, roles):
     assert any(abs(line["toPrice"] - signal["level"]) < 1e-3 for line in lines)
 
 
+@pytest.mark.parametrize("shape", ["BOTTOM_up", "MIDDLE_up", "SYM_up", "MIDDLE_down"])
+def test_each_line_carries_the_swing_points_that_made_it(shape):
+    # 2026-11-21, "I cannot see the range properly ... see the sample image":
+    # the chart circles each touch like his pictures.
+    bars = tape(BASES[shape])
+    by_period = {bar["period"]: bar for bar in bars}
+    signal = state(BASES[shape])["up" if shape.endswith("up") else "down"]
+    for line in signal["lines"]:
+        touches = line["touches"]
+        assert len(touches) >= 2, line["role"]
+        assert [t["period"] for t in touches] == sorted(t["period"] for t in touches)
+        assert all(line["from"] <= t["period"] < line["to"] for t in touches)
+        upper = line["role"] in ("resistance", "falling highs")
+        for t in touches:
+            bar = by_period[t["period"]]
+            assert t["price"] == pytest.approx(bar["high"] if upper else bar["low"], abs=1e-4)
+
+
 def test_sloped_lines_slope_the_right_way():
     lines = {line["role"]: line for line in state(BASES["SYM_up"])["up"]["lines"]}
     assert lines["falling highs"]["toPrice"] < lines["falling highs"]["fromPrice"]

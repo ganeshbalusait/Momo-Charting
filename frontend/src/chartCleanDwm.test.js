@@ -47,3 +47,11 @@ test("a saved D/W/M profile is cleaned once; after he saves it, his choice wins"
   assert.deepEqual(migrateCleanDwm(oldMonthly, "5m", DEFAULTS), {}, "minute charts are never touched");
   assert.equal(migrateCleanDwm(null, "W", DEFAULTS).chartPattern, true, "no saved Weekly: clean");
 });
+
+test("a study added after his D/W/M save starts off there; what he saved is untouched", () => {
+  const savedSince = { ...DEFAULTS, cleanDwmVersion: CLEAN_DWM_VERSION, ichimoku: true };
+  const later = { ...DEFAULTS, expectedMoveLines: true };
+  assert.deepEqual(migrateCleanDwm(savedSince, "D", later), { expectedMoveLines: false });
+  assert.deepEqual(migrateCleanDwm({ ...savedSince, expectedMoveLines: true }, "D", later), {}, "he turned it on and saved");
+  assert.deepEqual(migrateCleanDwm(savedSince, "5m", later), {});
+});

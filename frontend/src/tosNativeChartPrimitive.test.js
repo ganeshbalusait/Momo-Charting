@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   alignNativeCloudPair,
+  drawPatternMarker,
   expandNativeSignalPriceRange,
   nativeFireGlyphPoints,
   nativeFireMotion,
@@ -629,7 +630,7 @@ test("a chart-pattern trend segment slopes between its two points, and a target 
   assert.equal(lines.length, 2);
 });
 
-test("a chart-pattern caption is written just above the start of its line", () => {
+test("a chart-pattern caption sits beside the breakout candle, outside the line that broke", () => {
   const primitive = new TosNativeChartPrimitive();
   primitive.setData({
     bars: [{ time: 100, high: 11, low: 9 }, { time: 300, high: 13, low: 11 }],
@@ -643,8 +644,86 @@ test("a chart-pattern caption is written just above the start of its line", () =
     timeScale: () => ({ timeToCoordinate: (time) => Number(time), options: () => ({ barSpacing: 6 }), getVisibleRange: () => null }),
   };
   const series = { priceToCoordinate: (price) => 200 - Number(price) * 10 };
-  const captions = nativeGeometry(primitive.model, chart, series).backgroundLabels.filter((label) => /Range/.test(label.text));
+  // On the top layer (patternLabels), above the candles and other tags.
+  const captions = nativeGeometry(primitive.model, chart, series).patternLabels.filter((label) => /Range/.test(label.text));
   assert.equal(captions.length, 1);
-  assert.deepEqual([captions[0].x, captions[0].y, captions[0].color], [104, 72, "#00e5ff"]);
+  // Right-aligned to the breakout candle (x 300), above the line (y 80).
+  assert.deepEqual([captions[0].x, captions[0].y, captions[0].align, captions[0].color], [294, 68, "right", "#00e5ff"]);
   assert.match(captions[0].font, /11px/);
+});
+
+const PATTERN_CHART = {
+  paneSize: () => ({ width: 400, height: 200 }),
+  timeScale: () => ({ timeToCoordinate: (time) => Number(time), options: () => ({ barSpacing: 6 }), getVisibleRange: () => null }),
+};
+const PATTERN_SERIES = { priceToCoordinate: (price) => 200 - Number(price) * 10 };
+
+test("a pattern line is named at its start (Resistance above, Support below) and a measured move can be vertical", () => {
+  const primitive = new TosNativeChartPrimitive();
+  primitive.setData({
+    bars: [{ time: 100, high: 11, low: 9 }, { time: 300, high: 13, low: 11 }],
+    trendSegments: [
+      { startTime: 100, startPrice: 12, endTime: 300, endPrice: 12, color: "#ff4d5e", startLabel: "Resistance" },
+      { startTime: 100, startPrice: 9, endTime: 300, endPrice: 9, color: "#2fe07f", startLabel: "Support", startLabelSide: "below" },
+      { startTime: 300, startPrice: 12, endTime: 300, endPrice: 15, color: "#00e5ff", dash: [4, 4] },
+      { startTime: 300, startPrice: 12, endTime: 300, endPrice: 12 }, // a point: dropped
+    ],
+  });
+  const geometry = nativeGeometry(primitive.model, PATTERN_CHART, PATTERN_SERIES);
+  const names = geometry.patternLabels.map((label) => [label.text, label.x, label.y, label.color]);
+  assert.equal(geometry.backgroundLabels.length, 0, "never under the candles");
+  // Line starts at x 100: too close to the left edge, so past the ring.
+  assert.deepEqual(names, [["Resistance", 112, 68, "#ff4d5e"], ["Support", 112, 123, "#2fe07f"]]);
+  primitive.setData({
+    bars: [{ time: 200, high: 11, low: 9 }, { time: 300, high: 13, low: 11 }],
+    trendSegments: [{ startTime: 200, startPrice: 12, endTime: 300, endPrice: 12, color: "#ff4d5e", startLabel: "Resistance" }],
+  });
+  // With room: right-aligned just left of the line's start, level with it.
+  const left = nativeGeometry(primitive.model, PATTERN_CHART, PATTERN_SERIES).patternLabels[0];
+  assert.deepEqual([left.x, left.y, left.align], [190, 80, "right"]);
+  const vertical = geometry.lines.find((line) => line.x1 === line.x2);
+  assert.deepEqual([vertical.x1, vertical.y1, vertical.y2], [300, 80, 50]);
+  assert.equal(geometry.lines.length, 3);
+});
+
+test("a pattern is shaded and its touches, breakout and target are marked", () => {
+  const primitive = new TosNativeChartPrimitive();
+  primitive.setData({
+    bars: [{ time: 100, high: 11, low: 9 }, { time: 300, high: 13, low: 11 }],
+    patternFills: [
+      { points: [{ time: 100, price: 12 }, { time: 300, price: 12 }, { time: 300, price: 9 }, { time: 100, price: 9 }], color: "#00e5ff", opacity: 0.1 },
+      { points: [{ time: 100, price: 12 }, { time: "x", price: 1 }, { time: 300, price: 9 }] }, // junk: dropped
+    ],
+    patternMarkers: [
+      { time: 100, price: 12, color: "#ff4d5e", kind: "touch", radius: 5 },
+      { time: 300, price: 12, color: "#00e5ff", kind: "breakout", radius: 10 },
+      { time: 300, price: 15, color: "#00e5ff", kind: "arrowUp", radius: 7 },
+      { time: 9000, price: 15, kind: "touch" }, // off the pane: dropped
+      { time: null, price: 15 }, // junk: dropped
+    ],
+  });
+  const geometry = nativeGeometry(primitive.model, PATTERN_CHART, PATTERN_SERIES);
+  assert.equal(geometry.fills.length, 1);
+  assert.deepEqual(geometry.fills[0].points, [[100, 80], [300, 80], [300, 110], [100, 110]]);
+  assert.deepEqual(geometry.markers.map((marker) => [marker.kind, marker.x, marker.y, marker.radius]), [
+    ["touch", 100, 80, 5], ["breakout", 300, 80, 10], ["arrowUp", 300, 50, 7],
+  ]);
+});
+
+test("pattern marks draw a ring for a touch and an arrow head pointing at the target", () => {
+  const calls = [];
+  const context = new Proxy({}, {
+    get: (target, key) => (key in target ? target[key] : (...args) => calls.push([key, ...args])),
+    set: (target, key, value) => { target[key] = value; return true; },
+  });
+  drawPatternMarker(context, { x: 50, y: 40, radius: 5, color: "#ff4d5e", kind: "touch" });
+  assert.ok(calls.some(([name, , , r]) => name === "arc" && r === 5));
+  assert.ok(calls.some(([name]) => name === "stroke"));
+  calls.length = 0;
+  drawPatternMarker(context, { x: 50, y: 40, radius: 7, color: "#00e5ff", kind: "arrowUp" });
+  const moves = calls.filter(([name]) => name === "moveTo" || name === "lineTo").map(([, x, y]) => [x, y]);
+  // The tip is AT the target; the base is below it (larger y) for an up arrow.
+  assert.deepEqual(moves[0], [50, 40]);
+  assert.ok(moves.slice(1).every(([, y]) => y > 40));
+  assert.ok(calls.some(([name]) => name === "fill"));
 });

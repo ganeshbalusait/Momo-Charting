@@ -46,8 +46,10 @@ function monthlyTriangle(symbol) {
           pattern: "SYM", label: "Symmetrical triangle", direction: "up", status: "live", period: to,
           level: 150, target: 220,
           lines: [
-            { from: monthsBefore(to, 20), fromPrice: 190, to, toPrice: 150, bars: 20, role: "falling highs" },
-            { from: monthsBefore(to, 16), fromPrice: 90, to, toPrice: 120, bars: 16, role: "rising lows" },
+            { from: monthsBefore(to, 20), fromPrice: 190, to, toPrice: 150, bars: 20, role: "falling highs",
+              touches: [{ period: monthsBefore(to, 20), price: 190 }, { period: monthsBefore(to, 10), price: 170 }] },
+            { from: monthsBefore(to, 16), fromPrice: 90, to, toPrice: 120, bars: 16, role: "rising lows",
+              touches: [{ period: monthsBefore(to, 16), price: 90 }, { period: monthsBefore(to, 6), price: 110 }] },
           ],
         },
         down: null,
@@ -60,6 +62,8 @@ function monthlyTriangle(symbol) {
 
 const patternTags = (page, index = 0) => card(page, index).getAttribute("data-chart-pattern");
 const patternLines = async (page, index = 0) => Number(await card(page, index).getAttribute("data-chart-pattern-lines"));
+const patternMarks = async (page, index = 0) => Number(await card(page, index).getAttribute("data-chart-pattern-marks"));
+const patternFills = async (page, index = 0) => Number(await card(page, index).getAttribute("data-chart-pattern-fills"));
 const patternReads = (app) => app.reads.filter((read) => read.path === "/api/momx-scanner/chart-pattern");
 
 e2eTest("a Monthly chart draws the triangle's two lines, the dashed target and a tag naming the pattern", async () => {
@@ -72,7 +76,11 @@ e2eTest("a Monthly chart draws the triangle's two lines, the dashed target and a
     const month = new Date().toLocaleString("en-US", { timeZone: "America/New_York", month: "short" });
     const year = thisMonth().slice(2, 4);
     assert.equal(await patternTags(page), `M ▲ Triangle 150.00 (${month} ${year} open) | M Triangle target 220.00`);
-    assert.equal(await patternLines(page), 3, "two pattern lines + the dashed target");
+    assert.equal(await patternLines(page), 4, "two pattern lines + the arrow's shaft + the dashed target");
+    // Like his sample pictures (2026-11-21): 4 touches circled + the breakout
+    // ring + the target arrow head, and the triangle shaded.
+    assert.equal(await patternMarks(page), 6);
+    assert.equal(await patternFills(page), 1);
     assert.ok(patternReads(app).some((read) => /symbol=NVDA/.test(read.search)), "the chart asked for NVDA's pattern");
     assert.deepEqual(app.pageErrors, []);
   });
@@ -128,6 +136,7 @@ e2eTest("the study is on by default on a Daily chart; switching it off removes t
     assert.ok(patternReads(app).length > readsBefore, "switching it on reads the pattern again");
     assert.equal(await patternTags(page), "D ▼ Range 180.00", "a confirmed break with no target: one tag");
     assert.equal(await patternLines(page), 2);
+    assert.equal(await patternMarks(page), 1, "no touches sent: only the breakout ring, no target arrow");
     assert.deepEqual(app.pageErrors, []);
   });
 }, { timeout: 240_000 });
@@ -151,7 +160,8 @@ e2eTest("on a phone the Monthly pattern is drawn with nothing pushed off the sid
     await waitForTape(page, { symbol: "NVDA", timeframe: "M" });
     await page.waitForFunction(() => /Triangle/.test(document.querySelector("section.oi-finder-chart-card[data-tape-length]")?.dataset.chartPattern || ""),
       null, { timeout: 60_000 });
-    assert.equal(await patternLines(page), 3);
+    assert.equal(await patternLines(page), 4);
+    assert.equal(await patternMarks(page), 6);
     assert.equal(await overflowsSideways(page), false);
     assert.deepEqual(app.pageErrors, []);
   });

@@ -37,10 +37,14 @@ export function cleanDwmSettings(defaults = {}) {
   return out;
 }
 
-// For a saved profile of `timeframeKey`: the clean set, or {} when the
-// timeframe is not D/W/M or he has already saved this timeframe since.
+// For a saved profile of `timeframeKey`: the clean set, or - when he has
+// already saved this timeframe since - only the studies his save predates
+// (added to the app later, e.g. the ±EM switch on 2026-11-21), which start
+// clean too instead of inheriting the minute-chart default. {} when the
+// timeframe is not D/W/M.
 export function migrateCleanDwm(saved, timeframeKey, defaults = {}) {
   if (!isDwmTimeframe(timeframeKey)) return {};
-  if (saved && typeof saved === "object" && saved.cleanDwmVersion === CLEAN_DWM_VERSION) return {};
-  return cleanDwmSettings(defaults);
+  const clean = cleanDwmSettings(defaults);
+  if (!(saved && typeof saved === "object" && saved.cleanDwmVersion === CLEAN_DWM_VERSION)) return clean;
+  return Object.fromEntries(Object.entries(clean).filter(([key]) => !(key in saved)));
 }

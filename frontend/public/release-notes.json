@@ -2,6 +2,16 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-21T11:28:08-05:00",
+      "heading": "Charts: the breakout pattern is drawn like the textbook pictures - Resistance, Support, Trendline, touches and target",
+      "items": [
+        "On a D, W or M chart the pattern's lines are now coloured and named: red Resistance, green Support, orange Trendline. The name sits just left of where each line starts.",
+        "Every swing point that made a line is circled, the pattern (range, triangle, wedge) is shaded, the breakout candle has a ring, and an arrow points from the break up (or down) to the measured target.",
+        "The pattern's marks are drawn on top of the candles, so they are no longer hidden behind them.",
+        "The option expected-move lines (red +EM, green -EM) now have their own switch, \"Expected move (\u00b1EM)\", and are off on Daily, Weekly and Monthly charts - on the COST Monthly chart they sat right on the range's top line. Minute charts still show them."
+      ]
+    },
+    {
       "at": "2026-11-21T09:42:44-05:00",
       "heading": "Charts: Daily, Weekly and Monthly charts start clean - candles, EMA, Fib and the pattern",
       "items": [

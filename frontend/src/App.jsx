@@ -11536,6 +11536,10 @@ const DEFAULT_OI_CHART_INDICATORS = Object.freeze({
   fibSwing: true,
   // 2026-11-20: the Breakout / Breakdown pattern (lines + tag) on D/W/M charts.
   chartPattern: true,
+  // 2026-11-21: the option chain's expected move (+EM red / -EM green). Was
+  // always drawn with no switch; on his COST Monthly chart it sat on the
+  // range's resistance line. Off on D/W/M (chartCleanDwm.js).
+  expectedMoveLines: true,
   ichimoku: true,
   squeezeMomentumLower: false,
   mtfCloudLabelLower: true,
@@ -22934,6 +22938,10 @@ function OiFinderCandleChart({
         // Chart pattern (chartPattern.js): the pattern's lines, sloped or flat,
         // and the dashed measured target running to its axis tag.
         trendSegments: chartPatternOverlay.segments,
+        // ...its shading, and the circles on its touches / breakout candle
+        // and the arrow head at its target (2026-11-21, his sample pictures).
+        patternFills: chartPatternOverlay.fills,
+        patternMarkers: chartPatternOverlay.markers,
         // MomoX draws the MTF MA levels as short segments over the most recent
         // bars that run into the price axis. They keep their ThinkScript colour
         // per average rather than the side-of-price pair, so each one stays
@@ -23047,7 +23055,7 @@ function OiFinderCandleChart({
             // before today's session has accumulated many candles.
             startTime: 0,
           })),
-          ...(expectedMoveRange ? [
+          ...(expectedMoveRange && indicatorSettings.expectedMoveLines !== false ? [
             { price: expectedMoveRange.high, color: "#ff3b4f", lineWidth: 3, dash: lineStyleDashArray(2), startTime: momoxLevelAnchor ?? 0, labelText: `+EM ${expectedMoveRange.high}` },
             { price: expectedMoveRange.low, color: "#22c55e", lineWidth: 3, dash: lineStyleDashArray(2), startTime: momoxLevelAnchor ?? 0, labelText: `-EM ${expectedMoveRange.low}` },
           ] : []),
@@ -23282,7 +23290,7 @@ function OiFinderCandleChart({
         addIndicatorName(sessionLevelsStudy.allTimeHigh, "ATH", "#ff5500", true, "session-level-ath");
       }
     }
-    if (expectedMoveRange) {
+    if (expectedMoveRange && indicatorSettings.expectedMoveLines !== false) {
       // Both EM bands are session-anchored segments now; see levelSegments.
       addIndicatorName(
         expectedMoveRange.high,
@@ -23669,6 +23677,8 @@ function OiFinderCandleChart({
       // Chart pattern (chartPattern.js): its tags and how many lines are drawn.
       data-chart-pattern={chartPatternOverlay.labels.map((label) => label.title).join(" | ")}
       data-chart-pattern-lines={chartPatternOverlay.segments.length}
+      data-chart-pattern-marks={chartPatternOverlay.markers.length}
+      data-chart-pattern-fills={chartPatternOverlay.fills.length}
       data-gamma-levels={gammaModel.levels.length}
       data-gamma-empty-reason={gammaModel.emptyReason}
       data-gamma-symbol={gammaModel.symbol}
@@ -24118,7 +24128,8 @@ function OiFinderCandleChart({
               ["cloudMaxMtf", "CloudMAX MTF EMA 1/5/15", "shared_CloudMAX_MTF_EMA_1_5_15_v22 • EMA clouds, arrows, and bubbles"],
               ["autoFibSingleTf", "AutoFib — Single TF", "shared_AutoFib_SingleTF_v20263 • 38.2%, 50%, and 61.8% retracement cloud • 5m through Monthly"],
               ["fibSwing", "Big swing Fib", "Monthly, Weekly and Daily Fib on every timeframe, tagged M / W / D Fib • 50% and 61.8% lines, zone between them shaded"],
-              ["chartPattern", "Chart pattern (breakout)", "Daily / Weekly / Monthly charts • the scanner's Breakout / Breakdown patterns (HL + resistance, triangle, range, LH + support) with their lines, the line that broke and the measured target • cyan up, pink down • back-test edge on Monthly only"],
+              ["chartPattern", "Chart pattern (breakout)", "Daily / Weekly / Monthly charts • the scanner's Breakout / Breakdown patterns (HL + resistance, triangle, range, LH + support): red Resistance, green Support, orange Trendline, touches circled, the pattern shaded, the breakout candle ringed and an arrow to the measured target • cyan up, pink down • back-test edge on Monthly only"],
+              ["expectedMoveLines", "Expected move (±EM)", "The option chain's expected move • red +EM above, green -EM below • off on Daily / Weekly / Monthly charts"],
               ["ichimoku", "Ichimoku", "TOS study • Tenkan/Kijun, Span A/B, crosses, clouds, and Chikou"],
               ["mtfAdxCloudsLower", "MTF ADX Clouds (Lower)", "shared_MTF_ADXClouds_v225 • DI/ADX clouds • Current + five aggregations"],
               ["squeezeMomentumLower", "Squeeze Momentum (Lower)", "shared_SqueezeChain24 • TTM Squeeze LINE_VS_POINTS in a lower pane"],

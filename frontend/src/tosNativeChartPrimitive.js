@@ -11,12 +11,19 @@ const EMPTY_NATIVE_MODEL = Object.freeze({
   candleHighlights: [],
   levelSegments: [],
   trendSegments: [],
+  patternFills: [],
+  patternMarkers: [],
   wedges: [],
 });
 
 function finiteNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+// Number(null) is 0: a missing time or price must not land on 1970 / $0.
+function patternNumber(value) {
+  return value == null || value === "" ? null : finiteNumber(value);
 }
 
 function clamp(value, minimum, maximum) {
@@ -555,6 +562,21 @@ function normalizeModel(model = {}) {
         if (segment?.endTime != null && endTime == null) return [];
         return [{ ...segment, startTime, startPrice, endTime, endPrice }];
       }),
+    // Chart pattern shading: a polygon of (time, price) points.
+    patternFills: (Array.isArray(model.patternFills) ? model.patternFills : [])
+      .flatMap((fill) => {
+        const points = (Array.isArray(fill?.points) ? fill.points : [])
+          .map((point) => ({ time: patternNumber(point?.time), price: patternNumber(point?.price) }));
+        if (points.length < 3 || points.some((point) => point.time == null || point.price == null)) return [];
+        return [{ ...fill, points }];
+      }),
+    // Chart pattern circles (touches, the breakout candle) and target arrows.
+    patternMarkers: (Array.isArray(model.patternMarkers) ? model.patternMarkers : [])
+      .flatMap((marker) => {
+        const time = patternNumber(marker?.time);
+        const price = patternNumber(marker?.price);
+        return time == null || price == null ? [] : [{ ...marker, time, price }];
+      }),
     // TOS BOOLEAN_WEDGE_UP / _DOWN plots (shared_StochasX_v20263).
     wedges: (Array.isArray(model.wedges) ? model.wedges : [])
       .flatMap((wedge) => {
@@ -650,6 +672,10 @@ export function nativeGeometry(model, chart, series) {
   const lines = [];
   const candleHighlights = [];
   const wedges = [];
+  const markers = [];
+  // Chart pattern names and captions: drawn on the top layer with the
+  // markers, so candles and other studies' tags never cover them.
+  const patternLabels = [];
   const visibleTimeRange = chart.timeScale().getVisibleRange?.();
   const visibleTimeFrom = finiteNumber(visibleTimeRange?.from);
   const visibleTimeTo = finiteNumber(visibleTimeRange?.to);
@@ -867,6 +893,14 @@ export function nativeGeometry(model, chart, series) {
     });
   });
 
+  (model.patternFills || []).forEach((fill) => {
+    const points = fill.points.map((point) => [xForTime(point.time), yForPrice(point.price)]);
+    if (points.some(([x, y]) => x == null || y == null)) return;
+    const xs = points.map(([x]) => x);
+    if (Math.max(...xs) < 0 || Math.min(...xs) > width) return;
+    fills.push({ points, color: fill.color, opacity: fill.opacity ?? 0.1 });
+  });
+
   (model.trendSegments || []).forEach((segment) => {
     const x1 = xForTime(segment.startTime);
     const y1 = yForPrice(segment.startPrice);
@@ -874,7 +908,9 @@ export function nativeGeometry(model, chart, series) {
     const x2 = segment.endTime == null
       ? width - nativeLevelLabelGutter(segment.labelText, LEVEL_LABEL_GUTTER)
       : xForTime(segment.endTime);
-    if (x1 == null || x2 == null || y1 == null || y2 == null || x2 <= x1) return;
+    // x2 === x1 is a vertical line (the pattern's measured move).
+    if (x1 == null || x2 == null || y1 == null || y2 == null || x2 < x1) return;
+    if (x2 === x1 && y2 === y1) return;
     if (x2 < 0 || x1 > width) return;
     lines.push({
       x1,
@@ -886,20 +922,54 @@ export function nativeGeometry(model, chart, series) {
       lineWidth: segment.lineWidth || 2,
       dash: Array.isArray(segment.dash) ? segment.dash : [],
     });
-    // The pattern's name above the start of the line that broke ("M ▲ Range
-    // > 1096.50 · Nov 26 open"): its axis tag usually sits beside the LIVE
-    // tag, which nothing may join, so the chart itself names the pattern.
-    if (segment.caption) {
-      backgroundLabels.push({
-        x: Math.max(4, Math.min(x1 + 4, width - 200)),
-        y: (segment.endPrice >= segment.startPrice ? Math.min(y1, y2) : y1) - 8,
-        text: String(segment.caption),
+    // The line's name at its start ("Resistance", "Support", "Trendline"),
+    // like his sample pictures (2026-11-21).
+    if (segment.startLabel) {
+      const above = segment.startLabelSide !== "below";
+      // Left of the line's start, level with it, like his sample pictures:
+      // outside the pattern and away from the price-axis tags that crowd
+      // its right end (COST Monthly, 2026-11-21). On a dark plate. With no
+      // room on the left, just past the first touch's ring, above / below.
+      const roomLeft = x1 >= 110;
+      patternLabels.push({
+        x: roomLeft ? x1 - 10 : Math.max(4, Math.min(x1 + 12, width - 150)),
+        y: roomLeft ? y1 : y1 + (above ? -12 : 13),
+        ...(roomLeft ? { align: "right" } : {}),
+        text: String(segment.startLabel),
         color: segment.color,
+        font: "800 11px system-ui, sans-serif",
+        background: "rgba(6, 10, 18, 0.82)",
+      });
+    }
+    // The pattern's name beside the breakout on the line that broke ("M ▲
+    // Range > 1096.50 (Nov 26 open)"), outside the pattern: its axis tag
+    // usually sits beside the LIVE tag, which nothing may join.
+    if (segment.caption) {
+      const above = segment.captionSide !== "below";
+      patternLabels.push({
+        x: Math.max(4, x2 - 6),
+        y: y2 + (above ? -12 : 13),
+        align: "right",
+        text: String(segment.caption),
+        color: segment.captionColor || segment.color,
         font: "800 11px system-ui, sans-serif",
         // A dark plate so other studies' lines do not strike through it.
         background: "rgba(6, 10, 18, 0.82)",
       });
     }
+  });
+
+  (model.patternMarkers || []).forEach((marker) => {
+    const x = xForTime(marker.time);
+    const y = yForPrice(marker.price);
+    if (x == null || y == null || !visibleX(x)) return;
+    markers.push({
+      x,
+      y,
+      kind: String(marker.kind || "touch"),
+      color: marker.color || "#ffffff",
+      radius: clamp(Number(marker.radius) || 5, 2, 16),
+    });
   });
 
   const barsByTime = new Map(model.bars.map((bar) => [Number(bar.time), bar]));
@@ -992,6 +1062,8 @@ export function nativeGeometry(model, chart, series) {
     lines,
     candleHighlights,
     wedges,
+    markers,
+    patternLabels,
     labels,
   };
 }
@@ -1052,22 +1124,57 @@ class TosBackgroundRenderer {
         }
       });
       context.setLineDash([]);
-      geometry.backgroundLabels.forEach((label) => {
-        context.fillStyle = label.color;
-        context.font = label.font || "800 8px system-ui, sans-serif";
-        context.textBaseline = "middle";
-        if (label.background) {
-          const textWidth = context.measureText(label.text).width;
-          context.fillStyle = label.background;
-          roundedRectangle(context, label.x - 4, label.y - 9, textWidth + 8, 18, 4);
-          context.fill();
-          context.fillStyle = label.color;
-        }
-        context.fillText(label.text, label.x, label.y);
-      });
+      geometry.backgroundLabels.forEach((label) => drawPlateLabel(context, label));
       context.restore();
     });
   }
+}
+
+// A chart label: optional dark plate behind it, optional right alignment.
+function drawPlateLabel(context, label) {
+  context.save();
+  context.fillStyle = label.color;
+  context.font = label.font || "800 8px system-ui, sans-serif";
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  const textWidth = label.background || label.align === "right" ? context.measureText(label.text).width : 0;
+  const x = label.align === "right" ? Math.max(4, label.x - textWidth) : label.x;
+  if (label.background) {
+    context.fillStyle = label.background;
+    roundedRectangle(context, x - 4, label.y - 9, textWidth + 8, 18, 4);
+    context.fill();
+    context.fillStyle = label.color;
+  }
+  context.fillText(label.text, x, label.y);
+  context.restore();
+}
+
+// Chart pattern marks: a ring on each touch, a bold ring on the breakout
+// candle, and a filled arrow head at the measured target.
+export function drawPatternMarker(context, marker) {
+  const { x, y, radius, color } = marker;
+  context.save();
+  context.setLineDash([]);
+  if (marker.kind === "arrowUp" || marker.kind === "arrowDown") {
+    const tip = marker.kind === "arrowUp" ? -1 : 1;
+    context.fillStyle = color;
+    context.beginPath();
+    context.moveTo(x, y);
+    context.lineTo(x - radius, y - tip * radius * 1.4);
+    context.lineTo(x + radius, y - tip * radius * 1.4);
+    context.closePath();
+    context.fill();
+  } else {
+    const breakout = marker.kind === "breakout";
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fillStyle = colorWithOpacity(color, breakout ? 0.18 : 0.3);
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = breakout ? 2.5 : 1.5;
+    context.stroke();
+  }
+  context.restore();
 }
 
 function roundedRectangle(context, x, y, width, height, radius) {
@@ -1104,6 +1211,8 @@ class TosSignalRenderer {
       context.beginPath();
       context.rect(0, 0, mediaSize.width, mediaSize.height);
       context.clip();
+      (this.geometry.markers || []).forEach((marker) => drawPatternMarker(context, marker));
+      (this.geometry.patternLabels || []).forEach((label) => drawPlateLabel(context, label));
       context.font = "400 11px system-ui, sans-serif";
       context.textAlign = "center";
       context.textBaseline = "middle";

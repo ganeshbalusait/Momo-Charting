@@ -200,6 +200,9 @@ def test_chart_pattern_route_answers_any_ticker_over_http(tmp_path, monkeypatch,
     assert monthly["up"]["pattern"] == "BOTTOM" and monthly["up"]["status"] == "live"
     assert [line["role"] for line in monthly["up"]["lines"]] == ["resistance", "rising lows"]
     assert monthly["up"]["lines"][0]["toPrice"] == pytest.approx(102.0)
+    # Each line's touch points come over HTTP for the chart's circles.
+    assert all(len(line["touches"]) >= 2 for line in monthly["up"]["lines"])
+    assert all(t["price"] == pytest.approx(102.0, rel=0.07) for t in monthly["up"]["lines"][0]["touches"])
     assert weekly["down"]["pattern"] == "MIDDLE" and weekly["down"]["lines"][0]["to"] == weekly["down"]["period"]
     assert body["patterns"]["Daily"] is None
     # Fetched once (3 timeframes), then kept.
