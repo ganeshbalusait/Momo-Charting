@@ -111,7 +111,7 @@ import { setItemMakingRoom } from "./storageRoom.js";
 import { pruneOversizedBoardCaches } from "./momxCells.js";
 import { WOODIES_DEFAULTS, WOODIES_LEVELS, WOODIES_TIMEFRAMES, buildWoodiesPivots } from "./woodiesPivots.js";
 import { CHART_PATTERN_ENDPOINT, buildChartPatternOverlay, chartPatternSignature, chartPatternTimeframe } from "./chartPattern.js";
-import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, migrateFibSwingOwnOff, autoFibCalendarBars, autoFibCalendarKey, autoFibAxisLabels, autoFibTimeframeAllowed, buildFibSwingStudies, fibSwingAxisLabels } from "./chartFibSwing.js";
+import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, migrateFibSwingOwnOff, migrateFibDwmKeyLevelOptions, migrateFibDwmKeyLevelSettings, autoFibCalendarBars, autoFibCalendarKey, autoFibAxisLabels, autoFibTimeframeAllowed, buildFibSwingStudies, fibSwingAxisLabels } from "./chartFibSwing.js";
 import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartDeepHistoryPending, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
 import { CHART_TOUCH_ALERT_HOLD_MS, touchAlertGestureShouldCancel } from "./chartTouchAlert";
 import { CLOUD_BAND_STUDIES, calculateTosCloudBandPoints } from "./cloudBandStudy";
@@ -15557,6 +15557,7 @@ function OiFinderCandleChart({
         ...migrateTosCloudStudiesVisibility(saved),
         ...migrateRelVolVisibility(saved),
         ...migrateAutoFibVisibility(saved),
+        ...migrateFibDwmKeyLevelSettings(saved),
         indicatorSettingsVersion: FOCUSED_CHART_INDICATOR_SETTINGS_VERSION,
       };
     } catch {
@@ -15617,6 +15618,7 @@ function OiFinderCandleChart({
         ...migratedIchimokuOptions,
         ...migratedAutoFibOptions,
         ...migrateFibSwingOwnOff(saved),
+        ...migrateFibDwmKeyLevelOptions(saved),
         ...migratedSignalLabelOptions,
         ...migrateTosOiLevelOptions(saved),
         ...migrateTosPivotPointOptions(saved),
@@ -15756,6 +15758,7 @@ function OiFinderCandleChart({
           ...migrateTosCloudStudiesVisibility(profile.indicatorSettings),
           ...migrateRelVolVisibility(profile.indicatorSettings),
           ...migrateAutoFibVisibility(profile.indicatorSettings),
+          ...migrateFibDwmKeyLevelSettings(profile.indicatorSettings),
         }));
       }
       if (profile.indicatorOptions && typeof profile.indicatorOptions === "object") {
@@ -15765,6 +15768,7 @@ function OiFinderCandleChart({
           ...migrateIchimokuChartOptions(profile.indicatorOptions),
           ...migrateAutoFibChartOptions(profile.indicatorOptions),
           ...migrateFibSwingOwnOff(profile.indicatorOptions),
+          ...migrateFibDwmKeyLevelOptions(profile.indicatorOptions),
           ...migrateTosMtfSignalLabelOptions(profile.indicatorOptions),
           ...migrateTosOiLevelOptions(profile.indicatorOptions),
           ...migrateTosPivotPointOptions(profile.indicatorOptions),
@@ -24068,7 +24072,7 @@ function OiFinderCandleChart({
               ["stochasX", "StochasX", "shared_StochasX_v20263 • FullD 8/8 weighted • red ^ crossing below 90, lime v crossing above 10 • last 2 days"],
               ["cloudMaxMtf", "CloudMAX MTF EMA 1/5/15", "shared_CloudMAX_MTF_EMA_1_5_15_v22 • EMA clouds, arrows, and bubbles"],
               ["autoFibSingleTf", "AutoFib — Single TF", "shared_AutoFib_SingleTF_v20263 • 38.2%, 50%, and 61.8% retracement cloud • 5m through Monthly"],
-              ["fibSwing", "Big swing Fib", "TradingView-style retracement • the Monthly, Weekly and Daily swings together on every timeframe, tagged M / W / D Fib • 50%–61.8% zones shaded"],
+              ["fibSwing", "Big swing Fib", "Monthly, Weekly and Daily Fib on every timeframe, tagged M / W / D Fib • 50% and 61.8% lines, zone between them shaded"],
               ["chartPattern", "Chart pattern (breakout)", "Daily / Weekly / Monthly charts • the scanner's Breakout / Breakdown patterns (HL + resistance, triangle, range, LH + support) with their lines, the line that broke and the measured target • cyan up, pink down • back-test edge on Monthly only"],
               ["ichimoku", "Ichimoku", "TOS study • Tenkan/Kijun, Span A/B, crosses, clouds, and Chikou"],
               ["mtfAdxCloudsLower", "MTF ADX Clouds (Lower)", "shared_MTF_ADXClouds_v225 • DI/ADX clouds • Current + five aggregations"],
@@ -24438,17 +24442,17 @@ function OiFinderCandleChart({
                     </> : null}
                     {key === "fibSwing" ? <>
                       <p>Lowest low to highest high of the last N candles. The newer of the two is 0%.</p>
-                      <p>Swings drawn together. Minute and hour charts draw the Monthly only; their Daily and Weekly levels come from AutoFib.</p>
-                      {[["fibSwingShowM", "Monthly (M Fib)"], ["fibSwingShowW", "Weekly (W Fib, D/W/M charts)"], ["fibSwingShowD", "Daily (D Fib, D/W/M charts)"]].map(([optionKey, optionLabel]) => (
+                      <p>Daily, Weekly and Monthly swings drawn together on every chart, 50% and 61.8% lines. D and W use the last 20 candles like TOS AutoFib (61.8% counted up from the low); M uses 60 months like TradingView.</p>
+                      {[["fibSwingShowM", "Monthly (M Fib)"], ["fibSwingShowW", "Weekly (W Fib)"], ["fibSwingShowD", "Daily (D Fib)"]].map(([optionKey, optionLabel]) => (
                         <label key={optionKey}><input type="checkbox" checked={indicatorOptions[optionKey] !== false} onChange={() => setIndicatorOption(optionKey, indicatorOptions[optionKey] === false)} /><span>{optionLabel}</span></label>
                       ))}
                       <label><input type="checkbox" checked={indicatorOptions.fibSwingShowOwn === true} onChange={() => setIndicatorOption("fibSwingShowOwn", indicatorOptions.fibSwingShowOwn !== true)} /><span>This chart's own candles (Fib; "5-day Fib" on minute charts)</span></label>
                       <label><input type="checkbox" checked={indicatorOptions.fibSwingIntraday !== false} onChange={() => setIndicatorOption("fibSwingIntraday", indicatorOptions.fibSwingIntraday === false)} /><span>Show on minute and hour charts</span></label>
                       <label><span>Trading days (own candles, minute / hour charts)</span><input type="number" min="1" max="60" value={indicatorOptions.fibSwingIntradayDays} onChange={(event) => setIndicatorOption("fibSwingIntradayDays", Math.max(1, Math.min(60, Number(event.target.value) || 5)))} /></label>
-                      <label><span>Daily candles</span><input type="number" min="10" max="1000" value={indicatorOptions.fibSwingDayBars} onChange={(event) => setIndicatorOption("fibSwingDayBars", Math.max(10, Math.min(1000, Number(event.target.value) || 252)))} /></label>
-                      <label><span>Weekly candles</span><input type="number" min="10" max="1000" value={indicatorOptions.fibSwingWeekBars} onChange={(event) => setIndicatorOption("fibSwingWeekBars", Math.max(10, Math.min(1000, Number(event.target.value) || 104)))} /></label>
+                      <label><span>Daily candles</span><input type="number" min="10" max="1000" value={indicatorOptions.fibSwingDayBars} onChange={(event) => setIndicatorOption("fibSwingDayBars", Math.max(10, Math.min(1000, Number(event.target.value) || 20)))} /></label>
+                      <label><span>Weekly candles</span><input type="number" min="10" max="1000" value={indicatorOptions.fibSwingWeekBars} onChange={(event) => setIndicatorOption("fibSwingWeekBars", Math.max(10, Math.min(1000, Number(event.target.value) || 20)))} /></label>
                       <label><span>Monthly candles</span><input type="number" min="10" max="1000" value={indicatorOptions.fibSwingMonthBars} onChange={(event) => setIndicatorOption("fibSwingMonthBars", Math.max(10, Math.min(1000, Number(event.target.value) || 60)))} /></label>
-                      <label><input type="checkbox" checked={indicatorOptions.fibSwingShowAllLevels !== false} onChange={() => setIndicatorOption("fibSwingShowAllLevels", indicatorOptions.fibSwingShowAllLevels === false)} /><span>Show 23.6% / 38.2% / 78.6% too</span></label>
+                      <label><input type="checkbox" checked={indicatorOptions.fibSwingShowAllLevels !== false} onChange={() => setIndicatorOption("fibSwingShowAllLevels", indicatorOptions.fibSwingShowAllLevels === false)} /><span>Show 0% / 23.6% / 38.2% / 78.6% / 100% too</span></label>
                       <label><span>Zone after a rise</span><input type="color" value={indicatorOptions.fibSwingUpColor} onChange={(event) => setIndicatorOption("fibSwingUpColor", event.target.value)} /></label>
                       <label><span>Zone after a fall</span><input type="color" value={indicatorOptions.fibSwingDownColor} onChange={(event) => setIndicatorOption("fibSwingDownColor", event.target.value)} /></label>
                       <label><span>Zone opacity</span><input type="range" min="28" max="60" value={indicatorOptions.fibSwingZoneOpacity} onChange={(event) => setIndicatorOption("fibSwingZoneOpacity", Number(event.target.value))} /></label>

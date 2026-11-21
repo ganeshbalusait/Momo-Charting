@@ -31,9 +31,12 @@ e2eTest("NVDA monthly chart shows the Big swing Fib tags; switching it off remov
   await withCharts({ workspace: { symbols: ["NVDA"], timeframes: ["M"] } }, async (app) => {
     const { page } = app;
     await waitForTape(page, { symbol: "NVDA", timeframe: "M" });
-    await waitForFibTags(page, 3);
+    // 2026-11-21: six lines (D / W / M at 50% and 61.8%). On a Monthly chart
+    // the prices sit close together, so a tag beside another (NVDA M 50% at
+    // 127.09 next to the 130.03 live price) can hide; its line stays.
+    await waitForFibTags(page, 2);
     await page.waitForFunction(() => [...document.querySelectorAll("section.oi-finder-chart-card *")]
-      .filter((node) => node.children.length === 0 && /(?:^|\/)M(?:\/[WD])* Fib \d|· M(?:\/[WD])* Fib \d/.test(node.textContent.trim())).length >= 2, null, { timeout: 90_000 });
+      .filter((node) => node.children.length === 0 && /(?:^|\/)M(?:\/[WD])* Fib \d|· M(?:\/[WD])* Fib \d/.test(node.textContent.trim())).length >= 1, null, { timeout: 90_000 });
     const tags = await fibTags(page);
     // NVDA monthly is a five-year RISE, so 100% sits at the low far below the
     // high (a short first-paint tape once drew 243 -> this month's low instead).
@@ -48,7 +51,11 @@ e2eTest("NVDA monthly chart shows the Big swing Fib tags; switching it off remov
     const percent = (name) => parts.find(({ text }) => /^(?:[WD]\/)*M(?:\/[WD])* Fib /.test(text)
       && text.replace(/^[MWD/]+ Fib /, "") === name)?.price;
     const shownM = ["100%", "78.6%", "61.8%", "50%", "38.2%", "23.6%"].filter((name) => Number.isFinite(percent(name)));
-    assert.ok(shownM.length >= 2, `M Fib tags shown: ${tags.join(" | ")}`);
+    assert.ok(shownM.length >= 1, `M Fib tags shown: ${tags.join(" | ")}`);
+    // Only the 50% and 61.8% lines, at the levels he confirmed (TradingView).
+    assert.ok(shownM.every((name) => name === "50%" || name === "61.8%"), tags.join(" | "));
+    if (Number.isFinite(percent("61.8%"))) assert.equal(percent("61.8%"), 99.65, tags.join(" | "));
+    if (Number.isFinite(percent("50%"))) assert.equal(percent("50%"), 127.09, tags.join(" | "));
     // NVDA monthly is a five-year RISE: deeper levels sit at lower prices.
     for (let index = 1; index < shownM.length; index += 1) {
       assert.ok(percent(shownM[index - 1]) < percent(shownM[index]), `M swing should be a rise: ${tags.join(" | ")}`);
@@ -84,34 +91,47 @@ e2eTest("AutoFib settings list Weekly and Monthly, on by default; Big swing has 
     }
     await popover.getByRole("button", { name: `${BIG_SWING} settings`, exact: true }).click();
     const swing = studyRow(popover, BIG_SWING).locator(".oi-finder-indicator-settings");
-    assert.equal(await swing.locator("label", { hasText: "Weekly candles" }).locator("input").inputValue(), "104");
+    // 2026-11-21: D and W over 20 candles (his TOS AutoFib window).
+    assert.equal(await swing.locator("label", { hasText: "Daily candles" }).locator("input").inputValue(), "20");
+    assert.equal(await swing.locator("label", { hasText: "Weekly candles" }).locator("input").inputValue(), "20");
     assert.equal(await swing.locator("label", { hasText: "Monthly candles" }).locator("input").inputValue(), "60");
     assert.deepEqual(app.pageErrors, []);
   });
 }, { timeout: 240_000 });
 
-// 2026-11-20 "Use monthly fib 'big swing' and keep Daily and weekly 'Autofib'
-// on 5 min chart": a 5-minute chart draws the Monthly Big swing ("M Fib")
-// only, and the Daily / Weekly levels come from AutoFib, tagged "D AutoFib".
-// AAPL: its 20-day AutoFib sits inside the day's range (NVDA's is far above).
-e2eTest("a 5-minute chart: Monthly Big swing only, Daily/Weekly from AutoFib; own candles and the intraday switch work", async () => {
+// 2026-11-21 "I want to see fib line 50% and 61.8% for D/W/M in 5 mins chart
+// to all the timeframe charts": every chart draws D, W and M Fib at 50% and
+// 61.8% only (D / W over 20 candles = his TOS AutoFib window, so AutoFib itself
+// is off and its "D AutoFib" tags are gone). AAPL: its D / W levels sit inside
+// the day's range (NVDA's are far above).
+e2eTest("a 5-minute chart: D, W and M Fib at 50% and 61.8%; own candles and the intraday switch work", async () => {
   await withCharts({ workspace: { symbols: ["AAPL"], timeframes: ["5m"] } }, async (app) => {
     const { page } = app;
     await waitForTape(page, { symbol: "AAPL", timeframe: "5m" });
     const allTags = () => page.evaluate(() => [...document.querySelectorAll("section.oi-finder-chart-card *")]
-      .filter((node) => node.children.length === 0 && /Fib \d|AutoFib \d/.test(node.textContent)).map((node) => node.textContent.trim()));
+      .filter((node) => node.children.length === 0 && /Fib \d/.test(node.textContent)).map((node) => node.textContent.trim()));
     await page.waitForFunction(() => [...document.querySelectorAll("section.oi-finder-chart-card *")]
-      .some((node) => node.children.length === 0 && /[DW] AutoFib \d+(\.\d)?% \(\d/.test(node.textContent)), null, { timeout: 150_000 });
-    // No Daily / Weekly BIG SWING on a minute chart (only "M Fib").
-    assert.ok((await allTags()).every((tag) => !/(?:^|· |\/)[DW](?:\/[DW])* Fib \d/.test(tag)), (await allTags()).join(" | "));
+      .some((node) => node.children.length === 0 && /(?:^|\/|· )D(?:\/[MW])* Fib (?:50|61\.8)% \(\d/.test(node.textContent)), null, { timeout: 150_000 });
+    // (AAPL's W levels, 328.94 / 335.77, sit below the 5m chart's visible
+    // prices, so their tags are off-screen; the W values are checked in
+    // tests/test_chart_fib_swing_api.py.)
+    const tags = await allTags();
+    assert.ok(tags.every((tag) => !/AutoFib/.test(tag)), "AutoFib's D/W would repeat the lines: " + tags.join(" | "));
+    assert.ok(tags.every((tag) => !/\b(?:0|23\.6|38\.2|78\.6|100)%/.test(tag)), "50% and 61.8% only: " + tags.join(" | "));
     const popover = await openIndicators(page);
     await popover.getByRole("button", { name: `${BIG_SWING} settings`, exact: true }).click();
     const settings = studyRow(popover, BIG_SWING).locator(".oi-finder-indicator-settings");
     const box = (text) => settings.locator("label", { hasText: text }).locator("input[type='checkbox']");
-    assert.equal(await box("Monthly (M Fib)").isChecked(), true);
+    for (const text of ["Monthly (M Fib)", "Weekly (W Fib)", "Daily (D Fib)"]) {
+      assert.equal(await box(text).isChecked(), true, text + " on");
+    }
     assert.equal(await box("This chart's own candles").isChecked(), false);
-    await box("Monthly (M Fib)").click();
-    assert.equal(await box("Monthly (M Fib)").isChecked(), false, "stays off");
+    assert.equal(await settings.locator("label", { hasText: "Daily candles" }).locator("input").inputValue(), "20");
+    assert.equal(await settings.locator("label", { hasText: "Weekly candles" }).locator("input").inputValue(), "20");
+    for (const text of ["Monthly (M Fib)", "Weekly (W Fib)", "Daily (D Fib)"]) await box(text).click();
+    for (const text of ["Monthly (M Fib)", "Weekly (W Fib)", "Daily (D Fib)"]) {
+      assert.equal(await box(text).isChecked(), false, text + " stays off");
+    }
     // Switched off = its tags leave the chart (a stale merged tag once stayed).
     await page.waitForFunction(() => ![...document.querySelectorAll("section.oi-finder-chart-card *")]
       .some((node) => node.children.length === 0 && /[MWD] Fib \d/.test(node.textContent)), null, { timeout: 15_000 });
@@ -129,6 +149,25 @@ e2eTest("a 5-minute chart: Monthly Big swing only, Daily/Weekly from AutoFib; ow
     assert.deepEqual(app.pageErrors, []);
   });
 }, { timeout: 240_000 });
+
+// Same rule on the Daily, Weekly and Monthly charts (and 1h): lettered D / W /
+// M tags at 50% and 61.8% only, no AutoFib tags.
+for (const timeframe of ["1h", "D", "W", "M"]) {
+  e2eTest(`AAPL ${timeframe} chart: Fib tags are D / W / M at 50% and 61.8% only`, async () => {
+    await withCharts({ workspace: { symbols: ["AAPL"], timeframes: [timeframe] } }, async (app) => {
+      const { page } = app;
+      await waitForTape(page, { symbol: "AAPL", timeframe });
+      await page.waitForFunction(() => [...document.querySelectorAll("section.oi-finder-chart-card *")]
+        .some((node) => node.children.length === 0 && /[MWD] Fib (?:50|61\.8)% \(\d/.test(node.textContent)), null, { timeout: 150_000 });
+      const tags = await page.evaluate(() => [...document.querySelectorAll("section.oi-finder-chart-card *")]
+        .filter((node) => node.children.length === 0 && /Fib \d/.test(node.textContent)).map((node) => node.textContent.trim()));
+      assert.ok(tags.every((tag) => !/AutoFib/.test(tag)), tags.join(" | "));
+      assert.ok(tags.every((tag) => !/\b(?:0|23\.6|38\.2|78\.6|100)%/.test(tag)), "50% and 61.8% only: " + tags.join(" | "));
+      assert.ok(tags.every((tag) => !/(?:^|· )Fib \d/.test(tag)), "every tag names its swing: " + tags.join(" | "));
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }, { timeout: 240_000 });
+}
 
 // 2026-11-20 his NVDA 5m phone screenshot, then "Fix it": his saved settings
 // still had the chart's own 5-day swing ticked, so an unlabelled "Fib 50%

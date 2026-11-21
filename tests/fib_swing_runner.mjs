@@ -24,7 +24,11 @@ for (const [name, minutes] of [["D", 1440], ["W", 10080], ["M", 43200]]) {
   });
   // Each timeframe's own swing, and the default Monthly swing ("M Fib")
   // drawn on that chart from the same daily candles.
-  const study = buildFibSwingStudy(bars, minutes, { ...FIB_SWING_DEFAULTS, fibSwingSource: "own" });
+  // The level formula over the long windows, every level (set explicitly:
+  // the defaults are 50% / 61.8% with 20-candle D / W since 2026-11-21).
+  const study = buildFibSwingStudy(bars, minutes, {
+    ...FIB_SWING_DEFAULTS, fibSwingSource: "own", fibSwingShowAllLevels: true, fibSwingDayBars: 252, fibSwingWeekBars: 104,
+  });
   const monthly = buildFibSwingStudy(bars, minutes, FIB_SWING_DEFAULTS, { dailyBars: payload.dailyBars });
   out[name] = {
     candles: bars.length,
@@ -34,6 +38,9 @@ for (const [name, minutes] of [["D", 1440], ["W", 10080], ["M", 43200]]) {
     zoneEnd: study?.zone?.fast?.at(-1)?.time ?? null,
     lastCandle: bars.at(-1)?.time ?? null,
     mFib50: monthly?.levels?.find((level) => level.ratio === 0.5)?.label ?? null,
+    // What the chart shows by default: D / W / M, 50% and 61.8%.
+    defaultTags: fibSwingAxisLabels(buildFibSwingStudies(bars, minutes, FIB_SWING_DEFAULTS, { dailyBars: payload.dailyBars }))
+      .map((label) => label.title),
   };
   if (minutes > 1440) {
     const calendar = autoFibCalendarBars(payload.dailyBars, minutes);

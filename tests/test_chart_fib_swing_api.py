@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import tempfile
 from datetime import datetime
@@ -151,11 +152,12 @@ def test_route_daily_tape_gives_monthly_weekly_daily_fib_levels():
         assert timeframe["autoFib20High"] > timeframe["autoFib20Low"]
 
 
-def test_five_minute_chart_with_old_saved_settings_shows_only_the_monthly_fib():
+def test_five_minute_chart_with_old_saved_settings_has_no_unlabelled_fib():
     """His phone, 2026-11-20: an unlabelled "Fib 50%" (the chart's own 5-day
     swing, still ticked in his saved settings) sat beside "M Fib 50%". Through
-    the real first-paint route: the one-time fix leaves only "M Fib" tags; if he
-    ticks the own swing again it is tagged "5-day Fib", never a bare "Fib"."""
+    the real first-paint route: the one-time fix leaves only the M / W / D tags
+    (2026-11-21: all three on every chart); if he ticks the own swing again it
+    is tagged "5-day Fib", never a bare "Fib"."""
     payload = {**_payload(), "dailyBars": _weekday_tape()}
     state = ServeState({SYMBOL: payload}, market_newest_epoch=payload["bars"][-1]["time"])
     with running_api(state) as api:
@@ -163,10 +165,44 @@ def test_five_minute_chart_with_old_saved_settings_shows_only_the_monthly_fib():
     assert status == 200, body
     five = _run_frontend(body)["fiveMinute"]
     assert five["candles"] > 0
-    assert five["sourcesAfterFix"] == ["M"], five
-    assert five["tagsAfterFix"] and all(tag.startswith("M Fib ") for tag in five["tagsAfterFix"]), five["tagsAfterFix"]
+    assert five["sourcesAfterFix"] == ["M", "W", "D"], five
+    assert five["tagsAfterFix"] and all(re.match(r"^[MWD](?:/[MWD])* Fib ", tag) for tag in five["tagsAfterFix"]), five["tagsAfterFix"]
     assert "M Fib 50% (127.40)" in five["tagsAfterFix"]
-    own = [tag for tag in five["tagsOwnTicked"] if not tag.startswith("M Fib ")]
+    own = [tag for tag in five["tagsOwnTicked"] if "5-day" in tag]
     assert own, five["tagsOwnTicked"]
     assert all("5-day Fib " in tag for tag in own), own
     assert not any(tag.startswith("Fib ") or " · Fib " in tag for tag in five["tagsOwnTicked"]), five["tagsOwnTicked"]
+
+
+def _tos_fib(rows: list[dict], ratio: float) -> float:
+    """His TOS AutoFib: highest high / lowest low of the rows, level counted up from the low."""
+    high = max(row["high"] for row in rows)
+    low = min(row["low"] for row in rows)
+    return low + (high - low) * ratio
+
+
+def test_every_chart_shows_daily_weekly_monthly_fib_50_and_618():
+    """2026-11-21 "I want to see fib line 50% and 61.8% for D/W/M in 5 mins chart
+    to all the timeframe charts". Through the real route (full and first-paint
+    replies): the 5m, D, W and M charts each show D, W and M Fib at 50% and 61.8%
+    only. D = last 20 daily candles measured like his TOS AutoFib, worked out
+    here independently from the same reply; M = the 60-month swing."""
+    payload = {**_payload(), "dailyBars": _weekday_tape()}
+    state = ServeState({SYMBOL: payload}, market_newest_epoch=payload["bars"][-1]["time"])
+    with running_api(state) as api:
+        status, full = api.get(f"/api/oi-finder-chart?symbol={SYMBOL}")
+        status_first, first = api.get(f"/api/oi-finder-chart?symbol={SYMBOL}&initial=true")
+    assert status == 200 and status_first == 200
+    for body in (full, first):
+        result = _run_frontend(body)
+        daily_rows = sorted(body["dailyBars"], key=lambda row: row["time"])[-20:]
+        d50 = f"{_tos_fib(daily_rows, 0.5):.2f}"
+        d618 = f"{_tos_fib(daily_rows, 0.618):.2f}"
+        for name in ("fiveMinute", "D", "W", "M"):
+            tags = result[name]["tagsAfterFix"] if name == "fiveMinute" else result[name]["defaultTags"]
+            text = " | ".join(tags)
+            assert "M Fib 50% (127.40)" in tags and "M Fib 61.8% (100.64)" in tags, (name, text)
+            assert re.search(r"D(?:/[MW])* Fib 50%[^|]*\(" + re.escape(d50) + r"\)", text) or re.search(r"\bD Fib 50% \(" + re.escape(d50), text), (name, d50, text)
+            assert re.search(r"D(?:/[MW])* Fib 61\.8%[^|]*\(" + re.escape(d618) + r"\)", text) or re.search(r"[MW]/D Fib 61\.8%[^|]*\(" + re.escape(d618), text), (name, d618, text)
+            assert re.search(r"\bW(?:/[MD])* Fib 50%", text) and re.search(r"\bW(?:/[MD])* Fib 61\.8%", text), (name, text)
+            assert not re.search(r"\b(?:0|23\.6|38\.2|78\.6|100)%", text), (name, text)

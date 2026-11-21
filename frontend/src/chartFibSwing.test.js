@@ -12,6 +12,9 @@ import {
   FIB_SWING_OWN_OFF_VERSION,
   fibSwingOwnName,
   migrateFibSwingOwnOff,
+  FIB_DWM_KEY_LEVELS_VERSION,
+  migrateFibDwmKeyLevelOptions,
+  migrateFibDwmKeyLevelSettings,
   fibSwingAxisLabels,
   fibSwingSourcesOn,
   findFibSwing,
@@ -20,6 +23,11 @@ import {
   formatFibRatio,
 } from "./chartFibSwing.js";
 import { aggregateChartBars } from "./chartAggregation.js";
+
+// The level formula with every level and the older long windows, set
+// explicitly (the defaults are now 50% / 61.8% and 20-candle D / W, 2026-11-21).
+const ALL_LEVELS = Object.freeze({ ...FIB_SWING_DEFAULTS, fibSwingShowAllLevels: true });
+const LONG_WINDOWS = Object.freeze({ ...FIB_SWING_DEFAULTS, fibSwingDayBars: 252, fibSwingWeekBars: 104 });
 
 // Eastern-midnight epoch for a calendar date (EST, UTC-5, good for Jan-Feb).
 const etMidnight = (y, m, d) => Date.UTC(y, m - 1, d, 5) / 1000;
@@ -44,16 +52,15 @@ test("AutoFib: Weekly shows on a 5m chart; Monthly stays off intraday unless all
   assert.equal(autoFibTimeframeAllowed(60, 1440, {}), false, "1h on a daily chart stays skipped");
 });
 
-// "Use monthly fib 'big swing' ... on 5 min chart" (he judged the Big swing
-// D and W "not correct" there): intraday charts draw only the M Big swing.
-test("on minute and hour charts the Big swing is the Monthly only; D/W/M charts keep all three", () => {
-  assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS, 5), ["M"]);
-  assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS, 60), ["M"]);
-  assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS, 1440), ["M", "W", "D"]);
-  assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS, 10080), ["M", "W", "D"]);
-  assert.deepEqual(fibSwingSourcesOn({ ...FIB_SWING_DEFAULTS, fibSwingIntradayShowW: true }, 5), ["M", "W"]);
-  assert.deepEqual(fibSwingSourcesOn({ ...FIB_SWING_DEFAULTS, fibSwingShowM: false }, 5), []);
-  assert.deepEqual(fibSwingSourcesOn({ ...FIB_SWING_DEFAULTS, fibSwingShowOwn: true }, 5), ["M", "own"]);
+// 2026-11-21 "I want to see fib line 50% and 61.8% for D/W/M in 5 mins chart
+// to all the timeframe charts": D, W and M on every timeframe.
+test("every timeframe draws the D, W and M swings; each can be switched off", () => {
+  for (const minutes of [5, 15, 60, 240, 1440, 10080, 43200]) {
+    assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS, minutes), ["M", "W", "D"], "chart " + minutes);
+  }
+  assert.deepEqual(fibSwingSourcesOn({ ...FIB_SWING_DEFAULTS, fibSwingShowW: false }, 5), ["M", "D"]);
+  assert.deepEqual(fibSwingSourcesOn({ ...FIB_SWING_DEFAULTS, fibSwingShowM: false, fibSwingShowW: false, fibSwingShowD: false }, 5), []);
+  assert.deepEqual(fibSwingSourcesOn({ ...FIB_SWING_DEFAULTS, fibSwingShowOwn: true }, 5), ["M", "W", "D", "own"]);
 });
 
 test("AutoFib tags name their timeframe: 'D AutoFib 50% (171.89)'", () => {
@@ -93,9 +100,10 @@ test("Monthly AutoFib key is the month's own candle, not the previous month", ()
   assert.equal(autoFibCalendarKey(monthly[1].time, 43200), monthly[1].time);
 });
 
-test("Big swing lookback is per chart timeframe: Daily 252, Weekly 104, Monthly 60, none intraday", () => {
-  assert.equal(fibSwingLookback(1440, FIB_SWING_DEFAULTS), 252);
-  assert.equal(fibSwingLookback(10080, FIB_SWING_DEFAULTS), 104);
+test("swing lookback: Daily 20 and Weekly 20 (his TOS AutoFib window), Monthly 60, none intraday", () => {
+  assert.equal(fibSwingLookback(1440, FIB_SWING_DEFAULTS), 20);
+  assert.equal(fibSwingLookback(10080, FIB_SWING_DEFAULTS), 20);
+  assert.equal(fibSwingLookback(1440, LONG_WINDOWS), 252, "a saved count still wins");
   assert.equal(fibSwingLookback(43200, FIB_SWING_DEFAULTS), 60);
   assert.equal(fibSwingLookback(5, FIB_SWING_DEFAULTS), 0);
   assert.equal(fibSwingLookback(240, FIB_SWING_DEFAULTS), 0);
@@ -145,7 +153,7 @@ test("Ratios print like TradingView", () => {
 
 test("Big swing study: seven levels, shaded 50%-61.8% zone from the swing start to the last candle", () => {
   const bars = [bar(1, 50, 60), bar(2, 14, 30), bar(3, 40, 120), bar(4, 150, 240.8), bar(5, 120, 200)];
-  const study = buildFibSwingStudy(bars, 43200, FIB_SWING_DEFAULTS);
+  const study = buildFibSwingStudy(bars, 43200, ALL_LEVELS);
   assert.equal(study.levels.length, 7);
   const fifty = study.levels.find((level) => level.ratio === 0.5);
   assert.equal(fifty.label, "M Fib 50% (127.40)");
@@ -158,16 +166,17 @@ test("Big swing study: seven levels, shaded 50%-61.8% zone from the swing start 
   assert.ok(study.zone.slow.every((p) => p.value === 100.6376));
 });
 
-test("Big swing study: down swing is shaded in the down colour; key levels only when asked", () => {
+test("Big swing study: down swing is shaded in the down colour; by default only the 50% and 61.8% lines", () => {
   const bars = [bar(1, 90, 200), bar(2, 80, 150), bar(3, 100, 120)];
-  const study = buildFibSwingStudy(bars, 1440, { ...FIB_SWING_DEFAULTS, fibSwingSource: "own", fibSwingShowAllLevels: false });
+  const study = buildFibSwingStudy(bars, 1440, { ...FIB_SWING_DEFAULTS, fibSwingSource: "own" });
   assert.equal(study.zone.color, FIB_SWING_DEFAULTS.fibSwingDownColor);
-  assert.deepEqual(study.levels.map((level) => level.ratio), [0, 0.5, 0.618, 1]);
+  assert.deepEqual(study.levels.map((level) => level.ratio), [0.5, 0.618]);
+  assert.equal(buildFibSwingStudy(bars, 1440, { ...ALL_LEVELS, fibSwingSource: "own" }).levels.length, 7, "the rest on request");
 });
 
 test("each level has its own bright TradingView colour so it stands out on a busy chart", () => {
   const bars = [bar(1, 50, 60), bar(2, 14, 30), bar(3, 40, 120), bar(4, 150, 240.8), bar(5, 120, 200)];
-  const study = buildFibSwingStudy(bars, 43200, FIB_SWING_DEFAULTS);
+  const study = buildFibSwingStudy(bars, 43200, ALL_LEVELS);
   const colors = study.levels.map((level) => level.color);
   assert.equal(new Set(colors.slice(1, 6)).size, 5, "23.6 .. 78.6 each differ: " + colors.join(","));
   assert.equal(study.levels.find((level) => level.ratio === 0.5).color, "#4caf50");
@@ -268,13 +277,17 @@ test("a 5-minute chart draws the Monthly swing by default, the same levels as th
 
 test("the minute-chart swing can be Weekly or Daily instead", () => {
   const intraday = [bar(etTime(20, "10:00"), 128, 131)];
-  const weekly = buildFibSwingStudy(intraday, 5, { ...FIB_SWING_DEFAULTS, fibSwingSource: "W" }, { dailyBars: dailyTape() });
+  const weekly = buildFibSwingStudy(intraday, 5, { ...LONG_WINDOWS, fibSwingSource: "W" }, { dailyBars: dailyTape() });
   assert.equal(weekly.source, "W");
   assert.equal(weekly.swing.high, 240.8, "June 2026 is inside 104 weeks");
   assert.equal(weekly.swing.low, 60, "January 2023 is not");
-  const daily = buildFibSwingStudy(intraday, 5, { ...FIB_SWING_DEFAULTS, fibSwingSource: "D" }, { dailyBars: dailyTape() });
+  const daily = buildFibSwingStudy(intraday, 5, { ...LONG_WINDOWS, fibSwingSource: "D" }, { dailyBars: dailyTape() });
   assert.equal(daily.source, "D");
   assert.equal(daily.swing.high, 240.8);
+  // The default 20-candle window sees only the last 20 days.
+  const recent = buildFibSwingStudy(intraday, 5, { ...FIB_SWING_DEFAULTS, fibSwingSource: "D" }, { dailyBars: dailyTape() });
+  assert.equal(recent.lookback, 20);
+  assert.equal(recent.swing.high, 70, "June 2026 is not in the last 20 days");
 });
 
 test("every timeframe draws the same Monthly levels, tagged 'M Fib'; 'own' tags plain 'Fib'", () => {
@@ -287,7 +300,7 @@ test("every timeframe draws the same Monthly levels, tagged 'M Fib'; 'own' tags 
     return fifty.price;
   });
   assert.deepEqual(new Set(prices).size, 1);
-  const own = buildFibSwingStudy(daily, 1440, { ...FIB_SWING_DEFAULTS, fibSwingSource: "own" }, { dailyBars: daily });
+  const own = buildFibSwingStudy(daily, 1440, { ...ALL_LEVELS, fibSwingSource: "own" }, { dailyBars: daily });
   assert.match(own.levels[0].label, /^Fib 0% \(/);
 });
 
@@ -295,10 +308,10 @@ test("every timeframe draws the same Monthly levels, tagged 'M Fib'; 'own' tags 
 test("M, W and D Fibs are all drawn on one chart by default, each tagged with its letter", () => {
   const daily = dailyTape();
   const intraday = [bar(etTime(20, "10:00"), 128, 131)];
-  // On a Daily chart (minute charts draw the Monthly only, see below).
   const studies = buildFibSwingStudies(daily.slice(-30), 1440, FIB_SWING_DEFAULTS, { dailyBars: daily });
   assert.deepEqual(studies.map((study) => study.source), ["M", "W", "D"]);
-  assert.deepEqual(buildFibSwingStudies(intraday, 5, FIB_SWING_DEFAULTS, { dailyBars: daily }).map((study) => study.source), ["M"]);
+  // 2026-11-21: the 5-minute chart draws all three as well.
+  assert.deepEqual(buildFibSwingStudies(intraday, 5, FIB_SWING_DEFAULTS, { dailyBars: daily }).map((study) => study.source), ["M", "W", "D"]);
   assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS), ["M", "W", "D"]);
   for (const study of studies) {
     assert.ok(study.levels.every((level) => level.label.startsWith(study.source + " Fib ")), study.source);
@@ -364,5 +377,55 @@ test("saved settings with the chart's own swing ticked are unticked once; his la
   assert.equal(migrated.fibSwingOwnOffVersion, FIB_SWING_OWN_OFF_VERSION);
   const reticked = { ...migrated, fibSwingShowOwn: true };
   assert.deepEqual(migrateFibSwingOwnOff(reticked), {}, "runs only once");
-  assert.deepEqual(fibSwingSourcesOn(migrated, 5), ["M"], "5m: Monthly Big swing only");
+  assert.ok(!fibSwingSourcesOn(migrated, 5).includes("own"), "5m: no own swing");
+});
+
+// 2026-11-21 "I want to see fib line 50% and 61.8% for D/W/M in 5 mins chart
+// to all the timeframe charts". D and W over the last 20 candles (his TOS
+// AutoFib window), measured like TOS (up from the low); M over 60 months,
+// measured like the TradingView chart he confirmed.
+test("D, W and M each draw 50% and 61.8% on every chart; D matches TOS AutoFib, M matches TradingView", () => {
+  const daily = dailyTape();
+  // Last 20 days: high 100 fifteen days back, low 50 three days back (a fall).
+  // TOS AutoFib: 50% = 75.00, 61.8% = 50 + 0.618 x 50 = 80.90.
+  const recent = daily.map((row, index) => {
+    const back = daily.length - index;
+    if (back === 15) return { ...row, high: 100 };
+    if (back === 3) return { ...row, low: 50 };
+    return row;
+  });
+  for (const minutes of [5, 60, 1440, 10080, 43200]) {
+    const chart = minutes >= 1440 ? recent.slice(-30) : [bar(etTime(20, "10:00"), 64, 66)];
+    const tags = fibSwingAxisLabels(buildFibSwingStudies(chart, minutes, FIB_SWING_DEFAULTS, { dailyBars: recent }))
+      .map((label) => label.title);
+    const seen = (text) => tags.some((tag) => tag.includes(text));
+    assert.ok(seen("D Fib 50%") && tags.some((tag) => /D Fib 50%.*\(75\.00\)|\(75\.00\)$/.test(tag)), minutes + ": " + tags.join(" | "));
+    assert.ok(tags.includes("D Fib 61.8% (80.90)") || tags.some((tag) => /D Fib 61\.8%.*\(80\.90\)/.test(tag)), minutes + ": " + tags.join(" | "));
+    assert.ok(tags.includes("M Fib 50% (127.40)"), minutes + ": " + tags.join(" | "));
+    assert.ok(tags.includes("M Fib 61.8% (100.64)"), minutes + ": " + tags.join(" | "));
+    assert.ok(tags.some((tag) => /(?:^|\/|· )W(?:\/[MD])* Fib 50%/.test(tag)), minutes + ": " + tags.join(" | "));
+    assert.ok(tags.every((tag) => !/\b(?:0|23\.6|38\.2|78\.6|100)%/.test(tag)), "only 50% / 61.8%: " + tags.join(" | "));
+  }
+});
+
+test("TOS measure: 61.8% counts up from the low whichever came first (AAPL daily 2026-11-20)", () => {
+  assert.equal(fibSwingPrice({ high: 357.88, low: 326.96, direction: "up" }, 0.618, "tos").toFixed(2), "346.07");
+  assert.equal(fibSwingPrice({ high: 357.88, low: 326.96, direction: "up" }, 0.618).toFixed(2), "338.77", "TradingView retracement");
+});
+
+test("saved settings move once to D/W/M 50% + 61.8% on every chart, AutoFib off; his later choices win", () => {
+  const savedOptions = { ...FIB_SWING_DEFAULTS, fibSwingDayBars: 252, fibSwingWeekBars: 104, fibSwingShowAllLevels: true, fibSwingShowOwn: true };
+  const options = { ...savedOptions, ...migrateFibDwmKeyLevelOptions(savedOptions) };
+  assert.equal(options.fibSwingDayBars, 20);
+  assert.equal(options.fibSwingWeekBars, 20);
+  assert.equal(options.fibSwingMonthBars, 60);
+  assert.equal(options.fibSwingShowAllLevels, false);
+  assert.equal(options.fibSwingShowOwn, false);
+  assert.equal(options.fibDwmKeyLevelsVersion, FIB_DWM_KEY_LEVELS_VERSION);
+  assert.deepEqual(migrateFibDwmKeyLevelOptions({ ...options, fibSwingShowAllLevels: true }), {}, "runs once");
+  const settings = { fibSwing: false, autoFibSingleTf: true };
+  const moved = { ...settings, ...migrateFibDwmKeyLevelSettings(settings) };
+  assert.equal(moved.fibSwing, true);
+  assert.equal(moved.autoFibSingleTf, false, "AutoFib's D/W would repeat the same lines");
+  assert.deepEqual(migrateFibDwmKeyLevelSettings({ ...moved, autoFibSingleTf: true }), {}, "runs once");
 });

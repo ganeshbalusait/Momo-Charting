@@ -67,7 +67,9 @@ export function autoFibAxisLabels(studies, colors = {}) {
 }
 
 export const FIB_SWING_RATIOS = Object.freeze([0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]);
-const FIB_SWING_KEY_RATIOS = Object.freeze([0, 0.5, 0.618, 1]);
+// "I want to see fib line 50% and 61.8% for D/W/M ... to all the timeframe
+// charts" (2026-11-21): the default levels are the 50% and 61.8% lines only.
+const FIB_SWING_KEY_RATIOS = Object.freeze([0.5, 0.618]);
 const FIB_SWING_ZONE = Object.freeze([0.5, 0.618]);
 
 export const FIB_SWING_DEFAULTS = Object.freeze({
@@ -85,10 +87,14 @@ export const FIB_SWING_DEFAULTS = Object.freeze({
   fibSwingShowD: true,
   fibSwingShowOwn: false,
   fibSwingIntradayDays: 5,
-  fibSwingDayBars: 252,
-  fibSwingWeekBars: 104,
+  // D and W: the last 20 candles, the window of his TOS AutoFib (lookback 20),
+  // so the 50% lines are AutoFib's (2026-11-20 he judged the 252-day / 104-week
+  // swings "not correct" and picked AutoFib for D and W). M: 60 months, the
+  // swing he confirmed against TradingView (NVDA 50% 127.09).
+  fibSwingDayBars: 20,
+  fibSwingWeekBars: 20,
   fibSwingMonthBars: 60,
-  fibSwingShowAllLevels: true,
+  fibSwingShowAllLevels: false,
   fibSwingUpColor: "#26a69a",
   fibSwingDownColor: "#ef5350",
   fibSwingLineColor: "#9aa4b2",
@@ -108,8 +114,8 @@ export const FIB_SWING_LEVEL_COLORS = Object.freeze({
 });
 
 const LOOKBACK_OPTION_BY_MINUTES = Object.freeze({
-  1440: ["fibSwingDayBars", 252],
-  10080: ["fibSwingWeekBars", 104],
+  1440: ["fibSwingDayBars", 20],
+  10080: ["fibSwingWeekBars", 20],
   43200: ["fibSwingMonthBars", 60],
 });
 
@@ -151,8 +157,13 @@ export function findFibSwing(bars, lookback) {
 
 // 0% sits at the END of the swing and 100% at its start, as TradingView draws
 // a retracement: after a rise the levels count down from the high.
-export function fibSwingPrice(swing, ratio) {
+// measure "tos" = his TOS AutoFib: every level counts up from the low
+// (61.8% = low + 0.618 x range), whichever came first. Used for the D and W
+// swings, which he chose to match AutoFib (2026-11-20). Default: TradingView's
+// retracement from the end of the swing (the M swing he confirmed).
+export function fibSwingPrice(swing, ratio, measure = "retracement") {
   const range = Number(swing.high) - Number(swing.low);
+  if (measure === "tos") return Number(swing.low) + range * ratio;
   return swing.direction === "up"
     ? Number(swing.high) - range * ratio
     : Number(swing.low) + range * ratio;
@@ -202,16 +213,12 @@ export function fibSwingSource(options = {}) {
   return HIGHER_SOURCE_MINUTES[value] || value === "own" ? value : "M";
 }
 
-// Which swings a chart draws. Minute and hour charts: the Monthly only ("Use
-// monthly fib 'big swing' and keep Daily and weekly 'Autofib' on 5 min chart",
-// 2026-11-20 - he judged the Big swing D and W "not correct" there; the D and
-// W levels come from AutoFib instead). D / W / M charts: all ticked swings.
+// Which swings a chart draws: every ticked swing, on every timeframe ("I want
+// to see fib line 50% and 61.8% for D/W/M in 5 mins chart to all the timeframe
+// charts", 2026-11-21). D and W now use the 20-candle AutoFib window, so they
+// replace the AutoFib D / W lines on minute charts.
 export function fibSwingSourcesOn(options = {}, chartMinutes = 1440) {
-  const intraday = Number(chartMinutes) < 1440;
-  const list = ["M", "W", "D"].filter((source) => {
-    if (options["fibSwingShow" + source] === false) return false;
-    return !intraday || source === "M" || options["fibSwingIntradayShow" + source] === true;
-  });
+  const list = ["M", "W", "D"].filter((source) => options["fibSwingShow" + source] !== false);
   if (options.fibSwingShowOwn === true) list.push("own");
   return list;
 }
@@ -234,6 +241,35 @@ export const FIB_SWING_OWN_OFF_VERSION = "fib-swing-own-off-v1";
 export function migrateFibSwingOwnOff(saved = {}) {
   if (!saved || typeof saved !== "object" || saved.fibSwingOwnOffVersion === FIB_SWING_OWN_OFF_VERSION) return {};
   return { fibSwingOwnOffVersion: FIB_SWING_OWN_OFF_VERSION, fibSwingShowOwn: false };
+}
+
+// 2026-11-21 "I want to see fib line 50% and 61.8% for D/W/M ... to all the
+// timeframe charts": move saved settings once to D / W / M on every chart,
+// 50% and 61.8% only, D and W over 20 candles. Options part:
+export const FIB_DWM_KEY_LEVELS_VERSION = "fib-dwm-50-618-v1";
+
+export function migrateFibDwmKeyLevelOptions(saved = {}) {
+  if (!saved || typeof saved !== "object" || saved.fibDwmKeyLevelsVersion === FIB_DWM_KEY_LEVELS_VERSION) return {};
+  return {
+    fibDwmKeyLevelsVersion: FIB_DWM_KEY_LEVELS_VERSION,
+    fibSwingShowM: true,
+    fibSwingShowW: true,
+    fibSwingShowD: true,
+    fibSwingShowOwn: false,
+    fibSwingIntraday: true,
+    fibSwingDayBars: 20,
+    fibSwingWeekBars: 20,
+    fibSwingMonthBars: 60,
+    fibSwingShowAllLevels: false,
+  };
+}
+
+// Settings part: the Fib lines on, and AutoFib off - its D / W lines are the
+// same 20-candle swings and would draw a second set of tags at the same prices
+// (AutoFib was off on his charts before 2026-11-20).
+export function migrateFibDwmKeyLevelSettings(saved = {}) {
+  if (!saved || typeof saved !== "object" || saved.fibDwmKeyLevelsVersion === FIB_DWM_KEY_LEVELS_VERSION) return {};
+  return { fibDwmKeyLevelsVersion: FIB_DWM_KEY_LEVELS_VERSION, fibSwing: true, autoFibSingleTf: false };
 }
 
 // One study per ticked swing, drawn together on the chart.
@@ -317,11 +353,12 @@ export function buildFibSwingStudy(chartBars, chartMinutes, options = {}, { hist
     : options.fibSwingDownColor || FIB_SWING_DEFAULTS.fibSwingDownColor;
   const lineColor = options.fibSwingLineColor || FIB_SWING_DEFAULTS.fibSwingLineColor;
   const ratios = options.fibSwingShowAllLevels === false ? FIB_SWING_KEY_RATIOS : FIB_SWING_RATIOS;
+  const measure = source === "D" || source === "W" ? "tos" : "retracement";
   const name = sourceMinutes ? source + " Fib" : fibSwingOwnName(chartMinutes, options);
   const prefix = name;
   const levels = ratios.map((ratio) => {
     const inZone = FIB_SWING_ZONE.includes(ratio);
-    const price = round4(fibSwingPrice(swing, ratio));
+    const price = round4(fibSwingPrice(swing, ratio, measure));
     return {
       ratio,
       price,
@@ -331,8 +368,8 @@ export function buildFibSwingStudy(chartBars, chartMinutes, options = {}, { hist
       color: FIB_SWING_LEVEL_COLORS[ratio] || lineColor,
     };
   });
-  const top = round4(fibSwingPrice(swing, 0.5));
-  const bottom = round4(fibSwingPrice(swing, 0.618));
+  const top = round4(fibSwingPrice(swing, 0.5, measure));
+  const bottom = round4(fibSwingPrice(swing, 0.618, measure));
   const zoneBars = chart.filter((bar) => Number(bar?.time) >= swing.startTime);
   return {
     source: sourceMinutes ? source : "own",
