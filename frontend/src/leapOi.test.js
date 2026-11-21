@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   MAG7, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi, priceText,
   progressText, readAtText, scannerUrl, cleanTicker, searchNote,
-  addRecent, contractFacts, moveText, oiChangeText, oiChangeTone, sinceText, RECENT_MAX,
+  addRecent, contractFacts, moveText, oiChangeText, oiChangeTone, priceAgeText, sinceText, RECENT_MAX,
 } from "./leapOi.js";
 
 test("search box: typed text becomes a ticker the server accepts, anything else is refused", () => {
@@ -198,3 +198,15 @@ test("recent searches: newest first, no repeats, junk dropped, at most 5", () =>
   assert.deepEqual(addRecent(null, "pltr"), ["PLTR"]);
 });
 
+
+// 2026-11-20: the NVDA card at 5:39 PM ET showed Mid 1.95 from a 12:53 PM read. A read older than 15 minutes says its time.
+test("priceAgeText names the read time once the prices are more than 15 minutes old", () => {
+  const read = "2026-11-20T12:53:00-05:00";
+  const at = (iso) => new Date(iso).getTime();
+  assert.equal(priceAgeText({ readAt: read }, at("2026-11-20T13:05:00-05:00")), "");
+  assert.equal(priceAgeText({ readAt: read }, at("2026-11-20T17:39:00-05:00")), "Prices from 12:53 PM ET");
+  assert.equal(priceAgeText({ readAt: "2026-11-20T11:53:00-06:00" }, at("2026-11-20T17:39:00-05:00")), "Prices from 12:53 PM ET");
+  assert.equal(priceAgeText({ readAt: "2026-11-19T15:58:00-05:00" }, at("2026-11-20T09:40:00-05:00")), "Prices from Thu 3:58 PM ET");
+  assert.equal(priceAgeText({}, at("2026-11-20T17:39:00-05:00")), "");
+  assert.equal(priceAgeText({ readAt: "not a time" }), "");
+});

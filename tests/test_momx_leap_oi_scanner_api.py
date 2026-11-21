@@ -151,3 +151,33 @@ def test_open_interest_change_shows_after_a_second_days_read(world, tmp_path):
     assert status == 200 and second["rows"]
     assert all(r["oiChange"] == 1000 and r["oiChangeSince"] == doc["fetchedAt"] for r in second["rows"]), second["rows"][0]
     assert sorted(world) == ["NVDA"]                                                     # no extra Schwab read
+
+
+def test_a_noon_read_stays_on_screen_with_its_time_and_the_close_is_read_again(world, monkeypatch):
+    """2026-11-20: the NVDA card at 5:39 PM ET showed Bid 1.90 / Mid 1.95 from a 12:53 PM read, before NVDA fell 7%.
+    Each row now says when its prices were read, and after 4:05 PM the board reads the closing prices once while the
+    noon copy stays on screen."""
+    clock = {"now": datetime(2026, 11, 20, 12, 53, tzinfo=ET)}
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"] if tz is None else clock["now"].astimezone(tz)
+
+    monkeypatch.setattr(leap_oi_scanner, "datetime", Clock)
+    path = "/api/leap-oi-scanner?symbols=NVDA&from=1&to=12"
+    with running_api() as api:
+        status, noon = _wait_ready(api, path, REGULAR)
+        clock["now"] = datetime(2026, 11, 20, 16, 6, tzinfo=ET)
+        _, after = api.get(path, headers=REGULAR)                        # the noon copy, never blank
+        deadline = time.monotonic() + 10
+        while True:
+            _, fresh = api.get(path, headers=REGULAR)
+            if fresh["rows"] and fresh["rows"][0]["readAt"] != noon["rows"][0]["readAt"] or time.monotonic() > deadline:
+                break
+            time.sleep(0.1)
+    at = lambda row: datetime.fromisoformat(row["readAt"])                 # noqa: E731 - same moment, any zone
+    assert status == 200 and noon["rows"] and {at(r) for r in noon["rows"]} == {datetime(2026, 11, 20, 12, 53, tzinfo=ET)}
+    assert after["tickers"][0]["state"] == "ready" and at(after["rows"][0]) == datetime(2026, 11, 20, 12, 53, tzinfo=ET)
+    assert at(fresh["rows"][0]) == datetime(2026, 11, 20, 16, 6, tzinfo=ET), fresh["rows"][0]
+    assert world == ["NVDA", "NVDA"]                                       # one read at noon, one after the close

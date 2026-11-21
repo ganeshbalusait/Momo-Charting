@@ -106,6 +106,21 @@ export function costText(row) {
   return mid === null ? "—" : `$${Math.round(mid * 100).toLocaleString("en-US")}`;
 }
 
+// When the bid, ask and delta were read (2026-11-20: the NVDA card at 5:39 PM showed Mid 1.95 from a 12:53 PM read,
+// before NVDA fell 7%). Open interest is once a day, but option prices move, so a read more than 15 minutes old says
+// its time: "Prices from 12:53 PM ET", or "Prices from Thu 3:58 PM ET" for another day. Empty when fresh or unknown.
+export const PRICE_AGE_NOTE_MS = 15 * 60 * 1000;
+
+export function priceAgeText(row, nowMs = Date.now()) {
+  const read = new Date(row?.readAt || "");
+  if (Number.isNaN(read.getTime()) || nowMs - read.getTime() < PRICE_AGE_NOTE_MS) return "";
+  const zone = { timeZone: "America/New_York" };
+  const time = read.toLocaleTimeString("en-US", { ...zone, hour: "numeric", minute: "2-digit" });
+  const sameDay = read.toLocaleDateString("en-US", zone) === new Date(nowMs).toLocaleDateString("en-US", zone);
+  const day = sameDay ? "" : `${read.toLocaleDateString("en-US", { ...zone, weekday: "short" })} `;
+  return `Prices from ${day}${time} ET`;
+}
+
 // How wide the market is: (ask - bid) as a percent of the mid. "5.4%" or a dash.
 export function spreadText(row) {
   const mid = midPrice(row?.bid, row?.ask);

@@ -336,3 +336,44 @@ def test_a_brand_new_build_up_shows_its_whole_change(tmp_path):
     changes = {r["strike"]: r["oiChange"] for r in scanner.ticker_rows(saved, min_days=1, max_days=400, side="calls")}
     assert changes == {200.0: 500, 210.0: 38000, 230.0: 9000}
     assert set(scanner.compact({"symbol": "NVDA", "fetchedAt": "x", "spot": 180.0, "rows": []})) >= {"allOi"}
+
+
+# ---------------------------------------------------------------- closing prices, 2026-11-20
+# The NVDA card at 5:39 PM ET showed Bid 1.90 / Mid 1.95 / delta 0.13 from a 12:53 PM read, before NVDA fell 7% into the
+# close. Open interest is once a day, but option prices are not: a market-hours copy is read again once after 4:05 PM.
+FRIDAY_NOON = NOW.replace(year=2026, month=11, day=20, hour=12, minute=53)
+
+
+@pytest.mark.parametrize("read,now,again", [
+    ((12, 53), (15, 59), False),        # still market hours: the noon copy stands
+    ((12, 53), (16, 6), True),          # after the close: read the closing prices once
+    ((12, 53), (17, 39), True),
+    ((16, 10), (20, 0), False),         # read after the close already
+    ((7, 0), (16, 6), True),            # a premarket read is also before the close
+])
+def test_a_market_hours_copy_is_read_again_after_the_close(read, now, again):
+    doc = {"fetchedAt": FRIDAY_NOON.replace(hour=read[0], minute=read[1]).isoformat()}
+    assert scanner._read_before_close(doc, FRIDAY_NOON.replace(hour=now[0], minute=now[1])) is again
+
+
+def test_a_weekend_read_is_never_a_before_close_read():
+    saturday = FRIDAY_NOON + timedelta(days=1)
+    assert scanner._read_before_close({"fetchedAt": saturday.isoformat()}, saturday + timedelta(hours=6)) is False
+
+
+def test_the_board_keeps_the_noon_copy_on_screen_and_reads_the_close_again(tmp_path, fake, monkeypatch):
+    scanner.board(["NVDA"], tmp_path, FRIDAY_NOON, wait=True)
+    long_oi.reset()
+    queued: list = []
+    monkeypatch.setattr(scanner, "_schedule", lambda tickers, root, front=False: queued.append((list(tickers), front)))
+    before = scanner.board(["NVDA"], tmp_path, FRIDAY_NOON.replace(hour=15, minute=50))
+    assert before["tickers"][0]["state"] == "ready" and queued == [] and fake == ["NVDA"]
+    assert before["rows"] and all(row["readAt"] == FRIDAY_NOON.isoformat() for row in before["rows"])   # prices "as of"
+    after = scanner.board(["NVDA"], tmp_path, FRIDAY_NOON.replace(hour=16, minute=6))
+    assert after["tickers"][0]["state"] == "ready" and after["rows"], after["tickers"]    # never blank while it reads
+    assert queued == [(["NVDA"], False)]
+    # The warm-up also queues it, once, and a copy read after the close is left alone.
+    queued.clear()
+    assert scanner.warm(["NVDA"], tmp_path, FRIDAY_NOON.replace(hour=16, minute=6)) == 1
+    scanner._save_compact(tmp_path, "NVDA", {**scanner.held("NVDA", tmp_path, FRIDAY_NOON), "fetchedAt": FRIDAY_NOON.replace(hour=16, minute=7).isoformat()})
+    assert scanner.warm(["NVDA"], tmp_path, FRIDAY_NOON.replace(hour=16, minute=20)) == 0

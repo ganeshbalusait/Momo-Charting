@@ -194,6 +194,33 @@ def _save_compact(root: Path, ticker: str, doc: dict) -> dict:
     return _slim(doc)
 
 
+CLOSE_READ_AFTER = (16, 5)          # ET: a copy read before the 4:00 PM close is read again once after 4:05 PM
+
+
+def _read_before_close(doc: dict | None, now: datetime) -> bool:
+    """Was this copy read on a weekday before 4:00 PM ET, and is it now past 4:05 PM ET that day or later?
+    Ganesh 2026-11-20 (NVDA card at 5:39 PM showed Bid 1.90 / Mid 1.95 from a 12:53 PM read, before NVDA fell 7% into
+    the close): open interest is once a day, but the bid, ask and delta are not, so the board reads the closing prices
+    once after the close."""
+    try:
+        read = datetime.fromisoformat(str((doc or {}).get("fetchedAt"))).astimezone(ET)
+    except (TypeError, ValueError):
+        return False
+    now_et = now.astimezone(ET)
+    if read.weekday() >= 5 or (read.hour, read.minute) >= (16, 0):
+        return False
+    close_read = read.replace(hour=CLOSE_READ_AFTER[0], minute=CLOSE_READ_AFTER[1], second=0, microsecond=0)
+    return now_et >= close_read
+
+
+def _wants_read(ticker: str, doc: dict | None, now: datetime) -> bool:
+    """Should the background reader ask Schwab for this ticker: no copy, or a market-hours copy once the close is in.
+    The old copy stays on screen (with its read time) until the new one lands, so the page never goes blank."""
+    if doc is not None and not _read_before_close(doc, now):
+        return False
+    return _given_up(ticker) is None and not long_oi.failed_recently(ticker)
+
+
 def held(ticker: str, root: Path, now: datetime) -> dict | None:
     """This ticker's compact copy younger than BOARD_MAX_AGE: memory, its small file, or the full long-dated chain on
     disk (the chat's copy). Never asks Schwab."""
@@ -228,6 +255,7 @@ def ticker_rows(doc: dict, *, min_days: int, max_days: int, side: str = "both", 
                                        min_delta=min_delta):
             before = prev.get(contract_key(row))
             out.append({**row, "ticker": doc.get("symbol"), "spot": spot, "away": _away(row["strike"], spot),
+                        "readAt": doc.get("fetchedAt"),            # the bid, ask and delta are as of this read
                         "oiChange": (int(row["oi"]) - int(before)) if before is not None else None,
                         "oiChangeSince": doc.get("prevAt") if before is not None else None})
     return out
@@ -260,7 +288,8 @@ def _refresh_loop(root: Path) -> None:
         asked = False
         try:
             now = datetime.now().astimezone()
-            if held(ticker, root, now) is None:
+            current = held(ticker, root, now)
+            if current is None or _read_before_close(current, now):
                 with _REFRESH:
                     _FETCHED.append(time.monotonic())
                 asked = True
@@ -313,8 +342,7 @@ def warm(symbols: Any, root: Path, now: datetime | None = None) -> int:
     reader, without building a board. Returns how many were queued."""
     now = now or datetime.now().astimezone()
     stocks, _ = board_filter.drop_etfs(clean_symbols(symbols))
-    missing = [t for t in stocks
-               if held(t, root, now) is None and _given_up(t) is None and not long_oi.failed_recently(t)]
+    missing = [t for t in stocks if _wants_read(t, held(t, root, now), now)]
     if missing:
         _schedule(missing, root)
     return len(missing)
@@ -387,8 +415,11 @@ def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from:
     rows: list[dict] = []
     missing: list[str] = []
     by_ticker: list[dict] = []
+    close_reads: list[str] = []                         # on screen with market-hours prices: read the close again
     for ticker in tickers:
         doc = held(ticker, root, now)
+        if doc is not None and _wants_read(ticker, doc, now):
+            close_reads.append(ticker)
         error = None
         if doc is None and wait:
             try:
@@ -417,6 +448,8 @@ def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from:
         by_ticker.append(_ticker_summary(ticker, doc.get("spot"), found))
     if missing:
         _schedule(missing, root, front=True)               # what is on screen is read before the warm-up's queue
+    if close_reads:
+        _schedule(close_reads, root)                       # the closing prices, behind any ticker with no copy at all
     with_flow(rows, root)
     rows.sort(key=lambda r: (-r["oi"], -r["volume"], r["days"], r["strike"]))
     entries = [r for r in rows if r.get("entry")][:ENTRY_ROWS]

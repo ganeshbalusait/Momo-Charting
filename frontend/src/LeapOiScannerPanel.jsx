@@ -5,7 +5,7 @@ import "./simpleWhy.css";
 import {
   DELTAS, RANGES, SIDES, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi,
   BYTK_SORTS, boardTotals, cleanTicker, costText, dominance, filterByTicker, leftOutText, midText, searchNote, sortByTicker, spreadText, priceText, progressText, readAtText, scannerUrl,
-  addRecent, contractFacts, moveText, oiChangeText, oiChangeTone, readRecent, saveRecent, sinceText,
+  addRecent, contractFacts, moveText, oiChangeText, oiChangeTone, priceAgeText, readRecent, saveRecent, sinceText,
 } from "./leapOi.js";
 import { LIVE_PRICE_POLL_MS, awayFrom, changeTone, quotesFrom, stockPrice, stockText, tickersOnScreen } from "./leapLivePrice.js";
 import { flowCell } from "./leapFlow.js";
@@ -147,6 +147,7 @@ export function ContractSheet({ row, onClose, onOpenChart, onOpenOptions, volume
         </div>
         <p className="ck-sheet-sub">{expiryLabel(row.expiry)}{Number.isFinite(days) ? ` · ${days} days out` : ""}{quotes ? null : has("spot") ? ` · stock ${priceText(row.spot)}` : ""}</p>
         <SimpleWhy why={why} />
+        <PriceAge row={row} />
         <dl className="ck-sheet-grid">
           {quotes ? <Fact label="Stock price"><StockPrice row={row} quotes={quotes} /></Fact> : null}
           {quotes ? <Fact label="From price">{awayNow(row, quotes)}</Fact> : null}
@@ -290,6 +291,12 @@ function readPrefs() {
   }
 }
 
+// "Prices from 12:53 PM ET" under an option price read more than 15 minutes ago (2026-11-20).
+function PriceAge({ row }) {
+  const text = priceAgeText(row);
+  return text ? <small className="leapoi-price-age" data-testid="price-age">{text}: the bid, ask, mid and delta may have moved since.</small> : null;
+}
+
 function Chips({ label, items, value, onChange }) {
   return (
     <div className="leapoi-chip-group" role="group" aria-label={label}>
@@ -313,6 +320,7 @@ function Hero({ title, row, onOpenChart, onPick, quotes }) {
       <span>Today's trades: <TodayFlow row={row} /></span>
       <span>{expiryLabel(row.expiry)} · {row.days}d · OI <b>{formatOi(row.oi)}</b> <OiChange row={row} /> · Δ {deltaText(row.delta)}</span>
       <span>Bid {priceText(row.bid)} · <b>Mid {midText(row)}</b> · Ask {priceText(row.ask)} · 1 contract {costText(row)}</span>
+      <PriceAge row={row} />
       <button type="button" onClick={() => onOpenChart?.(row.ticker)}>Chart ›</button>
     </div>
   );
@@ -372,6 +380,7 @@ function Rows({ rows, onOpenChart, onPick, testId, quotes }) {
                 <div><dt>Bid-ask spread</dt><dd>{spreadText(row)}</dd></div>
                 <div><dt>From price</dt><dd>{awayNow(row, quotes)}</dd></div>
               </dl>
+              <PriceAge row={row} />
               <p className="simple-why-line" data-testid="why-line"><b>Why it's here:</b> {leapWhy(row, { rank: index }).verdict} <span>Tap for the simple explanation.</span></p>
               <i className={`leapoi-bar ${tone}`} style={{ width: `${barWidth(row.oi, top)}%` }} />
             </div>
