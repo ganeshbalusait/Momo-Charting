@@ -218,3 +218,38 @@ e2eTest("phone: NVDA weekly chart shows Fib tags inside the chart, nothing cut o
     assert.deepEqual(app.pageErrors, []);
   });
 }, { timeout: 240_000 });
+
+// 2026-11-21 "I need label W fib 50%", then "See how big swing fib label for
+// M do the same": on AAPL Daily the D Fib 50% / 61.8% lines sit beside the
+// live price, and their tags used to hide. Every D and W tag now shows, like
+// the M one, at desktop and phone width; a tag that sits beside another is
+// on its own line's row and does not cover it.
+for (const [label, extra] of [["desktop", {}], ["phone", { viewport: PHONE }]]) {
+  e2eTest(`${label}: AAPL D chart shows every D and W Fib tag, none hidden`, async () => {
+    await withCharts({ ...extra, workspace: { symbols: ["AAPL"], timeframes: ["D"] } }, async (app) => {
+      const { page } = app;
+      await waitForTape(page, { symbol: "AAPL", timeframe: "D" });
+      const shown = () => page.evaluate(() => [...document.querySelectorAll("section.oi-finder-chart-card .oi-finder-indicator-axis-label")]
+        .filter((chip) => chip.style.display !== "none" && /Fib/.test(chip.textContent))
+        .map((chip) => ({ text: chip.textContent.trim(), box: chip.querySelector("b").getBoundingClientRect().toJSON() })));
+      const want = [/\bD(?:\/[WM])* Fib 50%/, /\bD(?:\/[WM])* Fib 61\.8%/, /\bW(?:\/[DM])* Fib 50%/, /\bW(?:\/[DM])* Fib 61\.8%/];
+      await page.waitForFunction((sources) => {
+        const texts = [...document.querySelectorAll("section.oi-finder-chart-card .oi-finder-indicator-axis-label")]
+          .filter((chip) => chip.style.display !== "none").map((chip) => chip.textContent);
+        return sources.every((source) => texts.some((text) => new RegExp(source).test(text)));
+      }, want.map((re) => re.source), { timeout: 150_000 });
+      await page.waitForTimeout(500);
+      const chips = await shown();
+      want.forEach((re) => assert.ok(chips.some((chip) => re.test(chip.text)), re + " in " + chips.map((c) => c.text).join(" | ")));
+      // No two Fib tags drawn on top of each other.
+      for (let i = 0; i < chips.length; i += 1) {
+        for (let j = i + 1; j < chips.length; j += 1) {
+          const a = chips[i].box; const b = chips[j].box;
+          const overlap = a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+          assert.equal(overlap, false, `${chips[i].text} covers ${chips[j].text}`);
+        }
+      }
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }, { timeout: 240_000 });
+}

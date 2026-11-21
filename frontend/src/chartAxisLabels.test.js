@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { layoutChartAxisLabels, mergePivotAndOiAxisLabels } from "./chartAxisLabels.js";
+import { axisLabelBesideOffsets, layoutChartAxisLabels, mergePivotAndOiAxisLabels } from "./chartAxisLabels.js";
 
 test("keeps a pivot label visible when an OI wall shares the same price", () => {
   const labels = mergePivotAndOiAxisLabels([
@@ -160,8 +160,10 @@ test("a Fib tag never joins another Fib tag; it still joins a wall", () => {
     { key: "fib-swing-188.49", title: "M Fib 23.6% (188.49)", top: 100, mergeWhenBlocked: true },
     { key: "fib-swing-183.49", title: "W Fib 38.2% (183.49)", top: 108, mergeWhenBlocked: true },
   ], { paneHeight: 400 });
-  assert.equal(laid.length, 1);
-  assert.equal((laid[0].parts || []).length || 1, 1, JSON.stringify(laid[0]));
+  // Since 2026-11-21 the second sits BESIDE the first (its own chip, same
+  // row) instead of hiding; neither chip carries the other's name.
+  assert.equal(laid.length, 2);
+  laid.forEach((chip) => assert.equal((chip.parts || []).length || 1, 1, JSON.stringify(chip)));
   const walls = layoutChartAxisLabels([
     { key: "oi-wall-call-127", title: "4.3K 12/18", top: 100, preservePricePosition: true },
     { key: "fib-swing-127.09", title: "M Fib 50% (127.09)", top: 104, mergeWhenBlocked: true },
@@ -185,4 +187,53 @@ test("a chart-pattern tag wins its row over a Fib tag, and loses to an OI wall",
     { key: "chart-pattern-up-level", title: "M ▲ Triangle 134.79", top: 104 },
   ], { paneHeight: 400 });
   assert.ok(walls.some((label) => label.key === "oi-wall-call-135"));
+});
+
+// 2026-11-21 "I need label W fib 50%", then "See how big swing fib label for M
+// do the same": a Fib tag next to another Fib tag or the LIVE tag used to hide,
+// leaving a bare line. It now keeps its own row and sits to the left.
+test("a Fib tag blocked by another Fib tag or by LIVE sits beside it, on its own line's row", () => {
+  const laid = layoutChartAxisLabels([
+    { key: "live-price", title: "LIVE 344.87", top: 100, preservePricePosition: true },
+    { key: "fib-swing-346.07", title: "D Fib 61.8% (346.07)", top: 96, mergeWhenBlocked: true },
+    { key: "fib-swing-342.42", title: "D Fib 50% (342.42)", top: 110, mergeWhenBlocked: true },
+    { key: "fib-swing-335.77", title: "W Fib 61.8% (335.77)", top: 160, mergeWhenBlocked: true },
+  ], { paneHeight: 400 });
+  const byKey = Object.fromEntries(laid.map((label) => [label.key, label]));
+  ["live-price", "fib-swing-346.07", "fib-swing-342.42", "fib-swing-335.77"].forEach((key) => assert.ok(byKey[key], key + " shows"));
+  assert.equal(byKey["fib-swing-346.07"].top, 96, "welded to its own line");
+  assert.deepEqual(byKey["fib-swing-346.07"].beside, ["live-price"]);
+  assert.deepEqual(byKey["fib-swing-342.42"].beside, ["live-price", "fib-swing-346.07"]);
+  assert.equal(byKey["fib-swing-335.77"].beside, undefined, "room of its own: stays at the axis");
+  assert.equal(byKey["live-price"].title, "LIVE 344.87", "nothing joins the LIVE tag");
+});
+
+test("beside chips move left past the chips they sit beside; a chain moves further", () => {
+  const labels = [
+    { key: "live-price", title: "LIVE 344.87" },
+    { key: "a", title: "D Fib 61.8% (346.07)", beside: ["live-price"] },
+    { key: "b", title: "W Fib 50% (346.20)", beside: ["live-price", "a"] },
+    { key: "c", title: "M Fib 50% (127.09)" },
+  ];
+  const widths = { "live-price": 60, a: 100 };
+  const offsets = axisLabelBesideOffsets(labels, (key) => widths[key] ?? null);
+  assert.equal(offsets.get("live-price"), 0);
+  assert.equal(offsets.get("a"), 66);
+  assert.equal(offsets.get("b"), 66 + 100 + 6);
+  assert.equal(offsets.get("c"), 0);
+  // Not on screen yet: estimated from its text.
+  const estimated = axisLabelBesideOffsets(labels.slice(0, 2));
+  assert.ok(estimated.get("a") > 40 && estimated.get("a") < 120, String(estimated.get("a")));
+});
+
+test("no more than four chips share a row: a fifth Fib tag there still hides", () => {
+  const laid = layoutChartAxisLabels([
+    { key: "live-price", title: "LIVE", top: 100, preservePricePosition: true },
+    { key: "fib-swing-1", title: "D Fib 50% (1.00)", top: 101, mergeWhenBlocked: true },
+    { key: "fib-swing-2", title: "W Fib 50% (2.00)", top: 102, mergeWhenBlocked: true },
+    { key: "fib-swing-3", title: "M Fib 50% (3.00)", top: 103, mergeWhenBlocked: true },
+    { key: "fib-swing-4", title: "D Fib 61.8% (4.00)", top: 104, mergeWhenBlocked: true },
+    { key: "fib-swing-5", title: "W Fib 61.8% (5.00)", top: 105, mergeWhenBlocked: true },
+  ], { paneHeight: 400 });
+  assert.equal(laid.filter((label) => String(label.key).startsWith("fib-swing-")).length, 4);
 });

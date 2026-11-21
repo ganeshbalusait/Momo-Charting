@@ -34,6 +34,39 @@ function axisLabelPriority(label) {
 // Names a blocked MTF MA level may add to the chip that displaced it.
 const MAX_MERGED_NAMES = 2;
 const MERGED_OVERFLOW_KEY = "merged-overflow";
+// Chips already on a row before a Fib tag may sit beside them: LIVE plus the
+// four D / W lines, which often all sit near the price.
+const MAX_FIB_BESIDE = 4;
+
+// How far (px, from the chip's normal right edge) a "beside" chip moves left:
+// past every chip it sits beside, measured where possible. widthOf(key)
+// returns a chip's text width in px or null when it is not on screen yet.
+export function axisLabelBesideOffsets(labels, widthOf = () => null, spacing = 6) {
+  const list = Array.isArray(labels) ? labels : [];
+  const byKey = new Map(list.map((label) => [String(label.key || label.title), label]));
+  const offsets = new Map();
+  const estimate = (label) => String(label?.title || "").length * 5.6 + 8;
+  const resolve = (key, depth = 0) => {
+    if (offsets.has(key)) return offsets.get(key);
+    const label = byKey.get(key);
+    if (!label || !Array.isArray(label.beside) || !label.beside.length || depth > 8) {
+      offsets.set(key, 0);
+      return 0;
+    }
+    let offset = 0;
+    label.beside.forEach((otherKey) => {
+      const other = byKey.get(otherKey);
+      if (!other) return;
+      const measured = Number(widthOf(otherKey));
+      const width = Number.isFinite(measured) && measured > 0 ? measured : estimate(other);
+      offset = Math.max(offset, resolve(otherKey, depth + 1) + width + spacing);
+    });
+    offsets.set(key, offset);
+    return offset;
+  };
+  list.forEach((label) => resolve(String(label.key || label.title)));
+  return offsets;
+}
 
 export function layoutChartAxisLabels(labels, {
   paneHeight,
@@ -107,6 +140,21 @@ export function layoutChartAxisLabels(labels, {
       if (!label.mergeWhenBlocked) return;
       const blocker = positioned[blockerIndex];
       const blockerParts = axisLabelParts(blocker);
+      // A Fib tag blocked by the LIVE tag or another Fib tag sits BESIDE it on
+      // the same row, to its left, so every Fib line keeps its "W Fib 50%
+      // (328.94)" tag like the M one (2026-11-21 "I need label W fib 50%",
+      // then "See how big swing fib label for M do the same"). Before, it hid.
+      // App.jsx moves the chip left of the chips named in `beside`. At most
+      // MAX_FIB_BESIDE chips share one row so a crowded pane stays readable.
+      const isFibLabel = axisLabelParts(label).some(({ key }) => String(key || "").startsWith("fib-swing-"));
+      const blockerIsFibOrLive = ({ key }) => String(key || "") === "live-price"
+        || String(key || "").startsWith("fib-swing-");
+      if (isFibLabel && blockerParts.some(blockerIsFibOrLive)) {
+        const neighbours = positioned.filter((existing) => Math.abs(existing.top - label.top) < gap);
+        if (neighbours.length > MAX_FIB_BESIDE) return;
+        positioned.push({ ...label, beside: neighbours.map((existing) => String(existing.key || existing.title)) });
+        return;
+      }
       // The LIVE chip names the traded price and nothing may join it: on a
       // $3.97 ticker (MNKD 2026-09-30) nine MA levels sat within a few cents,
       // merged into LIVE, and the chip outgrew the phone pane, pushing the

@@ -103,7 +103,7 @@ import {
   buildPreflightView,
   preflightErrorMessage,
 } from "./preflightPanel";
-import { layoutChartAxisLabels, mergePivotAndOiAxisLabels } from "./chartAxisLabels";
+import { axisLabelBesideOffsets, layoutChartAxisLabels, mergePivotAndOiAxisLabels } from "./chartAxisLabels";
 import { STOCHASX_DEFAULTS, calculateStochasX } from "./stochasX";
 import { dedupeDailyBars } from "./dailyBars.js";
 import { withoutDailySeedBadPrints } from "./chartBadPrints.js";
@@ -15489,6 +15489,8 @@ function OiFinderCandleChart({
   // positions the axis chips, so they track pan/zoom frame-for-frame.
   const oiEdgeBadgesHostRef = useRef(null);
   const indicatorAxisLabelTopsRef = useRef(new Map());
+  // How far a Fib tag that sits beside another tag moves left (px).
+  const indicatorAxisLabelBesideRef = useRef(new Map());
   // TOS/MomoX-style bar-close countdown pinned under the LIVE price chip.
   // The per-second tick writes straight to the DOM node so the clock never
   // re-renders the workstation; the ref keeps the latest text so a React
@@ -20171,11 +20173,27 @@ function OiFinderCandleChart({
       const topsByKey = new Map(nextLabels.map((label) => [String(label.key || label.title), label.top]));
       indicatorAxisLabelTopsRef.current = topsByKey;
       const labelHost = indicatorAxisLabelsHostRef.current;
+      // A Fib tag that would collide with the LIVE tag or another Fib tag sits
+      // beside it on the same row (chartAxisLabels.js) instead of hiding, so
+      // each Fib line keeps its "W Fib 50% (328.94)" tag (2026-11-21).
+      const chipTextWidth = (key) => {
+        const chip = labelHost?.querySelector(`[data-axis-label-key="${CSS.escape(key)}"]`);
+        if (!chip || chip.style.display === "none") return null;
+        const padding = parseFloat(getComputedStyle(chip).paddingRight) || 0;
+        return chip.getBoundingClientRect().width - padding;
+      };
+      const besideByKey = nextLabels.some((label) => label.beside?.length)
+        ? axisLabelBesideOffsets(nextLabels, chipTextWidth)
+        : new Map();
+      indicatorAxisLabelBesideRef.current = besideByKey;
       if (labelHost) {
         for (const chip of labelHost.children) {
-          const top = topsByKey.get(chip.getAttribute("data-axis-label-key"));
+          const key = chip.getAttribute("data-axis-label-key");
+          const top = topsByKey.get(key);
           chip.style.display = top == null ? "none" : "";
           if (top != null) chip.style.top = `${top}px`;
+          const shift = besideByKey.get(key) || 0;
+          if (chip.classList.contains("is-beside") || shift) chip.style.right = `${shift}px`;
         }
         // The LIVE price re-quotes every tick. Push its new text/colour onto the
         // already-rendered chip here so a quote does not re-render the whole
@@ -20287,7 +20305,7 @@ function OiFinderCandleChart({
           // The TITLE too: a chip that merged a neighbour ("dL · D Fib 0%")
           // keeps its key and price when that neighbour is switched off, so
           // without the title the stale merged text stayed on screen.
-          : `${label.key || ""}|${label.title || ""}:${Number(label.price).toFixed(6)}`))
+          : `${label.key || ""}|${label.title || ""}:${Number(label.price).toFixed(6)}${label.beside?.length ? `<${label.beside.join(",")}` : ""}`))
         .join("|");
       if (nextSignature === lastIndicatorAxisLabelsSignature) return;
       lastIndicatorAxisLabelsSignature = nextSignature;
@@ -24805,13 +24823,15 @@ function OiFinderCandleChart({
               const isHighOiWall = labelParts.some(({ key }) => String(key || "").startsWith("oi-wall-high-"));
               const isPriceAlert = labelParts.some(({ key }) => String(key || "").startsWith("price-alert-"));
               const isLivePrice = labelParts.some(({ key }) => String(key || "") === "live-price");
+              const isBeside = Boolean(label.beside?.length);
               return (
                 <span
-                  className={`oi-finder-indicator-axis-label${isOiWall ? " is-oi-wall" : ""}${isHighOiWall ? " is-high-oi-wall" : ""}${isPriceAlert ? " is-price-alert" : ""}${isLivePrice ? " is-live-price" : ""}`}
+                  className={`oi-finder-indicator-axis-label${isOiWall ? " is-oi-wall" : ""}${isHighOiWall ? " is-high-oi-wall" : ""}${isPriceAlert ? " is-price-alert" : ""}${isLivePrice ? " is-live-price" : ""}${isBeside ? " is-beside" : ""}`}
                   key={label.key}
                   data-axis-label-key={String(label.key || label.title)}
                   style={{
                     top: `${indicatorAxisLabelTopsRef.current.get(String(label.key || label.title)) ?? label.top}px`,
+                    ...(isBeside ? { right: `${indicatorAxisLabelBesideRef.current.get(String(label.key || label.title)) || 0}px` } : {}),
                     // Colours the High OI wall glow (CSS ::before across the pane).
                     ...(isHighOiWall ? { "--oi-wall-color": (labelParts.find(({ key }) => String(key || "").startsWith("oi-wall-high-"))?.color || label.color) } : {}),
                   }}
@@ -24823,7 +24843,10 @@ function OiFinderCandleChart({
                     key={part.key || part.title}
                     className={String(part.key || "").startsWith("oi-wall-") ? "is-oi-part" : undefined}
                     style={{
-                      background: "transparent",
+                      // A tag beside another one sits over the chart lines, so
+                      // it gets a dark plate to stay readable.
+                      background: isBeside ? "rgba(6, 10, 18, 0.88)" : "transparent",
+                      ...(isBeside ? { borderRadius: "3px" } : {}),
                       color: part.color || label.color,
                     }}
                   >{part.title}</b>)}

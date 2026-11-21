@@ -3,6 +3,7 @@
 // shows (buildChartDisplayBars) and the Big swing Fib and Weekly / Monthly
 // AutoFib inputs from them. Prints JSON for the Python test to check.
 import { readFileSync } from "node:fs";
+import { layoutChartAxisLabels } from "../frontend/src/chartAxisLabels.js";
 import { buildChartDisplayBars } from "../frontend/src/chartAggregation.js";
 import {
   FIB_SWING_DEFAULTS,
@@ -41,6 +42,21 @@ for (const [name, minutes] of [["D", 1440], ["W", 10080], ["M", 43200]]) {
     // What the chart shows by default: D / W / M, 50% and 61.8%.
     defaultTags: fibSwingAxisLabels(buildFibSwingStudies(bars, minutes, FIB_SWING_DEFAULTS, { dailyBars: payload.dailyBars }))
       .map((label) => label.title),
+    // 2026-11-21 "I need label W fib 50%": laid out in a crowded 120px pane
+    // beside a LIVE tag, every Fib tag still shows (beside, not hidden).
+    crowdedTags: (() => {
+      const labels = fibSwingAxisLabels(buildFibSwingStudies(bars, minutes, FIB_SWING_DEFAULTS, { dailyBars: payload.dailyBars }));
+      const prices = labels.map((label) => label.price);
+      const lo = Math.min(...prices); const hi = Math.max(...prices);
+      const span = hi - lo || 1;
+      // A 400px pane with the LIVE tag on the top level: nearby levels crowd.
+      const topOf = (price) => 10 + (hi - price) / span * 380;
+      const laid = layoutChartAxisLabels([
+        { key: "live-price", title: "LIVE", price: hi, top: topOf(hi), preservePricePosition: true },
+        ...labels.map((label) => ({ ...label, top: topOf(label.price), mergeWhenBlocked: true })),
+      ], { paneHeight: 400 });
+      return laid.filter((label) => String(label.key).startsWith("fib-swing-")).map((label) => label.title);
+    })(),
   };
   if (minutes > 1440) {
     const calendar = autoFibCalendarBars(payload.dailyBars, minutes);

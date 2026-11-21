@@ -206,3 +206,7 @@ def test_every_chart_shows_daily_weekly_monthly_fib_50_and_618():
             assert re.search(r"D(?:/[MW])* Fib 61\.8%[^|]*\(" + re.escape(d618) + r"\)", text) or re.search(r"[MW]/D Fib 61\.8%[^|]*\(" + re.escape(d618), text), (name, d618, text)
             assert re.search(r"\bW(?:/[MD])* Fib 50%", text) and re.search(r"\bW(?:/[MD])* Fib 61\.8%", text), (name, text)
             assert not re.search(r"\b(?:0|23\.6|38\.2|78\.6|100)%", text), (name, text)
+            if name != "fiveMinute":
+                # 2026-11-21 "I need label W fib 50%": every line carries its own name.
+                # Squeezed into a few pixels beside the LIVE tag, none hides.
+                assert sorted(result[name]["crowdedTags"]) == sorted(result[name]["defaultTags"]), (name, result[name]["crowdedTags"])
