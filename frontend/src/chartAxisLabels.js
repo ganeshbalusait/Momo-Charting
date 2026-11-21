@@ -108,6 +108,11 @@ export function layoutChartAxisLabels(labels, {
       // merged into LIVE, and the chip outgrew the phone pane, pushing the
       // price itself off-screen.
       if (blockerParts.some(({ key }) => String(key || "") === "live-price")) return;
+      // A Fib tag never joins another Fib tag (2026-11-20, NVDA W on a phone:
+      // three nearby Fib levels made one 399px chip). It still joins a wall,
+      // a session level or an alert, so its line keeps a name.
+      const isFib = ({ key }) => String(key || "").startsWith("fib-swing-");
+      if (axisLabelParts(label).some(isFib) && blockerParts.some(isFib)) return;
       const extraParts = axisLabelParts(label)
         .filter((part) => !blockerParts.some(({ key, title }) => (
           key === part.key || (part.title && title === part.title)

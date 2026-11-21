@@ -171,6 +171,17 @@ test("AutoFib is switched on once, then the trader's checkbox wins", async () =>
   }), {});
 });
 
+// 2026-11-20 "keep Daily and weekly 'Autofib' on 5 min chart": his saved
+// profile had AutoFib off after v1; v2 switches it on once more.
+test("AutoFib v2 switches it on again for a profile that turned it off after v1", async () => {
+  const { migrateAutoFibVisibility, AUTO_FIB_VISIBILITY_VERSION } = await import("./chartIndicatorMigrations.js");
+  assert.notEqual(AUTO_FIB_VISIBILITY_VERSION, "autofib-visible-v1");
+  assert.deepEqual(migrateAutoFibVisibility({ autoFibVisibilityVersion: "autofib-visible-v1", autoFibSingleTf: false }), {
+    autoFibVisibilityVersion: AUTO_FIB_VISIBILITY_VERSION,
+    autoFibSingleTf: true,
+  });
+});
+
 test("CloudMax MTF (the 4x8 arrows) is switched on once, then the trader's checkbox wins", async () => {
   const { migrateCloudMaxMtfVisibility, CLOUD_MAX_MTF_VISIBILITY_VERSION } = await import("./chartIndicatorMigrations.js");
   assert.deepEqual(migrateCloudMaxMtfVisibility({ cloudMaxMtf: false }), {

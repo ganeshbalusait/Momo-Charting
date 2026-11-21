@@ -110,7 +110,7 @@ import { withoutDailySeedBadPrints } from "./chartBadPrints.js";
 import { setItemMakingRoom } from "./storageRoom.js";
 import { pruneOversizedBoardCaches } from "./momxCells.js";
 import { WOODIES_DEFAULTS, WOODIES_LEVELS, WOODIES_TIMEFRAMES, buildWoodiesPivots } from "./woodiesPivots.js";
-import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, autoFibCalendarBars, autoFibCalendarKey, autoFibTimeframeAllowed, buildFibSwingStudies, fibSwingAxisLabels } from "./chartFibSwing.js";
+import { AUTO_FIB_HIGHER_TIMEFRAMES, FIB_SWING_DEFAULTS, autoFibCalendarBars, autoFibCalendarKey, autoFibAxisLabels, autoFibTimeframeAllowed, buildFibSwingStudies, fibSwingAxisLabels } from "./chartFibSwing.js";
 import { aggregateChartBars, buildChartDisplayBars, chartAggregationBucketTime, chartDeepHistoryPending, chartSourceBarSpacingMinutes, normalizeChartCandleBars } from "./chartAggregation";
 import { CHART_TOUCH_ALERT_HOLD_MS, touchAlertGestureShouldCancel } from "./chartTouchAlert";
 import { CLOUD_BAND_STUDIES, calculateTosCloudBandPoints } from "./cloudBandStudy";
@@ -10306,6 +10306,9 @@ function calculateAutoFibSingleTfStudies(
     ));
     return [{
       ...definition,
+      // Which golden level the latest candle shows (61.8% above the 50%,
+      // 38.2% below it), for the "D AutoFib 61.8%" tag.
+      goldRatio: points.at(-1)?.above50 ? 0.618 : 0.382,
       lines: {
         fib50: options.autoFibShowFib50 !== false ? fib50 : [],
         fibGold: options.autoFibShowFibGold !== false ? fibGold : [],
@@ -21601,6 +21604,11 @@ function OiFinderCandleChart({
       // Big swing Fib: a settings change (M/W/D on or off) landing on a tick
       // render must redraw its lines and tags, not just move the last candle.
       fibSwingStudies.map((study) => `${study.source}:${study.levels.map((level) => level.price).join("/")}`).join(","),
+      // Same for the D / W / M AutoFib tags.
+      indicatorSettings.autoFibSingleTf
+        ? autoFibStudies.filter((study) => ["day", "week", "month"].includes(study.key))
+          .map((study) => `${study.key}:${study.lines?.fib50?.at(-1)?.value}:${study.lines?.fibGold?.at(-1)?.value}`).join(",")
+        : "",
     ].join("|");
     const nativeLiveOverlayChanged = nativeLiveOverlaySignatureRef.current !== nativeLiveOverlaySignature;
     nativeLiveOverlaySignatureRef.current = nativeLiveOverlaySignature;
@@ -23158,6 +23166,17 @@ function OiFinderCandleChart({
     fibSwingAxisLabels(fibSwingStudies).forEach((label) => {
       addIndicatorName(label.price, label.title, label.color, true, label.key, { mergeWhenBlocked: true });
     });
+    // AutoFib Daily / Weekly / Monthly tags ("D AutoFib 50% (171.89)") so
+    // they read apart from the Big swing's "M Fib" (2026-11-20, his 5m chart).
+    if (indicatorSettings.autoFibSingleTf) {
+      autoFibAxisLabels(autoFibStudies, {
+        day: indicatorOptions.autoFibAbove50Color,
+        week: indicatorOptions.autoFibAboveGoldColor,
+        month: indicatorOptions.autoFibCloudBullColor,
+      }).forEach((label) => {
+        addIndicatorName(label.price, label.title, label.color, true, label.key, { mergeWhenBlocked: true });
+      });
+    }
     if (indicatorSettings.previousOhlcLevels && sessionLevelsStudy) {
       const sideColor = (price) => (
         Number(price) >= Number(latestBar?.close || 0) ? "#ff00ff" : "#00ffff"
@@ -24371,13 +24390,13 @@ function OiFinderCandleChart({
                       <label><span>High</span><input type="color" value={indicatorOptions.autoFibHighColor} onChange={(event) => setIndicatorOption("autoFibHighColor", event.target.value)} /></label>
                       <label><span>Low</span><input type="color" value={indicatorOptions.autoFibLowColor} onChange={(event) => setIndicatorOption("autoFibLowColor", event.target.value)} /></label>
                       <label><span>Cloud opacity</span><input type="range" min="5" max="55" value={indicatorOptions.autoFibCloudOpacity} onChange={(event) => setIndicatorOption("autoFibCloudOpacity", Number(event.target.value))} /></label>
-                      <label><input type="checkbox" checked={indicatorOptions.autoFibHigherOnDailyUp !== false} onChange={() => setIndicatorOption("autoFibHigherOnDailyUp", indicatorOptions.autoFibHigherOnDailyUp === false)} /><span>Weekly / Monthly only on Daily and higher charts</span></label>
+                      <label><input type="checkbox" checked={indicatorOptions.autoFibHigherOnDailyUp !== false} onChange={() => setIndicatorOption("autoFibHigherOnDailyUp", indicatorOptions.autoFibHigherOnDailyUp === false)} /><span>Monthly only on Daily and higher charts</span></label>
                       <p>Checked aggregations below the chart timeframe are skipped, matching TOS secondary-aggregation rules.</p>
                     </> : null}
                     {key === "fibSwing" ? <>
                       <p>Lowest low to highest high of the last N candles. The newer of the two is 0%.</p>
-                      <p>Swings drawn on every chart, together:</p>
-                      {[["fibSwingShowM", "Monthly (M Fib)"], ["fibSwingShowW", "Weekly (W Fib)"], ["fibSwingShowD", "Daily (D Fib)"]].map(([optionKey, optionLabel]) => (
+                      <p>Swings drawn together. Minute and hour charts draw the Monthly only; their Daily and Weekly levels come from AutoFib.</p>
+                      {[["fibSwingShowM", "Monthly (M Fib)"], ["fibSwingShowW", "Weekly (W Fib, D/W/M charts)"], ["fibSwingShowD", "Daily (D Fib, D/W/M charts)"]].map(([optionKey, optionLabel]) => (
                         <label key={optionKey}><input type="checkbox" checked={indicatorOptions[optionKey] !== false} onChange={() => setIndicatorOption(optionKey, indicatorOptions[optionKey] === false)} /><span>{optionLabel}</span></label>
                       ))}
                       <label><input type="checkbox" checked={indicatorOptions.fibSwingShowOwn === true} onChange={() => setIndicatorOption("fibSwingShowOwn", indicatorOptions.fibSwingShowOwn !== true)} /><span>This chart's own candles (Fib)</span></label>

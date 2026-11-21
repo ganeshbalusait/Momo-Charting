@@ -152,3 +152,20 @@ test("an OI wall still beats a Fib tag", () => {
   assert.ok(laid.some((label) => label.key === "oi-wall-call-127"));
   assert.ok(!laid.some((label) => label.key === "fib-swing-127.09"), "the Fib tag hides behind the wall");
 });
+
+// 2026-11-20 (his NVDA W chart on a phone): "M Fib 23.6% (188.49)", "W Fib
+// 38.2% (183.49)" and "D Fib 50% (183.94)" joined into one 399px chip.
+test("a Fib tag never joins another Fib tag; it still joins a wall", () => {
+  const laid = layoutChartAxisLabels([
+    { key: "fib-swing-188.49", title: "M Fib 23.6% (188.49)", top: 100, mergeWhenBlocked: true },
+    { key: "fib-swing-183.49", title: "W Fib 38.2% (183.49)", top: 108, mergeWhenBlocked: true },
+  ], { paneHeight: 400 });
+  assert.equal(laid.length, 1);
+  assert.equal((laid[0].parts || []).length || 1, 1, JSON.stringify(laid[0]));
+  const walls = layoutChartAxisLabels([
+    { key: "oi-wall-call-127", title: "4.3K 12/18", top: 100, preservePricePosition: true },
+    { key: "fib-swing-127.09", title: "M Fib 50% (127.09)", top: 104, mergeWhenBlocked: true },
+  ], { paneHeight: 400 });
+  assert.equal(walls.length, 1);
+  assert.ok(JSON.stringify(walls[0]).includes("M Fib 50%"), "the Fib name joins the wall chip");
+});

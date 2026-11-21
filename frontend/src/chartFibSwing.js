@@ -28,15 +28,42 @@ export function autoFibCalendarKey(time, minutes) {
   return chartAggregationBucketTime(time, minutes);
 }
 
-// TOS skips a checked aggregation below the chart's own timeframe. Weekly and
-// Monthly also stay off intraday charts unless the trader allows them, so his
-// 5m / 15m working charts do not gain two more wide clouds.
+// TOS skips a checked aggregation below the chart's own timeframe. Weekly
+// shows on minute charts too ("keep Daily and weekly 'Autofib' on 5 min
+// chart", 2026-11-20); Monthly stays off intraday charts unless the trader
+// allows it, so his 5m chart does not gain a third wide cloud.
 export function autoFibTimeframeAllowed(definitionMinutes, chartMinutes, options = {}) {
   const definition = Number(definitionMinutes) || 0;
   const chart = Math.max(1, Number(chartMinutes) || 1);
   if (definition < chart) return false;
-  if (definition > 1440 && chart < 1440 && options.autoFibHigherOnDailyUp !== false) return false;
+  if (definition > 10080 && chart < 1440 && options.autoFibHigherOnDailyUp !== false) return false;
   return true;
+}
+
+const AUTO_FIB_LETTER = Object.freeze({ day: "D", week: "W", month: "M" });
+
+// Tags for the AutoFib lines on the price axis, named by timeframe so they are
+// told apart from the Big swing's "M Fib": "D AutoFib 50% (171.89)". Only the
+// Daily / Weekly / Monthly AutoFibs get a tag (the intraday ones move every
+// few minutes). Keys start "fib-swing-" so they rank with the Fib tags.
+export function autoFibAxisLabels(studies, colors = {}) {
+  return (Array.isArray(studies) ? studies : []).flatMap((study) => {
+    const letter = AUTO_FIB_LETTER[study?.key];
+    if (!letter) return [];
+    const fifty = Number(study?.lines?.fib50?.at(-1)?.value);
+    const gold = Number(study?.lines?.fibGold?.at(-1)?.value);
+    const goldRatio = Number(study?.goldRatio);
+    const out = [];
+    const tag = (ratio, price, part) => ({
+      key: `fib-swing-auto-${study.key}-${part}`,
+      price,
+      color: colors[study.key] || "#9aa4b2",
+      title: `${letter} AutoFib ${formatFibRatio(ratio)} (${price.toFixed(Math.abs(price) < 1 ? 4 : 2)})`,
+    });
+    if (Number.isFinite(fifty)) out.push(tag(0.5, fifty, "50"));
+    if (Number.isFinite(gold) && (goldRatio === 0.618 || goldRatio === 0.382)) out.push(tag(goldRatio, gold, "gold"));
+    return out;
+  });
 }
 
 export const FIB_SWING_RATIOS = Object.freeze([0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]);
@@ -175,15 +202,23 @@ export function fibSwingSource(options = {}) {
   return HIGHER_SOURCE_MINUTES[value] || value === "own" ? value : "M";
 }
 
-export function fibSwingSourcesOn(options = {}) {
-  const list = ["M", "W", "D"].filter((source) => options["fibSwingShow" + source] !== false);
+// Which swings a chart draws. Minute and hour charts: the Monthly only ("Use
+// monthly fib 'big swing' and keep Daily and weekly 'Autofib' on 5 min chart",
+// 2026-11-20 - he judged the Big swing D and W "not correct" there; the D and
+// W levels come from AutoFib instead). D / W / M charts: all ticked swings.
+export function fibSwingSourcesOn(options = {}, chartMinutes = 1440) {
+  const intraday = Number(chartMinutes) < 1440;
+  const list = ["M", "W", "D"].filter((source) => {
+    if (options["fibSwingShow" + source] === false) return false;
+    return !intraday || source === "M" || options["fibSwingIntradayShow" + source] === true;
+  });
   if (options.fibSwingShowOwn === true) list.push("own");
   return list;
 }
 
 // One study per ticked swing, drawn together on the chart.
 export function buildFibSwingStudies(chartBars, chartMinutes, options = {}, context = {}) {
-  return fibSwingSourcesOn(options)
+  return fibSwingSourcesOn(options, chartMinutes)
     .map((source) => buildFibSwingStudy(chartBars, chartMinutes, { ...options, fibSwingSource: source }, context))
     .filter(Boolean);
 }

@@ -5,6 +5,7 @@ import {
   FIB_SWING_DEFAULTS,
   autoFibCalendarBars,
   autoFibCalendarKey,
+  autoFibAxisLabels,
   autoFibTimeframeAllowed,
   buildFibSwingStudies,
   buildFibSwingStudy,
@@ -28,14 +29,43 @@ test("AutoFib gains Weekly and Monthly after Daily", () => {
   ]);
 });
 
-test("Weekly/Monthly AutoFib is skipped below the chart timeframe and, by default, on intraday charts", () => {
+// 2026-11-20 "keep Daily and weekly 'Autofib' on 5 min chart".
+test("AutoFib: Weekly shows on a 5m chart; Monthly stays off intraday unless allowed", () => {
   assert.equal(autoFibTimeframeAllowed(10080, 43200, {}), false, "weekly on a monthly chart");
   assert.equal(autoFibTimeframeAllowed(43200, 43200, {}), true, "monthly on a monthly chart");
   assert.equal(autoFibTimeframeAllowed(10080, 1440, {}), true, "weekly on a daily chart");
-  assert.equal(autoFibTimeframeAllowed(10080, 5, {}), false, "weekly kept off a 5m chart by default");
-  assert.equal(autoFibTimeframeAllowed(10080, 5, { autoFibHigherOnDailyUp: false }), true, "trader can allow it");
+  assert.equal(autoFibTimeframeAllowed(10080, 5, {}), true, "weekly on a 5m chart");
+  assert.equal(autoFibTimeframeAllowed(43200, 5, {}), false, "monthly kept off a 5m chart by default");
+  assert.equal(autoFibTimeframeAllowed(43200, 5, { autoFibHigherOnDailyUp: false }), true, "trader can allow it");
   assert.equal(autoFibTimeframeAllowed(1440, 5, {}), true, "Daily AutoFib on 5m is unchanged");
   assert.equal(autoFibTimeframeAllowed(60, 1440, {}), false, "1h on a daily chart stays skipped");
+});
+
+// "Use monthly fib 'big swing' ... on 5 min chart" (he judged the Big swing
+// D and W "not correct" there): intraday charts draw only the M Big swing.
+test("on minute and hour charts the Big swing is the Monthly only; D/W/M charts keep all three", () => {
+  assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS, 5), ["M"]);
+  assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS, 60), ["M"]);
+  assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS, 1440), ["M", "W", "D"]);
+  assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS, 10080), ["M", "W", "D"]);
+  assert.deepEqual(fibSwingSourcesOn({ ...FIB_SWING_DEFAULTS, fibSwingIntradayShowW: true }, 5), ["M", "W"]);
+  assert.deepEqual(fibSwingSourcesOn({ ...FIB_SWING_DEFAULTS, fibSwingShowM: false }, 5), []);
+  assert.deepEqual(fibSwingSourcesOn({ ...FIB_SWING_DEFAULTS, fibSwingShowOwn: true }, 5), ["M", "own"]);
+});
+
+test("AutoFib tags name their timeframe: 'D AutoFib 50% (171.89)'", () => {
+  const studies = [
+    { key: "day", lines: { fib50: [{ time: 1, value: 171.9 }, { time: 2, value: 171.89 }], fibGold: [{ time: 2, value: 160.7096 }] }, goldRatio: 0.382 },
+    { key: "week", lines: { fib50: [{ time: 2, value: 183.94 }], fibGold: [] } },
+    { key: "5m", lines: { fib50: [], fibGold: [] } },
+  ];
+  const labels = autoFibAxisLabels(studies, { day: "#00ffff", week: "#ff00ff" });
+  assert.deepEqual(labels.map((label) => label.title), [
+    "D AutoFib 50% (171.89)",
+    "D AutoFib 38.2% (160.71)",
+    "W AutoFib 50% (183.94)",
+  ]);
+  assert.ok(labels.every((label) => label.key.startsWith("fib-swing-auto-")), "ranked with the Fib tags");
 });
 
 test("Weekly AutoFib bars group daily candles exactly like the chart's weekly candles", () => {
@@ -262,8 +292,10 @@ test("every timeframe draws the same Monthly levels, tagged 'M Fib'; 'own' tags 
 test("M, W and D Fibs are all drawn on one chart by default, each tagged with its letter", () => {
   const daily = dailyTape();
   const intraday = [bar(etTime(20, "10:00"), 128, 131)];
-  const studies = buildFibSwingStudies(intraday, 5, FIB_SWING_DEFAULTS, { dailyBars: daily });
+  // On a Daily chart (minute charts draw the Monthly only, see below).
+  const studies = buildFibSwingStudies(daily.slice(-30), 1440, FIB_SWING_DEFAULTS, { dailyBars: daily });
   assert.deepEqual(studies.map((study) => study.source), ["M", "W", "D"]);
+  assert.deepEqual(buildFibSwingStudies(intraday, 5, FIB_SWING_DEFAULTS, { dailyBars: daily }).map((study) => study.source), ["M"]);
   assert.deepEqual(fibSwingSourcesOn(FIB_SWING_DEFAULTS), ["M", "W", "D"]);
   for (const study of studies) {
     assert.ok(study.levels.every((level) => level.label.startsWith(study.source + " Fib ")), study.source);

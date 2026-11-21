@@ -365,7 +365,9 @@ export function migrateMomoxOnChartPalette(saved = {}) {
 // 2026-09-30: he pasted his TOS AutoFib study and asked for it on the chart
 // ("I need same like TEAM ticker"). The focused-profile migration had turned it
 // off for everyone; switch it on ONCE, then his checkbox wins again.
-export const AUTO_FIB_VISIBILITY_VERSION = "autofib-visible-v1";
+// v2 (2026-11-20, "keep Daily and weekly 'Autofib' on 5 min chart"): his
+// saved profile had it off again; switch it on once more.
+export const AUTO_FIB_VISIBILITY_VERSION = "autofib-visible-v2-5m-daily-weekly";
 
 export function migrateAutoFibVisibility(saved = {}) {
   if (saved.autoFibVisibilityVersion === AUTO_FIB_VISIBILITY_VERSION) return {};
