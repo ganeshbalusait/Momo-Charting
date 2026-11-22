@@ -257,11 +257,17 @@ for (const [label, viewport] of WIDTHS) {
       await tap(view.getByRole("button", { name: "✕ Back to board" }));
       const recent = view.getByRole("group", { name: "Recent searches" });
       await recent.waitFor({ timeout: 5_000 });
-      assert.deepEqual(await recent.getByRole("button").allInnerTexts(), ["PLTR"]);
+      assert.deepEqual(await recent.getByRole("button").filter({ hasNotText: "Clear" }).allInnerTexts(), ["PLTR"]);
+      assert.equal(await recent.getByRole("button", { name: "Clear recent searches" }).count(), 1, "the Recent row has a Clear button");
       const before = asked.length;
       await tap(recent.getByRole("button", { name: "PLTR" }));
       for (let i = 0; i < 50 && !asked.slice(before).some((s) => s.includes("symbols=PLTR&")); i += 1) await page.waitForTimeout(100);
       assert.ok(asked.slice(before).some((s) => s.includes("symbols=PLTR&")), asked.join("\n"));
+      // 2026-11-22 "Recent I don't see the clear option": Clear empties the row,
+      // and it stays empty after the page is opened again.
+      await tap(view.getByRole("group", { name: "Recent searches" }).getByRole("button", { name: "Clear recent searches" }));
+      await view.getByRole("group", { name: "Recent searches" }).waitFor({ state: "detached", timeout: 5_000 });
+      assert.equal(await page.evaluate(() => localStorage.getItem("agxTickerSearchRecent")), "[]");
       // Options page from the card leaves for the Options page.
       await tap(view.getByRole("button", { name: "✕ Back to board" }));
       await view.locator(rowSel).first().waitFor({ timeout: 15_000 });

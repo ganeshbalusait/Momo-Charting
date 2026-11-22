@@ -62,6 +62,8 @@
 .tk-search-recent small { color: #7d8799; font-size: 12px; margin-right: 2px; }
 .tk-search .tk-search-recent button { padding: 4px 10px; font-size: 12.5px; border-radius: 999px; background: #18202c; }
 .tk-search .tk-search-recent button[aria-pressed="true"] { border-color: #4c8dff; color: #fff; }
+/* Clear (2026-11-22): quieter than the tickers so it is not tapped by mistake. */
+.tk-search .tk-search-recent button.tk-search-recent-clear { background: transparent; border-color: transparent; color: #9aa4b2; }
 .leapoi-chg { margin-left: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .leapoi-chg.is-up { color: #34c77b; }
 .leapoi-chg.is-down { color: #ff6b6b; }

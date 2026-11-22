@@ -5,7 +5,7 @@ import "./simpleWhy.css";
 import {
   DELTAS, RANGES, SIDES, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi,
   BYTK_SORTS, boardTotals, cleanTicker, costText, dominance, filterByTicker, leftOutText, midText, searchNote, sortByTicker, spreadText, priceText, progressText, readAtText, scannerUrl,
-  addRecent, contractFacts, moveText, oiChangeText, oiChangeTone, priceAgeText, readRecent, saveRecent, sinceText,
+  addRecent, clearRecent, contractFacts, moveText, oiChangeText, oiChangeTone, priceAgeText, readRecent, saveRecent, sinceText,
 } from "./leapOi.js";
 import { LIVE_PRICE_POLL_MS, awayFrom, changeTone, quotesFrom, stockPrice, stockText, tickersOnScreen } from "./leapLivePrice.js";
 import { flowCell } from "./leapFlow.js";
@@ -80,6 +80,8 @@ export function TickerSearch({ active, onSearch, onClear }) {
           {recent.map((ticker) => (
             <button key={ticker} type="button" aria-pressed={ticker === active} onClick={() => go(ticker)}>{ticker}</button>
           ))}
+          <button type="button" className="tk-search-recent-clear" aria-label="Clear recent searches"
+            onClick={() => setRecent(clearRecent())}>✕ Clear</button>
         </div>
       ) : null}
     </form>

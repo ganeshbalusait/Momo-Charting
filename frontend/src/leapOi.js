@@ -192,6 +192,12 @@ export function saveRecent(list) {
   try { window.localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch { /* private window */ }
 }
 
+// The Recent row's Clear button (2026-11-22 "Recent I don't see the clear option").
+export function clearRecent() {
+  saveRecent([]);
+  return [];
+}
+
 // By-ticker order (2026-11-17 "who is dominating"): A-Z, or the most call-heavy / put-heavy tickers first.
 export const BYTK_SORTS = [
   { id: "az", label: "A–Z" },

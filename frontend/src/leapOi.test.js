@@ -198,6 +198,22 @@ test("recent searches: newest first, no repeats, junk dropped, at most 5", () =>
   assert.deepEqual(addRecent(null, "pltr"), ["PLTR"]);
 });
 
+// 2026-11-22 "Recent I don't see the clear option": Clear empties the list and
+// it stays empty after the page is opened again.
+test("recent searches: clearing empties the saved list for good", async () => {
+  const { clearRecent, readRecent, saveRecent } = await import("./leapOi.js");
+  const store = new Map();
+  globalThis.window = { localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) } };
+  try {
+    saveRecent(["SMCI", "NVDA"]);
+    assert.deepEqual(readRecent(), ["SMCI", "NVDA"]);
+    assert.deepEqual(clearRecent(), []);
+    assert.deepEqual(readRecent(), [], "still empty when read back");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 
 // 2026-11-20: the NVDA card at 5:39 PM ET showed Mid 1.95 from a 12:53 PM read. A read older than 15 minutes says its time.
 test("priceAgeText names the read time once the prices are more than 15 minutes old", () => {
