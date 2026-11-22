@@ -74,6 +74,8 @@ def test_the_page_reads_schwab_in_the_background_then_shows_the_board(world, tmp
     assert body["entries"] and all(r["entry"] for r in body["entries"])
     assert again_status == 200 and sorted(world) == ["AAPL", "NVDA"]       # one Schwab read per ticker
     assert [t["ticker"] for t in body["byTicker"]] == ["AAPL", "NVDA"] and body["byTicker"][0]["call"]["strike"] == 200.0
+    # By sector (2026-11-22): each line carries the scanner's industry group.
+    assert {t["ticker"]: t["sector"] for t in body["byTicker"]} == {"AAPL": "Tech-HW", "NVDA": "Semis"}
     assert (tmp_path / "long_oi_cache" / "NVDA.json.gz").exists()
     capture = os.environ.get("LEAP_OI_CAPTURE")
     if capture:

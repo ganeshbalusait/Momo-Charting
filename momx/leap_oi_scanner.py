@@ -266,7 +266,9 @@ def _ticker_summary(ticker: str, spot: Any, found: list[dict]) -> dict:
     def top(side: str, entry: bool = False) -> dict | None:
         pool = [r for r in found if r["side"] == side and (r.get("entry") or not entry)]
         return max(pool, key=lambda r: (r["oi"], r["volume"]), default=None)
-    return {"ticker": ticker, "spot": spot, "call": top("CALL"), "put": top("PUT"),
+    from momx import industries   # the scanner's industry groups; By sector on the page (2026-11-22)
+    return {"ticker": ticker, "spot": spot, "sector": industries.industry_for(ticker) or "Other",
+            "call": top("CALL"), "put": top("PUT"),
             "entryCall": top("CALL", True), "entryPut": top("PUT", True),
             "callOi": sum(r["oi"] for r in found if r["side"] == "CALL"),
             "putOi": sum(r["oi"] for r in found if r["side"] == "PUT")}

@@ -161,6 +161,15 @@ def test_whole_watchlist_by_ticker_list_and_its_own_allowance(tmp_path, fake, mo
     assert long_oi._MEMORY == {}                                              # full chains are not held in memory
 
 
+def test_each_by_ticker_line_names_its_sector(tmp_path, fake):
+    """2026-11-22 "can we add sector also which one have more leaps option": the scanner's own industry groups
+    (Semis, Software, Fintech...), "Other" for a ticker the table does not list."""
+    out = scanner.board(["NVDA", "PLTR", "SOFI", "AMD"], tmp_path, NOW, months_from=1, wait=True)
+    assert {t["ticker"]: t["sector"] for t in out["byTicker"]} == {
+        "AMD": "Semis", "NVDA": "Semis", "PLTR": "Software", "SOFI": "Fintech"}
+    assert scanner._ticker_summary("ZZZQ", 50.0, [])["sector"] == "Other"
+
+
 def test_compact_copy_keeps_every_row_the_page_can_show(tmp_path, fake):
     full = scanner.board(["NVDA"], tmp_path, NOW, months_from=1, wait=True)
     scanner.reset()

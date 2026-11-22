@@ -192,6 +192,31 @@ export function saveRecent(list) {
   try { window.localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch { /* private window */ }
 }
 
+// By sector (2026-11-22, "can we add sector also which one have more leaps option? Sector can expand also and
+// sector have top [OI] with ticker?"). Sectors are the scanner's industry groups (momx/industries.py, sent as
+// line.sector), ranked by total open interest (calls + puts); inside each, tickers ranked the same way, each with
+// its single biggest contract.
+export function sectorGroups(byTicker) {
+  const groups = new Map();
+  (Array.isArray(byTicker) ? byTicker : []).forEach((line) => {
+    if (!line || !line.ticker) return;
+    const sector = line.sector || "Other";
+    const callOi = Number(line.callOi) || 0;
+    const putOi = Number(line.putOi) || 0;
+    const top = [line.call, line.put].filter(Boolean).sort((a, b) => (Number(b.oi) || 0) - (Number(a.oi) || 0))[0] || null;
+    if (!groups.has(sector)) groups.set(sector, { sector, callOi: 0, putOi: 0, oi: 0, tickers: [] });
+    const group = groups.get(sector);
+    group.callOi += callOi;
+    group.putOi += putOi;
+    group.oi += callOi + putOi;
+    group.tickers.push({ ticker: line.ticker, line, callOi, putOi, oi: callOi + putOi, top });
+  });
+  const byOi = (a, b) => b.oi - a.oi;
+  return [...groups.values()]
+    .map((group) => ({ ...group, tickers: group.tickers.sort((a, b) => byOi(a, b) || a.ticker.localeCompare(b.ticker)) }))
+    .sort((a, b) => byOi(a, b) || a.sector.localeCompare(b.sector));
+}
+
 // The Recent row's Clear button (2026-11-22 "Recent I don't see the clear option").
 export function clearRecent() {
   saveRecent([]);

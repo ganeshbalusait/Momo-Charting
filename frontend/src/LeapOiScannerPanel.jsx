@@ -5,7 +5,7 @@ import "./simpleWhy.css";
 import {
   DELTAS, RANGES, SIDES, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi,
   BYTK_SORTS, boardTotals, cleanTicker, costText, dominance, filterByTicker, leftOutText, midText, searchNote, sortByTicker, spreadText, priceText, progressText, readAtText, scannerUrl,
-  addRecent, clearRecent, contractFacts, moveText, oiChangeText, oiChangeTone, priceAgeText, readRecent, saveRecent, sinceText,
+  addRecent, clearRecent, contractFacts, sectorGroups, moveText, oiChangeText, oiChangeTone, priceAgeText, readRecent, saveRecent, sinceText,
 } from "./leapOi.js";
 import { LIVE_PRICE_POLL_MS, awayFrom, changeTone, quotesFrom, stockPrice, stockText, tickersOnScreen } from "./leapLivePrice.js";
 import { flowCell } from "./leapFlow.js";
@@ -233,6 +233,49 @@ export function LeftOut({ excluded, minPrice, className }) {
       <summary>{text}</summary>
       {(excluded || []).map((x) => x.ticker).join(", ")}
     </details>
+  );
+}
+
+// By sector (2026-11-22, "can we add sector also which one have more leaps option? Sector can expand also and
+// sector have top [OI] with ticker?"): sectors ranked by total LEAP open interest, tap one to see its tickers
+// ranked the same way, each with its biggest contract (tap it for the contract card).
+function BySector({ list, onOpenChart, onPick }) {
+  const groups = sectorGroups(list);
+  if (!groups.length) return null;
+  return (
+    <>
+      <h3>By sector</h3>
+      <p className="leapoi-sub">Which sector has the most open interest in these options. Tap a sector to see its tickers and each one's biggest contract.</p>
+      <div className="leapoi-sectors" data-testid="leap-oi-sectors">
+        {groups.map((group, index) => (
+          <details key={group.sector} className="leapoi-card leapoi-sector" data-testid="leap-oi-sector" data-sector={group.sector}>
+            <summary>
+              <span className="leapoi-sector-rank">{index + 1}</span>
+              <b className="leapoi-sector-name">{group.sector}</b>
+              <small className="leapoi-dim">{group.tickers.length} {group.tickers.length === 1 ? "ticker" : "tickers"} · OI {formatOi(group.oi)}</small>
+              <small className="leapoi-dim">Calls {formatOi(group.callOi)} · Puts {formatOi(group.putOi)}</small>
+            </summary>
+            <Dominance calls={group.callOi} puts={group.putOi} compact />
+            <ol className="leapoi-sector-tickers">
+              {group.tickers.map((item) => (
+                <li key={item.ticker} data-testid="leap-oi-sector-ticker">
+                  <div className="leapoi-card-head">
+                    <b className="leapoi-tk">{item.ticker}</b>
+                    <small className="leapoi-dim">OI {formatOi(item.oi)} · Calls {formatOi(item.callOi)} · Puts {formatOi(item.putOi)}</small>
+                    <button type="button" onClick={() => onOpenChart?.(item.ticker)}>Chart ›</button>
+                  </div>
+                  {item.top ? (
+                    <dl className="leapoi-card-grid leapoi-bytk-grid">
+                      <Pick label="Biggest contract" row={item.top} onPick={onPick} />
+                    </dl>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          </details>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -524,6 +567,7 @@ export default function LeapOiScannerPanel({ onOpenChart, onOpenOptions }) {
             ? "Green or red next to open interest: the change since the previous day's read (new contracts opened or closed)."
             : "Open interest change since the previous day shows once a second day has been read."}</p>
           <Rows rows={payload.rows || []} onOpenChart={onOpenChart} onPick={setPicked} testId="leap-oi-row" quotes={quotes} />
+          <BySector list={payload.byTicker || []} onOpenChart={onOpenChart} onPick={setPicked} />
           <ByTicker list={payload.byTicker || []} onOpenChart={onOpenChart} onPick={setPicked} quotes={quotes} />
           {errors.length ? <p className="leapoi-sub">Not read: {errors.map((t) => t.ticker).join(", ")} ({errors[0].error})</p> : null}
           <LeftOut excluded={payload.excluded} minPrice={payload.minPrice} className="leapoi-sub" />

@@ -50,7 +50,9 @@ for (const [label, viewport] of WIDTHS) {
       // 2026-11-17 "who is dominating call or put?": one board bar that names the leader, and one per ticker card.
       const dom = view.locator("[data-testid='dominance']");
       assert.match(await dom.first().innerText(), /Calls vs puts on this board[\s\S]*(Calls lead|Puts lead|About even) · [\s\S]*Calls [\d,.KM]+ · Puts [\d,.KM]+/);
-      assert.equal(await dom.count(), 1 + real.byTicker.length);
+      // One on the board, one per By-sector card (2026-11-22), one per By-ticker card.
+      const sectorCount = new Set(real.byTicker.map((t) => t.sector || "Other")).size;
+      assert.equal(await dom.count(), 1 + sectorCount + real.byTicker.length);
       // 2026-11-17 "give me mid prize also": every row shows the mid and what one contract costs at it.
       const top = real.rows[0];
       const mid = (Math.round(((top.bid + top.ask) / 2) * 100) / 100).toFixed(2);
@@ -279,4 +281,45 @@ for (const [label, viewport] of WIDTHS) {
       assert.deepEqual(app.writes.filter((w) => w.path !== "/api/news-feed/refresh"), []);
     });
   });
+}
+
+// 2026-11-22 "can we add sector also which one have more leaps option? Sector can expand also and sector have
+// top [OI] with ticker?"
+for (const [label, viewport] of WIDTHS) {
+  const phone = viewport === PHONE;
+  const size = viewport ? { viewport } : {};
+  e2eTest(`LEAP OI Scanner by sector at ${label}: ranked by open interest, tap to see tickers and their biggest contract`, async () => {
+    const reads = {
+      "GET /api/leap-oi-scanner": { json: real },
+      "GET /api/watchlist": { json: { tickers: ["PLTR", "NVDA", "AMD"] } },
+    };
+    await withApp({ view: "LEAP OI Scanner", ...size, fakeReads: reads }, async (app) => {
+      const { page } = app;
+      const view = page.locator(VIEW);
+      const sectors = view.locator("[data-testid='leap-oi-sector']");
+      await sectors.first().waitFor({ timeout: 60_000 });
+      // Ranked by total open interest, biggest first.
+      const totals = {};
+      real.byTicker.forEach((t) => { const s = t.sector || "Other"; totals[s] = (totals[s] || 0) + t.callOi + t.putOi; });
+      const expected = Object.keys(totals).sort((a, b) => totals[b] - totals[a] || a.localeCompare(b));
+      assert.deepEqual(await sectors.evaluateAll((nodes) => nodes.map((n) => n.dataset.sector)), expected);
+      // Closed until tapped; tapping shows its tickers, biggest open interest first, each with its biggest contract.
+      const first = sectors.first();
+      assert.equal(await first.locator("[data-testid='leap-oi-sector-ticker']").first().isVisible(), false);
+      const summary = first.locator("summary");
+      await (phone ? summary.tap() : summary.click());
+      const tickers = first.locator("[data-testid='leap-oi-sector-ticker']");
+      await tickers.first().waitFor({ state: "visible", timeout: 5_000 });
+      const inSector = real.byTicker.filter((t) => (t.sector || "Other") === expected[0])
+        .sort((a, b) => (b.callOi + b.putOi) - (a.callOi + a.putOi)).map((t) => t.ticker);
+      assert.deepEqual(await tickers.locator(".leapoi-tk").allInnerTexts(), inSector);
+      assert.match(await tickers.first().innerText(), /Biggest contract[\s\S]*(Call|Put)[\s\S]*OI/);
+      // The contract opens its card, like every other contract on the page.
+      const pick = tickers.first().getByRole("button", { name: / details$/ }).first();
+      await (phone ? pick.tap() : pick.click());
+      await page.getByTestId("contract-sheet").waitFor({ timeout: 5_000 });
+      if (phone) assert.equal(await overflowsSideways(page), false);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }, { timeout: 180_000 });
 }

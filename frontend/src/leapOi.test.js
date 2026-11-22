@@ -198,6 +198,34 @@ test("recent searches: newest first, no repeats, junk dropped, at most 5", () =>
   assert.deepEqual(addRecent(null, "pltr"), ["PLTR"]);
 });
 
+// 2026-11-22 "can we add sector also which one have more leaps option? Sector can expand also and sector have
+// top [OI] with ticker?": sectors ranked by total LEAP open interest, each with its tickers ranked the same way.
+test("by sector: sectors ranked by open interest, tickers inside ranked, each with its biggest contract", async () => {
+  const { sectorGroups } = await import("./leapOi.js");
+  const line = (ticker, sector, callOi, putOi, callStrike, putStrike) => ({
+    ticker, sector, callOi, putOi,
+    call: { ticker, side: "CALL", strike: callStrike, oi: callOi / 2 },
+    put: { ticker, side: "PUT", strike: putStrike, oi: putOi / 2 },
+  });
+  const groups = sectorGroups([
+    line("PLTR", "Software", 300, 100, 200, 150),
+    line("NVDA", "Semis", 5000, 2000, 200, 140),
+    line("AMD", "Semis", 900, 1200, 250, 150),
+    line("SOFI", "Fintech", 50, 10, 30, 20),
+    { ticker: "ZZZQ", callOi: 5, putOi: 0, call: null, put: null },
+  ]);
+  assert.deepEqual(groups.map((g) => g.sector), ["Semis", "Software", "Fintech", "Other"]);
+  const semis = groups[0];
+  assert.equal(semis.oi, 9100);
+  assert.equal(semis.callOi, 5900);
+  assert.equal(semis.putOi, 3200);
+  assert.deepEqual(semis.tickers.map((t) => t.ticker), ["NVDA", "AMD"]);
+  assert.equal(semis.tickers[0].top.side, "CALL", "NVDA's biggest contract is its call");
+  assert.equal(semis.tickers[1].top.side, "PUT", "AMD's biggest contract is its put");
+  assert.equal(groups[3].tickers[0].top, null, "a ticker with no contract still shows");
+  assert.deepEqual(sectorGroups(null), []);
+});
+
 // 2026-11-22 "Recent I don't see the clear option": Clear empties the list and
 // it stays empty after the page is opened again.
 test("recent searches: clearing empties the saved list for good", async () => {
