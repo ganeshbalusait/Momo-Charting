@@ -111,8 +111,8 @@ def test_monthly_breakout_list_uses_the_same_1_0_and_0_5_gates(tmp_path, monkeyp
     # 2026-11-20, "Use 'all of the following'": the breakout is the list's ALL
     # condition and the EMA lists' stricter Price_Change gates apply too.
     with running_worker(tmp_path, monkeypatch) as worker:
-        service._build_once("Monthly Breakout")
-        status, body = worker.get("/api/momx-scanner?list=Monthly%20Breakout&matches=0")
+        service._build_once("Monthly Bull Breakout")
+        status, body = worker.get("/api/momx-scanner?list=Monthly%20Bull%20Breakout&matches=0")
     assert status == 200, body
     rows = _rows(body)
     assert sorted(rows) == ["QQQ", "SPY"]

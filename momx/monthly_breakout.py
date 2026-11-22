@@ -50,13 +50,10 @@ swings are 2 bars either side), run on the bars the EMA refresher already
 fetches for that timeframe (Weekly ~3 years, Daily ~14 months). The earlier
 back-test found NO edge on weekly or daily breakouts; the panel says so.
 
-ONE LIST (2026-11-21, Ganesh: "Keep one list same as other watchlist for
-bull/bear"): Breakout and Breakdown were two lists; now one, "<Timeframe>
-Breakout", holds every Watchlist ticker that broke EITHER way (each member's
-signal carries its ``direction``). Like any other watchlist, the board's
-BULL / BEAR button picks the scan. One chart setting for the list; it starts
-from the old bull list's saved setting. The old "... Breakdown" names resolve
-to the list (:func:`legacy_alias`) so a saved selection does not 400.
+NAMES (2026-11-21, Ganesh: "only change the name bull and bear breakout"):
+the lists are "<Timeframe> Bull Breakout" and "<Timeframe> Bear Breakout"
+(were "... Breakout" / "... Breakdown"). An old name - a saved active list or
+a phone's remembered tab - resolves to its list (:func:`legacy_alias`).
 """
 
 from __future__ import annotations
@@ -65,13 +62,13 @@ import bisect
 import os
 from typing import Any, Iterable, Mapping, Sequence
 
-#: The one list (2026-11-21); the name is "<Timeframe> Breakout".
-LIST_WORD = "Breakout"
-BULL_LIST = "Monthly Breakout"
-#: what the server sends as the list's ``breakout`` (both directions).
-BOTH = "both"
-#: the word per break direction (chips, notes, the old list names).
-WORDS = {"up": "Breakout", "down": "Breakdown"}
+BULL_LIST = "Monthly Bull Breakout"
+BEAR_LIST = "Monthly Bear Breakout"
+DIRECTIONS = {BULL_LIST: "up", BEAR_LIST: "down"}
+#: list word per direction; the name is "<Timeframe> <word>".
+WORDS = {"up": "Bull Breakout", "down": "Bear Breakout"}
+#: the names before 2026-11-21, for :func:`legacy_alias`.
+OLD_WORDS = {"up": "Breakout", "down": "Breakdown"}
 #: picker order, same as the EMA lists' (momx/ema_touch.TIMEFRAMES).
 TIMEFRAMES = ("Monthly", "Weekly", "Daily")
 DEFAULT_TIMEFRAME = "Monthly"
@@ -100,37 +97,39 @@ def enabled() -> bool:
     return os.environ.get("AGX_MOMX_EMA_LISTS", "1").strip() != "0"
 
 
-def list_name(tf: str | None = None) -> str:
-    return f"{tf or timeframe()} {LIST_WORD}"
+def list_name(direction: str, tf: str | None = None) -> str:
+    return f"{tf or timeframe(direction)} {WORDS[direction]}"
 
 
-SETTING_KEY = "breakout:both"
-#: before 2026-11-21 each list had its own; the bull list's is the start value.
-_OLD_SETTING_KEY = "breakout:up"
+def _setting_key(direction: str) -> str:
+    return f"breakout:{direction}"
 
 
-def timeframe() -> str:
-    """The chart the list reads (default Monthly)."""
+def timeframe(direction: str) -> str:
+    """The chart the list reads (saved per direction; default Monthly)."""
     from momx import ema_touch
 
-    tf = ema_touch.saved_setting(SETTING_KEY) or ema_touch.saved_setting(_OLD_SETTING_KEY)
+    tf = ema_touch.saved_setting(_setting_key(direction))
     return tf if tf in TIMEFRAMES else DEFAULT_TIMEFRAME
 
 
-def set_timeframe(tf: Any) -> str:
-    """Save the list's chart; returns its new name."""
+def set_timeframe(direction: Any, tf: Any) -> str:
+    """Save the chart for one list (``"up"`` / ``"down"``); returns its new name."""
     from momx import ema_touch
 
+    side = str(direction or "").strip().lower()
+    if side not in WORDS:
+        raise ValueError(f"Unknown breakout list {direction!r}.")
     choice = next((t for t in TIMEFRAMES if t.lower() == str(tf or "").strip().lower()), None)
     if choice is None:
         raise ValueError(f"Timeframe must be one of {', '.join(TIMEFRAMES)}.")
-    ema_touch.save_setting(SETTING_KEY, choice)
-    return list_name(choice)
+    ema_touch.save_setting(_setting_key(side), choice)
+    return list_name(side, choice)
 
 
 def current_lists() -> dict[str, str]:
-    """Visible list name -> ``"both"`` (one list since 2026-11-21)."""
-    return {list_name(): BOTH} if enabled() else {}
+    """Visible list name -> direction, in picker order."""
+    return {list_name(d): d for d in WORDS} if enabled() else {}
 
 
 def list_names() -> list[str]:
@@ -138,28 +137,30 @@ def list_names() -> list[str]:
 
 
 def parse_name(name: Any) -> tuple[str, str] | None:
-    """"weekly breakout" -> ("both", "Weekly"); anything else -> None."""
+    """"weekly breakdown" -> ("down", "Weekly"); anything else -> None."""
     wanted = str(name or "").strip().lower()
-    for tf in TIMEFRAMES:
-        if wanted == list_name(tf).lower():
-            return BOTH, tf
-    return None
-
-
-def legacy_alias(name: Any) -> str | None:
-    """An old Breakout / Breakdown list name (any timeframe) -> today's list."""
-    if not enabled():
-        return None
-    wanted = str(name or "").strip().lower()
-    for word in WORDS.values():
+    for direction in WORDS:
         for tf in TIMEFRAMES:
-            if wanted == f"{tf} {word}".lower():
-                return list_name()
+            if wanted == list_name(direction, tf).lower():
+                return direction, tf
     return None
 
 
 def is_derived(name: Any) -> bool:
     return enabled() and parse_name(name) is not None
+
+
+def legacy_alias(name: Any) -> str | None:
+    """An old list name ("Monthly Breakdown", any timeframe) -> today's list
+    for that direction ("Monthly Bear Breakout" on its saved chart)."""
+    if not enabled():
+        return None
+    wanted = str(name or "").strip().lower()
+    for direction, word in OLD_WORDS.items():
+        for tf in TIMEFRAMES:
+            if wanted == f"{tf} {word}".lower():
+                return list_name(direction)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -396,31 +397,19 @@ CACHE_KEY = cache_key("Monthly")
 
 
 def details(symbols: Iterable[str], name: str) -> dict[str, dict]:
-    """``{symbol: signal}`` for the list's members - what the panel shows.
-
-    A member broke up OR down; its signal says which (``direction``). Both
-    on one ticker (different bars): the newer break wins, up on a tie.
-    """
+    """``{symbol: signal}`` for a list's members - what the panel shows."""
     from momx import ema_touch
 
     parsed = parse_name(name)
     if not enabled() or parsed is None:
         return {}
-    _, tf = parsed
-    out: dict[str, dict] = {}
-    for symbol, state in ema_touch.cached_states(symbols, cache_key(tf)).items():
-        up, down = (state or {}).get("up"), (state or {}).get("down")
-        if up and down:
-            pick = down if str(down.get("period") or "") > str(up.get("period") or "") else up
-        else:
-            pick = up or down
-        if pick:
-            out[symbol] = pick
-    return out
+    direction, tf = parsed
+    states = ema_touch.cached_states(symbols, cache_key(tf))
+    return {s: state[direction] for s, state in states.items() if (state or {}).get(direction)}
 
 
 def members(symbols: Iterable[str], name: str) -> list[str]:
-    """The given symbols (in their order) with a break either way."""
+    """The given symbols (in their order) with a break in the list's direction."""
     return list(details(symbols, name))
 
 
@@ -495,9 +484,8 @@ def chart_patterns(symbol: Any, now: Any = None, fetch: Any = None) -> dict:
 
 __all__ = [
     "chart_patterns",
-    "BOTH",
+    "BEAR_LIST",
     "BULL_LIST",
-    "LIST_WORD",
     "legacy_alias",
     "CACHE_KEY",
     "PATTERN_LABELS",

@@ -1825,7 +1825,7 @@ def _read_list_metadata(path: Any = None) -> dict:
             requested = _migration_target(symbols)
     active = next((name for name in names if name.lower() == requested.lower()), None)
     if active is None:
-        # A saved "Monthly Breakdown" is the one Breakout list now (2026-11-21).
+        # A saved "Monthly Breakdown" is "Monthly Bear Breakout" now (2026-11-21).
         alias = monthly_breakout.legacy_alias(requested)
         active = alias if alias in names else None
     active = active or (DEFAULT_LIST_NAME if DEFAULT_LIST_NAME in names else next(iter(names), DEFAULT_LIST_NAME))
@@ -1926,7 +1926,7 @@ def resolve_list_name(
     for existing in lists:
         if existing.lower() == wanted.lower():
             return existing
-    # "Monthly Breakdown" etc. became the one Breakout list (2026-11-21).
+    # The Breakout lists' old names (2026-11-21 rename to Bull / Bear Breakout).
     alias = monthly_breakout.legacy_alias(wanted)
     if alias and alias in lists:
         return alias

@@ -1,4 +1,4 @@
-"""Monthly Breakout / Monthly Breakdown lists (momx/monthly_breakout.py).
+"""Monthly Bull Breakout / Monthly Bear Breakout lists (momx/monthly_breakout.py).
 
 Unit layer: the four patterns, both directions, the EMA filter, live vs
 confirmed, no look-ahead, and the list plumbing in momx/board.py and
@@ -148,16 +148,11 @@ def test_names(monkeypatch, tmp_path):
     monkeypatch.setenv("AGX_MOMX_EMA_LISTS", "1")
     # Never his live setting file (he had switched the bull list to Daily).
     monkeypatch.setenv("AGX_MOMX_EMA_TF_PATH", str(tmp_path / "momx_ema_touch_tf.json"))
-    # 2026-11-21 "Keep one list same as other watchlist for bull/bear".
-    assert mb.list_names() == ["Monthly Breakout"]
-    assert mb.parse_name("monthly breakout") == ("both", "Monthly")
-    assert mb.parse_name("Weekly Breakout") == ("both", "Weekly")
-    assert mb.parse_name("daily breakdown") is None, "no Breakdown list any more"
+    assert mb.list_names() == ["Monthly Bull Breakout", "Monthly Bear Breakout"]
+    assert mb.parse_name("monthly bear breakout") == ("down", "Monthly")
+    assert mb.parse_name("Weekly Bull Breakout") == ("up", "Weekly")
+    assert mb.parse_name("daily bear breakout") == ("down", "Daily")
     assert mb.parse_name("Monthly") is None and mb.parse_name("Hourly Breakout") is None
-    # An old saved name still lands on the one list.
-    assert mb.legacy_alias("Monthly Breakdown") == "Monthly Breakout"
-    assert mb.legacy_alias("daily breakout") == "Monthly Breakout"
-    assert mb.legacy_alias("Watchlist") is None
 
 
 # ---------------------------------------------------------------------------
@@ -194,19 +189,9 @@ def lists_on(tmp_path, monkeypatch):
 
 def test_lists_are_the_watchlist_members_with_a_break(lists_on):
     names = board.list_names(lists_on)
-    assert names[2:5] == ["21 EMA Touch Monthly", "50 EMA Touch Monthly", "Monthly Breakout"]
-    assert "Monthly Breakdown" not in names
-    # One list, both directions: AAA broke up, CCC broke down.
-    assert board.load_universe("Monthly Breakout", path=lists_on) == ["AAA", "CCC"]
-    # His saved "Monthly Breakdown" selection resolves to it (no 400).
-    assert board.load_universe("monthly breakdown", path=lists_on) == ["AAA", "CCC"]
-
-
-def test_an_old_active_breakdown_list_opens_the_one_list(lists_on):
-    doc = json.loads(lists_on.read_text())
-    doc["active"] = "Monthly Breakdown"
-    lists_on.write_text(json.dumps(doc))
-    assert board.active_list(path=lists_on) == "Monthly Breakout"
+    assert names[2:6] == ["21 EMA Touch Monthly", "50 EMA Touch Monthly", "Monthly Bull Breakout", "Monthly Bear Breakout"]
+    assert board.load_universe("Monthly Bull Breakout", path=lists_on) == ["AAA"]
+    assert board.load_universe("monthly bear breakout", path=lists_on) == ["CCC"]
 
 
 def test_stale_cache_gives_empty_lists(lists_on):
@@ -214,32 +199,31 @@ def test_stale_cache_gives_empty_lists(lists_on):
     doc["fetchedAt"] = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
     ema_touch.cache_path().write_text(json.dumps(doc))
     ema_touch._CACHE_MTIME = None
-    assert board.load_universe("Monthly Breakout", path=lists_on) == []
+    assert board.load_universe("Monthly Bull Breakout", path=lists_on) == []
 
 
 def test_breakout_lists_are_never_saved_and_refuse_edits(lists_on):
-    board.set_active_list("Monthly Breakout", path=lists_on)
+    board.set_active_list("Monthly Bull Breakout", path=lists_on)
     saved = json.loads(lists_on.read_text())
-    assert "Monthly Breakout" not in saved["lists"]
-    assert board.active_list(path=lists_on) == "Monthly Breakout"
+    assert "Monthly Bull Breakout" not in saved["lists"]
+    assert board.active_list(path=lists_on) == "Monthly Bull Breakout"
     for call in (
-        lambda: board.add_symbols("ZZZ", "Monthly Breakout", path=lists_on),
-        lambda: board.remove_symbols("AAA", "Monthly Breakout", path=lists_on),
-        lambda: board.save_universe(["ZZZ"], "Monthly Breakout", path=lists_on),
-        lambda: board.rename_list("Monthly Breakout", "Mine", path=lists_on),
-        lambda: board.delete_list("Monthly Breakout", path=lists_on),
+        lambda: board.add_symbols("ZZZ", "Monthly Bull Breakout", path=lists_on),
+        lambda: board.remove_symbols("AAA", "Monthly Bull Breakout", path=lists_on),
+        lambda: board.save_universe(["ZZZ"], "Monthly Bear Breakout", path=lists_on),
+        lambda: board.rename_list("Monthly Bear Breakout", "Mine", path=lists_on),
+        lambda: board.delete_list("Monthly Bear Breakout", path=lists_on),
     ):
         with pytest.raises(board.UnknownListError, match="chart-pattern break"):
             call()
-    assert board.is_builtin("Monthly Breakout") and board.is_derived("Weekly Breakout")
-    assert not board.is_derived("Monthly Breakdown")
+    assert board.is_builtin("Monthly Bull Breakout") and board.is_derived("Monthly Bear Breakout")
     with pytest.raises(board.UnknownListError):
-        board.save_universe(["ZZZ"], "Monthly Breakout", path=lists_on, create=True)
+        board.save_universe(["ZZZ"], "Monthly Bull Breakout", path=lists_on, create=True)
 
 
 def test_switched_off_means_no_lists(lists_on, monkeypatch):
     monkeypatch.setenv("AGX_MOMX_EMA_LISTS", "0")
-    assert "Monthly Breakout" not in board.list_names(lists_on)
+    assert "Monthly Bull Breakout" not in board.list_names(lists_on)
 
 
 def test_service_lists_carry_the_pattern_details_and_the_derived_flag(lists_on, monkeypatch):
@@ -247,13 +231,11 @@ def test_service_lists_carry_the_pattern_details_and_the_derived_flag(lists_on, 
 
     monkeypatch.setattr(board, "universe_path", lambda: lists_on)
     entries = {e["name"]: e for e in service.lists()["lists"]}
-    assert "Monthly Breakdown" not in entries
-    one = entries["Monthly Breakout"]
-    assert one["breakout"] == "both"
-    assert sorted(one["breakouts"]) == ["AAA", "CCC"]
-    assert one["breakouts"]["AAA"]["pattern"] == "BOTTOM" and one["breakouts"]["AAA"]["direction"] == "up"
-    assert one["breakouts"]["CCC"]["pattern"] == "MIDDLE" and one["breakouts"]["CCC"]["direction"] == "down"
-    assert one["derived"] and one["builtIn"] and one["count"] == 2
+    bull, bear = entries["Monthly Bull Breakout"], entries["Monthly Bear Breakout"]
+    assert bull["breakout"] == "up" and bear["breakout"] == "down"
+    assert list(bull["breakouts"]) == ["AAA"] and bull["breakouts"]["AAA"]["pattern"] == "BOTTOM"
+    assert list(bear["breakouts"]) == ["CCC"] and bear["breakouts"]["CCC"]["pattern"] == "MIDDLE"
+    assert bull["derived"] and bull["builtIn"] and bull["count"] == 1
     assert entries["21 EMA Touch Monthly"]["derived"] is True
     assert entries["Watchlist"]["derived"] is False and "breakout" not in entries["Watchlist"]
 
@@ -320,35 +302,18 @@ def test_daily_confirmed_uses_the_previous_bar_it_is_given():
     assert mb.breakout_state(bars, later, later) == {"up": None, "down": None}
 
 
-def test_the_chart_setting_renames_the_one_list(lists_on):
-    assert mb.list_names() == ["Monthly Breakout"]
-    assert mb.set_timeframe("weekly") == "Weekly Breakout"
-    assert mb.list_names() == ["Weekly Breakout"]
-    assert mb.set_timeframe("Daily") == "Daily Breakout"
-    assert mb.timeframe() == "Daily"
+def test_the_chart_setting_is_per_list_and_renames_it(lists_on):
+    assert mb.list_names() == ["Monthly Bull Breakout", "Monthly Bear Breakout"]
+    assert mb.set_timeframe("up", "weekly") == "Weekly Bull Breakout"
+    assert mb.list_names() == ["Weekly Bull Breakout", "Monthly Bear Breakout"]
+    assert mb.set_timeframe("down", "Daily") == "Daily Bear Breakout"
+    assert mb.timeframe("up") == "Weekly" and mb.timeframe("down") == "Daily"
     # The EMA lists' own setting in the same file is untouched.
     assert ema_touch.timeframe(21) == "Monthly"
     with pytest.raises(ValueError):
-        mb.set_timeframe("Hourly")
-
-
-def test_the_one_list_starts_from_the_old_bull_lists_chart(lists_on):
-    # He had the Breakout list on Daily before the merge.
-    ema_touch.save_setting("breakout:up", "Daily")
-    ema_touch.save_setting("breakout:down", "Monthly")
-    assert mb.list_names() == ["Daily Breakout"]
-    mb.set_timeframe("Weekly")
-    assert mb.timeframe() == "Weekly"
-
-
-def test_a_ticker_that_broke_both_ways_shows_its_newer_break(lists_on):
-    doc = json.loads(ema_touch.cache_path().read_text())
-    up = state(BASES["BOTTOM_up"])["up"]
-    down = state(BASES["MIDDLE_down"])["down"]
-    doc["symbols"]["BBB"][mb.CACHE_KEY] = {"up": dict(up, period="2026-09"), "down": dict(down, period="2026-10")}
-    ema_touch.cache_path().write_text(json.dumps(doc))
-    ema_touch._CACHE_MTIME = None
-    assert mb.details(["BBB"], "Monthly Breakout")["BBB"]["direction"] == "down"
+        mb.set_timeframe("up", "Hourly")
+    with pytest.raises(ValueError):
+        mb.set_timeframe("sideways", "Daily")
 
 
 def test_a_weekly_list_reads_the_weekly_verdicts(lists_on):
@@ -356,10 +321,10 @@ def test_a_weekly_list_reads_the_weekly_verdicts(lists_on):
     doc["symbols"]["BBB"][mb.cache_key("Weekly")] = state(BASES["BOTTOM_up"])
     ema_touch.cache_path().write_text(json.dumps(doc))
     ema_touch._CACHE_MTIME = None
-    mb.set_timeframe("Weekly")
-    assert "Weekly Breakout" in board.list_names(lists_on)
-    assert board.load_universe("Weekly Breakout", path=lists_on) == ["BBB"]
-    assert board.is_derived("Monthly Breakout") and board.is_derived("Daily Breakout")
+    mb.set_timeframe("up", "Weekly")
+    assert "Weekly Bull Breakout" in board.list_names(lists_on)
+    assert board.load_universe("Weekly Bull Breakout", path=lists_on) == ["BBB"]
+    assert board.is_derived("Monthly Bull Breakout") and board.is_derived("Daily Bear Breakout")
 
 
 def test_refresh_stores_a_verdict_for_every_timeframe(lists_on, monkeypatch):
@@ -382,11 +347,11 @@ def test_service_sends_the_dropdown_and_switches_the_list(lists_on, monkeypatch)
     monkeypatch.setattr(service, "start_warmer", lambda: None)
     monkeypatch.setattr(service, "refresh_now", lambda name=None: None)
     entries = {e["name"]: e for e in service.lists()["lists"]}
-    assert entries["Monthly Breakout"]["timeframe"] == "Monthly"
-    assert entries["Monthly Breakout"]["timeframes"] == ["Monthly", "Weekly", "Daily"]
-    board.set_active_list("Monthly Breakout", path=lists_on)
+    assert entries["Monthly Bull Breakout"]["timeframe"] == "Monthly"
+    assert entries["Monthly Bull Breakout"]["timeframes"] == ["Monthly", "Weekly", "Daily"]
+    board.set_active_list("Monthly Bull Breakout", path=lists_on)
     out = service.set_breakout_timeframe("up", "Daily")
-    assert out == {"ok": True, "list": "Daily Breakout", "previous": "Monthly Breakout", "active": "Daily Breakout"}
+    assert out == {"ok": True, "list": "Daily Bull Breakout", "previous": "Monthly Bull Breakout", "active": "Daily Bull Breakout"}
     assert service.set_breakout_timeframe("up", "Hourly")["ok"] is False
     assert service.set_breakout_timeframe("left", "Daily")["ok"] is False
 
@@ -482,3 +447,18 @@ def test_chart_patterns_refuse_junk_and_survive_a_failed_fetch(lists_on):
     out = mb.chart_patterns("QQQQ", fetch=boom)
     assert out["ok"] is False and "QQQQ" in out["error"]
     assert "QQQQ" not in mb._ON_DEMAND
+
+
+# 2026-11-21 "only change the name bull and bear breakout": the old names
+# (a saved active list, a phone's remembered tab) open the renamed list.
+def test_old_names_open_the_renamed_lists(lists_on):
+    assert mb.legacy_alias("Monthly Breakdown") == "Monthly Bear Breakout"
+    assert mb.legacy_alias("monthly breakout") == "Monthly Bull Breakout"
+    assert mb.legacy_alias("Daily Breakdown") == "Monthly Bear Breakout", "lands on the list's saved chart"
+    assert mb.legacy_alias("Watchlist") is None and mb.legacy_alias("Monthly Bull Breakout") is None
+    assert board.load_universe("Monthly Breakdown", path=lists_on) == ["CCC"]
+    assert board.load_universe("Monthly Breakout", path=lists_on) == ["AAA"]
+    doc = json.loads(lists_on.read_text())
+    doc["active"] = "Monthly Breakdown"
+    lists_on.write_text(json.dumps(doc))
+    assert board.active_list(path=lists_on) == "Monthly Bear Breakout"
