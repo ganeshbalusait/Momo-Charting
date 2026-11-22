@@ -3,6 +3,11 @@
 // The server sends, per list, `breakout: "up"|"down"`, `timeframe`, and
 // `breakouts: {SYMBOL: {pattern, label, status, period, level, target, ...}}`;
 // this turns that into the one-line chips under the list bar.
+//
+// 2026-11-21 "Keep one list same as other watchlist for bull/bear": ONE list,
+// "<Timeframe> Breakout", `breakout: "both"`; each member's signal carries its
+// own `direction` (up = breakout, down = breakdown) and the board's BULL /
+// BEAR button picks the scan, like every other watchlist.
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -47,24 +52,29 @@ function tfOf(meta) {
   return tf === "Weekly" || tf === "Daily" ? tf : "Monthly";
 }
 
-// The chart a ticker clicked on a Breakout / Breakdown list opens on
-// ("D" / "W" / "M"), or null for every other list (they keep the chart's own).
+export function isBreakoutList(meta) {
+  return Boolean(meta) && (meta.breakout === "both" || meta.breakout === "up" || meta.breakout === "down");
+}
+
+// The chart a ticker clicked on the Breakout list opens on ("D" / "W" / "M"),
+// or null for every other list (they keep the chart's own).
 export function chartTimeframeKey(meta) {
-  if (!meta || (meta.breakout !== "up" && meta.breakout !== "down")) return null;
+  if (!isBreakoutList(meta)) return null;
   return { Monthly: "M", Weekly: "W", Daily: "D" }[meta.timeframe || "Monthly"] || null;
 }
 
 // The body for POST /api/momx-scanner/ema-timeframe, or null.
 export function timeframeRequest(meta, timeframe) {
   if (!meta || !timeframe) return null;
-  if (meta.breakout === "up" || meta.breakout === "down") return { breakout: meta.breakout, timeframe };
+  if (isBreakoutList(meta)) return { breakout: meta.breakout, timeframe };
   if (meta.emaLength) return { length: meta.emaLength, timeframe };
   return null;
 }
 
 export function breakoutEmpty(meta) {
-  const up = meta && meta.breakout === "up";
-  return `No ${tfOf(meta).toLowerCase()} ${up ? "breakouts" : "breakdowns"} on the Watchlist right now.`;
+  const side = meta && meta.breakout;
+  const what = side === "up" ? "breakouts" : side === "down" ? "breakdowns" : "breakouts or breakdowns";
+  return `No ${tfOf(meta).toLowerCase()} ${what} on the Watchlist right now.`;
 }
 
 function price(value) {
@@ -73,17 +83,21 @@ function price(value) {
   return number >= 100 ? number.toFixed(2) : number >= 1 ? number.toFixed(2) : number.toFixed(4);
 }
 
-// One chip per member, live (month not closed) first, then by symbol.
+// One chip per member, live (month not closed) first, then by symbol. On
+// the one list each chip points its own way (signal.direction).
 export function breakoutChips(meta) {
-  const direction = meta && (meta.breakout === "up" || meta.breakout === "down") ? meta.breakout : null;
-  const table = meta && meta.breakouts && typeof meta.breakouts === "object" ? meta.breakouts : {};
-  if (!direction) return [];
-  const up = direction === "up";
+  if (!isBreakoutList(meta)) return [];
+  const table = meta.breakouts && typeof meta.breakouts === "object" ? meta.breakouts : {};
   const tf = tfOf(meta);
   const bar = BAR_WORDS[tf];
   const chips = [];
   for (const [symbol, signal] of Object.entries(table)) {
     if (!signal || typeof signal !== "object") continue;
+    const direction = signal.direction === "up" || signal.direction === "down"
+      ? signal.direction
+      : meta.breakout === "both" ? null : meta.breakout;
+    if (!direction) continue;
+    const up = direction === "up";
     const live = signal.status === "live";
     const when = periodName(signal.period, tf);
     const line = price(signal.level);
@@ -91,6 +105,7 @@ export function breakoutChips(meta) {
     const pattern = SHORT_LABELS[signal.pattern] || String(signal.label || signal.pattern || "");
     chips.push({
       symbol,
+      direction,
       live,
       arrow: up ? "▲" : "▼",
       text: `${pattern}${line ? ` ${up ? ">" : "<"} ${line}` : ""}`,
@@ -111,6 +126,12 @@ export function breakoutChips(meta) {
 
 export function breakoutNote(direction, timeframe) {
   const tf = timeframe === "Weekly" || timeframe === "Daily" ? timeframe : "Monthly";
+  if (direction === "both") {
+    const edge = tf === "Monthly"
+      ? "Back-test: ▲ breakouts 69-78% higher 12 months later vs 62% for any month; ▼ breakdowns did NOT predict a fall (info only, not a put signal)."
+      : `Caution: the back-test found NO edge on ${tf.toLowerCase()} breakouts - only Monthly beat a random entry.`;
+    return `${tf} close through the line, EMAs agree: ▲ breakout (close > 21 > 50) or ▼ breakdown (close < 21 < 50). ${edge} BULL / BEAR picks the scan, like any watchlist: ALL of the following = VOLUME 4h >= 1.0% + CLOSE 1h >= 0.5%.`;
+  }
   if (tf !== "Monthly" && (direction === "up" || direction === "down")) {
     const bar = BAR_WORDS[tf];
     return `${tf} close through the line, EMAs agree (${direction === "up" ? "close > 21 > 50" : "close < 21 < 50"}), same four patterns counted in ${bar}s. Caution: the back-test found NO edge on ${tf.toLowerCase()} breakouts - only Monthly beat a random entry. Scan below: ALL of the following = the ${direction === "up" ? "breakout" : "breakdown"} + VOLUME 4h >= 1.0% + CLOSE 1h >= 0.5%.`;

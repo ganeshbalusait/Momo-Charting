@@ -37,9 +37,10 @@ def listed(worker):
 def test_the_two_touch_lists_offer_the_three_timeframes(tmp_path, monkeypatch, ema_lists):
     with running_worker(tmp_path, monkeypatch) as worker:
         by_name, _ = listed(worker)
-    # Monthly Breakout / Breakdown (2026-11-20) follow the EMA lists.
+    # The Breakout list (2026-11-20; one list for bull and bear since
+    # 2026-11-21) follows the EMA lists.
     assert list(by_name) == ["Mag7", "Watchlist", "21 EMA Touch Monthly", "50 EMA Touch Monthly",
-                             "Monthly Breakout", "Monthly Breakdown"]
+                             "Monthly Breakout"]
     monthly = by_name["21 EMA Touch Monthly"]
     assert (monthly["emaLength"], monthly["timeframe"], monthly["timeframes"]) == (21, "Monthly", ["Monthly", "Weekly", "Daily"])
     assert monthly["builtIn"] is True

@@ -1824,6 +1824,10 @@ def _read_list_metadata(path: Any = None) -> dict:
         if symbols:
             requested = _migration_target(symbols)
     active = next((name for name in names if name.lower() == requested.lower()), None)
+    if active is None:
+        # A saved "Monthly Breakdown" is the one Breakout list now (2026-11-21).
+        alias = monthly_breakout.legacy_alias(requested)
+        active = alias if alias in names else None
     active = active or (DEFAULT_LIST_NAME if DEFAULT_LIST_NAME in names else next(iter(names), DEFAULT_LIST_NAME))
     return {'active': active, 'lists': dict.fromkeys(names)}
 
@@ -1915,10 +1919,17 @@ def resolve_list_name(
     wanted = str(name or "").strip()
     if not wanted:
         active = doc.get("active")
-        return active if active in lists else DEFAULT_LIST_NAME
+        if active not in lists:
+            alias = monthly_breakout.legacy_alias(active)
+            return alias if alias and alias in lists else DEFAULT_LIST_NAME
+        return active
     for existing in lists:
         if existing.lower() == wanted.lower():
             return existing
+    # "Monthly Breakdown" etc. became the one Breakout list (2026-11-21).
+    alias = monthly_breakout.legacy_alias(wanted)
+    if alias and alias in lists:
+        return alias
     raise UnknownListError(wanted, list(lists))
 
 

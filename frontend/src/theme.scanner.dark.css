@@ -1690,7 +1690,8 @@
   color: #b9f3ec;
 }
 
-:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-breakout-row.is-down .momx-breakout-chip {
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-breakout-row.is-down .momx-breakout-chip,
+:root:not([data-theme="light"])[data-agx-skin~="scanner"] .momx-scanner-panel .momx-breakout-chip.is-down {
   color: #ffc9c7;
 }
 

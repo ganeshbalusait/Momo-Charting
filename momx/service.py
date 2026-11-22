@@ -1984,7 +1984,10 @@ def rename_list(list_name: Any, new_name: Any) -> dict:
 
 
 def set_breakout_timeframe(direction: Any, timeframe: Any) -> dict:
-    """The Monthly / Weekly / Daily dropdown on the Breakout / Breakdown lists.
+    """The Monthly / Weekly / Daily dropdown on the Breakout list.
+
+    ``direction`` is accepted for old callers ("up" / "down" / "both") and
+    ignored: since 2026-11-21 there is one list for both directions.
 
     Same contract as :func:`set_ema_timeframe`: the timeframe is in the name,
     so the trader lands on the renamed list if he was on the old one.
@@ -1995,10 +1998,10 @@ def set_breakout_timeframe(direction: Any, timeframe: Any) -> dict:
         was_active = ""
     try:
         side = str(direction or "").strip().lower()
-        if side not in monthly_breakout.WORDS:
+        if side not in (*monthly_breakout.WORDS, monthly_breakout.BOTH):
             raise ValueError(f"Unknown breakout list {direction!r}.")
-        previous = monthly_breakout.list_name(side)
-        name = monthly_breakout.set_timeframe(side, timeframe)
+        previous = monthly_breakout.list_name()
+        name = monthly_breakout.set_timeframe(timeframe)
     except (TypeError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
     try:

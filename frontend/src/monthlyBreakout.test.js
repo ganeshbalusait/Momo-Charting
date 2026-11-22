@@ -119,3 +119,30 @@ test("a Breakout list opens its chart on the list's timeframe; other lists keep 
   assert.equal(chartTimeframeKey({ emaLength: 21, timeframe: "Weekly" }), null);
   assert.equal(chartTimeframeKey({ name: "Watchlist" }), null);
 });
+
+// 2026-11-21 "Keep one list same as other watchlist for bull/bear": ONE list,
+// each chip points its own way.
+test("the one Breakout list shows up and down chips, each with its own arrow", async () => {
+  const { isBreakoutList, timeframeRequest, breakoutEmpty } = await import("./monthlyBreakout.js");
+  const meta = {
+    breakout: "both",
+    timeframe: "Daily",
+    breakouts: {
+      UPB: { pattern: "BOTTOM", direction: "up", status: "live", period: "2026-11-20", level: 102 },
+      DNB: { pattern: "TOP", direction: "down", status: "confirmed", period: "2026-11-19", level: 50 },
+      ODD: { pattern: "SYM", status: "live", period: "2026-11-20", level: 9 },   // no direction: skipped
+    },
+  };
+  const chips = breakoutChips(meta);
+  assert.deepEqual(chips.map((c) => [c.symbol, c.direction, c.arrow]), [["UPB", "up", "▲"], ["DNB", "down", "▼"]]);
+  assert.equal(chips[0].text, "HL + Resistance > 102.00");
+  assert.equal(chips[1].text, "LH + Support < 50.00");
+  assert.equal(isBreakoutList(meta), true);
+  assert.equal(isBreakoutList({ breakout: "sideways" }), false);
+  assert.equal(chartTimeframeKey(meta), "D");
+  assert.deepEqual(timeframeRequest(meta, "Weekly"), { breakout: "both", timeframe: "Weekly" });
+  assert.equal(breakoutEmpty(meta), "No daily breakouts or breakdowns on the Watchlist right now.");
+  assert.match(breakoutNote("both", "Monthly"), /BULL \/ BEAR picks the scan/);
+  assert.match(breakoutNote("both", "Monthly"), /not a put signal/);
+  assert.match(breakoutNote("both", "Daily"), /NO edge on daily/);
+});

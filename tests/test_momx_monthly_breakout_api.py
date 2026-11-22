@@ -89,14 +89,23 @@ def test_refresh_fills_breakout_and_breakdown_lists_over_http(tmp_path, monkeypa
         assert status == 200, body
         by_name = {item["name"]: item for item in body["lists"]}
         board_status, board = worker.get("/api/momx-scanner?list=Monthly%20Breakout")
-    bull, bear = by_name["Monthly Breakout"], by_name["Monthly Breakdown"]
-    assert (bull["count"], bear["count"]) == (1, 1)
-    assert list(bull["breakouts"]) == ["UPB"] and list(bear["breakouts"]) == ["DNB"]
-    up = bull["breakouts"]["UPB"]
+        bear_status, bear_board = worker.get("/api/momx-scanner?list=Monthly%20Breakout&dir=bear")
+        old_status, old_board = worker.get("/api/momx-scanner?list=Monthly%20Breakdown")
+    # The BEAR button scans the same list; an old saved name still opens it.
+    assert bear_status == 200 and bear_board["list"] == "Monthly Breakout", bear_board
+    assert bear_board.get("direction") == "bear", bear_board.get("direction")
+    assert old_status == 200 and old_board["list"] == "Monthly Breakout", old_board
+    # 2026-11-21 "Keep one list same as other watchlist for bull/bear".
+    assert "Monthly Breakdown" not in by_name
+    one = by_name["Monthly Breakout"]
+    assert one["breakout"] == "both" and one["count"] == 2
+    assert sorted(one["breakouts"]) == ["DNB", "UPB"]
+    up = one["breakouts"]["UPB"]
     assert (up["pattern"], up["status"], up["direction"]) == ("BOTTOM", "live", "up")
     assert up["level"] == pytest.approx(102.0) and up["close"] == pytest.approx(108.0)
-    assert bear["breakouts"]["DNB"]["pattern"] == "MIDDLE"
-    assert bull["derived"] is True and bull["builtIn"] is True
+    down = one["breakouts"]["DNB"]
+    assert (down["pattern"], down["direction"]) == ("MIDDLE", "down")
+    assert one["derived"] is True and one["builtIn"] is True
     assert by_name["Watchlist"]["derived"] is False
     assert board_status == 200 and board["list"] == "Monthly Breakout"
 
@@ -106,13 +115,13 @@ def test_breakout_lists_refuse_edits_over_http(tmp_path, monkeypatch, breakout_s
         _seed_watchlist(tmp_path)
         ema_touch.refresh(list(CLOSES))
         add_status, add = worker.post("/api/momx-scanner/universe/add", {"text": "ZZZ", "list": "Monthly Breakout"})
-        del_status, deleted = worker.post("/api/momx-scanner/lists/delete", {"list": "Monthly Breakdown"})
+        del_status, deleted = worker.post("/api/momx-scanner/lists/delete", {"list": "Monthly Breakout"})
         status, body = worker.get(LISTS)
     # Refused, with the reason the panel shows.
     assert add_status == 400 and "chart-pattern break" in add.get("error", ""), add
     assert del_status == 400 and "chart-pattern break" in deleted.get("error", ""), deleted
     names = [item["name"] for item in body["lists"]]
-    assert "Monthly Breakout" in names and "Monthly Breakdown" in names
+    assert "Monthly Breakout" in names and "Monthly Breakdown" not in names
 
 
 def test_a_new_list_can_be_added_with_six_lists_showing(tmp_path, monkeypatch, breakout_scratch):
@@ -155,7 +164,7 @@ def test_weekly_dropdown_switches_the_list_over_http(tmp_path, monkeypatch, brea
         ema_touch.refresh(["UPB", "WKB"])
         _, before = worker.get(LISTS)
         worker.post("/api/momx-scanner/lists/active", {"list": "Monthly Breakout"})
-        status, switched = worker.post("/api/momx-scanner/ema-timeframe", {"breakout": "up", "timeframe": "Weekly"})
+        status, switched = worker.post("/api/momx-scanner/ema-timeframe", {"breakout": "both", "timeframe": "Weekly"})
         _, after = worker.get(LISTS)
         bad_status, bad = worker.post("/api/momx-scanner/ema-timeframe", {"breakout": "up", "timeframe": "Hourly"})
         ema_status, ema = worker.post("/api/momx-scanner/ema-timeframe", {"length": 21, "timeframe": "Weekly"})
@@ -165,7 +174,7 @@ def test_weekly_dropdown_switches_the_list_over_http(tmp_path, monkeypatch, brea
     assert status == 200 and switched["ok"] is True, switched
     assert (switched["list"], switched["previous"], switched["active"]) == ("Weekly Breakout", "Monthly Breakout", "Weekly Breakout")
     by_name = {item["name"]: item for item in after["lists"]}
-    assert "Monthly Breakout" not in by_name and "Monthly Breakdown" in by_name
+    assert "Monthly Breakout" not in by_name and "Monthly Breakdown" not in by_name
     weekly_list = by_name["Weekly Breakout"]
     assert weekly_list["timeframe"] == "Weekly" and list(weekly_list["breakouts"]) == ["WKB"]
     assert weekly_list["breakouts"]["WKB"]["pattern"] == "BOTTOM"

@@ -23924,7 +23924,8 @@ body:has(.chat-dock-panel:not([hidden])) .global-price-alert-toast { z-index: 18
   cursor: pointer;
 }
 .momx-scanner-panel .momx-breakout-chip:hover { filter: brightness(1.25); }
-.momx-scanner-panel .momx-breakout-row.is-down .momx-breakout-chip {
+.momx-scanner-panel .momx-breakout-row.is-down .momx-breakout-chip,
+.momx-scanner-panel .momx-breakout-chip.is-down {
   border-color: rgba(239, 83, 80, 0.55);
   background: rgba(239, 83, 80, 0.12);
   color: #ffc9c7;

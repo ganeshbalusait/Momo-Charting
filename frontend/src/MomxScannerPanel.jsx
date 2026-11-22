@@ -222,7 +222,7 @@ import {
   spreadMapFrom,
   spreadSortValue,
 } from "./momxSpread.js";
-import { breakoutChips, breakoutEmpty, breakoutNote, chartTimeframeKey, pickerFull, timeframeRequest } from "./monthlyBreakout.js";
+import { breakoutChips, breakoutEmpty, breakoutNote, chartTimeframeKey, isBreakoutList, pickerFull, timeframeRequest } from "./monthlyBreakout.js";
 
 // MomX Scanner board - the trader's MomoX/MomoScan window, replayed.
 //
@@ -7152,7 +7152,7 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
       {/* Monthly Breakout / Breakdown (momx/monthly_breakout.py): which
           pattern each member broke, the line, and whether the month has
           closed. Same spot as the EMA row, so it shows on Live and History. */}
-      {lists.length > 0 && (activeMeta.breakout === "up" || activeMeta.breakout === "down") ? (
+      {lists.length > 0 && isBreakoutList(activeMeta) ? (
         <div
           className={`momx-breakout-row is-${activeMeta.breakout}`}
           data-testid="momx-breakout-row"
@@ -7163,7 +7163,7 @@ function MomxScannerPanel({ initialList = null, embedded = false, background = f
                 type="button"
                 key={chip.symbol}
                 role="listitem"
-                className={`momx-breakout-chip${chip.live ? " is-live" : ""}`}
+                className={`momx-breakout-chip is-${chip.direction}${chip.live ? " is-live" : ""}`}
                 title={`${chip.title}\nClick: open the ${activeMeta.timeframe || "Monthly"} chart.`}
                 data-testid="momx-breakout-chip"
                 onClick={() => chartLink.openChart(chip.symbol)}
