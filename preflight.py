@@ -1055,6 +1055,13 @@ def check_chart_prewarm(ctx: Context) -> dict:
     return _result("chart_prewarm", "Chart pre-warmer", status, measured, detail)
 
 
+#: Boards the scanner keeps built all day (momx/service.py ALWAYS_WARM_LISTS).
+#: Only these are graded on existence. Every other list is built only while a
+#: screen has it open (or it is the active list), so no file for it at 08:45
+#: means "nobody opened it yet today", not a lost archive.
+ALWAYS_WRITTEN_BOARDS = ("Mag7", "Watchlist")
+
+
 def check_scanner_history(ctx: Context) -> dict:
     """9. Today's archives exist AND are still being written to."""
     now = ctx.now_et
@@ -1091,8 +1098,15 @@ def check_scanner_history(ctx: Context) -> dict:
         boards = sorted(p for p in momx_root.iterdir() if p.is_dir())
     except OSError:
         boards = []
+    quiet = []
     for board in boards:
         path = board / (day + ".json")
+        if board.name not in ALWAYS_WRITTEN_BOARDS and not path.exists():
+            # On-demand lists (21/50 EMA touch, breakouts, Chips...) are only
+            # built while a screen has them open. Grading their missing file
+            # warned every single morning (2026-11-02..23) for no fault.
+            quiet.append(board.name)
+            continue
         try:
             stored = json.loads(path.read_text(encoding="utf-8"))
             symbols = stored.get("symbols") if isinstance(stored, dict) else None
@@ -1111,6 +1125,8 @@ def check_scanner_history(ctx: Context) -> dict:
         problems.append("no momx board archive was found at all under %s (expected the "
                         "Mag7 and Watchlist boards)" % momx_root)
     measured = "; ".join(parts) if parts else "no archive file found for " + day
+    if quiet:
+        measured += "; not opened yet today (built only while on screen): " + ", ".join(quiet)
     if problems:
         measured += "; " + "; ".join(problems)
     if not parts:

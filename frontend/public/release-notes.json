@@ -2,6 +2,14 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-23T09:06:42-05:00",
+      "heading": "Morning checklist: no more daily false alarm on the scanner archive",
+      "items": [
+        "The 8:45 morning checklist no longer warns every day that 11 scanner lists have \"no archive\". Lists like the 21/50 EMA touches, breakouts, Chips and Semis are only scanned while you have them open, so before you open them there is nothing to archive. It now just lists them as \"not opened yet today\".",
+        "It still warns if Mag7 or the Watchlist (the two lists scanned all day) have no archive for today."
+      ]
+    },
+    {
       "at": "2026-11-22T02:35:11-05:00",
       "heading": "LEAP OI Scanner: By sector",
       "items": [

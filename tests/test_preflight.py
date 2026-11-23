@@ -1261,3 +1261,54 @@ def test_a_heal_that_worked_marks_the_row_as_fixed(tmp_path):
     assert row["status"] == "pass"
     assert row["healed"] is True
     assert row["healAttempted"] is True
+
+
+def _archive_day(tmp_path, boards):
+    """Premarket archive plus a momx file for each board name in `boards`."""
+    artifacts = tmp_path / "artifacts"
+    day = at(hour=8, minute=45).date().isoformat()
+    premarket = artifacts / "premarket_scanner_history"
+    premarket.mkdir(parents=True, exist_ok=True)
+    (premarket / (day + ".json")).write_text(json.dumps({"rows": {"AAPL": {}}}), encoding="utf-8")
+    for name, written_today in boards.items():
+        folder = artifacts / "momx_history" / name
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "2026-08-28.json").write_text(json.dumps({"symbols": {"OLD": {}}}), encoding="utf-8")
+        if written_today:
+            (folder / (day + ".json")).write_text(json.dumps({"symbols": {"TSLA": {}}}),
+                                                  encoding="utf-8")
+    return artifacts
+
+
+def test_scanner_history_an_unopened_list_with_no_file_yet_is_not_a_warning(tmp_path):
+    # 2026-11-23: the 08:45 push warned EVERY morning because lists such as the
+    # 21 EMA touch boards are only built while a screen has them open. Before
+    # anyone opens them that is normal, not a lost archive.
+    artifacts = _archive_day(tmp_path, {"Mag7": True, "Watchlist": True,
+                                        "21_EMA_Touch_Daily": False, "Chips": False})
+    outcome = preflight.check_scanner_history(
+        ctx_for(tmp_path, now_et=at(hour=8, minute=45), artifacts_dir=artifacts))
+    assert outcome["status"] == "pass", outcome
+    assert "not opened yet today (built only while on screen): 21_EMA_Touch_Daily, Chips" in outcome["measured"]
+    assert "is missing" not in outcome["measured"]
+
+
+def test_scanner_history_a_missing_watchlist_archive_still_warns(tmp_path):
+    artifacts = _archive_day(tmp_path, {"Mag7": True, "Watchlist": False})
+    outcome = preflight.check_scanner_history(
+        ctx_for(tmp_path, now_et=at(hour=8, minute=45), artifacts_dir=artifacts))
+    assert outcome["status"] == "warn"
+    assert "momx Watchlist archive for" in outcome["measured"]
+
+
+def test_always_written_boards_match_the_scanners_always_warm_lists():
+    # If the scanner ever keeps a third list warm, the checklist must grade it.
+    import ast
+    source = (Path(preflight.__file__).parent / "momx" / "service.py").read_text(encoding="utf-8")
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "ALWAYS_WARM_LISTS":
+            warm = ast.literal_eval(node.value.args[0])
+            break
+    else:
+        raise AssertionError("momx/service.py no longer defines ALWAYS_WARM_LISTS")
+    assert set(preflight.ALWAYS_WRITTEN_BOARDS) == set(warm)
