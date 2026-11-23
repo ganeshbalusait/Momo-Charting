@@ -203,5 +203,8 @@ def test_the_route_sends_todays_bets_from_agx_flows_read(world, tmp_path):
         agx_flow.reset()
     assert status == 200 and body["pending"] == [], body
     lines = {t["ticker"]: t for t in body["byTicker"]}
-    assert lines["NVDA"]["todayBets"] == {"calls": 100000, "puts": 36000, "at": AT}
+    nvda = lines["NVDA"]["todayBets"]
+    assert {k: nvda[k] for k in ("calls", "puts", "at")} == {"calls": 100000, "puts": 36000, "at": AT}
+    assert nvda["topCalls"][0]["strike"] == 200.0 and nvda["topCalls"][0]["share"] == 100
+    assert nvda["topPuts"][0]["strike"] == 150.0
     assert lines["AAPL"]["todayBets"] is None                       # AGX Flow has not read AAPL

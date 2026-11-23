@@ -108,7 +108,13 @@ def build(ticker: str, leap: dict | None, flow: dict | None) -> dict:
                 lines.append(_line("yes", f"{unusual} of its contracts traded more today than were open before. That is unusual."))
         else:
             lines.append(_line("info", "No option trades in the app's latest read. Trades show here during market hours."))
-        sections.append({"title": "Today's bets", "lines": lines})
+        part = {"title": "Today's bets", "lines": lines}
+        # "Which strike is that?" (2026-11-23): the contracts that took the most money on each side, as a table.
+        leap_line = next((t for t in (leap or {}).get("byTicker") or [] if t.get("ticker") == ticker), None)
+        bets = (leap_line or {}).get("todayBets") or {}
+        if total > 0 and (bets.get("topCalls") or bets.get("topPuts")):
+            part["table"] = {"calls": bets.get("topCalls") or [], "puts": bets.get("topPuts") or []}
+        sections.append(part)
 
     rows = [r for r in (leap or {}).get("rows") or [] if r.get("ticker") == ticker]
     if leap_ready:

@@ -105,8 +105,28 @@ def test_todays_bets_sum_the_money_on_every_call_and_put_traded_today(tmp_path):
         _contract("CALL", "2027-06-17", 40.0, 0, 9000, 0.50, 0.45, 0.55),          # did not trade: $0
         _contract("PUT", "2026-11-27", 25.0, 200, 800, 1.80, 1.75, 1.85),          # $36,000
     ])
-    assert scanner.todays_bets("SMCI", tmp_path) == {"calls": 100000, "puts": 36000, "at": AT}
+    bets = scanner.todays_bets("SMCI", tmp_path)
+    assert {k: bets[k] for k in ("calls", "puts", "at")} == {"calls": 100000, "puts": 36000, "at": AT}
     assert scanner.todays_bets("CRWV", tmp_path) is None                       # AGX Flow has not read it
+
+
+def test_todays_bets_name_the_contracts_that_took_the_most_money(tmp_path):
+    """2026-11-23 "$20 million went to calls which strike is that?" then "Above table I don't see in our app, can we do
+    it?": the top contracts by today's money on each side, with their share of that side, whatever their open interest
+    (the 22 Call took $4.4M with more open than traded, so the unusual-only Big bets missed it)."""
+    calls = [_contract("CALL", "2026-11-27", 22.0, 15338, 40000, 2.95, 2.85, 2.95),   # most money, NOT unusual
+             _contract("CALL", "2026-12-04", 25.5, 22522, 9000, 1.24, 1.24, 1.30)]
+    calls += [_contract("CALL", "2027-03-19", 30.0 + i, 100, 50, 1.00, 0.95, 1.05) for i in range(6)]
+    _flow_copy(tmp_path, "SMCI", calls + [_contract("PUT", "2026-11-27", 25.0, 200, 800, 1.80, 1.75, 1.85)])
+    bets = scanner.todays_bets("SMCI", tmp_path)
+    top = bets["topCalls"]
+    assert len(top) == scanner.TOP_BET_CONTRACTS == 5
+    assert top[0] == {"strike": 22.0, "expiry": "2026-11-27", "volume": 15338, "premium": round(15338 * 2.9 * 100),
+                      "share": round(100 * round(15338 * 2.9 * 100) / bets["calls"]), "fill": "ask"}
+    assert [r["strike"] for r in top[:2]] == [22.0, 25.5] and top[1]["fill"] == "bid"
+    assert [r["premium"] for r in top] == sorted((r["premium"] for r in top), reverse=True)
+    assert bets["topPuts"] == [{"strike": 25.0, "expiry": "2026-11-27", "volume": 200, "premium": 36000, "share": 100,
+                                "fill": "mid"}]
 
 
 def test_the_board_puts_todays_bets_on_each_by_ticker_line(tmp_path, monkeypatch):
@@ -118,5 +138,6 @@ def test_the_board_puts_todays_bets_on_each_by_ticker_line(tmp_path, monkeypatch
     _flow_copy(tmp_path, "INTC", [_contract("CALL", "2027-06-17", 100.0, 1200, 49045, 2.31, 2.25, 2.31)])
     out = scanner.board(["INTC", "AMD"], tmp_path, datetime(2026, 11, 19, 23, 0, tzinfo=ET))
     lines = {t["ticker"]: t for t in out["byTicker"]}
-    assert lines["INTC"]["todayBets"] == {"calls": 273600, "puts": 0, "at": AT}
+    assert {k: lines["INTC"]["todayBets"][k] for k in ("calls", "puts", "at")} == {"calls": 273600, "puts": 0, "at": AT}
+    assert lines["INTC"]["todayBets"]["topCalls"][0]["strike"] == 100.0 and lines["INTC"]["todayBets"]["topPuts"] == []
     assert lines["AMD"]["todayBets"] is None

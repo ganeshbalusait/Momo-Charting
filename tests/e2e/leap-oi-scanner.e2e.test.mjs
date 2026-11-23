@@ -334,7 +334,10 @@ for (const [label, viewport] of WIDTHS) {
     const [first, ...rest] = real.byTicker;
     const board = {
       ...real,
-      byTicker: [{ ...first, todayBets: { calls: 20_000_000, puts: 7_400_000, at: real.asOf } },
+      byTicker: [{ ...first, todayBets: { calls: 20_000_000, puts: 7_400_000, at: real.asOf,
+        topCalls: [{ strike: 22, expiry: "2026-11-27", volume: 15338, premium: 4_432_682, share: 22, fill: "ask" },
+          { strike: 25.5, expiry: "2026-12-04", volume: 22522, premium: 2_860_294, share: 14, fill: "bid" }],
+        topPuts: [{ strike: 25, expiry: "2026-11-27", volume: 3000, premium: 442_308, share: 6, fill: "mid" }] } },
         ...rest.map((t) => ({ ...t, todayBets: null }))],
     };
     const reads = {
@@ -354,6 +357,17 @@ for (const [label, viewport] of WIDTHS) {
       assert.match(text, /Today about \$20 million went into Calls \(bets the price goes up\) and \$7\.4 million into Puts \(bets it goes down\)\./);
       assert.match(text, /Calls got 73% of the money\./);
       assert.equal(await bets.getAttribute("data-side"), "calls");
+      // "Which strikes?" (2026-11-23): closed until tapped, then the contracts that took the money.
+      const strikes = card.getByTestId("leap-oi-bets-strikes");
+      assert.equal(await strikes.getByTestId("bets-table").first().isVisible(), false);
+      const open = strikes.locator("summary");
+      await (phone ? open.tap() : open.click());
+      const callRows = strikes.locator("[data-testid='bets-table'][data-side='calls'] [data-testid='bets-table-row']");
+      await callRows.first().waitFor({ state: "visible", timeout: 5_000 });
+      assert.match(await strikes.innerText(), /Which Calls took the money \(of \$20M\)/);
+      assert.match(await callRows.first().innerText(), /22 Call[\s\S]*Nov 27 '26[\s\S]*15,338[\s\S]*\$4\.4M[\s\S]*22%[\s\S]*Buyer/);
+      assert.match(await callRows.nth(1).innerText(), /25\.5 Call[\s\S]*Seller/);
+      assert.match(await strikes.locator("[data-testid='bets-table'][data-side='puts']").innerText(), /25 Put[\s\S]*Can't tell/);
       if (rest.length) {
         const quiet = cards.filter({ has: page.locator(".leapoi-tk", { hasText: new RegExp(`^${rest[0].ticker}$`) }) });
         assert.equal(await quiet.locator("[data-testid='leap-oi-today-bets']").count(), 0);

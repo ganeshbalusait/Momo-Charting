@@ -16,7 +16,13 @@ const STORY = {
     { title: "Today's bets", lines: [
       { mark: "info", text: "Today about $22 million went into Calls (bets the price goes up) and $209 million into Puts (bets it goes down)." },
       { mark: "yes", text: "Puts got 91% of the money." },
-      { mark: "info", text: "Big bet: 95 Put ending Dec 18, 2026, $30 million; the last trade can't tell if a buyer or a seller led." }] },
+      { mark: "info", text: "Big bet: 95 Put ending Dec 18, 2026, $30 million; the last trade can't tell if a buyer or a seller led." }],
+      // 2026-11-23 "which strike is that?": the contracts that took the most money on each side.
+      table: {
+        calls: [{ strike: 55, expiry: "2026-11-20", volume: 9000, premium: 4_000_000, share: 19, fill: "ask" }],
+        puts: [{ strike: 95, expiry: "2026-12-18", volume: 50000, premium: 29_900_000, share: 14, fill: "mid" },
+          { strike: 60, expiry: "2026-11-20", volume: 30000, premium: 12_000_000, share: 6, fill: "bid" }],
+      } },
     { title: "Long bets (3 to 12 months)", lines: [
       { mark: "info", text: "The long Call most people hold: 50 Call ending Feb 19, 2027, 73,640 contracts." }] },
     { title: "New since yesterday", lines: [
@@ -61,6 +67,14 @@ for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]
         assert.match(text, /Today more money went into Puts on INTC: 91% of it\./);
         assert.match(text, /Today's bets[\s\S]*\$22 million went into Calls \(bets the price goes up\)/);
         assert.match(text, /✓ Puts got 91% of the money\./);
+        // The which-strike table under Today's bets.
+        const tables = card.getByTestId("bets-table");
+        assert.equal(await tables.count(), 2);
+        const callRows = card.locator("[data-testid='bets-table'][data-side='calls'] [data-testid='bets-table-row']");
+        assert.match(await callRows.first().innerText(), /55 Call[\s\S]*Nov 20 '26[\s\S]*9,000[\s\S]*\$4\.0M[\s\S]*19%[\s\S]*Buyer/);
+        const putRows = card.locator("[data-testid='bets-table'][data-side='puts'] [data-testid='bets-table-row']");
+        assert.equal(await putRows.count(), 2);
+        assert.match(await putRows.nth(1).innerText(), /60 Put[\s\S]*\$12M[\s\S]*6%[\s\S]*Seller/);
         assert.match(text, /Long bets \(3 to 12 months\)[\s\S]*73,640 contracts/);
         assert.match(text, /New since yesterday[\s\S]*✓ 43,513 new contracts[\s\S]*✗ 2,500 contracts closed/);
         assert.match(text, /What this means: A Call is a bet/);

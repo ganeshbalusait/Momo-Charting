@@ -12,6 +12,7 @@ import { flowCell } from "./leapFlow.js";
 import BeginnerGuide from "./BeginnerGuide.jsx";
 import { MARKS, leapWhy } from "./simpleWhy.js";
 import TickerStory from "./TickerStory.jsx";
+import BetsTable from "./BetsTable.jsx";
 
 // Today's trades on this contract, from AGX Flow's latest read: count, dollars, and Bought / Sold / Can't tell, so the
 // trader does not have to open AGX Flow to know (2026-11-20).
@@ -226,7 +227,7 @@ export function Dominance({ calls, puts, format = formatOi, title, compact = fal
 
 // Today's bets (2026-11-23, "in leap oi scanner ... I want: Today's bets"): the money that went into Calls vs Puts
 // today, in the ticker story's own words. Nothing at all until AGX Flow has read the ticker.
-function TodayBets({ bets }) {
+function TodayBets({ bets, showTable = false }) {
   const words = todayBetsWords(bets);
   if (!words) return null;
   const tone = words.side === "calls" ? "is-call" : words.side === "puts" ? "is-put" : "is-even";
@@ -235,6 +236,12 @@ function TodayBets({ bets }) {
       <small className="leapoi-bets-title">Today's bets</small>
       <p className="leapoi-bets-money">• {words.money}</p>
       {words.lead ? <p className={`leapoi-bets-lead ${tone}`}>{words.side === "even" ? "• " : "✓ "}{words.lead}</p> : null}
+      {showTable && (bets.topCalls?.length || bets.topPuts?.length) ? (
+        <details className="leapoi-bets-strikes" data-testid="leap-oi-bets-strikes">
+          <summary>Which strikes?</summary>
+          <BetsTable calls={bets.topCalls} puts={bets.topPuts} callTotal={bets.calls} putTotal={bets.puts} />
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -318,7 +325,7 @@ function ByTicker({ list, onOpenChart, onPick, quotes }) {
               <button type="button" onClick={() => onOpenChart?.(line.ticker)}>Chart ›</button>
             </div>
             <Dominance calls={line.callOi} puts={line.putOi} compact />
-            <TodayBets bets={line.todayBets} />
+            <TodayBets bets={line.todayBets} showTable />
             <dl className="leapoi-card-grid leapoi-bytk-grid">
               <Pick label="Most call OI" row={line.call} onPick={onPick} />
               <Pick label="Most put OI" row={line.put} onPick={onPick} />

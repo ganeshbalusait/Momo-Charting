@@ -66,6 +66,11 @@ def test_one_ticker_gets_one_answer_from_both_pages(world):
         while (not body.get("ready") or body.get("pending")) and time.monotonic() < deadline:
             time.sleep(0.2)
             status, body = api.get(f"{ROUTE}?symbol=NVDA", headers=REGULAR)
+        # 2026-11-23 "which strike is that?": once AGX Flow's read is held, Today's bets carries the table.
+        table_status, again = api.get(f"{ROUTE}?symbol=NVDA", headers=REGULAR)
+    assert table_status == 200
+    table = next(s for s in again["sections"] if s["title"] == "Today's bets").get("table")
+    assert table and table["calls"][0]["strike"] == 185.0 and 0 < table["calls"][0]["share"] <= 100, table
     assert status == 200 and body["ready"] and not body["pending"], body
     assert body["ticker"] == "NVDA" and world["leap"] == ["NVDA"] and world["flow"] == ["NVDA"]
     titles = [s["title"] for s in body["sections"]]

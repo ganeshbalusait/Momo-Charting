@@ -404,6 +404,9 @@ def with_flow(rows: list[dict], root: Path) -> list[dict]:
     return rows
 
 
+TOP_BET_CONTRACTS = 5   # rows per side in the Today's bets table
+
+
 def todays_bets(ticker: str, root: Path) -> dict | None:
     """Today's money on Calls vs Puts for one ticker (2026-11-23, "in leap oi scanner ... I want: Today's bets ... Calls
     got 73% of the money"): the same totals the ticker story shows, from AGX Flow's latest read (every contract it
@@ -414,12 +417,24 @@ def todays_bets(ticker: str, root: Path) -> dict | None:
     if not doc:
         return None
     totals = {"calls": 0, "puts": 0}
+    traded: dict[str, list[dict]] = {"calls": [], "puts": []}
     for contract in doc.get("contracts") or []:
         if not isinstance(contract, dict) or int(contract.get("volume") or 0) <= 0:
             continue
-        premium = agx_flow._flow_row(ticker, None, contract)["premium"]
-        totals["calls" if contract.get("side") == "CALL" else "puts"] += premium
-    return {**totals, "at": doc.get("fetchedAt")}
+        flow = agx_flow._flow_row(ticker, None, contract)
+        side = "calls" if contract.get("side") == "CALL" else "puts"
+        totals[side] += flow["premium"]
+        traded[side].append(flow)
+
+    # "Which strike is that?" (2026-11-23): the contracts that took the most money today on each side, with their share
+    # of that side. Ranked by money alone - the unusual-only Big bets missed SMCI's 22 Call ($4.4M, more open than
+    # traded).
+    def top(side: str) -> list[dict]:
+        ranked = sorted(traded[side], key=lambda r: (-r["premium"], -r["volume"], r["days"], r["strike"]))
+        return [{"strike": r["strike"], "expiry": r["expiry"], "volume": r["volume"], "premium": r["premium"],
+                 "share": round(100 * r["premium"] / totals[side]) if totals[side] else 0, "fill": r["fill"]}
+                for r in ranked[:TOP_BET_CONTRACTS]]
+    return {**totals, "at": doc.get("fetchedAt"), "topCalls": top("calls"), "topPuts": top("puts")}
 
 
 def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from: int = 3, months_to: int = 12,

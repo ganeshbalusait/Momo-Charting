@@ -284,3 +284,25 @@ test("each sector adds up its tickers' Today's bets", async () => {
   const [other] = sectorGroups([{ ticker: "ZZZ", callOi: 1, putOi: 0, todayBets: null }]);
   assert.equal(other.todayBets, null, "no ticker read yet: no totals, not zeros");
 });
+
+test("Which strikes took the money: one table row per contract (2026-11-23 \"which strike is that?\")", async () => {
+  const { betsTableRows, shortMoney } = await import("./leapOi.js");
+  assert.equal(shortMoney(4_432_682), "$4.4M");
+  assert.equal(shortMoney(20_363_948), "$20M");
+  assert.equal(shortMoney(625_212), "$625K");
+  assert.equal(shortMoney(36_000), "$36K");
+  assert.equal(shortMoney(800), "$800");
+  assert.equal(shortMoney(1_250_000_000), "$1.3B");
+  const rows = betsTableRows([
+    { strike: 22, expiry: "2026-11-27", volume: 15338, premium: 4_432_682, share: 22, fill: "ask" },
+    { strike: 25.5, expiry: "2026-12-04", volume: 22522, premium: 2_860_294, share: 14, fill: "bid" },
+    { strike: 24, expiry: "2026-11-27", volume: 8043, premium: 1_134_063, share: 6, fill: "mid" },
+  ], "calls");
+  assert.deepEqual(rows[0], { key: "calls-22-2026-11-27", contract: "22 Call", ends: "Nov 27 '26", traded: "15,338",
+    money: "$4.4M", share: "22%", lastTrade: "Buyer", tone: "is-call" });
+  assert.equal(rows[1].contract, "25.5 Call");
+  assert.equal(rows[1].lastTrade, "Seller");
+  assert.equal(rows[2].lastTrade, "Can't tell");
+  assert.equal(betsTableRows([{ strike: 25, expiry: "2026-11-27", volume: 200, premium: 36000, share: 100, fill: "mid" }], "puts")[0].contract, "25 Put");
+  assert.deepEqual(betsTableRows(null, "calls"), []);
+});

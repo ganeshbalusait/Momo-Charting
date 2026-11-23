@@ -248,6 +248,32 @@ export function todayBetsWords(bets) {
   return { money, lead: `${side === "calls" ? "Calls" : "Puts"} got ${share}% of the money.`, side, share };
 }
 
+// "Which strike is that?" (2026-11-23): the contracts that took the most money today, one table row each.
+export function shortMoney(value) {
+  const n = Number(value) || 0;
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e7) return `$${Math.round(n / 1e6)}M`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `$${Math.round(n / 1e3)}K`;
+  return `$${Math.round(n)}`;
+}
+
+const LAST_TRADE = { ask: "Buyer", bid: "Seller" };
+
+export function betsTableRows(rows, side) {
+  const put = side === "puts";
+  return (Array.isArray(rows) ? rows : []).map((row) => ({
+    key: `${side}-${formatStrike(row.strike)}-${row.expiry}`,
+    contract: `${formatStrike(row.strike)} ${put ? "Put" : "Call"}`,
+    ends: expiryLabel(row.expiry),
+    traded: formatOi(row.volume),
+    money: shortMoney(row.premium),
+    share: `${Math.round(Number(row.share) || 0)}%`,
+    lastTrade: LAST_TRADE[row.fill] || "Can't tell",
+    tone: put ? "is-put" : "is-call",
+  }));
+}
+
 // The Recent row's Clear button (2026-11-22 "Recent I don't see the clear option").
 export function clearRecent() {
   saveRecent([]);

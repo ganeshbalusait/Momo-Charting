@@ -151,3 +151,4 @@
 .leapoi-bets-lead { font-weight: 600; }
 .leapoi-bets-lead.is-put { color: #ff6b6b; }
 .leapoi-bets-lead.is-even { color: #c9d3e3; }
+.leapoi-bets-strikes > summary { cursor: pointer; color: #8fb4ff; font-size: 12px; margin-top: 2px; }

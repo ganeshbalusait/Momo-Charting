@@ -14,3 +14,14 @@
 .ticker-story { margin: 10px 0 14px; }
 .ticker-story h5 { margin: 8px 0 4px; font-size: 13px; color: #c3d3ff; }
 .ticker-story-part ul { margin: 0; }
+
+/* Which strikes took the money today (2026-11-23), in the simple-words card and LEAP OI ticker cards. */
+.bets-tables { margin: 6px 0 4px; display: flex; flex-direction: column; gap: 8px; max-width: 100%; }
+.bets-table-side { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.bets-table-title { display: block; color: #8fa3c0; font-size: 12px; margin-bottom: 2px; }
+.bets-table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+.bets-table th { text-align: left; color: #8b95a5; font-weight: 500; padding: 3px 6px 3px 0; white-space: nowrap; }
+.bets-table td { color: #d6deea; padding: 3px 6px 3px 0; border-top: 1px solid rgba(255, 255, 255, 0.06); white-space: nowrap; }
+.bets-table td.is-call b { color: #3ddc97; }
+.bets-table td.is-put b { color: #ff6b81; }
+.bets-table-note { color: #8b95a5; font-size: 11px; }

@@ -93,3 +93,16 @@ def test_nothing_says_what_to_buy_or_that_a_price_will_move():
 def test_money_words():
     assert ts.money(29_900_000) == "$30 million" and ts.money(4_000_000) == "$4.0 million"
     assert ts.money(273_600) == "$273,600" and ts.money(2_400_000_000) == "$2.4 billion"
+
+
+def test_todays_bets_carries_the_which_strike_table():
+    """2026-11-23 "$20 million went to calls which strike is that?" / "Above table I don't see in our app": the Today's
+    bets part carries the contracts that took the most money on each side (from the LEAP board's todayBets)."""
+    top_calls = [{"strike": 55.0, "expiry": "2026-11-20", "volume": 9000, "premium": 4_000_000, "share": 19, "fill": "ask"}]
+    top_puts = [{"strike": 95.0, "expiry": "2026-12-18", "volume": 50000, "premium": 29_900_000, "share": 14, "fill": "mid"}]
+    leap = {**LEAP, "byTicker": [{"ticker": "INTC", "todayBets": {"calls": 21_500_000, "puts": 209_000_000,
+                                                                  "topCalls": top_calls, "topPuts": top_puts}}]}
+    section = next(s for s in ts.build("INTC", leap, FLOW)["sections"] if s["title"] == "Today's bets")
+    assert section["table"] == {"calls": top_calls, "puts": top_puts}
+    plain = next(s for s in ts.build("INTC", LEAP, FLOW)["sections"] if s["title"] == "Today's bets")
+    assert "table" not in plain                                    # no LEAP line yet: no table, not an empty one

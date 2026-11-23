@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import BetsTable from "./BetsTable.jsx";
 import "./simpleWhy.css";
 import { MARKS } from "./simpleWhy.js";
 import { storyUrl, STORY_POLL_PENDING_MS, STORY_POLL_READY_MS } from "./tickerStory.js";
@@ -54,6 +55,7 @@ export default function TickerStory({ ticker, reveal = 0 }) {
                   <li key={line.text} className={`is-${line.mark}`}><span aria-hidden="true">{MARKS[line.mark]}</span> {line.text}</li>
                 ))}
               </ul>
+              {section.table ? <BetsTable calls={section.table.calls} puts={section.table.puts} /> : null}
             </div>
           ))}
           <p className="simple-why-meaning"><b>What this means: </b>{story.meaning}</p>
