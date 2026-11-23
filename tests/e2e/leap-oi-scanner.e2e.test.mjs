@@ -323,3 +323,48 @@ for (const [label, viewport] of WIDTHS) {
     });
   }, { timeout: 180_000 });
 }
+
+
+// 2026-11-23 "in leap oi scanner ... I want: Today's bets ... Calls got 73% of the money": the money into Calls vs
+// Puts today, on each ticker card and summed on its sector. A ticker AGX Flow has not read shows nothing.
+for (const [label, viewport] of WIDTHS) {
+  const phone = viewport === PHONE;
+  const size = viewport ? { viewport } : {};
+  e2eTest(`LEAP OI Scanner Today's bets at ${label}`, async () => {
+    const [first, ...rest] = real.byTicker;
+    const board = {
+      ...real,
+      byTicker: [{ ...first, todayBets: { calls: 20_000_000, puts: 7_400_000, at: real.asOf } },
+        ...rest.map((t) => ({ ...t, todayBets: null }))],
+    };
+    const reads = {
+      "GET /api/leap-oi-scanner": { json: board },
+      "GET /api/watchlist": { json: { tickers: ["PLTR", "NVDA", "AMD"] } },
+    };
+    await withApp({ view: "LEAP OI Scanner", ...size, fakeReads: reads }, async (app) => {
+      const { page } = app;
+      const view = page.locator(VIEW);
+      const cards = view.locator("[data-testid='leap-oi-ticker']");
+      await cards.first().waitFor({ timeout: 60_000 });
+      const card = cards.filter({ has: page.locator(".leapoi-tk", { hasText: new RegExp(`^${first.ticker}$`) }) });
+      const bets = card.locator("[data-testid='leap-oi-today-bets']");
+      await bets.waitFor({ timeout: 10_000 });
+      const text = await bets.innerText();
+      assert.match(text, /Today's bets/);
+      assert.match(text, /Today about \$20 million went into Calls \(bets the price goes up\) and \$7\.4 million into Puts \(bets it goes down\)\./);
+      assert.match(text, /Calls got 73% of the money\./);
+      assert.equal(await bets.getAttribute("data-side"), "calls");
+      if (rest.length) {
+        const quiet = cards.filter({ has: page.locator(".leapoi-tk", { hasText: new RegExp(`^${rest[0].ticker}$`) }) });
+        assert.equal(await quiet.locator("[data-testid='leap-oi-today-bets']").count(), 0);
+      }
+      // Its sector adds the same money up (the only ticker with a read here).
+      const sector = view.locator(`[data-testid='leap-oi-sector'][data-sector='${first.sector || "Other"}']`);
+      const summary = sector.locator("summary");
+      await (phone ? summary.tap() : summary.click());
+      assert.match(await sector.locator("[data-testid='leap-oi-today-bets']").first().innerText(), /Calls got 73% of the money/);
+      if (phone) assert.equal(await overflowsSideways(page), false);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  }, { timeout: 180_000 });
+}

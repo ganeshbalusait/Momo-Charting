@@ -95,3 +95,28 @@ def test_the_board_carries_flow_on_its_rows(tmp_path, monkeypatch):
     assert out["rows"][0]["flow"]["fill"] == "ask"
     assert out["biggestCall"]["flow"]["volume"] == 1200
     assert out["entries"][0]["flow"]["premium"] == 273600              # 1,200 contracts x mid 2.28 x 100 shares
+
+
+def test_todays_bets_sum_the_money_on_every_call_and_put_traded_today(tmp_path):
+    """2026-11-23 "in leap oi scanner ... I want: Today's bets ... Calls got 73% of the money": the same totals the
+    ticker story shows (AGX Flow, every contract it read, volume x mid x 100), per ticker."""
+    _flow_copy(tmp_path, "SMCI", [
+        _contract("CALL", "2026-12-04", 25.5, 1000, 500, 1.00, 0.95, 1.05),        # $100,000
+        _contract("CALL", "2027-06-17", 40.0, 0, 9000, 0.50, 0.45, 0.55),          # did not trade: $0
+        _contract("PUT", "2026-11-27", 25.0, 200, 800, 1.80, 1.75, 1.85),          # $36,000
+    ])
+    assert scanner.todays_bets("SMCI", tmp_path) == {"calls": 100000, "puts": 36000, "at": AT}
+    assert scanner.todays_bets("CRWV", tmp_path) is None                       # AGX Flow has not read it
+
+
+def test_the_board_puts_todays_bets_on_each_by_ticker_line(tmp_path, monkeypatch):
+    doc = {"schema": scanner.COMPACT_SCHEMA, "symbol": "INTC", "fetchedAt": AT, "spot": 54.6, "rows": [
+        {"side": "CALL", "expiry": "2027-06-17", "strike": 100.0, "days": 210, "oi": 49045, "volume": 0, "delta": 0.19,
+         "bid": 2.25, "ask": 2.31, "entry": True}]}
+    monkeypatch.setattr(scanner, "held", lambda ticker, root, now: doc if ticker in {"INTC", "AMD"} else None)
+    monkeypatch.setattr(scanner, "_schedule", lambda *a, **k: None)
+    _flow_copy(tmp_path, "INTC", [_contract("CALL", "2027-06-17", 100.0, 1200, 49045, 2.31, 2.25, 2.31)])
+    out = scanner.board(["INTC", "AMD"], tmp_path, datetime(2026, 11, 19, 23, 0, tzinfo=ET))
+    lines = {t["ticker"]: t for t in out["byTicker"]}
+    assert lines["INTC"]["todayBets"] == {"calls": 273600, "puts": 0, "at": AT}
+    assert lines["AMD"]["todayBets"] is None

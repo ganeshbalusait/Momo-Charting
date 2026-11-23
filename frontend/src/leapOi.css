@@ -143,3 +143,11 @@
 .leapoi-sector-name { font-size: 15px; }
 .leapoi-sector-tickers { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .leapoi-sector-tickers > li { border-top: 1px solid rgba(255, 255, 255, 0.06); padding-top: 8px; }
+
+/* Today's bets (2026-11-23): the money into Calls vs Puts today, in the ticker story's words. */
+.leapoi-bets { margin: 8px 0 4px; display: flex; flex-direction: column; gap: 2px; }
+.leapoi-bets-title { color: #8fa3c0; font-size: 12px; }
+.leapoi-bets p { margin: 0; font-size: 13px; line-height: 1.4; color: #d6deea; overflow-wrap: anywhere; }
+.leapoi-bets-lead { font-weight: 600; }
+.leapoi-bets-lead.is-put { color: #ff6b6b; }
+.leapoi-bets-lead.is-even { color: #c9d3e3; }

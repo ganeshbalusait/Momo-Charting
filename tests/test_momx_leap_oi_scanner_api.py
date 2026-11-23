@@ -183,3 +183,25 @@ def test_a_noon_read_stays_on_screen_with_its_time_and_the_close_is_read_again(w
     assert after["tickers"][0]["state"] == "ready" and at(after["rows"][0]) == datetime(2026, 11, 20, 12, 53, tzinfo=ET)
     assert at(fresh["rows"][0]) == datetime(2026, 11, 20, 16, 6, tzinfo=ET), fresh["rows"][0]
     assert world == ["NVDA", "NVDA"]                                       # one read at noon, one after the close
+
+
+def test_the_route_sends_todays_bets_from_agx_flows_read(world, tmp_path):
+    """2026-11-23 "in leap oi scanner ... I want: Today's bets": each By ticker line carries the money that went into
+    Calls vs Puts today (AGX Flow's saved read; never a new Schwab call for it)."""
+    from momx import agx_flow
+    from test_momx_leap_flow import AT, _contract, _flow_copy
+    agx_flow.reset()
+    _flow_copy(tmp_path, "NVDA", [
+        _contract("CALL", "2027-06-17", 200.0, 1000, 500, 1.00, 0.95, 1.05),      # $100,000 into Calls
+        _contract("PUT", "2027-06-17", 150.0, 200, 800, 1.80, 1.75, 1.85),        # $36,000 into Puts
+    ])
+    path = "/api/leap-oi-scanner?symbols=NVDA,AAPL&from=1&to=12"
+    try:
+        with running_api() as api:
+            status, body = _wait_ready(api, path, REGULAR)
+    finally:
+        agx_flow.reset()
+    assert status == 200 and body["pending"] == [], body
+    lines = {t["ticker"]: t for t in body["byTicker"]}
+    assert lines["NVDA"]["todayBets"] == {"calls": 100000, "puts": 36000, "at": AT}
+    assert lines["AAPL"]["todayBets"] is None                       # AGX Flow has not read AAPL

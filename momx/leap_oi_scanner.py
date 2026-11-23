@@ -404,6 +404,24 @@ def with_flow(rows: list[dict], root: Path) -> list[dict]:
     return rows
 
 
+def todays_bets(ticker: str, root: Path) -> dict | None:
+    """Today's money on Calls vs Puts for one ticker (2026-11-23, "in leap oi scanner ... I want: Today's bets ... Calls
+    got 73% of the money"): the same totals the ticker story shows, from AGX Flow's latest read (every contract it
+    read, any expiry: volume x mid x 100). {calls, puts, at} or None when AGX Flow has not read the ticker. Never asks
+    Schwab."""
+    from momx import agx_flow
+    doc = agx_flow._held(str(ticker or ""), Path(root)) if ticker else None
+    if not doc:
+        return None
+    totals = {"calls": 0, "puts": 0}
+    for contract in doc.get("contracts") or []:
+        if not isinstance(contract, dict) or int(contract.get("volume") or 0) <= 0:
+            continue
+        premium = agx_flow._flow_row(ticker, None, contract)["premium"]
+        totals["calls" if contract.get("side") == "CALL" else "puts"] += premium
+    return {**totals, "at": doc.get("fetchedAt")}
+
+
 def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from: int = 3, months_to: int = 12,
           side: str = "both", min_delta: float = long_oi.MIN_DELTA, entry_only: bool = False, wait: bool = False) -> dict:
     """The page's whole answer. Reads saved copies only; tickers without one are queued for the background reader
@@ -447,7 +465,9 @@ def board(symbols: Any, root: Path, now: datetime | None = None, *, months_from:
         puts = sum(r["oi"] for r in found if r["side"] == "PUT")
         status.append({"ticker": ticker, "state": "ready", "spot": doc.get("spot"), "readAt": doc.get("fetchedAt"),
                        "callOi": calls, "putOi": puts, "rows": len(found)})
-        by_ticker.append(_ticker_summary(ticker, doc.get("spot"), found))
+        line = _ticker_summary(ticker, doc.get("spot"), found)
+        line["todayBets"] = todays_bets(ticker, root)
+        by_ticker.append(line)
     if missing:
         _schedule(missing, root, front=True)               # what is on screen is read before the warm-up's queue
     if close_reads:

@@ -204,8 +204,13 @@ export function sectorGroups(byTicker) {
     const callOi = Number(line.callOi) || 0;
     const putOi = Number(line.putOi) || 0;
     const top = [line.call, line.put].filter(Boolean).sort((a, b) => (Number(b.oi) || 0) - (Number(a.oi) || 0))[0] || null;
-    if (!groups.has(sector)) groups.set(sector, { sector, callOi: 0, putOi: 0, oi: 0, tickers: [] });
+    if (!groups.has(sector)) groups.set(sector, { sector, callOi: 0, putOi: 0, oi: 0, todayBets: null, tickers: [] });
     const group = groups.get(sector);
+    if (line.todayBets) {
+      group.todayBets = group.todayBets || { calls: 0, puts: 0 };
+      group.todayBets.calls += Number(line.todayBets.calls) || 0;
+      group.todayBets.puts += Number(line.todayBets.puts) || 0;
+    }
     group.callOi += callOi;
     group.putOi += putOi;
     group.oi += callOi + putOi;
@@ -215,6 +220,32 @@ export function sectorGroups(byTicker) {
   return [...groups.values()]
     .map((group) => ({ ...group, tickers: group.tickers.sort((a, b) => byOi(a, b) || a.ticker.localeCompare(b.ticker)) }))
     .sort((a, b) => byOi(a, b) || a.sector.localeCompare(b.sector));
+}
+
+// Today's bets (2026-11-23, "in leap oi scanner ... I want: Today's bets ... Calls got 73% of the money"): the same
+// sentences as the ticker story (momx/ticker_story.py), from AGX Flow's latest read.
+export function betMoney(value) {
+  const n = Number(value) || 0;
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(1)} billion`;
+  if (n >= 1e7) return `$${Math.round(n / 1e6)} million`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(1)} million`;
+  return `$${Math.round(n).toLocaleString("en-US")}`;
+}
+
+export function todayBetsWords(bets) {
+  if (!bets) return null;
+  const calls = Number(bets.calls) || 0;
+  const puts = Number(bets.puts) || 0;
+  const total = calls + puts;
+  if (total <= 0) return { money: "No option trades in the latest read yet.", lead: "", side: "none", share: 0 };
+  const money = `Today about ${betMoney(calls)} went into Calls (bets the price goes up) and ${betMoney(puts)} into Puts (bets it goes down).`;
+  const callShare = calls / total;
+  if (callShare >= 0.45 && callShare <= 0.55) {
+    return { money, lead: "That is about even: neither side clearly led.", side: "even", share: Math.round(callShare * 100) };
+  }
+  const side = calls > puts ? "calls" : "puts";
+  const share = Math.round((Math.max(calls, puts) / total) * 100);
+  return { money, lead: `${side === "calls" ? "Calls" : "Puts"} got ${share}% of the money.`, side, share };
 }
 
 // The Recent row's Clear button (2026-11-22 "Recent I don't see the clear option").

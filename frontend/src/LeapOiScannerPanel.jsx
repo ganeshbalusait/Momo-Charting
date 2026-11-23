@@ -5,7 +5,7 @@ import "./simpleWhy.css";
 import {
   DELTAS, RANGES, SIDES, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi,
   BYTK_SORTS, boardTotals, cleanTicker, costText, dominance, filterByTicker, leftOutText, midText, searchNote, sortByTicker, spreadText, priceText, progressText, readAtText, scannerUrl,
-  addRecent, clearRecent, contractFacts, sectorGroups, moveText, oiChangeText, oiChangeTone, priceAgeText, readRecent, saveRecent, sinceText,
+  addRecent, clearRecent, contractFacts, sectorGroups, todayBetsWords, moveText, oiChangeText, oiChangeTone, priceAgeText, readRecent, saveRecent, sinceText,
 } from "./leapOi.js";
 import { LIVE_PRICE_POLL_MS, awayFrom, changeTone, quotesFrom, stockPrice, stockText, tickersOnScreen } from "./leapLivePrice.js";
 import { flowCell } from "./leapFlow.js";
@@ -224,6 +224,21 @@ export function Dominance({ calls, puts, format = formatOi, title, compact = fal
   );
 }
 
+// Today's bets (2026-11-23, "in leap oi scanner ... I want: Today's bets"): the money that went into Calls vs Puts
+// today, in the ticker story's own words. Nothing at all until AGX Flow has read the ticker.
+function TodayBets({ bets }) {
+  const words = todayBetsWords(bets);
+  if (!words) return null;
+  const tone = words.side === "calls" ? "is-call" : words.side === "puts" ? "is-put" : "is-even";
+  return (
+    <div className="leapoi-bets" data-testid="leap-oi-today-bets" data-side={words.side}>
+      <small className="leapoi-bets-title">Today's bets</small>
+      <p className="leapoi-bets-money">• {words.money}</p>
+      {words.lead ? <p className={`leapoi-bets-lead ${tone}`}>{words.side === "even" ? "• " : "✓ "}{words.lead}</p> : null}
+    </div>
+  );
+}
+
 // One grey line, tap to see the names: what the board leaves out (ETFs, stocks under $10).
 export function LeftOut({ excluded, minPrice, className }) {
   const text = leftOutText(excluded, minPrice);
@@ -256,6 +271,7 @@ function BySector({ list, onOpenChart, onPick }) {
               <small className="leapoi-dim">Calls {formatOi(group.callOi)} · Puts {formatOi(group.putOi)}</small>
             </summary>
             <Dominance calls={group.callOi} puts={group.putOi} compact />
+            <TodayBets bets={group.todayBets} />
             <ol className="leapoi-sector-tickers">
               {group.tickers.map((item) => (
                 <li key={item.ticker} data-testid="leap-oi-sector-ticker">
@@ -302,6 +318,7 @@ function ByTicker({ list, onOpenChart, onPick, quotes }) {
               <button type="button" onClick={() => onOpenChart?.(line.ticker)}>Chart ›</button>
             </div>
             <Dominance calls={line.callOi} puts={line.putOi} compact />
+            <TodayBets bets={line.todayBets} />
             <dl className="leapoi-card-grid leapoi-bytk-grid">
               <Pick label="Most call OI" row={line.call} onPick={onPick} />
               <Pick label="Most put OI" row={line.put} onPick={onPick} />

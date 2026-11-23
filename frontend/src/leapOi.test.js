@@ -254,3 +254,33 @@ test("priceAgeText names the read time once the prices are more than 15 minutes 
   assert.equal(priceAgeText({}, at("2026-11-20T17:39:00-05:00")), "");
   assert.equal(priceAgeText({ readAt: "not a time" }), "");
 });
+
+test("Today's bets in words: the ticker story's own sentences (2026-11-23)", async () => {
+  const { betMoney, todayBetsWords } = await import("./leapOi.js");
+  assert.equal(betMoney(20_000_000), "$20 million");
+  assert.equal(betMoney(7_400_000), "$7.4 million");
+  assert.equal(betMoney(565_136), "$565,136");
+  assert.equal(betMoney(1_250_000_000), "$1.3 billion");
+  const smci = todayBetsWords({ calls: 20_000_000, puts: 7_400_000 });
+  assert.equal(smci.money, "Today about $20 million went into Calls (bets the price goes up) and $7.4 million into Puts (bets it goes down).");
+  assert.equal(smci.lead, "Calls got 73% of the money.");
+  assert.equal(smci.side, "calls");
+  assert.equal(todayBetsWords({ calls: 1_000_000, puts: 3_000_000 }).lead, "Puts got 75% of the money.");
+  const even = todayBetsWords({ calls: 5_000_000, puts: 5_200_000 });
+  assert.equal(even.lead, "That is about even: neither side clearly led.");
+  assert.equal(even.side, "even");
+  assert.equal(todayBetsWords({ calls: 0, puts: 0 }).money, "No option trades in the latest read yet.");
+  assert.equal(todayBetsWords(null), null);
+});
+
+test("each sector adds up its tickers' Today's bets", async () => {
+  const { sectorGroups } = await import("./leapOi.js");
+  const [semis] = sectorGroups([
+    { ticker: "NVDA", sector: "Semis", callOi: 10, putOi: 5, todayBets: { calls: 3_000_000, puts: 1_000_000 } },
+    { ticker: "AMD", sector: "Semis", callOi: 4, putOi: 1, todayBets: { calls: 500_000, puts: 500_000 } },
+    { ticker: "MU", sector: "Semis", callOi: 1, putOi: 1, todayBets: null },
+  ]);
+  assert.deepEqual(semis.todayBets, { calls: 3_500_000, puts: 1_500_000 });
+  const [other] = sectorGroups([{ ticker: "ZZZ", callOi: 1, putOi: 0, todayBets: null }]);
+  assert.equal(other.todayBets, null, "no ticker read yet: no totals, not zeros");
+});
