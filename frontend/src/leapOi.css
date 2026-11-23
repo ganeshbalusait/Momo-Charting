@@ -152,3 +152,18 @@
 .leapoi-bets-lead.is-put { color: #ff6b6b; }
 .leapoi-bets-lead.is-even { color: #c9d3e3; }
 .leapoi-bets-strikes > summary { cursor: pointer; color: #8fb4ff; font-size: 12px; margin-top: 2px; }
+
+/* Phone compact table (2026-11-23 "big list have to scroll down more"). Desktop keeps its full table. */
+.leapoi-mini, .leapoi-phone-only { display: none; }
+@media (max-width: 760px) {
+  .leapoi-phone-only { display: block; margin: 6px 0; }
+  .leapoi-mini { display: table; width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; table-layout: auto; }
+  .leapoi-cards.is-hidden { display: none; }
+}
+.leapoi-mini th { text-align: left; color: #8b95a5; font-weight: 500; font-size: 11px; padding: 4px 4px; border-bottom: 1px solid #232c3b; }
+.leapoi-mini td { padding: 6px 4px; border-bottom: 1px solid #1a212d; vertical-align: top; }
+.leapoi-mini .num { text-align: right; white-space: nowrap; }
+.leapoi-mini td.num { position: relative; }
+.leapoi-mini .leapoi-rank { color: #8b95a5; width: 1.5em; }
+.leapoi-mini .leapoi-tag { margin-left: 4px; font-size: 10px; }
+.leapoi-mini-sub { display: block; color: #8b95a5; font-size: 11px; margin-top: 2px; }

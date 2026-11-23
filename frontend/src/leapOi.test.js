@@ -306,3 +306,11 @@ test("Which strikes took the money: one table row per contract (2026-11-23 \"whi
   assert.equal(betsTableRows([{ strike: 25, expiry: "2026-11-27", volume: 200, premium: 36000, share: 100, fill: "mid" }], "puts")[0].contract, "25 Put");
   assert.deepEqual(betsTableRows(null, "calls"), []);
 });
+
+test("phone contract lists open as a compact table unless Cards was picked (2026-11-23)", async () => {
+  const { PHONE_VIEWS, phoneViewFrom } = await import("./leapOi.js");
+  assert.deepEqual(PHONE_VIEWS.map((v) => v.id), ["table", "cards"]);
+  assert.equal(phoneViewFrom(null), "table");
+  assert.equal(phoneViewFrom("cards"), "cards");
+  assert.equal(phoneViewFrom("junk"), "table");
+});

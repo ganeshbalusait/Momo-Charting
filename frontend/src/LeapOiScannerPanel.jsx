@@ -5,7 +5,7 @@ import "./simpleWhy.css";
 import {
   DELTAS, RANGES, SIDES, awayText, barWidth, boardTickers, contractLabel, deltaText, expiryLabel, formatOi,
   BYTK_SORTS, boardTotals, cleanTicker, costText, dominance, filterByTicker, leftOutText, midText, searchNote, sortByTicker, spreadText, priceText, progressText, readAtText, scannerUrl,
-  addRecent, clearRecent, contractFacts, sectorGroups, todayBetsWords, moveText, oiChangeText, oiChangeTone, priceAgeText, readRecent, saveRecent, sinceText,
+  addRecent, clearRecent, contractFacts, sectorGroups, todayBetsWords, PHONE_VIEWS, PHONE_VIEW_KEY, phoneViewFrom, shortMoney, moveText, oiChangeText, oiChangeTone, priceAgeText, readRecent, saveRecent, sinceText,
 } from "./leapOi.js";
 import { LIVE_PRICE_POLL_MS, awayFrom, changeTone, quotesFrom, stockPrice, stockText, tickersOnScreen } from "./leapLivePrice.js";
 import { flowCell } from "./leapFlow.js";
@@ -395,7 +395,48 @@ function Hero({ title, row, onOpenChart, onPick, quotes }) {
   );
 }
 
-function Rows({ rows, onOpenChart, onPick, testId, quotes }) {
+// Phone compact table (2026-11-23, "instead of list can we do it table or another view because it's big list have to
+// scroll down more"): one short row per contract; tap a row for every detail in the contract card.
+function MiniRows({ rows, onPick, testId, top }) {
+  return (
+    <table className="leapoi-mini" data-testid={`${testId}-mini`}>
+      <thead>
+        <tr><th>#</th><th>Contract</th><th className="num">OI</th><th className="num">Mid</th><th className="num">Today</th></tr>
+      </thead>
+      <tbody>
+        {rows.map((row, index) => {
+          const tone = row.side === "PUT" ? "is-put" : "is-call";
+          const cell = flowCell(row);
+          const traded = Number(row.flow?.volume) > 0;
+          return (
+            <tr key={`${row.ticker}-${row.side}-${row.expiry}-${row.strike}`} className="leapoi-tap" data-testid={`${testId}-mini-row`}
+              {...pickProps({ ...row, rank: index }, onPick)}>
+              <td className="leapoi-rank">{index + 1}</td>
+              <td>
+                <b className="leapoi-tk">{row.ticker}</b> <b className={tone}>{contractLabel(row)}</b>
+                {row.entry ? <span className="leapoi-tag">ENTRY</span> : null}
+                <small className="leapoi-mini-sub">{expiryLabel(row.expiry)} · Δ {deltaText(row.delta)}</small>
+              </td>
+              <td className="num"><b>{formatOi(row.oi)}</b><OiChange row={row} short />
+                <i className={`leapoi-bar ${tone}`} style={{ width: `${barWidth(row.oi, top)}%` }} /></td>
+              <td className="num"><b>{midText(row)}</b><small className="leapoi-mini-sub">{costText(row)}</small></td>
+              <td className="num">
+                {traded ? (
+                  <>
+                    <span>{shortMoney(row.flow.premium)}</span>
+                    {cell.word ? <small className={`leapoi-mini-sub leapoi-flow ${cell.tone}`}>{cell.word}</small> : null}
+                  </>
+                ) : <small className="leapoi-dim">—</small>}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function Rows({ rows, onOpenChart, onPick, testId, quotes, phoneView = "table" }) {
   const top = rows.length ? Math.max(...rows.map((r) => r.oi || 0)) : 0;
   if (!rows.length) return <p className="leapoi-empty">Nothing in this range yet.</p>;
   return (
@@ -425,8 +466,9 @@ function Rows({ rows, onOpenChart, onPick, testId, quotes }) {
           })}
         </tbody>
       </table>
-      <div className="leapoi-cards">
-        {rows.map((row, index) => {
+      {phoneView === "table" ? <MiniRows rows={rows} onPick={onPick} testId={testId} top={top} /> : null}
+      <div className={`leapoi-cards${phoneView === "table" ? " is-hidden" : ""}`}>
+        {phoneView === "table" ? null : rows.map((row, index) => {
           const tone = row.side === "PUT" ? "is-put" : "is-call";
           return (
             <div className="leapoi-card leapoi-tap" key={`${row.ticker}-${row.side}-${row.expiry}-${row.strike}`} data-testid={`${testId}-card`} {...pickProps({ ...row, rank: index }, onPick)}>
@@ -467,6 +509,13 @@ export default function LeapOiScannerPanel({ onOpenChart, onOpenOptions }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [picked, setPicked] = useState(null);         // the contract whose facts card is open
+  const [phoneView, setPhoneViewState] = useState(() => {
+    try { return phoneViewFrom(window.localStorage.getItem(PHONE_VIEW_KEY)); } catch { return "table"; }
+  });
+  const setPhoneView = (value) => {
+    setPhoneViewState(value);
+    try { window.localStorage.setItem(PHONE_VIEW_KEY, value); } catch { /* private window */ }
+  };
 
   const setPref = (key, value) => {
     setPrefs((current) => {
@@ -582,15 +631,18 @@ export default function LeapOiScannerPanel({ onOpenChart, onOpenOptions }) {
           {payload.side === "both" ? (
             <Dominance title="Calls vs puts on this board" {...boardTotals(payload.byTicker)} />
           ) : null}
+          <div className="leapoi-phone-only" data-testid="leap-oi-phone-view">
+            <Chips label="View" value={phoneView} onChange={setPhoneView} items={PHONE_VIEWS} />
+          </div>
           <h3>ENTRY contracts with the most open interest</h3>
           <p className="leapoi-sub">Each expiry's ENTRY, picked exactly like the option chain: out of the money, delta just under 0.20.</p>
-          <Rows rows={(payload.entries || []).slice(0, 15)} onOpenChart={onOpenChart} onPick={setPicked} testId="leap-oi-entry-row" quotes={quotes} />
+          <Rows rows={(payload.entries || []).slice(0, 15)} onOpenChart={onOpenChart} onPick={setPicked} testId="leap-oi-entry-row" quotes={quotes} phoneView={phoneView} />
           <h3>All strikes with the most open interest</h3>
           <p className="leapoi-sub">Biggest open interest at the delta you picked. ENTRY tag when that strike is the chain's ENTRY. Tap a contract for its details.</p>
           <p className="leapoi-sub" data-testid="oi-change-note">{anyChange
             ? "Green or red next to open interest: the change since the previous day's read (new contracts opened or closed)."
             : "Open interest change since the previous day shows once a second day has been read."}</p>
-          <Rows rows={payload.rows || []} onOpenChart={onOpenChart} onPick={setPicked} testId="leap-oi-row" quotes={quotes} />
+          <Rows rows={payload.rows || []} onOpenChart={onOpenChart} onPick={setPicked} testId="leap-oi-row" quotes={quotes} phoneView={phoneView} />
           <BySector list={payload.byTicker || []} onOpenChart={onOpenChart} onPick={setPicked} />
           <ByTicker list={payload.byTicker || []} onOpenChart={onOpenChart} onPick={setPicked} quotes={quotes} />
           {errors.length ? <p className="leapoi-sub">Not read: {errors.map((t) => t.ticker).join(", ")} ({errors[0].error})</p> : null}

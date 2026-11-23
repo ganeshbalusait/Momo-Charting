@@ -38,7 +38,7 @@ for (const [label, viewport] of WIDTHS) {
       "GET /api/leap-oi-scanner": (read) => { asked.push(read.search || ""); return { json: real }; },
       "GET /api/watchlist": { json: { tickers: ["PLTR", "NVDA", "AMD"] } },
     };
-    await withApp({ view: "LEAP OI Scanner", ...size, fakeReads: reads }, async (app) => {
+    await withApp({ view: "LEAP OI Scanner", storage: { leapOiPhoneView: "cards" }, ...size, fakeReads: reads }, async (app) => {
       const { page } = app;
       const view = page.locator(VIEW);
       await view.waitFor({ timeout: 90_000 });
@@ -217,7 +217,7 @@ for (const [label, viewport] of WIDTHS) {
       "GET /api/leap-oi-scanner": (read) => { asked.push(decodeURIComponent(read.search || "")); return { json: board }; },
       "GET /api/watchlist": { json: { tickers: ["PLTR", "AMD"] } },
     };
-    await withApp({ view: "LEAP OI Scanner", ...size, fakeReads: reads }, async (app) => {
+    await withApp({ view: "LEAP OI Scanner", storage: { leapOiPhoneView: "cards" }, ...size, fakeReads: reads }, async (app) => {
       const { page } = app;
       const view = page.locator(VIEW);
       await view.locator(".leapoi-hero").first().waitFor({ timeout: 90_000 });
@@ -382,3 +382,52 @@ for (const [label, viewport] of WIDTHS) {
     });
   }, { timeout: 180_000 });
 }
+
+
+// 2026-11-23 "instead of list can we do it table or another view because it's big list have to scroll down more": on a
+// phone the contract lists open as a compact table (tap a row for the full card); Cards brings back the big cards and
+// is remembered.
+e2eTest("LEAP OI Scanner at phone width: compact table by default, Cards on request", async () => {
+  const reads = {
+    "GET /api/leap-oi-scanner": { json: real },
+    "GET /api/watchlist": { json: { tickers: ["PLTR", "NVDA", "AMD"] } },
+  };
+  await withApp({ view: "LEAP OI Scanner", viewport: PHONE, fakeReads: reads }, async (app) => {
+    const { page } = app;
+    const view = page.locator(VIEW);
+    const miniRows = view.locator("[data-testid='leap-oi-row-mini-row']");
+    await miniRows.first().waitFor({ timeout: 60_000 });
+    assert.equal(await miniRows.count(), real.rows.length);
+    assert.equal(await view.locator("[data-testid='leap-oi-row-card']").count(), 0, "no big cards in Table view");
+    const top = real.rows[0];
+    const first = await miniRows.first().innerText();
+    assert.match(first, new RegExp(`${top.ticker}[\s\S]*${String(top.strike).replace(".", "\.")} ${top.side === "PUT" ? "Put" : "Call"}`));
+    assert.match(first, new RegExp(Number(top.oi).toLocaleString("en-US")));
+    // Rows are short: several fit where one card used to.
+    const box = await miniRows.first().boundingBox();
+    assert.ok(box && box.height < 110, `a table row is ${box?.height}px tall`);
+    assert.equal(await overflowsSideways(page), false);
+    // Tap a row: the full contract card opens.
+    await miniRows.first().tap();
+    await page.getByTestId("contract-sheet").waitFor({ timeout: 5_000 });
+    await page.keyboard.press("Escape");
+    // Cards: the big cards come back, and the choice is remembered.
+    const cards = view.getByTestId("leap-oi-phone-view").getByRole("button", { name: "Cards" });
+    await cards.tap();
+    await view.locator("[data-testid='leap-oi-row-card']").first().waitFor({ timeout: 5_000 });
+    assert.equal(await miniRows.count(), 0);
+    assert.equal(await page.evaluate(() => window.localStorage.getItem("leapOiPhoneView")), "cards");
+    assert.deepEqual(app.pageErrors, []);
+  });
+}, { timeout: 180_000 });
+
+e2eTest("LEAP OI Scanner on desktop keeps its full table and shows no phone switch", async () => {
+  const reads = { "GET /api/leap-oi-scanner": { json: real }, "GET /api/watchlist": { json: { tickers: ["NVDA"] } } };
+  await withApp({ view: "LEAP OI Scanner", fakeReads: reads }, async (app) => {
+    const view = app.page.locator(VIEW);
+    await view.locator("[data-testid='leap-oi-row']").first().waitFor({ timeout: 60_000 });
+    assert.equal(await view.getByTestId("leap-oi-phone-view").isVisible(), false);
+    assert.equal(await view.locator("[data-testid='leap-oi-row-mini']").first().isVisible(), false);
+    assert.deepEqual(app.pageErrors, []);
+  });
+}, { timeout: 180_000 });

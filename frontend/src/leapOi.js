@@ -248,6 +248,15 @@ export function todayBetsWords(bets) {
   return { money, lead: `${side === "calls" ? "Calls" : "Puts"} got ${share}% of the money.`, side, share };
 }
 
+// Phone view of the contract lists (2026-11-23, "instead of list can we do it table or another view because it's big
+// list have to scroll down more"): a compact table by default; the big cards stay one tap away.
+export const PHONE_VIEW_KEY = "leapOiPhoneView";
+export const PHONE_VIEWS = [{ id: "table", label: "Table" }, { id: "cards", label: "Cards" }];
+
+export function phoneViewFrom(saved) {
+  return saved === "cards" ? "cards" : "table";
+}
+
 // "Which strike is that?" (2026-11-23): the contracts that took the most money today, one table row each.
 export function shortMoney(value) {
   const n = Number(value) || 0;

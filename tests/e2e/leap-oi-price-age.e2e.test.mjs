@@ -54,7 +54,7 @@ for (const [label, viewport] of WIDTHS) {
       "GET /api/watchlist": { json: { tickers: [] } },
       "GET /api/watchlist-quotes": { json: { rows: [] } },
     };
-    await withApp({ view: "LEAP OI Scanner", ...size, fakeReads: reads }, async (app) => {
+    await withApp({ view: "LEAP OI Scanner", storage: { leapOiPhoneView: "cards" }, ...size, fakeReads: reads }, async (app) => {
       const { page } = app;
       const view = page.locator(VIEW);
       const hero = view.locator(".leapoi-hero").first();
@@ -79,7 +79,7 @@ for (const [label, viewport] of WIDTHS) {
       "GET /api/watchlist": { json: { tickers: [] } },
       "GET /api/watchlist-quotes": { json: { rows: [] } },
     };
-    await withApp({ view: "LEAP OI Scanner", ...size, fakeReads: reads }, async (app) => {
+    await withApp({ view: "LEAP OI Scanner", storage: { leapOiPhoneView: "cards" }, ...size, fakeReads: reads }, async (app) => {
       const { page } = app;
       const view = page.locator(VIEW);
       await view.locator(".leapoi-hero").first().waitFor({ timeout: 90_000 });
