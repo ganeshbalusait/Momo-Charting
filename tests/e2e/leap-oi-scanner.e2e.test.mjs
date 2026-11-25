@@ -401,7 +401,7 @@ e2eTest("LEAP OI Scanner at phone width: compact table by default, Cards on requ
     assert.equal(await view.locator("[data-testid='leap-oi-row-card']").count(), 0, "no big cards in Table view");
     const top = real.rows[0];
     const first = await miniRows.first().innerText();
-    assert.match(first, new RegExp(`${top.ticker}[\s\S]*${String(top.strike).replace(".", "\.")} ${top.side === "PUT" ? "Put" : "Call"}`));
+    assert.match(first, new RegExp(`${top.ticker}[\\s\\S]*${String(top.strike).replace(".", "\\.")} ${top.side === "PUT" ? "Put" : "Call"}`));
     assert.match(first, new RegExp(Number(top.oi).toLocaleString("en-US")));
     // Rows are short: several fit where one card used to.
     const box = await miniRows.first().boundingBox();
