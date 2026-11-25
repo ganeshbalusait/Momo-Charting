@@ -95,3 +95,22 @@ def test_the_admins_own_grid_wins_over_a_legacy_grid_of_the_same_name(grid_file)
         "version": 2, "users": {"owner@example.com": {"Mags": newer}}, "_legacy": {"Mags": GRID, "Old": GRID},
     }), encoding="utf-8")
     assert api_server._chart_grids_for_user(ADMIN) == {"Mags": newer, "Old": GRID}
+
+
+# 2026-11-25: the morning checklist flagged "GOOGLE (Mags panel 3)" again two days after the file was fixed by hand -
+# another account's browser re-saved its old copy. The store now writes the real ticker whatever the browser sends.
+def test_a_save_holding_the_retired_GOOGLE_ticker_is_stored_as_GOOGL(grid_file):
+    mags = {"savedAt": "2026-08-31T14:37:32.665Z", "workspace": {"layoutId": "grid10", "panels": [
+        {"symbol": "AAPL"}, {"symbol": "GOOGLE", "timeframe": "5m"}, {"symbol": "google"}]}}
+    api_server._save_chart_grids_for_user(MEMBER, {"Mags": mags})
+    panels = json.loads(grid_file.read_text(encoding="utf-8"))["users"]["member@example.com"]["Mags"]["workspace"]["panels"]
+    assert [p["symbol"] for p in panels] == ["AAPL", "GOOGL", "GOOGL"]
+    assert panels[1]["timeframe"] == "5m"
+    assert mags["workspace"]["panels"][1]["symbol"] == "GOOGLE", "the caller's object is not changed in place"
+
+
+def test_a_stored_GOOGLE_is_read_back_as_GOOGL_so_the_browser_corrects_its_copy(grid_file):
+    grid_file.write_text(json.dumps({"version": 2, "users": {"member@example.com": {
+        "Mags": {"workspace": {"panels": [{"symbol": "GOOGLE"}, {"symbol": "GOOG"}]}}}}}), encoding="utf-8")
+    panels = api_server._chart_grids_for_user(MEMBER)["Mags"]["workspace"]["panels"]
+    assert [p["symbol"] for p in panels] == ["GOOGL", "GOOG"], "GOOG is a real ticker and stays"

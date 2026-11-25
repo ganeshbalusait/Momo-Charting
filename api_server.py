@@ -21415,7 +21415,32 @@ def _load_chart_grids_document() -> dict:
     return {"version": CHART_GRIDS_VERSION, "users": {}, "_legacy": legacy}
 
 
+# Tickers that do not exist at the broker but keep coming back in saved layouts (2026-11-25: "GOOGLE (Mags panel 3)"
+# returned two days after a hand fix because another account's browser re-saved its old copy). A chart on one of
+# these rebuilds every 30 s and never succeeds, so the store writes, and reads back, the real ticker.
+_GRID_SYMBOL_FIXES = {"GOOGLE": "GOOGL"}
+
+
+def _fix_grid_symbols(value):
+    """A copy of ``value`` with every ``symbol`` in _GRID_SYMBOL_FIXES replaced. The input is not changed."""
+    if isinstance(value, dict):
+        fixed = {}
+        for key, item in value.items():
+            if key == "symbol" and isinstance(item, str):
+                fixed[key] = _GRID_SYMBOL_FIXES.get(item.strip().upper(), item)
+            else:
+                fixed[key] = _fix_grid_symbols(item)
+        return fixed
+    if isinstance(value, list):
+        return [_fix_grid_symbols(item) for item in value]
+    return value
+
+
 def _chart_grids_for_user(user) -> dict:
+    return _fix_grid_symbols(_chart_grids_for_user_raw(user))
+
+
+def _chart_grids_for_user_raw(user) -> dict:
     document = _load_chart_grids_document()
     key = _chart_grids_user_key(user)
     grids = document["users"].get(key)
@@ -21435,7 +21460,7 @@ def _save_chart_grids_for_user(user, grids: dict) -> int:
     users = document["users"]
     key = _chart_grids_user_key(user)
     users[key] = {
-        str(name): value
+        str(name): _fix_grid_symbols(value)
         for name, value in grids.items()
         if isinstance(name, str) and isinstance(value, (dict, list))
     }

@@ -99,3 +99,14 @@ def test_a_signed_out_tunnel_visitor_cannot_read_or_write_grids(grid_file):
         post_status, _ = api.post("/api/chart-grids", {"grids": {"X": MORNING}}, headers=RELAYED)
     assert (get_status, post_status) == (401, 401)
     assert not grid_file.exists()
+
+
+def test_a_browser_saving_the_old_GOOGLE_layout_gets_GOOGL_back_and_on_disk(grid_file):
+    # 2026-11-25: a second account's browser kept re-saving Mags with GOOGLE, undoing the hand fix of 11-23.
+    mags = {"savedAt": "2026-08-31T14:37:32.665Z", "workspace": {"layoutId": "grid10", "panels": [{"symbol": "AAPL"}, {"symbol": "GOOGLE"}]}}
+    with running_api() as api:
+        status, _ = api.post("/api/chart-grids", {"grids": {"Mags": mags}}, headers=MEMBER)
+        get_status, body = api.get("/api/chart-grids", headers=MEMBER)
+    assert (status, get_status) == (200, 200)
+    assert [p["symbol"] for p in body["grids"]["Mags"]["workspace"]["panels"]] == ["AAPL", "GOOGL"]
+    assert "GOOGLE" not in grid_file.read_text(encoding="utf-8")
