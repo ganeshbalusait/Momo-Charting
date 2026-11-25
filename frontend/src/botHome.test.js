@@ -563,3 +563,17 @@ test("a tab tapped on an older page opens the home page on that section (2026-11
   assert.equal(homeStartSection(null, "trades"), "trades");
   assert.equal(homeStartSection("nonsense", "more"), "home");
 });
+
+test("the older Bot pages' new look restyles chrome only, never the colours that carry meaning (2026-11-25)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("./botHome.css", import.meta.url), "utf8");
+  const skin = css.slice(css.indexOf("The older Bot pages in the new look"));
+  assert.ok(skin.length > 500);
+  for (const cls of [".tt-card", ".desk-card", ".bot-card", ".chat-log", ".bot-kpi", ".bot-seg", ".desk-switch", ".bot-head"]) assert.ok(skin.includes(cls), cls);
+  // Status pills, fill labels, warning notes, win / loss numbers and the truth / Jev notes keep their own colours.
+  for (const cls of [".desk-status", ".desk-fill", ".is-warn", ".desk-stamp", ".bot-truth", ".bot-jevbook-note", ".tt-row-pct", ".is-up", ".is-down", ".desk-cal-cell"]) {
+    assert.ok(!skin.includes(cls), `${cls} must not be restyled`);
+  }
+  // No size, padding of cards, or font-size changes: nothing may reflow.
+  assert.ok(!/font-size|width:|height:|margin/.test(skin));
+});

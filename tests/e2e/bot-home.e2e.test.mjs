@@ -369,10 +369,22 @@ for (const [label, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
       // The panel row is above everything else on the page.
       const tops = await root.evaluate((el) => [el.querySelector("[data-testid='bh-panels']"), el.querySelector(".bh-top")].map((n) => n.getBoundingClientRect().top));
       assert.ok(tops[0] < tops[1]);
-      for (const [name, word, landed] of [["ticker", "Ticker", "[data-testid='ticker-trader']"], ["research", "Research", "section.bot-kpis[aria-label='Totals']"],
-        ["scorecard", "Scorecard", "[data-testid='bot-desk']"], ["ask", "Ask", "[data-testid='bot-chat']"]]) {
+      // Each older page wears the new look (his "Change with new Ui", "Yes"): its cards are the home page's
+      // card colour with no outline, and the page header is a plain title line, not a card.
+      const CARD = "rgb(18, 26, 42)";
+      for (const [name, word, landed, card] of [["ticker", "Ticker", "[data-testid='ticker-trader']", ".tt-card"],
+        ["research", "Research", "section.bot-kpis[aria-label='Totals']", ".bot-kpi"],
+        ["scorecard", "Scorecard", "[data-testid='bot-desk']", ".desk-card"], ["ask", "Ask", "[data-testid='bot-chat']", ".chat-log"]]) {
         await page.locator(`[data-testid='bot-view'] ${tid(`bh-panel-${name}`)}`).click();
         await page.locator(landed).first().waitFor({ timeout: 60_000 });
+        await page.locator(`[data-testid='bot-view'] ${card}`).first().waitFor({ timeout: 30_000 });
+        const look = await page.evaluate((sel) => {
+          const css = (el) => { const c = getComputedStyle(el); return [c.backgroundColor, c.borderTopColor]; };
+          return { card: css(document.querySelector(`[data-testid='bot-view'] ${sel}`)), head: css(document.querySelector(".bot-view .bot-head")),
+            pick: getComputedStyle(document.querySelector(".bot-view .bot-view-switch button[aria-pressed='true']") || document.querySelector(".bot-view .bot-view-switch button")).backgroundColor };
+        }, card);
+        assert.deepEqual(look.card, [CARD, "rgba(0, 0, 0, 0)"], `${name}: card colour and no outline`);
+        assert.deepEqual(look.head, ["rgba(0, 0, 0, 0)", "rgba(0, 0, 0, 0)"], `${name}: the header is not a card`);
         assert.deepEqual(await lit(), [word]);
         assert.deepEqual(await fits(), []);
         assert.equal(await overflowsSideways(page), false);

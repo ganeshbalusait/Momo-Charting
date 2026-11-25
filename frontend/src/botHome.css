@@ -153,3 +153,47 @@
 .bh-panels button { flex: 1 0 auto; min-width: 44px; padding: 0 2px; font-size: 13px; overflow: visible; }
 .bh-panels button[aria-pressed="true"] { background: var(--bh-accent-bg); color: var(--bh-accent); box-shadow: inset 0 -2px 0 var(--bh-accent); }
 @media (min-width: 560px) { .bh-panels button { font-size: 14px; } }
+
+/* ---------------------------------------------------------------------------------------------
+   The older Bot pages in the new look (2026-11-25, his "Change with new Ui", then "Yes"): Ticker
+   trader, Full scorecard, Research and Ask take the home page's chrome: soft borderless cards on
+   one card colour, darker wells inside them, rounded switches with a filled pick, pill buttons.
+   Chrome only. Signal colours, win / loss colours, warning notes, tables and numbers are untouched
+   (his rule: restyle the panel, not what is inside it). No sizes change, so nothing reflows.
+   --------------------------------------------------------------------------------------------- */
+.bot-view { --bs-card: #121a2a; --bs-well: #0e1522; --bs-edge: #2a3650; --bs-pick: #24324d; --bs-fg: #eef2f8; --bs-mute: #9aa8c0; }
+
+/* The page header: a quiet title line, not a third heavy card under the two rows of tabs. */
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-head { background: transparent !important; border-color: transparent !important; box-shadow: none !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-head h2 { font-weight: 700 !important; letter-spacing: -0.01em !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-badge { border-color: var(--bs-edge) !important; background: var(--bs-well) !important; }
+
+/* Cards. */
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-card, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-card, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-controls, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-how, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-card,
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .chat-log, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-quick-trade, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-verdict {
+  background: var(--bs-card) !important; border-radius: 16px !important; box-shadow: none !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-card, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-card, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-controls, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-how, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-card,
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .chat-log, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-quick-trade { border-color: transparent !important; }
+
+/* Tiles and rows inside the cards: the darker well. */
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-tile, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-tile, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-check, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-kpi, :root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-row, :root .app-shell.app-shell .bot-view.bot-view.bot-view .chat-card-wait {
+  background: var(--bs-well) !important; border-color: transparent !important; border-radius: 12px !important; box-shadow: none !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-kpi { background: var(--bs-card) !important; border-radius: 16px !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-card th, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-card th { background: var(--bs-card) !important; }
+
+/* Switches: a dark well with the pick filled in, no underline. */
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-seg, :root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-side, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-switch {
+  background: var(--bs-well) !important; border-color: transparent !important; border-radius: 12px !important; padding: 4px !important; gap: 4px; overflow: hidden; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-seg button, :root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-side button, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-switch button {
+  border-radius: 9px !important; border-color: transparent !important; box-shadow: none !important; color: var(--bs-mute); }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-seg button.is-on, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-seg button[aria-pressed="true"], :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-switch button[aria-pressed="true"],
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-switch button.is-on { background: var(--bs-pick) !important; color: #fff !important; }
+
+/* Buttons and fields. */
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-btn, :root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-ghost, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-refresh, :root .app-shell.app-shell .bot-view.bot-view.bot-view .chat-chip, :root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-chart {
+  border-radius: 999px !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-btn, :root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-ghost, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-refresh, :root .app-shell.app-shell .bot-view.bot-view.bot-view .chat-chip { border-color: var(--bs-edge) !important; background: var(--bs-well) !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-primary, :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-quick-go, :root .app-shell.app-shell .bot-view.bot-view.bot-view .chat-send { border-radius: 12px !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-paper-select, :root .app-shell.app-shell .bot-view.bot-view.bot-view .chat-input, :root .app-shell.app-shell .bot-view.bot-view.bot-view .tt-card input[type="text"], :root .app-shell.app-shell .bot-view.bot-view.bot-view .bot-quick-trade input {
+  background: var(--bs-well) !important; border-color: var(--bs-edge) !important; border-radius: 12px !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-answer, :root .app-shell.app-shell .bot-view.bot-view.bot-view .desk-journal-trades { border-color: var(--bs-edge) !important; border-radius: 12px !important; }

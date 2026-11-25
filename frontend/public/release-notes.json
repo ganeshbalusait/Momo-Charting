@@ -2,19 +2,19 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-25T09:21:06-05:00",
+      "heading": "Bot: Ticker trader, Scorecard, Research and Ask in the new look",
+      "items": [
+        "The four older Bot pages now match the new Bot page: soft cards with no outlines, darker boxes inside them, rounded switches with the chosen one filled in, and pill buttons.",
+        "Only the frame changed. Win and loss colours, status labels, warnings, tables and every number are the same as before."
+      ]
+    },
+    {
       "at": "2026-11-25T09:02:00-05:00",
       "heading": "Morning checklist: the GOOGLE layout typo stays fixed",
       "items": [
         "The 8:45 checklist flagged \"GOOGLE (Mags panel 3)\" again because a second account's browser re-saved its old copy of the Mags layout.",
         "Saved layouts now always store GOOGL, whatever an old browser copy sends, and that browser picks up GOOGL the next time it loads its layouts."
-      ]
-    },
-    {
-      "at": "2026-11-25T08:51:37-05:00",
-      "heading": "Bot: Ticker trader, Scorecard, Research and Ask in the new look",
-      "items": [
-        "The four older Bot pages now match the new Bot page: soft cards with no outlines, darker boxes inside them, rounded switches with the chosen one filled in, and pill buttons.",
-        "Only the frame changed. Win and loss colours, status labels, warnings, tables and every number are the same as before."
       ]
     },
     {
