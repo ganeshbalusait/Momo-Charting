@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { DESK_ACCOUNT_KEY, DESK_SAVED_KEY, DESK_URL, deskAccountLabel, readSavedDesk } from "./botDesk.js";
 import { truthAccountLabel } from "./botTruth.js";
 import {
-  HOME_ACCOUNTS, HOME_KEPT_SECTIONS, HOME_MORE, HOME_PERIODS, HOME_REFRESH_MS, HOME_SECTIONS, HOME_SECTION_KEY,
+  homeStartSection, HOME_ACCOUNTS, HOME_KEPT_SECTIONS, HOME_MORE, HOME_PERIODS, HOME_REFRESH_MS, HOME_SECTIONS, HOME_SECTION_KEY,
   homeCalendar, homeCallsPuts, homeChecks, homeClosedTrades, homeDayHead, homeFreshness, homeJournalTiles, homeLessons,
   homeMonths, homeNewestDay, homePeriodRows, homeResult, homeSpark, homeState, homeTiles, homeTopLesson, homeTrades,
   homeVerdict, readHomeAccount, readHomeSection,
@@ -327,7 +327,7 @@ export default function BotHome({ onOpen, initialSection }) {
   const state = useDesk();
   const { doc } = state;
   const rootRef = useRef(null);
-  const [section, setSectionState] = useState(() => readHomeSection(initialSection || stored(HOME_SECTION_KEY)));
+  const [section, setSectionState] = useState(() => homeStartSection(initialSection, stored(HOME_SECTION_KEY)));
   const [accountPick, setAccountPick] = useState(() => stored(DESK_ACCOUNT_KEY) || "");
   const [openId, setOpenId] = useState(null);
   const account = readHomeAccount(accountPick, doc);

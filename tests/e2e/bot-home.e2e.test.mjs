@@ -6,7 +6,7 @@
 // How the spec reaches the page (the mount must match):
 //   * left-rail view "Bot" (agenticActiveView), with localStorage "bot.view" = "home"
 //   * the page is [data-testid='bh-root'] inside [data-testid='bot-view']
-//   * a "More" row replaces it with the older page plus a [data-testid='bh-back'] button that returns
+//   * a "More" row replaces it with the older page plus the six Bot tabs ([data-testid='bh-oldnav']) that return
 
 import assert from "node:assert/strict";
 
@@ -302,15 +302,21 @@ async function wholeFlow(app, { phone }) {
 async function moreAndBack(app, name, landed) {
   const page = app.page;
   await page.locator(`${ROOT} ${tid(`bh-more-${name}`)}`).click();
-  const back = page.locator(`[data-testid='bot-view'] ${tid("bh-back")}`);
+  // 2026-11-25: the older pages carry the six Bot tabs (More lit) instead of the lone back button.
+  const nav = page.locator(`[data-testid='bot-view'] ${tid("bh-oldnav")}`);
+  const back = nav.locator(tid("bh-go-home"));
   await back.waitFor({ timeout: 30_000 });
+  assert.deepEqual(await texts(nav.locator("button")), ["Home", "Journal", "Trades", "Learned", "Ready", "More"]);
+  assert.deepEqual(await texts(nav.locator("button[aria-pressed='true']")), ["More"]);
+  const small = await nav.locator("button").evaluateAll((els) => els.filter((el) => el.getBoundingClientRect().width < 44 || el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent));
+  assert.deepEqual(small, []);
   assert.equal(await page.locator(ROOT).count(), 0, `"${name}" replaces the home page`);
   if (landed) await page.locator(landed).first().waitFor({ timeout: 60_000 });
   const box = await back.boundingBox();
   assert.ok(box.height >= 44, "Back to Bot is big enough for a thumb");
   await back.click();
   await page.locator(`${ROOT} ${tid("bh-section-home")} ${tid("bh-state")}`).waitFor({ timeout: 30_000 });
-  assert.equal(await page.locator(`[data-testid='bot-view'] ${tid("bh-back")}`).count(), 0);
+  assert.equal(await page.locator(`[data-testid='bot-view'] ${tid("bh-oldnav")}`).count(), 0);
 }
 
 e2eTest("the Bot page opens on the new home: state first, five screens, one read, no writes", async () => {
@@ -360,13 +366,17 @@ for (const [label, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
         ["Trade one ticker", "Full scorecard", "Research: every signal, simulated", "Ask the bot"]);
       await app.page.locator(`${ROOT} ${tid("bh-more-research")}`).click();
       await app.page.locator("section.bot-kpis[aria-label='Totals']").first().waitFor({ timeout: 60_000 });
-      await app.page.locator(`[data-testid='bot-view'] ${tid("bh-back")}`).click();
-      // Back lands on the last real section, not on the More tab.
-      await app.page.locator(`${ROOT} ${tid("bh-section-journal")}`).waitFor({ timeout: 30_000 });
+      // The Trades tab on the Research page goes straight to Trades; Journal on the next page to Journal.
+      await app.page.locator(`[data-testid='bot-view'] ${tid("bh-go-trades")}`).click();
+      await app.page.locator(`${ROOT} ${tid("bh-section-trades")}`).waitFor({ timeout: 30_000 });
       await go(app.page.locator(ROOT), "more");
       await app.page.locator(`${ROOT} ${tid("bh-more-ticker")}`).click();
       await app.page.locator("[data-testid='ticker-trader']").first().waitFor({ timeout: 60_000 });
       assert.equal(await overflowsSideways(app.page), false);
+      await app.page.locator(`[data-testid='bot-view'] ${tid("bh-go-journal")}`).click();
+      await app.page.locator(`${ROOT} ${tid("bh-section-journal")}`).waitFor({ timeout: 30_000 });
+      await app.page.reload();
+      await app.page.locator(`${ROOT} ${tid("bh-section-journal")}`).waitFor({ timeout: 60_000 });
       assert.deepEqual(app.writes, []);
       assert.deepEqual(app.pageErrors, []);
     });

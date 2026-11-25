@@ -617,3 +617,8 @@ export function botMoreTarget(name) {
   if (name === "research") return { view: "research", ticker: false };
   return null;
 }
+
+/** The section the home page opens on: one asked for by name (a tab tapped on an older page) wins over the remembered one. */
+export function homeStartSection(asked, stored) {
+  return HOME_SECTIONS.some(([key]) => key === asked) ? asked : readHomeSection(stored);
+}

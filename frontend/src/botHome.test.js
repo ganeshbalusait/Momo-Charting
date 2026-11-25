@@ -549,3 +549,11 @@ test("the More tab is in reach from every section and is not the page the Bot re
   assert.equal(readHomeSection("more"), "home");
   assert.equal(readHomeSection("journal"), "journal");
 });
+
+test("a tab tapped on an older page opens the home page on that section (2026-11-25)", async () => {
+  const { homeStartSection } = await import("./botHome.js");
+  assert.equal(homeStartSection("journal", "trades"), "journal");
+  assert.equal(homeStartSection("more", "trades"), "more");
+  assert.equal(homeStartSection(null, "trades"), "trades");
+  assert.equal(homeStartSection("nonsense", "more"), "home");
+});

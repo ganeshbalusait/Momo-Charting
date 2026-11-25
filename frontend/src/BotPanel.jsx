@@ -14,7 +14,7 @@ import BotDesk from "./BotDesk.jsx";
 import BotChat from "./BotChat.jsx";
 import TickerTrader from "./TickerTrader.jsx";
 import BotHome from "./BotHome.jsx";
-import { HOME_SEEN_KEY, botLanding, botMoreTarget } from "./botHome.js";
+import { HOME_KEPT_SECTIONS, HOME_SECTIONS, HOME_SECTION_KEY, HOME_SEEN_KEY, botLanding, botMoreTarget } from "./botHome.js";
 import { TICKER_TRADER_KEY } from "./tickerTrader.js";
 import { captureEntryLegLines, captureReasonLines } from "./botCapture.js";
 import { DESK_VIEW_KEY, readDeskView, botTradePlanLine, deskPlan, paperRowPlan } from "./botDesk.js";
@@ -1588,11 +1588,24 @@ export default function BotPanel() {
     if (target.ticker !== null) { try { window.localStorage.setItem(TICKER_TRADER_KEY, target.ticker ? "1" : "0"); } catch { /* private window */ } }
     setViewState(target.view);
   };
-  const goHome = () => { fromHome.current = false; setView("home"); };
-  if (view === "home") return <BotHome onOpen={openMore} />;
+  // 2026-11-25 (his "But add this also Home Journal Trades Learned Ready", on the Ticker trader): the older
+  // pages carry the same six tabs as the home page, with More lit, so every Bot screen has one way around.
+  // It replaces the lone "Bot" back button.
+  const landOn = useRef(null);
+  const goHome = (section) => {
+    fromHome.current = false;
+    landOn.current = section || null;
+    if (HOME_KEPT_SECTIONS.includes(section)) { try { window.localStorage.setItem(HOME_SECTION_KEY, section); } catch { /* private window */ } }
+    setView("home");
+  };
+  if (view === "home") return <BotHome onOpen={openMore} initialSection={landOn.current} />;
   const backBar = (
-    <div className="bot-back-bar">
-      <button type="button" className="bot-back" data-testid="bh-back" onClick={goHome}>‹ Bot</button>
+    <div className="bh bh-oldnav" data-testid="bh-oldnav">
+      <nav className="bh-seg bh-sections" role="group" aria-label="Bot sections">
+        {HOME_SECTIONS.map(([key, label]) => (
+          <button type="button" key={key} data-testid={"bh-go-" + key} aria-pressed={key === "more"} onClick={() => goHome(key)}>{label}</button>
+        ))}
+      </nav>
     </div>
   );
   const viewSwitch = (
