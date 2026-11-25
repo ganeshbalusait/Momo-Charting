@@ -323,7 +323,7 @@ function Ready({ doc, acct }) {
   );
 }
 
-export default function BotHome({ onOpen, initialSection }) {
+export default function BotHome({ onOpen, initialSection, top }) {
   const state = useDesk();
   const { doc } = state;
   const rootRef = useRef(null);
@@ -351,6 +351,7 @@ export default function BotHome({ onOpen, initialSection }) {
 
   return (
     <div className="bh" ref={rootRef} data-testid="bh-root">
+      {top || null}
       <header className="bh-top">
         <h2>Bot</h2>
         {fresh.text ? <span className={"bh-fresh bh-num is-" + (fresh.tone || "plain")} data-testid="bh-fresh" role="status">{fresh.text}</span> : null}
@@ -373,7 +374,7 @@ export default function BotHome({ onOpen, initialSection }) {
       </nav>
 
       <section className="bh-body" data-testid={"bh-section-" + section} aria-label={HOME_SECTIONS.find(([key]) => key === section)[1]}>
-        {section === "more" ? <More onOpen={onOpen} /> : !doc ? (
+        {!doc ? (
           <Empty title={state.failed ? "Could not load the bot's numbers" : "Loading the bot's numbers…"}
             line={state.failed ? "The app will try again in a minute." : "This takes a few seconds the first time."} />
         ) : !hasAccounts ? (

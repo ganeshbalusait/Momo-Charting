@@ -14,7 +14,7 @@ import BotDesk from "./BotDesk.jsx";
 import BotChat from "./BotChat.jsx";
 import TickerTrader from "./TickerTrader.jsx";
 import BotHome from "./BotHome.jsx";
-import { HOME_KEPT_SECTIONS, HOME_SECTIONS, HOME_SECTION_KEY, HOME_SEEN_KEY, botLanding, botMoreTarget } from "./botHome.js";
+import { BOT_PANELS, HOME_KEPT_SECTIONS, HOME_SECTIONS, HOME_SECTION_KEY, HOME_SEEN_KEY, botLanding, botMoreTarget, botPanelCurrent } from "./botHome.js";
 import { TICKER_TRADER_KEY } from "./tickerTrader.js";
 import { captureEntryLegLines, captureReasonLines } from "./botCapture.js";
 import { DESK_VIEW_KEY, readDeskView, botTradePlanLine, deskPlan, paperRowPlan } from "./botDesk.js";
@@ -832,7 +832,7 @@ function statusOf(t) {
   return t.status === "closed" ? "closed" : "open";
 }
 
-function BotResearch({ viewSwitch }) {
+function BotResearch({ viewSwitch, onTicker }) {
   const [days, setDays] = useState(1);
   const [side, setSide] = useState("bull");
   const [levelStrategy, setLevelStrategy] = useState('all');
@@ -848,6 +848,7 @@ function BotResearch({ viewSwitch }) {
   const setTickerTrader = (on) => {
     setTickerTraderState(on);
     try { window.localStorage.setItem(TICKER_TRADER_KEY, on ? "1" : "0"); } catch { /* private window */ }
+    if (onTicker) onTicker(on);            // the panel row at the top lights Ticker or Research to match
   };
   // The ticker box at the top of Research (2026-11-13, his "I dnt see research trade box"): type a ticker,
   // pick Call or Put, and the Ticker trader opens with both filled in, one tap from Trade.
@@ -1575,6 +1576,11 @@ export default function BotPanel() {
     } catch { return "home"; }
   });
   const fromHome = useRef(false);
+  // Which side of Research is showing (All trades or the Ticker trader), for the panel row at the top.
+  const [tickerOn, setTickerOn] = useState(() => {
+    try { return window.localStorage.getItem(TICKER_TRADER_KEY) === "1"; } catch { return false; }
+  });
+  const [researchRun, setResearchRun] = useState(0);
   const setView = (v) => {
     setViewState(v);
     if (fromHome.current && v !== "home") return;          // a visit from the home page is not remembered
@@ -1585,7 +1591,11 @@ export default function BotPanel() {
     const target = botMoreTarget(name);
     if (!target) return;
     fromHome.current = true;
-    if (target.ticker !== null) { try { window.localStorage.setItem(TICKER_TRADER_KEY, target.ticker ? "1" : "0"); } catch { /* private window */ } }
+    if (target.ticker !== null) {
+      try { window.localStorage.setItem(TICKER_TRADER_KEY, target.ticker ? "1" : "0"); } catch { /* private window */ }
+      setTickerOn(target.ticker);
+      setResearchRun((n) => n + 1);        // Research re-reads which side to show
+    }
     setViewState(target.view);
   };
   // 2026-11-25 (his "But add this also Home Journal Trades Learned Ready", on the Ticker trader): the older
@@ -1598,12 +1608,25 @@ export default function BotPanel() {
     if (HOME_KEPT_SECTIONS.includes(section)) { try { window.localStorage.setItem(HOME_SECTION_KEY, section); } catch { /* private window */ } }
     setView("home");
   };
-  if (view === "home") return <BotHome onOpen={openMore} initialSection={landOn.current} />;
+  // Later the same day ("I see more tab, it should be on top but try to add panel top that would be easy"):
+  // the panel row is the first thing on every Bot screen: Bot, Ticker, Scorecard, Research, Ask, with the
+  // one showing lit. It replaces the More tab. A panel opened this way is not remembered (as with More).
+  const current = botPanelCurrent(view, tickerOn);
+  const panels = (
+    <nav className="bh-seg bh-panels" role="group" aria-label="Bot pages" data-testid="bh-panels">
+      {BOT_PANELS.map(([key, label]) => (
+        <button type="button" key={key} data-testid={"bh-panel-" + key} aria-pressed={key === current}
+          onClick={() => (key === "bot" ? goHome() : openMore(key))}>{label}</button>
+      ))}
+    </nav>
+  );
+  if (view === "home") return <BotHome onOpen={openMore} initialSection={landOn.current} top={panels} />;
   const backBar = (
     <div className="bh bh-oldnav" data-testid="bh-oldnav">
+      {panels}
       <nav className="bh-seg bh-sections" role="group" aria-label="Bot sections">
         {HOME_SECTIONS.map(([key, label]) => (
-          <button type="button" key={key} data-testid={"bh-go-" + key} aria-pressed={key === "more"} onClick={() => goHome(key)}>{label}</button>
+          <button type="button" key={key} data-testid={"bh-go-" + key} aria-pressed={false} onClick={() => goHome(key)}>{label}</button>
         ))}
       </nav>
     </div>
@@ -1618,7 +1641,7 @@ export default function BotPanel() {
         title="Ask about a ticker or the bot: how far it went, why it failed, why it was missed. No AI; answers come from the app's records">Ask</button>
     </div>
   );
-  if (view === "research") return <>{backBar}<BotResearch viewSwitch={viewSwitch} /></>;
+  if (view === "research") return <>{backBar}<BotResearch key={researchRun} viewSwitch={viewSwitch} onTicker={setTickerOn} /></>;
   return (
     <div className="bot-page">
       {backBar}

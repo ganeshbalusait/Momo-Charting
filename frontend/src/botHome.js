@@ -8,7 +8,9 @@ import { DESK_LOW_BUYING_POWER, deskDollars, deskMoney, deskShortMoney } from ".
 // (Ticker trader, Scorecard, Research, Ask) were only at the bottom of Home, so from any other tab they
 // looked gone. They now have their own tab, in reach from every screen. It is not remembered: the Bot
 // reopens on the last real section (HOME_KEPT_SECTIONS).
-export const HOME_SECTIONS = [["home", "Home"], ["journal", "Journal"], ["trades", "Trades"], ["learned", "Learned"], ["ready", "Ready"], ["more", "More"]];
+// Later the same day ("I see more tab, it should be on top ... add panel top that would be easy"): the More
+// tab is gone again; the older pages sit in the panel row at the very top of every Bot screen (BOT_PANELS).
+export const HOME_SECTIONS = [["home", "Home"], ["journal", "Journal"], ["trades", "Trades"], ["learned", "Learned"], ["ready", "Ready"]];
 export const HOME_KEPT_SECTIONS = ["home", "journal", "trades", "learned", "ready"];
 export const HOME_SECTION_KEY = "bot.homeSection";
 export const HOME_ACCOUNTS = ["paper3", "paper5"];
@@ -621,4 +623,16 @@ export function botMoreTarget(name) {
 /** The section the home page opens on: one asked for by name (a tab tapped on an older page) wins over the remembered one. */
 export function homeStartSection(asked, stored) {
   return HOME_SECTIONS.some(([key]) => key === asked) ? asked : readHomeSection(stored);
+}
+
+// The panel row at the very top of every Bot screen (2026-11-25, his "it should be on top ... add panel top
+// that would be easy"): which page of the Bot this is, one tap to any other. "Bot" is the home page.
+export const BOT_PANELS = [["bot", "Bot"], ["ticker", "Ticker"], ["scorecard", "Scorecard"], ["research", "Research"], ["ask", "Ask"]];
+
+/** The panel that is showing, from BotPanel's view and whether Research is on its Ticker trader side. */
+export function botPanelCurrent(view, tickerOn) {
+  if (view === "desk") return "scorecard";
+  if (view === "ask") return "ask";
+  if (view === "research") return tickerOn ? "ticker" : "research";
+  return "bot";
 }

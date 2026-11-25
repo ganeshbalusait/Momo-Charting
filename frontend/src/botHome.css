@@ -148,3 +148,8 @@
 
 /* The way back from an older Bot page (Scorecard / Research / Ticker trader / Ask) to the home page. */
 .bh.bh-oldnav { padding-bottom: 0; }
+/* The panel row at the very top of every Bot screen: which page this is. */
+.bh-panels { display: flex; gap: 2px; border: 1px solid var(--bh-line); }
+.bh-panels button { flex: 1 0 auto; min-width: 44px; padding: 0 2px; font-size: 13px; overflow: visible; }
+.bh-panels button[aria-pressed="true"] { background: var(--bh-accent-bg); color: var(--bh-accent); box-shadow: inset 0 -2px 0 var(--bh-accent); }
+@media (min-width: 560px) { .bh-panels button { font-size: 14px; } }

@@ -181,7 +181,7 @@ async function wholeFlow(app, { phone }) {
   assert.deepEqual(await texts(root.locator(".bh-tiles .bh-tile b")), ["14 of 67", "−$76", "1"]);
   assert.equal(await text(root.locator(`${tid("bh-verdict")} b`)), "Not ready for real money");
   assert.deepEqual(await texts(root.locator("[role='group'][aria-label='Which bot'] button")), ["Paper 3 · Rules bot", "Paper 5 · AI bot"]);
-  assert.deepEqual(await texts(root.locator("[role='group'][aria-label='Bot sections'] button")), ["Home", "Journal", "Trades", "Learned", "Ready", "More"]);
+  assert.deepEqual(await texts(root.locator("[role='group'][aria-label='Bot sections'] button")), ["Home", "Journal", "Trades", "Learned", "Ready"]);
   assert.equal(await root.locator(`${tid("bh-section-home")} ${tid("bh-trade-row")}`).count(), 4);
   assert.deepEqual(await touchAudit(root), []);
   assert.equal(await overflowsSideways(app.page), false);
@@ -306,8 +306,8 @@ async function moreAndBack(app, name, landed) {
   const nav = page.locator(`[data-testid='bot-view'] ${tid("bh-oldnav")}`);
   const back = nav.locator(tid("bh-go-home"));
   await back.waitFor({ timeout: 30_000 });
-  assert.deepEqual(await texts(nav.locator("button")), ["Home", "Journal", "Trades", "Learned", "Ready", "More"]);
-  assert.deepEqual(await texts(nav.locator("button[aria-pressed='true']")), ["More"]);
+  assert.deepEqual(await texts(nav.locator("[aria-label='Bot sections'] button")), ["Home", "Journal", "Trades", "Learned", "Ready"]);
+  assert.deepEqual(await texts(nav.locator("button[aria-pressed='true']")), [{ scorecard: "Scorecard", ticker: "Ticker", research: "Research", ask: "Ask" }[name]]);
   const small = await nav.locator("button").evaluateAll((els) => els.filter((el) => el.getBoundingClientRect().width < 44 || el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent));
   assert.deepEqual(small, []);
   assert.equal(await page.locator(ROOT).count(), 0, `"${name}" replaces the home page`);
@@ -351,32 +351,43 @@ e2eTest("the four More rows lead to the older pages and Back to Bot returns", as
   });
 });
 
-// 2026-11-25, his "I see only this, where is research panel and they 2 panel?" (he was on Journal, where the
-// More rows did not show). The More tab is on every screen and leads to the same four older pages.
+// 2026-11-25, his "I see only this, where is research panel and they 2 panel?" then "I see more tab, it should
+// be on top ... add panel top that would be easy": the panel row is the first thing on every Bot screen.
 for (const [label, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
-  e2eTest(`${label}: from the Journal the More tab reaches Research and the Ticker trader, and no tab word is cut off`, async () => {
+  e2eTest(`${label}: the panel row at the top opens Ticker, Scorecard, Research and Ask from the Journal, and Bot comes back`, async () => {
     await withApp({ view: "Bot", ...(viewport ? { viewport } : {}), storage: HOME, fakeReads: canned() }, async (app) => {
+      const page = app.page;
       const root = await openHome(app);
       await go(root, "journal");
-      assert.equal(await root.locator(tid("bh-more")).count(), 0, "the Journal itself has no More rows");
-      const cut = await root.locator("[aria-label='Bot sections'] button").evaluateAll((els) => els.filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent));
-      assert.deepEqual(cut, []);
-      await go(root, "more");
-      assert.deepEqual(await texts(root.locator(`${tid("bh-more")} .bh-row-l .bh-row-t`)),
-        ["Trade one ticker", "Full scorecard", "Research: every signal, simulated", "Ask the bot"]);
-      await app.page.locator(`${ROOT} ${tid("bh-more-research")}`).click();
-      await app.page.locator("section.bot-kpis[aria-label='Totals']").first().waitFor({ timeout: 60_000 });
-      // The Trades tab on the Research page goes straight to Trades; Journal on the next page to Journal.
-      await app.page.locator(`[data-testid='bot-view'] ${tid("bh-go-trades")}`).click();
-      await app.page.locator(`${ROOT} ${tid("bh-section-trades")}`).waitFor({ timeout: 30_000 });
-      await go(app.page.locator(ROOT), "more");
-      await app.page.locator(`${ROOT} ${tid("bh-more-ticker")}`).click();
-      await app.page.locator("[data-testid='ticker-trader']").first().waitFor({ timeout: 60_000 });
-      assert.equal(await overflowsSideways(app.page), false);
-      await app.page.locator(`[data-testid='bot-view'] ${tid("bh-go-journal")}`).click();
-      await app.page.locator(`${ROOT} ${tid("bh-section-journal")}`).waitFor({ timeout: 30_000 });
-      await app.page.reload();
-      await app.page.locator(`${ROOT} ${tid("bh-section-journal")}`).waitFor({ timeout: 60_000 });
+      const panels = () => page.locator(`[data-testid='bot-view'] ${tid("bh-panels")}`);
+      const lit = async () => texts(panels().locator("button[aria-pressed='true']"));
+      const fits = async () => panels().locator("button").evaluateAll((els) => els.filter((el) => el.getBoundingClientRect().width < 44
+        || el.getBoundingClientRect().height < 44 || el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent));
+      assert.deepEqual(await texts(panels().locator("button")), ["Bot", "Ticker", "Scorecard", "Research", "Ask"]);
+      assert.deepEqual(await lit(), ["Bot"]);
+      assert.deepEqual(await fits(), []);
+      // The panel row is above everything else on the page.
+      const tops = await root.evaluate((el) => [el.querySelector("[data-testid='bh-panels']"), el.querySelector(".bh-top")].map((n) => n.getBoundingClientRect().top));
+      assert.ok(tops[0] < tops[1]);
+      for (const [name, word, landed] of [["ticker", "Ticker", "[data-testid='ticker-trader']"], ["research", "Research", "section.bot-kpis[aria-label='Totals']"],
+        ["scorecard", "Scorecard", "[data-testid='bot-desk']"], ["ask", "Ask", "[data-testid='bot-chat']"]]) {
+        await page.locator(`[data-testid='bot-view'] ${tid(`bh-panel-${name}`)}`).click();
+        await page.locator(landed).first().waitFor({ timeout: 60_000 });
+        assert.deepEqual(await lit(), [word]);
+        assert.deepEqual(await fits(), []);
+        assert.equal(await overflowsSideways(page), false);
+      }
+      // Bot comes back to the screen he was on; the Trades tab on an older page goes straight to Trades.
+      await page.locator(`[data-testid='bot-view'] ${tid("bh-panel-bot")}`).click();
+      await page.locator(`${ROOT} ${tid("bh-section-journal")}`).waitFor({ timeout: 30_000 });
+      await page.locator(`${ROOT} ${tid("bh-panel-research")}`).click();
+      await page.locator(`[data-testid='bot-view'] ${tid("bh-go-trades")}`).click();
+      await page.locator(`${ROOT} ${tid("bh-section-trades")}`).waitFor({ timeout: 30_000 });
+      // A panel opened from the row is not remembered: a reload opens the Bot page again.
+      await page.locator(`${ROOT} ${tid("bh-panel-scorecard")}`).click();
+      await page.locator("[data-testid='bot-desk']").first().waitFor({ timeout: 60_000 });
+      await page.reload();
+      await page.locator(`${ROOT} ${tid("bh-section-trades")}`).waitFor({ timeout: 60_000 });
       assert.deepEqual(app.writes, []);
       assert.deepEqual(app.pageErrors, []);
     });
