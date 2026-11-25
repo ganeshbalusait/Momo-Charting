@@ -143,7 +143,7 @@ export function mirrorDoc(account) {
     account, day: TODAY, enabled: true, reconciling: false, snapshotSource: "memory", snapshotAt: `${TODAY}T11:00:00-04:00`,
     refused: "", error: "", ai: { enabled: true, reason: "Trade first" },
     rules: { book: account === "paper3" ? "AI review - your picked rules" : "AI review experiment", picked: { bull: ["go"], bear: ["go"] },
-             orders: "limit at mid", sizing: "3+ contracts", entryTimes: "new buys 9:30-11:00 AM and 1:00-3:30 PM ET", exitPlan: "+100%: sell 20%" },
+             orders: "limit at mid", sizing: "3+ contracts", entryTimes: "new buys 9:35-11:30 AM and 1:00-3:30 PM ET", exitPlan: "+100%: sell 20%" },
     totals: {}, rows, history: [{ day: TODAY, rows }],
   };
 }

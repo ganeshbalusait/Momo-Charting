@@ -349,3 +349,130 @@ for (const [name, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
     });
   });
 }
+
+// 2026-11-24: the option stop. The stock stop let NVDA lose 63% and AVGO 92% ("option -50%" was only a guess at a stock
+// price), so the trade is also sold when the option's own bid is down 50%. The screen names both stops, says which one
+// sold a trade and the real loss, and never shows an option with no live price as a quiet "In a trade".
+const OPTION_STOPPED = { id: "LLY-CALL-0", day: "2026-11-12", ticker: "LLY", side: "CALL", strike: 1090, expiry: "2026-11-13", qty: 1, entry: 1.1,
+  cost: 110, stopOption: 0.55, stopFired: "option", stopLossPct: 55, boughtAt: "2026-11-12T10:00:00-05:00", closedAt: "2026-11-12T10:20:00-05:00",
+  status: "closed", pl: -60, plPct: -54.5, balanceAfter: 1940,
+  reason: "Option stop: the option's bid $0.50 is down 55% from the $1.10 paid (the stop is 50%), sold 1 at $0.50." };
+const DEAD_NOTE = "No live price on the 1100 Call for 3 min: the option stop cannot be checked. Still holding 1 of 1.";
+const DEAD = { ...LLY, note: DEAD_NOTE, quoteDead: true, openPl: 20, liveNet: -40, net: -60, tradeCount: 1, wins: 0,
+  open: { ...ONE, stopOption: 2.2, bidAt: "2026-11-13T10:39:00-05:00" }, trades: [OPTION_STOPPED] };
+
+for (const [name, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
+  e2eTest(`${name}: the run names both stops, says which stop sold a trade, and flags an option with no live price`, async () => {
+    // 2026-11-25: the account counts one open trade at an old price (oldPriceTrades), so the list and the tiles mark it.
+    const server = fakeServer([DEAD, NVDA], { ...LLY_ACCOUNT, openTrades: 2, oldPriceTrades: 1 });
+    await withApp({ view: "Bot", viewport, storage: OPEN_ON_IT, fakeReads: server.fakeReads, fakeWrites: server.fakeWrites }, async (app) => {
+      const { page } = app;
+      const panel = page.locator(PANEL);
+      // The rules on the list page say there are two stops, in plain words.
+      await panel.locator(".tt-rules", { hasText: "the option's own bid down 50% from what you paid" }).waitFor({ timeout: 60_000 });
+      // 2026-11-25: and that one bad quote does not sell, and when a contract is not bought at all.
+      assert.match(await panel.locator(".tt-rules").textContent(), /on two price checks in a row \(one bad quote does not sell\)/);
+      assert.match(await panel.locator(".tt-rules").textContent(), /Not bought when its buyers are already 50% or more under the ask\./);
+      const row = panel.locator("[data-testid='tt-row']", { hasText: "LLY" }).first();
+      await row.waitFor({ timeout: 60_000 });
+      assert.match(await row.textContent(), /No live price on the 1100 Call for 3 min: the option stop cannot be checked/);
+      // 2026-11-25: the open profit on the list comes from an OLD bid, and says so: in the line, beside the money, on
+      // the Today tile and on the account tiles. The ticker with a live price carries no such mark.
+      assert.match(await row.textContent(), /· open \+\$20 \(\+5%\), price is old/);
+      assert.equal((await row.locator("[data-testid='tt-row-old']").textContent()).trim(), "price is old");
+      const liveRow = panel.locator("[data-testid='tt-row']", { hasText: "NVDA" }).first();
+      assert.equal(await liveRow.locator("[data-testid='tt-row-old']").count(), 0);
+      assert.doesNotMatch(await liveRow.textContent(), /price is old/);
+      assert.match(await panel.locator("[data-testid='tt-dash-today']").textContent(), /in 2 open · 1 at an old price/);
+      assert.equal((await panel.locator("[data-testid='tt-account-old']").textContent()).trim(), "1 open trade's price is old");
+      assert.equal((await panel.locator("[data-testid='tt-account-net-old']").textContent()).trim(), "1 open trade's price is old");
+      const listWidth = (await page.viewportSize()).width;
+      for (const selector of ["[data-testid='tt-row-old']", "[data-testid='tt-account-old']", "[data-testid='tt-account-net-old']", "[data-testid='tt-dash-today']"]) {
+        const box = await panel.locator(selector).first().boundingBox();
+        assert.ok(box && box.x >= 0 && box.x + box.width <= listWidth + 1, `${selector} is cut off`);
+      }
+      assert.equal(await overflowsSideways(page), false);
+      await shot(app, `tt-${name}-price-is-old`);
+      await row.click();
+      const run = panel.locator("[data-testid='tt-run']");
+      await run.waitFor();
+      assert.match(await run.locator("[data-testid='tt-account-line']").textContent(), /shared by every ticker\s*· 1 open trade's price is old/);
+      // The dead quote is the loud line on the run, and the bid shown is called what it is: the last one.
+      const note = run.locator("[data-testid='tt-note']");
+      assert.match(await note.textContent(), /No live price on the 1100 Call for 3 min: the option stop cannot be checked\. Still holding 1 of 1\./);
+      assert.match(await note.getAttribute("class"), /\bis-warn\b/);
+      assert.match(await run.locator("[data-testid='tt-open']").textContent(), /Holding 1 of 1 · last bid \$4\.60 at 10:39 ET \(no live price since\)/);
+      // The Stop line: the stock price, and the option's own stop (bought at $4.40 -> a bid of $2.20).
+      assert.match(await run.locator("[data-testid='tt-level-Stop']").textContent(), /1040\.00.*or the option's bid at \$2\.20 \(down 50%\)/s);
+      // The closed trade says which stop fired and the real loss.
+      assert.match(await run.locator("[data-testid='tt-trade']").first().textContent(),
+        /−\$60.*Option stop: the option's bid \$0\.50 is down 55% from the \$1\.10 paid \(the stop is 50%\), sold 1 at \$0\.50\./s);
+      assert.equal(await overflowsSideways(page), false);
+      const width = (await page.viewportSize()).width;
+      for (const selector of ["[data-testid='tt-note']", "[data-testid='tt-level-Stop']", "[data-testid='tt-open']", "[data-testid='tt-trade']"]) {
+        const box = await run.locator(selector).first().boundingBox();
+        assert.ok(box && box.x >= 0 && box.x + box.width <= width + 1, `${selector} is cut off`);
+      }
+      await shot(app, `tt-${name}-option-stop`);
+      // A trade with a live price keeps its quiet note and the plain "bid".
+      await run.locator(".tt-back").click();
+      await panel.locator("[data-testid='tt-row']", { hasText: "NVDA" }).first().click();
+      await run.locator("[data-testid='tt-note']", { hasText: "In a trade: holding 2 of 3" }).waitFor({ timeout: 15_000 });
+      assert.doesNotMatch(await run.locator("[data-testid='tt-note']").getAttribute("class"), /is-warn/);
+      assert.match(await run.locator("[data-testid='tt-open']").textContent(), /Holding 2 of 3 · bid \$2\.00 at 10:42 ET(?! \()/);
+      assert.match(await run.locator("[data-testid='tt-level-Stop']").textContent(), /158\.40.*moved to break-even · or option bid \$0\.72/s);
+      assert.deepEqual(app.writes, []);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}
+
+// 2026-11-25: two things the engine now says in the run's note. (1) A contract whose buyers are already 50% under the
+// asking price is not bought, with the reason. (2) The option stop sells on the second price check in a row, and the
+// first check says so instead of a quiet "In a trade".
+const NOT_BOUGHT_NOTE = "Not bought: the 1100 Call's buyers ($0.10) are already 50% under the asking price ($0.20), so it would be sold at a loss at once.";
+const REFUSED = { ...LLY, status: "idle", open: null, note: NOT_BOUGHT_NOTE, balance: 2000, trades: [], tradeCount: 0, wins: 0, net: 0 };
+const PENDING_NOTE = "The option's bid $1.90 is down 57% from the $4.40 paid, at the 50% option stop: sold if the next price check says the same. Holding 1 of 1.";
+const PENDING = { ...LLY, id: "AMD-CALL", ticker: "AMD", note: PENDING_NOTE, openPl: -250, liveNet: -250,
+  open: { ...ONE, id: "AMD-CALL-1", ticker: "AMD", bid: 1.9, stopOption: 2.2 } };
+
+for (const [name, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
+  e2eTest(`${name}: a contract not bought says why, and the option stop's first check says it sells on the next one`, async () => {
+    const server = fakeServer([REFUSED, PENDING], { ...LLY_ACCOUNT, openValue: 190, value: 1750, net: -250 });
+    await withApp({ view: "Bot", viewport, storage: OPEN_ON_IT, fakeReads: server.fakeReads, fakeWrites: server.fakeWrites }, async (app) => {
+      const { page } = app;
+      const panel = page.locator(PANEL);
+      const width = (await page.viewportSize()).width;
+      const inside = async (locator, what) => {
+        const box = await locator.boundingBox();
+        assert.ok(box && box.x >= 0 && box.x + box.width <= width + 1, `${what} is cut off`);
+      };
+      const refused = panel.locator("[data-testid='tt-row']", { hasText: "LLY" }).first();
+      await refused.waitFor({ timeout: 60_000 });
+      assert.ok((await refused.textContent()).includes(NOT_BOUGHT_NOTE));
+      assert.equal(await refused.locator("[data-testid='tt-row-old']").count(), 0);
+      await inside(refused, "the not-bought row");
+      await refused.click();
+      const run = panel.locator("[data-testid='tt-run']");
+      await run.waitFor();
+      assert.ok((await run.locator("[data-testid='tt-note']").textContent()).includes(NOT_BOUGHT_NOTE));
+      assert.match(await run.locator("[data-testid='tt-status']").textContent(), /No trade open/);
+      assert.equal(await run.locator("[data-testid='tt-open']").count(), 0);          // nothing was bought
+      await run.locator("[data-testid='tt-again']").waitFor();                         // and he can try again himself
+      await inside(run.locator("[data-testid='tt-note']"), "the not-bought note");
+      assert.equal(await overflowsSideways(page), false);
+      await shot(app, `tt-${name}-not-bought`);
+      await run.locator(".tt-back").click();
+      const pending = panel.locator("[data-testid='tt-row']", { hasText: "AMD" }).first();
+      assert.ok((await pending.textContent()).includes(PENDING_NOTE));
+      await pending.click();
+      await run.locator("[data-testid='tt-note']", { hasText: "sold if the next price check says the same" }).waitFor({ timeout: 15_000 });
+      assert.match(await run.locator("[data-testid='tt-open']").textContent(), /Holding 1 of 1 · bid \$1\.90/);
+      assert.match(await run.locator("[data-testid='tt-level-Stop']").textContent(), /1040\.00.*or the option's bid at \$2\.20 \(down 50%\)/s);
+      await inside(run.locator("[data-testid='tt-note']"), "the option-stop note");
+      assert.equal(await overflowsSideways(page), false);
+      assert.deepEqual(app.writes, []);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}

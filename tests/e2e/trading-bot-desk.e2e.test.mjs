@@ -401,7 +401,7 @@ e2eTest("the three strategies are shown side by side with the best one named; an
 
     await app.page.locator(`${DESK} [role='group'][aria-label='Paper account'] button`, { hasText: "Paper 5" }).click();
     await app.page.locator(`${DESK} ${VERDICT}.is-empty`).waitFor({ timeout: 15_000 });
-    assert.match(await card.locator("[data-testid='desk-strategy-answer']").textContent(), /^No closed trades yet\. The first Level orders go out in the 9:30 AM ET buy window\.$/);
+    assert.match(await card.locator("[data-testid='desk-strategy-answer']").textContent(), /^No closed trades yet\. The first Level orders go out in the 9:35 AM ET buy window\.$/);
     assert.deepEqual(await texts(card.locator("tbody tr td:first-child b")), ["Level 1", "Level 2", "Level 3"]);
     assert.equal(await overflowsSideways(app.page), false);
     await shot(app, "desk-strategies-desktop");

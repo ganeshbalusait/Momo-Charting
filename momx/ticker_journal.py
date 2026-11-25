@@ -62,7 +62,9 @@ HOLD_BUCKETS = (("under5", "Under 5 min", 0, 5), ("to15", "5-15 min", 5, 15), ("
 OUTCOMES = (("stopped", "Stopped before T1"), ("T1", "Reached T1"), ("T2", "Reached T2"), ("T3", "Reached T3"),
             ("early", "Closed before T1, no stop"))
 SIDES = (("CALL", "Calls"), ("PUT", "Puts"))
-_STOP_TEXT = ("Stop:", "Break-even stop:", "Stop at T1:")
+#: How a stop's sale note starts. "Option stop:" (2026-11-24) = the option's own bid was down 50% from the price paid.
+_STOP_TEXT = ("Stop:", "Break-even stop:", "Stop at T1:", "Option stop:")
+_FIRST_STOP_TEXT = ("Stop:", "Option stop:")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f​-‏‪-‮⁦-⁩﻿]")
 
 
@@ -140,7 +142,7 @@ def outcome(trade: Mapping) -> str:
     if hits:
         return str(hits[-1].get("target") or "T1")
     events = [str(e.get("text") or "") for e in trade.get("events") or [] if isinstance(e, Mapping)]
-    return "stopped" if any(t.startswith("Stop:") for t in events) else "early"
+    return "stopped" if any(t.startswith(_FIRST_STOP_TEXT) for t in events) else "early"
 
 
 def _fast_stop(trade: Mapping, bought: datetime | None) -> bool:
@@ -155,6 +157,40 @@ def _fast_stop(trade: Mapping, bought: datetime | None) -> bool:
     return False
 
 
+_SOLD_AT = re.compile(r"sold \d+ at \$(\d+(?:\.\d+)?)")
+
+
+def stop_sale(trade: Mapping) -> tuple[str | None, int | None]:
+    """Which stop sold this trade ("stock", "option", or None when no stop did) and how far under the price paid
+    that sale was, in whole percent (63 = the option was down 63%; negative = above the price paid).
+
+    A trade closed since 2026-11-24 carries both (stopFired, stopLossPct). One saved before that is worked out from
+    what it did save: the stop's own sale note says which stop, and the price of that sale (the sale saved at the
+    same moment, else the price in the note) against the entry gives the loss. With no price at all and nothing
+    sold at a target, the trade's own plPct is that loss. His NVDA (-63%) and AVGO (-92%) were sold by the stock stop."""
+    fired = trade.get("stopFired") if trade.get("stopFired") in ("stock", "option") else None
+    lost = _num(trade.get("stopLossPct"))
+    events = [e for e in trade.get("events") or [] if isinstance(e, Mapping) and str(e.get("text") or "").startswith(_STOP_TEXT)]
+    if not fired and not events:
+        return None, None
+    text = str(events[-1].get("text") or "") if events else ""
+    fired = fired or ("option" if text.startswith("Option stop:") else "stock")
+    if lost is None and events:
+        entry = _num(trade.get("entry"))
+        at = events[-1].get("at")
+        price = next((_num(s.get("price")) for s in reversed(trade.get("sells") or [])
+                      if isinstance(s, Mapping) and at and s.get("at") == at), None)
+        if price is None:
+            found = _SOLD_AT.search(text)
+            price = float(found.group(1)) if found else None
+        if price is not None and entry:
+            lost = (1 - price / entry) * 100
+        elif not trade.get("hits"):
+            pct = _num(trade.get("plPct"))
+            lost = -pct if pct is not None else None
+    return fired, (int(round(lost)) if lost is not None else None)
+
+
 def trade_card(trade: Mapping, run: Mapping) -> dict | None:
     """One closed trade as the journal shows it, with what it was bucketed under. None = not a usable closed trade."""
     entry, pl, qty = _num(trade.get("entry")), _num(trade.get("pl")), _num(trade.get("qty"))
@@ -163,9 +199,10 @@ def trade_card(trade: Mapping, run: Mapping) -> dict | None:
     bought, closed = _when(trade.get("boughtAt")), _when(trade.get("closedAt"))
     hold = round((closed - bought).total_seconds() / 60, 1) if bought and closed and closed >= bought else None
     keep = ("id", "day", "ticker", "side", "contract", "strike", "expiry", "qty", "entry", "entrySpot", "cost", "boughtAt",
-            "closedAt", "stopStart", "stopStock", "stopKind", "t1", "t2", "t3", "targets", "hits", "sells", "events", "reason",
+            "closedAt", "stopStart", "stopStock", "stopKind", "stopOption", "stopFired", "stopLossPct", "t1", "t2", "t3", "targets", "hits", "sells", "events", "reason",
             "pl", "plPct", "balanceAfter")
     card = {k: trade.get(k) for k in keep}
+    card["stopFired"], card["stopLossPct"] = stop_sale(trade)
     card.update(runId=run.get("id"), side=str(trade.get("side") or run.get("side") or "CALL").upper(),
                 ticker=trade.get("ticker") or run.get("ticker"), outcome=outcome(trade),
                 timeBucket=_bucket(_minute(bought), TIME_BUCKETS) or TIME_BUCKETS[0][0],

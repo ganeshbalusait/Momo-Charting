@@ -270,3 +270,87 @@ e2eTest("a refused journal read says so in plain words", async () => {
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// 2026-11-24: the option stop in the journal. A trade the option stop sold is "Stopped before T1", and its card says
+// which stop sold it and the real loss (the stock never reached its own stop).
+const OPTION_STOPPED = { ...STOPPED, stopOption: 0.55, stopFired: "option", stopLossPct: 55, holdMinutes: 7, closedAt: "2026-11-13T10:07:30-05:00",
+  events: [{ at: "2026-11-13T10:07:30-05:00", text: "Option stop: the option's bid $0.50 is down 55% from the $1.10 paid (the stop is 50%), sold 3 at $0.50." }] };
+
+for (const [name, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
+  e2eTest(`${name}: a trade sold by the option stop says so on its journal card, with the real loss`, async () => {
+    const server = fakeServer({ journal: (scope) => journalDoc(scope, { trades: [WON, OPTION_STOPPED] }) });
+    await withApp({ view: "Bot", viewport, storage: OPEN_ON_IT, fakeReads: server.fakeReads, fakeWrites: server.fakeWrites }, async (app) => {
+      const { page } = app;
+      const panel = page.locator(PANEL);
+      await panel.locator("[data-testid='tt-journal-all']").click({ timeout: 60_000 });
+      const journal = panel.locator("[data-testid='tj']");
+      const rows = journal.locator("[data-testid='tj-trade']");
+      await rows.first().waitFor({ timeout: 30_000 });
+      assert.match(await rows.nth(1).textContent(), /Stopped before T1.*−\$180/s);
+      await rows.nth(1).click();
+      const card = journal.locator("[data-testid='tj-detail']");
+      await card.waitFor();
+      assert.match(await card.textContent(), /−\$180 · −54\.5%/);
+      assert.match(await card.locator("[data-testid='tj-level-Stop']").textContent(), /98\.40.*option stop sold it · option down 55%/s);
+      assert.match(await card.textContent(), /10:07 ET · Option stop: the option's bid \$0\.50 is down 55% from the \$1\.10 paid \(the stop is 50%\), sold 3 at \$0\.50\./);
+      assert.equal(await overflowsSideways(page), false);
+      const width = (await page.viewportSize()).width;
+      for (const selector of ["[data-testid='tj-detail']", "[data-testid='tj-level-Stop']"]) {
+        const box = await journal.locator(selector).first().boundingBox();
+        assert.ok(box && box.x >= 0 && box.x + box.width <= width + 1, `${selector} is cut off`);
+      }
+      // The winning trade's Stop line: no stop sold it, and it was bought before the option stop, so the old words stay.
+      await rows.nth(0).click();
+      await card.locator("[data-testid='tj-level-T3']").waitFor();
+      assert.match(await card.locator("[data-testid='tj-level-Stop']").textContent(), /98\.40.*option down 50%/s);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}
+
+// 2026-11-25: trades saved BEFORE the option stop carry no stopOption / stopFired / stopLossPct. Their cards used to
+// say "option down 50%" under a -63% and a -92% result. Which stop sold them and the real loss are now worked out
+// from what the trade did save (his real NVDA and AVGO rows).
+const OLD_AT = "2026-11-19T10:31:14-05:00";
+const OLD_NVDA = { id: "NVDA-CALL-1-1795098725", runId: "NVDA-CALL", day: "2026-11-19", ticker: "NVDA", side: "CALL", strike: 162.5, expiry: "2026-11-20",
+  qty: 2, entry: 0.7, entrySpot: 155.74, cost: 140, stopStart: 153.02, stopStock: 153.02, stopKind: "stop", t1: 158, t2: 160, t3: 162.5, pl: -88, plPct: -62.9,
+  boughtAt: "2026-11-19T09:32:05-05:00", closedAt: OLD_AT, outcome: "stopped", holdMinutes: 59, hits: [], targets: [],
+  sells: [{ at: OLD_AT, qty: 2, price: 0.26, pl: -88 }], events: [{ at: OLD_AT, text: "Stop: stock traded through 153.02, sold 2 at $0.26." }], note: "", noteAt: null };
+const OLD_AVGO = { ...OLD_NVDA, id: "AVGO-CALL-1-1795015582", runId: "AVGO-CALL", day: "2026-11-18", ticker: "AVGO", strike: 360, qty: 3, entry: 0.66, entrySpot: 352.1,
+  cost: 198, stopStart: 348.8, stopStock: 348.8, pl: -183, plPct: -92.4, boughtAt: "2026-11-18T09:46:22-05:00", closedAt: "2026-11-18T11:39:04-05:00",
+  sells: [{ at: "2026-11-18T11:39:04-05:00", qty: 3, price: 0.05, pl: -183 }],
+  events: [{ at: "2026-11-18T11:39:04-05:00", text: "Stop: stock traded through 348.80, sold 3 at $0.05." }] };
+
+for (const [name, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
+  e2eTest(`${name}: a trade saved before the option stop says the stock stop sold it and the real loss, not "option down 50%"`, async () => {
+    const server = fakeServer({ journal: (scope) => journalDoc(scope, { trades: [OLD_NVDA, OLD_AVGO] }) });
+    await withApp({ view: "Bot", viewport, storage: OPEN_ON_IT, fakeReads: server.fakeReads, fakeWrites: server.fakeWrites }, async (app) => {
+      const { page } = app;
+      const panel = page.locator(PANEL);
+      await panel.locator("[data-testid='tt-journal-all']").click({ timeout: 60_000 });
+      const journal = panel.locator("[data-testid='tj']");
+      const rows = journal.locator("[data-testid='tj-trade']");
+      await rows.first().waitFor({ timeout: 30_000 });
+      const card = journal.locator("[data-testid='tj-detail']");
+      const width = (await page.viewportSize()).width;
+      for (const [index, money, stop, line] of [[0, /−\$88 · −62\.9%/, /153\.02.*stock stop sold it · option down 63%/s, "Stop: stock traded through 153.02, sold 2 at $0.26."],
+        [1, /−\$183 · −92\.4%/, /348\.80.*stock stop sold it · option down 92%/s, "Stop: stock traded through 348.80, sold 3 at $0.05."]]) {
+        await rows.nth(index).click();
+        await card.locator("[data-testid='tj-level-Stop']", { hasText: "stock stop sold it" }).waitFor({ timeout: 15_000 });
+        assert.match(await card.textContent(), money);
+        const stopLine = await card.locator("[data-testid='tj-level-Stop']").textContent();
+        assert.match(stopLine, stop);
+        assert.doesNotMatch(stopLine, /option down 50%/);
+        assert.ok((await card.textContent()).includes(line));
+        assert.equal(await overflowsSideways(page), false);
+        for (const selector of ["[data-testid='tj-detail']", "[data-testid='tj-level-Stop']"]) {
+          const box = await journal.locator(selector).first().boundingBox();
+          assert.ok(box && box.x >= 0 && box.x + box.width <= width + 1, `${selector} is cut off`);
+        }
+        await rows.nth(index).click();          // close it again
+        await card.waitFor({ state: "detached" });
+      }
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}

@@ -688,8 +688,10 @@ def test_a_new_trade_is_priced_at_the_signal_from_a_live_quote(tmp_path):
         asked.append(query)
         return {"results": [{"symbol": "X", "ok": True, "chainAt": "2026-09-28T09:40:00-04:00",
                              "pick": {"contract": "X_C101.0_1002", "strike": 101.0, "expiry": "2026-10-02",
-                                      "delta": 0.4, "spot": 100.0, "entry": 1.2},
-                             "z": {"contract": "X_C101.0_0928", "strike": 101.0, "entry": 0.25},
+                                      "delta": 0.4, "spot": 100.0, "entry": 1.2,
+                                      "entryBid": 1.15, "entryAsk": 1.25},     # buyers and sellers: a real quote
+                             "z": {"contract": "X_C101.0_0928", "strike": 101.0, "entry": 0.25,
+                                   "entryBid": 0.2, "entryAsk": 0.3},
                              "e": None, "levels": {"expectedMove": 2.0}}]}
 
     calls = []

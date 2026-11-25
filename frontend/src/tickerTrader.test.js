@@ -46,8 +46,11 @@ test("the ladder runs T3, T2, T1, Entry, Stop and ticks what was hit", () => {
   assert.equal(rows[0].note, "OI level past the move");
   assert.equal(rows[3].value, "158.40 · ask $1.45");
   assert.equal(rows[3].note, "3 contracts");
-  assert.deepEqual([rows[4].value, rows[4].note], ["158.40", "moved to break-even"]);
-  assert.equal(ladder({ ...OPEN, stopKind: "stop", hits: [] })[4].note, "option down 50%");
+  // 2026-11-24: the Stop line also names the option's own stop price (bought at $1.45 -> sold at a bid of $0.72 or less).
+  assert.deepEqual([rows[4].value, rows[4].note], ["158.40", "moved to break-even · or option bid $0.72"]);
+  assert.equal(ladder({ ...OPEN, stopKind: "stop", hits: [] })[4].note, "or the option's bid at $0.72 (down 50%)");
+  assert.equal(ladder({ ...OPEN, stopKind: "T1" })[4].note, "moved to T1 · or option bid $0.72");
+  assert.equal(ladder({ ...OPEN, stopKind: "stop", entry: null })[4].note, "option down 50%");
   assert.equal(ladder({ ...OPEN, qty: 1, hits: [{ target: "T1", at: "2026-11-13T10:31:00-05:00", sold: 0 }] })[2].note, "hit 10:31 ET · none sold");
   assert.deepEqual(ladder(null), []);
 });
@@ -213,4 +216,99 @@ test("the one account's tiles: worth now, cash left, up or down (2026-11-16)", a
   assert.equal(flat.net, "$0");
   assert.equal(accountTiles(null), null);                       // an older server sends no account: no card
   assert.equal(accountTiles({ startBalance: 2000 }), null);
+});
+
+test("the option stop price is the highest cent that is down half or more (2026-11-24)", async () => {
+  const { optionStopPrice } = await import("./tickerTrader.js");
+  assert.equal(optionStopPrice({ entry: 0.7 }), 0.35);                 // his NVDA call: sold at a bid of $0.35 or less, not $0.26
+  assert.equal(optionStopPrice({ entry: 0.66 }), 0.33);                // his AVGO call: not $0.05
+  assert.equal(optionStopPrice({ entry: 0.65 }), 0.32);                // never a price that is down less than 50%
+  assert.equal(optionStopPrice({ entry: 1.1 }), 0.55);
+  assert.equal(optionStopPrice({ entry: 1.1, stopOption: 0.5 }), 0.5); // the server's own number wins
+  assert.equal(optionStopPrice({ entry: 0.01, stopOption: 0 }), 0);
+  assert.equal(optionStopPrice({}), null);
+  assert.equal(optionStopPrice(null), null);
+});
+
+test("a closed trade's Stop line says which stop sold it and the real loss", async () => {
+  const { closedStopNote, tradeDetail } = await import("./tickerTrader.js");
+  assert.equal(closedStopNote({ entry: 0.7, stopOption: 0.35, stopFired: "option", stopLossPct: 51 }), "option stop sold it · option down 51%");
+  assert.equal(closedStopNote({ entry: 0.7, stopOption: 0.35, stopFired: "stock", stopLossPct: 63 }), "stock stop sold it · option down 63%");
+  assert.equal(closedStopNote({ entry: 1.1, stopOption: 0.55, stopFired: "stock", stopLossPct: -9 }), "stock stop sold it · option up 9%");
+  assert.equal(closedStopNote({ entry: 1.1, stopOption: 0.55, stopFired: "stock", stopLossPct: null }), "stock stop sold it");
+  assert.equal(closedStopNote({ entry: 1.1, stopOption: 0.55 }), "or the option's bid at $0.55 (down 50%)");     // no stop sold it
+  assert.equal(closedStopNote({ entry: 0.7 }), "option down 50%");     // a trade from before the option stop keeps its old words
+  const card = tradeDetail({ id: "NVDA-CALL-3", ticker: "NVDA", side: "CALL", strike: 104, expiry: "2026-11-20", qty: 3, entry: 1.1, entrySpot: 100,
+    stopStart: 98.4, stopStock: 98.4, stopOption: 0.55, stopFired: "option", stopLossPct: 55, t1: 102, t2: 104, t3: 106, pl: -180, plPct: -54.5,
+    boughtAt: "2026-11-13T10:00:20-05:00", closedAt: "2026-11-13T10:07:30-05:00", outcome: "stopped", hits: [], targets: [],
+    events: [{ at: "2026-11-13T10:07:30-05:00", text: "Option stop: the option's bid $0.50 is down 55% from the $1.10 paid (the stop is 50%), sold 3 at $0.50." }] });
+  assert.deepEqual(card.levels[1], { key: "Stop", label: "Stop", value: "98.40", note: "option stop sold it · option down 55%" });
+  assert.equal(card.pct, "\u221254.5%");
+  assert.equal(card.outcome, "Stopped before T1");
+  assert.match(card.events[0].text, /^Option stop: the option's bid \$0\.50 is down 55% from the \$1\.10 paid/);
+});
+
+test("a trade saved before the option stop still says which stop sold it and the real loss (2026-11-25)", async () => {
+  const { closedStopNote, stopSale, tradeDetail } = await import("./tickerTrader.js");
+  // His real rows: no stopOption, no stopFired, no stopLossPct. Before this they read "option down 50%".
+  const at = "2026-11-19T10:31:14-05:00";
+  const nvda = { id: "NVDA-CALL-1-1795098725", ticker: "NVDA", side: "CALL", strike: 162.5, expiry: "2026-11-20", qty: 2, entry: 0.7, entrySpot: 155.74,
+    stopStart: 153.02, stopStock: 153.02, t1: 158, t2: 160, t3: 162.5, pl: -88, plPct: -62.9, hits: [], targets: [], outcome: "stopped",
+    boughtAt: "2026-11-19T09:32:05-05:00", closedAt: at, sells: [{ at, qty: 2, price: 0.26, pl: -88 }],
+    events: [{ at, text: "Stop: stock traded through 153.02, sold 2 at $0.26." }] };
+  const avgo = { ...nvda, ticker: "AVGO", entry: 0.66, qty: 3, pl: -183, plPct: -92.4, sells: [{ at, qty: 3, price: 0.05, pl: -183 }],
+    events: [{ at, text: "Stop: stock traded through 348.80, sold 3 at $0.05." }] };
+  assert.equal(closedStopNote(nvda), "stock stop sold it · option down 63%");
+  assert.equal(closedStopNote(avgo), "stock stop sold it · option down 92%");
+  assert.equal(tradeDetail(nvda).levels[1].note, "stock stop sold it · option down 63%");
+  assert.equal(tradeDetail(nvda).pct, "−62.9%");
+  // Worked out from whatever was saved: the price in the note, else (nothing sold at a target) the trade's own percent.
+  assert.deepEqual(stopSale({ ...nvda, sells: [] }), { fired: "stock", lost: 63 });
+  assert.deepEqual(stopSale({ ...nvda, sells: [], events: [{ at, text: "Stop: stock traded through 153.02." }] }), { fired: "stock", lost: 63 });
+  // After T1 the trade's own percent has the T1 sale in it, so only the stop's own sale counts.
+  const afterT1 = { ...nvda, plPct: 20, hits: [{ target: "T1" }], sells: [{ at: "x", qty: 1, price: 1.2 }, { at, qty: 1, price: 0.6 }],
+    events: [{ at: "x", text: "T1 hit: sold 1 at $1.20, stop to break-even." }, { at, text: "Break-even stop: stock traded through 155.74, sold 1 at $0.60." }] };
+  assert.equal(closedStopNote(afterT1), "stock stop sold it · option down 14%");
+  assert.deepEqual(stopSale({ ...afterT1, sells: [], events: [{ at, text: "Stop at T1: stock traded through 158.00." }] }), { fired: "stock", lost: null });
+  assert.equal(closedStopNote({ ...nvda, events: [{ at, text: "Option stop: the option's bid $0.34 is down 51% from the $0.70 paid (the stop is 50%), sold 2 at $0.34." }],
+    sells: [{ at, qty: 2, price: 0.34 }] }), "option stop sold it · option down 51%");
+  // No stop sold it: nothing is claimed, and the old words stay.
+  assert.deepEqual(stopSale({ ...nvda, events: [{ at, text: "15:50 close: sold 2 at the bid $0.26." }] }), { fired: null, lost: null });
+  assert.equal(closedStopNote({ ...nvda, events: [{ at, text: "15:50 close: sold 2 at the bid $0.26." }] }), "option down 50%");
+  assert.deepEqual(stopSale(null), { fired: null, lost: null });
+  // The server's own answer always wins.
+  assert.deepEqual(stopSale({ ...nvda, stopFired: "stock", stopLossPct: 64 }), { fired: "stock", lost: 64 });
+});
+
+test("a run with no live price is marked 'price is old' on its row, the Today tile and the account (2026-11-25)", async () => {
+  const { accountOldNote, oldPriceMark, openPlText } = await import("./tickerTrader.js");
+  const dead = { id: "NVDA-CALL", ticker: "NVDA", side: "CALL", status: "open", quoteDead: true, openPl: 110, liveNet: 110, net: 0, open: OPEN, trades: [],
+    note: "No live price on the 165 Call for 3 min: the option stop cannot be checked. Still holding 2 of 3." };
+  const live = { ...dead, quoteDead: false, note: "In a trade: holding 2 of 3" };
+  assert.equal(oldPriceMark(dead), "price is old");
+  assert.equal(oldPriceMark(live), "");
+  assert.equal(oldPriceMark({ ...dead, open: null }), "");              // nothing held: nothing to mark
+  assert.equal(oldPriceMark(null), "");
+  assert.equal(openPlText(dead), " · open +$110 (+38%), price is old");
+  assert.equal(openPlText(live), " · open +$110 (+38%)");
+  assert.equal(runLine(dead), "No live price on the 165 Call for 3 min: the option stop cannot be checked. Still holding 2 of 3. · open +$110 (+38%), price is old");
+  assert.equal(runLine(live), "In a trade: holding 2 of 3 · open +$110 (+38%)");
+  const asOf = "2026-11-13T10:42:05-05:00";
+  assert.equal(tickersDashboard([dead], asOf).today.note, "+$110 in 1 open · price is old");
+  assert.equal(tickersDashboard([live], asOf).today.note, "+$110 in 1 open");
+  assert.equal(tickersDashboard([dead, { ...live, id: "AMD-CALL", ticker: "AMD" }], asOf).today.note, "+$220 in 2 open · 1 at an old price");
+  assert.equal(accountOldNote({ openTrades: 1, oldPriceTrades: 1 }), "1 open trade's price is old");
+  assert.equal(accountOldNote({ openTrades: 3, oldPriceTrades: 2 }), "2 open trades' prices are old");
+  assert.equal(accountOldNote({ openTrades: 2, oldPriceTrades: 0 }), "");
+  assert.equal(accountOldNote({ openTrades: 2 }), "");                  // a server not restarted yet sends no count
+  assert.equal(accountOldNote(null), "");
+});
+
+test("an open trade with no live price is flagged; one with a live price is not", async () => {
+  const { quoteWarning } = await import("./tickerTrader.js");
+  assert.equal(quoteWarning({ open: OPEN, quoteDead: true }), "no live price since");
+  assert.equal(quoteWarning({ open: OPEN, quoteDead: false }), "");
+  assert.equal(quoteWarning({ open: OPEN }), "");                      // a server not restarted yet sends no flag
+  assert.equal(quoteWarning({ open: null, quoteDead: true }), "");     // nothing held: nothing to warn about
+  assert.equal(quoteWarning(null), "");
 });

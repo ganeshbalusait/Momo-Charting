@@ -13,7 +13,10 @@ import { Bot, RefreshCw, X } from "lucide-react";
 import BotDesk from "./BotDesk.jsx";
 import BotChat from "./BotChat.jsx";
 import TickerTrader from "./TickerTrader.jsx";
+import BotHome from "./BotHome.jsx";
+import { HOME_SEEN_KEY, botLanding, botMoreTarget } from "./botHome.js";
 import { TICKER_TRADER_KEY } from "./tickerTrader.js";
+import { captureEntryLegLines, captureReasonLines } from "./botCapture.js";
 import { DESK_VIEW_KEY, readDeskView, botTradePlanLine, deskPlan, paperRowPlan } from "./botDesk.js";
 import { BOT_RULE_HELP, BOT_RULE_LABELS, BOT_RULE_ORDER, botRuleLabel, BOT_TEST_RULES, botContractLabel, botDailyLog, botEntryStrikeLabel, isEarlyDayLine, setBotFills, setBotExit, setBotContract, BOT_EXIT_LABELS, BOT_CONTRACT_LABELS, botExitMatrix, botRiskOk, botRiskRoi, botMomentumMatrix, botPeriodMatrix, botReport, formatBotDollars, formatBotPct, nextBotSort, sortBotRows } from "./momxBot.js";
 
@@ -194,7 +197,7 @@ function PaperTable({ rows, showDay, account, team }) {
               <td title="Review status refers to the batch containing this trade; it is not an entry approval.">{reviewLabel(team, `${account}|${r.buyId}`, r)}</td>
             </tr>
           )) : (
-            <tr><td colSpan={showDay ? 21 : 20} className="bot-hint">No paper orders in this range. New entries require an eligible signal and a fresh quote during the entry windows (9:30-11:00 AM and 1:00-3:30 PM ET). AI reviews completed trades afterward.</td></tr>
+            <tr><td colSpan={showDay ? 21 : 20} className="bot-hint">No paper orders in this range. New entries require an eligible signal and a fresh quote during the entry windows (9:35-11:30 AM and 1:00-3:30 PM ET). AI reviews completed trades afterward.</td></tr>
           )}
         </tbody>
       </table>
@@ -343,9 +346,10 @@ function LearningTeamStatus({ onStatus }) {
       <p>Rule-qualified signals received by the BOT, including the scanner's secondary rows. This does not count every market opportunity or prove that an unentered signal would have won.</p>
       {Object.entries(team.capture).map(([side, c]) => <div key={side}>
         <p><b>{side.toUpperCase()} · {c.day || "Waiting for scanner"}</b>: {c.signals} recorded signals · {c.entered} entered · {c.pending} waiting for quotes · {c.notEntered} not entered.</p>
-        {Object.entries(c.reasons || {}).map(([reason, n]) => <p key={reason}>{n} · {reason}</p>)}
+        {captureReasonLines(c).map(({ reason, n }) => <p key={reason} data-testid="bot-capture-reason">{n} · {reason}</p>)}
+        {captureEntryLegLines(c).map(({ kind, text }) => <p key={kind} data-testid="bot-capture-entry-leg" data-kind={kind}>{text}</p>)}
       </div>)}
-      <p>Incomplete option chains retry while the original signal is fresh, for up to 10 minutes and within entry hours. Expired signals remain visible with a reason; the BOT does not invent an earlier fill.</p>
+      <p>Incomplete option chains retry while the original signal is fresh, for up to 10 minutes and within entry hours. Expired signals remain visible with a reason; the BOT does not invent an earlier fill. An option with no buyers (bid $0), no sellers or no quote is never bought: the signal is counted here as not entered, with what was found when it was checked.</p>
     </details> : null}
     {team?.scoreboard && Object.keys(team.scoreboard).length ? <details><summary>Specialist scoreboard</summary>
       <p>Each specialist calls whether the next completed batch will win a higher or lower share of trades. The call is saved before that batch exists, then graded; "unclear" is counted, never graded. Specialists see their own record on their next turn.</p>
@@ -432,7 +436,7 @@ function PaperBook({ account, side, days, team, refreshKey }) {
       <p className="bot-jevbook-note">
         <b>Alpaca PAPER · {account}</b> · {doc.enabled ? "ON" : "OFF"} · real paper orders (no money) for the Bot&apos;s {doc.rules?.book}.
         {" "}{side === "bear" ? "BEAR (puts)" : "BULL (calls)"} rules: {picked.length ? picked.join(", ") : "every rule"}.
-        {" "}When: {doc.rules?.entryTimes || "9:30-11:00 AM and 1:00-3:30 PM ET"}. Size: {doc.rules?.sizing}. Exit: {doc.rules?.exitPlan}. {doc.error ? "Last error: " + doc.error : ""}
+        {" "}When: {doc.rules?.entryTimes || "9:35-11:30 AM and 1:00-3:30 PM ET"}. Size: {doc.rules?.sizing}. Exit: {doc.rules?.exitPlan}. {doc.error ? "Last error: " + doc.error : ""}
       </p>
       <p className="bot-hint" role="status">Entry policy: {account === "paper5" && team?.experiments?.activeId ? "every signal is taken; the validated rule is advice only" : "every signal is taken; AI never blocks"}. {doc.ai?.enabled ? "ON · experimental" : "OFF"}. {doc.ai?.reason || "Waiting for status"}. Entries never wait for an AI response. The review and critic agents analyze completed trades afterward. Existing risk limits and midpoint exits stay in force.</p>
       </details>
@@ -1087,7 +1091,7 @@ function BotResearch({ viewSwitch }) {
       <TruthCheckCard />
       {book === 'all' ? <details className="bot-level-help">
         <summary>Level strategies · 3+ Setup types · MOM optional · AI review afterward</summary>
-        <p>{BOT_LEVEL_HELP} The Bot records every Level signal from 09:30 to 15:30 ET. Once the servers run the chart plan, the signals from 9:30-11:00 AM and 1:00-3:30 PM go on the chart&apos;s Entry / Target / Stop plan (the Chart plan column shows its numbers); a midday or later signal is noted &quot;Not ordered&quot;. A dash in that column means the trade was recorded before the chart plan was running. New records start with valid future scanner updates.</p>
+        <p>{BOT_LEVEL_HELP} The Bot records every Level signal from 09:30 to 15:30 ET. Once the servers run the chart plan, the signals from 9:35-11:30 AM and 1:00-3:30 PM go on the chart&apos;s Entry / Target / Stop plan (the Chart plan column shows its numbers); a midday or later signal is noted &quot;Not ordered&quot;. A dash in that column means the trade was recorded before the chart plan was running. New records start with valid future scanner updates.</p>
         <p><b>Setup column rules counted (23):</b> {SCANNER_SETUP_TYPES.map(([, label]) => label).join(' · ')}.</p>
         <p>Any three distinct types above satisfy the Setup requirement for each level. Multiple timeframes of one type count once. MOM is optional; these types include status and warning tags, so three types do not mean three independent bullish confirmations. Each new level trade shows its recorded Setup rules below its strategy name.</p>
         {learningTeam?.capture?.[side]?.levelStrategies ? <p role="status">Level engine ({side === "bear" ? "puts" : "calls"}): {learningTeam.capture[side].levelStrategies.state} · {learningTeam.capture[side].levelStrategies.reason}</p> : null}
@@ -1554,15 +1558,43 @@ function BotResearch({ viewSwitch }) {
 
 // The page a trader lands on is the Scorecard (2026-11-09): real paper fills
 // judged like a prop-firm evaluation. Everything older lives under Research.
+//
+// 2026-11-25 (his "Bot page is so complicated ... it's bad page", then "sample page is really good build it"):
+// the Bot now opens on the home page (BotHome.jsx): is it buying, the real result, Journal / Trades /
+// Learned / Ready. The Scorecard, Research, the Ticker trader and Ask are one tap away under its "More"
+// rows, each with a "Bot" button back. A page opened from a More row is not remembered, so the Bot
+// always opens on the home page; a page asked for by name (a link from the Ask dock, a remembered
+// choice) still opens directly.
 export default function BotPanel() {
   const [view, setViewState] = useState(() => {
-    try { return readDeskView(window.localStorage.getItem(DESK_VIEW_KEY)); } catch { return "desk"; }
+    try {
+      const landing = botLanding(window.localStorage.getItem(DESK_VIEW_KEY), window.localStorage.getItem(HOME_SEEN_KEY));
+      window.localStorage.setItem(HOME_SEEN_KEY, "1");
+      if (landing === "home") window.localStorage.setItem(DESK_VIEW_KEY, "home");
+      return landing;
+    } catch { return "home"; }
   });
+  const fromHome = useRef(false);
   const setView = (v) => {
     setViewState(v);
+    if (fromHome.current && v !== "home") return;          // a visit from the home page is not remembered
     try { window.localStorage.setItem(DESK_VIEW_KEY, v); } catch { /* private window */ }
   };
-  useBotLink((link) => setViewState(link.view));
+  useBotLink((link) => { fromHome.current = false; setViewState(link.view); });
+  const openMore = (name) => {
+    const target = botMoreTarget(name);
+    if (!target) return;
+    fromHome.current = true;
+    if (target.ticker !== null) { try { window.localStorage.setItem(TICKER_TRADER_KEY, target.ticker ? "1" : "0"); } catch { /* private window */ } }
+    setViewState(target.view);
+  };
+  const goHome = () => { fromHome.current = false; setView("home"); };
+  if (view === "home") return <BotHome onOpen={openMore} />;
+  const backBar = (
+    <div className="bot-back-bar">
+      <button type="button" className="bot-back" data-testid="bh-back" onClick={goHome}>‹ Bot</button>
+    </div>
+  );
   const viewSwitch = (
     <div className="bot-seg bot-view-switch" role="group" aria-label="Page">
       <button type="button" className={view === "desk" ? "is-on" : ""} aria-pressed={view === "desk"} onClick={() => setView("desk")}
@@ -1573,9 +1605,10 @@ export default function BotPanel() {
         title="Ask about a ticker or the bot: how far it went, why it failed, why it was missed. No AI; answers come from the app's records">Ask</button>
     </div>
   );
-  if (view === "research") return <BotResearch viewSwitch={viewSwitch} />;
+  if (view === "research") return <>{backBar}<BotResearch viewSwitch={viewSwitch} /></>;
   return (
     <div className="bot-page">
+      {backBar}
       <header className="bot-head">
         <div className="bot-title">
           <Bot size={18} aria-hidden="true" />

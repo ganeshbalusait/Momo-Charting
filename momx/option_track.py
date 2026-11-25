@@ -677,6 +677,119 @@ def _price(r: Mapping) -> float:
     return 0.0
 
 
+#: No trade opens on a quote that is not a real two-sided market (2026-11-24 loss audit: trades
+#: were "bought" at the mid of a $0 bid, a price nobody would pay back). _price above still marks
+#: trades that are ALREADY open, unchanged. The signal stays pending and is checked again while it
+#: is fresh, then recorded as not entered with a reason that says what really happened.
+#:
+#: What can be wrong with an entry quote. Each kind has its own sentence and its own count on the
+#: Bot page; a quote with NO bid number is "missing", never "$0".
+QUOTE_GAP_KINDS = ("missing", "buyers", "sellers", "unusable")
+QUOTE_GAP_WAIT = {
+    "missing": "No quote for this option right now; checked again while the signal is fresh",
+    "buyers": "No buyers for this option right now (bid $0); checked again while the signal is fresh",
+    "sellers": "No sellers for this option right now (no ask); checked again while the signal is fresh",
+    "unusable": "This option's quote is not usable right now (buyers priced above sellers); checked again while the signal is fresh",
+}
+_GAP_LEAD = {"missing": "No quote for this option", "buyers": "No buyers", "sellers": "No sellers",
+             "unusable": "Quote not usable"}
+_GAP_DETAIL = {"missing": "", "buyers": " (bid $0)", "sellers": " (no ask)",
+               "unusable": " (buyers priced above sellers)"}
+#: How the final reason is worded: "once" = the option was checked one time; "last" = checked
+#: more than once and this is what the last check found; "each" = every check found the same;
+#: "window" = every check found the same AND the checks ran to the end of the signal's 10 minutes.
+_GAP_WHEN = {"once": " when it was checked", "last": " at the last check", "each": " each time it was checked"}
+#: A signal counts as checked "through the deadline" when its last check was in the final
+#: two minutes of its ten.
+SIGNAL_FRESH_SECONDS = 600
+CHECKED_TO_DEADLINE_SECONDS = 480
+GENERIC_NOT_ENTERED = "No usable option quote before the signal's 10-minute deadline or entry close"
+
+
+def quote_gap_final(kind: str, mode: str) -> str:
+    """The plain reason a signal was not entered, e.g. ("buyers", "once") ->
+    "No buyers when it was checked (bid $0): no trade taken"."""
+    lead, detail = _GAP_LEAD[kind], _GAP_DETAIL[kind]
+    if mode == "window":
+        subject = lead + " for this option" if kind in ("buyers", "sellers") else lead
+        return f"{subject}{detail} in the 10 minutes after the signal: no trade taken"
+    return f"{lead}{_GAP_WHEN[mode]}{detail}: no trade taken"
+
+
+NO_BUYERS_WAIT, NO_SELLERS_WAIT = QUOTE_GAP_WAIT["buyers"], QUOTE_GAP_WAIT["sellers"]
+NO_BUYERS_ONCE, NO_BUYERS_FINAL = quote_gap_final("buyers", "once"), quote_gap_final("buyers", "window")
+NO_SELLERS_ONCE, NO_SELLERS_FINAL = quote_gap_final("sellers", "once"), quote_gap_final("sellers", "window")
+
+#: Why an entered trade has no 0.20-delta contract (the one the paper accounts buy). Saved on the
+#: trade as eGap (the kind) and eNote (the sentence); the Bot page counts each kind separately.
+ENTRY_LEG_GAP_KINDS = ("none", "missing", "buyers", "sellers", "unusable")
+ENTRY_LEG_NOTE = {
+    "none": "No strike under 0.20 delta on this expiry at the signal: the paper accounts do not buy it",
+    "missing": "The 0.20-delta option was not quoted at the signal: the paper accounts do not buy it",
+    "buyers": "No buyers for the 0.20-delta option at the signal (bid $0): the paper accounts do not buy it",
+    "sellers": "No sellers for the 0.20-delta option at the signal (no ask): the paper accounts do not buy it",
+    "unusable": "The 0.20-delta option's quote was not usable at the signal (buyers far below sellers, or crossed): the paper accounts do not buy it",
+}
+#: The 0.20-delta pick trusts a strike's delta only on a real two-sided market: bid above $0 and
+#: ask no more than 3x the bid (spread no more than 100% of the mid). A sanity guard on the quote
+#: the delta was worked out from, not a strategy filter.
+ENTRY_MAX_ASK_TO_BID = 3.0
+#: Live-quote path: how many strikes under 0.20 delta (nearest 0.20 first) are quoted live.
+ENTRY_LIVE_CANDIDATES = 4
+
+
+def _quote_num(value: Any) -> float | None:
+    n = _num(value)
+    return n if n is not None and math.isfinite(n) else None
+
+
+def quote_gap(bid: Any, ask: Any) -> str | None:
+    """What is wrong with an entry quote, or None for a real two-sided one:
+    "missing" (no bid number: not quoted - NOT a $0 bid), "buyers" (the bid really
+    is $0), "sellers" (a bid but no ask), "unusable" (the ask is under the bid)."""
+    b, a = _quote_num(bid), _quote_num(ask)
+    if b is None or b < 0:
+        return "missing"
+    if b == 0:
+        return "buyers"
+    if a is None or a <= 0:
+        return "sellers"
+    if a < b:
+        return "unusable"
+    return None
+
+
+def two_sided(bid: Any, ask: Any) -> bool:
+    return quote_gap(bid, ask) is None
+
+
+def delta_pick_gap(bid: Any, ask: Any) -> str | None:
+    """quote_gap for the 0.20-delta pick: also "unusable" when the buyers are far
+    below the sellers (ask above 3x the bid), where Schwab's delta is not to be trusted."""
+    gap = quote_gap(bid, ask)
+    if gap is None and _quote_num(ask) > ENTRY_MAX_ASK_TO_BID * _quote_num(bid) + 1e-9:
+        return "unusable"
+    return gap
+
+
+def entry_leg_gap_of(gaps: Any) -> str:
+    """One reason for "no 0.20-delta contract" from the strikes that were looked at.
+    No strike at all = "none". Otherwise the strike that came closest to a market
+    speaks: "buyers" (bid $0) is only said when NO quoted strike had a bid."""
+    seen = {g for g in gaps if g}
+    for kind in ("unusable", "sellers", "buyers", "missing"):
+        if kind in seen:
+            return kind
+    return "none"
+
+
+def real_delta(value: Any) -> float | None:
+    """A delta as Schwab sent it, or None for its placeholders (+/-999 outside
+    regular hours, anything beyond +/-1, NaN). 789 saved trades carried 999."""
+    d = _num(value)
+    return d if d is not None and math.isfinite(d) and abs(d) <= 1 else None
+
+
 #: The VWAP exit is gone (2026-11-10, his "Remove 'vwap' exit strategy in BOT's" after the NVDA put
 #: bought 09:35 was sold at 10:00 on a 5m close above VWAP, -$144, before NVDA fell to 167). The bots
 #: and the Research score now exit on the 21 EMA only, else 15:50. Past records keep their old exits.
@@ -765,7 +878,7 @@ def pick_contract(chain: Any, bear: bool, zero_dte: bool = False) -> dict | None
     legs = [r for r in legs if str(r["expiry"])[:10] == expiry]
     best = min(legs, key=lambda r: abs(_num(r["strike"]) - spot))
     return {"contract": best["symbol"], "strike": _num(best["strike"]), "expiry": expiry,
-            "delta": _num(best.get("delta")), "spot": round(spot, 4), "entry": _price(best),
+            "delta": real_delta(best.get("delta")), "spot": round(spot, 4), "entry": _price(best),
             "entryBid": _num(best.get("bid")), "entryAsk": _num(best.get("ask"))}
 
 
@@ -776,31 +889,63 @@ ENTRY_DELTA = 0.20
 FADING_BLOCKS: frozenset = frozenset()
 
 
-def pick_entry_strike(chain: Any, bear: bool, expiry: str) -> dict | None:
-    """The chain's ENTRY strike (App.jsx buildOptionRoiEstimates, his ask
-    2026-09-28 "you should take that strike entry"): on ``expiry``, the OTM
-    contract with 0 < |delta| < 0.20 whose |delta| is closest to 0.20, ties to
-    the strike nearest spot. ABVX 2026-09-28: the 103C (delta 0.20) at $0.75."""
+def entry_strike_candidates(chain: Any, bear: bool, expiry: str) -> list[Mapping]:
+    """The chain rows that could be the ENTRY strike, best first: on ``expiry``,
+    OTM contracts with a real 0 < |delta| < 0.20, |delta| closest to 0.20 first,
+    ties to the strike nearest spot. Placeholder deltas (+/-999) never count.
+    No test of the quote here: the caller tests the quote it will trade on."""
     spot = _num(_m(chain).get("underlyingPrice"))
     rows = _m(chain).get("selectedExpiryChainRows")
     if not spot or not isinstance(rows, list):
-        return None
+        return []
     side = "PUT" if bear else "CALL"
     legs = []
     for r in rows:
         if not isinstance(r, Mapping) or r.get("side") != side or str(r.get("expiry") or "")[:10] != expiry:
             continue
-        strike, delta = _num(r.get("strike")), abs(_num(r.get("delta")) or 0.0)
-        if strike is None or not r.get("symbol") or _price(r) <= 0 or not (0 < delta < ENTRY_DELTA):
+        strike, delta = _num(r.get("strike")), abs(real_delta(r.get("delta")) or 0.0)
+        if strike is None or not r.get("symbol") or not (0 < delta < ENTRY_DELTA):
             continue
         if (strike < spot) if bear else (strike > spot):
             legs.append((abs(ENTRY_DELTA - delta), abs(strike - spot), r))
-    if not legs:
-        return None
-    best = min(legs, key=lambda x: (x[0], x[1]))[2]
-    return {"eContract": best["symbol"], "eStrike": _num(best["strike"]), "eDelta": _num(best.get("delta")),
-            "eEntry": _price(best), "eLast": _price(best), "eBest": _price(best), "eStatus": "open",
-            "eEntryBid": _num(best.get("bid")), "eEntryAsk": _num(best.get("ask"))}
+    return [r for _, _, r in sorted(legs, key=lambda x: (x[0], x[1]))]
+
+
+def entry_strike_fields(row: Mapping, bid: Any, ask: Any) -> dict:
+    """The trade's 0.20-delta fields for ``row`` bought at the mid of ``bid``/``ask``."""
+    bid, ask = _num(bid), _num(ask)
+    mid = round((bid + ask) / 2, 4)
+    return {"eContract": row["symbol"], "eStrike": _num(row["strike"]), "eDelta": _num(row.get("delta")),
+            "eEntry": mid, "eLast": mid, "eBest": mid, "eStatus": "open", "eEntryBid": bid, "eEntryAsk": ask}
+
+
+def pick_entry_strike(chain: Any, bear: bool, expiry: str) -> dict | None:
+    """The chain's ENTRY strike (App.jsx buildOptionRoiEstimates, his ask
+    2026-09-28 "you should take that strike entry"): on ``expiry``, the OTM
+    contract with 0 < |delta| < 0.20 whose |delta| is closest to 0.20, ties to
+    the strike nearest spot. ABVX 2026-09-28: the 103C (delta 0.20) at $0.75.
+
+    A strike counts only with a real two-sided market in THIS chain (2026-11-24):
+    bid above $0 and ask no more than 3x the bid (delta_pick_gap). Schwab works
+    the delta out from the quote's mid; with a $0 bid or a penny bid under a
+    wide ask that mid is fiction and so is the delta. EOSE 2026-11-24 at $1.24:
+    the 1.5 to 4.0 calls read 0.076 falling to 0.024, then the 4.5 call 0.167
+    because its ask was $0.14 - "closest to 0.20", so the BOT took calls at 5x
+    the stock price (EOSE $18 call at $1.735, 2026-11-17).
+
+    Used when the trade is priced from the chain itself. The live-quote path
+    (api_server option_contract_quotes) takes entry_strike_candidates and
+    applies the same test to each strike's LIVE quote instead."""
+    for row in entry_strike_candidates(chain, bear, expiry):
+        if delta_pick_gap(row.get("bid"), row.get("ask")) is None:
+            return entry_strike_fields(row, row.get("bid"), row.get("ask"))
+    return None
+
+
+def entry_leg_gap(chain: Any, bear: bool, expiry: str) -> str:
+    """Why pick_entry_strike found nothing on this chain: one of ENTRY_LEG_GAP_KINDS."""
+    return entry_leg_gap_of(delta_pick_gap(r.get("bid"), r.get("ask"))
+                            for r in entry_strike_candidates(chain, bear, expiry))
 
 
 #: His risk gate (2026-10-03: "I want fewer losses - exp move 2x and ROI at least 100"):
@@ -848,7 +993,7 @@ def levels_at_signal(chain: Any) -> dict:
 # target' use that entry the position and target 1,2,3 ... and stop loss", then
 # "Do the paper trades and all trades also changes").
 #
-# Every Level trade opened inside PLAN_WINDOWS (9:30-11:00 and 1:00-3:30 ET; his
+# Every Level trade opened inside PLAN_WINDOWS (9:35-11:30 and 1:00-3:30 ET since 2026-11-25; his
 # 2026-11-13 "Remove 10 am rule on bot also if you see the setup then trade it") gets, on its
 # 0.20-delta contract, the plan the chart's Project ROI card would draw for that
 # contract (momx/chart_plan.py, a tested port of the chart's own formulas):
@@ -868,7 +1013,7 @@ def levels_at_signal(chain: Any) -> dict:
 # which read the stock's live quote every 10 s. Sales are priced at the mid of a
 # live quote taken right after (bid and ask are kept beside it).
 #: Same windows as the paper bots (momx/paper_mirror.ENTRY_WINDOWS; a test holds them equal).
-PLAN_WINDOWS = ((9, 30, 11, 0), (13, 0, 15, 30))
+PLAN_WINDOWS = ((9, 35, 11, 30), (13, 0, 15, 30))   # 2026-11-25: was 9:30-11:00
 #: The paper bots still buy a signal up to this long after it fired
 #: (momx/paper_mirror.FRESH_SECONDS; a test holds them equal), so a signal in the
 #: last minutes BEFORE a window opens is bought when it opens and needs its plan
@@ -887,7 +1032,7 @@ PLAN_KEYS = ("side", "expiry", "strike", "entry", "entrySpot", "expectedMove", "
 PLAN_CHAIN_DIR = "oi_chain_cache"
 
 
-PLAN_OUTSIDE_WHY = "outside the buy windows (9:30-11:00, 1:00-3:30)"
+PLAN_OUTSIDE_WHY = "outside the buy windows (9:35-11:30, 1:00-3:30)"
 
 
 def plan_window_note(at: Any, entry_at: Any = None) -> str | None:
@@ -1593,13 +1738,19 @@ class OptionTrackBook:
             missing += [{"rule": t.get("rule"), "symbol": t.get("symbol"),
                          "reason": t.get("why") or _m(t.get("aiDecision")).get("reason") or t.get("status")}
                         for t in self._trades if t.get("status") in ("no_contract", "ai_skipped")]
+            # Entered trades with no 0.20-delta contract, counted per cause (ENTRY_LEG_GAP_KINDS):
+            # the paper accounts buy that contract, so these are the signals they sit out.
+            entry_leg = {kind: 0 for kind in ENTRY_LEG_GAP_KINDS}
+            for t in self._trades:
+                if t.get("eGap") in entry_leg and (_num(t.get("entry")) or 0) > 0:
+                    entry_leg[t["eGap"]] += 1
             reasons = {}
             for r in missing:
                 why = str(r["reason"])
                 reasons[why] = reasons.get(why, 0)+1
             return {"day": self._day, "signals": len(self._trades)+len([k for k in skipped if k not in have]),
                     "entered": entered, "pending": len(pending), "notEntered": len(missing), "reasons": reasons,
-                    "examples": missing[-10:], "levelStrategies": self._levels.status}
+                    "examples": missing[-10:], "entryLeg": entry_leg, "levelStrategies": self._levels.status}
 
     def _level_index(self) -> dict[str, list]:
         """Per ticker, across ALL Level rules (level1/2/3) of this book today:
@@ -1720,15 +1871,57 @@ class OptionTrackBook:
             out["hlMissing"] = True         # a scan match with no H/L on the last scan: rank unknown
         return out
 
+    # ------------------------------------------------- why a signal was not entered
+    @staticmethod
+    def _note_gap(t: dict, kind: str, now: float) -> bool:
+        """This check found the option's quote unusable for ``kind`` (QUOTE_GAP_KINDS).
+        quoteGap counts the quote checks in a row ("checks") and how many of the latest
+        found this same kind ("n"), so the final reason can say what really happened."""
+        gap = _m(t.get("quoteGap"))
+        same = gap.get("kind") == kind
+        t["quoteGap"] = {"kind": kind, "n": (int(gap.get("n") or 0) if same else 0) + 1,
+                         "checks": int(gap.get("checks") or 0) + 1, "last": now}
+        t["why"] = QUOTE_GAP_WAIT[kind]
+        return True
+
+    @staticmethod
+    def _clear_gap(t: dict) -> bool:
+        """This check failed for a cause that is NOT the quote (no chain, no OTM strike, a
+        stale price): an earlier "no buyers" must not stay on the signal as its reason."""
+        waits = QUOTE_GAP_WAIT.values()
+        if "quoteGap" not in t and t.get("why") not in waits:
+            return False
+        t.pop("quoteGap", None)
+        if t.get("why") in waits:
+            t.pop("why", None)
+        return True
+
+    @staticmethod
+    def _final_why(t: Mapping, at: datetime, deadline: bool) -> str:
+        """The reason saved on a signal that ran out of time. ``deadline``: its 10 minutes
+        ended (False = entry hours closed first)."""
+        gap = _m(t.get("quoteGap"))
+        kind, n, checks = gap.get("kind"), int(gap.get("n") or 0), int(gap.get("checks") or 0)
+        if kind not in QUOTE_GAP_WAIT or t.get("why") != QUOTE_GAP_WAIT[kind] or n < 1:
+            return GENERIC_NOT_ENTERED
+        if checks <= 1:
+            return quote_gap_final(kind, "once")
+        if n < checks:
+            return quote_gap_final(kind, "last")
+        last = _num(gap.get("last"))
+        to_the_end = deadline and last is not None and last - at.timestamp() >= CHECKED_TO_DEADLINE_SECONDS
+        return quote_gap_final(kind, "window" if to_the_end else "each")
+
     def _expire_unpriced(self, local: datetime) -> bool:
         changed = False
         for t in self._trades:
             if t.get("status") != "pending":
                 continue
             at = _iso(t.get("at"))
-            if at and ((local-at).total_seconds() > 600 or local.hour*60+local.minute > UNTIL_MIN):
-                t.update(status="no_contract", why="No usable option quote before the signal's 10-minute deadline or entry close")
+            if at and ((local-at).total_seconds() > SIGNAL_FRESH_SECONDS or local.hour*60+local.minute > UNTIL_MIN):
+                t.update(status="no_contract", why=self._final_why(t, at, (local-at).total_seconds() > SIGNAL_FRESH_SECONDS))
                 t.pop("aiCandidate", None)
+                t.pop("quoteGap", None)
                 changed = True
         return changed
 
@@ -2221,11 +2414,25 @@ class OptionTrackBook:
             for res in _m(reply).get("results") or []:
                 res = _m(res)
                 pick = _m(res.get("pick"))
-                if not res.get("ok") or not pick.get("contract") or not _num(pick.get("entry")):
-                    continue
                 sym = res.get("symbol")
+                # The LIVE quote is not a two-sided market: no trade. The server says which
+                # way ("noQuoteSide"); a server not restarted yet still sends the pick priced
+                # at Schwab's mark, so the quote is tested here as well. The signal stays
+                # pending with the reason and is checked again while it is fresh.
+                gap = res.get("noQuoteSide") if not res.get("ok") else (
+                    quote_gap(pick.get("entryBid"), pick.get("entryAsk")) if pick.get("contract") else None)
+                waiting = [t for t in self._trades if t["symbol"] == sym and t.get("status") == "pending"]
+                if gap in QUOTE_GAP_WAIT:
+                    for t in waiting:
+                        changed |= self._note_gap(t, gap, now)
+                    continue
                 live = self._live_px.get(sym)
-                if entry_impossible(_num(pick["entry"]), _num(pick.get("strike")), live, self.bear):
+                if (not res.get("ok") or not pick.get("contract") or not _num(pick.get("entry"))
+                        or entry_impossible(_num(pick["entry"]), _num(pick.get("strike")), live, self.bear)):
+                    # Not priced for another cause (no chain held, no OTM strike, a stale
+                    # price): an earlier "no buyers" is no longer this signal's reason.
+                    for t in waiting:
+                        changed |= self._clear_gap(t)
                     continue
                 for t in self._trades:
                     if t["symbol"] != sym or t.get("status") != "pending":
@@ -2237,6 +2444,7 @@ class OptionTrackBook:
                         continue
                     t.update(candidate)
                     t.pop("why", None)
+                    t.pop("quoteGap", None)
                     t.update(status="open", entryAt=stamp, best=pick["entry"], bestAt=stamp, worst=pick["entry"],
                              worstAt=stamp, last=pick["entry"], lastAt=stamp, pricedAtTs=now, entryVia="quote",
                              chainAt=res.get("chainAt"),
@@ -2245,15 +2453,26 @@ class OptionTrackBook:
                              # per 8+ s): median 230 s late, 2026-11-04 truth check.
                              lastBid=pick.get("entryBid"), lastAsk=pick.get("entryAsk"))
                     self._jev_ask(t)
+                    # The 0.20-delta contract: the server tested each candidate's LIVE quote.
+                    # Tested again here for a server not restarted yet, which still prices
+                    # a $0 bid at Schwab's mark.
                     e = res.get("e")
-                    t.update(dict(e) if isinstance(e, Mapping) else {"eStatus": "none"})
+                    e_gap = res.get("eGap")
+                    if isinstance(e, Mapping) and e.get("eContract"):
+                        e_gap = delta_pick_gap(e.get("eEntryBid"), e.get("eEntryAsk"))
+                    if isinstance(e, Mapping) and e.get("eContract") and e_gap is None:
+                        t.update(dict(e))
+                    elif e_gap in ENTRY_LEG_NOTE:
+                        t.update(eStatus="none", eGap=e_gap, eNote=ENTRY_LEG_NOTE[e_gap])
+                    else:
+                        t.update(eStatus="none")    # an older server gives no reason: none is made up
                     if t.get("eContract"):
                         # Same reason as lastBid/lastAsk above, for the 0.20-delta
                         # contract the paper accounts buy since 2026-11-10.
                         t.update(eLastBid=t.get("eEntryBid"), eLastAsk=t.get("eEntryAsk"))
                     plan_open(t, plan_chains.get(sym), self.bear, day)
                     z = _m(res.get("z"))
-                    if z.get("contract") and _num(z.get("entry")):
+                    if z.get("contract") and _num(z.get("entry")) and two_sided(z.get("entryBid"), z.get("entryAsk")):
                         t.update(zContract=z["contract"], zStrike=z.get("strike"), zEntry=z["entry"],
                                  zLast=z["entry"], zBest=z["entry"], zStatus="open",
                                  zEntryBid=z.get("entryBid"), zEntryAsk=z.get("entryAsk"))
@@ -2429,12 +2648,19 @@ class OptionTrackBook:
                         # walls and EM seen AT the signal are saved from today.
                         pick = pick_contract(chain, self.bear)
                         if pick and entry_impossible(pick["entry"], pick["strike"], live, self.bear):
+                            changed |= self._clear_gap(t)
                             continue        # quote not updated yet - stay pending, retried next pass
                         t.update(levels_at_signal(chain))
+                        gap = quote_gap(pick.get("entryBid"), pick.get("entryAsk")) if pick else None
                         if not pick:
                             # An incomplete chain is transient: keep the signal in the
                             # priority retry queue until its original freshness deadline.
+                            t.pop("quoteGap", None)
                             t["why"] = "Waiting for a usable OTM option quote; retrying within the signal deadline"
+                        elif gap:
+                            # Not a price a trade could be made at (here: nobody bidding). No
+                            # entry; checked again while fresh, then counted as not entered.
+                            self._note_gap(t, gap, now)
                         else:
                             candidate = dict(pick)
                             candidate.update(risk_check(pick["spot"], t.get("expectedMove"), pick["strike"], pick["entry"], self.bear))
@@ -2443,18 +2669,22 @@ class OptionTrackBook:
                                 continue
                             t.update(candidate)
                             t.pop("why", None)
+                            t.pop("quoteGap", None)
                             t.update(status="open", entryAt=stamp, best=pick["entry"], bestAt=stamp,
                                      worst=pick["entry"], worstAt=stamp, last=pick["entry"], lastAt=stamp,
                                      pricedAtTs=now, lastBid=pick.get("entryBid"), lastAsk=pick.get("entryAsk"))
                             self._note_path(t, pick["entry"], stamp)
                             self._jev_ask(t)
                             e = pick_entry_strike(chain, self.bear, pick["expiry"])
-                            t.update(e if e else {"eStatus": "none"})
+                            if not e:
+                                e_gap = entry_leg_gap(chain, self.bear, pick["expiry"])
+                                e = {"eStatus": "none", "eGap": e_gap, "eNote": ENTRY_LEG_NOTE[e_gap]}
+                            t.update(e)
                             if t.get("eContract"):
                                 t.update(eLastBid=t.get("eEntryBid"), eLastAsk=t.get("eEntryAsk"))
                             plan_open(t, chain, self.bear, self._day)
                             z = pick_contract(chain, self.bear, zero_dte=True)
-                            if z:
+                            if z and two_sided(z.get("entryBid"), z.get("entryAsk")):
                                 t.update(zContract=z["contract"], zStrike=z["strike"], zEntry=z["entry"],
                                          zLast=z["entry"], zBest=z["entry"], zStatus="open",
                                          zEntryBid=z.get("entryBid"), zEntryAsk=z.get("entryAsk"))

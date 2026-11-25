@@ -115,7 +115,7 @@ export function latestTradeFacts(run) {
  *  The account card already shows the all-time Up / Down, so it is not repeated here. */
 export function tickersDashboard(runs, asOf) {
   const today = String(asOf || "").slice(0, 10);
-  let todayPl = 0, closed = 0, wins = 0, open = 0, openMoney = 0;
+  let todayPl = 0, closed = 0, wins = 0, open = 0, openMoney = 0, old = 0;
   const perTicker = [];
   for (const run of runs || []) {
     for (const t of run.trades || []) {
@@ -125,6 +125,7 @@ export function tickersDashboard(runs, asOf) {
     }
     if (run.open) {
       open += 1;
+      if (oldPriceMark(run)) old += 1;
       const live = (openPl(run) || 0) + (Number(run.open.pl) || 0);
       todayPl += live;
       openMoney += live;
@@ -134,8 +135,10 @@ export function tickersDashboard(runs, asOf) {
   perTicker.sort((a, b) => b.money - a.money);
   const best = perTicker[0], worst = perTicker[perTicker.length - 1];
   const round = (n) => Math.round(n * 100) / 100;
+  // An open trade whose option has no live price is counted at its OLD bid: the tile says so (2026-11-25).
+  const oldNote = !old ? "" : old === open ? ` · ${OLD_PRICE}` : ` · ${old} at an old price`;
   return {
-    today: { text: signedMoney(round(todayPl)), tone: tone(todayPl), note: open ? `${signedMoney(round(openMoney))} in ${open} open` : "nothing open" },
+    today: { text: signedMoney(round(todayPl)), tone: tone(todayPl), note: open ? `${signedMoney(round(openMoney))} in ${open} open${oldNote}` : "nothing open" },
     winRate: { text: closed ? `${Math.round((wins / closed) * 100)}%` : "–", note: closed ? `${wins} of ${closed} won` : "no closed trades" },
     trades: { text: String(closed + open), note: `${closed} closed · ${open} open` },
     best: best ? { text: `${best.ticker} ${signedMoney(best.money)}`, tone: tone(best.money),
@@ -188,12 +191,14 @@ export function rowPercent(run) {
   return `${pct > 0 ? "+" : pct < 0 ? "−" : ""}${Math.abs(pct)}%`;
 }
 
-/** " · open +$42 (+12%)" for a trade still held, once a bid has been seen. */
+/** " · open +$42 (+12%)" for a trade still held, once a bid has been seen. With no live price on the option the
+ *  number comes from an old bid, and says so: " · open +$42 (+12%), price is old". */
 export function openPlText(run) {
   const pl = openPl(run);
   if (pl === null) return "";
   const gain = openGain(run.open);
-  return ` · open ${signedMoney(pl)}${gain ? ` (${gain})` : ""}`;
+  const old = oldPriceMark(run);
+  return ` · open ${signedMoney(pl)}${gain ? ` (${gain})` : ""}${old ? `, ${old}` : ""}`;
 }
 
 export function runLine(run) {
@@ -210,6 +215,81 @@ export function winsLabel(run) {
   return count ? `${Number(run.wins) || 0} of ${count}` : "–";
 }
 
+/** The option stop (2026-11-24): the option price at or under which everything is sold, the highest whole cent that
+ *  is down 50% or more from the price paid. The server's own number when it sends one, else worked out from the entry
+ *  (a server not restarted since). Null with no entry price. */
+export function optionStopPrice(trade) {
+  const saved = trade?.stopOption;
+  if (saved !== null && saved !== undefined && Number.isFinite(Number(saved)) && Number(saved) >= 0) return Number(saved);
+  const entry = Number(trade?.entry);
+  return entry > 0 ? Math.floor(entry * 50 + 1e-6) / 100 : null;
+}
+
+/** The small words beside the open trade's Stop: where the stock stop stands, and the option's own stop price. */
+export function stopNote(trade) {
+  const level = optionStopPrice(trade);
+  const bid = level === null ? "" : `$${price(level)}`;
+  if (trade?.stopKind === "break-even") return bid ? `moved to break-even · or option bid ${bid}` : "moved to break-even";
+  if (trade?.stopKind === "T1") return bid ? `moved to T1 · or option bid ${bid}` : "moved to T1";
+  return bid ? `or the option's bid at ${bid} (down 50%)` : "option down 50%";
+}
+
+const STOP_NOTES = ["Stop:", "Break-even stop:", "Stop at T1:", "Option stop:"];
+
+/** Which stop sold a closed trade ("stock" / "option" / null) and how far under the price paid that sale was, in whole
+ *  percent. The server's own stopFired / stopLossPct when the trade carries them; a trade saved before 2026-11-24
+ *  carries neither, so they are worked out from what it did save (the same rule as momx/ticker_journal.py stop_sale):
+ *  the stop's own sale note says which stop, and that sale's price against the entry is the loss. */
+export function stopSale(t) {
+  let fired = t?.stopFired === "option" || t?.stopFired === "stock" ? t.stopFired : null;
+  let lost = t?.stopLossPct !== null && t?.stopLossPct !== undefined && Number.isFinite(Number(t.stopLossPct)) ? Number(t.stopLossPct) : null;
+  const stops = (t?.events || []).filter((e) => STOP_NOTES.some((s) => String(e?.text || "").startsWith(s)));
+  const last = stops[stops.length - 1];
+  if (!fired && !last) return { fired: null, lost: null };
+  const text = String(last?.text || "");
+  if (!fired) fired = text.startsWith("Option stop:") ? "option" : "stock";
+  if (lost === null && last) {
+    const entry = Number(t.entry);
+    const sale = [...(t.sells || [])].reverse().find((s) => last.at && s?.at === last.at && typeof s.price === "number");
+    const said = /sold \d+ at \$(\d+(?:\.\d+)?)/.exec(text);
+    const sold = sale ? sale.price : said ? Number(said[1]) : null;
+    if (sold !== null && entry > 0) lost = (1 - sold / entry) * 100;
+    else if (!(t.hits || []).length && typeof t.plPct === "number" && Number.isFinite(t.plPct)) lost = -t.plPct;
+  }
+  return { fired, lost: lost === null ? null : Math.round(lost) };
+}
+
+/** The Stop line of a closed trade in the journal: which stop sold it and the real loss, when a stop did. */
+export function closedStopNote(t) {
+  const { fired, lost } = stopSale(t);
+  const how = lost === null ? "" : lost > 0 ? ` · option down ${lost}%` : lost < 0 ? ` · option up ${Math.abs(lost)}%` : " · option level";
+  if (fired === "option") return `option stop sold it${how}`;
+  if (fired === "stock") return `stock stop sold it${how}`;
+  if (t?.stopOption === null || t?.stopOption === undefined) return "option down 50%";       // bought before the option stop, and no stop sold it
+  return `or the option's bid at $${price(optionStopPrice(t))} (down 50%)`;
+}
+
+/** "" while the open trade's option has a live price; else the words that say its last bid is old (2026-11-24: an
+ *  option with no bid cannot be sold and its option stop cannot be checked, so the screen never shows it as fine). */
+export function quoteWarning(run) {
+  return run?.open && run.quoteDead ? "no live price since" : "";
+}
+
+export const OLD_PRICE = "price is old";
+
+/** "price is old" beside a ticker's money while its open trade has no live price (2026-11-25): the open profit shown
+ *  is worked out from the last bid seen, not from a live one. "" otherwise. */
+export function oldPriceMark(run) {
+  return quoteWarning(run) ? OLD_PRICE : "";
+}
+
+/** The same mark for the one account: how many open trades are counted at an old price. "" when none are. */
+export function accountOldNote(account) {
+  const n = Math.round(Number(account?.oldPriceTrades)) || 0;
+  if (n < 1) return "";
+  return n === 1 ? "1 open trade's price is old" : `${n} open trades' prices are old`;
+}
+
 /** The ladder of the open trade, top to bottom: T3, T2, T1, Entry, Stop. */
 export function ladder(trade) {
   if (!trade) return [];
@@ -224,8 +304,7 @@ export function ladder(trade) {
   });
   rows.push({ key: "Entry", kind: "entry", hit: false, label: "Entry", value: `${price(trade.entrySpot)} · ask $${price(trade.entry)}`,
     note: `${trade.qty} ${Number(trade.qty) === 1 ? "contract" : "contracts"}` });
-  const moved = trade.stopKind === "break-even" ? "moved to break-even" : trade.stopKind === "T1" ? "moved to T1" : "option down 50%";
-  rows.push({ key: "Stop", kind: "stop", hit: false, label: "Stop", value: price(trade.stopStock), note: moved });
+  rows.push({ key: "Stop", kind: "stop", hit: false, label: "Stop", value: price(trade.stopStock), note: stopNote(trade) });
   return rows;
 }
 
@@ -409,7 +488,7 @@ export function tradeDetail(t) {
   const reasons = new Map((t.targets || []).map((x) => [x.label, x.reason]));
   const levels = [
     { key: "Entry", label: "Entry", value: `${price(t.entrySpot)} · ask $${price(t.entry)}`, note: `${timeEt(t.boughtAt)} · ${t.qty} ${Number(t.qty) === 1 ? "contract" : "contracts"}` },
-    { key: "Stop", label: "Stop", value: price(t.stopStart ?? t.stopStock), note: "option down 50%" },
+    { key: "Stop", label: "Stop", value: price(t.stopStart ?? t.stopStock), note: closedStopNote(t) },
     ...["T1", "T2", "T3"].map((label) => {
       const hit = hits.get(label);
       return { key: label, label: hit ? `${label} ✓` : label, value: price(t[label.toLowerCase()]), hit: Boolean(hit),

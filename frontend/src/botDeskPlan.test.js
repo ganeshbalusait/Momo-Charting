@@ -57,7 +57,7 @@ test("a Bot tracked trade reads as one line: the numbers, then what happened", (
   assert.equal(botTradePlan(t).entryAsk, 1.25);
   assert.equal(botTradePlanLine(t),
     "Entry $1.25 · Stop 97.26 → 102.00 (T1) · T1 102.00 ✓ 10:10 · T2 104.00 ✓ 10:15 · T3 108.00 · on the plan +56% (Stop at T1: stock traded through 102.00)");
-  assert.equal(botTradePlanLine({ planNote: "Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30)" }), "Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30)");
+  assert.equal(botTradePlanLine({ planNote: "Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30)" }), "Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30)");
   assert.equal(botTradePlanLine({ rule: "go" }), "–");
   assert.equal(botTradePlan({}), null);
 });
@@ -67,11 +67,11 @@ test("All trades and the journal carry the plan cells for every row", () => {
     { key: "k1", status: "open", symbol: "AAPL", side: "bull", rule: "level2", levels: ["level1", "level2"], at: "2026-11-13T10:05:00-05:00",
       qty: 3, buy: 1.25, pnl: 15, roiPct: 4, live: true, note: "holding", plan: PLAN },
     { key: "k2", status: "signal", symbol: "TSLA", side: "bull", rule: "level3", levels: ["level3"], at: "2026-11-13T09:41:00-05:00",
-      note: "Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30) · 0.20-delta option $2.00", plan: null }] };
+      note: "Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30) · 0.20-delta option $2.00", plan: null }] };
   const out = deskTradeLog({ tradeLog: log }, "all");
   assert.deepEqual(out.rows.map((r) => [r.symbol, r.plan.entry, r.plan.stop, r.plan.t1, r.plan.t2, r.plan.t3]),
     [["AAPL", "$1.25", "97.26", "102.00", "104.00", "108.00"], ["TSLA", "–", "–", "–", "–", "–"]]);
-  assert.equal(out.rows[1].note, "Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30) · 0.20-delta option $2.00");
+  assert.equal(out.rows[1].note, "Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30) · 0.20-delta option $2.00");
   const journal = deskJournal({ journal: { periods: { day: [] }, tradeCount: 1, trades: [
     { symbol: "AAPL", side: "bull", rule: "level2", levels: ["level2"], closedAt: "2026-11-13T10:40:00-05:00", qty: 3, buy: 1.25, pnl: -195,
       roiPct: -52, exit: "Stop: stock traded through 97.26", plan: PLAN }] } }, "day");
@@ -112,7 +112,7 @@ test("the rules text says the plan in his words", () => {
   // Was: "No new buys from 9:30 to 10:00 AM ET", "10:00 to 11:00 AM", "Not ordered: before ten"
   // (the 10:00 rule, removed 2026-11-13: "if you see the setup then trade it").
   assert.ok(!text.includes("10:00"), "the 10:00 rule is gone");
-  for (const words of ["from 9:30 to 11:00 AM", "1:00 to 3:30 PM", "as soon as the setup is there", "from 9:45 it has to stay there for 5 minutes",
+  for (const words of ["from 9:35 to 11:30 AM", "1:00 to 3:30 PM", "as soon as the setup is there", "from 9:45 it has to stay there for 5 minutes",
     "A signal with no chart plan",
     "limit order at the option's ask", "down 50%", "stock trades through it, everything is sold", "T1 is half the expected move",
     "T2 is the full expected move", "biggest open-interest strike", "sell 1 at T1 and move the stop to break-even",
@@ -158,15 +158,15 @@ test("the evaluation line does not claim the chart plan before the server runs i
 });
 
 // Was "before any trade the answers name the 10:00 buy window" (the 10:00 rule, removed 2026-11-13).
-test("before any trade the answers name the 9:30 buy window", () => {
+test("before any trade the answers name the 9:35 buy window", () => {
   const strat = (rule) => ({ rule, sent: 0, filled: 0, closed: 0, wins: 0, winRatePct: null, pnl: 0, roiPct: null, perTrade: null, smallSample: true,
     calls: { closed: 0 }, puts: { closed: 0 }, sameAs: null });
   const strategies = deskStrategies({ strategies: { rows: [strat("level1"), strat("level2"), strat("level3")], best: null, allLosing: false, need: 20,
     mostClosed: { rule: "level1", closed: 0 } } });
-  assert.equal(strategies.answer, "No closed trades yet. The first Level orders go out in the 9:30 AM ET buy window.");
+  assert.equal(strategies.answer, "No closed trades yet. The first Level orders go out in the 9:35 AM ET buy window.");
   const versus = deskVersus({ versus: { rows: [{ account: "paper3", name: "Rules bot", mode: "rules", sent: 0, filled: 0, closed: 0 },
     { account: "paper5", name: "AI bot", mode: "ai", sent: 0, filled: 0, closed: 0 }], ready: false, leader: null, need: 20 } });
-  assert.equal(versus.answer, "No closed trades yet. Both bots start with the 9:30 AM ET buy window.");
+  assert.equal(versus.answer, "No closed trades yet. Both bots start with the 9:35 AM ET buy window.");
 });
 
 test("before the restart (no plan field) the page says its numbers are the older plan's, not 'the earlier period below'", async () => {

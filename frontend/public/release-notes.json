@@ -2,6 +2,22 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-25T04:51:59-05:00",
+      "heading": "Bot page rebuilt, new buying hours, and two bot fixes",
+      "items": [
+        "The Bot page now opens on one simple screen. The first line says plainly whether the bot can buy: \"Cannot buy: the Alpaca paper account has $10 left\", \"Buying is paused\" or \"Buying is on\", with the day of the last order.",
+        "One money number: the real result on real paper fills since the start day, with the trade count and the account line under it.",
+        "Five parts on one switch: Home, Journal (month calendar, tap a day for its trades, Day / Week / Month, calls against puts), Trades (All / Open / Won / Lost / Not bought, tap a trade for its plan and how it was sold), Learned (what the review found in the losing trades, marked \"Suggestion only, not applied\") and Ready (the eight checks as pass or fail).",
+        "Nothing was removed. Under \"More\" on Home: Trade one ticker, Full scorecard, Research and Ask the bot. Each opens with a \"Bot\" button to come back.",
+        "New buying hours for the paper bots: new trades from 9:35 to 11:30 AM and from 1:00 to 3:30 PM ET (was 9:30 to 11:00 AM and 1:00 to 3:30 PM). Selling is not limited to those hours.",
+        "Ticker trader: a real option stop. The trade is sold when the option itself is down 50% at the price it can really be sold for, on two price checks in a row, as well as at the chart's stock stop. Before, only the stock price was watched, and \"-50%\" stops sold at -63% and -92%.",
+        "Ticker trader: a contract whose buyers are already 50% or more under the asking price is not bought, and the ticker says why. An open option with no live price for 2 minutes is marked \"price is old\". Journal cards say which stop sold a trade and the real loss.",
+        "Bot: it no longer records a trade on an option nobody is bidding for. The 0.20-delta contract is picked only when its live quote has real buyers and sellers (a bid above $0 and an ask no more than 3 times the bid), so the paper accounts skip those too. Each skipped signal shows its real reason.",
+        "Known limit: on a thinly traded option whose price has not updated for over a minute, the option stop cannot be checked until a fresh price arrives. The screen says so.",
+        "The paper bots will place fewer orders, because some signals have no tradable 0.20-delta contract (up to about 16% of them in Nov 10 to Nov 24)."
+      ]
+    },
+    {
       "at": "2026-11-23T14:47:20-05:00",
       "heading": "LEAP OI Scanner on the phone: compact table",
       "items": [

@@ -52,8 +52,13 @@
 /* Dollars and percent side by side, same size (2026-11-18 "Add percentage": the small % under the dollars was missed). */
 .tt-row-money { font-size: 15px; font-weight: 600; flex: 0 0 auto; display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
 .tt-row-pct { font-size: 14px; font-weight: 700; color: inherit; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); }
+/* "price is old" (2026-11-25): an open trade with no live price is counted at its last bid, so its money is marked. */
+.tt-row-right { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: 0 0 auto; min-width: 0; }
+.tt .tt-old { font-size: 12px; font-weight: 700; color: var(--tt-down); white-space: nowrap; }
+.tt-tile .tt-old { white-space: normal; overflow-wrap: anywhere; }
 .tt-foot { margin: 0; font-size: 12px; line-height: 1.5; color: var(--tt-dim); }
 .tt-why { font-size: 13px; line-height: 1.45; color: var(--tt-soft); overflow-wrap: anywhere; }
+.tt-note.is-warn { border-color: var(--tt-down); background: var(--tt-down-bg); color: var(--tt-down); font-weight: 600; }
 .tt-note { margin: 0; padding: 10px 12px; border: 1px solid var(--tt-line); border-radius: 10px; font-size: 13px; color: var(--tt-soft); overflow-wrap: anywhere; }
 
 .tt-run { display: flex; flex-direction: column; gap: 16px; min-width: 0; color: var(--tt-text); }

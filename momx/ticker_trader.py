@@ -29,6 +29,17 @@ stop where the option is down 50%, and T1 / T2 / T3.
              long as the account can pay for it (2026-11-16: LLY at $440 a contract
              was skipped on his $2,000 account, "Bot is not taking trade properly")
     stop     the stock trades through the stop -> everything is sold
+    option   the option's own BID is down 50% from the price paid -> everything is sold
+    stop     (2026-11-24: the stock stop is a delta/gamma guess with no time decay and no
+             spread in it; NVDA sold at -63% and AVGO at -92% while it waited for the
+             stock). Checked on the bid it can really be sold at, at every quote check, and
+             it sells only when the bid is at or under the stop on OPTION_STOP_CHECKS checks
+             in a row, so one bad quote on a thin option cannot sell the trade (the paper
+             bots' own stop rule: two checks in a row).
+             With no live bid for DEAD_QUOTE_SECONDS the screen says so: it cannot be checked.
+    no buy   a contract whose bid is ALREADY at or under that option stop when it would be
+             bought (a spread that wide, or a $0.00 bid) is not bought: the option stop
+             would sell it at a loss with no price move at all.
     targets  one contract at each (2 contracts: T1 and T2; 1 contract: T2);
              the stop moves to break-even after T1 and to T1 after T2
     close    everything left is sold at 15:50 ET
@@ -70,6 +81,14 @@ REPLY_SECONDS = 15.0
 FETCH_SECONDS = 5.0
 NO_TIMES_NOTE = "Waiting for quote times (restart needed)"
 TICK_SECONDS = 10.0
+#: The option stop: everything is sold when the option's bid is down this share of the price paid.
+OPTION_STOP_SHARE = chart_plan.STOP_LOSS_SHARE
+#: The bid must be at or under the option stop on this many quote checks in a row before it sells, so one bad
+#: quote on a thin option cannot stop a trade out (the paper bots' own stop rule: two checks, 20 s, in a row).
+OPTION_STOP_CHECKS = 2
+#: An open trade with no usable bid for this long has a dead quote: neither stop can sell and the
+#: option stop cannot even be checked, so the note says it plainly instead of "In a trade".
+DEAD_QUOTE_SECONDS = 120.0
 OPEN_MINUTE = 9 * 60 + 30
 CLOSE_OUT_MINUTE = 15 * 60 + 50
 END_MINUTE = 16 * 60
@@ -138,13 +157,73 @@ def _live_bid(quote: Any, now: datetime) -> float | None:
     return bid if bid is not None and bid >= 0 else None
 
 
-def _waiting(quote: Any, now: datetime, what: str) -> str:
-    """Why there is no usable quote on `what`, in his words."""
+def _waiting(quote: Any, now: datetime, what: str, selling: bool = False) -> str:
+    """Why there is no usable quote on `what`, in his words. `selling` = a price to sell at is wanted:
+    a fresh quote with one side missing names the side that IS missing (no buyer / no seller).
+    With no quote at all the engine cannot know why, so it claims no reason: today's quote route
+    (api_server.option_quotes) leaves a contract out of its reply when either side is missing."""
     if isinstance(quote, Mapping) and not fresh(quote, now):
         at = _num(quote.get("quoteAt"))
         if at is None or at < _open_epoch(now):
             return f"Waiting for today's first quote on {what}"
+    elif selling and isinstance(quote, Mapping):
+        bid = _num(quote.get("bid"))
+        has_bid, has_ask = bid is not None and bid >= 0, bool(_pos(quote.get("ask")))
+        if has_ask and not has_bid:
+            return f"No buyer is bidding on {what} right now: waiting for a bid"
+        if has_bid and not has_ask:
+            return f"No seller is asking a price on {what} right now: waiting for a full quote"
+        return f"No price on {what} right now: waiting for one"
     return f"Waiting for a fresh quote on {what} (no quote under {QUOTE_SECONDS:.0f} s old)"
+
+
+def option_stop(trade: Mapping) -> float | None:
+    """The option price at or under which the option stop sells: the highest whole cent that is
+    down OPTION_STOP_SHARE or more from the price paid ($0.70 paid -> $0.35, $0.65 -> $0.32).
+    Worked out from the entry for a trade bought before this stop existed."""
+    saved = _num(trade.get("stopOption"))
+    if saved is not None and saved >= 0:
+        return saved
+    entry = _pos(trade.get("entry"))
+    return math.floor(entry * (1 - OPTION_STOP_SHARE) * 100 + 1e-6) / 100 if entry else None
+
+
+def entry_refusal(what: str, bid: float, ask: float) -> str | None:
+    """Why this contract is not bought at `ask`, or None when it may be: its bid is already at or under the
+    option stop for that buy, so the trade would be sold at a loss with no price move at all."""
+    paid = {"entry": round(ask, 2)}
+    limit = option_stop(paid)
+    if limit is None or bid > limit + 1e-9:
+        return None
+    if bid <= 0:
+        return (f"Not bought: nobody is bidding on {what} ($0.00 against the ${ask:.2f} asking price), "
+                f"so it would be sold at a loss at once.")
+    return (f"Not bought: {what}'s buyers (${bid:.2f}) are already {loss_pct(paid, bid)}% under the asking price "
+            f"(${ask:.2f}), so it would be sold at a loss at once.")
+
+
+def loss_pct(trade: Mapping, price: float) -> int | None:
+    """How far `price` is under the price paid, in whole percent (63 = down 63%). Negative = above it."""
+    entry = _pos(trade.get("entry"))
+    return int(round((1 - price / entry) * 100)) if entry else None
+
+
+def _against_paid(trade: Mapping, price: float) -> str:
+    """"down 63% from the $0.70 paid" for a sale note: the real result of this sale."""
+    pct = loss_pct(trade, price)
+    if pct is None:
+        return "sold"
+    paid = f"the ${float(trade['entry']):.2f} paid"
+    return f"down {pct}% from {paid}" if pct > 0 else f"up {-pct}% from {paid}" if pct < 0 else f"level with {paid}"
+
+
+def _quiet_seconds(trade: Mapping, now: datetime) -> float:
+    """How long this open trade has had no usable bid, counted inside today's session only."""
+    try:
+        since = datetime.fromisoformat(str(trade.get("quietSince") or ""))
+    except ValueError:
+        return 0.0
+    return max(0.0, now.timestamp() - max(since.timestamp(), _open_epoch(now)))
 
 
 def expired(trade: Mapping, now: datetime) -> bool:
@@ -325,18 +404,22 @@ class TickerTrader:
         """What the screen shows: the cash left, what the open trades cost, and the account's value
         with each open trade at its last bid (at its cost until a bid has been seen)."""
         with self._lock:
-            start, cash, worth, count = self._start_size(), self._cash(), 0.0, 0
+            start, cash, worth, count, old = self._start_size(), self._cash(), 0.0, 0, 0
             for run in self._runs.values():
                 trade = run.get("open")
                 if not isinstance(trade, Mapping):
                     continue
                 count += 1
+                old += 1 if run.get("quoteDead") else 0
                 bid = _num(trade.get("bid"))
                 price = bid if bid is not None and bid >= 0 else (_num(trade.get("entry")) or 0.0)
                 worth += price * 100 * int(_num(trade.get("held")) or 0)
             value = round(cash + worth, 2)
             return {"startBalance": start, "cash": cash, "invested": round(self._invested(), 2), "openValue": round(worth, 2),
                     "value": value, "net": round(value - start, 2), "realized": round(self._realized(), 2), "openTrades": count,
+                    # Open trades whose option has had no live price for DEAD_QUOTE_SECONDS: they are counted above
+                    # at an OLD bid, so the screen marks the account's value and open profit as not live.
+                    "oldPriceTrades": old,
                     "resetAt": self._account.get("resetAt")}
 
     # ---- helpers --------------------------------------------------------
@@ -456,6 +539,8 @@ class TickerTrader:
         out["openPl"] = round((bid - entry) * 100 * left, 2) if held and bid is not None and bid >= 0 and entry and left > 0 else None
         out["liveNet"] = round(out["net"] + (out["openPl"] or 0.0), 2)
         out["tradeCount"] = len(trades)
+        # True = the open trade has had no usable bid for DEAD_QUOTE_SECONDS: its last bid is old and no stop can sell.
+        out["quoteDead"] = bool(out.get("quoteDead")) and bool(held)
         out["wins"] = sum(1 for t in trades if (t.get("pl") or 0) > 0)
         return out
 
@@ -565,6 +650,9 @@ class TickerTrader:
                         want += [trade["contract"], run["ticker"]]
                         plan.append((run["id"], self._token(run)))
                     else:
+                        if run.get("quoteDead"):
+                            run["quoteDead"] = False        # the market is shut: no quote is expected, the note below says why
+                            changed = True
                         changed |= self._note(run, "Market closed: this trade is sold at the first fresh bid after the open", stamp)
                 elif run.get("status") == "waiting":
                     if buying_open(now):
@@ -632,8 +720,16 @@ class TickerTrader:
             return True
         quote = quotes.get(pick["contract"])
         ask = _live_ask(quote, now)
+        what = f"the {pick['strike']:g} {side.title()}"
         if not ask:
-            return self._note(run, _waiting(quote, now, f"the {pick['strike']:g} {side.title()}"), stamp)
+            return self._note(run, _waiting(quote, now, what), stamp)
+        # The entry guard (2026-11-25): a bid already at or under the option stop for this buy is not bought.
+        bid = _num(quote.get("bid"))
+        if bid is None or bid < 0:
+            return self._note(run, f"Waiting for a buyer's price on {what}: its quote has an asking price only", stamp)
+        refused = entry_refusal(what, bid, ask)
+        if refused:
+            return self._idle(run, refused, stamp)
         plan = chart_plan.from_chain(chain, bear=side == "PUT", expiry=pick["expiry"], strike=pick["strike"],
                                      entry=ask, spot=spot, today=day)
         levels = [(plan or {}).get(k) for k in ("stopStock", "t1", "t2", "t3")]
@@ -651,6 +747,7 @@ class TickerTrader:
             "qty": qty, "held": qty, "split": chart_plan.split_contracts(qty),
             "entry": round(ask, 2), "entrySpot": plan["entrySpot"], "cost": round(ask * 100 * qty, 2), "boughtAt": stamp,
             "stopStart": plan["stopStock"], "stopStock": plan["stopStock"], "stopKind": "stop",
+            "stopOption": option_stop({"entry": round(ask, 2)}),
             "t1": plan["t1"], "t2": plan["t2"], "t3": plan["t3"],
             "targets": [{"label": t["label"], "stock": t["stock"], "reason": t["reason"]} for t in plan["targets"]],
             "expectedMove": plan.get("expectedMove"), "chainAt": plan.get("chainAt"),
@@ -680,8 +777,10 @@ class TickerTrader:
                      plPct=round(trade["pl"] / trade["cost"] * 100, 1) if trade.get("cost") else None,
                      balanceAfter=self._equity())
         run.setdefault("trades", []).append(trade)
+        trade.pop("quietSince", None)
+        trade.pop("stopChecks", None)
         stopped = bool(run.get("stopping"))
-        run.update(open=None, status="stopped" if stopped else "idle", stopping=False)
+        run.update(open=None, status="stopped" if stopped else "idle", stopping=False, quoteDead=False)
         self._note(run, ("Stopped. " if stopped else "Trade closed. ") + "Tap Trade again for the next one.", stamp)
 
     def _expire(self, run: dict, trade: dict, quotes: Mapping, stamp: str) -> None:
@@ -717,10 +816,29 @@ class TickerTrader:
         if stock:
             run.update(stock=round(stock, 2), stockAt=stamp)
             changed = True
-        if bid is not None:
-            trade.update(bid=round(bid, 2), bidAt=stamp)
         held = int(trade["held"])
         what = f"the {_num(trade.get('strike')) or 0:g} {str(trade['side']).title()}"
+        if bid is not None:
+            trade.update(bid=round(bid, 2), bidAt=stamp)
+            changed |= trade.pop("quietSince", None) is not None
+        elif not trade.get("quietSince") or str(trade["quietSince"])[:10] != stamp[:10]:
+            trade["quietSince"] = stamp
+            changed = True
+        quiet = 0.0 if bid is not None else _quiet_seconds(trade, now)
+        dead = quiet >= DEAD_QUOTE_SECONDS
+        if bool(run.get("quoteDead")) != dead:
+            run["quoteDead"] = dead
+            changed = True
+
+        def no_bid(lead: str) -> bool:
+            """Something is due but there is no bid to sell at. A short gap waits; a dead quote says so."""
+            if dead:
+                text = (f"{lead}, but there has been no live price on {what} for {int(quiet // 60)} min, "
+                        f"so nothing can be sold. Still holding {held}.")
+            else:
+                text = f"{lead}: {_waiting(quote, now, what, selling=True)}"
+            return self._note(run, text, stamp) or changed
+
         minute = now.hour * 60 + now.minute
         # Sold in full whatever the stock does: his Stop button, the 15:50 close, a trade left from another day.
         full = ("Stopped by you" if run.get("stopping") else
@@ -728,21 +846,47 @@ class TickerTrader:
                 "Left open from an earlier day" if trade.get("day") != now.date().isoformat() else "")
         if full:
             if bid is None:
-                return self._note(run, f"{full}: {_waiting(quote, now, what)}", stamp) or changed
+                return no_bid(full)
             self._sell(run, trade, held, bid, f"{full}: sold {held} at the bid ${bid:.2f}.", stamp)
             self._close(run, trade, stamp)
             return True
-        if not stock:
-            return self._note(run, _waiting(quotes.get(ticker), now, ticker), stamp) or changed
         call = trade["side"] != "PUT"
         stop = float(trade["stopStock"])
-        if (stock <= stop) if call else (stock >= stop):
+        if stock and ((stock <= stop) if call else (stock >= stop)):
             if bid is None:
-                return self._note(run, f"Stop reached at {stop:.2f}: {_waiting(quote, now, what)}", stamp) or changed
+                return no_bid(f"Stop reached at {stop:.2f}")
             kind = {"break-even": "Break-even stop", "T1": "Stop at T1"}.get(trade.get("stopKind"), "Stop")
-            self._sell(run, trade, held, bid, f"{kind}: stock traded through {stop:.2f}, sold {held} at ${bid:.2f}.", stamp)
+            trade.update(stopFired="stock", stopLossPct=loss_pct(trade, bid))
+            self._sell(run, trade, held, bid, f"{kind}: stock traded through {stop:.2f}, sold {held} at ${bid:.2f}, "
+                                              f"{_against_paid(trade, bid)}.", stamp)
             self._close(run, trade, stamp)
             return True
+        # The option stop (2026-11-24): the option itself, at the bid it can really be sold at, is down 50% from the
+        # price paid. It needs no stock price, and it comes before a target reached on the same check. It sells only
+        # when the bid is at or under the stop on OPTION_STOP_CHECKS checks in a row (2026-11-25): one bad quote
+        # followed by a normal one sells nothing. A check with no usable bid neither counts nor clears the count.
+        limit = option_stop(trade)
+        if bid is not None and limit is not None:
+            if bid <= limit + 1e-9:
+                checks = int(_num(trade.get("stopChecks")) or 0) + 1
+                if checks >= OPTION_STOP_CHECKS:
+                    trade.update(stopFired="option", stopLossPct=loss_pct(trade, bid))
+                    self._sell(run, trade, held, bid, f"Option stop: the option's bid ${bid:.2f} is {_against_paid(trade, bid)} "
+                                                      f"(the stop is 50%), sold {held} at ${bid:.2f}.", stamp)
+                    self._close(run, trade, stamp)
+                    return True
+                trade["stopChecks"] = checks
+                self._note(run, f"The option's bid ${bid:.2f} is {_against_paid(trade, bid)}, at the 50% option stop: "
+                                f"sold if the next price check says the same. Holding {held} of {trade['qty']}.", stamp)
+                return True
+            if trade.pop("stopChecks", None) is not None:
+                changed = True
+        if not stock:
+            if dead:
+                # Neither price is coming in: the loud note, never the quiet "Waiting for a fresh quote on NVDA".
+                return self._note(run, f"No live price on {what} for {int(quiet // 60)} min, and none on {ticker} either: "
+                                       f"neither stop can be checked. Still holding {trade['held']} of {trade['qty']}.", stamp) or changed
+            return self._note(run, _waiting(quotes.get(ticker), now, ticker), stamp) or changed
         while len(trade["hits"]) < 3 and trade["held"] > 0:
             index = len(trade["hits"])
             label = f"T{index + 1}"
@@ -751,7 +895,7 @@ class TickerTrader:
                 break
             lot = min(int(trade["split"][index]), int(trade["held"]))
             if lot > 0 and bid is None:
-                return self._note(run, f"{label} reached at {level:.2f}: {_waiting(quote, now, what)}", stamp) or changed
+                return no_bid(f"{label} reached at {level:.2f}")
             move = ""
             if index == 0:
                 trade.update(stopStock=trade["entrySpot"], stopKind="break-even")
@@ -769,6 +913,10 @@ class TickerTrader:
             if trade["held"] <= 0:
                 self._close(run, trade, stamp)
                 return True
+        if dead:
+            # Nothing is due on the stock, but with no bid the option stop cannot be checked: never a quiet "In a trade".
+            return self._note(run, f"No live price on {what} for {int(quiet // 60)} min: the option stop cannot be checked. "
+                                   f"Still holding {trade['held']} of {trade['qty']}.", stamp) or changed
         changed |= self._note(run, f"In a trade: holding {trade['held']} of {trade['qty']}", stamp)
         return changed
 

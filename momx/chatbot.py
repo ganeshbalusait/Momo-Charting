@@ -718,7 +718,7 @@ def answer_why_missed(records: Records, ticker: str, minute: int | None, side: s
     c = contract_facts(t)
     why, step = [], ""
     if at is not None and not (570 <= at < 660 or 780 <= at < 930):
-        why.append(f"The signal came at {_clock(t.get('at'))}, outside the buy windows (9:30-11:00 AM and 1:00-3:30 PM ET).")
+        why.append(f"The signal came at {_clock(t.get('at'))}, outside the buy windows (9:35-11:30 AM and 1:00-3:30 PM ET).")
         step = "outside the buy windows"
     if not t.get("eContract"):
         recorded = " ".join(str(t.get("why") or "").split())[:160]

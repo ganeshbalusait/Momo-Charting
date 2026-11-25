@@ -93,13 +93,14 @@ def _level3(b):
 
 
 def test_the_windows_are_the_paper_bots_windows():
-    """9:30-11:00 and 1:00-3:30. Between 2026-11-12 and 11-13 this asserted a 10:00 start and the
+    """9:35-11:30 and 1:00-3:30 (since 2026-11-25; 9:30-11:00 before). Between 2026-11-12 and 11-13 this asserted a 10:00 start and the
     note "before 10:00"; he removed that rule ("if you see the setup then trade it")."""
-    assert ot.PLAN_WINDOWS == pm.ENTRY_WINDOWS == ((9, 30, 11, 0), (13, 0, 15, 30))
-    assert ot.plan_window_note(_at(9, 30).isoformat()) is None
+    assert ot.PLAN_WINDOWS == pm.ENTRY_WINDOWS == ((9, 35, 11, 30), (13, 0, 15, 30))
+    # A 9:30 signal is still fresh when the window opens at 9:35, so it is bought then and keeps its plan.
+    assert ot.plan_window_note(_at(9, 30).isoformat()) is None and ot.plan_window_note(_at(9, 35).isoformat()) is None
     assert ot.plan_window_note(_at(9, 59, 59).isoformat()) is None
-    assert ot.plan_window_note(_at(10, 0).isoformat()) is None and ot.plan_window_note(_at(10, 59).isoformat()) is None
-    assert ot.plan_window_note(_at(11, 0).isoformat()) == "outside the buy windows (9:30-11:00, 1:00-3:30)" == ot.PLAN_OUTSIDE_WHY
+    assert ot.plan_window_note(_at(10, 0).isoformat()) is None and ot.plan_window_note(_at(11, 29).isoformat()) is None
+    assert ot.plan_window_note(_at(11, 30).isoformat()) == "outside the buy windows (9:35-11:30, 1:00-3:30)" == ot.PLAN_OUTSIDE_WHY
     assert ot.plan_window_note(_at(13, 0).isoformat()) is None and ot.plan_window_note(_at(15, 29).isoformat()) is None
     assert ot.plan_window_note(_at(15, 30).isoformat()).startswith("outside the buy windows")
     assert ot.plan_window_note("not a time") is None
@@ -118,10 +119,10 @@ def test_a_signal_just_before_a_window_opens_is_still_bought_so_it_gets_its_plan
     # time the Bot OPENED the trade, so the plan is judged on the later of the two times.
     assert ot.plan_window_note(_at(12, 49, 55).isoformat(), _at(12, 50, 20).isoformat()) is None
     assert ot.plan_window_note(_at(12, 49, 55).isoformat(), _at(12, 49, 58).isoformat()) is not None
-    assert ot.plan_window_note(_at(10, 59, 50).isoformat(), _at(11, 0, 10).isoformat()) == ot.PLAN_OUTSIDE_WHY
+    assert ot.plan_window_note(_at(11, 29, 50).isoformat(), _at(11, 30, 10).isoformat()) == ot.PLAN_OUTSIDE_WHY
     assert ot.plan_window_note(_at(12, 55).isoformat(), "not a time") is None
-    # The end of a window is not stretched: 11:00 and 15:30 signals are not bought.
-    assert ot.plan_window_note(_at(11, 0).isoformat()) is not None and ot.plan_window_note(_at(15, 30).isoformat()) is not None
+    # The end of a window is not stretched: 11:30 and 15:30 signals are not bought.
+    assert ot.plan_window_note(_at(11, 30).isoformat()) is not None and ot.plan_window_note(_at(15, 30).isoformat()) is not None
 
 
 def test_a_1256_signal_carries_the_charts_plan(tmp_path, monkeypatch):
@@ -172,7 +173,7 @@ def test_a_signal_before_ten_gets_the_charts_plan_like_any_other(tmp_path, monke
 def test_a_midday_signal_is_noted_as_outside_the_buy_windows(tmp_path, monkeypatch):
     b, clock = _book(tmp_path, monkeypatch, _at(11, 30))
     _scan(b, clock, _at(11, 30), row(100.0))
-    assert _level3(b)["planNote"] == "Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30)"
+    assert _level3(b)["planNote"] == "Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30)"
     assert "plan" not in _level3(b)
 
 
@@ -182,7 +183,7 @@ def test_a_signal_opened_inside_the_lead_gets_its_plan_from_the_later_time(tmp_p
          "eContract": "X"}
     assert ot.plan_open(t, None, False, "2026-11-13") is True
     assert t["planNote"].startswith("No chart plan")            # inside the clock; only the chain is missing here
-    late = {"rule": "level3", "symbol": "AAPL", "at": _at(10, 59, 50).isoformat(), "entryAt": _at(11, 0, 10).isoformat(),
+    late = {"rule": "level3", "symbol": "AAPL", "at": _at(11, 29, 50).isoformat(), "entryAt": _at(11, 30, 10).isoformat(),
             "eContract": "X"}
     ot.plan_open(late, None, False, "2026-11-13")
     assert late["planNote"] == "Not ordered: " + ot.PLAN_OUTSIDE_WHY

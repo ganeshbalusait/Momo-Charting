@@ -160,7 +160,7 @@ def test_the_plan_from_the_signal_to_the_paper_page_the_bot_page_and_the_scoreca
     # --- the Paper page (scanner worker)
     assert status == 200 and refused == 403
     doc = paper["mirrors"][0]
-    assert "limit at the live ask" in doc["rules"]["orders"] and "9:30-11:00" in doc["rules"]["entryTimes"]
+    assert "limit at the live ask" in doc["rules"]["orders"] and "9:35-11:30" in doc["rules"]["entryTimes"]
     assert "10:00" not in doc["rules"]["entryTimes"] and doc["rules"]["plan"] == "chart"
     assert "T1 = half the expected move" in doc["rules"]["exitPlan"]
     assert len(doc["rows"]) == 1                                         # Y fired at 11:40 (midday): never ordered
@@ -185,7 +185,7 @@ def test_the_plan_from_the_signal_to_the_paper_page_the_bot_page_and_the_scoreca
                                                             "Stop at break-even: stock traded through 100.00"]
     assert [s["price"] for s in x3["planState"]["sells"]] == [1.75, 1.05]         # the Bot scores at the mid
     y3 = next(t for t in trades if t["symbol"] == "Y" and t["rule"] == "level3")
-    assert y3["planNote"] == "Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30)" and "plan" not in y3
+    assert y3["planNote"] == "Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30)" and "plan" not in y3
 
     # --- the Scorecard (api_server)
     assert desk_status == 200 and desk["startDay"] == "2026-01-01"
@@ -202,7 +202,7 @@ def test_the_plan_from_the_signal_to_the_paper_page_the_bot_page_and_the_scoreca
     assert journal["exit"] == "Stop at break-even: stock traded through 100.00" and journal["plan"]["t2"] == 104.0
     if DAY.date() == datetime.now(ET).date():                            # today's signals are listed (not on a weekend run)
         early = next(r for r in log if r["symbol"] == "Y")
-        assert early["status"] == "signal" and early["note"].startswith("Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30)")
+        assert early["status"] == "signal" and early["note"].startswith("Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30)")
         assert early["plan"] is None
 
 

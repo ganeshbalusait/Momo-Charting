@@ -164,7 +164,8 @@ export async function openApp({
     agxLearnSeen: String(LEARN_CONTENT_VERSION), ...(view ? { agenticActiveView: view } : {}), ...(await gridAlreadyApplied(view)),
     // The Bot page opens on its Scorecard (2026-11-09). The older Bot specs test
     // the Research view, so that is seeded unless a spec asks for something else.
-    ...(view === "Bot" ? { "bot.view": "research" } : {}), ...storage,
+    // "bot.homeSeen" (2026-11-25): the Bot home page takes the first visit once; a spec is not a first visit.
+    ...(view === "Bot" ? { "bot.view": "research", "bot.homeSeen": "1" } : {}), ...storage,
   };
   const hasTouch = touch ?? viewport === PHONE;
   const context = await browser.newContext({ viewport, hasTouch, isMobile: hasTouch && viewport.width < 800 });

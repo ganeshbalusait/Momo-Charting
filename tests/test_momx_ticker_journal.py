@@ -295,3 +295,74 @@ def _SHARED_RUNS():
                 "events": []}
     return [{"id": "NVDA-CALL", "ticker": "NVDA", "side": "CALL", "trades": [closed("NVDA-CALL", 1, 40.0)], "open": None},
             {"id": "AMD-PUT", "ticker": "AMD", "side": "PUT", "trades": [closed("AMD-PUT", 2, -25.0)], "open": None}]
+
+
+# ---- 2026-11-24: the option stop is a stop in the journal too, and the card says which stop fired ----
+
+def test_an_option_stop_is_counted_as_stopped_and_the_card_says_which_stop_and_the_real_loss(world):
+    trader = bought(world)
+    world.set(100.0, bid=0.5, ask=0.6)                        # the stock has not moved; the option's bid is down 55%
+    world.step(trader)
+    world.step(trader)                                        # 2026-11-25 (changed on purpose): sold on the second check in a row
+    doc = trader.journal("NVDA-CALL")
+    card = doc["trades"][0]
+    assert card["outcome"] == "stopped" and card["fastStop"] is True and card["reachedT1"] is False
+    assert card["stopFired"] == "option" and card["stopLossPct"] == 55 and card["stopOption"] == 0.55 and card["plPct"] == -54.5
+    assert card["events"][0]["text"] == "Option stop: the option's bid $0.50 is down 55% from the $1.10 paid (the stop is 50%), sold 3 at $0.50."
+    assert {r["key"]: r["trades"] for r in doc["breakdowns"]["outcome"]}["stopped"] == 1
+    fast = next(i for i in doc["improve"] if i["key"] == "fastStop")
+    assert "on 1 of 1" in fast["text"]
+
+
+def test_an_option_stop_after_t1_keeps_the_t1_outcome():
+    trade = {"hits": [{"target": "T1"}], "events": [{"text": "T1 hit: sold 1 at $1.80, stop to break-even."},
+                                                    {"text": "Option stop: the option's bid $0.50 is down 55% from the $1.10 paid (the stop is 50%), sold 2 at $0.50."}]}
+    assert ticker_journal.outcome(trade) == "T1"
+    assert ticker_journal.outcome({"events": [{"text": "Option stop: the option's bid $0.50 is down 55%."}]}) == "stopped"
+    assert ticker_journal.outcome({"events": [{"text": "15:50 close: sold 3 at the bid $0.90."}]}) == "early"
+
+
+# ---- 2026-11-25: trades saved BEFORE the option stop carry no stopFired / stopLossPct. Which stop sold them and the
+# ---- real loss are worked out from what they did save, so the card never says "option down 50%" for a -63% sale.
+
+def _old(run_id, entry, qty, price, at, stop, pl, pl_pct, **more):
+    """A closed trade exactly as the engine saved it before 2026-11-24 (his real NVDA and AVGO rows)."""
+    return {"id": f"{run_id}-1-1", "day": at[:10], "ticker": run_id.split("-")[0], "side": "CALL", "strike": 100, "expiry": "2026-11-20",
+            "qty": qty, "held": 0, "entry": entry, "entrySpot": 100.0, "cost": round(entry * 100 * qty, 2), "boughtAt": at[:11] + "09:35:00-05:00",
+            "closedAt": at, "stopStart": stop, "stopStock": stop, "stopKind": "stop", "hits": [], "status": "closed", "pl": pl, "plPct": pl_pct,
+            "sells": [{"at": at, "qty": qty, "price": price, "pl": pl}],
+            "events": [{"at": at, "text": f"Stop: stock traded through {stop:.2f}, sold {qty} at ${price:.2f}."}], **more}
+
+
+def test_his_old_nvda_and_avgo_trades_say_the_stock_stop_sold_them_and_the_real_loss():
+    nvda = _old("NVDA-CALL", 0.70, 2, 0.26, "2026-11-19T10:31:14-05:00", 153.02, -88.0, -62.9)
+    avgo = _old("AVGO-CALL", 0.66, 3, 0.05, "2026-11-18T11:39:04-05:00", 348.80, -183.0, -92.4)
+    assert ticker_journal.stop_sale(nvda) == ("stock", 63) and ticker_journal.stop_sale(avgo) == ("stock", 92)
+    doc = ticker_journal.build([{"id": "NVDA-CALL", "ticker": "NVDA", "side": "CALL", "trades": [nvda], "open": None},
+                                {"id": "AVGO-CALL", "ticker": "AVGO", "side": "CALL", "trades": [avgo], "open": None}], account_start=2000.0)
+    cards = {c["ticker"]: c for c in doc["trades"]}
+    assert (cards["NVDA"]["stopFired"], cards["NVDA"]["stopLossPct"], cards["NVDA"]["stopOption"]) == ("stock", 63, None)
+    assert (cards["AVGO"]["stopFired"], cards["AVGO"]["stopLossPct"], cards["AVGO"]["plPct"]) == ("stock", 92, -92.4)
+
+
+def test_an_old_trades_stop_is_worked_out_from_whatever_it_saved():
+    at = "2026-11-19T10:31:14-05:00"
+    base = _old("NVDA-CALL", 0.70, 2, 0.26, at, 153.02, -88.0, -62.9)
+    # No sale row saved: the price in the stop's own note.
+    assert ticker_journal.stop_sale({**base, "sells": []}) == ("stock", 63)
+    # Neither a sale row nor a price in the note, and nothing sold at a target: the trade's own plPct is the loss.
+    assert ticker_journal.stop_sale({**base, "sells": [], "events": [{"at": at, "text": "Stop: stock traded through 153.02."}]}) == ("stock", 63)
+    # After T1 the trade's plPct mixes the T1 sale in, so only the stop's own sale price is used (here: $0.60 on $0.70 = down 14%).
+    after_t1 = {**base, "hits": [{"target": "T1"}], "plPct": 20.0, "stopKind": "break-even",
+                "sells": [{"at": "2026-11-19T10:00:00-05:00", "qty": 1, "price": 1.2, "pl": 50.0}, {"at": at, "qty": 1, "price": 0.6, "pl": -10.0}],
+                "events": [{"at": "2026-11-19T10:00:00-05:00", "text": "T1 hit: sold 1 at $1.20, stop to break-even."},
+                           {"at": at, "text": "Break-even stop: stock traded through 100.00, sold 1 at $0.60."}]}
+    assert ticker_journal.stop_sale(after_t1) == ("stock", 14)
+    assert ticker_journal.stop_sale({**after_t1, "sells": [], "events": [{"at": at, "text": "Stop at T1: stock traded through 102.00."}]}) == ("stock", None)
+    # A stop sale above the price paid is a negative loss ("option up 9%").
+    assert ticker_journal.stop_sale(_old("NVDA-CALL", 1.10, 2, 1.20, at, 100.0, 20.0, 9.1)) == ("stock", -9)
+    # No stop sold it: nothing is claimed.
+    assert ticker_journal.stop_sale({**base, "events": [{"at": at, "text": "15:50 close: sold 2 at the bid $0.26."}]}) == (None, None)
+    assert ticker_journal.stop_sale({}) == (None, None)
+    # What the engine saved since 2026-11-24 always wins.
+    assert ticker_journal.stop_sale({**base, "stopFired": "option", "stopLossPct": 51}) == ("option", 51)

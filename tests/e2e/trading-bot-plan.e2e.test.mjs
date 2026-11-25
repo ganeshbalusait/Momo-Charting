@@ -89,7 +89,7 @@ const PAPER_RULES = { book: "Rules bot - Level 1 / 2 / 3 at 0.20 delta, newest s
   orders: "buy: limit at the live ask; unfilled after 120 s, re-sent at the ask (up to 2 times); target and close sells: limit at the mid; stop sells: limit at the bid",
   sizing: "up to $8.00: at least 3 contracts",
   plan: "chart",
-  entryTimes: "new buys 9:30-11:00 AM and 1:00-3:30 PM ET (midday skipped; a signal from the 10 minutes before 1:00 is bought at 1:00; a Level signal with no chart plan is not bought)",
+  entryTimes: "new buys 9:35-11:30 AM and 1:00-3:30 PM ET (midday skipped; a signal from the 10 minutes before 1:00 is bought at 1:00; a Level signal with no chart plan is not bought)",
   exitPlan: "the chart's Entry / Target / Stop plan. Stop: the stock price where the option is down 50% from the fill; T1 = half the expected move: sell 1 of 3 and stop to break-even" };
 const PAPER3_DOC = { ...mirrorDoc("paper3"), rules: PAPER_RULES, rows: PAPER_ROWS, history: [{ day: TODAY, rows: PAPER_ROWS }] };
 
@@ -104,7 +104,7 @@ const PLANNED = { ...LEVEL, symbol: "NVDA", at: `${TODAY}T10:05:00-04:00`, entry
   planState: { status: "closed", qty: 3, held: 0, stopStock: 102, stopKind: "T1", pct: 56, reason: "Stop at T1: stock traded through 102.00",
     hits: [{ target: "T1", at: `${TODAY}T10:10:00-04:00` }, { target: "T2", at: `${TODAY}T10:15:00-04:00` }], sells: [] } };
 const EARLY = { ...LEVEL, symbol: "AAPL", at: `${TODAY}T11:41:00-04:00`, entryAt: `${TODAY}T11:41:02-04:00`, exitAt: `${TODAY}T12:00:00-04:00`,
-  planNote: "Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30)" };
+  planNote: "Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30)" };
 const BOT_DOC = { bull: [{ day: TODAY, trades: [PLANNED, EARLY] }], bear: [{ day: TODAY, trades: [] }], keepDays: 180 };
 
 function canned(extra = {}) {
@@ -172,7 +172,7 @@ e2eTest("Scorecard: every trade shows Entry (ask), Stop, T1, T2, T3, which targe
     const rules = (await rulesBox.textContent()).replace(/\s+/g, " ");
     assert.ok(!rules.includes("10:00"), "the 10:00 rule is gone");
     assert.ok(!rules.includes("older plan"), "the server says the chart plan runs");
-    for (const words of ["How the bot trades since 11-13 (the chart's Entry / Target / Stop plan):", "Buys go in from 9:30 to 11:00 AM and from 1:00 to 3:30 PM ET",
+    for (const words of ["How the bot trades since 11-13 (the chart's Entry / Target / Stop plan):", "Buys go in from 9:35 to 11:30 AM and from 1:00 to 3:30 PM ET",
       "limit order at the option's ask", "stock trades through it, everything is sold",
       "T1 is half the expected move", "sell 1 at T1 and move the stop to break-even", "sell 1 at T2 and move the stop to T1", "sell the last at T3"]) {
       assert.ok(rules.includes(words), words);
@@ -277,7 +277,7 @@ e2eTest("Paper 3: each order shows its stock stop and T1 / T2 / T3, and the acco
     await app.page.locator("details summary", { hasText: "Account rules and entry policy" }).click();
     const rules = (await app.page.locator("details p.bot-jevbook-note", { hasText: "Alpaca PAPER · paper3" }).textContent()).replace(/\s+/g, " ");
     // Was "new buys 10:00-11:00 AM ... (no buys 9:30-10:00" (the 10:00 rule, removed 2026-11-13).
-    assert.match(rules, /When: new buys 9:30-11:00 AM and 1:00-3:30 PM ET \(midday skipped/);
+    assert.match(rules, /When: new buys 9:35-11:30 AM and 1:00-3:30 PM ET \(midday skipped/);
     assert.ok(!rules.includes("10:00"));
     assert.match(rules, /Exit: the chart's Entry \/ Target \/ Stop plan\./);
     assert.equal(await overflowsSideways(app.page), false);
@@ -296,7 +296,7 @@ e2eTest("Research trades: a Level trade shows its chart plan in one line, and a 
       tr.querySelector("td:nth-child(3) b")?.textContent, tr.querySelector("[data-testid='bot-trade-plan']")?.textContent.trim()])));
     assert.equal(byTicker.NVDA,
       "Entry $1.25 · Stop 97.26 → 102.00 (T1) · T1 102.00 ✓ 10:10 · T2 104.00 ✓ 10:15 · T3 108.00 · on the plan +56% (Stop at T1: stock traded through 102.00)");
-    assert.equal(byTicker.AAPL, "Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30)");
+    assert.equal(byTicker.AAPL, "Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30)");
     assert.ok((await texts(app.page.locator(".bot-card table.bot-table thead th"))).some((h) => h.startsWith("Chart plan")));
     assert.match(await app.page.locator("p.bot-foot").textContent(), /Chart plan \(Level trades recorded while the chart plan is running; a dash = recorded before that\) = three 0\.20-delta contracts bought at the ask/);
     assert.deepEqual(app.writes, []);

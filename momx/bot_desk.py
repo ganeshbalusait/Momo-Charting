@@ -571,7 +571,7 @@ def _not_ordered_why(side: str, t: dict, orders: list[dict], stop: dict | None,
         minute = when.hour * 60 + when.minute
     except ValueError:
         minute = None
-    # The buy windows (9:30-11:00 and 1:00-3:30 ET; the 10:00 start of 2026-11-12 was taken back
+    # The buy windows (9:35-11:30 and 1:00-3:30 ET since 2026-11-25; the 10:00 start of 2026-11-12 was taken back
     # the next morning, before it ever ran). The same clock as the Bot's plan and the paper bot's
     # buy (option_track.plan_window_note, on the later of the signal and entry times): a signal
     # in the last minutes before a window opens is still bought when it opens, so "outside the

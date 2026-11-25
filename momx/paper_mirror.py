@@ -152,7 +152,9 @@ FINAL_EXIT = (15, 52)
 #: trade it"; "Start trading 9:30 if you see the setup or wait 5 mins"): back to
 #: 9:30-11:00 and 13:00-15:30 ET, with the top-of-board rule as before (no 5-minute
 #: hold 9:30-9:45, the hold from 9:45: OPEN_NO_HOLD_UNTIL). Exits run all day.
-ENTRY_WINDOWS = ((9, 30, 11, 0), (13, 0, 15, 30))
+#: 2026-11-25, his words: "Bot will start at 9:35 to 11:30 between take the trades and 1 pm to
+#: 3:30 pm est take the trade": the morning window is now 9:35-11:30 (was 9:30-11:00).
+ENTRY_WINDOWS = ((9, 35, 11, 30), (13, 0, 15, 30))
 
 
 def entry_open(now: datetime) -> bool:
@@ -1950,7 +1952,7 @@ class PaperMirror:
                                    "pivot / previous-day / premarket level; no chart data = not checked, never blocked",
                           "sizing": f"up to ${MAX_PRICE:.2f}: at least {MIN_MULTI} contracts (more when they fit in "
                                     f"${BUDGET:.0f}), so one lot can come off at each target; over ${MAX_PRICE:.2f}: skip",
-                          "entryTimes": "new buys 9:30-11:00 AM and 1:00-3:30 PM ET (midday skipped; a signal from the "
+                          "entryTimes": "new buys 9:35-11:30 AM and 1:00-3:30 PM ET (midday skipped; a signal from the "
                                         "10 minutes before 1:00 is bought at 1:00; a Level signal with no chart plan "
                                         "is not bought)",
                           # Which exit plan this running bot follows (the Bot page shows the

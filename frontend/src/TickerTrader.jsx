@@ -9,17 +9,17 @@ import { openAppLink } from "./appLinks.js";
 import { DailyBars, Gauge } from "./BotDesk.jsx";
 import { deskCalendar, deskCurve, deskKpis, deskMonthKey } from "./botDesk.js";
 import {
-  ALL_SCOPE, DEFAULT_SIZE, JOURNAL_POLL_MS, accountTiles, NOTE_MAX, NOTE_URL, REVIEW_LABEL, REVIEW_URL, SIMULATED_NOTE, SIZE_CHOICES, TICKER_CHIPS,
+  ALL_SCOPE, DEFAULT_SIZE, JOURNAL_POLL_MS, accountOldNote, accountTiles, oldPriceMark, NOTE_MAX, NOTE_URL, REVIEW_LABEL, REVIEW_URL, SIMULATED_NOTE, SIZE_CHOICES, TICKER_CHIPS,
   TICKER_TRADER_POLL_MS, TICKER_TRADER_URL, breakdownTables, chartLink, cleanTicker, contractLabel, equityDays, failureText, improveItems,
-  journalStats, journalTrades, journalUrl, ladder, money, noteProblem, openGain, latestTradeFacts, parseSize, tickersDashboard, rowMoney, rowPercent, runLine, sortRuns, saveSize, shouldAskReview,
+  journalStats, journalTrades, journalUrl, ladder, money, noteProblem, openGain, quoteWarning, latestTradeFacts, parseSize, tickersDashboard, rowMoney, rowPercent, runLine, sortRuns, saveSize, shouldAskReview,
   sideLabel, signedMoney, sizeChip, sizeProblem, statusLabel, tickerProblem, timeEt, tone, tradeDetail, tradeRows, winsLabel,
 } from "./tickerTrader.js";
 import "./tickerTrader.css";
 
 const RULES = [
   ["Direction", "You choose: Call or Put. Call is the default."],
-  ["Entry", "The option's ask, the same contract as the chart's Entry line."],
-  ["Stop", "The stock price where the option is down 50%."],
+  ["Entry", "The option's ask, the same contract as the chart's Entry line. Not bought when its buyers are already 50% or more under the ask."],
+  ["Stop", "Two stops, whichever comes first: the chart's stock price, or the option's own bid down 50% from what you paid on two price checks in a row (one bad quote does not sell). Everything is sold."],
   ["Targets", "T1, T2, T3 from the chart. One contract sold at each. Stop to break-even after T1, to T1 after T2."],
   ["Size", "3 contracts, fewer when 3 cost more than 10% of the account. A contract that costs more than 10% is still bought, one only, when the account can pay for it."],
   ["Account", "One account for every ticker. A buy takes its cost out of the cash; a sale puts the money back."],
@@ -79,6 +79,8 @@ function AccountCard({ account, busy, onAct }) {
   const [resetting, setResetting] = useState(false);
   const tiles = accountTiles(account);
   if (!tiles) return null;
+  // Open trades with no live price are counted at their last bid: the tiles that include them say so (2026-11-25).
+  const old = accountOldNote(account);
   return (
     <div className="tt-card" data-testid="tt-account">
       <div className="tt-card-head">
@@ -88,9 +90,11 @@ function AccountCard({ account, busy, onAct }) {
       </div>
       <span className="tt-why">One account for every ticker. A buy takes its cost out of the cash; a sale puts the money back.</span>
       <div className="tt-tiles">
-        <div className="tt-tile"><span>ACCOUNT NOW</span><b data-testid="tt-account-value">{tiles.value}</b><small className="tt-dim">{tiles.from}</small></div>
+        <div className="tt-tile"><span>ACCOUNT NOW</span><b data-testid="tt-account-value">{tiles.value}</b><small className="tt-dim">{tiles.from}</small>
+          {old ? <small className="tt-old" data-testid="tt-account-old">{old}</small> : null}</div>
         <div className="tt-tile"><span>CASH LEFT</span><b data-testid="tt-account-cash">{tiles.cash}</b><small className="tt-dim">{tiles.inTrades}</small></div>
-        <div className="tt-tile"><span>UP / DOWN</span><b className={tiles.tone} data-testid="tt-account-net">{tiles.net}</b></div>
+        <div className="tt-tile"><span>UP / DOWN</span><b className={tiles.tone} data-testid="tt-account-net">{tiles.net}</b>
+          {old ? <small className="tt-old" data-testid="tt-account-net-old">{old}</small> : null}</div>
       </div>
       {resetting ? <ResetPanel startSize={tiles.start} busy={busy} onClose={() => setResetting(false)}
         onReset={async (size) => Boolean(await onAct("reset", { size }))} /> : null}
@@ -442,9 +446,10 @@ function RunView({ run, busy, onBack, onAct, onJournal }) {
       {account ? (
         <p className="tt-note" data-testid="tt-account-line">
           Account now {account.value} ({account.net} {account.from}) · {account.inTrades} · shared by every ticker
+          {accountOldNote(run.account) ? <b className="tt-old" data-testid="tt-account-line-old"> · {accountOldNote(run.account)}</b> : null}
         </p>
       ) : null}
-      {run.note ? <p className="tt-note" role="status" data-testid="tt-note">{run.note}{run.noteAt ? ` · ${timeEt(run.noteAt)}` : ""}</p> : null}
+      {run.note ? <p className={"tt-note" + (quoteWarning(run) ? " is-warn" : "")} role="status" data-testid="tt-note">{run.note}{run.noteAt ? ` · ${timeEt(run.noteAt)}` : ""}</p> : null}
       {trade ? (
         <div className="tt-card" data-testid="tt-open">
           <div className="tt-card-head"><h4>OPEN TRADE</h4><span className="tt-dim">bought {timeEt(trade.boughtAt)}</span></div>
@@ -453,7 +458,7 @@ function RunView({ run, busy, onBack, onAct, onJournal }) {
             {gain ? <b className={gain.startsWith("+") ? "is-up" : gain.startsWith("−") ? "is-down" : ""}>{gain}</b> : null}
           </div>
           <span className="tt-why">Why: {trade.why}</span>
-          <span className="tt-why">Holding {trade.held} of {trade.qty}{trade.bid ? ` · bid $${Number(trade.bid).toFixed(2)} at ${timeEt(trade.bidAt)}` : ""}</span>
+          <span className="tt-why">Holding {trade.held} of {trade.qty}{trade.bid ? ` · ${quoteWarning(run) ? "last bid" : "bid"} $${Number(trade.bid).toFixed(2)} at ${timeEt(trade.bidAt)}${quoteWarning(run) ? ` (${quoteWarning(run)})` : ""}` : ""}</span>
           <div className="tt-ladder" role="list" aria-label="Chart plan">
             {ladder(trade).map((row) => (
               <div key={row.key} role="listitem" data-testid={`tt-level-${row.key}`}
@@ -608,9 +613,12 @@ export default function TickerTrader({ viewSwitch, onAllTrades, initialTicker = 
                   {facts ? <span className="tt-row-trade" data-testid="tt-row-trade"><em>{facts.contract}</em><em>{facts.when}</em></span> : null}
                   <small>{runLine(run)}</small>
                 </span>
-                <span className={"tt-row-money " + tone(rowMoney(run))}>
-                  {signedMoney(rowMoney(run))}
-                  {rowPercent(run) ? <small className="tt-row-pct" data-testid="tt-row-pct">{rowPercent(run)}</small> : null}
+                <span className="tt-row-right">
+                  <span className={"tt-row-money " + tone(rowMoney(run))}>
+                    {signedMoney(rowMoney(run))}
+                    {rowPercent(run) ? <small className="tt-row-pct" data-testid="tt-row-pct">{rowPercent(run)}</small> : null}
+                  </span>
+                  {oldPriceMark(run) ? <small className="tt-old" data-testid="tt-row-old">{oldPriceMark(run)}</small> : null}
                 </span>
               </button>
               );

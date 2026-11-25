@@ -4743,14 +4743,31 @@ class DashboardState:
         {symbol, bear, spot}: the strike / expiry come from the chain already held
         (memory, else disk - NO rebuild is kicked), re-anchored on the LIVE stock
         price, with the bot's own rules (momx.option_track pick_contract /
-        pick_entry_strike / levels_at_signal); the price is a live Schwab quote of
-        that contract (one batched /quotes call). The chain's old prices are only
-        used to skip strikes with no market."""
+        entry_strike_candidates / levels_at_signal); the price is a live Schwab
+        quote of that contract (one batched /quotes call).
+
+        What the held chain decides and what the live quote decides (2026-11-24):
+
+        * Main contract ("pick") and same-day contract ("z"): the strike is the OTM
+          strike nearest the stock that had an ask in the HELD chain (its old bid is
+          not looked at). Whether it can be traded is decided by its LIVE quote only:
+          a bid above $0 and an ask at or above it. If not, ok is False and
+          "noQuoteSide" says why: "missing" (Schwab sent no quote / no bid),
+          "buyers" (bid $0), "sellers" (no ask), "unusable" (ask under the bid).
+        * 0.20-delta contract ("e"): the HELD chain only supplies the deltas, which
+          can be minutes to hours old. The strikes under 0.20 delta are ranked
+          nearest 0.20 first and the first ENTRY_LIVE_CANDIDATES are quoted live;
+          the first one whose LIVE quote is a real two-sided market (bid above $0,
+          ask no more than 3x the bid) is the pick. The held chain's old bid / ask
+          never adds or removes a strike. With no pick, "e" is None and "eGap" says
+          why: "none" (no strike under 0.20 delta on that expiry), "missing",
+          "buyers", "sellers" or "unusable" (momx.option_track entry_leg_gap_of)."""
         from momx import option_track as ot
 
         today = datetime.now(ZoneInfo(EASTERN_TZ)).date()
         out: list[dict] = []
         wanted: list[str] = []
+        e_rows: dict[tuple, list] = {}
         for item in items[:150]:
             symbol = str(item.get("symbol") or "").strip().upper()
             bear = bool(item.get("bear"))
@@ -4786,10 +4803,11 @@ class DashboardState:
             if not pick:
                 entry["why"] = "no OTM contract"
                 continue
-            entry.update(pick=pick, z=ot.pick_contract(chain, bear, zero_dte=True),
-                         e=ot.pick_entry_strike(chain, bear, pick["expiry"]), levels=ot.levels_at_signal(chain),
-                         chainAt=(payload or {}).get("scannedAt"))
-            wanted += [x["contract"] for x in (pick, entry["z"]) if x] + ([entry["e"]["eContract"]] if entry["e"] else [])
+            # The 0.20-delta candidates by the held chain's deltas; their LIVE quotes decide below.
+            e_rows[symbol, bear] = ot.entry_strike_candidates(chain, bear, pick["expiry"])[:ot.ENTRY_LIVE_CANDIDATES]
+            entry.update(pick=pick, z=ot.pick_contract(chain, bear, zero_dte=True), e=None,
+                         levels=ot.levels_at_signal(chain), chainAt=(payload or {}).get("scannedAt"))
+            wanted += [x["contract"] for x in (pick, entry["z"]) if x] + [r["symbol"] for r in e_rows[symbol, bear]]
         quotes: dict = {}
         if wanted:
             for client in _schwab_market_clients():
@@ -4803,8 +4821,10 @@ class DashboardState:
         def live(contract):
             q = quotes.get(str(contract or "").upper()) or {}
             bid, ask = self._safe_float(q.get("bid"), 0.0), self._safe_float(q.get("ask"), 0.0)
-            px = round((bid + ask) / 2, 4) if bid > 0 and ask > 0 else (
-                self._safe_float(q.get("mark"), 0.0) or self._safe_float(q.get("last_price"), 0.0))
+            # Only a quote with buyers AND sellers is a price (2026-11-24): with a $0 bid
+            # this used to fall back to Schwab's mark, i.e. the mid of nothing and the ask,
+            # and the BOT "bought" there.
+            px = round((bid + ask) / 2, 4) if ot.two_sided(bid, ask) else 0.0
             return (px if px > 0 else None), q.get("quote_time_ms")
 
         def bid_ask(contract):
@@ -4818,7 +4838,12 @@ class DashboardState:
                 continue
             price, at_ms = live(pick["contract"])
             if price is None:
-                entry["why"] = "no live quote"
+                # Not a two-sided LIVE quote: the BOT records the signal as not entered for
+                # the cause named here instead of trading the mid. A quote with no bid
+                # number is "missing", never a $0 bid.
+                side = ot.quote_gap(*bid_ask(pick["contract"])) or "missing"
+                entry.update(noQuoteSide=side, why={"missing": "no live quote", "buyers": "no buyers",
+                                                    "sellers": "no sellers", "unusable": "quote not usable"}[side])
                 continue
             pick["entry"] = price
             pick["entryBid"], pick["entryAsk"] = bid_ask(pick["contract"])
@@ -4829,14 +4854,16 @@ class DashboardState:
                 z["entryBid"], z["entryAsk"] = bid_ask(z["contract"])
                 if not z["entry"]:
                     entry["z"] = None
-            e = entry.get("e")
-            if e:
-                ep = live(e["eContract"])[0]
-                if ep:
-                    e_bid, e_ask = bid_ask(e["eContract"])
-                    e.update(eEntry=ep, eLast=ep, eBest=ep, eEntryBid=e_bid, eEntryAsk=e_ask)
-                else:
-                    entry["e"] = None
+            gaps = []
+            for row in e_rows.get((entry["symbol"], entry["bear"])) or []:
+                e_bid, e_ask = bid_ask(row["symbol"])
+                gap = ot.delta_pick_gap(e_bid, e_ask)
+                if gap is None:
+                    entry["e"] = ot.entry_strike_fields(row, e_bid, e_ask)
+                    break
+                gaps.append(gap)
+            if not entry["e"]:
+                entry["eGap"] = ot.entry_leg_gap_of(gaps)
             entry["ok"] = True
         return {"asOf": time.time(), "results": out}
 

@@ -368,7 +368,7 @@ def test_a_signal_the_paper_clock_would_buy_always_has_the_bots_plan_clock(tmp_p
     now = d(13, 0, 5)
     c = FakeClient()
     t = _trade(at=d(12, 49, 55).isoformat(), entryAt=d(12, 50, 20).isoformat(), plan=None,
-               planNote="Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30)",
+               planNote="Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30)",
                lastAt=(now - timedelta(seconds=5)).isoformat(), stockLastAt=(now - timedelta(seconds=5)).isoformat())
     m = _mirror(tmp_path, [t], c)
     m.tick(now)
@@ -509,7 +509,7 @@ def test_the_rules_text_describes_the_chart_plan(tmp_path):
     rules = _mirror(tmp_path, [], FakeClient()).status()["rules"]
     assert "limit at the live ask" in rules["orders"] and "stop sells: limit at the bid" in rules["orders"]
     # Was: "10:00-11:00" and "no buys 9:30-10:00" (the 10:00 rule, removed 2026-11-13).
-    assert "9:30-11:00 AM and 1:00-3:30 PM" in rules["entryTimes"] and "10:00" not in rules["entryTimes"]
+    assert "9:35-11:30 AM and 1:00-3:30 PM" in rules["entryTimes"] and "10:00" not in rules["entryTimes"]
     assert "no chart plan" in rules["entryTimes"] and rules["plan"] == "chart" == pm.EXIT_PLAN
     for words in ("T1 = half the expected move", "T2 = the full expected move", "open-interest strike", "break-even",
                   "stock trades through", "21 EMA", "15:52"):

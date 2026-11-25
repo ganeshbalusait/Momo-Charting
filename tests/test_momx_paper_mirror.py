@@ -373,23 +373,26 @@ def test_history_reads_saved_days_newest_first(tmp_path):
 
 
 def test_new_buys_only_in_his_windows():
-    """His windows: 9:30-11:00 and 1:00-3:30 ET. (2026-11-12 the chart-plan build moved the start
+    """His windows: 9:35-11:30 and 1:00-3:30 ET (since 2026-11-25; 9:30-11:00 before). (2026-11-12 the chart-plan build moved the start
     to 10:00; 2026-11-13 he took that back: "Remove 10 am rule on bot also if you see the setup
     then trade it". This test asserted the 10:00 start in between.)"""
     d = NOW.replace
-    assert pm.ENTRY_WINDOWS == ((9, 30, 11, 0), (13, 0, 15, 30))
-    assert not pm.entry_open(d(hour=9, minute=29))
-    assert pm.entry_open(d(hour=9, minute=30)) and pm.entry_open(d(hour=9, minute=59))
-    assert pm.entry_open(d(hour=10, minute=0)) and pm.entry_open(d(hour=10, minute=59))
-    assert not pm.entry_open(d(hour=11, minute=0)) and not pm.entry_open(d(hour=12, minute=30))
+    assert pm.ENTRY_WINDOWS == ((9, 35, 11, 30), (13, 0, 15, 30))   # 2026-11-25: was 9:30-11:00
+    # 2026-11-25, his words: "Bot will start at 9:35 to 11:30 between take the trades and 1 pm to
+    # 3:30 pm est take the trade". Was: open at 9:30, shut at 11:00.
+    assert not pm.entry_open(d(hour=9, minute=29)) and not pm.entry_open(d(hour=9, minute=34))
+    assert pm.entry_open(d(hour=9, minute=35)) and pm.entry_open(d(hour=9, minute=59))
+    assert pm.entry_open(d(hour=10, minute=0)) and pm.entry_open(d(hour=11, minute=29))
+    assert not pm.entry_open(d(hour=11, minute=30)) and not pm.entry_open(d(hour=12, minute=30))
     assert pm.entry_open(d(hour=13, minute=0)) and not pm.entry_open(d(hour=15, minute=30))
     assert not hasattr(pm, "NO_BUY_BEFORE") and not hasattr(pm, "signal_too_early")
 
 
 def test_a_setup_between_930_and_1000_is_bought(tmp_path):
     """Was test_no_buy_between_930_and_1000 (the 10:00 rule, removed 2026-11-13): "Start trading
-    9:30 if you see the setup"."""
-    for minute in (30, 45, 59):
+    9:30 if you see the setup". 2026-11-25: the window opens at 9:35 now ("Bot will start at 9:35"), so
+    the first minute checked is 9:35, not 9:30."""
+    for minute in (35, 45, 59):
         c = FakeClient()
         early = NOW.replace(hour=9, minute=minute)
         m = _mirror(tmp_path / str(minute), [_trade(at=(early - timedelta(seconds=20)).isoformat(),

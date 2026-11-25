@@ -250,7 +250,7 @@ test("before any trade the three strategies are listed and the answer says when 
   assert.deepEqual(out.rows.map((r) => [r.name, r.closed, r.pnl, r.win, r.roi, r.calls, r.tag]), [
     ["Level 1", 0, "–", "–", "–", "–", ""], ["Level 2", 0, "–", "–", "–", "–", ""], ["Level 3", 0, "–", "–", "–", "–", ""]]);
   // Was "the 10:00 AM ET buy window" (the 10:00 rule, removed 2026-11-13).
-  assert.match(out.answer, /^No closed trades yet\. The first Level orders go out in the 9:30 AM ET buy window\.$/);
+  assert.match(out.answer, /^No closed trades yet\. The first Level orders go out in the 9:35 AM ET buy window\.$/);
   assert.equal(out.rows[0].needs, "3+ Setup types and any 1 of RVOL / SQZ / Skittles");
   assert.equal(deskStrategies({ orders: {} }), null);
 });
@@ -291,7 +291,7 @@ test("before any trade the two bots are listed and nothing is called ahead", asy
   assert.deepEqual(out.rows.map((r) => [r.name, r.account, r.closed, r.pnl, r.roi, r.balance, r.leader]),
     [["Rules bot", "Paper 3", 0, "–", "–", "$10,000", false], ["AI bot", "Paper 5", 0, "–", "–", "$10,000", false]]);
   // Was "the 10:00 AM ET buy window" (the 10:00 rule, removed 2026-11-13).
-  assert.equal(out.answer, "No closed trades yet. Both bots start with the 9:30 AM ET buy window.");
+  assert.equal(out.answer, "No closed trades yet. Both bots start with the 9:35 AM ET buy window.");
   assert.equal(deskVersus({ versus: { rows: [bot("paper3", "Rules bot", 0, 0, null, 10000)] } }), null);   // one account: nothing to compare
   assert.equal(deskVersus({}), null);
   assert.equal(deskAccountLabel("paper5", { mode: { name: "AI bot" } }, "Paper 5"), "Paper 5 · AI bot");

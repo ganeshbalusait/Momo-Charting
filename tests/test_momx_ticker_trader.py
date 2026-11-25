@@ -144,7 +144,8 @@ def test_stock_through_the_stop_sells_everything_at_the_bid(world):
     run = run_of(trader)
     trade = run["trades"][0]
     assert run["open"] is None and run["status"] == "idle"
-    assert trade["reason"] == f"Stop: stock traded through {stop:.2f}, sold 3 at $0.50."
+    # 2026-11-24: the sale says the real loss (the wording changed on purpose; the sale itself is the same).
+    assert trade["reason"] == f"Stop: stock traded through {stop:.2f}, sold 3 at $0.50, down 55% from the $1.10 paid."
     assert trade["pl"] == -180.0 and run["balance"] == 9820.0 and trade["balanceAfter"] == 9820.0 and run["wins"] == 0
 
 
@@ -175,7 +176,7 @@ def test_break_even_stop_after_t1(world):
     world.set(99.9, bid=1.0, ask=1.1)
     world.step(trader)
     trade = run_of(trader)["trades"][0]
-    assert "Break-even stop: stock traded through 100.00, sold 2 at $1.00." in trade["reason"]
+    assert "Break-even stop: stock traded through 100.00, sold 2 at $1.00, down 9% from the $1.10 paid." in trade["reason"]
     assert trade["pl"] == 50.0
 
 
@@ -385,13 +386,21 @@ def test_a_zero_bid_sells_at_the_stop_and_at_a_target_too(world):
     stop = run_of(trader)["open"]["stopStock"]
     world.set(stop - 0.05, bid=0.0, ask=0.05)
     world.step(trader)
-    assert run_of(trader)["trades"][0]["reason"] == f"Stop: stock traded through {stop:.2f}, sold 3 at $0.00."
+    assert run_of(trader)["trades"][0]["reason"] == f"Stop: stock traded through {stop:.2f}, sold 3 at $0.00, down 100% from the $1.10 paid."
     world2 = World(world.dir.parent / "z")
     trader2 = bought(world2)
     world2.set(102.1, bid=0.0, ask=0.05)
     world2.step(trader2)
-    trade = run_of(trader2)["open"]
-    assert trade["held"] == 2 and trade["hits"][0]["price"] == 0.0 and trade["bid"] == 0.0
+    # 2026-11-24: a $0.00 bid at T1's stock price is still a real price, but the option is down 100%, so the option
+    # stop sells all 3 there (before, T1 sold one at $0.00 and two were kept).
+    # 2026-11-25 (changed on purpose): the option stop needs the bid under it on two checks in a row, so the first
+    # check sells nothing (not at T1 either) and the second sells all 3.
+    assert run_of(trader2)["open"]["held"] == 3 and run_of(trader2)["open"]["hits"] == []
+    world2.step(trader2)
+    assert run_of(trader2)["open"] is None
+    trade = run_of(trader2)["trades"][0]
+    assert trade["hits"] == [] and trade["bid"] == 0.0 and trade["sells"][0]["qty"] == 3 and trade["sells"][0]["price"] == 0.0
+    assert trade["reason"] == "Option stop: the option's bid $0.00 is down 100% from the $1.10 paid (the stop is 50%), sold 3 at $0.00."
     # A zero bid with NO ask is not a market: nothing sells.
     world3 = World(world.dir.parent / "n")
     trader3 = bought(world3)
@@ -798,3 +807,345 @@ def test_his_file_from_this_morning_becomes_one_2000_account(world):
     (world.dir / "state.json").write_text(json.dumps({"version": 1, "runs": runs}), encoding="utf-8")
     account = world.trader().snapshot()["account"]
     assert account["startBalance"] == 2000.0 and account["cash"] == 1856.0 and account["invested"] == 144.0
+
+
+# ---- 2026-11-24: the option stop. The stock stop is a delta/gamma guess with no time decay and no spread in
+# ---- it, so the "option -50%" stop sold NVDA at -63% and AVGO at -92%. The option's own bid is checked too.
+
+@pytest.mark.parametrize("paid,level", [(0.70, 0.35), (0.66, 0.33), (0.65, 0.32), (1.10, 0.55), (0.29, 0.14), (0.01, 0.0)])
+def test_the_option_stop_is_the_highest_cent_that_is_down_half_or_more(paid, level):
+    assert ticker_trader.option_stop({"entry": paid}) == level
+    assert level <= paid * 0.5 + 1e-9                         # never a price that is down less than 50%
+    assert ticker_trader.option_stop({"entry": paid, "stopOption": 0.2}) == 0.2      # the level saved at the buy wins
+    assert ticker_trader.option_stop({}) is None
+
+
+def test_the_option_down_half_is_sold_while_the_stock_is_still_above_its_stop(world):
+    trader = bought(world)                                    # 3 at the ask $1.10
+    trade = run_of(trader)["open"]
+    assert trade["stopOption"] == 0.55 and trade["stopStock"] < 99.9
+    world.set(99.9, bid=0.56, ask=0.66)                       # down 49%: still held
+    world.step(trader)
+    assert run_of(trader)["open"]["held"] == 3 and run_of(trader)["note"] == "In a trade: holding 3 of 3"
+    world.set(99.9, bid=0.55, ask=0.65)                       # down 50% on the bid, the stock nowhere near its stop
+    world.step(trader)
+    # 2026-11-25 (changed on purpose): one check under the stop sells nothing; the note says what happens next.
+    run = run_of(trader)
+    assert run["open"]["held"] == 3 and run["trades"] == [] and run["open"]["stopChecks"] == 1
+    assert run["note"] == ("The option's bid $0.55 is down 50% from the $1.10 paid, at the 50% option stop: "
+                           "sold if the next price check says the same. Holding 3 of 3.")
+    world.step(trader)                                        # the second check in a row: sold
+    run = run_of(trader)
+    sold = run["trades"][0]
+    assert "stopChecks" not in sold
+    assert run["open"] is None and run["status"] == "idle"
+    assert sold["reason"] == "Option stop: the option's bid $0.55 is down 50% from the $1.10 paid (the stop is 50%), sold 3 at $0.55."
+    assert sold["stopFired"] == "option" and sold["stopLossPct"] == 50 and sold["pl"] == -165.0 and sold["plPct"] == -50.0
+    assert sold["hits"] == [] and sold["stopKind"] == "stop" and sold["stopStock"] == sold["stopStart"]
+
+
+def test_his_nvda_morning_is_sold_near_half_not_at_minus_63(tmp_path):
+    # 2026-11-19: 162.5 Call bought at $0.70 with NVDA at 155.74; the stock stop (153.02) was reached an hour later
+    # with the bid at $0.26 (-63%). The option's own bid passes $0.35 long before the stock gets there.
+    world = World(tmp_path)
+    trader = bought(world, ask=0.70)
+    stop = run_of(trader)["open"]["stopStock"]
+    for bid in (0.52, 0.41, 0.37):
+        world.set(stop + 0.8, bid=bid, ask=bid + 0.02)
+        world.step(trader)
+        assert run_of(trader)["open"]["held"] == 3
+    world.set(stop + 0.5, bid=0.34, ask=0.36)
+    world.step(trader)
+    assert run_of(trader)["open"]["held"] == 3                # 2026-11-25 (changed on purpose): the first check under $0.35
+    world.step(trader)                                        # the second in a row sells
+    sold = run_of(trader)["trades"][0]
+    assert sold["sells"] == [{"at": sold["closedAt"], "qty": 3, "price": 0.34, "pl": -108.0}]
+    assert sold["reason"] == "Option stop: the option's bid $0.34 is down 51% from the $0.70 paid (the stop is 50%), sold 3 at $0.34."
+    assert sold["plPct"] == -51.4
+
+
+def test_the_option_stop_needs_no_stock_price(world):
+    trader = bought(world)
+    world.quotes.pop("NVDA")                                  # the stock's quote is missing this check
+    world.quotes[CALL] = {"bid": 0.4, "ask": 0.5}
+    world.step(trader)
+    # 2026-11-25 (changed on purpose): two checks in a row. The first says so even with no stock price.
+    assert run_of(trader)["note"].startswith("The option's bid $0.40 is down 64% from the $1.10 paid, at the 50% option stop")
+    world.step(trader)
+    sold = run_of(trader)["trades"][0]
+    assert sold["stopFired"] == "option" and sold["reason"].startswith("Option stop: the option's bid $0.40 is down 64% from the $1.10 paid")
+
+
+def test_the_stock_stop_says_the_real_loss_and_is_named_when_both_fire(world):
+    trader = bought(world)
+    stop = run_of(trader)["open"]["stopStock"]
+    world.set(stop - 0.05, bid=0.4, ask=0.5)
+    world.step(trader)
+    sold = run_of(trader)["trades"][0]
+    assert sold["reason"] == f"Stop: stock traded through {stop:.2f}, sold 3 at $0.40, down 64% from the $1.10 paid."
+    assert sold["stopFired"] == "stock" and sold["stopLossPct"] == 64
+
+
+def test_the_option_stop_keeps_working_after_t1_and_leaves_the_break_even_move_alone(world):
+    trader = bought(world)
+    world.set(102.1, bid=1.8, ask=1.9)                        # T1: one sold, stop to break-even
+    world.step(trader)
+    trade = run_of(trader)["open"]
+    assert trade["held"] == 2 and trade["stopKind"] == "break-even" and trade["stopStock"] == trade["entrySpot"]
+    world.set(100.6, bid=0.5, ask=0.6)                        # the stock is above break-even, the option is down 55%
+    world.step(trader)
+    assert run_of(trader)["open"]["held"] == 2                # 2026-11-25 (changed on purpose): the first of two checks
+    world.step(trader)
+    sold = run_of(trader)["trades"][0]
+    assert sold["reason"] == ("T1 hit: sold 1 at $1.80, stop to break-even. "
+                              "Option stop: the option's bid $0.50 is down 55% from the $1.10 paid (the stop is 50%), sold 2 at $0.50.")
+    assert sold["stopFired"] == "option" and sold["pl"] == 70.0 - 120.0
+
+
+def test_the_option_stop_fires_before_a_target_reached_on_the_same_check(world):
+    trader = bought(world)
+    world.set(102.1, bid=0.3, ask=0.4)                        # T1's stock price, but the option is down 73%
+    world.step(trader)
+    # 2026-11-25 (changed on purpose): the first check under the stop sells nothing, and T1 does not sell at that bid either.
+    held = run_of(trader)["open"]
+    assert held["held"] == 3 and held["hits"] == [] and held["stopKind"] == "stop"
+    world.step(trader)
+    sold = run_of(trader)["trades"][0]
+    assert sold["hits"] == [] and sold["stopFired"] == "option" and sold["sells"][0]["qty"] == 3
+
+
+def test_a_put_is_sold_on_its_own_bid_too(world):
+    trader = bought(world, side="PUT", contract=PUT)
+    world.set(100.1, bid=0.5, ask=0.6, contract=PUT)
+    world.step(trader)
+    assert run_of(trader, "NVDA-PUT")["open"]["held"] == 3    # 2026-11-25 (changed on purpose): the first of two checks
+    world.step(trader)
+    sold = run_of(trader, "NVDA-PUT")["trades"][0]
+    assert sold["reason"] == "Option stop: the option's bid $0.50 is down 55% from the $1.10 paid (the stop is 50%), sold 3 at $0.50."
+
+
+def test_a_trade_saved_before_the_option_stop_gets_it_from_its_entry(world):
+    trader = bought(world)
+    state = json.loads((world.dir / "state.json").read_text(encoding="utf-8"))
+    state["runs"]["NVDA-CALL"]["open"].pop("stopOption")      # a file written by the old engine
+    (world.dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    again = world.trader()
+    world.set(100.0, bid=0.55, ask=0.65)
+    world.step(again)
+    world.step(again)                                         # 2026-11-25 (changed on purpose): two checks in a row
+    assert run_of(again)["trades"][0]["stopFired"] == "option"
+
+
+def test_a_dead_quote_is_said_out_loud_and_never_reads_as_in_a_trade(world):
+    trader = bought(world)
+    world.set(100.0, bid=0.9, ask=1.0)
+    world.step(trader)
+    world.quotes.pop(CALL)                                    # the option's quote is gone: no bid, nothing to check
+    world.step(trader)
+    run = run_of(trader)
+    assert run["note"] == "In a trade: holding 3 of 3" and run["quoteDead"] is False     # one missed check is not dead
+    for _ in range(12):                                       # two minutes with no usable bid
+        world.step(trader)
+    run = run_of(trader)
+    assert run["quoteDead"] is True and run["open"]["held"] == 3 and run["open"]["bid"] == 0.9
+    assert run["note"] == "No live price on the 104 Call for 2 min: the option stop cannot be checked. Still holding 3 of 3."
+    stop = run["open"]["stopStock"]
+    world.quotes["NVDA"] = {"last": stop - 0.5}               # the stock stop is reached and there is still no bid
+    world.step(trader)
+    run = run_of(trader)
+    assert run["open"]["held"] == 3 and run["quoteDead"] is True
+    assert run["note"] == (f"Stop reached at {stop:.2f}, but there has been no live price on the 104 Call for 2 min, "
+                           "so nothing can be sold. Still holding 3.")
+    world.quotes[CALL] = {"bid": 0.2, "ask": 0.3}             # the quote is back: sold at the real bid, the loss said
+    world.step(trader)
+    run = run_of(trader)
+    assert run["quoteDead"] is False and run["open"] is None
+    assert run["trades"][0]["reason"] == f"Stop: stock traded through {stop:.2f}, sold 3 at $0.20, down 82% from the $1.10 paid."
+    assert "quietSince" not in run["trades"][0]
+
+
+def test_a_quote_that_comes_back_clears_the_dead_quote_warning(world):
+    trader = bought(world)
+    world.quotes.pop(CALL)
+    for _ in range(14):
+        world.step(trader)
+    assert run_of(trader)["quoteDead"] is True
+    world.quotes[CALL] = {"bid": 0.9, "ask": 1.0}
+    world.step(trader)
+    run = run_of(trader)
+    assert run["quoteDead"] is False and run["note"] == "In a trade: holding 3 of 3" and "quietSince" not in run["open"]
+
+
+def test_an_old_quote_counts_as_dead_too_and_a_fresh_one_with_no_bid_is_called_that(world):
+    trader = bought(world)
+    stop = run_of(trader)["open"]["stopStock"]
+    world.quotes["NVDA"] = {"last": stop - 0.5, "quoteAt": None}
+    world.quotes[CALL] = {"ask": 0.3, "bid": None}            # a fresh quote with an ask and no bid at all
+    world.step(trader)
+    assert run_of(trader)["note"] == f"Stop reached at {stop:.2f}: No buyer is bidding on the 104 Call right now: waiting for a bid"
+    # 2026-11-25: the sentence names the side that is really missing. A bid with no ask is "no seller", never "no buyer".
+    world.quotes[CALL] = {"bid": 0.2, "ask": 0.0}
+    world.step(trader)
+    assert run_of(trader)["note"] == (f"Stop reached at {stop:.2f}: No seller is asking a price on the 104 Call right now: "
+                                      "waiting for a full quote")
+    world.quotes[CALL] = {"bid": None, "ask": None}           # a fresh quote with neither side
+    world.step(trader)
+    assert run_of(trader)["note"] == f"Stop reached at {stop:.2f}: No price on the 104 Call right now: waiting for one"
+    world.quotes.pop(CALL)                                    # no quote at all (what the quote route really sends): no reason claimed
+    world.step(trader)
+    note = run_of(trader)["note"]
+    assert note == f"Stop reached at {stop:.2f}: Waiting for a fresh quote on the 104 Call (no quote under 60 s old)"
+    assert "buyer" not in note and "seller" not in note and run_of(trader)["open"]["held"] == 3
+    world.quotes[CALL] = {"bid": 0.2, "ask": 0.3, "quoteAt": world.now.timestamp() - 100}    # a quote that stopped updating
+    for _ in range(13):
+        world.step(trader)
+    run = run_of(trader)
+    assert run["open"]["held"] == 3 and run["quoteDead"] is True and "no live price on the 104 Call for 2 min" in run["note"]
+
+
+# ---- 2026-11-25 (round 2): two checks in a row, the entry guard, the dead-quote note with no stock price ----
+
+def test_one_bad_quote_followed_by_a_normal_one_does_not_sell(world):
+    trader = bought(world)                                    # 3 at $1.10: the option stop is a bid of $0.55
+    assert ticker_trader.OPTION_STOP_CHECKS == 2
+    world.set(100.0, bid=0.2, ask=1.0)                        # one bad tick on a thin option
+    world.step(trader)
+    run = run_of(trader)
+    assert run["open"]["held"] == 3 and run["open"]["stopChecks"] == 1 and run["trades"] == []
+    world.set(100.0, bid=0.95, ask=1.05)                      # the next quote is normal again
+    world.step(trader)
+    run = run_of(trader)
+    assert run["open"]["held"] == 3 and "stopChecks" not in run["open"] and run["note"] == "In a trade: holding 3 of 3"
+    assert run["trades"] == [] and run["balance"] == 9670.0
+    world.set(100.0, bid=0.3, ask=1.0)                        # a second bad tick later is the FIRST of a new pair
+    world.step(trader)
+    assert run_of(trader)["open"]["held"] == 3 and run_of(trader)["open"]["stopChecks"] == 1
+    world.set(100.0, bid=0.31, ask=1.0)                       # and the one right after it sells, at this check's bid
+    world.step(trader)
+    sold = run_of(trader)["trades"][0]
+    assert sold["reason"] == "Option stop: the option's bid $0.31 is down 72% from the $1.10 paid (the stop is 50%), sold 3 at $0.31."
+    assert sold["stopFired"] == "option" and sold["stopLossPct"] == 72 and "stopChecks" not in sold
+
+
+def test_a_check_with_no_bid_neither_counts_nor_clears_the_option_stop_count(world):
+    trader = bought(world)
+    world.set(100.0, bid=0.5, ask=0.6)
+    world.step(trader)
+    assert run_of(trader)["open"]["stopChecks"] == 1
+    world.quotes.pop(CALL)                                    # no quote on this check: nothing to judge
+    world.step(trader)
+    assert run_of(trader)["open"]["held"] == 3 and run_of(trader)["open"]["stopChecks"] == 1
+    world.set(100.0, bid=0.5, ask=0.6)                        # the next usable bid is still under the stop: sold
+    world.step(trader)
+    assert run_of(trader)["trades"][0]["stopFired"] == "option"
+
+
+def test_the_stock_stop_still_sells_on_one_check_and_a_pending_option_check_does_not_block_it(world):
+    trader = bought(world)
+    stop = run_of(trader)["open"]["stopStock"]
+    world.set(stop + 0.5, bid=0.5, ask=0.6)                   # the option stop's first check
+    world.step(trader)
+    assert run_of(trader)["open"]["stopChecks"] == 1
+    world.set(stop - 0.05, bid=0.9, ask=1.0)                  # the stock goes through its stop: sold at once, by the stock stop
+    world.step(trader)
+    sold = run_of(trader)["trades"][0]
+    assert sold["stopFired"] == "stock" and "stopChecks" not in sold
+    assert sold["reason"] == f"Stop: stock traded through {stop:.2f}, sold 3 at $0.90, down 18% from the $1.10 paid."
+
+
+def _armed(world, bid, ask):
+    trader = world.trader()
+    world.set(100.0, bid=bid, ask=ask)
+    trader.start("nvda", "CALL")
+    world.step(trader)      # picks the contract
+    world.step(trader)      # would buy at its ask
+    return trader
+
+
+def test_a_contract_whose_bid_is_already_at_the_option_stop_is_not_bought(world):
+    trader = _armed(world, bid=0.10, ask=0.20)                # the buyers are already 50% under the asking price
+    run = run_of(trader)
+    assert run["open"] is None and run["status"] == "idle" and run["trades"] == [] and run["tradeCount"] == 0
+    assert run["note"] == ("Not bought: the 104 Call's buyers ($0.10) are already 50% under the asking price ($0.20), "
+                           "so it would be sold at a loss at once.")
+    account = trader.snapshot()["account"]
+    assert account["cash"] == 10000.0 and account["invested"] == 0.0 and account["openTrades"] == 0
+    world.step(trader)                                        # not bought means not bought: no retry by itself
+    assert run_of(trader)["open"] is None and run_of(trader)["status"] == "idle"
+    world.set(100.0, bid=0.15, ask=0.20)                      # a normal spread; he taps Trade again
+    trader.again("NVDA-CALL")
+    world.step(trader)
+    world.step(trader)
+    assert run_of(trader)["open"]["entry"] == 0.2 and run_of(trader)["open"]["stopOption"] == 0.1
+
+
+def test_a_zero_bid_contract_is_not_bought(world):
+    trader = _armed(world, bid=0.0, ask=0.20)
+    run = run_of(trader)
+    assert run["open"] is None and run["status"] == "idle"
+    assert run["note"] == ("Not bought: nobody is bidding on the 104 Call ($0.00 against the $0.20 asking price), "
+                           "so it would be sold at a loss at once.")
+
+
+@pytest.mark.parametrize("bid, ask, buys", [(0.11, 0.20, True), (0.10, 0.20, False), (0.56, 1.10, True), (0.55, 1.10, False),
+                                            (0.33, 0.65, True), (0.32, 0.65, False), (0.0, 0.01, False)])
+def test_the_entry_guard_is_exactly_the_option_stop_for_that_buy(tmp_path, bid, ask, buys):
+    trader = _armed(World(tmp_path), bid=bid, ask=ask)
+    run = run_of(trader)
+    assert (run["open"] is not None) is buys
+    if buys:
+        assert run["open"]["stopOption"] < bid                # so the first check after the buy cannot fire the option stop
+    else:
+        assert run["note"].startswith("Not bought: ") and "sold at a loss at once" in run["note"]
+
+
+def test_a_quote_with_an_asking_price_and_no_bid_is_not_bought_and_waits(world):
+    trader = world.trader()
+    world.quotes["NVDA"] = {"last": 100.0}
+    world.quotes[CALL] = {"ask": 1.1}                         # not a shape today's quote route sends; never bought blind
+    trader.start("nvda", "CALL")
+    world.step(trader)
+    world.step(trader)
+    run = run_of(trader)
+    assert run["open"] is None and run["status"] == "waiting"
+    assert run["note"] == "Waiting for a buyer's price on the 104 Call: its quote has an asking price only"
+    world.quotes[CALL] = {"bid": 1.0, "ask": 1.1}
+    world.step(trader)
+    assert run_of(trader)["open"]["entry"] == 1.1
+
+
+def test_with_every_quote_gone_the_dead_quote_note_still_shows(world):
+    """Round 1 answered "Waiting for a fresh quote on NVDA" first, so the loud note never showed with the stock missing too."""
+    trader = bought(world)
+    world.set(100.0, bid=0.9, ask=1.0)
+    world.step(trader)
+    world.quotes.clear()                                      # the option AND the stock stop quoting
+    world.step(trader)
+    run = run_of(trader)
+    assert run["quoteDead"] is False and run["note"] == "Waiting for a fresh quote on NVDA (no quote under 60 s old)"
+    for _ in range(12):                                       # two minutes of nothing
+        world.step(trader)
+    run = run_of(trader)
+    assert run["quoteDead"] is True and run["open"]["held"] == 3 and run["open"]["bid"] == 0.9
+    assert run["note"] == ("No live price on the 104 Call for 2 min, and none on NVDA either: neither stop can be checked. "
+                           "Still holding 3 of 3.")
+    account = trader.snapshot()["account"]
+    assert account["oldPriceTrades"] == 1 and account["openTrades"] == 1 and run["account"]["oldPriceTrades"] == 1
+    world.quotes["NVDA"] = {"last": 100.0}                    # the stock comes back, the option does not
+    world.step(trader)
+    assert run_of(trader)["note"] == "No live price on the 104 Call for 2 min: the option stop cannot be checked. Still holding 3 of 3."
+    world.quotes[CALL] = {"bid": 0.9, "ask": 1.0}             # the option is back: nothing is marked old any more
+    world.step(trader)
+    assert run_of(trader)["quoteDead"] is False and trader.snapshot()["account"]["oldPriceTrades"] == 0
+
+
+def test_the_dead_quote_clock_starts_again_each_day(world):
+    trader = bought(world)
+    world.quotes.pop(CALL)
+    world.now = datetime(2026, 11, 13, 15, 59, 0, tzinfo=ET)
+    world.step(trader)                                        # 15:50 close with no bid
+    assert run_of(trader)["note"].startswith("15:50 close: Waiting for a fresh quote on the 104 Call")
+    world.now = datetime(2026, 11, 16, 9, 30, 0, tzinfo=ET)   # Monday's open
+    world.step(trader)
+    run = run_of(trader)
+    assert run["quoteDead"] is False and run["note"].startswith("Left open from an earlier day: Waiting for")

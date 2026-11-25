@@ -266,7 +266,7 @@ export function deskVersus(doc, accountLabel = (a) => a) {
   }));
   const lead = rows.find((r) => r.leader);
   let answer;
-  if (!rows.some((r) => r.closed)) answer = "No closed trades yet. Both bots start with the 9:30 AM ET buy window.";
+  if (!rows.some((r) => r.closed)) answer = "No closed trades yet. Both bots start with the 9:35 AM ET buy window.";
   else if (lead) answer = `${lead.name} is ahead (${lead.roi} return, ${lead.pnl} on ${lead.closed} closed trades). That is the one to take to real money, once its account passes the checks.`;
   else if (v.allLosing) answer = "Neither is good so far: both bots have lost money on real fills.";
   else if (v.enough && !v.aiProven) answer = `Not a fair test yet: the AI chose only ${v.aiChosenClosed || 0} of the AI bot's ${v.aiClosed || 0} closed trades (it needs ${v.need}, and at least half). The rest used the rules order, so both bots traded almost the same way.`;
@@ -321,7 +321,7 @@ export function deskStrategies(acct) {
   const total = rows.reduce((n, r) => Math.max(n, r.closed), 0);
   const bestRow = rows.find((r) => r.best);
   let answer;
-  if (!total) answer = "No closed trades yet. The first Level orders go out in the 9:30 AM ET buy window.";
+  if (!total) answer = "No closed trades yet. The first Level orders go out in the 9:35 AM ET buy window.";
   else if (bestRow) answer = `Best so far: ${bestRow.name} (${bestRow.roi} return, ${bestRow.pnl} on ${bestRow.closed} closed trades).`;
   else if (s.allLosing) answer = "None is good so far: every strategy with enough trades has lost money on real fills.";
   else {
@@ -557,7 +557,7 @@ export function deskDailyBars(days, width = 640, height = 200, pad = 14) {
  * (2026-11-13: the first line said "No new buys from 9:30 to 10:00"; he took that rule back the
  * same morning: "Remove 10 am rule on bot also if you see the setup then trade it".) */
 export const DESK_PLAN_RULES = [
-  "Buys go in from 9:30 to 11:00 AM and from 1:00 to 3:30 PM ET, as soon as the setup is there. From 9:30 to 9:45 the ticker only has to be in the top of its board; from 9:45 it has to stay there for 5 minutes. A signal with no chart plan (no stop and no targets could be worked out) is not bought.",
+  "Buys go in from 9:35 to 11:30 AM and from 1:00 to 3:30 PM ET, as soon as the setup is there. From 9:35 to 9:45 the ticker only has to be in the top of its board; from 9:45 it has to stay there for 5 minutes. A signal with no chart plan (no stop and no targets could be worked out) is not bought.",
   "Entry: a limit order at the option's ask when the signal comes (the 0.20-delta contract, 3 or more contracts).",
   "Stop: the stock price where the option is down 50% from the entry, from the chart's own formula. The moment the stock trades through it, everything is sold. As a backstop, the option itself down 50% on a fresh quote also sells everything on the first tick.",
   "Targets on the stock: T1 is half the expected move, T2 is the full expected move, T3 is the biggest open-interest strike past the move (1.5 times the move when there is none).",

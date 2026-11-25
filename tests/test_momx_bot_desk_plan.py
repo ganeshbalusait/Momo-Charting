@@ -45,10 +45,10 @@ def test_a_signal_before_ten_is_not_turned_away_for_the_time_and_midday_names_th
     why = lambda clock, day="2026-11-13": bd._not_ordered_why("bull", signal("AAPL", clock, day), [], None)
     for clock in ("09:30:03", "09:59:59", "10:00:00", "13:00:00"):
         assert not why(clock).startswith(("before", "outside")), clock
-    assert why("11:30:00") == "outside the buy windows (9:30-11:00, 1:00-3:30)"
-    assert why("15:45:00") == "outside the buy windows (9:30-11:00, 1:00-3:30)"
+    assert why("11:30:00") == "outside the buy windows (9:35-11:30, 1:00-3:30)"
+    assert why("15:45:00") == "outside the buy windows (9:35-11:30, 1:00-3:30)"
     assert not why("09:35:00", "2026-11-12").startswith(("before", "outside"))
-    assert why("11:30:00", "2026-11-12") == "outside the buy windows (9:30-11:00, 1:00-3:30)"
+    assert why("11:30:00", "2026-11-12") == "outside the buy windows (9:35-11:30, 1:00-3:30)"
 
 
 def test_a_940_signal_is_explained_by_the_real_reason_not_by_the_time():
@@ -71,8 +71,8 @@ def test_a_signal_with_no_chart_plan_says_so_and_one_clock_names_the_windows():
     assert not bd._not_ordered_why("bull", planned, [], None).startswith("no chart plan")
     lead = signal("AMD", "12:49:55", entryAt=at("2026-11-13", "12:50:20"))
     assert not bd._not_ordered_why("bull", lead, [], None).startswith("outside")
-    late = signal("AMD", "10:59:50", entryAt=at("2026-11-13", "11:00:10"))
-    assert bd._not_ordered_why("bull", late, [], None) == "outside the buy windows (9:30-11:00, 1:00-3:30)"
+    late = signal("AMD", "11:29:50", entryAt=at("2026-11-13", "11:30:10"))   # 2026-11-25: the window ends 11:30 (was 11:00)
+    assert bd._not_ordered_why("bull", late, [], None) == "outside the buy windows (9:35-11:30, 1:00-3:30)"
 
 
 def test_the_page_is_told_which_plan_the_running_bots_follow(tmp_path):
@@ -147,7 +147,7 @@ def test_a_signal_not_ordered_shows_the_plan_it_would_have_had(tmp_path, monkeyp
                      planState={"status": "closed", "stopStock": 250.0, "stopKind": "break-even", "pct": 12.5,
                                 "reason": "Stop at break-even: stock traded through 250.00",
                                 "hits": [{"target": "T1", "at": at("2026-11-13", "10:30:00"), "stock": 253.2}]})
-    early = signal("TSLA", "11:41:00", planNote="Not ordered: outside the buy windows (9:30-11:00, 1:00-3:30)")
+    early = signal("TSLA", "11:41:00", planNote="Not ordered: outside the buy windows (9:35-11:30, 1:00-3:30)")
     (tmp_path / "momx_option_track").mkdir()
     (tmp_path / "momx_option_track" / "2026-11-13.json").write_text(json.dumps({"trades": [planned, early]}), encoding="utf-8")
     folder = tmp_path / "momx_paper_mirror" / "paper3"
@@ -162,7 +162,7 @@ def test_a_signal_not_ordered_shows_the_plan_it_would_have_had(tmp_path, monkeyp
                                  "reason": "Stop at break-even: stock traded through 250.00",
                                  "hits": [{"target": "T1", "at": at("2026-11-13", "10:30:00")}]}
     # Was a 9:41 signal with "Not ordered: before 10:00" (the 10:00 rule, removed 2026-11-13).
-    assert by["TSLA"]["note"].startswith("Not ordered: outside the buy windows (9:30-11:00") and by["TSLA"]["plan"] is None
+    assert by["TSLA"]["note"].startswith("Not ordered: outside the buy windows (9:35-11:30") and by["TSLA"]["plan"] is None
     assert by["AAPL"]["status"] == "open" and by["AAPL"]["scored"] is True
 
 
@@ -221,8 +221,9 @@ def test_a_signal_in_the_ten_minutes_before_a_window_is_not_called_outside_the_w
     why = lambda clock: bd._not_ordered_why("bull", signal("AMD", clock), [], None)
     assert not why("12:56:22").startswith(("outside", "before"))
     assert not why("12:50:00").startswith("outside")
-    assert why("12:49:59") == "outside the buy windows (9:30-11:00, 1:00-3:30)"
-    assert why("11:00:00") == "outside the buy windows (9:30-11:00, 1:00-3:30)"
+    assert why("12:49:59") == "outside the buy windows (9:35-11:30, 1:00-3:30)"
+    assert why("11:30:00") == "outside the buy windows (9:35-11:30, 1:00-3:30)"   # 2026-11-25: was 11:00
+    assert not why("11:00:00").startswith("outside")
     assert not why("09:55:00").startswith(("before", "outside"))      # was "before 10:00" (rule removed 2026-11-13)
 
 
