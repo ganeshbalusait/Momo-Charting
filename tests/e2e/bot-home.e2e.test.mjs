@@ -181,7 +181,7 @@ async function wholeFlow(app, { phone }) {
   assert.deepEqual(await texts(root.locator(".bh-tiles .bh-tile b")), ["14 of 67", "−$76", "1"]);
   assert.equal(await text(root.locator(`${tid("bh-verdict")} b`)), "Not ready for real money");
   assert.deepEqual(await texts(root.locator("[role='group'][aria-label='Which bot'] button")), ["Paper 3 · Rules bot", "Paper 5 · AI bot"]);
-  assert.deepEqual(await texts(root.locator("[role='group'][aria-label='Bot sections'] button")), ["Home", "Journal", "Trades", "Learned", "Ready"]);
+  assert.deepEqual(await texts(root.locator("[role='group'][aria-label='Bot sections'] button")), ["Home", "Journal", "Trades", "Learned", "Ready", "More"]);
   assert.equal(await root.locator(`${tid("bh-section-home")} ${tid("bh-trade-row")}`).count(), 4);
   assert.deepEqual(await touchAudit(root), []);
   assert.equal(await overflowsSideways(app.page), false);
@@ -344,6 +344,34 @@ e2eTest("the four More rows lead to the older pages and Back to Bot returns", as
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// 2026-11-25, his "I see only this, where is research panel and they 2 panel?" (he was on Journal, where the
+// More rows did not show). The More tab is on every screen and leads to the same four older pages.
+for (const [label, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
+  e2eTest(`${label}: from the Journal the More tab reaches Research and the Ticker trader, and no tab word is cut off`, async () => {
+    await withApp({ view: "Bot", ...(viewport ? { viewport } : {}), storage: HOME, fakeReads: canned() }, async (app) => {
+      const root = await openHome(app);
+      await go(root, "journal");
+      assert.equal(await root.locator(tid("bh-more")).count(), 0, "the Journal itself has no More rows");
+      const cut = await root.locator("[aria-label='Bot sections'] button").evaluateAll((els) => els.filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent));
+      assert.deepEqual(cut, []);
+      await go(root, "more");
+      assert.deepEqual(await texts(root.locator(`${tid("bh-more")} .bh-row-l .bh-row-t`)),
+        ["Trade one ticker", "Full scorecard", "Research: every signal, simulated", "Ask the bot"]);
+      await app.page.locator(`${ROOT} ${tid("bh-more-research")}`).click();
+      await app.page.locator("section.bot-kpis[aria-label='Totals']").first().waitFor({ timeout: 60_000 });
+      await app.page.locator(`[data-testid='bot-view'] ${tid("bh-back")}`).click();
+      // Back lands on the last real section, not on the More tab.
+      await app.page.locator(`${ROOT} ${tid("bh-section-journal")}`).waitFor({ timeout: 30_000 });
+      await go(app.page.locator(ROOT), "more");
+      await app.page.locator(`${ROOT} ${tid("bh-more-ticker")}`).click();
+      await app.page.locator("[data-testid='ticker-trader']").first().waitFor({ timeout: 60_000 });
+      assert.equal(await overflowsSideways(app.page), false);
+      assert.deepEqual(app.writes, []);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}
 
 e2eTest("phone: the same flow fits 375 px with thumb-sized buttons, and More goes through", async () => {
   await withApp({ view: "Bot", viewport: PHONE, storage: HOME, fakeReads: canned() }, async (app) => {

@@ -32,7 +32,9 @@
 .bh-seg button[aria-pressed="true"] { background: var(--bh-pick); color: #fff; }
 .bh-seg.is-inset { background: var(--bh-well); }
 .bh-sections { position: sticky; top: 0; z-index: 3; background: var(--bh-bar); border: 1px solid var(--bh-line); }
-.bh-sections button { font-size: 13px; }
+/* Six sections: each tab is as wide as its word needs, so "Learned" is not cut off on a 375 px phone. */
+.bh-sections { display: flex; }
+.bh-sections button { font-size: 13px; flex: 1 1 auto; min-width: 44px; overflow: visible; }
 
 .bh-body { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .bh-card { background: var(--bh-card); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }

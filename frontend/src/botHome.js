@@ -4,7 +4,12 @@
 // Alpaca paper fills only. Pure, so node:test can run it. No React here.
 import { DESK_LOW_BUYING_POWER, deskDollars, deskMoney, deskShortMoney } from "./botDesk.js";
 
-export const HOME_SECTIONS = [["home", "Home"], ["journal", "Journal"], ["trades", "Trades"], ["learned", "Learned"], ["ready", "Ready"]];
+// "More" (2026-11-25, his "I see only this, where is research panel and they 2 panel?"): the older pages
+// (Ticker trader, Scorecard, Research, Ask) were only at the bottom of Home, so from any other tab they
+// looked gone. They now have their own tab, in reach from every screen. It is not remembered: the Bot
+// reopens on the last real section (HOME_KEPT_SECTIONS).
+export const HOME_SECTIONS = [["home", "Home"], ["journal", "Journal"], ["trades", "Trades"], ["learned", "Learned"], ["ready", "Ready"], ["more", "More"]];
+export const HOME_KEPT_SECTIONS = ["home", "journal", "trades", "learned", "ready"];
 export const HOME_SECTION_KEY = "bot.homeSection";
 export const HOME_ACCOUNTS = ["paper3", "paper5"];
 export const HOME_REFRESH_MS = 60 * 1000;
@@ -15,7 +20,7 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export function readHomeSection(stored) {
-  return HOME_SECTIONS.some(([key]) => key === stored) ? stored : "home";
+  return HOME_KEPT_SECTIONS.includes(stored) ? stored : "home";
 }
 
 /** The account to show: the stored one when the server has it, else the first it has. */

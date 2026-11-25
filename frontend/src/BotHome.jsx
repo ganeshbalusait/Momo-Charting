@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { DESK_ACCOUNT_KEY, DESK_SAVED_KEY, DESK_URL, deskAccountLabel, readSavedDesk } from "./botDesk.js";
 import { truthAccountLabel } from "./botTruth.js";
 import {
-  HOME_ACCOUNTS, HOME_MORE, HOME_PERIODS, HOME_REFRESH_MS, HOME_SECTIONS, HOME_SECTION_KEY,
+  HOME_ACCOUNTS, HOME_KEPT_SECTIONS, HOME_MORE, HOME_PERIODS, HOME_REFRESH_MS, HOME_SECTIONS, HOME_SECTION_KEY,
   homeCalendar, homeCallsPuts, homeChecks, homeClosedTrades, homeDayHead, homeFreshness, homeJournalTiles, homeLessons,
   homeMonths, homeNewestDay, homePeriodRows, homeResult, homeSpark, homeState, homeTiles, homeTopLesson, homeTrades,
   homeVerdict, readHomeAccount, readHomeSection,
@@ -337,7 +337,7 @@ export default function BotHome({ onOpen, initialSection }) {
   const go = (name) => {
     setSectionState(name);
     setOpenId(null);
-    store(HOME_SECTION_KEY, name);
+    if (HOME_KEPT_SECTIONS.includes(name)) store(HOME_SECTION_KEY, name);
     const el = rootRef.current;
     if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "start" });
   };
@@ -373,7 +373,7 @@ export default function BotHome({ onOpen, initialSection }) {
       </nav>
 
       <section className="bh-body" data-testid={"bh-section-" + section} aria-label={HOME_SECTIONS.find(([key]) => key === section)[1]}>
-        {!doc ? (
+        {section === "more" ? <More onOpen={onOpen} /> : !doc ? (
           <Empty title={state.failed ? "Could not load the bot's numbers" : "Loading the bot's numbers…"}
             line={state.failed ? "The app will try again in a minute." : "This takes a few seconds the first time."} />
         ) : !hasAccounts ? (

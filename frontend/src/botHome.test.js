@@ -135,7 +135,7 @@ test("side, level and the saved section, account and filter", () => {
   assert.equal(homeLevel("level3", []), "Level 3");
   assert.equal(homeLevel("rvol"), "rvol");
   assert.equal(homeLevel(null), "");
-  assert.deepEqual(HOME_SECTIONS.map(([key, label]) => `${key}:${label}`), ["home:Home", "journal:Journal", "trades:Trades", "learned:Learned", "ready:Ready"]);
+  assert.deepEqual(HOME_SECTIONS.map(([key, label]) => `${key}:${label}`), ["home:Home", "journal:Journal", "trades:Trades", "learned:Learned", "ready:Ready", "more:More"]);
   assert.equal(readHomeSection("trades"), "trades");
   assert.equal(readHomeSection("desk"), "home");
   assert.equal(readHomeSection(null), "home");
@@ -540,4 +540,12 @@ test("the Bot opens on the home page; an older page remembered from before it ex
     { view: "research", ticker: true }, { view: "desk", ticker: null }, { view: "research", ticker: false }, { view: "ask", ticker: null },
   ]);
   assert.equal(botMoreTarget("settings"), null);
+});
+
+test("the More tab is in reach from every section and is not the page the Bot reopens on (2026-11-25)", async () => {
+  const { HOME_KEPT_SECTIONS, readHomeSection } = await import("./botHome.js");
+  assert.equal(HOME_SECTIONS[HOME_SECTIONS.length - 1][0], "more");
+  assert.deepEqual(HOME_KEPT_SECTIONS, ["home", "journal", "trades", "learned", "ready"]);
+  assert.equal(readHomeSection("more"), "home");
+  assert.equal(readHomeSection("journal"), "journal");
 });
