@@ -281,7 +281,7 @@ e2eTest("the owner's real Scorecard link opens the Bot page's Scorecard", async 
     const { page } = app;
     await ask(page, "scorecard");
     await follow(page, "Scorecard");
-    await page.locator("[role='group'][aria-label='Page'] button[aria-pressed='true']", { hasText: "Scorecard" }).waitFor({ timeout: 60_000 });
+    await page.locator("[data-testid='bh-panels'] button[aria-pressed='true']", { hasText: "Scorecard" }).waitFor({ timeout: 60_000 });
     assert.deepEqual(app.pageErrors, []);
   });
 });

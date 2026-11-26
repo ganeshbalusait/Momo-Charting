@@ -402,11 +402,11 @@ e2eTest("the Bot page's Ask tab has its own chat, so the window stands aside the
     await page.locator("[data-testid='bot-chat']").waitFor({ timeout: 60_000 });
     await page.waitForTimeout(1500);
     assert.equal(await page.locator(BUTTON).isVisible(), false);
-    await page.locator("[role='group'][aria-label='Page'] button", { hasText: "Scorecard" }).click();
+    await page.locator("[data-testid='bh-panels'] button", { hasText: "Scorecard" }).click();
     await page.locator(BUTTON).waitFor({ state: "visible", timeout: 15_000 });
     await page.locator(BUTTON).click();
     await page.locator(PANEL).waitFor({ state: "visible", timeout: 15_000 });
-    await page.locator("[role='group'][aria-label='Page'] button", { hasText: "Ask" }).click();
+    await page.locator("[data-testid='bh-panels'] button", { hasText: "Ask" }).click();
     await page.locator("[data-testid='bot-chat']").waitFor({ timeout: 15_000 });
     await page.locator(PANEL).waitFor({ state: "hidden", timeout: 5_000 });
     assert.equal(await page.locator(BUTTON).isVisible(), false);

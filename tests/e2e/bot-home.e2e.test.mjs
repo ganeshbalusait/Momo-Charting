@@ -299,6 +299,9 @@ async function wholeFlow(app, { phone }) {
 }
 
 /** A "More" row leaves the home page for an older page; "Back to Bot" returns to it. */
+// The Ask page reads its opening cards with one POST ({"home": true}) 200 ms after it opens: a read, not a write.
+const realWrites = (app) => app.writes.filter((w) => !JSON.parse(w.body || "{}").home);
+
 async function moreAndBack(app, name, landed) {
   const page = app.page;
   await page.locator(`${ROOT} ${tid(`bh-more-${name}`)}`).click();
@@ -346,7 +349,7 @@ e2eTest("the four More rows lead to the older pages and Back to Bot returns", as
     await moreAndBack(app, "ticker", "[data-testid='ticker-trader']");
     await moreAndBack(app, "research", "section.bot-kpis[aria-label='Totals']");
     await moreAndBack(app, "ask", "[data-testid='bot-chat']");
-    assert.deepEqual(app.writes, []);
+    assert.deepEqual(realWrites(app), []);
     assert.deepEqual(app.pageErrors, []);
   });
 });
@@ -372,17 +375,24 @@ for (const [label, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
       // Each older page wears the new look (his "Change with new Ui", "Yes"): its cards are the home page's
       // card colour with no outline, and the page header is a plain title line, not a card.
       const CARD = "rgb(18, 26, 42)";
-      for (const [name, word, landed, card] of [["ticker", "Ticker", "[data-testid='ticker-trader']", ".tt-card"],
-        ["research", "Research", "section.bot-kpis[aria-label='Totals']", ".bot-kpi"],
-        ["scorecard", "Scorecard", "[data-testid='bot-desk']", ".desk-card"], ["ask", "Ask", "[data-testid='bot-chat']", ".chat-log"]]) {
+      for (const [name, word, landed, card, title] of [["ticker", "Ticker", "[data-testid='ticker-trader']", ".tt-card", "Ticker trader"],
+        ["research", "Research", "section.bot-kpis[aria-label='Totals']", ".bot-kpi", "Research"],
+        ["scorecard", "Scorecard", "[data-testid='bot-desk']", ".desk-card", "Scorecard"], ["ask", "Ask", "[data-testid='bot-chat']", ".chat-log", "Ask"]]) {
         await page.locator(`[data-testid='bot-view'] ${tid(`bh-panel-${name}`)}`).click();
         await page.locator(landed).first().waitFor({ timeout: 60_000 });
         await page.locator(`[data-testid='bot-view'] ${card}`).first().waitFor({ timeout: 30_000 });
         const look = await page.evaluate((sel) => {
           const css = (el) => { const c = getComputedStyle(el); return [c.backgroundColor, c.borderTopColor]; };
+          // 2026-11-26 ("Page looks not good"): one way around. No second switch, no "BOT workspace" title,
+          // and the first content starts within a phone screen of the top.
           return { card: css(document.querySelector(`[data-testid='bot-view'] ${sel}`)), head: css(document.querySelector(".bot-view .bot-head")),
-            pick: getComputedStyle(document.querySelector(".bot-view .bot-view-switch button[aria-pressed='true']") || document.querySelector(".bot-view .bot-view-switch button")).backgroundColor };
+            title: document.querySelector(".bot-view .bot-head h2").textContent.trim(),
+            extra: document.querySelectorAll(".bot-view .bot-view-switch, .bot-view [aria-label='Which bot'], .bot-view .bot-badge.is-admin").length,
+            headBottom: Math.round(document.querySelector(".bot-view .bot-head").getBoundingClientRect().bottom + window.scrollY) };
         }, card);
+        assert.equal(look.title, title, `${name}: the title is the page's own name`);
+        assert.equal(look.extra, 0, `${name}: no duplicate switch or badge`);
+        assert.ok(look.headBottom < 330, `${name}: the buttons and title take too much of the screen (${look.headBottom}px)`);
         assert.deepEqual(look.card, [CARD, "rgba(0, 0, 0, 0)"], `${name}: card colour and no outline`);
         assert.deepEqual(look.head, ["rgba(0, 0, 0, 0)", "rgba(0, 0, 0, 0)"], `${name}: the header is not a card`);
         assert.deepEqual(await lit(), [word]);
@@ -413,7 +423,7 @@ e2eTest("phone: the same flow fits 375 px with thumb-sized buttons, and More goe
     await moreAndBack(app, "scorecard", "[data-testid='bot-desk']");
     await moreAndBack(app, "ask", "[data-testid='bot-chat']");
     assert.equal(await overflowsSideways(app.page), false);
-    assert.deepEqual(app.writes, []);
+    assert.deepEqual(realWrites(app), []);
     assert.deepEqual(app.pageErrors, []);
   });
 });

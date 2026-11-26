@@ -91,14 +91,14 @@ const shot = async (app, name) => { if (SHOTS) await app.page.screenshot({ path:
 const texts = async (locator) => (await locator.allTextContents()).map((s) => s.trim());
 const sent = (app, key) => app.writes.filter((w) => `${w.method} ${w.path}` === key).map((w) => JSON.parse(w.body));
 
-e2eTest("Research has a Ticker trader button beside All trades; typing a ticker with Put starts a run", async () => {
+e2eTest("the Ticker tab in the top row opens the Ticker trader; typing a ticker with Put starts a run", async () => {
   const server = fakeServer();
   await withApp({ view: "Bot", fakeReads: server.fakeReads, fakeWrites: server.fakeWrites }, async (app) => {
     const { page } = app;
-    const which = page.locator("[role='group'][aria-label='Which bot']");
+    const which = page.locator("[data-testid='bh-panels']");
     await which.waitFor({ timeout: 60_000 });
-    assert.deepEqual(await texts(which.locator("button")), ["All trades", "Ticker trader"]);
-    await which.locator("button", { hasText: "Ticker trader" }).click();
+    assert.deepEqual(await texts(which.locator("button")), ["Bot", "Ticker", "Scorecard", "Research", "Ask"]);
+    await which.locator("[data-testid='bh-panel-ticker']").click();
     const panel = page.locator(PANEL);
     await panel.locator("[data-testid='tt-row']").first().waitFor({ timeout: 30_000 });
     assert.match(await panel.locator("[data-testid='tt-simulated']").textContent(), /Simulated inside the app\. No order goes to any broker\./);
@@ -162,7 +162,7 @@ e2eTest("Research has a Ticker trader button beside All trades; typing a ticker 
     assert.match(await account.textContent(), /from \$2,000.*nothing in trades/s);
     assert.equal(await account.locator("[data-testid='tt-reset-panel']").count(), 0);
     // Back to the All trades view, untouched.
-    await page.locator("[role='group'][aria-label='Which bot'] button", { hasText: "All trades" }).click();
+    await page.locator("[data-testid='bh-panel-research']").click();
     await page.locator("section.bot-kpis[aria-label='Totals']").waitFor({ timeout: 60_000 });
     assert.equal(await page.locator(PANEL).count(), 0);
     assert.deepEqual(app.pageErrors, []);
@@ -180,7 +180,7 @@ for (const [name, viewport] of [["desktop", undefined], ["phone width", PHONE]])
       await box.waitFor({ timeout: 60_000 });
       const go = box.locator("button[type='submit']");
       assert.equal(await go.isDisabled(), true, "Open is off until a ticker is typed");
-      // It sits near the top, right under All trades | Ticker trader, not below the page's settings.
+      // It sits near the top, right under the page title, not below the page's settings.
       const top = await box.boundingBox();
       assert.ok(top && top.y < 600, `the box is too far down: ${JSON.stringify(top)}`);
       assert.equal(await box.locator("[aria-label='Call or Put'] button[aria-pressed='true']").textContent(), "Call");
@@ -275,8 +275,9 @@ e2eTest("phone width: the Ticker trader list and a run fit with no sideways scro
       const box = await panel.locator(selector).first().boundingBox();
       assert.ok(box && box.x >= 0 && box.x + box.width <= PHONE.width + 1, `${selector} is cut off on a phone`);
     }
-    const which = await texts(page.locator("[role='group'][aria-label='Which bot'] button"));
-    assert.deepEqual(which, ["All trades", "Ticker trader"]);
+    const which = await texts(page.locator("[data-testid='bh-panels'] button[aria-pressed='true']"));
+    assert.deepEqual(which, ["Ticker"]);
+    assert.equal((await panel.locator(".bot-head h2").textContent()).trim(), "Ticker trader");
     await panel.locator("[data-testid='tt-row']").first().click();
     await panel.locator("[data-testid='tt-run']").waitFor();
     assert.equal(await overflowsSideways(page), false);

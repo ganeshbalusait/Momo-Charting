@@ -38,7 +38,7 @@ e2eTest("Ask: a starter question, a typed question and a follow-up each send one
   await withApp({ view: "Bot", storage: ASK, fakeWrites: answers() }, async (app) => {
     const chat = app.page.locator(CHAT);
     await chat.waitFor({ timeout: 60_000 });
-    assert.equal((await app.page.locator("[role='group'][aria-label='Page'] button[aria-pressed='true']").textContent()).trim(), "Ask");
+    assert.equal((await app.page.locator("[data-testid='bh-panels'] button[aria-pressed='true']").textContent()).trim(), "Ask");
     assert.match(await chat.locator(".chat-note").textContent(), /any reply with a number that is not in the records is thrown away\. It only reads; it cannot place or change a trade\./);
     assert.deepEqual((await texts(chat.locator(".chat-tray .chat-chip"))).slice(0, 2), ["SPY if I take how much it went up", "why AAPL failed"]);
     assert.equal(await chat.locator("button.chat-send").isDisabled(), true);              // nothing typed yet
@@ -91,7 +91,7 @@ e2eTest("Ask: a refused or failed answer says so plainly, and the tab switches b
     await chat.locator("button.chat-send").click();
     await chat.locator("[data-testid='chat-answer']", { hasText: "The app could not answer that. Nothing was changed." }).waitFor({ timeout: 15_000 });
     assert.deepEqual(await texts(chat.locator(".chat-kind")), ["Could not answer", "Could not answer"]);
-    await app.page.locator("[role='group'][aria-label='Page'] button", { hasText: "Scorecard" }).click();
+    await app.page.locator("[data-testid='bh-panels'] button", { hasText: "Scorecard" }).click();
     await app.page.locator("[data-testid='bot-desk']").waitFor({ timeout: 15_000 });
     assert.equal(await app.page.locator(CHAT).count(), 0);
     assert.deepEqual(app.pageErrors, []);

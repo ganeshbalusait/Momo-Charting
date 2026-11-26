@@ -154,6 +154,20 @@
 .bh-panels button[aria-pressed="true"] { background: var(--bh-accent-bg); color: var(--bh-accent); box-shadow: inset 0 -2px 0 var(--bh-accent); }
 @media (min-width: 560px) { .bh-panels button { font-size: 14px; } }
 
+/* Sections that open with one tap on the Scorecard and Research (BotFold.jsx, 2026-11-26). */
+.bf { display: grid; gap: 10px; min-width: 0; }
+.bf-body { display: grid; gap: 14px; min-width: 0; }
+.bf-body > * { min-width: 0; }
+.bf-body[hidden] { display: none !important; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bf-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 52px; padding: 10px 16px; border: 0 !important; border-radius: 14px !important; background: #121a2a !important; box-shadow: none !important; color: #eef2f8 !important; text-align: left; cursor: pointer; font: 600 15px/1.3 Inter, system-ui, sans-serif; }
+:root .app-shell.app-shell .bot-view.bot-view.bot-view .bf.is-open > .bf-head { background: #18233a !important; }
+.bf-text { display: grid; gap: 2px; min-width: 0; }
+.bf-note { font-weight: 400; font-size: 12px; color: #9aa6b8; }
+.bf-chev { flex: none; color: #9aa6b8; transition: transform 0.15s; }
+.bf.is-open > .bf-head .bf-chev { transform: rotate(180deg); }
+.bf-head:focus-visible { outline: 2px solid #7dd3fc; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .bf-chev { transition: none; } }
+
 /* ---------------------------------------------------------------------------------------------
    The older Bot pages in the new look (2026-11-25, his "Change with new Ui", then "Yes"): Ticker
    trader, Full scorecard, Research and Ask take the home page's chrome: soft borderless cards on

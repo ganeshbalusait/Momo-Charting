@@ -401,7 +401,7 @@ e2eTest("the owner's Bot link opens the part it names, whether or not the page i
     const { page } = app;
     await ask(page, "go");
     await follow(page, "Desk");
-    const switcher = "[role='group'][aria-label='Page'] button";
+    const switcher = "[data-testid='bh-panels'] button";
     await page.locator(`${switcher}[aria-pressed='true']`, { hasText: "Scorecard" }).waitFor({ timeout: 60_000 });
     await follow(page, "Research");
     await page.locator(`${switcher}[aria-pressed='true']`, { hasText: "Research" }).waitFor({ timeout: 15_000 });

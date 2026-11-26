@@ -636,3 +636,21 @@ export function botPanelCurrent(view, tickerOn) {
   if (view === "research") return tickerOn ? "ticker" : "research";
   return "bot";
 }
+
+// Sections that open with one tap on the Scorecard and Research (BotFold.jsx). Stored as
+// {all, open, shut}: "all" (the browser tests' seed) means every section is open unless shut.
+export const FOLDS_KEY = "bot.folds";
+export function readFolds(stored) {
+  if (stored === "all") return { all: true, open: [], shut: [] };
+  let doc = null;
+  try { doc = JSON.parse(stored); } catch { doc = null; }
+  const list = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+  return doc && typeof doc === "object" && !Array.isArray(doc) ? { all: doc.all === true, open: list(doc.open), shut: list(doc.shut) } : { all: false, open: [], shut: [] };
+}
+export function foldIsOpen(state, id) {
+  return state.all ? !state.shut.includes(id) : state.open.includes(id);
+}
+export function toggleFold(state, id) {
+  const flip = (list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
+  return state.all ? { ...state, shut: flip(state.shut) } : { ...state, open: flip(state.open) };
+}

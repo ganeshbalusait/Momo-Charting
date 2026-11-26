@@ -37,7 +37,10 @@ async function tradesKpiSub(page) {
 e2eTest("the live Bot page opens with its seven totals and writes nothing", async () => {
   await withApp({ view: "Bot" }, async (app) => {
     await openBot(app);
-    assert.equal((await app.page.locator(".bot-head h2").innerText()).trim(), "BOT workspace");
+    // 2026-11-26 ("Page looks not good"): the title is the page's own name; the top row is the only switch.
+    assert.equal((await app.page.locator(".bot-head h2").innerText()).trim(), "Research");
+    assert.equal(await app.page.locator(".bot-view-switch, [role='group'][aria-label='Which bot'], .bot-badge.is-admin").count(), 0);
+    assert.deepEqual((await app.page.locator("[data-testid='bh-panels'] button[aria-pressed='true']").allTextContents()).map((s) => s.trim()), ["Research"]);
     assert.equal(await app.page.locator(`${TOTALS} .bot-kpi`).count(), 7);
     // textContent, not innerText: .bot-kpi-label is drawn in capitals (text-transform), the words are unchanged.
     const labels = (await app.page.locator(`${TOTALS} .bot-kpi-label`).allTextContents()).map((s) => s.trim());
@@ -84,8 +87,7 @@ e2eTest("Research shows All trades only: no News trade or AI pick, and an old sa
   // 2026-11-10, his "Remove filters also news trade": the paper accounts trade only the three Level strategies.
   await withApp({ view: "Bot", storage: { "bot.book": "news" }, fakeReads: canned() }, async (app) => {
     await openBot(app);
-    assert.deepEqual((await group(app.page, "Which bot").locator("button").allTextContents()).map((s) => s.trim()), ["All trades", "Ticker trader"]);
-    assert.match(await group(app.page, "Which bot").locator("button").first().getAttribute("class"), /\bis-on\b/);
+    assert.deepEqual((await app.page.locator("[data-testid='bh-panels'] button[aria-pressed='true']").allTextContents()).map((s) => s.trim()), ["Research"]);
     assert.equal(await app.page.locator(FILTER).count(), 0);
     assert.equal(await app.page.locator("p.bot-jevbook-note", { hasText: /News trade|AI pick/ }).count(), 0);
     assert.match(await app.page.locator("p.bot-jevbook-note").innerText(), /0\.20-delta contract sold at strategy exit/);
@@ -238,3 +240,30 @@ e2eTest("on a phone the Bot page never scrolls sideways and the range buttons st
     assert.deepEqual(app.pageErrors, []);
   });
 });
+
+// 2026-11-26, his "Refer deep-research see other bot pages and do it": Research opens on its totals. The
+// controls, the ticker box and the notes that sat above them open with one tap.
+for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]) {
+  e2eTest(`${label}: Research opens on its totals; Settings and Trade one ticker wait behind one tap`, async () => {
+    await withApp({ view: "Bot", ...(viewport ? { viewport } : {}), storage: { "bot.folds": "" }, fakeReads: canned() }, async (app) => {
+      await openBot(app);
+      const { page } = app;
+      for (const hidden of [group(page, "Range"), group(page, "Board"), page.locator("[data-testid='bot-quick-trade']"), page.locator("p.bot-foot")]) {
+        assert.equal(await hidden.isVisible(), false);
+      }
+      const box = await page.locator(TOTALS).boundingBox();
+      assert.ok(box && box.y < 560, `the totals start too far down: ${JSON.stringify(box)}`);
+      const settings = page.locator("[data-testid='fold-r-settings']");
+      assert.match((await settings.locator(".bf-note").textContent()).trim(), /^All strategies · calls · \S+/);
+      await settings.locator(".bf-head").click();
+      await group(page, "Range").waitFor({ timeout: 15_000 });
+      await group(page, "Board").locator("button", { hasText: "BEAR" }).click();
+      assert.match((await settings.locator(".bf-note").textContent()).trim(), / · puts · /);
+      await page.locator("[data-testid='fold-r-ticker'] .bf-head").click();
+      await page.locator("[data-testid='bot-quick-trade']").waitFor({ timeout: 15_000 });
+      assert.equal(await overflowsSideways(page), false);
+      assert.deepEqual(app.writes, []);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}

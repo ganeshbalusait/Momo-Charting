@@ -165,7 +165,10 @@ export async function openApp({
     // The Bot page opens on its Scorecard (2026-11-09). The older Bot specs test
     // the Research view, so that is seeded unless a spec asks for something else.
     // "bot.homeSeen" (2026-11-25): the Bot home page takes the first visit once; a spec is not a first visit.
-    ...(view === "Bot" ? { "bot.view": "research", "bot.homeSeen": "1" } : {}), ...storage,
+    ...(view === "Bot" ? { "bot.view": "research", "bot.homeSeen": "1" } : {}),
+    // "bot.folds" (2026-11-26): the Scorecard and Research keep their long lists behind one tap. The older
+    // Bot specs test what is inside those lists, so every section is seeded open.
+    "bot.folds": "all", ...storage,
   };
   const hasTouch = touch ?? viewport === PHONE;
   const context = await browser.newContext({ viewport, hasTouch, isMobile: hasTouch && viewport.width < 800 });

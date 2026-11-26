@@ -497,7 +497,7 @@ function RunView({ run, busy, onBack, onAct, onJournal }) {
   );
 }
 
-export default function TickerTrader({ viewSwitch, onAllTrades, initialTicker = "", initialSide = "CALL" }) {
+export default function TickerTrader({ initialTicker = "", initialSide = "CALL" }) {
   const [doc, setDoc] = useState(null);
   const [error, setError] = useState("");
   const [formError, setFormError] = useState("");
@@ -563,16 +563,8 @@ export default function TickerTrader({ viewSwitch, onAllTrades, initialTicker = 
       <header className="bot-head">
         <div className="bot-title">
           <Bot size={18} aria-hidden="true" />
-          <h2>BOT workspace</h2>
+          <h2>Ticker trader</h2>
           <span className="bot-badge">SIMULATED</span>
-          <span className="bot-badge is-admin">Admin only</span>
-        </div>
-        <div className="bot-controls">
-          {viewSwitch}
-          <div className="bot-seg" role="group" aria-label="Which bot">
-            <button type="button" onClick={onAllTrades} title="Every trade the rules took">All trades</button>
-            <button type="button" className="is-on" aria-pressed="true">Ticker trader</button>
-          </div>
         </div>
       </header>
       {error ? <p className="bot-error" role="alert">{error}</p> : null}

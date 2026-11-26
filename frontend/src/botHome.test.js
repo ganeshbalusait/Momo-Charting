@@ -577,3 +577,51 @@ test("the older Bot pages' new look restyles chrome only, never the colours that
   // No size, padding of cards, or font-size changes: nothing may reflow.
   assert.ok(!/font-size|width:|height:|margin/.test(skin));
 });
+
+test("the older Bot pages have one way around: no second page switch, no BOT workspace title (2026-11-26)", async () => {
+  const { readFileSync } = await import("node:fs");
+  for (const file of ["./BotPanel.jsx", "./TickerTrader.jsx"]) {
+    const src = readFileSync(new URL(file, import.meta.url), "utf8");
+    for (const gone of ["<h2>BOT workspace</h2>", "bot-view-switch", 'aria-label="Which bot"', "viewSwitch", "Admin only"]) {
+      assert.ok(!src.includes(gone), `${file} still has ${gone}`);
+    }
+  }
+  const panel = readFileSync(new URL("./BotPanel.jsx", import.meta.url), "utf8");
+  for (const title of ["<h2>Research</h2>", '"Ask" : "Scorecard"']) assert.ok(panel.includes(title), title);
+  assert.ok(readFileSync(new URL("./TickerTrader.jsx", import.meta.url), "utf8").includes("<h2>Ticker trader</h2>"));
+});
+
+test("one-tap sections: closed until opened, remembered, and the test seed opens them all (2026-11-26)", async () => {
+  const { FOLDS_KEY, foldIsOpen, readFolds, toggleFold } = await import("./botHome.js");
+  assert.equal(FOLDS_KEY, "bot.folds");
+  for (const junk of [null, "", "nonsense", "[]", "7", "null"]) assert.deepEqual(readFolds(junk), { all: false, open: [], shut: [] });
+  let state = readFolds(null);
+  assert.equal(foldIsOpen(state, "trades"), false);
+  state = toggleFold(state, "trades");
+  assert.equal(foldIsOpen(state, "trades"), true);
+  assert.equal(foldIsOpen(state, "stats"), false);
+  assert.deepEqual(readFolds(JSON.stringify(state)), state);                 // survives a save and a read
+  assert.equal(foldIsOpen(toggleFold(state, "trades"), "trades"), false);
+  let all = readFolds("all");
+  assert.equal(foldIsOpen(all, "anything"), true);
+  all = toggleFold(all, "stats");
+  assert.equal(foldIsOpen(all, "stats"), false);
+  assert.equal(foldIsOpen(all, "trades"), true);
+  assert.deepEqual(readFolds(JSON.stringify(all)), all);
+});
+
+test("the Scorecard keeps its reading order; the long lists sit in one-tap sections (2026-11-26)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const desk = readFileSync(new URL("./BotDesk.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const at = (text) => { const i = desk.indexOf(text); assert.ok(i > 0, text); return i; };
+  // The order he asked for over time stays: All trades, numbers, charts, calendar, the comparisons, the checks.
+  const order = ['<Fold id="trades"', 'aria-label="All trades"', 'aria-label="Key numbers"', '<Fold id="charts"', 'aria-label="Account curve"', 'aria-label="Calendar"',
+    'aria-label="The three strategies"', '<Fold id="journal"', 'aria-label="Evaluation checks"', '<Fold id="stats"', '<Fold id="lessons"', '<Fold id="rules"', 'aria-label="Day by day"'].map(at);
+  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+  const panel = readFileSync(new URL("./BotPanel.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const p = (text) => { const i = panel.indexOf(text); assert.ok(i > 0, text); return i; };
+  assert.ok(p('<Fold id="r-settings"') < p('aria-label="Totals"') && p('aria-label="Totals"') < p("<TruthCheckCard />"));
+  assert.ok(p('aria-label="Range"') > p('<Fold id="r-settings"') && p('aria-label="Range"') < p('aria-label="Totals"'));
+  const css = readFileSync(new URL("./botHome.css", import.meta.url), "utf8");
+  assert.ok(css.indexOf(".bf-body[hidden]") > 0 && css.indexOf(".bf-body[hidden]") < css.indexOf("The older Bot pages in the new look"));
+});

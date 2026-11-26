@@ -8,6 +8,7 @@ import { Check, RefreshCw, X } from "lucide-react";
 import { deskEarlier, deskPlanText, deskFillChance, deskBroker, deskFirstMonth, deskTradeLog, readTradeFilter, TRADE_FILTER_KEY, deskCalendar, deskDailyBars, deskKpis, deskMonthKey, DESK_SAVED_KEY, readSavedDesk, JOURNAL_MODES, JOURNAL_MODE_KEY, deskJournal, readJournalMode, DESK_ACCOUNT_KEY, DESK_CONTROL_URL, DESK_URL, deskAccountLabel, deskAiPicks, deskAlerts, deskClock, deskControl, deskCoverage, deskCurve, deskDollars, deskEvaluation, deskLessons, deskMoney, deskObjectives, deskPct, deskStrategies, deskStuckRows, deskTone, deskTruthDays, deskTruthLabel, deskVerdict, deskVersus } from "./botDesk.js";
 import { truthAccountLabel, truthPct } from "./botTruth.js";
 import { botRuleLabel } from "./momxBot.js";
+import Fold from "./BotFold.jsx";
 
 const REFRESH_MS = 60 * 1000;
 const TRUTH_REFRESH_MS = 5 * 60 * 1000;
@@ -258,6 +259,10 @@ export default function BotDesk() {
       {notice && notice.account === account ? <p className={"desk-note desk-notice" + (notice.bad ? " is-bad" : "")} role="status" data-testid="desk-notice">{notice.text}</p> : null}
 
       {!acct ? <p className="desk-note" role="status">No paper orders yet. The evaluation starts with the first real paper fill.</p> : (<>
+        {/* 2026-11-26 (his "Refer deep-research see other bot pages and do it"): the reading order he asked for stays
+            (All trades, numbers, charts, calendar, the two comparisons, the checks). The long lists are sections that
+            open with one tap, so the numbers, the calendar and the checks are reached without a long scroll. */}
+        <Fold id="trades" title="All trades" note="every signal and order, with its status">
         {/* All trades first (2026-11-10: he asked three times where it was - it sat below the calendar). */}
         {tradeLog ? (
           <section className="desk-card" aria-label="All trades">
@@ -327,6 +332,8 @@ export default function BotDesk() {
           </section>
         ))}
 
+        </Fold>
+
         {/* Journal dashboard (2026-11-10, his "Scoreboard look like not a tradezella"): what a trading journal opens
             on - the key numbers, the two P&L charts, the month calendar and the latest trades. */}
         <section className="desk-tiles" aria-label="Key numbers">
@@ -342,6 +349,7 @@ export default function BotDesk() {
           ))}
         </section>
 
+        <Fold id="charts" title="Account curve and daily result" note="real profit and loss, day by day">
         <div className="desk-grid">
           <section className="desk-card" aria-label="Account curve">
             <div className="desk-card-head">
@@ -361,6 +369,8 @@ export default function BotDesk() {
             <DailyBars days={acct.days} />
           </section>
         </div>
+
+        </Fold>
 
         <div className="desk-grid is-calendar">
           <section className="desk-card" aria-label="Calendar">
@@ -463,6 +473,7 @@ export default function BotDesk() {
           </section>
         ) : null}
 
+        <Fold id="journal" title="Journal" note="profit and loss by day, week and month" when={!!journal}>
         {journal ? (
           <section className="desk-card" aria-label="Journal">
             <div className="desk-card-head">
@@ -515,6 +526,8 @@ export default function BotDesk() {
           </section>
         ) : null}
 
+        </Fold>
+
         <p className="desk-coverage">{truthAccountLabel(account)} · {deskCoverage(acct)} · judged as a {deskDollars(limits.accountSize)} evaluation account</p>
 
         <section className="desk-checks" aria-label="Evaluation checks">
@@ -532,6 +545,7 @@ export default function BotDesk() {
           ))}
         </section>
 
+        <Fold id="stats" title="Statistics" note="trader statistics, and the claim against the real result">
         <section className="desk-card" aria-label="Trader statistics">
           <div className="desk-card-head"><h4>Trader statistics · closed real fills</h4></div>
           <div className="desk-stats">
@@ -557,6 +571,9 @@ export default function BotDesk() {
           </section>
         ) : null}
 
+        </Fold>
+
+        <Fold id="lessons" title="What the review learned" note="from the losing trades; it suggests, it never changes a rule">
         <section className="desk-card" aria-label="AI lessons from losing trades">
           <div className="desk-card-head">
             <h4>What the AI learned from the losing trades</h4>
@@ -578,6 +595,9 @@ export default function BotDesk() {
           ) : null}
         </section>
 
+        </Fold>
+
+        <Fold id="rules" title="Each rule, and day by day" note="what each rule earned on real fills">
         <section className="desk-card" aria-label="Rules on real fills">
           <div className="desk-card-head">
             <h4>Rules · what each one earned on real fills</h4>
@@ -622,6 +642,8 @@ export default function BotDesk() {
             </table>
           </div>
         </section>
+        </Fold>
+
       </>)}
 
       <details className="desk-how">

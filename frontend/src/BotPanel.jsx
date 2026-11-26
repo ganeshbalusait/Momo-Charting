@@ -14,6 +14,7 @@ import BotDesk from "./BotDesk.jsx";
 import BotChat from "./BotChat.jsx";
 import TickerTrader from "./TickerTrader.jsx";
 import BotHome from "./BotHome.jsx";
+import Fold from "./BotFold.jsx";
 import { BOT_PANELS, HOME_KEPT_SECTIONS, HOME_SECTIONS, HOME_SECTION_KEY, HOME_SEEN_KEY, botLanding, botMoreTarget, botPanelCurrent } from "./botHome.js";
 import { TICKER_TRADER_KEY } from "./tickerTrader.js";
 import { captureEntryLegLines, captureReasonLines } from "./botCapture.js";
@@ -62,6 +63,9 @@ export function openBotLink(sub) {
   const link = isView ? { view: sub } : { view: "research", tab: sub };
   try {
     window.localStorage.setItem(DESK_VIEW_KEY, link.view);
+    // A page asked for by name opens directly, even on the very first visit to the Bot (2026-11-26: the
+    // first-visit rule sent a Scorecard link from the Ask window to the Bot home page instead).
+    window.localStorage.setItem(HOME_SEEN_KEY, "1");
     if (link.tab) window.localStorage.setItem(BOT_TAB_KEY, link.tab);
   } catch { /* private window: a page already open is still told below */ }
   botLinkListeners.forEach((listener) => listener(link));
@@ -832,7 +836,7 @@ function statusOf(t) {
   return t.status === "closed" ? "closed" : "open";
 }
 
-function BotResearch({ viewSwitch, onTicker }) {
+function BotResearch({ onTicker }) {
   const [days, setDays] = useState(1);
   const [side, setSide] = useState("bull");
   const [levelStrategy, setLevelStrategy] = useState('all');
@@ -1006,25 +1010,24 @@ function BotResearch({ viewSwitch, onTicker }) {
   const dailyLog = useMemo(() => botDailyLog(pick(history ? history[side] : []), side), [history, side, pick]);
   const ruleLabel = rule ? (leaderboard.find((r) => r.rule === rule) || {}).label || rule : null;
 
+  // What the Settings section is set to, shown on its closed row.
+  const settingsNote = [paperMode ? (book === "paper3" ? "Paper 3" : "Paper 5") : (BOT_LEVEL_OPTIONS.find((o) => o.value === levelStrategy) || {}).label,
+    side === "bear" ? "puts" : "calls", (RANGES.find((r) => r.days === days) || {}).label].filter(Boolean).join(" · ");
   if (tickerTrader) {
-    return <TickerTrader viewSwitch={viewSwitch} initialTicker={handoff?.ticker || ""} initialSide={handoff?.side || "CALL"}
-      onAllTrades={() => { setHandoff(null); setTickerTrader(false); }} />;
+    return <TickerTrader initialTicker={handoff?.ticker || ""} initialSide={handoff?.side || "CALL"} />;
   }
   return (
     <div className="bot-page">
       <header className="bot-head">
         <div className="bot-title">
           <Bot size={18} aria-hidden="true" />
-          <h2>BOT workspace</h2>
+          <h2>Research</h2>
           <span className="bot-badge">MIDPOINT ONLY · PAPER</span>
-          <span className="bot-badge is-admin">Admin only</span>
         </div>
-        <div className="bot-controls">
-          {viewSwitch}
-          <div className="bot-seg" role="group" aria-label="Which bot">
-            <button type="button" className={book === "all" ? "is-on" : ""} onClick={() => setBook("all")} title="Every trade the rules took">All trades</button>
-            <button type="button" data-testid="open-ticker-trader" onClick={() => setTickerTrader(true)} title="Type a ticker: the bot trades it from the chart in one simulated account">Ticker trader</button>
-          </div>
+      </header>
+      {/* 2026-11-26 (his "Refer deep-research see other bot pages and do it"): the totals come first. The controls
+          and the notes that sat above them (about 30 before the first number, the report counted) open with one tap. */}
+      <Fold id="r-ticker" title="Trade one ticker" note="type a ticker; the bot trades it from the chart">
           <form className="bot-quick-trade" data-testid="bot-quick-trade" aria-label="Trade a ticker" onSubmit={openQuick}>
             <span className="bot-quick-title">Trade a ticker</span>
             <input aria-label="Ticker to trade" placeholder="NVDA" maxLength={7} autoCapitalize="characters" autoComplete="off"
@@ -1037,6 +1040,9 @@ function BotResearch({ viewSwitch, onTicker }) {
             </div>
             <button type="submit" className="bot-quick-go" disabled={!quick.ticker.trim()}>Open Ticker trader</button>
           </form>
+      </Fold>
+      <Fold id="r-settings" title="Settings" note={settingsNote}>
+        <div className="bot-controls">
           {/* News trade and AI pick are gone from this page (2026-11-10, his "Remove filters also
               news trade"): the paper accounts trade only the three Level strategies. */}
           {/* Paper accounts as ONE drop-down (2026-10-17, his "Instead of panel use dropdown for paper 3/paper5"). */}
@@ -1087,8 +1093,21 @@ function BotResearch({ viewSwitch, onTicker }) {
             {paperMode ? "Refresh paper" : loading ? "Loading…" : updated ? updated.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" }) + " ET" : "Load"}
           </button>
         </div>
-      </header>
+      </Fold>
 
+      {paperMode ? null : (
+      <section className="bot-kpis" aria-label="Totals">
+        <Kpi label={"P/L · " + (exitMode === "exit" && contractMode === "main" ? "strategy exit" : BOT_CONTRACT_LABELS[contractMode] + " · " + BOT_EXIT_LABELS[exitMode])} value={total.priced ? formatBotDollars(total.dollars) : "-"} sub={exitMode === "best" ? "Hindsight only · 1 contract each · before fees" : "Closed " + formatBotDollars(total.realizedDollars) + " · open " + formatBotDollars(total.openDollars) + " · before fees"} className={tone(total.dollars)} />
+        <Kpi label="ROI" value={formatBotPct(total.roi, 1)} sub={"on $" + Math.round(total.invested).toLocaleString("en-US") + " of contracts"} className={tone(total.roi)} />
+        <Kpi label={exitMode === "best" ? "Hindsight gains / break-even" : "Closed wins / losses"} value={total.priced ? total.wins + " / " + (exitMode === "best" ? total.breakeven : total.losses) : "—"} sub={exitMode === "best" ? "Entry sets the floor at $0. Use Strategy exit for losses." : (total.winRate === null ? "No completed exits yet" : Math.round(total.winRate) + "% win rate") + " · " + total.breakeven + " break-even"} />
+        <Kpi label="Avg trade" value={formatBotPct(total.avgExit)} sub={exitMode === "best" ? "hindsight comparison" : "includes open marked P/L"} className={tone(total.avgExit)} />
+        <Kpi label="Trades" value={String(total.trades)}
+          sub={report.days.length + (report.days.length === 1 ? " day" : " days") + " · " + total.completed + " closed with prices / " + total.openPriced + " open with marks (" + total.openWins + " gaining, " + total.openLosses + " losing) / " + total.unpriced + " unpriced"
+            + (badQuotes ? " · " + badQuotes + " bad quote (not counted)" : "")} />
+        <Kpi label="Best rule" value={best ? best.label : "-"} sub={best ? formatBotPct(best.avgExit) + " avg" : ""} className={best ? tone(best.avgExit) : ""} />
+        <Kpi label="Worst rule" value={worst ? worst.label : "-"} sub={worst ? formatBotPct(worst.avgExit) + " avg" : ""} className={worst ? tone(worst.avgExit) : ""} />
+      </section>
+      )}
       <TruthCheckCard />
       {book === 'all' ? <details className="bot-level-help">
         <summary>Level strategies · 3+ Setup types · MOM optional · AI review afterward</summary>
@@ -1097,7 +1116,9 @@ function BotResearch({ viewSwitch, onTicker }) {
         <p>Any three distinct types above satisfy the Setup requirement for each level. Multiple timeframes of one type count once. MOM is optional; these types include status and warning tags, so three types do not mean three independent bullish confirmations. Each new level trade shows its recorded Setup rules below its strategy name.</p>
         {learningTeam?.capture?.[side]?.levelStrategies ? <p role="status">Level engine ({side === "bear" ? "puts" : "calls"}): {learningTeam.capture[side].levelStrategies.state} · {learningTeam.capture[side].levelStrategies.reason}</p> : null}
       </details> : null}
-      {!paperMode ? <><LearningTeamStatus onStatus={setLearningTeam} /><RuleLabScorecard side={side} /></> : null}
+      <Fold id="r-review" title="AI review and rule lab" note="what the evening review found; it suggests, it never changes a rule" when={!paperMode}>
+        <LearningTeamStatus onStatus={setLearningTeam} /><RuleLabScorecard side={side} />
+      </Fold>
       {paperMode ? <><PaperBook account={book} side={side} days={days} team={learningTeam} refreshKey={paperRefresh} /><LearningTeamStatus onStatus={setLearningTeam} /></> : (<>
       {error ? <p className="bot-error" role="alert">{error} Use Refresh to retry.</p> : null}
       {loading ? <p className="bot-hint" role="status">Loading BOT trades…</p> : null}
@@ -1110,19 +1131,6 @@ function BotResearch({ viewSwitch, onTicker }) {
           {exitMode === "best" ? " Best recorded price is hindsight, not an executed exit. Quote gaps can miss the true peak. Use Strategy exit to review the strategy's wins and losses." : ""}
         </p>
       ) : null}
-      <p className="bot-hint">All trades: eligible signals enter immediately under the existing rules. AI never blocks an entry; AI agents review completed trades afterward.</p>
-      <p className="bot-hint">Virtual P/L uses bid/ask midpoints, before fees. A midpoint estimate is not a confirmed fill. Paper orders use midpoint limits and may remain unfilled.</p>
-      <section className="bot-kpis" aria-label="Totals">
-        <Kpi label={"P/L · " + (exitMode === "exit" && contractMode === "main" ? "strategy exit" : BOT_CONTRACT_LABELS[contractMode] + " · " + BOT_EXIT_LABELS[exitMode])} value={total.priced ? formatBotDollars(total.dollars) : "-"} sub={exitMode === "best" ? "Hindsight only · 1 contract each · before fees" : "Closed " + formatBotDollars(total.realizedDollars) + " · open " + formatBotDollars(total.openDollars) + " · before fees"} className={tone(total.dollars)} />
-        <Kpi label="ROI" value={formatBotPct(total.roi, 1)} sub={"on $" + Math.round(total.invested).toLocaleString("en-US") + " of contracts"} className={tone(total.roi)} />
-        <Kpi label={exitMode === "best" ? "Hindsight gains / break-even" : "Closed wins / losses"} value={total.priced ? total.wins + " / " + (exitMode === "best" ? total.breakeven : total.losses) : "—"} sub={exitMode === "best" ? "Entry sets the floor at $0. Use Strategy exit for losses." : (total.winRate === null ? "No completed exits yet" : Math.round(total.winRate) + "% win rate") + " · " + total.breakeven + " break-even"} />
-        <Kpi label="Avg trade" value={formatBotPct(total.avgExit)} sub={exitMode === "best" ? "hindsight comparison" : "includes open marked P/L"} className={tone(total.avgExit)} />
-        <Kpi label="Trades" value={String(total.trades)}
-          sub={report.days.length + (report.days.length === 1 ? " day" : " days") + " · " + total.completed + " closed with prices / " + total.openPriced + " open with marks (" + total.openWins + " gaining, " + total.openLosses + " losing) / " + total.unpriced + " unpriced"
-            + (badQuotes ? " · " + badQuotes + " bad quote (not counted)" : "")} />
-        <Kpi label="Best rule" value={best ? best.label : "-"} sub={best ? formatBotPct(best.avgExit) + " avg" : ""} className={best ? tone(best.avgExit) : ""} />
-        <Kpi label="Worst rule" value={worst ? worst.label : "-"} sub={worst ? formatBotPct(worst.avgExit) + " avg" : ""} className={worst ? tone(worst.avgExit) : ""} />
-      </section>
 
       <nav className="bot-tabs" role="tablist" aria-label="Bot views">
         {BOT_TABS.map((t) => (
@@ -1544,6 +1552,9 @@ function BotResearch({ viewSwitch, onTicker }) {
       </section>
       ) : null}
 
+      <Fold id="r-how" title="How this is measured" note="mid-price estimates, the rules, the exits">
+      <p className="bot-hint">All trades: eligible signals enter immediately under the existing rules. AI never blocks an entry; AI agents review completed trades afterward.</p>
+      <p className="bot-hint">Virtual P/L uses bid/ask midpoints, before fees. A midpoint estimate is not a confirmed fill. Paper orders use midpoint limits and may remain unfilled.</p>
       <p className="bot-foot">
         <b>How it trades:</b> at each GO+, GO, ⭐1, MX A+, Daily 2 and Market-turn signal (and, as a <i>test</i>, the first 15 a day of
         C2H/C4H, CALL2H/4H, ADX, SKIT, RVOL, SQZ fire and your ZS rule - above EMA 9/21/50, VWAP and the 5m cloud with no level within 2% above) it takes the nearest weekly first out-of-the-money option at the mid price, 09:30-15:30 ET.
@@ -1552,6 +1563,7 @@ function BotResearch({ viewSwitch, onTicker }) {
         <b> Chart plan</b> (Level trades recorded while the chart plan is running; a dash = recorded before that) = three 0.20-delta contracts bought at the ask and followed on the chart&apos;s Entry / Target / Stop plan: sold in full when the stock trades through the stop, one at each of T1, T2 and T3 otherwise.
         Paper tracking of your rules, not advice. Kept {data && data.keepDays ? data.keepDays : 180} days.
       </p>
+      </Fold>
       </>)}
     </div>
   );
@@ -1631,28 +1643,19 @@ export default function BotPanel() {
       </nav>
     </div>
   );
-  const viewSwitch = (
-    <div className="bot-seg bot-view-switch" role="group" aria-label="Page">
-      <button type="button" className={view === "desk" ? "is-on" : ""} aria-pressed={view === "desk"} onClick={() => setView("desk")}
-        title="Real paper fills, judged like a prop-firm evaluation">Scorecard</button>
-      <button type="button" className={view === "research" ? "is-on" : ""} aria-pressed={view === "research"} onClick={() => setView("research")}
-        title="The virtual BOT: every signal scored as if it filled at the mid price">Research</button>
-      <button type="button" className={view === "ask" ? "is-on" : ""} aria-pressed={view === "ask"} onClick={() => setView("ask")}
-        title="Ask about a ticker or the bot: how far it went, why it failed, why it was missed. No AI; answers come from the app's records">Ask</button>
-    </div>
-  );
-  if (view === "research") return <>{backBar}<BotResearch key={researchRun} viewSwitch={viewSwitch} onTicker={setTickerOn} /></>;
+  // 2026-11-26 (his "Page looks not good", a screenshot with five rows of buttons before any content): the
+  // panel row above is the one way around. The old Scorecard / Research / Ask switch, the All trades |
+  // Ticker trader switch and the "BOT workspace" title are gone; each page's title is its own name.
+  if (view === "research") return <>{backBar}<BotResearch key={researchRun} onTicker={setTickerOn} /></>;
   return (
     <div className="bot-page">
       {backBar}
       <header className="bot-head">
         <div className="bot-title">
           <Bot size={18} aria-hidden="true" />
-          <h2>BOT workspace</h2>
+          <h2>{view === "ask" ? "Ask" : "Scorecard"}</h2>
           <span className="bot-badge">{view === "ask" ? "ASK THE APP" : "REAL PAPER FILLS"}</span>
-          <span className="bot-badge is-admin">Admin only</span>
         </div>
-        <div className="bot-controls">{viewSwitch}</div>
       </header>
       {view === "ask" ? <BotChat /> : <BotDesk />}
     </div>

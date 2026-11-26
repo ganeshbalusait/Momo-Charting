@@ -144,11 +144,11 @@ e2eTest("switching to the other paper account and to Research and back", async (
     assert.equal(await desk.locator(".desk-check.is-pass").count(), 8);
     assert.equal(await desk.locator(".desk-alerts").count(), 0);
 
-    const page = app.page.locator("[role='group'][aria-label='Page']");
+    const page = app.page.locator("[data-testid='bh-panels']");
     await page.locator("button", { hasText: "Research" }).click();
     await app.page.locator("section.bot-kpis[aria-label='Totals']").waitFor({ timeout: 60_000 });
     assert.equal(await app.page.locator(DESK).count(), 0);
-    await app.page.locator("[role='group'][aria-label='Which bot']").waitFor();
+    await app.page.locator("[data-testid='bot-quick-trade']").waitFor();
     await page.locator("button", { hasText: "Scorecard" }).click();
     await app.page.locator(`${DESK} ${VERDICT}`).waitFor({ timeout: 15_000 });
     assert.equal(await app.page.locator("section.bot-kpis[aria-label='Totals']").count(), 0);
@@ -848,6 +848,43 @@ for (const phone of [false, true]) {
         "not enough buying power ($1,950 needed, $640 free)"]) assert.ok(text.includes(want), `missing: ${want}`);
       assert.equal(await card.locator("tbody tr").count(), 3);
       assert.equal(await overflowsSideways(app.page), false);
+      assert.deepEqual(app.writes, []);
+      assert.deepEqual(app.pageErrors, []);
+    });
+  });
+}
+
+// 2026-11-26, his "Refer deep-research see other bot pages and do it": the Scorecard opens on the numbers, the
+// eight checks and the calendar. The long lists are sections that open with one tap and stay open.
+for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]) {
+  e2eTest(`${label}: the Scorecard's long lists are closed sections; All trades opens with one tap and is remembered`, async () => {
+    await withApp({ view: "Bot", ...(viewport ? { viewport } : {}), storage: { ...SCORECARD, "bot.folds": "" }, fakeReads: canned(LOG_DOC) }, async (app) => {
+      const desk = app.page.locator(DESK);
+      await desk.locator(VERDICT).waitFor({ timeout: 60_000 });
+      await desk.locator(TILES).first().waitFor({ timeout: 30_000 });
+      const titles = await texts(desk.locator(".bf-title"));
+      assert.equal(titles[0], "All trades");
+      for (const t of ["Account curve and daily result", "Statistics", "What the review learned", "Each rule, and day by day"]) assert.ok(titles.includes(t), t);
+      const heads = desk.locator(".bf-head");
+      assert.deepEqual([...new Set(await heads.evaluateAll((els) => els.map((el) => el.getAttribute("aria-expanded"))))], ["false"]);
+      assert.deepEqual(await heads.evaluateAll((els) => els.filter((el) => el.getBoundingClientRect().height < 44).map((el) => el.textContent)), []);
+      for (const hidden of [ALL_TRADES, "section[aria-label='Trader statistics']", "section[aria-label='Day by day']", "section[aria-label='Account curve']"]) {
+        assert.equal(await desk.locator(hidden).isVisible(), false, `${hidden} should wait behind its section`);
+      }
+      const top = async (sel) => (await desk.locator(sel).first().boundingBox()).y;
+      const order = [await top("[data-testid='fold-trades']"), await top("section[aria-label='Key numbers']"), await top(CALENDAR), await top("section[aria-label='Evaluation checks']"), await top("[data-testid='fold-stats']")];
+      assert.deepEqual(order, [...order].sort((a, b) => a - b), `All trades row, numbers, calendar, checks, then the rest: ${order}`);
+      // With the lists closed the numbers start right under the All trades row.
+      assert.ok(order[1] - order[0] < 90, `the numbers should follow the All trades row: ${order}`);
+      await desk.locator("[data-testid='fold-trades'] .bf-head").click();
+      await desk.locator(ALL_TRADES).waitFor({ timeout: 15_000 });
+      assert.equal(await desk.locator("section[aria-label='Trader statistics']").isVisible(), false);
+      assert.equal(await overflowsSideways(app.page), false);
+      await shot(app, `desk-folds-${viewport ? "phone" : "desktop"}`);
+      await app.page.reload();
+      await app.page.locator(`${DESK} ${ALL_TRADES}`).waitFor({ timeout: 60_000 });
+      await app.page.locator(`${DESK} [data-testid='fold-trades'] .bf-head`).click();
+      await app.page.locator(`${DESK} ${ALL_TRADES}`).waitFor({ state: "hidden", timeout: 15_000 });
       assert.deepEqual(app.writes, []);
       assert.deepEqual(app.pageErrors, []);
     });
