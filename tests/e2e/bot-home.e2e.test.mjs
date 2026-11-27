@@ -392,7 +392,8 @@ for (const [label, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
         }, card);
         assert.equal(look.title, title, `${name}: the title is the page's own name`);
         assert.equal(look.extra, 0, `${name}: no duplicate switch or badge`);
-        assert.ok(look.headBottom < 330, `${name}: the buttons and title take too much of the screen (${look.headBottom}px)`);
+        // Research keeps its ticker box and settings in the header (his "Revert the changes", 2026-11-26).
+        if (name !== "research") assert.ok(look.headBottom < 330, `${name}: the buttons and title take too much of the screen (${look.headBottom}px)`);
         assert.deepEqual(look.card, [CARD, "rgba(0, 0, 0, 0)"], `${name}: card colour and no outline`);
         assert.deepEqual(look.head, ["rgba(0, 0, 0, 0)", "rgba(0, 0, 0, 0)"], `${name}: the header is not a card`);
         assert.deepEqual(await lit(), [word]);

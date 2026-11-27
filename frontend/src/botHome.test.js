@@ -616,12 +616,19 @@ test("the Scorecard keeps its reading order; the long lists sit in one-tap secti
   const at = (text) => { const i = desk.indexOf(text); assert.ok(i > 0, text); return i; };
   // The order he asked for over time stays: All trades, numbers, charts, calendar, the comparisons, the checks.
   const order = ['<Fold id="trades"', 'aria-label="All trades"', 'aria-label="Key numbers"', '<Fold id="charts"', 'aria-label="Account curve"', 'aria-label="Calendar"',
-    'aria-label="The three strategies"', '<Fold id="journal"', 'aria-label="Evaluation checks"', '<Fold id="stats"', '<Fold id="lessons"', '<Fold id="rules"', 'aria-label="Day by day"'].map(at);
+    'aria-label="The three strategies"', 'aria-label="Journal"', 'aria-label="Evaluation checks"', '<Fold id="stats"', '<Fold id="lessons"', '<Fold id="rules"', 'aria-label="Day by day"'].map(at);
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
   const panel = readFileSync(new URL("./BotPanel.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const p = (text) => { const i = panel.indexOf(text); assert.ok(i > 0, text); return i; };
-  assert.ok(p('<Fold id="r-settings"') < p('aria-label="Totals"') && p('aria-label="Totals"') < p("<TruthCheckCard />"));
-  assert.ok(p('aria-label="Range"') > p('<Fold id="r-settings"') && p('aria-label="Range"') < p('aria-label="Totals"'));
+  // 2026-11-26, later the same day (his "Research page is not good. Revert the changes", and "journal also same
+  // scoreboard journal calendar"): Research has no one-tap sections; its ticker box and settings sit in the header,
+  // then the notes and the totals. The Scorecard's journal calendar is not inside a section either.
+  assert.equal(panel.includes("<Fold"), false);
+  assert.equal(desk.includes('<Fold id="journal"'), false);
+  const order2 = ['data-testid="bot-quick-trade"', 'aria-label="Range"', "</header>", "<TruthCheckCard />", 'aria-label="Totals"', 'aria-label="Bot views"'];
+  const from = p("function BotResearch(");
+  const places = order2.map((text) => { const i = panel.indexOf(text, from); assert.ok(i > 0, text); return i; });
+  assert.deepEqual(places, [...places].sort((a, b) => a - b));
   const css = readFileSync(new URL("./botHome.css", import.meta.url), "utf8");
   assert.ok(css.indexOf(".bf-body[hidden]") > 0 && css.indexOf(".bf-body[hidden]") < css.indexOf("The older Bot pages in the new look"));
 });

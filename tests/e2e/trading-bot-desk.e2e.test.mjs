@@ -864,6 +864,9 @@ for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]
       await desk.locator(TILES).first().waitFor({ timeout: 30_000 });
       const titles = await texts(desk.locator(".bf-title"));
       assert.equal(titles[0], "All trades");
+      // His "journal also same scoreboard journal calendar" (2026-11-26): the journal is not a closed section.
+      assert.equal(titles.includes("Journal"), false);
+      assert.equal(await desk.locator("[data-testid='fold-journal']").count(), 0);
       for (const t of ["Account curve and daily result", "Statistics", "What the review learned", "Each rule, and day by day"]) assert.ok(titles.includes(t), t);
       const heads = desk.locator(".bf-head");
       assert.deepEqual([...new Set(await heads.evaluateAll((els) => els.map((el) => el.getAttribute("aria-expanded"))))], ["false"]);

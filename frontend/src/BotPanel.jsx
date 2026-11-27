@@ -14,7 +14,6 @@ import BotDesk from "./BotDesk.jsx";
 import BotChat from "./BotChat.jsx";
 import TickerTrader from "./TickerTrader.jsx";
 import BotHome from "./BotHome.jsx";
-import Fold from "./BotFold.jsx";
 import { BOT_PANELS, HOME_KEPT_SECTIONS, HOME_SECTIONS, HOME_SECTION_KEY, HOME_SEEN_KEY, botLanding, botMoreTarget, botPanelCurrent } from "./botHome.js";
 import { TICKER_TRADER_KEY } from "./tickerTrader.js";
 import { captureEntryLegLines, captureReasonLines } from "./botCapture.js";
@@ -1010,9 +1009,6 @@ function BotResearch({ onTicker }) {
   const dailyLog = useMemo(() => botDailyLog(pick(history ? history[side] : []), side), [history, side, pick]);
   const ruleLabel = rule ? (leaderboard.find((r) => r.rule === rule) || {}).label || rule : null;
 
-  // What the Settings section is set to, shown on its closed row.
-  const settingsNote = [paperMode ? (book === "paper3" ? "Paper 3" : "Paper 5") : (BOT_LEVEL_OPTIONS.find((o) => o.value === levelStrategy) || {}).label,
-    side === "bear" ? "puts" : "calls", (RANGES.find((r) => r.days === days) || {}).label].filter(Boolean).join(" · ");
   if (tickerTrader) {
     return <TickerTrader initialTicker={handoff?.ticker || ""} initialSide={handoff?.side || "CALL"} />;
   }
@@ -1024,10 +1020,9 @@ function BotResearch({ onTicker }) {
           <h2>Research</h2>
           <span className="bot-badge">MIDPOINT ONLY · PAPER</span>
         </div>
-      </header>
-      {/* 2026-11-26 (his "Refer deep-research see other bot pages and do it"): the totals come first. The controls
-          and the notes that sat above them (about 30 before the first number, the report counted) open with one tap. */}
-      <Fold id="r-ticker" title="Trade one ticker" note="type a ticker; the bot trades it from the chart">
+        {/* 2026-11-26 (his "Research page is not good. Revert the changes"): the ticker box and the settings are
+            in view again, as before the one-tap sections of the same day. */}
+        <div className="bot-controls">
           <form className="bot-quick-trade" data-testid="bot-quick-trade" aria-label="Trade a ticker" onSubmit={openQuick}>
             <span className="bot-quick-title">Trade a ticker</span>
             <input aria-label="Ticker to trade" placeholder="NVDA" maxLength={7} autoCapitalize="characters" autoComplete="off"
@@ -1040,9 +1035,6 @@ function BotResearch({ onTicker }) {
             </div>
             <button type="submit" className="bot-quick-go" disabled={!quick.ticker.trim()}>Open Ticker trader</button>
           </form>
-      </Fold>
-      <Fold id="r-settings" title="Settings" note={settingsNote}>
-        <div className="bot-controls">
           {/* News trade and AI pick are gone from this page (2026-11-10, his "Remove filters also
               news trade"): the paper accounts trade only the three Level strategies. */}
           {/* Paper accounts as ONE drop-down (2026-10-17, his "Instead of panel use dropdown for paper 3/paper5"). */}
@@ -1093,21 +1085,8 @@ function BotResearch({ onTicker }) {
             {paperMode ? "Refresh paper" : loading ? "Loading…" : updated ? updated.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" }) + " ET" : "Load"}
           </button>
         </div>
-      </Fold>
+      </header>
 
-      {paperMode ? null : (
-      <section className="bot-kpis" aria-label="Totals">
-        <Kpi label={"P/L · " + (exitMode === "exit" && contractMode === "main" ? "strategy exit" : BOT_CONTRACT_LABELS[contractMode] + " · " + BOT_EXIT_LABELS[exitMode])} value={total.priced ? formatBotDollars(total.dollars) : "-"} sub={exitMode === "best" ? "Hindsight only · 1 contract each · before fees" : "Closed " + formatBotDollars(total.realizedDollars) + " · open " + formatBotDollars(total.openDollars) + " · before fees"} className={tone(total.dollars)} />
-        <Kpi label="ROI" value={formatBotPct(total.roi, 1)} sub={"on $" + Math.round(total.invested).toLocaleString("en-US") + " of contracts"} className={tone(total.roi)} />
-        <Kpi label={exitMode === "best" ? "Hindsight gains / break-even" : "Closed wins / losses"} value={total.priced ? total.wins + " / " + (exitMode === "best" ? total.breakeven : total.losses) : "—"} sub={exitMode === "best" ? "Entry sets the floor at $0. Use Strategy exit for losses." : (total.winRate === null ? "No completed exits yet" : Math.round(total.winRate) + "% win rate") + " · " + total.breakeven + " break-even"} />
-        <Kpi label="Avg trade" value={formatBotPct(total.avgExit)} sub={exitMode === "best" ? "hindsight comparison" : "includes open marked P/L"} className={tone(total.avgExit)} />
-        <Kpi label="Trades" value={String(total.trades)}
-          sub={report.days.length + (report.days.length === 1 ? " day" : " days") + " · " + total.completed + " closed with prices / " + total.openPriced + " open with marks (" + total.openWins + " gaining, " + total.openLosses + " losing) / " + total.unpriced + " unpriced"
-            + (badQuotes ? " · " + badQuotes + " bad quote (not counted)" : "")} />
-        <Kpi label="Best rule" value={best ? best.label : "-"} sub={best ? formatBotPct(best.avgExit) + " avg" : ""} className={best ? tone(best.avgExit) : ""} />
-        <Kpi label="Worst rule" value={worst ? worst.label : "-"} sub={worst ? formatBotPct(worst.avgExit) + " avg" : ""} className={worst ? tone(worst.avgExit) : ""} />
-      </section>
-      )}
       <TruthCheckCard />
       {book === 'all' ? <details className="bot-level-help">
         <summary>Level strategies · 3+ Setup types · MOM optional · AI review afterward</summary>
@@ -1116,9 +1095,7 @@ function BotResearch({ onTicker }) {
         <p>Any three distinct types above satisfy the Setup requirement for each level. Multiple timeframes of one type count once. MOM is optional; these types include status and warning tags, so three types do not mean three independent bullish confirmations. Each new level trade shows its recorded Setup rules below its strategy name.</p>
         {learningTeam?.capture?.[side]?.levelStrategies ? <p role="status">Level engine ({side === "bear" ? "puts" : "calls"}): {learningTeam.capture[side].levelStrategies.state} · {learningTeam.capture[side].levelStrategies.reason}</p> : null}
       </details> : null}
-      <Fold id="r-review" title="AI review and rule lab" note="what the evening review found; it suggests, it never changes a rule" when={!paperMode}>
-        <LearningTeamStatus onStatus={setLearningTeam} /><RuleLabScorecard side={side} />
-      </Fold>
+      {!paperMode ? <><LearningTeamStatus onStatus={setLearningTeam} /><RuleLabScorecard side={side} /></> : null}
       {paperMode ? <><PaperBook account={book} side={side} days={days} team={learningTeam} refreshKey={paperRefresh} /><LearningTeamStatus onStatus={setLearningTeam} /></> : (<>
       {error ? <p className="bot-error" role="alert">{error} Use Refresh to retry.</p> : null}
       {loading ? <p className="bot-hint" role="status">Loading BOT trades…</p> : null}
@@ -1131,6 +1108,19 @@ function BotResearch({ onTicker }) {
           {exitMode === "best" ? " Best recorded price is hindsight, not an executed exit. Quote gaps can miss the true peak. Use Strategy exit to review the strategy's wins and losses." : ""}
         </p>
       ) : null}
+      <p className="bot-hint">All trades: eligible signals enter immediately under the existing rules. AI never blocks an entry; AI agents review completed trades afterward.</p>
+      <p className="bot-hint">Virtual P/L uses bid/ask midpoints, before fees. A midpoint estimate is not a confirmed fill. Paper orders use midpoint limits and may remain unfilled.</p>
+      <section className="bot-kpis" aria-label="Totals">
+        <Kpi label={"P/L · " + (exitMode === "exit" && contractMode === "main" ? "strategy exit" : BOT_CONTRACT_LABELS[contractMode] + " · " + BOT_EXIT_LABELS[exitMode])} value={total.priced ? formatBotDollars(total.dollars) : "-"} sub={exitMode === "best" ? "Hindsight only · 1 contract each · before fees" : "Closed " + formatBotDollars(total.realizedDollars) + " · open " + formatBotDollars(total.openDollars) + " · before fees"} className={tone(total.dollars)} />
+        <Kpi label="ROI" value={formatBotPct(total.roi, 1)} sub={"on $" + Math.round(total.invested).toLocaleString("en-US") + " of contracts"} className={tone(total.roi)} />
+        <Kpi label={exitMode === "best" ? "Hindsight gains / break-even" : "Closed wins / losses"} value={total.priced ? total.wins + " / " + (exitMode === "best" ? total.breakeven : total.losses) : "—"} sub={exitMode === "best" ? "Entry sets the floor at $0. Use Strategy exit for losses." : (total.winRate === null ? "No completed exits yet" : Math.round(total.winRate) + "% win rate") + " · " + total.breakeven + " break-even"} />
+        <Kpi label="Avg trade" value={formatBotPct(total.avgExit)} sub={exitMode === "best" ? "hindsight comparison" : "includes open marked P/L"} className={tone(total.avgExit)} />
+        <Kpi label="Trades" value={String(total.trades)}
+          sub={report.days.length + (report.days.length === 1 ? " day" : " days") + " · " + total.completed + " closed with prices / " + total.openPriced + " open with marks (" + total.openWins + " gaining, " + total.openLosses + " losing) / " + total.unpriced + " unpriced"
+            + (badQuotes ? " · " + badQuotes + " bad quote (not counted)" : "")} />
+        <Kpi label="Best rule" value={best ? best.label : "-"} sub={best ? formatBotPct(best.avgExit) + " avg" : ""} className={best ? tone(best.avgExit) : ""} />
+        <Kpi label="Worst rule" value={worst ? worst.label : "-"} sub={worst ? formatBotPct(worst.avgExit) + " avg" : ""} className={worst ? tone(worst.avgExit) : ""} />
+      </section>
 
       <nav className="bot-tabs" role="tablist" aria-label="Bot views">
         {BOT_TABS.map((t) => (
@@ -1552,9 +1542,6 @@ function BotResearch({ onTicker }) {
       </section>
       ) : null}
 
-      <Fold id="r-how" title="How this is measured" note="mid-price estimates, the rules, the exits">
-      <p className="bot-hint">All trades: eligible signals enter immediately under the existing rules. AI never blocks an entry; AI agents review completed trades afterward.</p>
-      <p className="bot-hint">Virtual P/L uses bid/ask midpoints, before fees. A midpoint estimate is not a confirmed fill. Paper orders use midpoint limits and may remain unfilled.</p>
       <p className="bot-foot">
         <b>How it trades:</b> at each GO+, GO, ⭐1, MX A+, Daily 2 and Market-turn signal (and, as a <i>test</i>, the first 15 a day of
         C2H/C4H, CALL2H/4H, ADX, SKIT, RVOL, SQZ fire and your ZS rule - above EMA 9/21/50, VWAP and the 5m cloud with no level within 2% above) it takes the nearest weekly first out-of-the-money option at the mid price, 09:30-15:30 ET.
@@ -1563,7 +1550,6 @@ function BotResearch({ onTicker }) {
         <b> Chart plan</b> (Level trades recorded while the chart plan is running; a dash = recorded before that) = three 0.20-delta contracts bought at the ask and followed on the chart&apos;s Entry / Target / Stop plan: sold in full when the stock trades through the stop, one at each of T1, T2 and T3 otherwise.
         Paper tracking of your rules, not advice. Kept {data && data.keepDays ? data.keepDays : 180} days.
       </p>
-      </Fold>
       </>)}
     </div>
   );

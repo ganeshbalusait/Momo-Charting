@@ -2,6 +2,15 @@
   "note": "One entry per DEPLOY, newest first, timestamped in ET. Written for the trader, not for developers: each line says what he would NOTICE. The time matters - four deploys landed on 2026-08-31, so 'that day' cannot answer 'was that fix in the build I was running at 3pm?'. Add a new entry at the TOP each time something ships.",
   "releases": [
     {
+      "at": "2026-11-27T00:43:28-05:00",
+      "heading": "Bot: Research put back; Scorecard journal calendar always shown",
+      "items": [
+        "Research is back to how it was laid out before today's change: the ticker box and the settings are in view at the top, then the notes and the dollar totals. Nothing waits behind a \"Trade one ticker\" or \"Settings\" row any more.",
+        "On the Scorecard the journal calendar, with each day's dollar result, is always in view again. It no longer sits behind a \"Journal\" row.",
+        "Not changed back: the top row (Bot, Ticker, Scorecard, Research, Ask) is still the one way to move between pages."
+      ]
+    },
+    {
       "at": "2026-11-27T00:37:26-05:00",
       "heading": "Chart ROI: Auto picks Call or Put for you",
       "items": [

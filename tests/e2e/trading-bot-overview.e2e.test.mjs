@@ -241,26 +241,22 @@ e2eTest("on a phone the Bot page never scrolls sideways and the range buttons st
   });
 });
 
-// 2026-11-26, his "Refer deep-research see other bot pages and do it": Research opens on its totals. The
-// controls, the ticker box and the notes that sat above them open with one tap.
+// 2026-11-26, his "Research page is not good. Revert the changes": Research shows its ticker box, its settings,
+// its totals and its notes with no tap, even for a browser that never opened a section. (Earlier the same day they
+// sat behind one-tap rows.)
 for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]) {
-  e2eTest(`${label}: Research opens on its totals; Settings and Trade one ticker wait behind one tap`, async () => {
+  e2eTest(`${label}: Research shows its ticker box, settings and totals with no tap`, async () => {
     await withApp({ view: "Bot", ...(viewport ? { viewport } : {}), storage: { "bot.folds": "" }, fakeReads: canned() }, async (app) => {
       await openBot(app);
       const { page } = app;
-      for (const hidden of [group(page, "Range"), group(page, "Board"), page.locator("[data-testid='bot-quick-trade']"), page.locator("p.bot-foot")]) {
-        assert.equal(await hidden.isVisible(), false);
+      await page.locator(TOTALS).waitFor({ timeout: 60_000 });
+      for (const shown of [group(page, "Range"), group(page, "Board"), page.locator("[data-testid='bot-quick-trade']"), page.locator(TOTALS), page.locator("p.bot-foot")]) {
+        assert.equal(await shown.first().isVisible(), true);
       }
-      const box = await page.locator(TOTALS).boundingBox();
-      assert.ok(box && box.y < 560, `the totals start too far down: ${JSON.stringify(box)}`);
-      const settings = page.locator("[data-testid='fold-r-settings']");
-      assert.match((await settings.locator(".bf-note").textContent()).trim(), /^All strategies · calls · \S+/);
-      await settings.locator(".bf-head").click();
-      await group(page, "Range").waitFor({ timeout: 15_000 });
-      await group(page, "Board").locator("button", { hasText: "BEAR" }).click();
-      assert.match((await settings.locator(".bf-note").textContent()).trim(), / · puts · /);
-      await page.locator("[data-testid='fold-r-ticker'] .bf-head").click();
-      await page.locator("[data-testid='bot-quick-trade']").waitFor({ timeout: 15_000 });
+      assert.equal(await page.locator("[data-testid='bot-view'] .bf-head").count(), 0, "no one-tap rows on Research");
+      const y = async (loc) => (await loc.first().boundingBox()).y;
+      const order = [await y(page.locator("[data-testid='bot-quick-trade']")), await y(group(page, "Range")), await y(page.locator(TOTALS))];
+      assert.deepEqual(order, [...order].sort((a, b) => a - b), `ticker box, settings, totals: ${order}`);
       assert.equal(await overflowsSideways(page), false);
       assert.deepEqual(app.writes, []);
       assert.deepEqual(app.pageErrors, []);

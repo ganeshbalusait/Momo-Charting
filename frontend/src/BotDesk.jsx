@@ -473,7 +473,7 @@ export default function BotDesk() {
           </section>
         ) : null}
 
-        <Fold id="journal" title="Journal" note="profit and loss by day, week and month" when={!!journal}>
+        {/* 2026-11-26 (his "journal also same scoreboard journal calendar"): the journal calendar is always in view. */}
         {journal ? (
           <section className="desk-card" aria-label="Journal">
             <div className="desk-card-head">
@@ -525,8 +525,6 @@ export default function BotDesk() {
             <p className="desk-note">Real paper fills only, on the day each trade closed. A trade counts under every Level it qualified for, so the three Level columns can add up to more than the total.</p>
           </section>
         ) : null}
-
-        </Fold>
 
         <p className="desk-coverage">{truthAccountLabel(account)} · {deskCoverage(acct)} · judged as a {deskDollars(limits.accountSize)} evaluation account</p>
 
