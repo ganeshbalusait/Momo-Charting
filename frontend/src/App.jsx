@@ -1200,6 +1200,15 @@ const optionNavItems = [
   // Scanner ... only visible admin only"). The worker also refuses its data
   // to non-admins, so hiding the item is not the only guard.
   { label: "Bot", icon: Bot, adminOnly: true },
+  // Long Term (2026-11-06): the Buffett / Rule #1 value screen. LEAP OI Scanner
+  // + AGX Flow (2026-11-17): long-dated open interest, and today's unusual
+  // option volume. 2026-11-26 (trader, phone More sheet): "Rearrange - 'long
+  // term' next to 'leap oi scanner & AGX flow'", then "Wrong BOT, next to 'Long
+  // term, leap oi scanner & agx flow'": the four run together, Bot first. The
+  // phone sheet leads with them (mobileOverflowNavigation.SHEET_FIRST_LABELS).
+  { label: "Long Term", icon: Landmark },
+  { label: "LEAP OI Scanner", icon: Layers },
+  { label: "AGX Flow", icon: Waves },
   // My Trading (2026-11-11, "Yes build it"): the owner's real Schwab trades, read-only. Owner only.
   { label: "My Trading", icon: ClipboardList, adminOnly: true },
   // Alpaca PAPER accounts back in the menu (2026-10-16, "I don't see alpaca
@@ -1217,15 +1226,6 @@ const optionNavItems = [
   // style sector heatmap as its own page, so the phone reaches it from the
   // More sheet. It is also a panel in the option chain's + menu on desktop.
   { label: "Sectors", icon: LayoutGrid },
-  // LEAP OI Scanner + AGX Flow (2026-11-17, "Build all 3 now"): long-dated
-  // open interest across Mag7 + watchlist, and today's unusual option volume.
-  // Long Term (2026-11-06, "build in our app in left side panel 'long term'"):
-  // the Buffett / Rule #1 value screen. 2026-11-26 (trader, phone More sheet):
-  // "Rearrange - 'long term' next to 'leap oi scanner & AGX flow'". It sat
-  // under Bot from 2026-11-08; now the three long-dated pages run together.
-  { label: "Long Term", icon: Landmark },
-  { label: "LEAP OI Scanner", icon: Layers },
-  { label: "AGX Flow", icon: Waves },
   { label: "News Feed", icon: Newspaper },
   { label: "Earnings Calendar", icon: CalendarDays },
   { label: "Mag7 Scanner", displayLabel: "Mag7 Watchlist", icon: Trophy },

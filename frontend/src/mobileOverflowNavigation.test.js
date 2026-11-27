@@ -97,9 +97,9 @@ test("Sectors is on the bar and Alerts moved into the sheet (trader, 2026-11-06)
   assert.equal(overflowDestinationLabel(visibleNavItems.find((i) => i.label === "Auto Alert")), "Alerts");
 });
 
-// Trader 2026-11-26 (phone, "Rearrange - 'long term' next to 'leap oi scanner & AGX flow'"): Bot still leads the
-// sheet; Long Term no longer jumps up beside it and keeps its sidebar place, just before LEAP OI Scanner and AGX Flow.
-test("Bot leads the sheet; Long Term stays with LEAP OI Scanner and AGX Flow", () => {
+// Trader 2026-11-26 (phone, "Wrong BOT, next to 'Long term, leap oi scanner & agx flow'"): the four lead the sheet,
+// wherever the sidebar lists them; every other destination keeps its order behind them.
+test("Bot, Long Term, LEAP OI Scanner and AGX Flow lead the sheet together", () => {
   const items = [
     { label: "Charts & OI" },
     { label: "Quick Options" },
@@ -118,13 +118,13 @@ test("Bot leads the sheet; Long Term stays with LEAP OI Scanner and AGX Flow", (
     { label: "Settings" },
   ];
   const labels = selectOverflowDestinations(items).map((i) => i.label);
-  assert.deepEqual(labels, ["Bot", "Auto Alert", "Option Paper Trading", "Learn + Setup", "Watchlist", "Long Term", "LEAP OI Scanner", "AGX Flow", "News Feed", "Settings"]);
+  assert.deepEqual(labels, ["Bot", "Long Term", "LEAP OI Scanner", "AGX Flow", "Auto Alert", "Option Paper Trading", "Learn + Setup", "Watchlist", "News Feed", "Settings"]);
 });
 
-test("without Bot (not an admin) the sheet keeps the sidebar's order and nothing is invented", () => {
+test("without Bot (not an admin) Long Term leads and nothing is invented", () => {
   const labels = selectOverflowDestinations([
     { label: "Auto Alert" }, { label: "Watchlist" }, { label: "Long Term" }, { label: "Settings" },
   ]).map((i) => i.label);
-  assert.deepEqual(labels, ["Auto Alert", "Watchlist", "Long Term", "Settings"]);
+  assert.deepEqual(labels, ["Long Term", "Auto Alert", "Watchlist", "Settings"]);
   assert.deepEqual(selectOverflowDestinations([{ label: "Watchlist" }]).map((i) => i.label), ["Watchlist"]);
 });

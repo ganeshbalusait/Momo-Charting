@@ -109,21 +109,20 @@ e2eTest("a non-admin's More sheet has no Bot or paper-trading pages", async () =
   });
 });
 
-// Trader 2026-11-26 (phone More sheet): "Rearrange - 'long term' next to 'leap oi scanner & AGX flow'". Long Term,
-// LEAP OI Scanner and AGX Flow run together in the sheet and on the desktop rail. (From 2026-11-08 it sat beside Bot.)
-e2eTest("Long Term sits with LEAP OI Scanner and AGX Flow: in the phone sheet and on the desktop rail", async () => {
+// Trader 2026-11-26 (phone More sheet): "Rearrange - 'long term' next to 'leap oi scanner & AGX flow'", then "Wrong
+// BOT, next to 'Long term, leap oi scanner & agx flow'". The four lead the sheet as two rows, Bot | Long Term over
+// LEAP OI Scanner | AGX Flow, and run together on the desktop rail.
+e2eTest("Bot, Long Term, LEAP OI Scanner and AGX Flow sit together: first two rows of the phone sheet, in a run on the desktop rail", async () => {
   await withApp({ view: "Release Notes", viewport: PHONE }, async (app) => {
     await bar(app.page);
     const items = await openSheet(app.page);
-    assert.equal(items[0], "Bot", `Bot leads: ${JSON.stringify(items.slice(0, 4))}`);
-    const long = items.indexOf("Long Term");
-    assert.deepEqual(items.slice(long, long + 3), ["Long Term", "LEAP OI Scanner", "AGX Flow"], JSON.stringify(items));
-    // The three tiles touch: each one is on the same row as the next, or on the row right above it.
-    const boxes = await app.page.locator(`${SHEET} .mobile-more-grid [role="menuitem"]`).evaluateAll(
-      (els, at) => els.slice(at, at + 3).map((el) => { const r = el.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom) }; }), long,
+    assert.deepEqual(items.slice(0, 4), ["Bot", "Long Term", "LEAP OI Scanner", "AGX Flow"], JSON.stringify(items.slice(0, 6)));
+    const tops = await app.page.locator(`${SHEET} .mobile-more-grid [role="menuitem"]`).evaluateAll(
+      (els) => els.slice(0, 4).map((el) => Math.round(el.getBoundingClientRect().top)),
     );
-    assert.ok(boxes[1].top - boxes[0].top < boxes[0].bottom - boxes[0].top + 40, JSON.stringify(boxes));
-    assert.ok(boxes[2].top - boxes[1].top < boxes[1].bottom - boxes[1].top + 40, JSON.stringify(boxes));
+    assert.equal(tops[0], tops[1], "Bot and Long Term are on the same row");
+    assert.equal(tops[2], tops[3], "LEAP OI Scanner and AGX Flow are on the same row");
+    assert.ok(tops[2] > tops[0], "the second pair is the row below");
     await app.page.locator(`${SHEET} [role="menuitem"]`, { hasText: "Long Term" }).tap();
     await app.page.getByTestId("long-term-panel").waitFor({ state: "visible", timeout: 90_000 });
     assert.equal(await overflowsSideways(app.page), false);
@@ -135,8 +134,6 @@ e2eTest("Long Term sits with LEAP OI Scanner and AGX Flow: in the phone sheet an
     const rail = await app.page.locator("aside.sidebar nav button.nav-item").evaluateAll((els) => els.map((el) => el.getAttribute("title")));
     const bot = rail.indexOf("Bot");
     assert.ok(bot >= 0, `Bot on the rail: ${JSON.stringify(rail)}`);
-    assert.equal(rail[bot + 1], "My Trading", `under Bot: ${JSON.stringify(rail.slice(bot, bot + 3))}`);
-    const long = rail.indexOf("Long Term");
-    assert.deepEqual(rail.slice(long, long + 3), ["Long Term", "LEAP OI Scanner", "AGX Flow"], JSON.stringify(rail));
+    assert.deepEqual(rail.slice(bot, bot + 5), ["Bot", "Long Term", "LEAP OI Scanner", "AGX Flow", "My Trading"], JSON.stringify(rail));
   });
 });

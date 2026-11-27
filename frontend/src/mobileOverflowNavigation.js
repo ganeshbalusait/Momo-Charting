@@ -26,9 +26,10 @@ export const BOTTOM_NAV_LABELS = [
 // destination keeps the sidebar's order behind them. A label the user cannot
 // see (Bot is admin only) is simply skipped.
 // 2026-11-26 (trader, phone): "Rearrange - 'long term' next to 'leap oi scanner
-// & AGX flow'". Long Term led the sheet beside Bot from 2026-11-08; it now
-// follows the sidebar, where it sits just before LEAP OI Scanner and AGX Flow.
-export const SHEET_FIRST_LABELS = ["Bot"];
+// & AGX flow'", then "Wrong BOT, next to 'Long term, leap oi scanner & agx
+// flow'": the four lead the sheet as its first two rows, Bot | Long Term over
+// LEAP OI Scanner | AGX Flow.
+export const SHEET_FIRST_LABELS = ["Bot", "Long Term", "LEAP OI Scanner", "AGX Flow"];
 
 export function selectOverflowDestinations(visibleNavItems, bottomNavLabels = BOTTOM_NAV_LABELS) {
   if (!Array.isArray(visibleNavItems)) return [];
