@@ -214,6 +214,10 @@
 .ba-money-form { display: grid; gap: 10px; }
 .ba-error { margin: 0; padding: 10px 12px; border-radius: 12px; background: var(--bh-warn-bg); color: var(--bh-warn); font-size: 13px; line-height: 1.45; }
 .ba .desk-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ba-accounts button { padding: 0 2px; font-size: 13px; overflow: visible; }
+.ba-well b, .ba-btn { white-space: nowrap; }
+.ba-two .ba-btn { padding: 0 8px; }
+@media (max-width: 420px) { .ba-well { padding: 10px 8px; } .ba-well b { font-size: 15px; } }
 @media (min-width: 900px) {
   .ba { max-width: 760px; }
   .ba .desk-tiles { grid-template-columns: repeat(5, minmax(0, 1fr)); }
