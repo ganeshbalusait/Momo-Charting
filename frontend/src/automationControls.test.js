@@ -2,7 +2,7 @@
 // (2026-11-14): "Start / Pause Stock Bot" and "Scan MAG7 OI". One description
 // each, used by the Dashboard strip AND by the page the trader can open
 // (Stock Paper Trading, Mag7 Watchlist). Plus the menu order he ruled on
-// 2026-11-08: Long Term directly under Bot, My Trading right below it.
+// 2026-11-08, changed 2026-11-26: My Trading under Bot; Long Term with LEAP OI Scanner and AGX Flow.
 // Run: node --test src/automationControls.test.js
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -60,11 +60,14 @@ function navLabels() {
   return [...block.matchAll(/^\s*\{ label: "([^"]+)"/gm)].map((match) => match[1]);
 }
 
-test("menu order: Long Term directly under Bot, My Trading right below Long Term", () => {
+test("menu order: My Trading under Bot; Long Term, LEAP OI Scanner and AGX Flow run together (2026-11-26)", () => {
   const labels = navLabels();
   const bot = labels.indexOf("Bot");
   assert.ok(bot >= 0, `Bot in the menu: ${JSON.stringify(labels)}`);
-  assert.deepEqual(labels.slice(bot, bot + 3), ["Bot", "Long Term", "My Trading"]);
+  assert.deepEqual(labels.slice(bot, bot + 2), ["Bot", "My Trading"]);
+  const long = labels.indexOf("Long Term");
+  assert.deepEqual(labels.slice(long, long + 3), ["Long Term", "LEAP OI Scanner", "AGX Flow"]);
+  assert.equal(labels.filter((label) => label === "Long Term").length, 1);
 });
 
 function viewBlock(view) {

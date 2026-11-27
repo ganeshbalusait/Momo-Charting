@@ -22,11 +22,13 @@ export const BOTTOM_NAV_LABELS = [
   "MomX Scanner",
 ];
 
-// 2026-11-08 (trader, phone): "Move 'long term' next to 'bot'". The sheet is a
-// two-column grid, so these lead it, in this order, and share the first row;
-// every other destination keeps the sidebar's order behind them. A label the
-// user cannot see (Bot is admin only) is simply skipped.
-export const SHEET_FIRST_LABELS = ["Bot", "Long Term"];
+// The sheet is a two-column grid. These lead it, in this order; every other
+// destination keeps the sidebar's order behind them. A label the user cannot
+// see (Bot is admin only) is simply skipped.
+// 2026-11-26 (trader, phone): "Rearrange - 'long term' next to 'leap oi scanner
+// & AGX flow'". Long Term led the sheet beside Bot from 2026-11-08; it now
+// follows the sidebar, where it sits just before LEAP OI Scanner and AGX Flow.
+export const SHEET_FIRST_LABELS = ["Bot"];
 
 export function selectOverflowDestinations(visibleNavItems, bottomNavLabels = BOTTOM_NAV_LABELS) {
   if (!Array.isArray(visibleNavItems)) return [];

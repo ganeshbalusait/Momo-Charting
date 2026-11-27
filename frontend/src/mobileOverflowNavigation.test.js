@@ -97,10 +97,9 @@ test("Sectors is on the bar and Alerts moved into the sheet (trader, 2026-11-06)
   assert.equal(overflowDestinationLabel(visibleNavItems.find((i) => i.label === "Auto Alert")), "Alerts");
 });
 
-// Trader 2026-11-08 (phone, "Move 'long term' next to 'bot'"): the sheet is a
-// two-column grid, so Bot and Long Term lead it and share the first row; every
-// other destination keeps its order behind them.
-test("Bot and Long Term share the first row of the sheet; the rest keep their order", () => {
+// Trader 2026-11-26 (phone, "Rearrange - 'long term' next to 'leap oi scanner & AGX flow'"): Bot still leads the
+// sheet; Long Term no longer jumps up beside it and keeps its sidebar place, just before LEAP OI Scanner and AGX Flow.
+test("Bot leads the sheet; Long Term stays with LEAP OI Scanner and AGX Flow", () => {
   const items = [
     { label: "Charts & OI" },
     { label: "Quick Options" },
@@ -108,23 +107,24 @@ test("Bot and Long Term share the first row of the sheet; the rest keep their or
     { label: "Premarket Scanner" },
     { label: "MomX Scanner" },
     { label: "Bot" },
-    { label: "Long Term" },
     { label: "Option Paper Trading" },
     { label: "Learn + Setup" },
     { label: "Watchlist" },
     { label: "Sectors" },
+    { label: "Long Term" },
+    { label: "LEAP OI Scanner" },
+    { label: "AGX Flow" },
     { label: "News Feed" },
     { label: "Settings" },
   ];
   const labels = selectOverflowDestinations(items).map((i) => i.label);
-  assert.deepEqual(labels.slice(0, 2), ["Bot", "Long Term"], "first row: Bot | Long Term");
-  assert.deepEqual(labels.slice(2), ["Auto Alert", "Option Paper Trading", "Learn + Setup", "Watchlist", "News Feed", "Settings"]);
+  assert.deepEqual(labels, ["Bot", "Auto Alert", "Option Paper Trading", "Learn + Setup", "Watchlist", "Long Term", "LEAP OI Scanner", "AGX Flow", "News Feed", "Settings"]);
 });
 
-test("without Bot (not an admin) Long Term still leads and nothing is invented", () => {
+test("without Bot (not an admin) the sheet keeps the sidebar's order and nothing is invented", () => {
   const labels = selectOverflowDestinations([
     { label: "Auto Alert" }, { label: "Watchlist" }, { label: "Long Term" }, { label: "Settings" },
   ]).map((i) => i.label);
-  assert.deepEqual(labels, ["Long Term", "Auto Alert", "Watchlist", "Settings"]);
+  assert.deepEqual(labels, ["Auto Alert", "Watchlist", "Long Term", "Settings"]);
   assert.deepEqual(selectOverflowDestinations([{ label: "Watchlist" }]).map((i) => i.label), ["Watchlist"]);
 });
