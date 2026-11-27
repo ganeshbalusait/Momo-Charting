@@ -104,7 +104,7 @@ export function accountMoney(acct) {
   const share = value ? Math.max(0, Math.min(1, invested / value)) : 0;
   const skipped = a.skippedNoMoney || 0;
   return {
-    // Research before its first reset has no money per trade: one contract for every signal.
+    // Research before its first reset has no money per trade: one contract for every Level signal.
     perTrade: isNum(run.perTrade) ? wholeDollars(run.perTrade) : "1 contract", free: isNum(a.free) ? wholeDollars(Math.max(0, a.free)) : "–",
     capped: !!run.capped, share,
     // The Ticker trader sizes its own trades (a tenth of its money), so there is nothing to change there.

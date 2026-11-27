@@ -80,6 +80,31 @@ def trades_of(*raw):
     return [v for v in (ba.virtual_trade(t, "bull", DAY, DAY) for t in raw) if v]
 
 
+def test_research_counts_level_signals_only_and_one_signal_once():
+    """His answer 2026-11-27: the Research account counts Level only. The live file gave
+    178,301 trades and -$659,593 because every rule of the virtual bot was counted."""
+    found = [vt("AAPL", 1.0, 1.5, rule="level1"), vt("AAPL", 1.0, 1.5, rule="level3"), vt("AAPL", 1.0, 1.5, rule="level2"),
+             vt("MSFT", 2.0, 1.0, rule="go_macd"), vt("TSLA", 2.0, 1.0, rule="jev"), vt("NVDA", 1.0, 1.2, rule="level2"),
+             vt("AAPL", 3.0, 3.3, rule="level2", at=11), "junk", None]
+    made = ba.level_trades(found, "bull", DAY, DAY)
+    # One row a signal, on its highest level; a later signal on the same ticker is its own trade.
+    assert sorted((v.symbol, v.rule, v.entry) for v in made) == [("AAPL", "level2", 3.0), ("AAPL", "level3", 1.0), ("NVDA", "level2", 1.0)]
+    assert ba.level_trades(None, "bull", DAY, DAY) == [] and ba.level_trades([vt(rule="mom")], "bull", DAY, DAY) == []
+    assert ba.LEVEL_RULES == pm.LEVEL_RULES                         # the same three rules the paper accounts trade
+
+
+def test_the_research_account_leaves_out_every_other_rule(desk):
+    before = desk.account("research")
+    path = desk.grade / "momx_option_track" / f"{DAY}.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["trades"] += [vt("TSLA", 5.0, 1.0, rule="go_macd"), vt("AMD", 5.0, 1.0, rule="jev"), vt("MSFT", 2.0, 1.5, rule="level2")]
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    desk._research, desk._research_memo = ba.ResearchReader(lambda: [("bull", desk.grade)]), None
+    after = desk.account("research")
+    assert (after["totalPnl"], after["journal"]["tiles"]["closed"]) == (before["totalPnl"], before["journal"]["tiles"]["closed"]) == (50.0, 2)
+    assert "Level" in after["note"]
+
+
 def test_the_first_research_run_counts_every_trade_one_contract_each():
     run = {"n": 1, "money": 10000.0, "perTrade": None, "startedAt": stamp(0), "capped": False}
     books = ba.research_books(trades_of(vt("AAPL", 1.0, 1.5), vt("MSFT", 20.0, 19.0), vt("NVDA", 2.0, eLast=2.5)), run)

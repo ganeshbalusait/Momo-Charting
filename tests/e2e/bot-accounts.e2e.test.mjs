@@ -26,7 +26,7 @@ const account = (key, label, kind, more = {}) => ({ key, label, kind, note: "", 
   skippedNoMoney: 0, pastRuns: [], resets: 0, canTradeTicker: key === "ticker", error: null, ...more });
 
 const RESEARCH = account("research", "Research", "virtual", {
-  note: "Every scanner signal, scored at the mid price. Not real fills.",
+  note: "The virtual bot: every Level 1 / 2 / 3 signal, counted once, priced at the middle of the bid and ask. No order is sent.",
   run: { n: 2, money: 3000, perTrade: 300, startedAt: "2026-11-19T09:30:00-05:00", capped: true },
   value: 3474, free: 2932, invested: 542, dayPnl: -184, openPnl: 62, totalPnl: 474, skippedNoMoney: 2, resets: 1,
   positions: [{ symbol: "NVDA", contract: "150C · Dec 4", qty: 3, entry: 0.62, mark: 0.71, pnl: 27, pct: 14.5, at: "2026-11-25T10:42:00-05:00" }],
@@ -77,6 +77,8 @@ for (const [label, viewport] of [["desktop", undefined], ["phone width", PHONE]]
       // Research: its own money, its own numbers.
       await root.locator(tid("ba-account-research")).click();
       await root.locator(tid("ba-value-number"), { hasText: "$3,474.00" }).waitFor({ timeout: 15_000 });
+      // The page says what Research counts: Level signals only (his answer 2026-11-27).
+      await root.locator(".ba-dim", { hasText: "every Level 1 / 2 / 3 signal, counted once" }).first().waitFor({ timeout: 15_000 });
       assert.equal((await root.locator(tid("ba-started")).innerText()).trim(), "Started with $3,000 on Nov 19 · run 2");
       assert.deepEqual(await texts(root.locator(`${tid("ba-value")} .ba-well`)), ["Day P&L −$184", "Open P&L +$62", "Total P&L +$474"]);
       const money = await root.locator(tid("ba-money")).innerText();

@@ -54,7 +54,12 @@ def desk(tmp_path, monkeypatch):
     (grade / "momx_option_track").mkdir(parents=True)
     (grade / "momx_option_track" / f"{DAY}.json").write_text(json.dumps({"trades": [
         {"rule": "level1", "symbol": "NVDA", "at": stamp(10), "entryAt": stamp(10), "status": "closed", "eContract": "NVDA  261127C00150000",
-         "eEntry": 1.0, "eExit": 1.5, "exitAt": stamp(10, 20), "eExitPriceAt": stamp(10, 20)}]}), encoding="utf-8")
+         "eEntry": 1.0, "eExit": 1.5, "exitAt": stamp(10, 20), "eExitPriceAt": stamp(10, 20)},
+        # The same signal saved again on a higher level, and a rule that is not a Level: neither adds to the account.
+        {"rule": "level2", "symbol": "NVDA", "at": stamp(10), "entryAt": stamp(10), "status": "closed", "eContract": "NVDA  261127C00150000",
+         "eEntry": 1.0, "eExit": 1.5, "exitAt": stamp(10, 20), "eExitPriceAt": stamp(10, 20)},
+        {"rule": "go_macd", "symbol": "TSLA", "at": stamp(10, 5), "entryAt": stamp(10, 5), "status": "closed", "eContract": "TSLA  261127C00300000",
+         "eEntry": 9.0, "eExit": 1.0, "exitAt": stamp(10, 30), "eExitPriceAt": stamp(10, 30)}]}), encoding="utf-8")
     clock = {"now": NOW}
     quotes = {"NVDA": {"last": 100.0}, CALL: {"bid": 1.0, "ask": 1.1}}
 
@@ -97,6 +102,8 @@ def test_owner_reads_all_four_accounts_through_the_proxy(tmp_path, monkeypatch, 
     assert p3["journal"]["tiles"]["netPnl"] == -90.0 and p3["journal"]["days"] == [{"day": DAY, "pnl": -90.0, "trades": 1}]
     assert a["paper5"]["value"] == 10000.0 and a["paper5"]["orders"] == []
     assert a["research"]["totalPnl"] == 50.0 and a["research"]["run"]["capped"] is False and a["research"]["run"]["perTrade"] is None
+    # Level signals only, one signal once: the level2 copy and the go_macd trade are left out.
+    assert a["research"]["journal"]["tiles"]["closed"] == 1 and "Level" in a["research"]["note"]
     # Ticker: the engine's own account - 3 bought at $1.10, bid $1.00.
     assert a["ticker"]["canTradeTicker"] is True and a["ticker"]["openPnl"] == -30.0 and a["ticker"]["invested"] == 330.0
     assert a["ticker"]["value"] == desk.trader.account()["value"] == 9970.0 and a["ticker"]["free"] == desk.trader.account()["cash"]

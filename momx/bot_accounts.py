@@ -2,7 +2,7 @@
 accounts on the Bot page.
 
     paper3 / paper5   the Alpaca PAPER accounts (momx/paper_mirror.py day files)
-    research          the virtual bot: every scanner signal scored at the mid (momx/option_track.py)
+    research          the virtual bot: every Level signal scored at the mid (momx/option_track.py)
     ticker            the simulated Ticker trader (momx/ticker_trader.py)
 
 Each account has RUNS. A run = {n, money, perTrade, startedAt, endedAt, capped}. Until he
@@ -48,7 +48,7 @@ KINDS = {"paper3": "paper", "paper5": "paper", "research": "virtual", "ticker": 
 NOTES = {
     "paper3": "An Alpaca paper account: real paper orders, counted only when they fill.",
     "paper5": "An Alpaca paper account: real paper orders, counted only when they fill.",
-    "research": "The virtual bot: every scanner signal priced at the middle of the bid and ask, no order is sent.",
+    "research": "The virtual bot: every Level 1 / 2 / 3 signal, counted once, priced at the middle of the bid and ask. No order is sent.",
     "ticker": "The Ticker trader: simulated trades on the tickers you type, no order is sent.",
 }
 START_MONEY = 10_000.0
@@ -234,6 +234,30 @@ def virtual_trade(t: Mapping, side: str, day: str, today: str) -> VTrade | None:
                   None if exited else price)
 
 
+#: The rules the Research account counts (his answer 2026-11-27: Level only, like the paper
+#: accounts - momx/paper_mirror.py LEVEL_RULES). Every other rule of the virtual bot stays on
+#: the Research page and is left out of the account.
+LEVEL_RULES = ("level1", "level2", "level3")
+
+
+def level_trades(found: Iterable | None, side: str, day: str, today: str) -> list[VTrade]:
+    """The priced Level trades of one saved day file. Each level records its own row, so one
+    signal (the same ticker at the same moment) can be saved up to three times: it is counted
+    ONCE, on its highest level, the way the paper accounts take one trade a signal."""
+    best: dict[tuple, VTrade] = {}
+    for t in found or []:
+        if not isinstance(t, Mapping) or t.get("rule") not in LEVEL_RULES:
+            continue
+        v = virtual_trade(t, side, day, today)
+        if v is None:
+            continue
+        key = (v.symbol, v.entry_at)
+        had = best.get(key)
+        if had is None or LEVEL_RULES.index(v.rule) > LEVEL_RULES.index(had.rule):
+            best[key] = v
+    return list(best.values())
+
+
 class ResearchReader:
     """The saved virtual trades. A day file is about 13 MB, so each is read once and only what
     is needed is kept (past days never change):
@@ -294,7 +318,7 @@ class ResearchReader:
                     except (OSError, ValueError, UnicodeDecodeError):
                         continue
                     found = doc.get("trades") if isinstance(doc, dict) else None
-                    made = [v for v in (virtual_trade(t, side, day, today) for t in found or []) if v]
+                    made = level_trades(found, side, day, today)
                     pls = array("d", [(v.exit - v.entry) * 100 for v in made if v.exit is not None])
                     hit = (version, self._clock(), pls, made if want_full else None)
                     self._files[str(path)] = hit
@@ -631,7 +655,7 @@ class BotAccounts:
         if isinstance(run, dict) and run.get("startedAt"):
             return run
         if account == "research":
-            # Every signal, one contract each: there is no per-trade money until a reset sets one.
+            # Every Level signal, one contract each: there is no per-trade money until a reset sets one.
             day = first_day or self._clock().astimezone(ET).date().isoformat()
             return {"n": 1, "money": START_MONEY, "perTrade": None, "startedAt": _day_start(day), "capped": False}
         from momx import paper_mirror
