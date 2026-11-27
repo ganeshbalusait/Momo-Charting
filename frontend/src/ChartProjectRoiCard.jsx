@@ -22,6 +22,7 @@ import {
 import { ChartProjectRoiPrimitive } from "./chartProjectRoiPrimitive.js";
 import ChartTimeMachine, { CHART_SHOW_OPTIONS, chartShowOf, useTimeMachine } from "./ChartTimeMachine.jsx";
 import { chartPlanLines } from "./chartTimeMachine.js";
+import { roiAutoNote, roiAutoSide, roiNextView, roiViewOf } from "./chartRoiAutoSide.js";
 import { freshRoiPlan, readRoiCarry, roiCarryFrom, roiCarryFromPlans, roiPlanOnArrival, writeRoiCarry } from "./chartRoiCarry.js";
 
 // One copy of the saved plans for the whole page. Every chart panel showing
@@ -70,6 +71,8 @@ export default function ChartProjectRoiCard({
   symbol = "",
   rows: rowsProp = null,
   spot = 0,
+  // Today's 9:30 open (0 before it, or on a day with no session): the Auto side's yardstick.
+  sessionOpen = 0,
   defaultExpiry = "",
   expectedMove = 0,
   walls = [],
@@ -120,7 +123,8 @@ export default function ChartProjectRoiCard({
   const editSide = (side) => {
     const current = getPlans();
     if (!current[ticker]) return;
-    savePlans({ ...current, [ticker]: projectRoiSwapSide(current[ticker], side) }, ticker);
+    // Picking a side by hand takes the plan off Auto.
+    savePlans({ ...current, [ticker]: { ...projectRoiSwapSide(current[ticker], side), auto: false } }, ticker);
   };
   const deletePlan = () => {
     const next = { ...getPlans() };
@@ -285,6 +289,14 @@ export default function ChartProjectRoiCard({
           <b>{contractName}</b> entry ${result.entry.toFixed(2)}
           <small>{result.strikeReason}</small>
         </div>
+        {savedPlan?.auto === true ? <p
+          className="chart-project-roi-auto"
+          role="status"
+          data-testid="chart-project-roi-auto"
+          data-side={result.side}
+          data-open={Number(sessionOpen) > 0 ? Number(sessionOpen).toFixed(2) : ""}
+          title="Auto picks Call above today's open and Put below it. In the Mag7 back-test that side reached its target a little more often (a small lean, not a sure thing)."
+        >{roiAutoNote({ ticker, spot, open: sessionOpen, side: result.side })}</p> : null}
         {result.quoteMismatch ? <p className="chart-project-roi-warn" role="status">
           ⚠ Option prices were quoted with {ticker} near ${result.quoteSpot.toFixed(2)}; it is ${result.spot.toFixed(2)} now (overnight move or a bad print). They reprice at the open - treat these numbers as rough.
         </p> : null}
@@ -328,11 +340,19 @@ export default function ChartProjectRoiCard({
             {["CALL", "PUT"].map((side) => <button
               key={side}
               type="button"
-              className={result.side === side ? "is-active" : ""}
-              aria-pressed={result.side === side}
+              className={result.side === side && savedPlan?.auto !== true ? "is-active" : ""}
+              aria-pressed={result.side === side && savedPlan?.auto !== true}
               title={showBoth ? `Edit the ${side === "CALL" ? "call" : "put"} side` : `Plan a ${side === "CALL" ? "call" : "put"}`}
               onClick={() => { setEntryDraft(null); setTargetDraft(null); editSide(side); }}
             >{side === "CALL" ? "Call" : "Put"}</button>)}
+            <button
+              type="button"
+              className={savedPlan?.auto === true ? "is-active" : ""}
+              aria-pressed={savedPlan?.auto === true}
+              aria-label="Pick the side automatically"
+              title="Auto: Call when the price is above today's open, Put when it is below"
+              onClick={() => { setEntryDraft(null); setTargetDraft(null); updatePlan({ auto: true, both: false }); }}
+            >Auto</button>
           </span>
         </div>
         {/* How many targets each side draws, 1-6 (his ask, 2026-11-11:
@@ -440,15 +460,16 @@ export default function ChartProjectRoiCard({
 // "next to ROI just add call, put, both ... ROI select then ON else OFF").
 //  - ROI: selected = the plan's lines are ON for this ticker; tap again = OFF
 //    (the plan is kept, so ON brings it back unchanged).
-//  - Call / Put / Both (shown while ROI is on): which side the chart draws.
+//  - Call / Put / Both / Auto (shown while ROI is on): which side the chart draws.
+//    Auto follows today's open (chartRoiAutoSide.js).
 //    Tapping the side already picked opens or closes the card.
-export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false, onCardOpenChange }) {
+export function ChartProjectRoiToolbar({ symbol = "", spot = 0, sessionOpen = 0, cardOpen = false, onCardOpenChange }) {
   const ticker = String(symbol || "").trim().toUpperCase();
   const plans = useSyncExternalStore(subscribePlans, getPlans);
   const plan = plans[ticker] || null;
   const on = Boolean(plan) && plan.hidden !== true;
   const show = chartShowOf(plan);
-  const view = !plan ? "" : plan.both === true ? "BOTH" : sideOfPlan(plan);
+  const view = roiViewOf(plan);
   const save = (next) => savePlans({ ...getPlans(), [ticker]: next }, ticker);
   const fresh = () => ({ ...freshRoiPlan(carry, spot), hidden: false });
   // A ticker coming on screen takes the last ROI choices: ROI on/off and
@@ -461,6 +482,17 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
     // Only on a ticker change (and once its price is known), not every tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker, spotReady]);
+
+  // Auto (2026-11-26): the drawn side follows today's open. Above it = Call, below = Put; right at it the side
+  // is kept. Before 9:30 or on a day with no session there is no open, so nothing changes.
+  const planSide = plan ? sideOfPlan(plan) : "";
+  const autoWanted = plan?.auto === true && on ? roiAutoSide({ spot, open: sessionOpen, current: planSide }) : null;
+  useEffect(() => {
+    if (!ticker || !autoWanted || autoWanted === planSide) return;
+    const current = getPlans()[ticker];
+    if (!current || current.auto !== true) return;
+    savePlans({ ...getPlans(), [ticker]: { ...projectRoiSwapSide(current, autoWanted), both: false } });
+  }, [ticker, autoWanted, planSide]);
 
   const toggleRoi = () => {
     if (!ticker) return;
@@ -478,8 +510,11 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
       onCardOpenChange?.(!cardOpen);
       return;
     }
-    if (wanted === "BOTH") save({ ...plan, both: true, hidden: false });
-    else save({ ...projectRoiSwapSide(plan, wanted), both: false, hidden: false });
+    if (wanted === "AUTO") {
+      const side = roiAutoSide({ spot, open: sessionOpen, current: planSide }) || planSide;
+      save({ ...projectRoiSwapSide(plan, side), auto: true, both: false, hidden: false });
+    } else if (wanted === "BOTH") save({ ...plan, both: true, auto: false, hidden: false });
+    else save({ ...projectRoiSwapSide(plan, wanted), both: false, auto: false, hidden: false });
   };
 
   return (
@@ -492,12 +527,15 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
         aria-label={`Project ROI for ${ticker}`}
         aria-pressed={on}
       >ROI</button>
-      {on ? [["CALL", "Call"], ["PUT", "Put"], ["BOTH", "Both"]].map(([value, label]) => <button
+      {on ? [["CALL", "Call"], ["PUT", "Put"], ["BOTH", "Both"], ["AUTO", "Auto"]].map(([value, label]) => <button
         key={value}
         className={`oi-finder-chart-roi-side${view === value ? " is-active" : ""}`}
         type="button"
         onClick={(event) => { event.stopPropagation(); pick(value); }}
-        title={view === value ? `${label} is drawn: tap to ${cardOpen ? "close" : "open"} the ROI card` : `Draw the ${label.toLowerCase()} plan`}
+        title={value === "AUTO"
+          ? (view === value ? `${roiAutoNote({ ticker, spot, open: sessionOpen, side: planSide })}. Tap to ${cardOpen ? "close" : "open"} the ROI card` : "Auto: Call when the price is above today's open, Put when it is below")
+          : view === value ? `${label} is drawn: tap to ${cardOpen ? "close" : "open"} the ROI card` : `Draw the ${label.toLowerCase()} plan`}
+        data-auto-side={value === "AUTO" && view === value ? planSide : undefined}
         aria-label={`ROI ${label.toLowerCase()} side`}
         aria-pressed={view === value}
       >{label}</button>) : null}
@@ -519,20 +557,22 @@ export function ChartProjectRoiToolbar({ symbol = "", spot = 0, cardOpen = false
       {/* Phone (CSS shows this and hides the three above): the toolbar row has
           room for one more 24 px button, not three - three pushed the row
           into a sideways scroll that slid it under the ticker box. One tap
-          steps Call -> Put -> Both. */}
+          steps Call -> Put -> Both -> Auto. */}
       {on ? <button
         className="oi-finder-chart-roi-cycle"
         type="button"
         onClick={(event) => {
           event.stopPropagation();
-          pick(view === "CALL" ? "PUT" : view === "PUT" ? "BOTH" : "CALL");
+          pick(roiNextView(view));
         }}
-        title={`ROI side: ${view === "BOTH" ? "Both" : view === "PUT" ? "Put" : "Call"} (tap for ${view === "CALL" ? "Put" : view === "PUT" ? "Both" : "Call"})`}
-        aria-label={`ROI side ${view === "BOTH" ? "both" : view === "PUT" ? "put" : "call"}, tap to change`}
-      >{view === "BOTH" ? "B" : view === "PUT" ? "P" : "C"}</button> : null}
+        title={`ROI side: ${SIDE_NAMES[view] || "Call"} (tap for ${SIDE_NAMES[roiNextView(view)]})`}
+        aria-label={`ROI side ${(SIDE_NAMES[view] || "Call").toLowerCase()}, tap to change`}
+      >{(SIDE_NAMES[view] || "Call")[0]}</button> : null}
     </span>
   );
 }
+
+const SIDE_NAMES = { CALL: "Call", PUT: "Put", BOTH: "Both", AUTO: "Auto" };
 
 function sideOfPlan(plan) {
   return String(plan?.side || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";

@@ -62,3 +62,6 @@
 .chart-project-roi-show small { color: var(--hm-muted, #a6b0bf); font-size: .62rem; margin-right: 2px; }
 .chart-project-roi-show button { min-height: 24px; border: 1px solid var(--hm-rule-2, rgba(255, 255, 255, .25)); border-radius: 6px; padding: 2px 10px; background: var(--hm-paper-2, transparent); color: var(--hm-ink-2, #dfe7f2); font: inherit; font-size: .64rem; font-weight: 700; cursor: pointer; }
 .chart-project-roi-show button.is-active { border-color: var(--hm-accent, #3ddcff); background: var(--hm-accent, #3ddcff); color: var(--hm-accent-ink, #05070c); }
+
+/* ROI side on Auto (2026-11-26): one line saying which side Auto picked and why. */
+.chart-project-roi-auto { margin: 0; padding: 4px 7px; border: 1px solid rgba(61, 220, 255, .4); border-radius: 5px; background: rgba(61, 220, 255, .08); color: #bfefff; font-size: .66rem; line-height: 1.35; }

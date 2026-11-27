@@ -3,7 +3,7 @@
 // ticker with no plan showed ROI off. Now the last choices are remembered:
 // ROI on/off and what the chart shows (ROI / Odds / Both) apply to every
 // ticker; a ticker with no plan gets a fresh one with the last side, Both,
-// number of targets and contracts. Strike, entry and target stay per ticker.
+// number of targets and contracts. Auto side (2026-11-26) is carried the same way. Strike, entry and target stay per ticker.
 
 export const ROI_CARRY_STORAGE_KEY = "agx.chartProjectRoi.carry.v1";
 
@@ -15,7 +15,9 @@ export function roiCarryFrom(plan) {
   return {
     on: plan.hidden !== true,
     side: String(plan.side || "").toUpperCase() === "PUT" ? "PUT" : "CALL",
-    both: plan.both === true,
+    // Auto (chartRoiAutoSide.js, 2026-11-26) draws one side, so it and Both are never on together.
+    both: plan.both === true && plan.auto !== true,
+    auto: plan.auto === true,
     show: SHOWS.has(plan.show) ? plan.show : "roi",
     targetCount: Math.min(6, Math.max(1, Math.round(Number(plan.targetCount) || 3))),
     contracts: Math.max(1, Math.round(Number(plan.contracts) || 1)),
@@ -34,6 +36,7 @@ export function freshRoiPlan(carry, spot, now = Date.now()) {
   return {
     side: carry?.side || "CALL",
     both: carry?.both === true,
+    auto: carry?.auto === true,
     contracts: carry?.contracts || 1,
     targetCount: carry?.targetCount || 3,
     show: carry?.show || "roi",
@@ -51,8 +54,11 @@ export function roiPlanOnArrival(current, carry, spot, now = Date.now()) {
   const hidden = !carry.on;
   const show = carry.show || "roi";
   const currentShow = SHOWS.has(current.show) ? current.show : "roi";
-  if ((current.hidden === true) === hidden && currentShow === show) return null;
-  return { ...current, hidden, show };
+  // Auto is a mode like ROI / Odds / Both: the last choice applies to every ticker.
+  const auto = carry.auto === true;
+  const autoSame = (current.auto === true) === auto;
+  if ((current.hidden === true) === hidden && currentShow === show && autoSame) return null;
+  return autoSame ? { ...current, hidden, show } : { ...current, hidden, show, auto, both: auto ? false : current.both === true };
 }
 
 export function readRoiCarry(storage = globalThis.localStorage) {

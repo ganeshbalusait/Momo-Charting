@@ -268,6 +268,7 @@ import { buildHighOiContractList, expectedMoveFromExpiries, formatCompactVolume,
 import { OI_SIDE_NOTE, oiSideCell } from "./oiSideEstimate";
 import { buildRoiAutofill, roiAutoTargets, roiEntryPrice, roiStopLevel } from "./roiCalcAutofill";
 import ChartProjectRoiCard, { ChartProjectRoiToolbar } from "./ChartProjectRoiCard";
+import { roiSessionOpen } from "./chartRoiAutoSide.js";
 import {
   OI_AUTO_ALERT_MIRROR_SOURCE,
   activeLevelsForPrice,
@@ -18410,6 +18411,9 @@ function OiFinderCandleChart({
   // quote packet cannot resend the complete indicator stack while the trader
   // is dragging or zooming.
   const chartReferencePrice = Number(latestChartPrice || underlyingPrice || 0);
+  // Today's 9:30 open for the ROI card's Auto side (chartRoiAutoSide.js). A number, so the ROI toolbar and card
+  // re-render only when it changes.
+  const roiSessionOpenPrice = useMemo(() => roiSessionOpen({ dailyBars, chartBars }), [dailyBars, chartBars]);
   const gammaModel = useMemo(() => buildChartGamma({
     rows: indicatorSettings.gammaConcentration ? selectedChainRows : [],
     symbol: normalizedChartSymbol,
@@ -24043,6 +24047,7 @@ function OiFinderCandleChart({
           <ChartProjectRoiToolbar
             symbol={normalizedChartSymbol}
             spot={chartReferencePrice}
+            sessionOpen={roiSessionOpenPrice}
             cardOpen={projectRoiOpen}
             onCardOpenChange={setProjectRoiOpen}
           />
@@ -24752,6 +24757,7 @@ function OiFinderCandleChart({
             symbol={normalizedChartSymbol}
             rows={selectedChainRows}
             spot={chartReferencePrice}
+            sessionOpen={roiSessionOpenPrice}
             defaultExpiry={currentAtm?.expiry}
             expectedMove={currentAtm?.expectedMove}
             walls={wallLevels}

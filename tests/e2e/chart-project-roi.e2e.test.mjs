@@ -304,7 +304,7 @@ e2eTest("ROI on the toolbar: selected = lines on, tap again = off (the plan is k
     await openCard(chart);
     await chart.locator(LINES).waitFor({ state: "attached", timeout: 60_000 });
     assert.equal(await roiButton.getAttribute("aria-pressed"), "true");
-    assert.equal(await chart.locator("button.oi-finder-chart-roi-side").count(), 3);
+    assert.equal(await chart.locator("button.oi-finder-chart-roi-side").count(), 4, "Call, Put, Both and Auto (2026-11-26)");
     const before = (await plans(page)).AAPL;
     // Off: lines and card go, side buttons hide, the plan stays.
     await roiButton.click();
@@ -330,7 +330,7 @@ e2eTest("ROI on the toolbar: selected = lines on, tap again = off (the plan is k
   });
 });
 
-e2eTest("on a phone ROI + one C/P/B button fit the toolbar row; the button steps Call, Put, Both", async () => {
+e2eTest("on a phone ROI + one C/P/B/A button fit the toolbar row; the button steps Call, Put, Both, Auto", async () => {
   await withApp(chartAppOptions({ viewport: PHONE }), async (app) => {
     const { page } = app;
     const chart = await chartCard(page, "AAPL");
@@ -344,14 +344,100 @@ e2eTest("on a phone ROI + one C/P/B button fit the toolbar row; the button steps
     }));
     assert.ok(row.overflow <= 1, `the toolbar row overflows by ${row.overflow}px`);
     assert.equal(row.y, "hidden");
-    for (const [label, side] of [["P", "PUT"], ["B", "BOTH"], ["C", "CALL"]]) {
+    // 2026-11-26: Auto is the fourth step (Call -> Put -> Both -> Auto -> Call).
+    for (const [label, side] of [["P", "PUT"], ["B", "BOTH"], ["A", "AUTO"], ["C", "CALL"]]) {
       await cycle.click();
       await page.waitForFunction((want) => {
         const plan = JSON.parse(localStorage.getItem("agx.chartProjectRoi.v1") || "{}").AAPL || {};
-        return (plan.both === true ? "BOTH" : String(plan.side)) === want;
+        return (plan.auto === true ? "AUTO" : plan.both === true ? "BOTH" : String(plan.side)) === want;
       }, side, { timeout: 10_000 });
       assert.equal((await cycle.innerText()).trim(), label);
     }
+    assert.equal(await overflowsSideways(page), false);
+    noPageErrors(app);
+  });
+}, { timeout: 420_000 });
+
+// 2026-11-26 ("I have to choose call or puts or both, can we do automatic based on trend" -> "Build it now"):
+// Auto draws Call when the price is above today's 9:30 open and Put when it is below. The chart is the real AAPL
+// chart, so the spec reads the card's own line and checks the side against the two prices in it. Before 9:30, on a
+// weekend or a holiday there is no open today: Auto says it is waiting and keeps the side.
+async function autoIsConsistent(page, chart, roi) {
+  const note = roi.locator('[data-testid="chart-project-roi-auto"]');
+  await note.waitFor({ state: "visible", timeout: 15_000 });
+  const text = (await note.innerText()).trim();
+  const drawnSide = await note.getAttribute("data-side");
+  const plan = (await plans(page)).AAPL;
+  assert.equal(plan.auto, true);
+  assert.equal(plan.both, false, "Auto draws one side");
+  assert.equal(plan.side, drawnSide, "the card shows the side the plan holds");
+  if ((await note.getAttribute("data-open")) === "") {
+    assert.match(text, /^Auto: waiting for today's open \(9:30 AM ET\) · (Call|Put) kept$/);
+  } else {
+    const found = text.match(/^Auto: (Call|Put) · AAPL ([\d.]+) is (above|below|right at) today's open ([\d.]+)/);
+    assert.ok(found, text);
+    const [, name, price, where, open] = found;
+    assert.equal(name.toUpperCase(), drawnSide);
+    if (where === "above") { assert.equal(name, "Call"); assert.ok(Number(price) > Number(open), text); }
+    if (where === "below") { assert.equal(name, "Put"); assert.ok(Number(price) < Number(open), text); }
+  }
+  const letter = drawnSide === "PUT" ? "P" : "C";
+  const lines = await drawnLines(chart);
+  assert.ok(lines.length >= 3, "Entry, a target and the stop are drawn");
+  assert.ok(lines.some((line) => line.key === "entry" && line.title.includes(letter)), `the Entry box names a ${drawnSide} contract: ${JSON.stringify(lines)}`);
+  return text;
+}
+
+e2eTest("ROI Auto on the toolbar: one side is drawn from today's open, and a hand pick turns Auto off", async () => {
+  await withApp(chartAppOptions(), async (app) => {
+    const { page } = app;
+    const chart = await chartCard(page, "AAPL");
+    const roi = await openCard(chart);
+    const auto = side(chart, "auto");
+    await auto.click();
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("agx.chartProjectRoi.v1") || "{}").AAPL?.auto === true, null, { timeout: 10_000 });
+    assert.equal(await auto.getAttribute("aria-pressed"), "true");
+    for (const other of ["call", "put", "both"]) assert.equal(await side(chart, other).getAttribute("aria-pressed"), "false", `${other} is not lit while Auto is on`);
+    if (!(await roi.isVisible())) await auto.click(); // tapping the lit button opens the card
+    await autoIsConsistent(page, chart, roi);
+    assert.equal(await roi.locator('button[aria-label="Pick the side automatically"]').getAttribute("aria-pressed"), "true");
+    // The carried choice: the next ticker starts on Auto too.
+    assert.equal(JSON.parse(await readStorage(page, "agx.chartProjectRoi.carry.v1")).auto, true);
+
+    // A hand pick in the card takes the plan off Auto.
+    await roi.locator('.chart-project-roi-side button', { hasText: "Put" }).click();
+    await page.waitForFunction(() => {
+      const plan = JSON.parse(localStorage.getItem("agx.chartProjectRoi.v1") || "{}").AAPL || {};
+      return plan.auto === false && plan.side === "PUT";
+    }, null, { timeout: 10_000 });
+    assert.equal(await roi.locator('[data-testid="chart-project-roi-auto"]').count(), 0);
+    assert.equal(await side(chart, "put").getAttribute("aria-pressed"), "true");
+    assert.equal(await auto.getAttribute("aria-pressed"), "false");
+
+    // And back on from inside the card.
+    await roi.locator('button[aria-label="Pick the side automatically"]').click();
+    await autoIsConsistent(page, chart, roi);
+    noPageErrors(app);
+  });
+}, { timeout: 420_000 });
+
+e2eTest("on a phone a plan saved on Auto opens on Auto: the card says why and nothing is cut off", async () => {
+  const saved = { AAPL: { side: "CALL", auto: true, both: false, contracts: 1, targetCount: 3, show: "roi", createdAt: Date.now() - 60_000 } };
+  await withApp(chartAppOptions({ viewport: PHONE, storage: { [PLAN_KEY]: JSON.stringify(saved) } }), async (app) => {
+    const { page } = app;
+    const chart = await chartCard(page, "AAPL");
+    const cycle = chart.locator("button.oi-finder-chart-roi-cycle");
+    await cycle.waitFor({ state: "visible", timeout: 30_000 });
+    assert.equal((await cycle.innerText()).trim(), "A");
+    assert.equal(await cycle.getAttribute("aria-label"), "ROI side auto, tap to change");
+    await chart.locator("button.oi-finder-chart-roi-odds").click(); // opens the card on a phone
+    const roi = chart.locator(ROI);
+    await roi.waitFor({ state: "visible", timeout: 30_000 });
+    await roi.locator(".chart-project-roi-title").waitFor({ state: "visible", timeout: 120_000 });
+    await autoIsConsistent(page, chart, roi);
+    const box = await roi.locator('[data-testid="chart-project-roi-auto"]').boundingBox();
+    const card = await roi.boundingBox();
+    assert.ok(box && card && box.x >= card.x - 1 && box.x + box.width <= card.x + card.width + 1, "the Auto line fits inside the card");
     assert.equal(await overflowsSideways(page), false);
     noPageErrors(app);
   });
