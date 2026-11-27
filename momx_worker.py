@@ -475,6 +475,19 @@ class Handler(BaseHTTPRequestHandler):
                 except ticker_trader.TraderError as exc:
                     self._json(HTTPStatus(exc.status), {"ok": False, "error": exc.message})
                 return
+            if path == "/api/momx-scanner/bot-accounts":
+                # Bot accounts (2026-11-26): each account's run, money, open trades and journal.
+                # Read-only, saved files only - admin only.
+                if not viewer_is_admin(self.headers.get("X-AGX-User")):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import bot_accounts
+                _ba = bot_accounts.current()
+                if _ba is None:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": "The Bot accounts are not running yet."})
+                    return
+                self._json(HTTPStatus.OK, _ba.snapshot())
+                return
             if path == "/api/momx-scanner/paper-mirror":
                 # Alpaca PAPER fills of the Jev BOT trades (2026-10-16) - admin only.
                 if not viewer_is_admin(self.headers.get("X-AGX-User")):
@@ -791,6 +804,31 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._json(HTTPStatus.OK, {"ok": True, "run": _tt_run, "account": _tt.account()})
                 return
+            if path in ("/api/momx-scanner/bot-accounts/reset", "/api/momx-scanner/bot-accounts/money"):
+                # Bot accounts buttons (2026-11-26): Reset (new starting money, the run so far is
+                # kept as a past run) and the money per trade. Bookkeeping only: no order is sent,
+                # changed or cancelled. Admin only, re-checked here.
+                who = self.headers.get("X-AGX-User")
+                if not viewer_is_admin(who):
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
+                    return
+                from momx import bot_accounts
+                _ba = bot_accounts.current()
+                if _ba is None:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": "The Bot accounts are not running yet."})
+                    return
+                if not isinstance(body, dict):
+                    body = {}                     # a list or a bare string: the 400 below explains
+                try:
+                    if path.endswith("/reset"):
+                        _ba_account = _ba.reset(body.get("account"), body.get("money"), body.get("perTrade"), str(who or ""))
+                    else:
+                        _ba_account = _ba.set_per_trade(body.get("account"), body.get("perTrade"), str(who or ""))
+                except bot_accounts.AccountsError as exc:
+                    self._json(HTTPStatus(exc.status), {"ok": False, "error": exc.message})
+                    return
+                self._json(HTTPStatus.OK, {"ok": True, "account": _ba_account})
+                return
             if path == "/api/momx-scanner/paper-control":
                 # Scorecard buttons (2026-11-09, his "Yes" + "stuck orders give
                 # me button to remove"): pause / resume one paper account's NEW
@@ -964,6 +1002,15 @@ def main() -> int:
         ticker_trader.start(Path(ARTIFACTS_DIR) / "momx_ticker_trader")
     except Exception as exc:  # noqa: BLE001 - the scanner must start regardless
         print(f"[ticker-trader] not started: {type(exc).__name__}: {exc}", flush=True)
+    # Bot accounts (2026-11-26): starting money, reset and past runs for Paper 3 / Paper 5 /
+    # Research / Ticker. One small file of runs; reads saved files only, places no orders.
+    try:
+        from pathlib import Path
+        from config import ARTIFACTS_DIR
+        from momx import bot_accounts
+        bot_accounts.start(Path(ARTIFACTS_DIR) / "momx_bot_accounts")
+    except Exception as exc:  # noqa: BLE001 - the scanner must start regardless
+        print(f"[bot-accounts] not started: {type(exc).__name__}: {exc}", flush=True)
     # Shadow AI filter (2026-10-17): scores every Bot trade, retrains nightly
     # after 16:40 ET in its own low-priority process, grades itself walk-forward.
     # Places no orders.

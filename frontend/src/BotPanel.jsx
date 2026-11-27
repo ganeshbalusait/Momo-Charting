@@ -14,6 +14,7 @@ import BotDesk from "./BotDesk.jsx";
 import BotChat from "./BotChat.jsx";
 import TickerTrader from "./TickerTrader.jsx";
 import BotHome from "./BotHome.jsx";
+import BotAccounts from "./BotAccounts.jsx";
 import { BOT_PANELS, HOME_KEPT_SECTIONS, HOME_SECTIONS, HOME_SECTION_KEY, HOME_SEEN_KEY, botLanding, botMoreTarget, botPanelCurrent } from "./botHome.js";
 import { TICKER_TRADER_KEY } from "./tickerTrader.js";
 import { captureEntryLegLines, captureReasonLines } from "./botCapture.js";
@@ -1632,6 +1633,9 @@ export default function BotPanel() {
   // 2026-11-26 (his "Page looks not good", a screenshot with five rows of buttons before any content): the
   // panel row above is the one way around. The old Scorecard / Research / Ask switch, the All trades |
   // Ticker trader switch and the "BOT workspace" title are gone; each page's title is its own name.
+  // 2026-11-27 (his "See Webull paper trade page ... Let's build"): the paper accounts page, one screen for Paper 3,
+  // Paper 5, Research and Ticker with money, a reset and each account's own journal.
+  if (view === "accounts") return <div className="bot-page">{backBar}<BotAccounts onTradeTicker={() => openMore("ticker")} /></div>;
   if (view === "research") return <>{backBar}<BotResearch key={researchRun} onTicker={setTickerOn} /></>;
   return (
     <div className="bot-page">

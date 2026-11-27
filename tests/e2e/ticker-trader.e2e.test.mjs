@@ -97,7 +97,7 @@ e2eTest("the Ticker tab in the top row opens the Ticker trader; typing a ticker 
     const { page } = app;
     const which = page.locator("[data-testid='bh-panels']");
     await which.waitFor({ timeout: 60_000 });
-    assert.deepEqual(await texts(which.locator("button")), ["Bot", "Ticker", "Scorecard", "Research", "Ask"]);
+    assert.deepEqual(await texts(which.locator("button")), ["Bot", "Paper", "Ticker", "Scorecard", "Research", "Ask"]);
     await which.locator("[data-testid='bh-panel-ticker']").click();
     const panel = page.locator(PANEL);
     await panel.locator("[data-testid='tt-row']").first().waitFor({ timeout: 30_000 });

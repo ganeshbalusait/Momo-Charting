@@ -23437,9 +23437,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                     _bot_days = 5
                 self._send_momx_bot(_bot_days)
                 return
-            if parsed.path == "/api/momx-scanner/ticker-trader" or parsed.path.startswith("/api/momx-scanner/ticker-trader/"):
+            if (parsed.path == "/api/momx-scanner/ticker-trader" or parsed.path.startswith("/api/momx-scanner/ticker-trader/")
+                    or parsed.path == "/api/momx-scanner/bot-accounts"):
                 # Ticker trader (2026-11-13): simulated runs and their journal. Admin only here too;
                 # then proxied to the worker like the rest (falls through).
+                # Bot accounts (2026-11-26): each account's run, money and journal. Same guard.
                 _tt_user = self._session_user()
                 if not (_tt_user and _tt_user.get("isAdmin")):
                     self._send_json(HTTPStatus.FORBIDDEN, {"error": "admin only"})
@@ -24312,11 +24314,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # also why POST /rebuild 404'd through the browser while
                 # working against :3010 directly (verify agent, 2026-08-30).
                 if parsed.path in ("/api/momx-scanner/data-source", "/api/momx-scanner/paper-experiment-decision",
-                                   "/api/momx-scanner/paper-control") or parsed.path.startswith("/api/momx-scanner/ticker-trader/"):
+                                   "/api/momx-scanner/paper-control") or parsed.path.startswith(
+                                       ("/api/momx-scanner/ticker-trader/", "/api/momx-scanner/bot-accounts/")):
                     # The "TOS" checkbox switches the scanner's data source for
                     # EVERY viewer (2026-09-30) - admin only, like preflight.
                     # Paper 5 rule Approve / Reject (2026-11-05) - admin only.
                     # Scorecard Pause / Resume / Remove stuck order (2026-11-09) - admin only.
+                    # Bot accounts Reset / money per trade (2026-11-26) - admin only.
                     # The worker re-checks the forwarded X-AGX-User too.
                     if self._require_admin_user() is None:
                         return
@@ -24342,7 +24346,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                         with _mx_req.urlopen(_mx_req_obj, timeout=_mx_timeout) as _mx_res:
                             _mx_body = _mx_res.read()
                     finally:
-                        if parsed.path == "/api/momx-scanner/paper-control":
+                        if parsed.path == "/api/momx-scanner/paper-control" or parsed.path.startswith("/api/momx-scanner/bot-accounts/"):
                             # The Scorecard re-reads right after a button press
                             # - done, refused or timed out - and must not get
                             # the 30 s cached copy from before it.

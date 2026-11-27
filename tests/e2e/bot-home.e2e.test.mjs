@@ -366,7 +366,7 @@ for (const [label, viewport] of [["desktop", undefined], ["phone", PHONE]]) {
       const lit = async () => texts(panels().locator("button[aria-pressed='true']"));
       const fits = async () => panels().locator("button").evaluateAll((els) => els.filter((el) => el.getBoundingClientRect().width < 44
         || el.getBoundingClientRect().height < 44 || el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent));
-      assert.deepEqual(await texts(panels().locator("button")), ["Bot", "Ticker", "Scorecard", "Research", "Ask"]);
+      assert.deepEqual(await texts(panels().locator("button")), ["Bot", "Paper", "Ticker", "Scorecard", "Research", "Ask"]);
       assert.deepEqual(await lit(), ["Bot"]);
       assert.deepEqual(await fits(), []);
       // The panel row is above everything else on the page.

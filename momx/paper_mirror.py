@@ -361,11 +361,13 @@ def _stock_price(q: Any) -> float | None:
     return _mid(q.get("bid"), q.get("ask"))
 
 
-def size_for(price: float | None) -> int | None:
-    """Contracts to buy at this option price, per his plan; None = skip."""
+def size_for(price: float | None, budget: float | None = None) -> int | None:
+    """Contracts to buy at this option price, per his plan; None = skip.
+    `budget`: the per-trade money of a run he started with a reset (momx/bot_accounts.py);
+    None = BUDGET, as always."""
     if price is None or price <= 0 or price > MAX_PRICE:
         return None
-    return max(MIN_MULTI, int(BUDGET // (price * 100)))
+    return max(MIN_MULTI, int((BUDGET if budget is None else budget) // (price * 100)))
 
 
 #: top_verdict's answers: buy may go on / not yet (checked again on later ticks while the
@@ -504,8 +506,12 @@ class PaperMirror:
                  book: str = "All trades", jev_cut: float | None = JEV_CUT,
                  rules: Mapping[str, frozenset] | None = None,
                  quotes_fetch: Callable[[list], Any] | None = None,
-                 ai_policy: Callable | None = None, leg: str = "main") -> None:
+                 ai_policy: Callable | None = None, leg: str = "main",
+                 run_cap: Callable[[str, Path, str], Any] | None = None) -> None:
         self.books = dict(books)
+        #: momx/bot_accounts.paper_cap: None unless he reset this account with starting money;
+        #: then the run's per-trade money and its free money (_entries). Never touches an exit.
+        self._run_cap = run_cap
         #: Which recorded contract this account buys ("main" or "entry" = 0.20 delta).
         self.leg = leg
         self.directory = Path(directory)
@@ -1714,6 +1720,15 @@ class PaperMirror:
                         if isinstance(v, dict)}
         # Signals the top-of-board check turned down for the day (a rank fail; a short hold is retried).
         top_failed = self._top_final()
+        # A run he started with a reset (momx/bot_accounts.py): its per-trade money replaces
+        # BUDGET and a buy must fit in the run's free money. None (no reset, or the run could
+        # not be read) = every line below does exactly what it did before.
+        cap = None
+        if self._run_cap is not None:
+            try:
+                cap = self._run_cap(self.account, self.directory, now.date().isoformat())
+            except Exception:  # noqa: BLE001 - bookkeeping must never stop the paper bot
+                cap = None
         for key, (side, t) in queue:
             if live >= MAX_OPEN or entries >= MAX_ENTRIES_PER_DAY:
                 break
@@ -1790,7 +1805,7 @@ class PaperMirror:
                 continue                      # $0 bid or a penny option: it could not be sold back
             # The chart plan's entry (his decision 2026-11-12): a limit at the ASK, not the mid.
             limit = _ask(bid, ask)
-            qty = size_for(limit)
+            qty = size_for(limit) if cap is None else size_for(limit, cap.per_trade)
             if not qty:
                 continue
             # Buying power (2026-11-10): every buy is 3+ contracts up to $8.00
@@ -1804,6 +1819,13 @@ class PaperMirror:
                 why = f"not enough buying power (${needed:,.0f} needed, ${max(free, 0):,.0f} free)"
                 changed |= self._skip_for_funds(key, side, t, why, stamp, done)
                 continue
+            if cap is not None:
+                # The run's own books: its money + closed profit or loss - what is held or on order.
+                run_free = cap.free(self._rows)
+                if needed > run_free:
+                    why = f"no free money in this run (${needed:,.0f} needed, ${max(run_free, 0):,.0f} free)"
+                    changed |= self._skip_for_funds(key, side, t, why, stamp, done)
+                    continue
             if self._fund_skips.pop(key, None):   # paid for now: no stale reason left behind
                 self._fund_seen.pop(key, None)
                 changed = True
@@ -2023,6 +2045,12 @@ PaperMirror.history = _history
 _MIRRORS: list[PaperMirror] = []
 
 
+def _run_cap(account: str, folder: Path, day: str) -> Any:
+    """The account's run, when he started one with a reset (momx/bot_accounts.py); else None."""
+    from momx import bot_accounts
+    return bot_accounts.paper_cap(account, folder, day)
+
+
 def start(books: Mapping[str, Any], directory: Path) -> list[PaperMirror]:
     """Start one mirror per ACCOUNTS entry, one loop thread (momx_worker). Idempotent."""
     if not _MIRRORS:
@@ -2031,7 +2059,8 @@ def start(books: Mapping[str, Any], directory: Path) -> list[PaperMirror]:
         for account, (label, cut) in ACCOUNTS.items():
             _MIRRORS.append(PaperMirror(books, Path(directory) / account, account=account, book=label, jev_cut=cut,
                                         rules=ACCOUNT_RULES.get(account), leg=PAPER_LEG,
-                                        ai_policy=paper5_policy if account == "paper5" else paper3_policy))
+                                        ai_policy=paper5_policy if account == "paper5" else paper3_policy,
+                                        run_cap=_run_cap))
             _MIRRORS[-1]._ai_status = trade_first()
 
         def loop() -> None:

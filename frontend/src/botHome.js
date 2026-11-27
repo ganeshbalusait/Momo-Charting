@@ -614,6 +614,7 @@ export function botLanding(storedView, seen) {
 /** A "More" row on the home page -> the older page it opens, and whether that is the Ticker trader. */
 export function botMoreTarget(name) {
   if (name === "scorecard") return { view: "desk", ticker: null };
+  if (name === "accounts") return { view: "accounts", ticker: null };
   if (name === "ask") return { view: "ask", ticker: null };
   if (name === "ticker") return { view: "research", ticker: true };
   if (name === "research") return { view: "research", ticker: false };
@@ -627,11 +628,12 @@ export function homeStartSection(asked, stored) {
 
 // The panel row at the very top of every Bot screen (2026-11-25, his "it should be on top ... add panel top
 // that would be easy"): which page of the Bot this is, one tap to any other. "Bot" is the home page.
-export const BOT_PANELS = [["bot", "Bot"], ["ticker", "Ticker"], ["scorecard", "Scorecard"], ["research", "Research"], ["ask", "Ask"]];
+export const BOT_PANELS = [["bot", "Bot"], ["accounts", "Paper"], ["ticker", "Ticker"], ["scorecard", "Scorecard"], ["research", "Research"], ["ask", "Ask"]];
 
 /** The panel that is showing, from BotPanel's view and whether Research is on its Ticker trader side. */
 export function botPanelCurrent(view, tickerOn) {
   if (view === "desk") return "scorecard";
+  if (view === "accounts") return "accounts";
   if (view === "ask") return "ask";
   if (view === "research") return tickerOn ? "ticker" : "research";
   return "bot";

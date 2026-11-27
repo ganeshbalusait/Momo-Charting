@@ -154,6 +154,71 @@
 .bh-panels button[aria-pressed="true"] { background: var(--bh-accent-bg); color: var(--bh-accent); box-shadow: inset 0 -2px 0 var(--bh-accent); }
 @media (min-width: 560px) { .bh-panels button { font-size: 14px; } }
 
+/* ---- The paper accounts page (BotAccounts.jsx, 2026-11-27): Webull-style account screen for Paper 3, Paper 5,
+   Research and Ticker. Chrome only; win and loss colours are the Bot page's own (.is-up / .is-down). ---- */
+.ba { display: grid; gap: 14px; min-width: 0; padding-bottom: 24px; }
+.ba-card { display: grid; gap: 10px; min-width: 0; padding: 16px; border-radius: 16px; background: var(--bh-card); }
+.ba-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.ba-dim { color: var(--bh-mute); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.ba-strong { font-weight: 600; }
+.ba-block { display: block; margin-top: 3px; }
+.ba-right { text-align: right; flex: none; }
+.ba-big { font-size: 38px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.05; color: var(--bh-fg); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ba-mid { display: block; font-size: 17px; font-weight: 700; color: var(--bh-fg); font-variant-numeric: tabular-nums; }
+.ba .ba-mid.is-up, .ba .ba-well b.is-up { color: var(--bh-up); }
+.ba .ba-mid.is-down, .ba .ba-well b.is-down { color: var(--bh-down); }
+.ba-pill { flex: none; padding: 4px 8px; border: 1px solid var(--bh-edge); border-radius: 999px; color: var(--bh-mute); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+.ba-pill.is-on { border-color: var(--bh-accent); color: var(--bh-accent); }
+.ba-three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ba-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ba-well { display: grid; gap: 4px; min-width: 0; padding: 10px; border-radius: 12px; background: var(--bh-well); }
+.ba-well b { font-size: 17px; font-weight: 700; color: var(--bh-fg); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ba-btn { min-height: 46px; padding: 0 16px; border: 1px solid var(--bh-edge); border-radius: 999px; background: transparent; color: var(--bh-fg); font: 600 15px/1.2 Inter, system-ui, sans-serif; cursor: pointer; }
+.ba-btn.is-main { border-color: var(--bh-accent); background: var(--bh-accent); color: #06121f; font-weight: 700; }
+.ba-btn.is-small { min-height: 44px; padding: 0 14px; color: var(--bh-accent); font-size: 14px; }
+.ba-btn:disabled { opacity: .5; cursor: default; }
+.ba-btn:focus-visible, .ba-run:focus-visible, .ba-tabs button:focus-visible, .ba-x:focus-visible, .ba-presets button:focus-visible { outline: 2px solid var(--bh-accent); outline-offset: 2px; }
+.ba-bar { height: 6px; border-radius: 999px; background: var(--bh-well); overflow: hidden; }
+.ba-bar span { display: block; height: 100%; background: var(--bh-accent); }
+.ba-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--bh-line); }
+.ba-tabs button { min-height: 44px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--bh-mute); font: 600 14px/1.2 Inter, system-ui, sans-serif; cursor: pointer; }
+.ba-tabs button[aria-selected="true"] { border-bottom-color: var(--bh-accent); color: var(--bh-fg); }
+.ba-list, .ba-journal { display: grid; gap: 10px; min-width: 0; }
+.ba-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 14px 16px; border-radius: 14px; background: var(--bh-card); color: var(--bh-fg); }
+.ba-item b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.ba-run { display: grid; gap: 8px; min-width: 0; padding: 16px; border: 1px solid transparent; border-radius: 16px; background: var(--bh-card); color: var(--bh-fg); text-align: left; font: inherit; cursor: pointer; }
+.ba-run.is-live { border-color: var(--bh-accent); }
+.ba-link { color: var(--bh-accent); font-size: 13px; font-weight: 600; }
+.ba-sheet { display: grid; gap: 14px; min-width: 0; }
+.ba-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ba-sheet-head h3 { margin: 0; font-size: 18px; color: var(--bh-fg); }
+.ba-x { width: 44px; height: 44px; border: 0; border-radius: 999px; background: var(--bh-card); color: var(--bh-mute); font-size: 20px; cursor: pointer; }
+.ba-facts { display: grid; gap: 8px; margin: 0; }
+.ba-facts div { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.ba-facts dt { color: var(--bh-mute); }
+.ba-facts dd { margin: 0; font-weight: 700; color: var(--bh-fg); font-variant-numeric: tabular-nums; text-align: right; }
+.ba .ba-facts dd.is-up { color: var(--bh-up); }
+.ba .ba-facts dd.is-down { color: var(--bh-down); }
+.ba-label { color: var(--bh-fg); font-size: 15px; font-weight: 600; }
+.ba-input { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 14px; border: 1px solid var(--bh-edge); border-radius: 14px; background: var(--bh-well); color: var(--bh-mute); font-size: 18px; }
+.ba-input input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--bh-fg); font: 700 20px/1.2 Inter, system-ui, sans-serif; }
+.ba-input.is-big { min-height: 56px; font-size: 22px; }
+.ba-input.is-big input { font-size: 26px; }
+.ba-input:focus-within { border-color: var(--bh-accent); }
+.ba-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.ba-presets button { min-height: 44px; border: 1px solid var(--bh-edge); border-radius: 999px; background: transparent; color: var(--bh-fg); font: 600 14px/1.2 Inter, system-ui, sans-serif; cursor: pointer; }
+.ba-presets button[aria-pressed="true"] { border-color: var(--bh-accent); background: var(--bh-accent-bg); }
+.ba-notes { color: var(--bh-mute); font-size: 13px; line-height: 1.5; }
+.ba-notes b { color: var(--bh-fg); }
+.ba-notes p { margin: 0; }
+.ba-money-form { display: grid; gap: 10px; }
+.ba-error { margin: 0; padding: 10px 12px; border-radius: 12px; background: var(--bh-warn-bg); color: var(--bh-warn); font-size: 13px; line-height: 1.45; }
+.ba .desk-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 900px) {
+  .ba { max-width: 760px; }
+  .ba .desk-tiles { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+
 /* Sections that open with one tap on the Scorecard and Research (BotFold.jsx, 2026-11-26). */
 .bf { display: grid; gap: 10px; min-width: 0; }
 .bf-body { display: grid; gap: 14px; min-width: 0; }

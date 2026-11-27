@@ -542,18 +542,19 @@ test("the Bot opens on the home page; an older page remembered from before it ex
   assert.equal(botMoreTarget("settings"), null);
 });
 
-test("the panel row: five pages, the one showing lit, and no More tab (2026-11-25)", async () => {
+test("the panel row: six pages with Paper second, the one showing lit, and no More tab (2026-11-25, Paper 2026-11-27)", async () => {
   const { BOT_PANELS, HOME_KEPT_SECTIONS, botMoreTarget, botPanelCurrent, readHomeSection } = await import("./botHome.js");
-  assert.deepEqual(BOT_PANELS.map(([key, label]) => `${key}:${label}`), ["bot:Bot", "ticker:Ticker", "scorecard:Scorecard", "research:Research", "ask:Ask"]);
+  assert.deepEqual(BOT_PANELS.map(([key, label]) => `${key}:${label}`), ["bot:Bot", "accounts:Paper", "ticker:Ticker", "scorecard:Scorecard", "research:Research", "ask:Ask"]);
   assert.deepEqual(HOME_KEPT_SECTIONS, HOME_SECTIONS.map(([key]) => key));
   assert.equal(readHomeSection("more"), "home");
   assert.equal(botPanelCurrent("home", true), "bot");
   assert.equal(botPanelCurrent("desk", true), "scorecard");
+  assert.equal(botPanelCurrent("accounts", true), "accounts");
   assert.equal(botPanelCurrent("ask", false), "ask");
   assert.equal(botPanelCurrent("research", true), "ticker");
   assert.equal(botPanelCurrent("research", false), "research");
   // Every panel but Bot opens through the same targets as the More rows.
-  assert.deepEqual(BOT_PANELS.slice(1).map(([key]) => botMoreTarget(key).view), ["research", "desk", "research", "ask"]);
+  assert.deepEqual(BOT_PANELS.slice(1).map(([key]) => botMoreTarget(key).view), ["accounts", "research", "desk", "research", "ask"]);
 });
 
 test("a tab tapped on an older page opens the home page on that section (2026-11-25)", async () => {
